@@ -17,6 +17,7 @@ import tempfile
 from pathlib import Path
 
 from .harness import Session
+from .harness.session import QUIET
 from .mockprovider import MockProvider, Scenario
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,11 +49,20 @@ class Ctx:
         self.mock = MockProvider().start()
         self.sessions: list[Session] = []
         self._checked: list[str] = []
+        self.quiet = QUIET
 
     # ---- provider ---------------------------------------------------------
     def scenario(self, spec: str | Scenario):
-        """Set what the dummy provider streams back for the next turns."""
+        """Set what the dummy provider streams back for the next turns.
+
+        A paced scenario leaves gaps between deltas, and a quiet window
+        shorter than one of those gaps would read a mid-stream pause as a
+        settled screen — so the window follows the pacing.
+        """
         self.mock.scenario = spec
+        self.quiet = max(QUIET, self.mock.scenario.delay * 2.5)
+        for s in self.sessions:
+            s.quiet = self.quiet
         return self
 
     # ---- files ------------------------------------------------------------
@@ -108,6 +118,7 @@ class Ctx:
             cols=cols,
             rows=rows,
             name=self.case,
+            quiet=self.quiet,
         )
         s.start()
         self.sessions.append(s)

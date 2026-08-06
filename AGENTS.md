@@ -102,7 +102,9 @@ sequences; `tests/golden/` holds expected screen dumps (`make test-update`
 rewrites them, so read the diff first). `tests/README.md` documents the
 scenario language of the mock provider and the waiting primitives that keep
 cases reproducible — nothing sleeps for a fixed time, everything waits on a
-state.
+state. Cases are fully isolated (own temp `HOME`, own provider port, own pty)
+and the runner executes them in parallel; `-j 1` forces one at a time when
+debugging.
 
 A failing test means the source is wrong until proven otherwise. Do not
 relax an assertion to match clunky behaviour: fix it in `src/`, then keep the

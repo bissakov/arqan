@@ -14,7 +14,13 @@ make test T=--list              # list cases with their one-line summaries
 make test-update                # rewrite golden screens after an intended change
 python3 tests/run.py -v -x      # verbose, stop at the first failure
 python3 tests/run.py --repeat 5 # flush out flakiness
+python3 tests/run.py -j 1       # one case at a time, for debugging
 ```
+
+Cases run in parallel (`-j`, default twice the CPU count, capped at 32): each
+owns its temp `HOME`, its provider port and its pty, so the only thing they
+share is the read-only golden directory. A case spends ~99% of its time
+waiting, so the suite is bounded by its slowest case, not by their sum.
 
 ## Layout
 
@@ -58,6 +64,12 @@ Nothing sleeps for a fixed time; tests wait for states.
 * `s.submit(text)` — returns once the composer clears, which is the signal a
   turn actually started.
 * `s.wait_turn_done()` — returns when the agent loop is idle again.
+
+“Quiet” means no output for a short window. The window has to outlast the
+largest gap the frames being waited on can contain, so it follows the
+scenario: a bare one settles in 60 ms, and `delay=` widens it to 2.5× the
+pacing. Set `AH_TEST_QUIET=0.2` to raise the floor on a machine too slow or
+too loaded for the default.
 
 The environment is pinned so the rendered frame is reproducible: fixed
 `TERM`, `LC_ALL=C.UTF-8`, an isolated `HOME`/`XDG_CONFIG_HOME`, a cwd of

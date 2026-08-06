@@ -17,6 +17,7 @@ import fcntl
 import os
 import pty
 import select
+import shutil
 import signal
 import struct
 import subprocess
@@ -25,6 +26,19 @@ import time
 
 from . import keys as K
 from .vt import Terminal
+
+# A quiet window has to outlast the largest gap the frames it waits on can
+# have; below that floor we are only bridging one repaint, which `ah` emits as
+# a single write. Scenarios that pace their deltas widen it (see `Ctx.quiet`),
+# and AH_TEST_QUIET raises the floor for machines too slow for the default.
+QUIET = max(0.06, float(os.environ.get("AH_TEST_QUIET") or 0))
+
+# `ah` keeps ISIG on, so Ctrl-C is a signal from the line discipline, not a
+# byte — which only happens if the child owns the pty as its controlling
+# terminal. setsid(1) does the setsid + TIOCSCTTY dance before exec with no
+# Python in between, which matters because cases run in parallel threads and
+# a preexec_fn runs the interpreter in a forked, threaded child.
+SETSID = shutil.which("setsid")
 
 
 class TimeoutError_(AssertionError):
@@ -40,6 +54,7 @@ class Session:
         cols=80,
         rows=24,
         name="ah",
+        quiet=QUIET,
     ):
         self.argv = list(argv)
         self.env = dict(env or {})
@@ -47,6 +62,7 @@ class Session:
         self.cols = cols
         self.rows = rows
         self.name = name
+        self.quiet = max(quiet, QUIET)
         self.term = Terminal(cols, rows)
         self.raw = bytearray()
         self.proc: subprocess.Popen | None = None
@@ -60,21 +76,15 @@ class Session:
         _set_winsize(master, self.cols, self.rows)
         _set_winsize(slave, self.cols, self.rows)
 
-        def child_setup():
-            os.setsid()
-            try:
-                fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-            except OSError:
-                pass
-
+        argv = [SETSID, "--ctty", *self.argv] if SETSID else list(self.argv)
         self.proc = subprocess.Popen(
-            self.argv,
+            argv,
             stdin=slave,
             stdout=slave,
             stderr=slave,
             cwd=self.cwd,
             env=self.env,
-            preexec_fn=child_setup,
+            preexec_fn=None if SETSID else _child_setup,
             close_fds=True,
         )
         os.close(slave)
@@ -120,7 +130,7 @@ class Session:
 
     def wait_idle(
         self,
-        quiet: float = 0.15,
+        quiet: float | None = None,
         timeout: float = 10.0,
         require_output: bool = False,
     ) -> "Session":
@@ -130,11 +140,12 @@ class Session:
         what makes "send a key, then assert" safe: the screen we inspect is
         never the one from before the key.
         """
+        quiet = self.quiet if quiet is None else quiet
         deadline = time.monotonic() + timeout
         last = time.monotonic()
         seen = not require_output
         while time.monotonic() < deadline:
-            got = self._read_once(0.02)
+            got = self._read_once(min(0.02, quiet / 3))
             now = time.monotonic()
             if got:
                 seen = True
@@ -187,11 +198,11 @@ class Session:
             timeout,
         )
 
-    def settle(self, quiet: float = 0.12, timeout: float = 10.0):
+    def settle(self, quiet: float | None = None, timeout: float = 10.0):
         """Idle wait used right before taking a golden snapshot."""
         return self.wait_idle(quiet, timeout)
 
-    def sync(self, quiet: float = 0.12, timeout: float = 10.0):
+    def sync(self, quiet: float | None = None, timeout: float = 10.0):
         """Wait for the repaint caused by the input just sent, then settle."""
         return self.wait_idle(quiet, timeout, require_output=True)
 
@@ -408,6 +419,14 @@ class Session:
             except OSError:
                 pass
             self.master = -1
+
+
+def _child_setup():  # only without setsid(1); see SETSID above
+    os.setsid()
+    try:
+        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+    except OSError:
+        pass
 
 
 def _set_winsize(fd: int, cols: int, rows: int):

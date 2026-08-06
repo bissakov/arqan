@@ -390,7 +390,12 @@ class MockProvider:
         self.httpd.requests = []           # type: ignore[attr-defined]
         self.httpd.verbose = False         # type: ignore[attr-defined]
         self.scenario = scenario
-        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        # socketserver's shutdown() only returns on the next poll tick, so the
+        # default 0.5s would dominate the runtime of a short case.
+        self.thread = threading.Thread(
+            target=self.httpd.serve_forever, kwargs={"poll_interval": 0.01},
+            daemon=True,
+        )
 
     # -- configuration -----------------------------------------------------
     @property
