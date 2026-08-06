@@ -30,7 +30,7 @@ src/
   history.c       prompt history, mirrored to the XDG state dir
   session.c       per-directory saved conversations (/resume)
   config.c        env + XDG config file loader
-  provider.c      OpenAI-compatible chat-completions streaming + tool deltas
+  provider.c      chat-completions streaming + reasoning and tool deltas
   tools.c         SoA tool registry + read/write/bash/edit tools
   tui.c           alternate-screen TUI, viewport, composer + raw input
   main.c          unity includes + main + agent loop

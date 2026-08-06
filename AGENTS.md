@@ -97,7 +97,10 @@ an AoS layout.
   precedence
 - `tools.c`: the `ToolRegistry` and the four built-in tools (read/write/bash/edit)
 - `provider.c`: OpenAI-compatible chat-completions streaming client; parses
-  SSE deltas into text/tool-call callbacks and appends to `Conv`. Each event
+  SSE deltas into text/reasoning/tool-call callbacks and appends to `Conv`.
+  A `reasoning_content` or `reasoning` delta reaches `on_reason` and the
+  screen but never `Conv`, since a provider rejects a thinking trace it did
+  not produce itself. Each event
   is parsed into a small arena that is reset per delta, so a turn's scratch
   use follows the size of the reply rather than the number of events. Also
   `provider_models`, the `/models` listing the `/model` picker offers

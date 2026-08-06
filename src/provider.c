@@ -141,6 +141,7 @@ typedef struct {
     i32  dropped;      /* calls past the per-turn cap */
     Buf  text;
     b8   text_started;
+    b8   reason_started;
 } StreamState;
 
 static i32 slot(StreamState *s, i32 idx) {
@@ -186,6 +187,23 @@ static b8 on_line(Str line, void *ud) {
         if (!ch0) return true;
         const JVal *delta = json_get(ch0, STR("delta"));
         if (delta) {
+            /* "reasoning_content" is what DeepSeek-style endpoints send,
+             * "reasoning" what OpenRouter does; both carry plain text. */
+            const JVal *reason = json_get(delta, STR("reasoning_content"));
+            if (!reason) reason = json_get(delta, STR("reasoning"));
+            if (reason && reason->type == J_STR && reason->u.s.n) {
+                Str rt = reason->u.s;
+                if (!s->reason_started) {
+                    size_t skip = 0;
+                    while (skip < rt.n && (rt.p[skip] == '\r' || rt.p[skip] == '\n'))
+                        skip++;
+                    rt = str_drop(rt, skip);
+                }
+                if (rt.n) {
+                    s->reason_started = true;
+                    if (p->on_reason) p->on_reason(rt, p->ud);
+                }
+            }
             const JVal *content = json_get(delta, STR("content"));
             if (content && content->type == J_STR && content->u.s.n) {
                 Str text = content->u.s;

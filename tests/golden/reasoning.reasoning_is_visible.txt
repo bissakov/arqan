@@ -1,0 +1,26 @@
+--- screen 80x24 ---
+|
+|
+|  how many?
+|
+|
+|
+|  let me count the rabbits
+|
+|  four rabbits
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|  › Message yoke...
+|
+|
+|  ● ready · mock-model · local · ~/work · 28
+--- cursor row=21 col=5 visible=yes ---

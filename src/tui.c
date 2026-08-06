@@ -29,7 +29,7 @@
 #define TUI_POPUP_ROWS 6         /* completion entries shown at once         */
 #define TUI_PICK_SEARCH_MIN 10   /* entries above which a picker searches    */
 #define TUI_PICK_QUERY 64        /* longest search a picker accepts          */
-#define TUI_MAX_USER_SPANS 256   /* boxed user messages tracked in scrollback */
+#define TUI_MAX_SPANS 256        /* styled transcript ranges kept in scrollback */
 #define TUI_CKPTS 4096           /* wrapped-row checkpoints into the transcript */
 
 /* A quiet 256-colour palette.  Styling is optional (NO_COLOR and dumb
@@ -80,13 +80,15 @@ typedef struct {
     size_t ckpt_off[TUI_CKPTS];
     size_t ckpt_n;
     size_t ckpt_step;        /* rows between checkpoints; doubles on overflow */
-    /* Byte ranges of the transcript that are user messages: a row whose text
-     * starts inside one is painted as the boxed user block. Keeping it beside
-     * the transcript (rather than as markup inside it) means arbitrary model
-     * or tool output can never forge one. */
-    size_t user_a[TUI_MAX_USER_SPANS];
-    size_t user_b[TUI_MAX_USER_SPANS];
-    size_t user_n;
+    /* Byte ranges of the transcript that carry a role of their own (a user
+     * message, a reasoning trace): a row whose text starts inside one is
+     * painted with that role's style. Keeping it beside the transcript
+     * (rather than as markup inside it) means arbitrary model or tool output
+     * can never forge one. */
+    size_t span_a[TUI_MAX_SPANS];
+    size_t span_b[TUI_MAX_SPANS];
+    u8     span_k[TUI_MAX_SPANS];
+    size_t span_n;
     /* Raised by Esc while a turn is in flight, so the UI can cancel a request
      * through the same path SIGINT uses. */
     volatile sig_atomic_t *interrupt;
@@ -515,7 +517,7 @@ static void pad_row(size_t used, size_t cols) {
 
 enum {
     ROW_PLAIN = 1, ROW_COMPOSER, ROW_STATUS,
-    ROW_USER, ROW_TOOL, ROW_RESULT, ROW_NOTICE, ROW_POPUP,
+    ROW_USER, ROW_REASON, ROW_TOOL, ROW_RESULT, ROW_NOTICE, ROW_POPUP,
     ROW_WELCOME_ART, ROW_WELCOME_TEXT
 };
 
@@ -568,36 +570,48 @@ static b8 str_contains_ci(Str s, Str needle) {
     return false;
 }
 
-/* ---- user message spans -------------------------------------------------- */
-static void span_add(size_t a, size_t b) {
-    if (g_tui.user_n == TUI_MAX_USER_SPANS) {
-        memmove(g_tui.user_a, g_tui.user_a + 1,
-                sizeof g_tui.user_a - sizeof g_tui.user_a[0]);
-        memmove(g_tui.user_b, g_tui.user_b + 1,
-                sizeof g_tui.user_b - sizeof g_tui.user_b[0]);
-        g_tui.user_n--;
+/* ---- styled transcript spans --------------------------------------------- */
+/* Reasoning arrives as many tiny deltas, so an append that continues the
+ * previous span extends it instead of claiming a slot of its own. */
+static void span_add(size_t a, size_t b, u8 kind) {
+    if (g_tui.span_n && g_tui.span_k[g_tui.span_n - 1] == kind
+        && g_tui.span_b[g_tui.span_n - 1] == a) {
+        g_tui.span_b[g_tui.span_n - 1] = b;
+        return;
     }
-    g_tui.user_a[g_tui.user_n] = a;
-    g_tui.user_b[g_tui.user_n] = b;
-    g_tui.user_n++;
+    if (g_tui.span_n == TUI_MAX_SPANS) {
+        memmove(g_tui.span_a, g_tui.span_a + 1,
+                sizeof g_tui.span_a - sizeof g_tui.span_a[0]);
+        memmove(g_tui.span_b, g_tui.span_b + 1,
+                sizeof g_tui.span_b - sizeof g_tui.span_b[0]);
+        memmove(g_tui.span_k, g_tui.span_k + 1,
+                sizeof g_tui.span_k - sizeof g_tui.span_k[0]);
+        g_tui.span_n--;
+    }
+    g_tui.span_a[g_tui.span_n] = a;
+    g_tui.span_b[g_tui.span_n] = b;
+    g_tui.span_k[g_tui.span_n] = kind;
+    g_tui.span_n++;
 }
 
 /* Scrollback dropped `delta` bytes off the front: rebase, forget what went. */
 static void spans_shift(size_t delta) {
     size_t w = 0;
-    for (size_t i = 0; i < g_tui.user_n; i++) {
-        if (g_tui.user_b[i] <= delta) continue;
-        g_tui.user_a[w] = g_tui.user_a[i] > delta ? g_tui.user_a[i] - delta : 0;
-        g_tui.user_b[w] = g_tui.user_b[i] - delta;
+    for (size_t i = 0; i < g_tui.span_n; i++) {
+        if (g_tui.span_b[i] <= delta) continue;
+        g_tui.span_a[w] = g_tui.span_a[i] > delta ? g_tui.span_a[i] - delta : 0;
+        g_tui.span_b[w] = g_tui.span_b[i] - delta;
+        g_tui.span_k[w] = g_tui.span_k[i];
         w++;
     }
-    g_tui.user_n = w;
+    g_tui.span_n = w;
 }
 
-static b8 span_holds(size_t off) {
-    for (size_t i = 0; i < g_tui.user_n; i++)
-        if (off >= g_tui.user_a[i] && off < g_tui.user_b[i]) return true;
-    return false;
+/* The style a row starting at `off` takes, or 0 when it is plain. */
+static u8 span_kind(size_t off) {
+    for (size_t i = 0; i < g_tui.span_n; i++)
+        if (off >= g_tui.span_a[i] && off < g_tui.span_b[i]) return g_tui.span_k[i];
+    return 0;
 }
 
 static u8 display_kind(u8 kind, Str text) {
@@ -654,6 +668,8 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
         put_safe_clipped(STR("Message yoke..."), room, NULL);
     } else if (kind == ROW_USER) {
         style(S_USER_BG S_TEXT); put_text(text.p, text.n);
+    } else if (kind == ROW_REASON) {
+        style(S_MUTED); put_text(text.p, text.n);
     } else if (kind == ROW_TOOL) {
         style(S_YELLOW); put_text_z("◆  "); put_text(text.p, text.n);
     } else if (kind == ROW_RESULT) {
@@ -771,10 +787,13 @@ static void update_text_rows(Str s, size_t base_off, size_t cols,
         if (end || newline || wrap) {
             if (row >= first_row && row < first_row + visible_rows) {
                 Str prefix = row == 0 && prompt_cells ? STR("› ") : (Str){0};
-                /* Only the transcript carries user spans; the composer
+                /* Only the transcript carries styled spans; the composer
                  * indexes its own buffer. */
-                u8 row_kind = kind == ROW_PLAIN && span_holds(base_off + start)
-                            ? (u8)ROW_USER : kind;
+                u8 row_kind = kind;
+                if (kind == ROW_PLAIN) {
+                    u8 sk = span_kind(base_off + start);
+                    if (sk) row_kind = sk;
+                }
                 update_text_row(screen_row + row - first_row, prefix,
                                 (Str){s.p + start, i - start}, screen_col,
                                 screen_cols, row_kind, force);
@@ -1355,7 +1374,7 @@ void tui_notice(Str msg) {
 void tui_clear(void) {
     g_tui.notice_n = 0;
     g_tui.transcript_n = 0;
-    g_tui.user_n = 0;
+    g_tui.span_n = 0;
     wrap_invalidate();
     g_tui.scroll_rows = 0;
     g_tui.context_tokens = 0;
@@ -1385,7 +1404,7 @@ void tui_write(Str s) {
         s.p += s.n - (TUI_TRANSCRIPT_CAP - 1);
         s.n = TUI_TRANSCRIPT_CAP - 1;
         g_tui.transcript_n = 0;
-        g_tui.user_n = 0;
+        g_tui.span_n = 0;
         wrap_invalidate();   /* the bytes the index described are gone */
     } else if (g_tui.transcript_n + s.n >= TUI_TRANSCRIPT_CAP) {
         size_t room_for_old = TUI_TRANSCRIPT_CAP - 1 - s.n;
@@ -1433,6 +1452,17 @@ void tui_printf(const char *fmt, ...) {
 
 void tui_putstr(Str s) { tui_write(s); }
 
+/* Reasoning is transcript text like any other; only the byte range recorded
+ * around it tells the painter to mute those rows.  A write that overflowed
+ * the scrollback moved the bytes, and the span is dropped with them. */
+void tui_write_reason(Str s) {
+    if (!g_tui.fullscreen) { tui_write(s); return; }
+    size_t a = g_tui.transcript_n;
+    tui_write(s);
+    size_t b = g_tui.transcript_n;
+    if (b > a) span_add(a, b, ROW_REASON);
+}
+
 /* A user turn is a block of screen, not a labelled line: it is written with a
  * padding row above and below and the whole range is recorded so every row it
  * wraps onto is painted with the panel background. */
@@ -1449,7 +1479,7 @@ void tui_write_user(Str s) {
     tui_write(s);
     tui_write(STR("\n\n"));               /* text row ends, padding row ends */
     size_t b = g_tui.transcript_n;
-    if (b > a) span_add(a, b);
+    if (b > a) span_add(a, b, ROW_USER);
     tui_write(STR("\n"));                 /* air below the box */
 }
 

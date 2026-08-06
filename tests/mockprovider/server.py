@@ -57,6 +57,10 @@ class Scenario:
         # tools: "read:{...}" entries, repeatable via `|`
         self.tools: list[tuple[str, str]] = kw.get("tools", [])
         self.tool_rounds: int = int(kw.get("tool_rounds", 1))
+        # reasoning: streamed before the content, in the field a provider of
+        # that family uses ("reasoning_content" or "reasoning").
+        self.reasoning: str | None = kw.get("reasoning")
+        self.reasoning_field: str = kw.get("reasoning_field", "reasoning_content")
         self.final_text: str | None = kw.get("final_text")
         self.prompt_tokens = kw.get("prompt_tokens")
         self.completion_tokens = kw.get("completion_tokens")
@@ -103,7 +107,7 @@ class Scenario:
                     kw["usage"] = value
             elif key == "models":
                 kw["models"] = [m for m in _unescape(value).split("|") if m]
-            elif key in ("text", "final_text", "prefix", "error"):
+            elif key in ("text", "final_text", "prefix", "error", "reasoning"):
                 kw[key] = _unescape(value)
             else:
                 kw[key] = value
@@ -328,6 +332,13 @@ class _Handler(BaseHTTPRequestHandler):
             time.sleep(scenario.first_delay)
 
         completion_chars = 0
+        if scenario.reasoning and tool_replies == 0:
+            for piece in chunks(scenario.reasoning, scenario.chunk):
+                if not self._sse(frame({scenario.reasoning_field: piece})):
+                    return
+                if scenario.delay:
+                    time.sleep(scenario.delay)
+
         if emit_tools:
             for index, (name, args) in enumerate(scenario.tools):
                 head = {

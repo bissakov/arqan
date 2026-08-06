@@ -106,6 +106,8 @@ ctx.scenario("status=500")
 | `words=`, `paragraphs=`, `seed=` | size and shape of generated lorem ipsum |
 | `chunk=` | words per SSE delta (`chunk=1` streams word by word) |
 | `delay=`, `first_delay=` | seconds between deltas / before the first one |
+| `reasoning=` | thinking trace streamed before the reply |
+| `reasoning_field=` | the delta key it arrives in (`reasoning_content` by default, `reasoning` for OpenRouter-style providers) |
 | `tool=NAME:JSON` | emit a tool call; repeatable for parallel calls |
 | `tool_rounds=` | how many rounds of tool calls before answering |
 | `final_text=` | reply sent after the tool results come back |

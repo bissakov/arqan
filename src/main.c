@@ -49,8 +49,25 @@ static size_t commands_init(void) {
 }
 
 /* Streaming sinks append to the TUI's transcript. */
+/* Set while a reply's reasoning is still streaming, so the first word of the
+ * answer proper can open a row of its own. */
+static b8 g_reasoning;
+static void on_reason(Str delta, void *ud) {
+    (void)ud;
+    if (!g_reasoning) {
+        g_reasoning = true;
+        tui_set_status("reasoning");
+        tui_write(STR("\n"));
+    }
+    tui_write_reason(delta);
+}
 static void on_text(Str delta, void *ud) {
     (void)ud;
+    if (g_reasoning) {
+        g_reasoning = false;
+        tui_set_status("thinking");
+        tui_write(STR("\n\n"));
+    }
     tui_write(delta);
 }
 static void on_tool_call(i32 idx, Str id, Str name, Str args_delta, void *ud) {
@@ -358,6 +375,7 @@ i32 main(i32 argc, char **argv) {
                 break;
             }
             tui_set_status("thinking");
+            g_reasoning = false;
             Provider p = {
                 .cfg = &cfg,
                 .tools = &tools,
@@ -365,6 +383,7 @@ i32 main(i32 argc, char **argv) {
                 .persist = &persist,
                 .scratch = &scratch,
                 .on_text = on_text,
+                .on_reason = on_reason,
                 .on_tool_call = on_tool_call,
                 .ud = NULL,
                 .on_idle = on_idle,

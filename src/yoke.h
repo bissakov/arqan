@@ -332,6 +332,10 @@ typedef struct {
     Arena             *scratch;   /* per-turn scratch (reset each turn)        */
     /* streaming sinks */
     void (*on_text)(Str delta, void *ud);
+    /* Reasoning deltas ("reasoning_content" or "reasoning"): displayed as the
+     * turn streams, never appended to the conversation, since a provider
+     * rejects a thinking trace it did not produce itself. */
+    void (*on_reason)(Str delta, void *ud);
     void (*on_tool_call)(i32 index, Str id, Str name, Str args_delta, void *ud);
     void *ud;
     /* pumped while the request is in flight (see HttpReq.on_idle) */
@@ -387,6 +391,9 @@ void tui_clear(void);
  * transcript is the conversation, so this never lands in it. */
 void tui_notice(Str msg);
 void tui_write(Str s);
+/* Append reasoning output: same transcript, painted muted so a thinking trace
+ * reads apart from the reply. */
+void tui_write_reason(Str s);
 /* Append a user turn: rendered as a padded block with its own background,
  * which is what marks it apart from the agent's own output. */
 void tui_write_user(Str s);
