@@ -100,9 +100,16 @@ def test_sigint_outside_a_turn_clears_the_composer(ctx):
     s = ctx.spawn()
     s.type("half typed").sync()
     s.signal(signal.SIGINT)
-    s.wait_text("^C")
-    assert s.composer_text() == ""
+    s.wait_for(lambda t: s.composer_text() == "", "the composer to clear")
+    assert "^C" not in s.text(), "nothing is written to the transcript"
     assert s.proc.poll() is None, "SIGINT must not kill the session"
+
+    # the cancellation must not leak into the turn that follows it
+    ctx.scenario("text=next+turn+runs")
+    s.submit("and now this")
+    s.wait_text("next turn runs")
+    s.wait_turn_done()
+    assert "[interrupted]" not in s.text()
 
 
 def test_unknown_slash_command_is_sent_as_text(ctx):

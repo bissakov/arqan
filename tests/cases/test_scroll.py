@@ -45,7 +45,7 @@ def test_scroll_is_clamped_at_the_top(ctx):
         s.key("pageup")
     s.sync()
     top = s.text()
-    assert "\u25cf  You" in top
+    assert "write a lot" in top
     s.key("pageup").sync()
     assert s.text() == top, "already at the top: nothing more to scroll"
 
@@ -82,7 +82,7 @@ def test_new_output_returns_to_the_bottom(ctx):
     for _ in range(10):
         s.key("pageup")
     s.sync()
-    assert "\u25cf  You" in s.text()
+    assert "write a lot" in s.text()
 
     ctx.scenario("text=fresh+output+marker")
     s.submit("more please")

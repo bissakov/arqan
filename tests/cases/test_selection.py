@@ -97,8 +97,8 @@ def test_chrome_is_selectable_too(ctx):
     """Selection works over any painted cell, including the status line."""
     s = ctx.spawn()
     row = s.screen.rows            # status line, 1-based
-    drag(s, row, 3, 3 + len("\u25cf  ready") - 1)
-    assert s.screen.clipboard == "\u25cf  ready", repr(s.screen.clipboard)
+    drag(s, row, 3, 3 + len("\u25cf ready") - 1)
+    assert s.screen.clipboard == "\u25cf ready", repr(s.screen.clipboard)
 
 
 def test_composer_text_is_selectable(ctx):

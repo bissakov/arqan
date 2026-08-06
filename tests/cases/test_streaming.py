@@ -4,7 +4,7 @@ import json
 
 
 def test_simple_turn(ctx):
-    """One turn renders You/Assistant blocks and returns to ready."""
+    """One turn renders the user box, the reply, and returns to ready."""
     ctx.scenario("text=Hello+from+the+mock+provider.,usage=120/8")
     s = ctx.spawn()
     s.submit("say hi")
@@ -12,8 +12,7 @@ def test_simple_turn(ctx):
     s.wait_turn_done()
     ctx.check_screen(s)
 
-    assert "\u25cf  You" in s.text()
-    assert "\u25cf  Assistant" in s.text()
+    assert "say hi" in s.text(), "the user turn stays in the transcript"
     assert len(ctx.mock.requests) == 1
 
 
@@ -56,20 +55,29 @@ def test_status_is_thinking_while_streaming(ctx):
     s.wait_turn_done()
 
 
+def reply_text(s, after="stream it"):
+    """Transcript text below the user's message, chrome excluded.
+
+    The status line and composer change independently of the stream, so a
+    length comparison has to look at the transcript alone. Before the user
+    turn is painted there is no reply yet — an empty string, not the whole
+    screen.
+    """
+    body = "\n".join(s.screen.lines()[: s.transcript_height()])
+    head, sep, tail = body.partition(after)
+    return tail.strip() if sep else ""
+
+
 def test_streaming_is_incremental(ctx):
     """Deltas appear as they arrive rather than all at the end."""
     ctx.scenario("words=40,chunk=2,delay=0.03")
     s = ctx.spawn()
     s.submit("stream it")
 
-    def partial(t):
-        body = t.text()
-        return "Assistant" in body and len(body.split("Assistant", 1)[1].strip()) > 20
-
-    s.wait_for(partial, "partial assistant output")
-    mid = s.text()
+    s.wait_for(lambda t: len(reply_text(s)) > 20, "partial assistant output")
+    mid = reply_text(s)
     s.wait_turn_done()
-    assert len(s.text()) > len(mid), "more text should have arrived after the check"
+    assert len(reply_text(s)) > len(mid), "more text should have arrived"
 
 
 def test_multiline_prompt_is_sent_verbatim(ctx):
@@ -175,13 +183,38 @@ def test_interrupt_stops_the_turn(ctx):
     s = ctx.spawn()
     s.submit("go on forever")
     s.wait_status("thinking")
-    s.wait_for(lambda t: "Assistant" in t.text(), "streaming started")
+    s.wait_for(lambda t: len(reply_text(s, "go on forever")) > 20,
+               "streaming started")
     s.key("ctrl-c")
     s.wait_text("[interrupted]")
     s.wait_turn_done()
     # and the UI is still alive
     s.type("after interrupt").sync()
     assert s.composer_text() == "after interrupt", s.composer_lines()
+
+
+def test_escape_stops_the_turn(ctx):
+    """Esc during a stream cancels it, keeping whatever was being composed."""
+    ctx.scenario("words=200,chunk=1,delay=0.05")
+    s = ctx.spawn()
+    s.submit("go on forever")
+    s.wait_status("thinking")
+    s.wait_for(lambda t: len(reply_text(s, "go on forever")) > 20,
+               "streaming started")
+    s.type("draft kept")
+    s.key("esc")
+    s.wait_text("[interrupted]")
+    s.wait_turn_done()
+    assert s.composer_text() == "draft kept", s.composer_lines()
+
+
+def test_escape_when_idle_does_not_disturb_the_composer(ctx):
+    """With no turn running, Esc is inert rather than an interrupt."""
+    s = ctx.spawn()
+    s.type("still here").sync()
+    s.key("esc").sync()
+    assert s.composer_text() == "still here", s.composer_lines()
+    assert "[interrupted]" not in s.text()
 
 
 def test_scenario_from_model_name(ctx):

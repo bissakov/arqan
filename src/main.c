@@ -119,6 +119,7 @@ i32 main(i32 argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     tui_start(cfg.model, cfg.base_url, !cfg.api_key.p, tools.n);
     tui_set_commands(g_commands, commands_init());
+    tui_set_interrupt_flag(&g_got_sigint);
     atexit(tui_stop);
 
     char line[YOKE_LINE_BUF];
@@ -138,9 +139,7 @@ i32 main(i32 argc, char **argv) {
         }
 
         conv_add(&conv, M_USER, str_dup(&persist, str_c(line)));
-        tui_write(STR("You\n"));
-        tui_write((Str){ line, ln });
-        tui_write(STR("\n\nAssistant\n"));
+        tui_write_user((Str){ line, ln });
 
         /* agent loop: keep running until the model emits no tool calls.
          * The composer stays editable throughout; only submitting waits. */
@@ -206,7 +205,7 @@ i32 main(i32 argc, char **argv) {
             }
             if (count == 0) { break; }
             run_tool_calls(&tools, &conv, &scratch, &persist, count, ids, names, argss);
-            tui_write(STR("\nAssistant\n"));
+            tui_write(STR("\n"));
         }
         tui_set_busy(false);
     }

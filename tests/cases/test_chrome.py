@@ -38,8 +38,9 @@ def test_no_color_renders_the_same_glyphs(ctx):
     plain.wait_turn_done()
 
     assert plain.snapshot() == coloured.snapshot()
-    assert coloured.screen.attr_at(0, 2).fg is not None, "colour run should style"
-    assert plain.screen.attr_at(0, 2).fg is None, "NO_COLOR run should not"
+    row = coloured.screen.find_row("same either way")
+    assert coloured.screen.attr_at(row, 2).fg is not None, "colour run should style"
+    assert plain.screen.attr_at(row, 2).fg is None, "NO_COLOR run should not"
 
 
 def test_status_colour_encodes_the_state(ctx):
@@ -55,7 +56,7 @@ def test_status_colour_encodes_the_state(ctx):
 
 
 def test_transcript_roles_are_styled(ctx):
-    """You / Assistant / tool rows each get their own colour."""
+    """Tool and result rows each get their own colour."""
     ctx.write_file("f.txt", "file body")
     ctx.scenario('tool=read:{"path":"f.txt"},final_text=done')
     s = ctx.spawn()
@@ -68,10 +69,41 @@ def test_transcript_roles_are_styled(ctx):
         assert row >= 0, f"{needle!r} missing\n{s.text()}"
         return s.screen.attr_at(row, 2).fg
 
-    assert fg_of("\u25cf  You") == 75           # S_BLUE
-    assert fg_of("\u25cf  Assistant") == 177    # S_PURPLE
     assert fg_of("\u25c6  Tool") == 221         # S_YELLOW
     assert fg_of("\u2514\u2500 Result") == 114  # S_GREEN
+
+
+def test_user_message_is_a_box(ctx):
+    """A user turn is a padded block of background, with no role label."""
+    ctx.scenario("text=answered")
+    s = ctx.spawn()
+    s.submit("my question")
+    s.wait_text("answered")
+    s.wait_turn_done()
+
+    text = s.text()
+    assert "You" not in text, text
+    assert "Assistant" not in text, text
+
+    row = s.screen.find_row("my question")
+    assert row >= 0, text
+    bg = s.screen.attr_at(row, 2).bg
+    assert bg == 238, f"user row should carry the panel background: {bg}"
+    # the box is padded above and below, and spans the full width
+    assert s.screen.attr_at(row - 1, 2).bg == 238, "padding row above"
+    assert s.screen.attr_at(row + 1, 2).bg == 238, "padding row below"
+    assert s.screen.attr_at(row, s.screen.cols - 2).bg == 238, "box spans the body"
+    # the agent's own output is not boxed
+    reply = s.screen.find_row("answered")
+    assert s.screen.attr_at(reply, 2).bg is None, "assistant text is unboxed"
+
+
+def test_status_fields_use_single_spacing(ctx):
+    """Status items are separated by one space either side of the dot."""
+    s = ctx.spawn()
+    line = s.status_line()
+    assert "  \u00b7  " not in line, line
+    assert line.startswith("\u25cf ready \u00b7 "), line
 
 
 def test_log_output_becomes_a_transcript_notice(ctx):

@@ -6,5 +6,5 @@
 | › Message yoke…
 |
 |
-| ●  ready · mock-mo
+| ● ready · mock-mod
 --- cursor row=5 col=4 visible=yes ---

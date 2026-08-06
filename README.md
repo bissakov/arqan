@@ -99,8 +99,13 @@ The TUI uses the terminal's alternate screen, adapts to `SIGWINCH`, streams
 responses into a bounded transcript, and keeps a multiline composer at the
 bottom, with the status line just below it. Enter sends, Alt+Enter inserts a
 newline, PageUp/PageDown scroll the transcript, the mouse wheel scrolls it
-through a visible scrollbar, Ctrl-L repaints, Ctrl-C cancels, and Ctrl-D quits
-from an empty composer.
+through a visible scrollbar, Ctrl-L repaints, Ctrl-C cancels (discarding the
+draft at the prompt, cancelling the turn while one runs), Esc also interrupts a
+running turn, and Ctrl-D quits from an empty composer. Ctrl-A/Ctrl-E/Ctrl-K
+work on the composer line the cursor is on, not on the whole buffer.
+
+A user turn is rendered as a padded block with its own background; everything
+else on screen is the agent's own output, so neither side needs a label.
 
 Text is selectable with the mouse anywhere on screen — transcript, composer and
 status line alike. Dragging highlights the range, releasing copies it to the

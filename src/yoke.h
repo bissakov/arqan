@@ -216,6 +216,11 @@ void tui_set_status(const char *status);
 void tui_set_context_tokens(size_t tokens);
 void tui_clear(void);
 void tui_write(Str s);
+/* Append a user turn: rendered as a padded block with its own background,
+ * which is what marks it apart from the agent's own output. */
+void tui_write_user(Str s);
+/* Flag Esc raises to cancel an in-flight turn (same path as SIGINT). */
+void tui_set_interrupt_flag(volatile sig_atomic_t *flag);
 void tui_printf(const char *fmt, ...) __attribute__((format(printf,1,2)));
 void tui_enter_raw(void);
 void tui_exit_raw(void);

@@ -1,8 +1,9 @@
 --- screen 80x24 ---
-|  ●  You
+|
+|
 |  what is in notes.txt?
 |
-|  ●  Assistant
+|
 |
 |  ◆  Tool · read
 |  {"path":"notes.txt"}
@@ -10,7 +11,6 @@
 |  hello from disk
 |
 |
-|  ●  Assistant
 |  I read the file.
 |
 |
@@ -22,5 +22,5 @@
 |  › Message yoke…
 |
 |
-|  ●  ready  ·  mock-model  ·  local  ·  ~/work  ·  212
+|  ● ready · mock-model · local · ~/work · 212
 --- cursor row=21 col=5 visible=yes ---

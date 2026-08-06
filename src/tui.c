@@ -27,6 +27,7 @@
 #define TUI_SEL_ROW_BYTES 2048   /* visible bytes kept per screen row       */
 #define TUI_SEL_BYTES (1u << 16) /* clipboard payload cap                   */
 #define TUI_POPUP_ROWS 6         /* completion entries shown at once         */
+#define TUI_MAX_USER_SPANS 256   /* boxed user messages tracked in scrollback */
 
 /* A quiet 256-colour palette.  Styling is optional (NO_COLOR and dumb
  * terminals get the same layout without escape-heavy decoration). */
@@ -40,6 +41,7 @@
 #define S_YELLOW      "\033[1;38;5;221m"
 #define S_RED         "\033[1;38;5;203m"
 #define S_PURPLE      "\033[1;38;5;177m"
+#define S_USER_BG     "\033[48;5;238m"
 #define S_POPUP_BG    "\033[48;5;237m"
 #define S_POPUP_SEL   "\033[48;5;24m"
 
@@ -63,6 +65,16 @@ typedef struct {
     char transcript[TUI_TRANSCRIPT_CAP];
     size_t transcript_n;
     size_t scroll_rows;
+    /* Byte ranges of the transcript that are user messages: a row whose text
+     * starts inside one is painted as the boxed user block. Keeping it beside
+     * the transcript (rather than as markup inside it) means arbitrary model
+     * or tool output can never forge one. */
+    size_t user_a[TUI_MAX_USER_SPANS];
+    size_t user_b[TUI_MAX_USER_SPANS];
+    size_t user_n;
+    /* Raised by Esc while a turn is in flight, so the UI can cancel a request
+     * through the same path SIGINT uses. */
+    volatile sig_atomic_t *interrupt;
     f64 last_paint;
     size_t painted_rows;
     size_t painted_cols;
@@ -479,7 +491,7 @@ static void pad_row(size_t used, size_t cols) {
 
 enum {
     ROW_PLAIN = 1, ROW_COMPOSER, ROW_STATUS,
-    ROW_USER, ROW_ASSISTANT, ROW_TOOL, ROW_RESULT, ROW_NOTICE, ROW_POPUP,
+    ROW_USER, ROW_TOOL, ROW_RESULT, ROW_NOTICE, ROW_POPUP,
     ROW_WELCOME_ART, ROW_WELCOME_TEXT
 };
 
@@ -525,10 +537,40 @@ static b8 str_starts_ci(Str s, Str prefix) {
     return true;
 }
 
+/* ---- user message spans -------------------------------------------------- */
+static void span_add(size_t a, size_t b) {
+    if (g_tui.user_n == TUI_MAX_USER_SPANS) {
+        memmove(g_tui.user_a, g_tui.user_a + 1,
+                sizeof g_tui.user_a - sizeof g_tui.user_a[0]);
+        memmove(g_tui.user_b, g_tui.user_b + 1,
+                sizeof g_tui.user_b - sizeof g_tui.user_b[0]);
+        g_tui.user_n--;
+    }
+    g_tui.user_a[g_tui.user_n] = a;
+    g_tui.user_b[g_tui.user_n] = b;
+    g_tui.user_n++;
+}
+
+/* Scrollback dropped `delta` bytes off the front: rebase, forget what went. */
+static void spans_shift(size_t delta) {
+    size_t w = 0;
+    for (size_t i = 0; i < g_tui.user_n; i++) {
+        if (g_tui.user_b[i] <= delta) continue;
+        g_tui.user_a[w] = g_tui.user_a[i] > delta ? g_tui.user_a[i] - delta : 0;
+        g_tui.user_b[w] = g_tui.user_b[i] - delta;
+        w++;
+    }
+    g_tui.user_n = w;
+}
+
+static b8 span_holds(size_t off) {
+    for (size_t i = 0; i < g_tui.user_n; i++)
+        if (off >= g_tui.user_a[i] && off < g_tui.user_b[i]) return true;
+    return false;
+}
+
 static u8 display_kind(u8 kind, Str text) {
     if (kind != ROW_PLAIN) return kind;
-    if (str_eq(text, STR("You"))) return ROW_USER;
-    if (str_eq(text, STR("Assistant"))) return ROW_ASSISTANT;
     if (str_starts(text, STR("Tool · "))) return ROW_TOOL;
     if (str_eq(text, STR("Result"))) return ROW_RESULT;
     if (text.n >= 2 && text.p[0] == '[' && text.p[text.n - 1] == ']')
@@ -550,8 +592,10 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
     cup(screen_row, 1);
     put_str(S_RESET "\033[2K");
 
-    if (kind == ROW_COMPOSER) {
-        style(S_PANEL_BG);
+    if (kind == ROW_COMPOSER || kind == ROW_USER) {
+        /* The whole row carries the panel colour, so a user turn reads as one
+         * block of screen rather than as a prefixed line. */
+        style(kind == ROW_USER ? S_USER_BG : S_PANEL_BG);
         pad_row(0, screen_cols);
         cup(screen_row, screen_col);
     } else {
@@ -578,9 +622,7 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
         style(S_PANEL_BG S_MUTED);
         put_safe_clipped(STR("Message yoke…"), room, NULL);
     } else if (kind == ROW_USER) {
-        style(S_BLUE); put_text_z("●  "); put_text(text.p, text.n);
-    } else if (kind == ROW_ASSISTANT) {
-        style(S_PURPLE); put_text_z("●  "); put_text(text.p, text.n);
+        style(S_USER_BG S_TEXT); put_text(text.p, text.n);
     } else if (kind == ROW_TOOL) {
         style(S_YELLOW); put_text_z("◆  "); put_text(text.p, text.n);
     } else if (kind == ROW_RESULT) {
@@ -621,9 +663,13 @@ static void update_text_rows(Str s, size_t cols, size_t prompt_cells,
         if (end || newline || wrap) {
             if (row >= first_row && row < first_row + visible_rows) {
                 Str prefix = row == 0 && prompt_cells ? STR("› ") : (Str){0};
+                /* Only the transcript carries user spans; the composer
+                 * indexes its own buffer. */
+                u8 row_kind = kind == ROW_PLAIN && span_holds(start)
+                            ? (u8)ROW_USER : kind;
                 update_text_row(screen_row + row - first_row, prefix,
                                 (Str){s.p + start, i - start}, screen_col,
-                                screen_cols, kind, force);
+                                screen_cols, row_kind, force);
                 painted++;
             }
             if (end) break;
@@ -950,10 +996,10 @@ static void repaint(void) {
         if (!strcmp(status, "ready")) status_style = S_GREEN;
         else if (strstr(status, "error")) status_style = S_RED;
         else if (!strcmp(status, "thinking")) status_style = S_PURPLE;
-        Str separator = body_cols >= 64 ? STR("  ·  ") : STR(" · ");
-        size_t separator_cells = body_cols >= 64 ? 5 : 3;
+        Str separator = STR(" · ");
+        size_t separator_cells = 3;
         style(status_style);
-        put_safe_clipped(STR("●  "), body_cols, &used);
+        put_safe_clipped(STR("● "), body_cols, &used);
         /* Spelled out rather than only coloured: the bullet says nothing on a
          * NO_COLOR or dumb terminal, and whether a turn is running is the one
          * thing the user is waiting to see. It leads the line so it is the
@@ -1125,6 +1171,7 @@ void tui_set_context_tokens(size_t tokens) {
 
 void tui_clear(void) {
     g_tui.transcript_n = 0;
+    g_tui.user_n = 0;
     g_tui.scroll_rows = 0;
     g_tui.context_tokens = 0;
     g_tui.context_known = false;
@@ -1151,6 +1198,7 @@ void tui_write(Str s) {
         s.p += s.n - (TUI_TRANSCRIPT_CAP - 1);
         s.n = TUI_TRANSCRIPT_CAP - 1;
         g_tui.transcript_n = 0;
+        g_tui.user_n = 0;
     } else if (g_tui.transcript_n + s.n >= TUI_TRANSCRIPT_CAP) {
         size_t room_for_old = TUI_TRANSCRIPT_CAP - 1 - s.n;
         size_t keep = g_tui.transcript_n;
@@ -1158,6 +1206,7 @@ void tui_write(Str s) {
         if (keep > room_for_old) keep = room_for_old;
         memmove(g_tui.transcript,
                 g_tui.transcript + g_tui.transcript_n - keep, keep);
+        spans_shift(g_tui.transcript_n - keep);
         g_tui.transcript_n = keep;
     }
 
@@ -1194,6 +1243,30 @@ void tui_printf(const char *fmt, ...) {
 }
 
 void tui_putstr(Str s) { tui_write(s); }
+
+/* A user turn is a block of screen, not a labelled line: it is written with a
+ * padding row above and below and the whole range is recorded so every row it
+ * wraps onto is painted with the panel background. */
+void tui_write_user(Str s) {
+    if (!g_tui.fullscreen) {
+        tui_write(STR("\n> "));
+        tui_write(s);
+        tui_write(STR("\n\n"));
+        return;
+    }
+    tui_write(STR("\n"));                 /* air above the box */
+    size_t a = g_tui.transcript_n;
+    tui_write(STR("\n"));                 /* the box's top padding row */
+    tui_write(s);
+    tui_write(STR("\n\n"));               /* text row ends, padding row ends */
+    size_t b = g_tui.transcript_n;
+    if (b > a) span_add(a, b);
+    tui_write(STR("\n"));                 /* air below the box */
+}
+
+void tui_set_interrupt_flag(volatile sig_atomic_t *flag) {
+    g_tui.interrupt = flag;
+}
 
 static b8 input_ready(i32 timeout_ms) {
     struct pollfd pfd = { STDIN_FILENO, POLLIN, 0 };
@@ -1303,6 +1376,18 @@ static size_t prev_word(const char *buf, size_t cur) {
     return cur;
 }
 
+/* Start of the logical line the cursor sits on: the composer is multi-line, so
+ * Home/Ctrl-A act on a line, not on the whole buffer. */
+static size_t line_start(const char *buf, size_t cur) {
+    while (cur > 0 && buf[cur - 1] != '\n') cur--;
+    return cur;
+}
+
+static size_t line_end(const char *buf, size_t n, size_t cur) {
+    while (cur < n && buf[cur] != '\n') cur++;
+    return cur;
+}
+
 static size_t next_word(const char *buf, size_t n, size_t cur) {
     while (cur < n && (buf[cur] == ' ' || buf[cur] == '\t')) cur++;
     while (cur < n && buf[cur] != ' ' && buf[cur] != '\t') cur++;
@@ -1407,13 +1492,21 @@ static EdAction editor_key(i32 c) {
             memmove(buf + cur, buf + next, n - next);
             n -= next - cur; buf[n] = '\0';
         }
-    } else if (c == 0x01) cur = 0;
-    else if (c == 0x05) cur = n;
+    } else if (c == 0x01) cur = line_start(buf, cur);
+    else if (c == 0x05) cur = line_end(buf, n, cur);
     else if (c == 0x02) cur = prev_glyph(buf, cur);
     else if (c == 0x06) cur = next_glyph(buf, n, cur);
-    else if (c == 0x0b) { n = cur; buf[n] = '\0'; }
-    else if (c == 0x15) {
-        memmove(buf, buf + cur, n - cur); n -= cur; cur = 0; buf[n] = '\0';
+    else if (c == 0x0b) {
+        /* Kill to the end of the line; on an empty tail, eat the line break
+         * itself, so repeated Ctrl-K walks down the composer like readline. */
+        size_t end = line_end(buf, n, cur);
+        if (end == cur && end < n) end++;
+        memmove(buf + cur, buf + end, n - end);
+        n -= end - cur; buf[n] = '\0';
+    } else if (c == 0x15) {
+        size_t start = line_start(buf, cur);
+        memmove(buf + start, buf + cur, n - cur);
+        n -= cur - start; cur = start; buf[n] = '\0';
     } else if (c == 0x17) {
         size_t word = prev_word(buf, cur);
         memmove(buf + word, buf + cur, n - cur);
@@ -1431,8 +1524,8 @@ static EdAction editor_key(i32 c) {
         i32 key = read_escape();
         if (key == KEY_LEFT) cur = prev_glyph(buf, cur);
         else if (key == KEY_RIGHT) cur = next_glyph(buf, n, cur);
-        else if (key == KEY_HOME) cur = 0;
-        else if (key == KEY_END) cur = n;
+        else if (key == KEY_HOME) cur = line_start(buf, cur);
+        else if (key == KEY_END) cur = line_end(buf, n, cur);
         else if (key == KEY_PREV_WORD) cur = prev_word(buf, cur);
         else if (key == KEY_NEXT_WORD) cur = next_word(buf, n, cur);
         else if (key == KEY_PAGE_UP) {
@@ -1455,8 +1548,12 @@ static EdAction editor_key(i32 c) {
             sel_finish(); keep_sel = true;
         } else if (g_tui.comp_n && (key == KEY_DOWN || key == KEY_UP)) {
             completion_move(key == KEY_DOWN ? 1 : -1);
-        } else if (g_tui.comp_n && key == KEY_NONE) {
+        } else if (key == KEY_NONE && g_tui.comp_n) {
             g_tui.comp_dismissed = true;   /* bare Esc closes the popup */
+        } else if (key == KEY_NONE && g_tui.busy && g_tui.interrupt) {
+            /* Nothing to dismiss and a turn is running: Esc cancels it, the
+             * same way Ctrl-C does, without touching the composed text. */
+            *g_tui.interrupt = 1;
         } else if (key == KEY_NEWLINE && n + 1 < cap) {
             memmove(buf + cur + 1, buf + cur, n - cur);
             buf[cur++] = '\n'; n++; buf[n] = '\0';
@@ -1525,10 +1622,11 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
         i32 c = rbyte();
         if (c == -3) { repaint(); continue; }
         if (c == -2 || c == 0x03) {
+            /* Idle Ctrl-C abandons the draft and nothing else: the transcript
+             * is the conversation, and a discarded line was never part of it. */
             composer_clear();
-            *out_n = 0;
-            tui_write(STR("^C\n"));
-            return true;
+            repaint();
+            continue;
         }
         if (c < 0) { *out_n = 0; return false; }
 

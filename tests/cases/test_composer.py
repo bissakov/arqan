@@ -64,6 +64,38 @@ def test_emacs_editing_keys(ctx):
     assert s.composer_text() == "il", s.composer_lines()
 
 
+def test_line_keys_are_line_scoped(ctx):
+    """Ctrl-A/E/K act on the composer line the cursor is on, not the buffer."""
+    s = ctx.spawn()
+    s.type("first line").sync()
+    s.key("newline").sync()
+    s.type("second line").sync()
+
+    s.key("ctrl-a").sync()
+    s.type(">").sync()
+    assert s.composer_body(2) == ["first line", ">second line"], s.composer_lines(2)
+
+    s.key("ctrl-e").sync()
+    s.type("!").sync()
+    assert s.composer_body(2) == ["first line", ">second line!"], s.composer_lines(2)
+
+    s.key("ctrl-a", "ctrl-k").sync()
+    assert s.composer_body(2) == ["first line", ""], s.composer_lines(2)
+    assert ctx.mock.requests == []
+
+
+def test_ctrl_k_on_empty_tail_joins_the_next_line(ctx):
+    """With nothing left on the line, Ctrl-K eats the break like readline."""
+    s = ctx.spawn()
+    s.type("one").sync()
+    s.key("newline").sync()
+    s.type("two").sync()
+    s.key("ctrl-a").sync()          # start of "two"
+    s.key("ctrl-b").sync()          # onto the end of "one"
+    s.key("ctrl-k").sync()
+    assert s.composer_text() == "onetwo", s.composer_lines()
+
+
 def test_word_motion(ctx):
     """Ctrl-Left / Ctrl-Right jump whole words."""
     s = ctx.spawn()
@@ -135,14 +167,22 @@ def test_unicode_backspace_deletes_whole_glyph(ctx):
 
 
 def test_ctrl_c_clears_composer(ctx):
-    """Ctrl-C abandons the line and notes it in the transcript."""
+    """Ctrl-C abandons the line without writing anything to the transcript."""
+    ctx.scenario("text=kept")
     s = ctx.spawn()
+    s.submit("first message")
+    s.wait_text("kept")
+    s.wait_turn_done()
+    before = s.text()
+
     s.type("throw this away").sync()
     s.key("ctrl-c").sync()
-    s.wait_text("^C")
-    assert s.composer_text() == "", s.composer_lines()
+    s.wait_for(lambda t: s.composer_text() == "", "the composer to clear")
     assert s.PLACEHOLDER in s.text(), "placeholder should be back"
-    assert ctx.mock.requests == []
+    assert "^C" not in s.text(), "an abandoned draft leaves no trace"
+    assert "throw this away" not in s.text()
+    assert s.text() == before, "the transcript is untouched"
+    assert len(ctx.mock.requests) == 1
 
 
 def test_ctrl_l_redraws(ctx):

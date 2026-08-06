@@ -1,11 +1,11 @@
 --- screen 80x24 ---
-|  ●  You
+|
+|
 |  please fail
 |
-|  ●  Assistant
+|
 |
 |  [provider error: HTTP 500]
-|
 |
 |
 |
@@ -22,5 +22,5 @@
 |  › Message yoke…
 |
 |
-|  ●  ready  ·  mock-model  ·  local  ·  ~/work  ·  -
+|  ● ready · mock-model · local · ~/work · -
 --- cursor row=21 col=5 visible=yes ---
