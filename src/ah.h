@@ -128,6 +128,12 @@ typedef struct {
     void *ud;
     const char *body;     /* nul-terminated JSON request                    */
     const volatile sig_atomic_t *interrupt_flag;
+    /* The transfer waits on curl's sockets and `idle_fd` together, so the UI
+     * stays alive during a request without threads. on_idle runs after every
+     * wait (readable fd or timeout); it must not block. */
+    i32   idle_fd;        /* -1 disables the extra poll fd                  */
+    void (*on_idle)(void *ud);
+    void *idle_ud;
 } HttpReq;
 
 i32     http_sse_post(const HttpReq *r);  /* 0 on success, nonzero on error */
@@ -179,6 +185,9 @@ typedef struct {
     void (*on_text)(Str delta, void *ud);
     void (*on_tool_call)(i32 index, Str id, Str name, Str args_delta, void *ud);
     void *ud;
+    /* pumped while the request is in flight (see HttpReq.on_idle) */
+    void (*on_idle)(void *ud);
+    i32   idle_fd;                /* -1 when there is nothing to watch         */
     const volatile sig_atomic_t *interrupt_flag;
     size_t prompt_tokens;
     size_t completion_tokens;
@@ -202,5 +211,10 @@ void tui_enter_raw(void);
 void tui_exit_raw(void);
 void tui_putstr(Str s);
 b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n);
+/* Composer editing while a turn is in flight: keystrokes are accepted, Enter
+ * is not. Callers pump tui_poll_input from wherever they wait. */
+void tui_set_busy(b8 busy);
+void tui_poll_input(void);
+i32  tui_input_fd(void);      /* readable-input fd, or -1 when not interactive */
 
 #endif /* AH_H */

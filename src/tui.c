@@ -9,6 +9,7 @@
 
 #include <errno.h>
 #include <locale.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +22,7 @@
 #define TUI_TRANSCRIPT_CAP (8u << 20)
 #define TUI_MAX_ROWS 4096
 #define TUI_BODY_GUTTER 2
+#define TUI_OUT_CAP (1u << 16)   /* one frame's escapes, written in one go */
 
 /* A quiet 256-colour palette.  Styling is optional (NO_COLOR and dumb
  * terminals get the same layout without escape-heavy decoration). */
@@ -42,6 +44,8 @@ typedef struct {
     b8 tty;
     b8 fullscreen;
     b8 editing;
+    b8 busy;          /* a turn is running: edits allowed, submit is not */
+    b8 input_eof;     /* terminal went away: stop polling a dead fd       */
     b8 color;
     Str model;
     Str provider;
@@ -58,18 +62,48 @@ typedef struct {
     size_t painted_cols;
     u64 row_hash[TUI_MAX_ROWS];
     b8 frame_valid;
-    char *input;
+    size_t bar_first, bar_total, bar_visible;
+    b8 bar_valid;
+    /* The composer outlives a single tui_readline: text typed while a turn is
+     * running is still here when the next prompt opens. */
+    char input[AH_LINE_BUF];
     size_t input_n;
     size_t input_cur;
+    char out[TUI_OUT_CAP];
+    size_t out_n;
 } TuiState;
 
 static TuiState g_tui;
 static volatile sig_atomic_t g_winch = 0;
 
 static void on_winch(i32 sig) { (void)sig; g_winch = 1; }
-static void put_raw(const char *s, size_t n) { (void)fwrite(s, 1, n, stdout); }
+
+/* A frame is assembled here and handed to the terminal as one write. Painting
+ * escape by escape lets the terminal display half-drawn frames — that is what
+ * flicker looks like while typing quickly. */
+static void flush_out(void) {
+    size_t off = 0;
+    while (off < g_tui.out_n) {
+        ssize_t w = write(STDOUT_FILENO, g_tui.out + off, g_tui.out_n - off);
+        if (w > 0) { off += (size_t)w; continue; }
+        if (w < 0 && errno == EINTR) continue;
+        break;   /* closed or full pipe: drop the frame rather than spin */
+    }
+    g_tui.out_n = 0;
+}
+
+static void put_raw(const char *s, size_t n) {
+    while (n) {
+        size_t room = TUI_OUT_CAP - g_tui.out_n;
+        if (!room) { flush_out(); room = TUI_OUT_CAP; }
+        size_t take = n < room ? n : room;
+        memcpy(g_tui.out + g_tui.out_n, s, take);
+        g_tui.out_n += take;
+        s += take; n -= take;
+    }
+}
+
 static void put_str(const char *s) { put_raw(s, strlen(s)); }
-static void flush_out(void) { (void)fflush(stdout); }
 static void style(const char *s) { if (g_tui.color) put_str(s); }
 
 static Str provider_from_url(Str url) {
@@ -207,6 +241,11 @@ static void pad_row(size_t used, size_t cols) {
     while (used++ < cols) put_raw(" ", 1);
 }
 
+enum {
+    ROW_PLAIN = 1, ROW_COMPOSER, ROW_STATUS,
+    ROW_USER, ROW_ASSISTANT, ROW_TOOL, ROW_RESULT, ROW_NOTICE
+};
+
 static u64 hash_add(u64 h, const void *data, size_t n) {
     const u8 *p = (const u8 *)data;
     for (size_t i = 0; i < n; i++) {
@@ -219,6 +258,8 @@ static u64 hash_add(u64 h, const void *data, size_t n) {
 static u64 row_hash(Str prefix, Str text, u8 kind) {
     u64 h = UINT64_C(1469598103934665603);
     h = hash_add(h, &kind, sizeof kind);
+    /* the composer's prompt is dimmed while busy, so it has to redraw then */
+    if (kind == ROW_COMPOSER) h = hash_add(h, &g_tui.busy, sizeof g_tui.busy);
     h = hash_add(h, prefix.p, prefix.n);
     return hash_add(h, text.p, text.n);
 }
@@ -229,11 +270,6 @@ static b8 row_changed(size_t row, u64 hash, b8 force) {
     g_tui.row_hash[index] = hash;
     return true;
 }
-
-enum {
-    ROW_PLAIN = 1, ROW_COMPOSER, ROW_STATUS,
-    ROW_USER, ROW_ASSISTANT, ROW_TOOL, ROW_RESULT, ROW_NOTICE
-};
 
 static b8 str_starts(Str s, Str prefix) {
     return s.n >= prefix.n && !memcmp(s.p, prefix.p, prefix.n);
@@ -268,7 +304,7 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
     }
 
     if (kind == ROW_COMPOSER && prefix.n) {
-        style(S_PANEL_BG S_CYAN);
+        style(g_tui.busy ? S_PANEL_BG S_MUTED : S_PANEL_BG S_CYAN);
         put_raw(prefix.p, prefix.n);
         style(S_PANEL_BG S_TEXT);
     } else if (prefix.n) {
@@ -344,8 +380,18 @@ static void update_text_rows(Str s, size_t cols, size_t prompt_cells,
     }
 }
 
+/* The bar spans the transcript's rows in its own column, so it sits outside
+ * the row-hash diff and keeps its own one-line cache instead. */
 static void paint_scrollbar(size_t first_row, size_t total_rows,
-                            size_t visible_rows, size_t screen_col) {
+                            size_t visible_rows, size_t screen_col, b8 force) {
+    if (!force && g_tui.bar_valid && g_tui.bar_first == first_row
+        && g_tui.bar_total == total_rows && g_tui.bar_visible == visible_rows)
+        return;
+    g_tui.bar_first = first_row;
+    g_tui.bar_total = total_rows;
+    g_tui.bar_visible = visible_rows;
+    g_tui.bar_valid = true;
+
     b8 scrollable = total_rows > visible_rows;
     size_t thumb_rows = visible_rows;
     size_t thumb_top = 0;
@@ -401,15 +447,17 @@ static void repaint(void) {
     size_t body_cols = cols - gutter * 2;
     size_t body_col = gutter + 1;
     size_t cursor_row = 0, cursor_col = 2;
-    Str input = { g_tui.input ? g_tui.input : "", g_tui.input_n };
+    Str input = { g_tui.input, g_tui.input_n };
     size_t input_rows = text_rows(input, body_cols, 2, g_tui.input_cur,
                                   &cursor_row, &cursor_col);
     size_t composer_padding = rows >= 6 ? 1 : 0;
+    /* A blank row keeps the status line visually outside the composer box. */
+    size_t status_gap = composer_padding;
     size_t composer_cap = rows / 3;
     if (composer_cap < 1) composer_cap = 1;
     if (composer_cap > 8) composer_cap = 8;
     size_t composer_rows = input_rows < composer_cap ? input_rows : composer_cap;
-    size_t chrome_rows = 1 + composer_padding * 2; /* status and padding */
+    size_t chrome_rows = 1 + composer_padding * 2 + status_gap;
     size_t max_composer = rows > chrome_rows ? rows - chrome_rows : 1;
     if (max_composer > 1) max_composer--; /* always preserve a transcript row */
     if (composer_rows > max_composer) composer_rows = max_composer;
@@ -425,7 +473,7 @@ static void repaint(void) {
                  ? all_rows - transcript_rows - g_tui.scroll_rows : 0;
     update_text_rows(transcript, body_cols, 0, first, transcript_rows, 1,
                      body_col, cols, ROW_PLAIN, force);
-    paint_scrollbar(first, all_rows, transcript_rows, cols);
+    paint_scrollbar(first, all_rows, transcript_rows, cols, force);
 
     /* Composer, including one quiet row of breathing room on each side. */
     size_t input_first = cursor_row >= composer_rows
@@ -441,8 +489,13 @@ static void repaint(void) {
         update_text_row(composer_screen_row + composer_rows, (Str){0}, (Str){0},
                         body_col, cols, ROW_COMPOSER, force);
 
-    /* Curated status line, always below the composer. */
-    size_t status_row = composer_screen_row + composer_rows + composer_padding;
+    /* Curated status line: its own chrome on the bottom row, separated from
+     * the composer panel by a blank row and carrying no panel background. */
+    size_t status_row = composer_screen_row + composer_rows + composer_padding
+                      + status_gap;
+    if (status_gap)
+        update_text_row(status_row - status_gap, (Str){0}, (Str){0}, body_col,
+                        cols, ROW_PLAIN, force);
     const char *status = g_tui.status ? g_tui.status : "ready";
     u64 status_hash = row_hash(g_tui.model, g_tui.provider, ROW_STATUS);
     status_hash = hash_add(status_hash, g_tui.cwd.p, g_tui.cwd.n);
@@ -453,8 +506,8 @@ static void repaint(void) {
                            sizeof g_tui.context_known);
     status_hash = hash_add(status_hash, &cols, sizeof cols);
     if (row_changed(status_row, status_hash, force)) {
-        cup(status_row, 1); style(S_PANEL_BG); pad_row(0, cols);
-        cup(status_row, body_col); style(S_PANEL_BG);
+        cup(status_row, 1); put_str(S_RESET "\033[2K");
+        cup(status_row, body_col);
         char context_buf[48];
         Str context = format_context_size(context_buf, sizeof context_buf);
         Str cwd = g_tui.cwd;
@@ -473,27 +526,27 @@ static void repaint(void) {
         else if (!strcmp(status, "thinking")) status_style = S_PURPLE;
         style(status_style);
         put_safe_clipped(STR("●  "), body_cols, &used);
-        style(S_PANEL_BG S_TEXT);
+        style(S_TEXT);
         if (used < body_cols)
             put_safe_clipped(g_tui.model, body_cols - used, &used);
         Str separator = body_cols >= 64 ? STR("  ·  ") : STR(" · ");
         size_t separator_cells = body_cols >= 64 ? 5 : 3;
         if (body_cols - used >= separator_cells) {
-            style(S_PANEL_BG S_MUTED);
+            style(S_MUTED);
             put_safe_clipped(separator, body_cols - used, &used);
-            style(S_PANEL_BG S_TEXT);
+            style(S_TEXT);
             put_safe_clipped(g_tui.provider, body_cols - used, &used);
         }
         if (body_cols - used >= separator_cells) {
-            style(S_PANEL_BG S_MUTED);
+            style(S_MUTED);
             put_safe_clipped(separator, body_cols - used, &used);
-            style(S_PANEL_BG S_TEXT);
+            style(S_TEXT);
             put_safe_clipped(cwd, body_cols - used, &used);
         }
         if (body_cols - used >= separator_cells) {
-            style(S_PANEL_BG S_MUTED);
+            style(S_MUTED);
             put_safe_clipped(separator, body_cols - used, &used);
-            style(S_PANEL_BG S_TEXT);
+            style(S_TEXT);
             put_safe_clipped(context, body_cols - used, &used);
         }
         style(S_RESET);
@@ -527,10 +580,15 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count) {
 
     if (!g_tui.tty) {
         g_tui.raw = true;
-        fprintf(stdout, "ah %s — model=%.*s base=%.*s tools=%zu\n",
-                AH_VERSION, (i32)model.n, model.p,
-                (i32)base_url.n, base_url.p, tool_count);
-        if (missing_key) fputs("warn: no API key set\n", stdout);
+        char banner[512];
+        i32 n = snprintf(banner, sizeof banner,
+                         "ah %s — model=%.*s base=%.*s tools=%zu\n",
+                         AH_VERSION, (i32)model.n, model.p,
+                         (i32)base_url.n, base_url.p, tool_count);
+        if (n > 0) put_raw(banner, (size_t)n < sizeof banner
+                                   ? (size_t)n : sizeof banner - 1);
+        if (missing_key) put_str("warn: no API key set\n");
+        flush_out();
         return;
     }
 
@@ -559,6 +617,8 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count) {
 
     g_tui.raw = true;
     g_tui.fullscreen = true;
+    /* The composer is always live: it owns the cursor for the whole session. */
+    g_tui.editing = true;
     put_str("\033[?1049h\033[?7l\033[?25l\033[?1000h\033[?1006h");
     repaint();
 }
@@ -572,7 +632,18 @@ void tui_stop(void) {
         (void)sigaction(SIGWINCH, &g_tui.original_winch, NULL);
     }
     g_tui.fullscreen = false;
+    g_tui.editing = false;
     g_tui.raw = false;
+}
+
+void tui_set_busy(b8 busy) {
+    if (g_tui.busy == busy) return;
+    g_tui.busy = busy;
+    repaint();
+}
+
+i32 tui_input_fd(void) {
+    return g_tui.fullscreen && !g_tui.input_eof ? STDIN_FILENO : -1;
 }
 
 /* Compatibility wrappers retained for callers outside main.c. */
@@ -600,12 +671,15 @@ void tui_clear(void) {
 }
 
 void tui_write(Str s) {
-    if (!s.p || s.n == 0) { if (g_winch) repaint(); return; }
     if (!g_tui.fullscreen) {
-        put_raw(s.p, s.n);
-        flush_out();
+        if (s.p && s.n) { put_raw(s.p, s.n); flush_out(); }
         return;
     }
+    /* Streaming output is the busiest place we pass through, so it doubles as
+     * the pump that keeps the composer responsive mid-turn. It also services
+     * a pending resize, so an empty write still costs nothing here. */
+    tui_poll_input();
+    if (!s.p || s.n == 0) return;
 
     /* Keep the newest half if the bounded scrollback fills. */
     if (s.n >= TUI_TRANSCRIPT_CAP) {
@@ -656,12 +730,24 @@ void tui_printf(const char *fmt, ...) {
 
 void tui_putstr(Str s) { tui_write(s); }
 
+static b8 input_ready(i32 timeout_ms) {
+    struct pollfd pfd = { STDIN_FILENO, POLLIN, 0 };
+    i32 rc = poll(&pfd, 1, timeout_ms);
+    return rc > 0 && (pfd.revents & (POLLIN | POLLHUP)) != 0;
+}
+
 static i32 rbyte(void) {
     unsigned char c = 0;
     ssize_t n = read(STDIN_FILENO, &c, 1);
     if (n < 0 && errno == EINTR) return g_winch ? -3 : -2;
     if (n <= 0) return -1;
     return (i32)c;
+}
+
+/* Continuation byte of an escape sequence. A bare Esc must not park the reader
+ * on a blocking read — especially when polling during a turn. */
+static i32 rbyte_soon(void) {
+    return input_ready(50) ? rbyte() : -1;
 }
 
 typedef struct { i32 final; i32 nparams; i32 p[4]; b8 mouse; } Csi;
@@ -671,7 +757,7 @@ static i32 read_csi(Csi *out) {
     i32 cur = 0;
     b8 got = false;
     for (;;) {
-        i32 c = rbyte();
+        i32 c = rbyte_soon();
         if (c < 0) return -1;
         if (c == '<' && out->nparams == 0 && !got) {
             out->mouse = true;
@@ -699,7 +785,7 @@ enum {
 };
 
 static i32 read_escape(void) {
-    i32 first = rbyte();
+    i32 first = rbyte_soon();
     if (first < 0) return KEY_NONE;
     if (first == '\r' || first == '\n') return KEY_NEWLINE;
     if (first == '[') {
@@ -730,7 +816,7 @@ static i32 read_escape(void) {
         }
     }
     if (first == 'O') {
-        i32 second = rbyte();
+        i32 second = rbyte_soon();
         if (second == 'H') return KEY_HOME;
         if (second == 'F') return KEY_END;
     }
@@ -749,21 +835,117 @@ static size_t next_word(const char *buf, size_t n, size_t cur) {
     return cur;
 }
 
+/* What a keystroke asked the caller to do; edits are already applied. */
+typedef enum { ED_EDIT = 0, ED_SUBMIT, ED_EOF } EdAction;
+
+/* Apply one input byte to the shared composer. The caller decides whether a
+ * submit is honoured, so the same editor drives both the prompt and the
+ * keep-typing-while-busy path. */
+static EdAction editor_key(i32 c) {
+    char *buf = g_tui.input;
+    const size_t cap = sizeof g_tui.input;
+    size_t n = g_tui.input_n, cur = g_tui.input_cur;
+    EdAction action = ED_EDIT;
+
+    if (c == '\r' || c == '\n') return ED_SUBMIT;
+    if (c == 0x04) {
+        if (n == 0) return ED_EOF;
+        if (cur < n) {
+            size_t next = next_glyph(buf, n, cur);
+            memmove(buf + cur, buf + next, n - next);
+            n -= next - cur; buf[n] = '\0';
+        }
+    } else if (c == 0x01) cur = 0;
+    else if (c == 0x05) cur = n;
+    else if (c == 0x02) cur = prev_glyph(buf, cur);
+    else if (c == 0x06) cur = next_glyph(buf, n, cur);
+    else if (c == 0x0b) { n = cur; buf[n] = '\0'; }
+    else if (c == 0x15) {
+        memmove(buf, buf + cur, n - cur); n -= cur; cur = 0; buf[n] = '\0';
+    } else if (c == 0x17) {
+        size_t word = prev_word(buf, cur);
+        memmove(buf + word, buf + cur, n - cur);
+        n -= cur - word; cur = word; buf[n] = '\0';
+    } else if (c == 0x0c) {
+        /* Explicit repaint also repairs a terminal after stray output. */
+        g_tui.frame_valid = false;
+    } else if (c == 0x7f || c == 0x08) {
+        if (cur > 0) {
+            size_t prev = prev_glyph(buf, cur);
+            memmove(buf + prev, buf + cur, n - cur);
+            n -= cur - prev; cur = prev; buf[n] = '\0';
+        }
+    } else if (c == 0x1b) {
+        i32 key = read_escape();
+        if (key == KEY_LEFT) cur = prev_glyph(buf, cur);
+        else if (key == KEY_RIGHT) cur = next_glyph(buf, n, cur);
+        else if (key == KEY_HOME) cur = 0;
+        else if (key == KEY_END) cur = n;
+        else if (key == KEY_PREV_WORD) cur = prev_word(buf, cur);
+        else if (key == KEY_NEXT_WORD) cur = next_word(buf, n, cur);
+        else if (key == KEY_PAGE_UP) {
+            size_t rows, cols; screen_size(&rows, &cols); (void)cols;
+            g_tui.scroll_rows += rows > 4 ? rows - 4 : 1;
+        } else if (key == KEY_PAGE_DOWN) {
+            size_t rows, cols; screen_size(&rows, &cols); (void)cols;
+            size_t page = rows > 4 ? rows - 4 : 1;
+            g_tui.scroll_rows = g_tui.scroll_rows > page ? g_tui.scroll_rows - page : 0;
+        } else if (key == KEY_WHEEL_UP) {
+            g_tui.scroll_rows += 3;
+        } else if (key == KEY_WHEEL_DOWN) {
+            g_tui.scroll_rows = g_tui.scroll_rows > 3
+                              ? g_tui.scroll_rows - 3 : 0;
+        } else if (key == KEY_NEWLINE && n + 1 < cap) {
+            memmove(buf + cur + 1, buf + cur, n - cur);
+            buf[cur++] = '\n'; n++; buf[n] = '\0';
+        }
+    } else if ((c >= 0x20 && c < 0x7f) || c >= 0x80) {
+        if (n + 1 < cap) {
+            memmove(buf + cur + 1, buf + cur, n - cur);
+            buf[cur++] = (char)c; n++; buf[n] = '\0';
+        }
+    }
+
+    g_tui.input_n = n;
+    g_tui.input_cur = cur;
+    return action;
+}
+
+static void composer_clear(void) {
+    g_tui.input[0] = '\0';
+    g_tui.input_n = 0;
+    g_tui.input_cur = 0;
+}
+
+/* Drain whatever the terminal already has, without ever blocking. Enter is
+ * swallowed: a turn is in flight, so the composed text stays put until the
+ * prompt reopens. */
+void tui_poll_input(void) {
+    if (!g_tui.fullscreen) return;
+    b8 dirty = g_winch != 0;
+    while (!g_tui.input_eof && input_ready(0)) {
+        i32 c = rbyte();
+        if (c == -3) { dirty = true; continue; }
+        if (c == -2) continue;
+        if (c < 0) { g_tui.input_eof = true; break; }
+        /* Enter, Ctrl-C and Ctrl-D belong to the prompt, not to a live turn. */
+        if (c == '\r' || c == '\n' || c == 0x03 || c == 0x04) continue;
+        editor_key(c);
+        dirty = true;
+    }
+    if (dirty) repaint();
+}
+
 b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
     if (!g_tui.tty) {
-        if (prompt) fputs(prompt, stdout);
-        flush_out();
+        if (prompt) { put_str(prompt); flush_out(); }
         if (!fgets(buf, (i32)cap, stdin)) { *out_n = 0; return false; }
         size_t n = strlen(buf);
         while (n && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) n--;
         buf[n] = '\0'; *out_n = n; return true;
     }
 
-    size_t n = 0, cur = 0;
-    buf[0] = '\0';
-    g_tui.input = buf;
-    g_tui.input_n = 0;
-    g_tui.input_cur = 0;
+    /* The composer already holds anything typed during the previous turn. */
     g_tui.editing = true;
     g_tui.status = "ready";
     repaint();
@@ -772,89 +954,26 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
         i32 c = rbyte();
         if (c == -3) { repaint(); continue; }
         if (c == -2 || c == 0x03) {
-            g_tui.editing = false;
-            g_tui.input = NULL; g_tui.input_n = g_tui.input_cur = 0;
+            composer_clear();
             *out_n = 0;
             tui_write(STR("^C\n"));
             return true;
         }
-        if (c < 0) {
-            g_tui.editing = false;
-            *out_n = n;
-            return n > 0;
-        }
+        if (c < 0) { *out_n = 0; return false; }
 
-        if (c == '\r' || c == '\n') {
-            g_tui.editing = false;
-            g_tui.input = NULL; g_tui.input_n = g_tui.input_cur = 0;
-            buf[n] = '\0'; *out_n = n;
+        EdAction action = editor_key(c);
+        if (action == ED_EOF) { *out_n = 0; return false; }
+        if (action == ED_SUBMIT) {
+            size_t n = g_tui.input_n < cap ? g_tui.input_n : cap - 1;
+            memcpy(buf, g_tui.input, n);
+            buf[n] = '\0';
+            composer_clear();
+            *out_n = n;
+            repaint();
             return true;
         }
-        if (c == 0x04) {
-            if (n == 0) {
-                g_tui.editing = false; g_tui.input = NULL; *out_n = 0;
-                return false;
-            }
-            if (cur < n) {
-                size_t next = next_glyph(buf, n, cur);
-                memmove(buf + cur, buf + next, n - next);
-                n -= next - cur; buf[n] = '\0';
-            }
-        } else if (c == 0x01) cur = 0;
-        else if (c == 0x05) cur = n;
-        else if (c == 0x02) cur = prev_glyph(buf, cur);
-        else if (c == 0x06) cur = next_glyph(buf, n, cur);
-        else if (c == 0x0b) { n = cur; buf[n] = '\0'; }
-        else if (c == 0x15) {
-            memmove(buf, buf + cur, n - cur); n -= cur; cur = 0; buf[n] = '\0';
-        } else if (c == 0x17) {
-            size_t word = prev_word(buf, cur);
-            memmove(buf + word, buf + cur, n - cur);
-            n -= cur - word; cur = word; buf[n] = '\0';
-        } else if (c == 0x0c) {
-            /* Explicit repaint also repairs a terminal after stray output. */
-            g_tui.frame_valid = false;
-            repaint();
-            continue;
-        } else if (c == 0x7f || c == 0x08) {
-            if (cur > 0) {
-                size_t prev = prev_glyph(buf, cur);
-                memmove(buf + prev, buf + cur, n - cur);
-                n -= cur - prev; cur = prev; buf[n] = '\0';
-            }
-        } else if (c == 0x1b) {
-            i32 key = read_escape();
-            if (key == KEY_LEFT) cur = prev_glyph(buf, cur);
-            else if (key == KEY_RIGHT) cur = next_glyph(buf, n, cur);
-            else if (key == KEY_HOME) cur = 0;
-            else if (key == KEY_END) cur = n;
-            else if (key == KEY_PREV_WORD) cur = prev_word(buf, cur);
-            else if (key == KEY_NEXT_WORD) cur = next_word(buf, n, cur);
-            else if (key == KEY_PAGE_UP) {
-                size_t rows, cols; screen_size(&rows, &cols); (void)cols;
-                g_tui.scroll_rows += rows > 4 ? rows - 4 : 1;
-            } else if (key == KEY_PAGE_DOWN) {
-                size_t rows, cols; screen_size(&rows, &cols); (void)cols;
-                size_t page = rows > 4 ? rows - 4 : 1;
-                g_tui.scroll_rows = g_tui.scroll_rows > page ? g_tui.scroll_rows - page : 0;
-            } else if (key == KEY_WHEEL_UP) {
-                g_tui.scroll_rows += 3;
-            } else if (key == KEY_WHEEL_DOWN) {
-                g_tui.scroll_rows = g_tui.scroll_rows > 3
-                                  ? g_tui.scroll_rows - 3 : 0;
-            } else if (key == KEY_NEWLINE && n + 1 < cap) {
-                memmove(buf + cur + 1, buf + cur, n - cur);
-                buf[cur++] = '\n'; n++; buf[n] = '\0';
-            }
-        } else if ((c >= 0x20 && c < 0x7f) || c >= 0x80) {
-            if (n + 1 < cap) {
-                memmove(buf + cur + 1, buf + cur, n - cur);
-                buf[cur++] = (char)c; n++; buf[n] = '\0';
-            }
-        }
-
-        g_tui.input_n = n;
-        g_tui.input_cur = cur;
-        repaint();
+        /* Coalesce bursts: with more bytes already queued, painting the
+         * intermediate state only costs a frame nobody sees. */
+        if (!input_ready(0)) repaint();
     }
 }

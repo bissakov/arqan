@@ -69,8 +69,14 @@ endpoint.
 
 The TUI uses the terminal's alternate screen, adapts to `SIGWINCH`, streams
 responses into a bounded transcript, and keeps a multiline composer at the
-bottom. Enter sends, Alt+Enter inserts a newline, PageUp/PageDown scroll the
-transcript, the mouse wheel scrolls it through a visible scrollbar, Ctrl-L
-repaints, Ctrl-C cancels, and Ctrl-D quits from an empty composer. `/new`
-clears the active conversation and `/exit` exits. Redirected stdin/stdout
-automatically falls back to plain text.
+bottom, with the status line just below it. Enter sends, Alt+Enter inserts a
+newline, PageUp/PageDown scroll the transcript, the mouse wheel scrolls it
+through a visible scrollbar, Ctrl-L repaints, Ctrl-C cancels, and Ctrl-D quits
+from an empty composer. `/new` clears the active conversation and `/exit`
+exits. Redirected stdin/stdout automatically falls back to plain text.
+
+The composer stays editable while a turn is running — the request waits on
+stdin alongside its socket — but Enter only sends once the turn is done; the
+dimmed prompt marks the difference. Each repaint is assembled in memory and
+written to the terminal in one go, and a burst of keystrokes collapses into a
+single frame, so fast typing never shows a half-drawn screen.

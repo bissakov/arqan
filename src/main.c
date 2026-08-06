@@ -41,6 +41,11 @@ static void on_tool_call(i32 idx, Str id, Str name, Str args_delta, void *ud) {
     (void)ud; (void)idx; (void)id; (void)name; (void)args_delta;
     tui_set_status("preparing tool call");
 }
+/* Called from inside the request wait: keeps the composer typeable mid-turn. */
+static void on_idle(void *ud) {
+    (void)ud;
+    tui_poll_input();
+}
 
 /* run one tool call against the registry; append a tool result message */
 static void run_tool_calls(ToolRegistry *reg, Conv *conv, Arena *scratch,
@@ -123,8 +128,10 @@ i32 main(i32 argc, char **argv) {
         tui_write((Str){ line, ln });
         tui_write(STR("\n\nAssistant\n"));
 
-        /* agent loop: keep running until the model emits no tool calls */
+        /* agent loop: keep running until the model emits no tool calls.
+         * The composer stays editable throughout; only submitting waits. */
         g_got_sigint = 0;
+        tui_set_busy(true);
         for (i32 turn = 0; turn < 16; turn++) {
             if (g_got_sigint) {
                 tui_write(STR("\n[interrupted]\n\n"));
@@ -142,6 +149,8 @@ i32 main(i32 argc, char **argv) {
                 .on_text = on_text,
                 .on_tool_call = on_tool_call,
                 .ud = NULL,
+                .on_idle = on_idle,
+                .idle_fd = tui_input_fd(),
                 .interrupt_flag = &g_got_sigint,
             };
             char err[256] = {0};
@@ -185,6 +194,7 @@ i32 main(i32 argc, char **argv) {
             run_tool_calls(&tools, &conv, &scratch, &persist, count, ids, names, argss);
             tui_write(STR("\nAssistant\n"));
         }
+        tui_set_busy(false);
     }
 
     tui_stop();

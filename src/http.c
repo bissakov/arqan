@@ -43,12 +43,9 @@ static size_t header_cb(char *p, size_t sz, size_t n, void *ud) {
     return sz * n; /* ignore */
 }
 
-static i32 xferinfo_cb(void *ud, curl_off_t dl_total, curl_off_t dl_now,
-                       curl_off_t ul_total, curl_off_t ul_now) {
-    (void)dl_total; (void)dl_now; (void)ul_total; (void)ul_now;
-    const Ctx *c = (const Ctx *)ud;
-    return c->r->interrupt_flag && *c->r->interrupt_flag ? 1 : 0;
-}
+/* How long a wait may last before we re-check the interrupt flag. Short enough
+ * that Ctrl-C feels immediate, long enough to stay idle between events. */
+#define HTTP_POLL_MS 100
 
 i32 http_sse_post(const HttpReq *r) {
     CURL *curl = curl_easy_init();
@@ -74,22 +71,60 @@ i32 http_sse_post(const HttpReq *r) {
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_cb);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &ctx);
-    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, xferinfo_cb);
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &ctx);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 
-    CURLcode rc = curl_easy_perform(curl);
+    /* Driven through the multi interface so the wait covers our idle fd as
+     * well as curl's sockets: the caller's UI stays live for the whole
+     * request without a second thread. */
+    CURLM *multi = curl_multi_init();
+    if (!multi) {
+        curl_slist_free_all(hdrs);
+        curl_easy_cleanup(curl);
+        free(url);
+        ah_log(AH_LOG_ERROR, "curl multi init failed");
+        return 1;
+    }
+    curl_multi_add_handle(multi, curl);
+
+    CURLcode rc = CURLE_OK;
+    b8 interrupted = false;
+    i32 running = 1;
+    while (running) {
+        CURLMcode mc = curl_multi_perform(multi, &running);
+        if (mc == CURLM_OK && running) {
+            struct curl_waitfd extra = {r->idle_fd, CURL_WAIT_POLLIN, 0};
+            b8 watch = r->idle_fd >= 0;
+            i32 numfds = 0;
+            mc = curl_multi_poll(multi, watch ? &extra : NULL, watch ? 1u : 0u,
+                                 HTTP_POLL_MS, &numfds);
+        }
+        if (mc != CURLM_OK) {
+            ah_log(AH_LOG_ERROR, "curl multi: %s", curl_multi_strerror(mc));
+            rc = CURLE_RECV_ERROR;
+            break;
+        }
+        if (r->on_idle) r->on_idle(r->idle_ud);
+        if (r->interrupt_flag && *r->interrupt_flag) { interrupted = true; break; }
+    }
+
+    if (!interrupted && rc == CURLE_OK) {
+        CURLMsg *msg;
+        i32 left = 0;
+        while ((msg = curl_multi_info_read(multi, &left)))
+            if (msg->msg == CURLMSG_DONE) rc = msg->data.result;
+    }
+
     i64 http = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http);
 
+    curl_multi_remove_handle(multi, curl);
+    curl_multi_cleanup(multi);
     curl_slist_free_all(hdrs);
     curl_easy_cleanup(curl);
     free(url);
 
+    if (interrupted) return 3; /* expected user cancellation */
     if (rc != CURLE_OK) {
-        if (r->interrupt_flag && *r->interrupt_flag)
-            return 3; /* expected user cancellation */
         ah_log(AH_LOG_ERROR, "curl: %s", curl_easy_strerror(rc));
         return 2;
     }

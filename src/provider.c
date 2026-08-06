@@ -259,6 +259,9 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         .ud       = p,
         .body     = bstr.p,
         .interrupt_flag = p->interrupt_flag,
+        .idle_fd  = p->on_idle ? p->idle_fd : -1,
+        .on_idle  = p->on_idle,
+        .idle_ud  = saved_ud,
     };
     i32 rc = http_sse_post(&r);
     p->ud = saved_ud;

@@ -58,13 +58,20 @@ an AoS layout.
 **Module responsibilities:**
 - `core.c` — arena allocator, `Str`/`Buf` string types, logging, monotonic time
 - `json.c` — arena-backed JSON DOM: parser + serializer, no separate token stream
-- `http.c` — libcurl streaming POST or SSE (`http_sse_post`), used only by `provider.c`
+- `http.c` — libcurl streaming POST or SSE (`http_sse_post`), used only by
+  `provider.c`. Runs the transfer on the multi interface so one wait covers
+  both curl's sockets and `HttpReq.idle_fd` (stdin), calling `on_idle` after
+  every wait — that is what keeps the UI live mid-request, single-threaded
 - `config.c` — loads `Config` from env vars then `~/.config/ah/config`
 - `tools.c` — the `ToolRegistry` and the four built-in tools (read/write/bash/edit)
 - `provider.c` — OpenAI-compatible chat-completions streaming client; parses
   SSE deltas into text/tool-call callbacks and appends to `Conv`
 - `tui.c` — alternate-screen terminal UI: viewport, scrollback, raw-mode
-  composer, mouse wheel scrolling, SIGWINCH-aware repaint
+  composer, mouse wheel scrolling, SIGWINCH-aware repaint. Frames are built
+  in `TuiState.out` and hit the terminal as one `write`; the composer lives in
+  `TuiState` for the whole session, so `tui_readline` (blocking, submits) and
+  `tui_poll_input` (non-blocking, refuses Enter while `busy`) drive the same
+  editor
 - `main.c` — wires everything together and runs the agent loop
 
 **Agent loop shape** (`main.c`): each user turn calls `provider_run` in a
@@ -74,7 +81,9 @@ call count. If nonzero, `main` scans the newly appended `Conv` tail for
 tool-call slots, executes each via `tools_find` + `ToolDef.run`, appends the
 results as `M_TOOL` messages, and loops again; a zero return ends the turn.
 `SIGINT` sets `g_got_sigint`, checked between and during provider calls to
-support cancellation.
+support cancellation. `main` marks the turn with `tui_set_busy` and passes
+`on_idle` + `tui_input_fd()` to the provider, which is how typing stays alive
+while the model streams.
 
 **Adding a tool:** implement a `b8 (*run)(Str args_json, Arena *scratch, Buf
 *out, char *err, size_t err_cap)` function in `tools.c`, register it (name +
