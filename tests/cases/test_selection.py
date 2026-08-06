@@ -166,3 +166,18 @@ def test_selection_trims_row_padding(ctx):
     row = row_of(s, "short")
     drag(s, row, 3, s.screen.cols)
     assert s.screen.clipboard == "short", repr(s.screen.clipboard)
+
+
+def test_composer_text_right_of_the_cursor_is_selectable(ctx):
+    """Parking the cursor mid-line leaves the rest of the row copyable.
+
+    The frame ends by moving the terminal cursor into the composer, which is
+    not the painter rewriting that row: treating it as one dropped everything
+    to the right of the cursor out of the selectable snapshot.
+    """
+    s = ctx.spawn()
+    s.type("hello world").sync()
+    s.key("home").sync()
+    row = row_of(s, "hello world")
+    drag(s, row, 5, s.screen.cols)
+    assert s.screen.clipboard == "hello world", repr(s.screen.clipboard)

@@ -44,8 +44,26 @@ static size_t commands_init(void) {
     g_commands[n++] = (TuiCmd){ STR("/resume"), STR("Resume a saved session from this directory") };
     g_commands[n++] = (TuiCmd){ STR("/model"), STR("Pick the model, remembered for the next run") };
     g_commands[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
+    g_commands[n++] = (TuiCmd){ STR("/vim"), STR("Toggle vim keys over the whole screen") };
     g_commands[n++] = (TuiCmd){ STR("/exit"), STR("Quit yoke") };
     return n;
+}
+
+/* One command namespace, two ways in. ':' is what vim's normal mode reaches
+ * for, and the handful of ex spellings people type without thinking map onto
+ * the commands that already exist; everything else is ':name' for '/name'.
+ * Nothing here interprets an ex language: yoke has commands, not an editor. */
+static void command_normalize(char *line, size_t *n) {
+    if (line[0] != ':') return;
+    line[0] = '/';
+    static const char *quit[] = { "/q", "/q!", "/qa", "/qa!", "/quit", "/wq",
+                                 "/x", "/exit" };
+    for (size_t i = 0; i < sizeof quit / sizeof *quit; i++) {
+        if (strcmp(line, quit[i])) continue;
+        memcpy(line, "/exit", 6);
+        *n = 5;
+        return;
+    }
 }
 
 /* Streaming sinks append to the TUI's transcript. */
@@ -310,6 +328,7 @@ i32 main(i32 argc, char **argv) {
         size_t ln = 0;
         if (!tui_readline("> ", line, sizeof line, &ln)) break;
         if (ln == 0) { g_got_sigint = 0; continue; }
+        command_normalize(line, &ln);
         if (!strcmp(line, "/exit")) break;
         if (!strcmp(line, "/clear")) {
             /* Keep the configured system prompt, discard the visible and
@@ -323,6 +342,12 @@ i32 main(i32 argc, char **argv) {
         }
         if (!strcmp(line, "/copy")) {
             copy_last_reply(&conv);
+            continue;
+        }
+        if (!strcmp(line, "/vim")) {
+            /* The mode row appearing (or going) is the answer; a notice on top
+             * of it would say the same thing twice. */
+            tui_set_vim(!tui_vim());
             continue;
         }
         if (!strcmp(line, "/model")) {

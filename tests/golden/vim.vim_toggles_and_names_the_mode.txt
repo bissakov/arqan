@@ -1,5 +1,8 @@
 --- screen 80x24 ---
 |
+|
+|
+|
 |                                          _
 |                              _   _  ___ | | _____
 |                             | | | |/ _ \| |/ / _ \
@@ -11,16 +14,13 @@
 |
 |                    type a message and press Enter to begin
 |
-|    no saved sessions in this directory
-|  › /clear   Start a fresh conversation
-|    /resume  Resume a saved session from this directory
-|    /model   Pick the model, remembered for the next run
-|    /copy    Copy the last response to the clipboard
-|    /vim     Toggle vim keys over the whole screen
-|    /exit    Quit yoke
 |
-|  › /
+|
+|
+|    -- NORMAL --
+|
+|  › Message yoke...
 |
 |
 |  ● ready · mock-model · local · ~/work · -
---- cursor row=21 col=6 visible=yes ---
+--- cursor row=21 col=5 visible=yes ---

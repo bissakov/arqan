@@ -82,8 +82,17 @@ back to the terminal's own selection.
 
 Typing `/` opens a completion popup: `/clear` starts a fresh conversation,
 `/resume` reopens one saved for this directory, `/model` switches model,
-`/copy` puts the last reply on the clipboard as the Markdown the model wrote
-and `/exit` quits.
+`/copy` puts the last reply on the clipboard as the Markdown the model wrote,
+`/vim` toggles vim keys and `/exit` quits.
+
+`/vim` puts a cursor on the whole screen rather than on the composer alone.
+Normal mode moves it with `hjkl`, `w`/`b`/`e`, `0`/`$` and `gg`/`G`, scrolls
+with Ctrl-U/D/B/F, and walks the transcript the way tmux copy-mode does, live
+even while a reply streams; `v` and `V` select from there and `y` copies over
+OSC 52. Editing keys (`x`, `dw`, `dd`, `cw`, `p`, `u`, ...) only apply to the
+composer and are refused elsewhere, `i`/`a`/`I`/`A`/`o`/`O` return to insert,
+Esc leaves it, `:` opens a slash command and Enter sends from any mode. The
+notice row above the composer names the current mode.
 
 `/model` lists what the provider's `/models` endpoint serves and remembers the
 choice for the next run. Past ten entries the popup takes the keyboard and

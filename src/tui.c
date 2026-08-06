@@ -48,6 +48,10 @@
 #define S_POPUP_BG    "\033[48;5;237m"
 #define S_POPUP_SEL   "\033[48;5;24m"
 
+/* Insert is the composer's own editor; the other two move a cell cursor over
+ * the painted frame. */
+enum { VIM_INSERT = 0, VIM_NORMAL, VIM_VISUAL };
+
 typedef struct {
     struct termios original_termios;
     struct sigaction original_winch;
@@ -106,6 +110,7 @@ typedef struct {
      * of it the popup is currently showing. */
     const TuiCmd *cmds;
     size_t cmd_n;
+    b8 picking;                      /* tui_pick lent the list to a caller  */
     u16 comp_idx[YOKE_MAX_POPUP];      /* matches, as indices into cmds       */
     size_t comp_n;
     size_t comp_sel;
@@ -115,6 +120,37 @@ typedef struct {
      * conversation, and "there is nothing to pick from" is not part of it. */
     char notice[160];
     size_t notice_n;
+    /* Vim layer. The cursor is a screen cell rather than a byte offset,
+     * because normal and visual reach the whole frame; `vim_follow` asks the
+     * next frame to reseat it on `input_cur` after an edit or a mode change,
+     * which is the only direction the mapping has to run in. */
+    b8 vim;
+    u8 vim_mode;
+    b8 vim_linewise;      /* V: the range covers whole rows                */
+    b8 vim_follow;
+    size_t vim_row, vim_col;
+    u8 vim_op;            /* d, c or y waiting for a motion                */
+    u8 vim_await;         /* key the last one asked for: f F t T r g i a   */
+    u32 vim_count;        /* the 3 in 3dw                                  */
+    char vim_find;        /* target of the last f/F/t/T, for ; and ,       */
+    u8 vim_find_kind;
+    u8 cursor_shape;      /* last DECSCUSR emitted, so frames stay quiet   */
+    char vim_yank[YOKE_LINE_BUF];
+    size_t vim_yank_n;
+    b8 vim_yank_line;     /* the register holds whole lines: dd, yy, V       */
+    char vim_undo[YOKE_LINE_BUF];
+    size_t vim_undo_n, vim_undo_cur;
+    b8 vim_undo_valid;
+    /* Geometry of the last frame the cell cursor navigates over. */
+    size_t view_rows;         /* transcript rows                           */
+    size_t view_max_scroll;
+    /* Composer provenance, one entry per screen row: where the row's text
+     * starts in `input` and the column it starts at. A cell is editable
+     * exactly when it has one, which is what confines insert and the
+     * operators to the composer without them knowing the layout. */
+    u32 row_input_off[TUI_SEL_ROWS];
+    u16 row_input_col[TUI_SEL_ROWS];
+    b8  row_input[TUI_SEL_ROWS];
     /* Prompt history recall: `draft` holds the text the first Up displaced. */
     History *hist;
     char draft[YOKE_LINE_BUF];
@@ -225,10 +261,18 @@ static void screen_size(size_t *rows, size_t *cols) {
     if (*cols < 8) *cols = 8;
 }
 
-static void cup(size_t row, size_t col) {
+/* Move the terminal cursor without telling the snapshot: parking it mid-row
+ * is not the painter about to rewrite that row, and treating it as one
+ * truncates everything painted to the right of the cursor out of the
+ * selectable text. */
+static void cup_park(size_t row, size_t col) {
     char seq[48];
     i32 n = snprintf(seq, sizeof seq, "\033[%zu;%zuH", row, col);
     if (n > 0) put_raw(seq, (size_t)n);
+}
+
+static void cup(size_t row, size_t col) {
+    cup_park(row, col);
     snap_seek(row, col);
 }
 
@@ -771,6 +815,13 @@ static void update_text_rows(Str s, size_t base_off, size_t cols,
         if (end || newline || wrap) {
             if (row >= first_row && row < first_row + visible_rows) {
                 Str prefix = row == 0 && prompt_cells ? STR("› ") : (Str){0};
+                size_t at = screen_row + row - first_row;
+                if (kind == ROW_COMPOSER && at && at <= TUI_SEL_ROWS) {
+                    g_tui.row_input[at - 1] = true;
+                    g_tui.row_input_off[at - 1] = (u32)start;
+                    g_tui.row_input_col[at - 1] =
+                        (u16)(screen_col - 1 + (row == 0 ? prompt_cells : 0));
+                }
                 /* Only the transcript carries user spans; the composer
                  * indexes its own buffer. */
                 u8 row_kind = kind == ROW_PLAIN && span_holds(base_off + start)
@@ -858,10 +909,26 @@ static size_t popup_name_cells(size_t first, size_t rows) {
     return widest + 4;   /* "\u203a " marker plus a two-cell gap */
 }
 
-/* The popup slot answering a command that opened no popup. */
+/* Named in the notice row while /vim is on: the mode decides what every other
+ * key does, so it is worth a permanent row. */
+static Str vim_mode_label(void) {
+    if (!g_tui.vim) return (Str){0};
+    if (g_tui.vim_mode == VIM_INSERT) return STR("-- INSERT --");
+    if (g_tui.vim_mode == VIM_VISUAL)
+        return g_tui.vim_linewise ? STR("-- VISUAL LINE --") : STR("-- VISUAL --");
+    return STR("-- NORMAL --");
+}
+
+/* The popup slot answering a command that opened no popup, and the row the
+ * vim mode lives on: a notice shares it, after the mode label. */
 static void update_notice_row(size_t screen_row, Str text, size_t screen_col,
                               size_t screen_cols, size_t body_cols, b8 force) {
+    Str mode = vim_mode_label();
     u64 hash = row_hash(STR("notice"), text, ROW_POPUP);
+    hash = hash_add(hash, mode.p, mode.n);
+    hash = hash_add(hash, &g_tui.vim_count, sizeof g_tui.vim_count);
+    hash = hash_add(hash, &g_tui.vim_op, sizeof g_tui.vim_op);
+    hash = hash_add(hash, &g_tui.vim_await, sizeof g_tui.vim_await);
     size_t sel_c0, sel_c1;
     sel_row_range(screen_row, &sel_c0, &sel_c1);
     hash = hash_add(hash, &sel_c0, sizeof sel_c0);
@@ -873,9 +940,30 @@ static void update_notice_row(size_t screen_row, Str text, size_t screen_col,
     style(S_POPUP_BG);
     pad_row(0, screen_cols);
     cup(screen_row, screen_col);
-    style(S_POPUP_BG S_YELLOW);
     size_t used = 0;
+    style(S_POPUP_BG S_YELLOW);
     put_safe_clipped(STR("  "), body_cols, &used);
+    if (mode.n) {
+        style(S_POPUP_BG S_CYAN);
+        put_safe_clipped(mode, body_cols - used, &used);
+        /* A half-typed command is state the user cannot otherwise see: 3d
+         * waiting for its motion looks exactly like nothing happening. */
+        char pending[16];
+        size_t at = 0;
+        if (g_tui.vim_count && at + 8 < sizeof pending)
+            at += (size_t)snprintf(pending + at, sizeof pending - at, "%u",
+                                   g_tui.vim_count);
+        if (g_tui.vim_op) pending[at++] = (char)g_tui.vim_op;
+        if (g_tui.vim_await) pending[at++] = (char)g_tui.vim_await;
+        if (at) {
+            style(S_POPUP_BG S_MUTED);
+            put_safe_clipped(STR("  "), body_cols - used, &used);
+            put_safe_clipped((Str){ pending, at }, body_cols - used, &used);
+        }
+        style(S_POPUP_BG S_YELLOW);
+        if (text.n && used + 2 < body_cols)
+            put_safe_clipped(STR("  "), body_cols - used, &used);
+    }
     if (used < body_cols) put_safe_clipped(text, body_cols - used, &used);
     paint_sel_tail(screen_row, screen_cols);
     style(S_RESET);
@@ -887,9 +975,20 @@ static void paint_completions(size_t top_row, size_t rows, size_t screen_col,
     /* Keep the selection on screen when there are more matches than room. */
     size_t first = g_tui.comp_sel >= rows ? g_tui.comp_sel - rows + 1 : 0;
     size_t name_cells = popup_name_cells(first, rows);
+    /* The list echoes the character the command line was opened with, so a
+     * ':' popup reads as the ':' commands it will run. A picker's entries are
+     * the caller's own strings and are painted untouched. */
+    char prefix = g_tui.picking || !g_tui.input_n ? '\0' : g_tui.input[0];
     for (size_t i = 0; i < rows; i++) {
         const TuiCmd *cmd = &g_tui.cmds[g_tui.comp_idx[first + i]];
-        update_popup_row(top_row + i, cmd->name, cmd->desc,
+        char named[32];   /* a command name; longer ones paint unswapped */
+        Str name = cmd->name;
+        if (prefix && name.n && name.n <= sizeof named) {
+            memcpy(named, name.p, name.n);
+            named[0] = prefix;
+            name = (Str){ named, name.n };
+        }
+        update_popup_row(top_row + i, name, cmd->desc,
                          first + i == g_tui.comp_sel, name_cells, screen_col,
                          screen_cols, body_cols, force);
     }
@@ -1013,6 +1112,67 @@ static Str format_context_size(char *buf, size_t cap) {
     return (Str){buf, len};
 }
 
+/* ---- vim: the painted frame as a text plane -----------------------------
+ * Rows the frame put on screen are already mirrored in row_text[] for mouse
+ * selection, so normal and visual mode navigate that snapshot instead of the
+ * buffers behind it, and a motion costs nothing but a column.
+ */
+static size_t vim_rows(void) {
+    size_t rows = g_tui.painted_rows ? g_tui.painted_rows : 1;
+    return rows < TUI_SEL_ROWS ? rows : TUI_SEL_ROWS;
+}
+
+static size_t vim_row_cells(size_t r) {
+    return r < TUI_SEL_ROWS ? g_tui.row_text_w[r] : 0;
+}
+
+/* Cells the painter never reached are blanks on screen, so they read as one. */
+static b8 vim_cell_blank(size_t r, size_t c) {
+    if (r >= TUI_SEL_ROWS) return true;
+    size_t reached = 0;
+    size_t at = row_byte_at(r, c, &reached);
+    if (reached != c || at >= g_tui.row_text_n[r]) return true;
+    return g_tui.row_text[r][at] == ' ';
+}
+
+/* Where a row's own text starts: on a composer row the '› ' prompt is chrome
+ * in front of the buffer, and a cursor parked on it would map to the same
+ * byte as the first character while looking like a different place. */
+static size_t vim_row_text_col(size_t r) {
+    return r < TUI_SEL_ROWS && g_tui.row_input[r] ? g_tui.row_input_col[r] : 0;
+}
+
+static size_t vim_first_text(size_t r) {
+    size_t width = vim_row_cells(r), c = vim_row_text_col(r);
+    while (c < width && vim_cell_blank(r, c)) c++;
+    return c < width ? c : vim_row_text_col(r);
+}
+
+static size_t vim_last_text(size_t r) {
+    size_t width = vim_row_cells(r), floor = vim_row_text_col(r);
+    while (width > floor && vim_cell_blank(r, width - 1)) width--;
+    return width > floor ? width - 1 : floor;
+}
+
+static void vim_clamp(void) {
+    size_t rows = vim_rows();
+    if (g_tui.vim_row >= rows) g_tui.vim_row = rows - 1;
+    size_t width = vim_row_cells(g_tui.vim_row);
+    size_t last = width ? width - 1 : 0;
+    if (g_tui.vim_col > last) g_tui.vim_col = last;
+    size_t floor = vim_row_text_col(g_tui.vim_row);
+    if (g_tui.vim_col < floor) g_tui.vim_col = floor;
+}
+
+/* DECSCUSR, emitted only on a change: 2 is the block normal mode wants, 6 the
+ * bar for insert, 0 the shape the terminal started with. */
+static void set_cursor_shape(u8 shape) {
+    if (g_tui.cursor_shape == shape) return;
+    g_tui.cursor_shape = shape;
+    char seq[8] = { '\033', '[', (char)('0' + shape), ' ', 'q' };
+    put_raw(seq, 5);
+}
+
 static void repaint(void) {
     if (!g_tui.fullscreen) return;
     g_tui.last_paint = yoke_now_seconds();
@@ -1032,6 +1192,7 @@ static void repaint(void) {
     } else {
         put_str("\033[?25l");
     }
+    memset(g_tui.row_input, 0, sizeof g_tui.row_input);
     size_t gutter = cols >= 24 ? TUI_BODY_GUTTER : 1;
     size_t body_cols = cols - gutter * 2;
     size_t body_col = gutter + 1;
@@ -1059,18 +1220,20 @@ static void repaint(void) {
      * and always leave it one row so the view never collapses entirely. */
     size_t popup_rows = g_tui.comp_n < TUI_POPUP_ROWS
                       ? g_tui.comp_n : TUI_POPUP_ROWS;
-    size_t notice_rows = g_tui.notice_n ? 1 : 0;
+    size_t notice_rows = g_tui.notice_n || g_tui.vim ? 1 : 0;
     size_t overlay_cap = body_rows > 1 ? body_rows - 1 : 0;
     if (popup_rows > overlay_cap) popup_rows = overlay_cap;
     if (notice_rows + popup_rows > overlay_cap)
         notice_rows = overlay_cap - popup_rows;
     size_t transcript_rows = body_rows - popup_rows - notice_rows;
     if (transcript_rows < 1) transcript_rows = 1;
+    g_tui.view_rows = transcript_rows;
 
     /* Transcript, pinned to its bottom unless PageUp has moved the viewport. */
     size_t all_rows = wrap_scan(body_cols);
     size_t max_scroll = all_rows > transcript_rows ? all_rows - transcript_rows : 0;
     if (g_tui.scroll_rows > max_scroll) g_tui.scroll_rows = max_scroll;
+    g_tui.view_max_scroll = max_scroll;
     size_t first = all_rows > transcript_rows + g_tui.scroll_rows
                  ? all_rows - transcript_rows - g_tui.scroll_rows : 0;
     if (g_tui.transcript_n == 0 && welcome_fits(body_cols, transcript_rows))
@@ -1194,15 +1357,30 @@ static void repaint(void) {
         style(S_RESET);
     }
 
-    if (g_tui.editing) {
+    g_tui.painted_rows = rows;
+    g_tui.painted_cols = cols;
+    if (g_tui.vim && g_tui.vim_mode != VIM_INSERT) {
+        /* The cell cursor is authoritative in normal and visual, except right
+         * after an edit or a mode change, when it reseats on the text. */
+        if (g_tui.vim_follow) {
+            size_t row = composer_screen_row + cursor_row - input_first;
+            g_tui.vim_row = row ? row - 1 : 0;
+            g_tui.vim_col = gutter + cursor_col;
+            g_tui.vim_follow = false;
+        }
+        vim_clamp();
+        set_cursor_shape(2);
+        cup_park(g_tui.vim_row + 1,
+                 g_tui.vim_col + 1 <= cols ? g_tui.vim_col + 1 : cols);
+        put_str("\033[?25h");
+    } else if (g_tui.editing) {
         size_t screen_cursor_row = composer_screen_row + cursor_row - input_first;
         size_t screen_cursor_col = gutter + cursor_col + 1;
         if (screen_cursor_col > cols) screen_cursor_col = cols;
-        cup(screen_cursor_row, screen_cursor_col);
+        set_cursor_shape(g_tui.vim ? 6 : 0);
+        cup_park(screen_cursor_row, screen_cursor_col);
         put_str("\033[?25h");
     }
-    g_tui.painted_rows = rows;
-    g_tui.painted_cols = cols;
     g_tui.frame_valid = true;
     flush_out();
 }
@@ -1282,7 +1460,7 @@ void tui_stop(void) {
     if (!g_tui.raw) return;
     yoke_log_set_sink(NULL, NULL);
     if (g_tui.fullscreen) {
-        put_str("\033[?1006l\033[?1002l\033[?25h\033[?7h\033[?1049l");
+        put_str("\033[0 q\033[?1006l\033[?1002l\033[?25h\033[?7h\033[?1049l");
         flush_out();
         (void)tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_tui.original_termios);
         (void)sigaction(SIGWINCH, &g_tui.original_winch, NULL);
@@ -1291,6 +1469,23 @@ void tui_stop(void) {
     g_tui.editing = false;
     g_tui.raw = false;
 }
+
+void tui_set_vim(b8 on) {
+    g_tui.vim = on;
+    g_tui.vim_mode = on ? VIM_NORMAL : VIM_INSERT;
+    g_tui.vim_op = 0;
+    g_tui.vim_await = 0;
+    g_tui.vim_count = 0;
+    g_tui.vim_linewise = false;
+    g_tui.vim_follow = true;
+    if (!on) {
+        sel_clear();
+        g_tui.scroll_rows = 0;
+    }
+    repaint();
+}
+
+b8 tui_vim(void) { return g_tui.vim; }
 
 void tui_set_busy(b8 busy) {
     if (g_tui.busy == busy) return;
@@ -1377,8 +1572,9 @@ void tui_write(Str s) {
     /* Transcript output answers whatever the notice was about. */
     g_tui.notice_n = 0;
     /* New output shifts the rows a highlight was drawn over; only an active
-     * drag keeps it, since the pointer is still choosing the range. */
-    if (!g_tui.sel_drag) sel_clear();
+     * drag keeps it, since the pointer is still choosing the range, as does a
+     * visual range, whose cursor is choosing it by hand. */
+    if (!g_tui.sel_drag && g_tui.vim_mode != VIM_VISUAL) sel_clear();
 
     /* Keep the newest half if the bounded scrollback fills. */
     if (s.n >= TUI_TRANSCRIPT_CAP) {
@@ -1410,7 +1606,9 @@ void tui_write(Str s) {
             g_tui.transcript[g_tui.transcript_n++] = (char)c;
         }
     }
-    g_tui.scroll_rows = 0;
+    /* Reading back through the scrollback survives new output: normal mode is
+     * where the user went to read, and yanking a moving target is hopeless. */
+    if (!g_tui.vim || g_tui.vim_mode == VIM_INSERT) g_tui.scroll_rows = 0;
     /* SSE can deliver many tiny deltas. Row diffing keeps each paint small,
      * and 15 Hz is plenty for readable text streaming. Newlines/status
      * changes still make the final state visible immediately. */
@@ -1592,11 +1790,14 @@ static void completion_refresh(void) {
     g_tui.comp_sel = 0;
     if (g_tui.comp_dismissed || !g_tui.cmds || !g_tui.cmd_n) return;
     Str in = { g_tui.input, g_tui.input_n };
-    if (in.n == 0 || in.p[0] != '/') return;
+    /* ':' reaches the same commands from vim's normal mode, so it offers the
+     * same list; only the character that opened it differs. */
+    if (in.n == 0 || (in.p[0] != '/' && in.p[0] != ':')) return;
     for (size_t i = 0; i < in.n; i++)
         if (in.p[i] == ' ' || in.p[i] == '\t' || in.p[i] == '\n') return;
     for (size_t i = 0; i < g_tui.cmd_n && g_tui.comp_n < YOKE_MAX_COMMANDS; i++) {
-        if (!str_starts_ci(g_tui.cmds[i].name, in)) continue;
+        if (!str_starts_ci(str_drop(g_tui.cmds[i].name, 1), str_drop(in, 1)))
+            continue;
         /* Narrowing the list keeps the highlight on the same command. */
         if (i == previous) g_tui.comp_sel = g_tui.comp_n;
         g_tui.comp_idx[g_tui.comp_n++] = (u16)i;
@@ -1616,14 +1817,16 @@ static b8 completion_would_change(void) {
     if (!g_tui.comp_n) return false;
     Str name = g_tui.cmds[g_tui.comp_idx[g_tui.comp_sel]].name;
     return name.n != g_tui.input_n
-        || memcmp(name.p, g_tui.input, name.n) != 0;
+        || memcmp(name.p + 1, g_tui.input + 1, name.n - 1) != 0;
 }
 
 static void completion_accept(void) {
     if (!g_tui.comp_n) return;
     Str name = g_tui.cmds[g_tui.comp_idx[g_tui.comp_sel]].name;
     size_t n = name.n < sizeof g_tui.input - 1 ? name.n : sizeof g_tui.input - 1;
+    char prefix = g_tui.input_n ? g_tui.input[0] : '/';
     memcpy(g_tui.input, name.p, n);
+    g_tui.input[0] = prefix;   /* ':cl' completes to ':clear', not '/clear' */
     g_tui.input[n] = '\0';
     g_tui.input_n = n;
     g_tui.input_cur = n;
@@ -1723,6 +1926,7 @@ b8 tui_pick(Str title, const TuiCmd *items, size_t n, size_t *out) {
 
     g_tui.cmds = items;
     g_tui.cmd_n = n;
+    g_tui.picking = true;
     g_tui.comp_n = n;
     g_tui.comp_sel = 0;
     for (size_t i = 0; i < n; i++) g_tui.comp_idx[i] = (u16)i;
@@ -1773,6 +1977,7 @@ b8 tui_pick(Str title, const TuiCmd *items, size_t n, size_t *out) {
 
     g_tui.cmds = saved_cmds;
     g_tui.cmd_n = saved_cmd_n;
+    g_tui.picking = false;
     g_tui.comp_dismissed = saved_dismissed;
     memcpy(g_tui.notice, saved_notice, sizeof saved_notice);
     g_tui.notice_n = saved_notice_n;
@@ -1787,10 +1992,777 @@ b8 tui_pick(Str title, const TuiCmd *items, size_t n, size_t *out) {
 /* What a keystroke asked the caller to do; edits are already applied. */
 typedef enum { ED_EDIT = 0, ED_SUBMIT, ED_EOF } EdAction;
 
+/* ---- vim: modes ----------------------------------------------------------
+ * Normal and visual own the frame, insert owns the composer. Motions resolve
+ * in the cell plane, one table for both jobs: navigating moves the cursor,
+ * and an operator is the byte range between where the cursor was and where
+ * the same motion put it. Everything that writes goes through vim_cell_offset,
+ * which fails on a cell no composer row painted, so "edit anywhere" is
+ * refused in one place rather than in each operator. Yank is the exception:
+ * reading the transcript is the point of walking it.
+ *
+ * What is deliberately absent: buffers, windows, marks, macros, registers
+ * beyond the unnamed one, and an ex language. ':' reaches yoke's own commands
+ * and nothing else.
+ */
+
+/* Positive `back` walks toward older output. A visual anchor is a screen cell
+ * over content that just moved, so it travels with it. */
+static void vim_scroll(i64 back) {
+    size_t before = g_tui.scroll_rows;
+    if (back > 0) {
+        size_t room = g_tui.view_max_scroll > before
+                    ? g_tui.view_max_scroll - before : 0;
+        size_t step = (size_t)back < room ? (size_t)back : room;
+        g_tui.scroll_rows = before + step;
+    } else {
+        size_t step = (size_t)(-back);
+        g_tui.scroll_rows = before > step ? before - step : 0;
+    }
+    if (g_tui.scroll_rows == before) return;
+    if (g_tui.vim_mode == VIM_VISUAL && g_tui.sel_ar < g_tui.view_rows) {
+        i64 anchor = (i64)g_tui.sel_ar
+                   + (i64)g_tui.scroll_rows - (i64)before;
+        if (anchor < 0) anchor = 0;
+        if (anchor >= (i64)g_tui.view_rows) anchor = (i64)g_tui.view_rows - 1;
+        g_tui.sel_ar = (size_t)anchor;
+    }
+}
+
+/* Visual mode is the selection mouse drag already builds, so the highlight,
+ * the extraction and the OSC 52 copy are all shared with it. */
+static void vim_sel_sync(void) {
+    if (g_tui.vim_mode != VIM_VISUAL) return;
+    g_tui.sel_br = g_tui.vim_row;
+    g_tui.sel_bc = g_tui.vim_col;
+    if (g_tui.vim_linewise) {
+        size_t cols = g_tui.painted_cols ? g_tui.painted_cols : 1;
+        b8 down = g_tui.sel_br >= g_tui.sel_ar;
+        g_tui.sel_ac = down ? 0 : cols - 1;
+        g_tui.sel_bc = down ? cols - 1 : 0;
+    }
+    g_tui.sel_active = true;
+    g_tui.bar_valid = false;
+}
+
+static void vim_visual_end(void) {
+    g_tui.vim_mode = VIM_NORMAL;
+    g_tui.vim_linewise = false;
+    sel_clear();
+}
+
+/* Blank, word or punctuation, which is the split w/b/e obey and W/B/E ignore. */
+static u8 vim_class(size_t r, size_t c) {
+    if (vim_cell_blank(r, c)) return 0;
+    size_t reached = 0;
+    size_t at = row_byte_at(r, c, &reached);
+    unsigned char ch = (unsigned char)g_tui.row_text[r][at];
+    if (ch >= 0x80) return 1;
+    if (ch == '_' || (ch >= '0' && ch <= '9')
+        || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) return 1;
+    return 2;
+}
+
+/* Column of the next word start, or the row's width when there is none: an
+ * operator wants that as its exclusive end, which is what makes "dw" on the
+ * last word of a row delete to the end of it, exactly as vim does. */
+static size_t vim_col_word_fwd(size_t r, size_t c, b8 big) {
+    size_t width = vim_row_cells(r);
+    u8 start = vim_class(r, c);
+    if (start) {
+        while (c < width && (big ? vim_class(r, c) != 0 : vim_class(r, c) == start))
+            c++;
+    }
+    while (c < width && !vim_class(r, c)) c++;
+    return c;
+}
+
+static size_t vim_col_word_back(size_t r, size_t c, b8 big) {
+    size_t floor = vim_row_text_col(r);
+    while (c > floor && !vim_class(r, c - 1)) c--;
+    if (c <= floor) return floor;
+    u8 start = vim_class(r, c - 1);
+    while (c > floor
+           && (big ? vim_class(r, c - 1) != 0 : vim_class(r, c - 1) == start))
+        c--;
+    return c;
+}
+
+/* Inclusive: `e` lands on the last cell of the word, not past it. */
+static size_t vim_col_word_end(size_t r, size_t c, b8 big) {
+    size_t width = vim_row_cells(r);
+    if (c + 1 >= width) return c;
+    c++;
+    while (c < width && !vim_class(r, c)) c++;
+    if (c >= width) return width ? width - 1 : 0;
+    u8 start = vim_class(r, c);
+    while (c + 1 < width
+           && (big ? vim_class(r, c + 1) != 0 : vim_class(r, c + 1) == start))
+        c++;
+    return c;
+}
+
+/* f/F/t/T over the row's painted text. SIZE_MAX when the char is not there,
+ * which leaves the cursor (and any pending operator) untouched. */
+static size_t vim_col_find(size_t r, size_t c, char ch, u8 kind) {
+    size_t width = vim_row_cells(r);
+    b8 forward = kind == 'f' || kind == 't';
+    size_t at = c;
+    for (;;) {
+        if (forward) {
+            if (at + 1 >= width) return SIZE_MAX;
+            at++;
+        } else {
+            if (at == 0) return SIZE_MAX;
+            at--;
+        }
+        size_t reached = 0;
+        size_t byte = row_byte_at(r, at, &reached);
+        if (reached != at || byte >= g_tui.row_text_n[r]) continue;
+        if (g_tui.row_text[r][byte] != ch) continue;
+        if (kind == 't') return at ? at - 1 : at;
+        if (kind == 'T') return at + 1;
+        return at;
+    }
+}
+
+static b8 vim_row_blank(size_t r) {
+    return vim_row_cells(r) == 0 || vim_cell_blank(r, vim_first_text(r));
+}
+
+static void vim_step_row(i32 delta) {
+    if (delta < 0) {
+        if (g_tui.vim_row == 0) vim_scroll(1);
+        else g_tui.vim_row--;
+    } else if (g_tui.view_rows && g_tui.vim_row + 1 == g_tui.view_rows
+               && g_tui.scroll_rows) {
+        /* At the foot of a scrolled-back transcript, down means more output,
+         * not a step into the chrome below it. */
+        vim_scroll(-1);
+    } else if (g_tui.vim_row + 1 < vim_rows()) {
+        g_tui.vim_row++;
+    }
+}
+
+/* Move the cell cursor. `cross` lets row-bound motions walk onto the next
+ * row, which navigation wants and an operator does not: a range that leaves
+ * the row it started on is a different edit than the one that was asked for.
+ * `inclusive` reports whether an operator should take the cell landed on. */
+static b8 vim_motion(i32 key, u32 count, b8 cross, b8 *inclusive) {
+    *inclusive = false;
+    if (!count) count = 1;
+    size_t rows = vim_rows();
+    switch (key) {
+        case 'h':
+            for (u32 i = 0; i < count; i++) if (g_tui.vim_col) g_tui.vim_col--;
+            break;
+        case ' ': case 'l':
+            for (u32 i = 0; i < count; i++) g_tui.vim_col++;
+            break;
+        case 'j': case 'k':
+            for (u32 i = 0; i < count; i++) vim_step_row(key == 'j' ? 1 : -1);
+            break;
+        case 'w': case 'W':
+            for (u32 i = 0; i < count; i++) {
+                size_t width = vim_row_cells(g_tui.vim_row);
+                size_t next = vim_col_word_fwd(g_tui.vim_row, g_tui.vim_col,
+                                               key == 'W');
+                if (next < width || !cross) { g_tui.vim_col = next; continue; }
+                size_t was = g_tui.vim_row;
+                vim_step_row(1);
+                g_tui.vim_col = g_tui.vim_row != was
+                              ? vim_first_text(g_tui.vim_row) : width;
+            }
+            break;
+        case 'b': case 'B':
+            for (u32 i = 0; i < count; i++) {
+                size_t back = vim_col_word_back(g_tui.vim_row, g_tui.vim_col,
+                                                key == 'B');
+                if (back || g_tui.vim_col || !cross) { g_tui.vim_col = back; continue; }
+                size_t was = g_tui.vim_row;
+                vim_step_row(-1);
+                if (g_tui.vim_row != was) g_tui.vim_col = vim_last_text(g_tui.vim_row);
+            }
+            break;
+        case 'e': case 'E':
+            *inclusive = true;
+            for (u32 i = 0; i < count; i++)
+                g_tui.vim_col = vim_col_word_end(g_tui.vim_row, g_tui.vim_col,
+                                                 key == 'E');
+            break;
+        case '0': case '^':
+            /* Column zero is the frame's gutter, which is chrome; the row's
+             * first glyph is what "the start of the line" means on screen. */
+            g_tui.vim_col = vim_first_text(g_tui.vim_row);
+            break;
+        case '$':
+            *inclusive = true;
+            g_tui.vim_col = vim_last_text(g_tui.vim_row);
+            break;
+        case '{': case '}':
+            for (u32 i = 0; i < count; i++) {
+                size_t was = g_tui.vim_row;
+                do {
+                    size_t before = g_tui.vim_row;
+                    vim_step_row(key == '}' ? 1 : -1);
+                    if (g_tui.vim_row == before) break;
+                } while (!vim_row_blank(g_tui.vim_row));
+                if (g_tui.vim_row == was) break;
+            }
+            g_tui.vim_col = vim_first_text(g_tui.vim_row);
+            break;
+        case 'H': case 'M': case 'L': {
+            size_t last = g_tui.view_rows ? g_tui.view_rows - 1 : rows - 1;
+            g_tui.vim_row = key == 'H' ? 0 : key == 'L' ? last : last / 2;
+            g_tui.vim_col = vim_first_text(g_tui.vim_row);
+            break;
+        }
+        case ';': case ',': {
+            if (!g_tui.vim_find_kind) return true;
+            u8 kind = g_tui.vim_find_kind;
+            if (key == ',') {   /* the same search, the other way */
+                static const char flip[] = "fFtT";
+                const char *at = strchr(flip, kind);
+                kind = at ? (u8)flip[(at - flip) ^ 1] : kind;
+            }
+            *inclusive = kind == 'f' || kind == 't';
+            for (u32 i = 0; i < count; i++) {
+                size_t to = vim_col_find(g_tui.vim_row, g_tui.vim_col,
+                                         g_tui.vim_find, kind);
+                if (to == SIZE_MAX) break;
+                g_tui.vim_col = to;
+            }
+            break;
+        }
+        default: return false;
+    }
+    return true;
+}
+
+/* Byte in `input` under a screen cell, false when no composer row painted it. */
+static b8 vim_cell_offset(size_t r, size_t c, size_t *off) {
+    if (r >= TUI_SEL_ROWS || !g_tui.row_input[r]) return false;
+    size_t at = g_tui.row_input_off[r];
+    size_t col = g_tui.row_input_col[r];
+    size_t limit = r + 1 < TUI_SEL_ROWS && g_tui.row_input[r + 1]
+                 ? g_tui.row_input_off[r + 1] : g_tui.input_n;
+    if (limit > g_tui.input_n) limit = g_tui.input_n;
+    while (at < limit && col < c && g_tui.input[at] != '\n') {
+        i32 width = 0;
+        size_t used = glyph(g_tui.input + at, limit - at, &width);
+        at += used;
+        col += width > 0 ? (size_t)width : 0;
+    }
+    *off = at;
+    return true;
+}
+
+static b8 vim_offset(size_t *off) {
+    if (vim_cell_offset(g_tui.vim_row, g_tui.vim_col, off)) return true;
+    tui_notice(STR("read-only: only the composer can be edited"));
+    return false;
+}
+
+static void vim_snapshot(void) {
+    memcpy(g_tui.vim_undo, g_tui.input, g_tui.input_n);
+    g_tui.vim_undo_n = g_tui.input_n;
+    g_tui.vim_undo_cur = g_tui.input_cur;
+    g_tui.vim_undo_valid = true;
+}
+
+/* Whole lines go into the register without their break, so putting them back
+ * can choose which side of the cursor's line they land on. */
+static void vim_yank(size_t a, size_t b, b8 linewise) {
+    if (linewise && b > a && g_tui.input[b - 1] == '\n') b--;
+    g_tui.vim_yank_n = b - a;
+    g_tui.vim_yank_line = linewise;
+    memcpy(g_tui.vim_yank, g_tui.input + a, b - a);
+}
+
+static b8 vim_splice(size_t at, const char *p, size_t n) {
+    if (g_tui.input_n + n + 1 >= sizeof g_tui.input) return false;
+    memmove(g_tui.input + at + n, g_tui.input + at, g_tui.input_n - at);
+    memcpy(g_tui.input + at, p, n);
+    g_tui.input_n += n;
+    g_tui.input[g_tui.input_n] = '\0';
+    return true;
+}
+
+static void vim_cut(size_t a, size_t b, b8 yank) {
+    if (b > g_tui.input_n) b = g_tui.input_n;
+    if (a >= b) return;
+    vim_snapshot();
+    if (yank) vim_yank(a, b, false);
+    memmove(g_tui.input + a, g_tui.input + b, g_tui.input_n - b);
+    g_tui.input_n -= b - a;
+    g_tui.input[g_tui.input_n] = '\0';
+    g_tui.input_cur = a;
+    g_tui.vim_follow = true;
+}
+
+/* p and P. A linewise register opens a line below or above the cursor's,
+ * which is the half of put that dd and yy are useless without. */
+static void vim_put(b8 after, u32 count) {
+    size_t off;
+    if (!vim_offset(&off)) return;
+    size_t n = g_tui.vim_yank_n;
+    if (!n || !count) return;
+    vim_snapshot();
+    if (g_tui.vim_yank_line) {
+        size_t at = after ? line_end(g_tui.input, g_tui.input_n, off)
+                          : line_start(g_tui.input, off);
+        size_t first = after ? at + 1 : at;
+        for (u32 i = 0; i < count; i++) {
+            if (after) {
+                if (!vim_splice(at, "\n", 1)) break;
+                at++;
+                if (!vim_splice(at, g_tui.vim_yank, n)) break;
+                at += n;
+            } else {
+                if (!vim_splice(at, g_tui.vim_yank, n)) break;
+                if (!vim_splice(at + n, "\n", 1)) break;
+                at += n + 1;
+            }
+        }
+        g_tui.input_cur = first < g_tui.input_n ? first : g_tui.input_n;
+    } else {
+        size_t at = after ? next_glyph(g_tui.input, g_tui.input_n, off) : off;
+        for (u32 i = 0; i < count; i++) {
+            if (!vim_splice(at, g_tui.vim_yank, n)) break;
+            at += n;
+        }
+        g_tui.input_cur = prev_glyph(g_tui.input, at);
+    }
+    g_tui.vim_follow = true;
+}
+
+static void vim_undo(void) {
+    if (!g_tui.vim_undo_valid) return;
+    char swap[YOKE_LINE_BUF];
+    size_t swap_n = g_tui.input_n, swap_cur = g_tui.input_cur;
+    memcpy(swap, g_tui.input, swap_n);
+    memcpy(g_tui.input, g_tui.vim_undo, g_tui.vim_undo_n);
+    g_tui.input_n = g_tui.vim_undo_n;
+    g_tui.input_cur = g_tui.vim_undo_cur;
+    g_tui.input[g_tui.input_n] = '\0';
+    memcpy(g_tui.vim_undo, swap, swap_n);   /* u undoes itself, as vim's does */
+    g_tui.vim_undo_n = swap_n;
+    g_tui.vim_undo_cur = swap_cur;
+    g_tui.vim_follow = true;
+}
+
+/* Insert only ever resumes in the composer, and typing into rows that are
+ * scrolled out of view is typing blind, so entering it pins the transcript. */
+static void vim_insert_at(size_t off) {
+    g_tui.vim_mode = VIM_INSERT;
+    g_tui.vim_op = 0;
+    g_tui.vim_await = 0;
+    g_tui.vim_count = 0;
+    g_tui.input_cur = off < g_tui.input_n ? off : g_tui.input_n;
+    g_tui.scroll_rows = 0;
+    sel_clear();
+}
+
+static void vim_enter_insert(i32 c) {
+    size_t off;
+    if (!vim_cell_offset(g_tui.vim_row, g_tui.vim_col, &off))
+        off = g_tui.input_cur;   /* elsewhere on screen: resume where insert left */
+    const char *buf = g_tui.input;
+    size_t n = g_tui.input_n;
+    if (c == 'a') off = next_glyph(buf, n, off);
+    else if (c == 'I') off = line_start(buf, off);
+    else if (c == 'A') off = line_end(buf, n, off);
+    else if (c == 'o' || c == 'O') {
+        size_t at = c == 'o' ? line_end(buf, n, off) : line_start(buf, off);
+        if (n + 1 < sizeof g_tui.input) {
+            vim_snapshot();
+            memmove(g_tui.input + at + 1, g_tui.input + at, n - at);
+            g_tui.input[at] = '\n';
+            g_tui.input_n = n + 1;
+            g_tui.input[g_tui.input_n] = '\0';
+        }
+        off = c == 'o' ? at + 1 : at;
+    }
+    vim_insert_at(off);
+}
+
+/* An operator over the range between two cells. Both have to be composer
+ * cells: a motion that wandered onto the transcript is refused whole rather
+ * than clamped to the part that happened to be editable. */
+static void vim_apply(u8 op, size_t r0, size_t c0, b8 inclusive) {
+    size_t a, b;
+    if (!vim_cell_offset(r0, c0, &a)
+        || !vim_cell_offset(g_tui.vim_row, g_tui.vim_col, &b)) {
+        tui_notice(STR("read-only: only the composer can be edited"));
+        g_tui.vim_row = r0;
+        g_tui.vim_col = c0;
+        return;
+    }
+    if (b < a) { size_t t = a; a = b; b = t; }
+    else if (inclusive) b = next_glyph(g_tui.input, g_tui.input_n, b);
+    if (b <= a) { g_tui.vim_row = r0; g_tui.vim_col = c0; return; }
+    if (op == 'y') {
+        vim_yank(a, b, false);
+        g_tui.input_cur = a;
+        g_tui.vim_follow = true;
+        return;
+    }
+    vim_cut(a, b, true);
+    if (op == 'c') vim_insert_at(a);
+}
+
+/* dd, cc and yy: the composer's logical line, break included for a delete. */
+static void vim_apply_line(u8 op, u32 count) {
+    size_t off;
+    if (!vim_offset(&off)) return;
+    const char *buf = g_tui.input;
+    size_t n = g_tui.input_n;
+    size_t a = line_start(buf, off), b = line_end(buf, n, off);
+    for (u32 i = 1; i < count && b < n; i++) b = line_end(buf, n, b + 1);
+    if (b <= a && op != 'c') return;
+    /* The register holds the lines themselves; the break is only part of what
+     * is removed. A deleted line takes the one after it or, on the last line,
+     * the one before, so no empty row is left where the line was. */
+    vim_yank(a, b, true);
+    if (op == 'y') {
+        g_tui.input_cur = a;
+        g_tui.vim_follow = true;
+        return;
+    }
+    size_t cut_a = a, cut_b = b;
+    if (op != 'c') {
+        if (cut_b < n) cut_b++;
+        else if (cut_a) cut_a--;
+    }
+    vim_cut(cut_a, cut_b, false);
+    if (op == 'c') vim_insert_at(cut_a);
+}
+
+/* iw / aw, the two text objects worth having: they are how a word is changed
+ * without first walking to its start. */
+static void vim_apply_object(u8 op, b8 around) {
+    size_t r = g_tui.vim_row;
+    size_t width = vim_row_cells(r);
+    if (!width || vim_cell_blank(r, g_tui.vim_col)) return;
+    u8 cls = vim_class(r, g_tui.vim_col);
+    size_t floor = vim_row_text_col(r);
+    size_t a = g_tui.vim_col, b = g_tui.vim_col;
+    while (a > floor && vim_class(r, a - 1) == cls) a--;
+    while (b + 1 < width && vim_class(r, b + 1) == cls) b++;
+    if (around) while (b + 1 < width && !vim_class(r, b + 1)) b++;
+    g_tui.vim_row = r;
+    g_tui.vim_col = b;
+    size_t start_row = r, start_col = a;
+    vim_apply(op, start_row, start_col, true);
+}
+
+/* The visual range as composer bytes; false when it reaches outside. */
+static b8 vim_visual_range(size_t *a, size_t *b) {
+    size_t r0, c0, r1, c1;
+    sel_norm(&r0, &c0, &r1, &c1);
+    if (!vim_cell_offset(r0, c0, a) || !vim_cell_offset(r1, c1, b)) return false;
+    if (g_tui.vim_linewise) {
+        *a = line_start(g_tui.input, *a);
+        *b = line_end(g_tui.input, g_tui.input_n, *b);
+    }
+    return *b > *a;
+}
+
+static void vim_visual_cut(b8 insert) {
+    size_t a, b;
+    if (!vim_visual_range(&a, &b)) {
+        tui_notice(STR("read-only: only the composer can be edited"));
+        vim_visual_end();
+        return;
+    }
+    vim_yank(a, b, g_tui.vim_linewise);
+    vim_cut(a, b, false);
+    vim_visual_end();
+    if (insert) vim_insert_at(a);
+}
+
+/* y copies the highlight to the clipboard wherever it is, and doubles as the
+ * register when it happens to lie in the composer. */
+static void vim_visual_yank(void) {
+    size_t a, b;
+    if (vim_visual_range(&a, &b)) vim_yank(a, b, g_tui.vim_linewise);
+    sel_copy();
+    vim_visual_end();
+}
+
+/* Replace, join and toggle case: single-key edits with no motion to resolve. */
+static void vim_replace_char(i32 c) {
+    size_t off;
+    if (!vim_offset(&off)) return;
+    size_t end = next_glyph(g_tui.input, g_tui.input_n, off);
+    if (end <= off || c < 0x20) return;
+    vim_snapshot();
+    size_t room = g_tui.input_n - (end - off) + 1;
+    if (room + 1 >= sizeof g_tui.input) return;
+    memmove(g_tui.input + off + 1, g_tui.input + end, g_tui.input_n - end);
+    g_tui.input[off] = (char)c;
+    g_tui.input_n = room;
+    g_tui.input[g_tui.input_n] = '\0';
+    g_tui.vim_follow = true;
+}
+
+static void vim_toggle_case(u32 count) {
+    size_t off;
+    if (!vim_offset(&off)) return;
+    vim_snapshot();
+    for (u32 i = 0; i < count && off < g_tui.input_n; i++) {
+        char ch = g_tui.input[off];
+        if (ch >= 'a' && ch <= 'z') g_tui.input[off] = (char)(ch - 32);
+        else if (ch >= 'A' && ch <= 'Z') g_tui.input[off] = (char)(ch + 32);
+        off = next_glyph(g_tui.input, g_tui.input_n, off);
+    }
+    g_tui.input_cur = off;
+    g_tui.vim_follow = true;
+}
+
+static void vim_join(void) {
+    size_t off;
+    if (!vim_offset(&off)) return;
+    size_t at = line_end(g_tui.input, g_tui.input_n, off);
+    if (at >= g_tui.input_n) return;
+    vim_snapshot();
+    size_t skip = at + 1;
+    while (skip < g_tui.input_n
+           && (g_tui.input[skip] == ' ' || g_tui.input[skip] == '\t')) skip++;
+    memmove(g_tui.input + at + 1, g_tui.input + skip, g_tui.input_n - skip);
+    g_tui.input_n -= skip - at - 1;
+    g_tui.input[at] = ' ';
+    g_tui.input[g_tui.input_n] = '\0';
+    g_tui.input_cur = at;
+    g_tui.vim_follow = true;
+}
+
+/* ':' opens yoke's own command line rather than an ex one: same commands the
+ * popup lists, spelled the way a vim user reaches for them. */
+static void vim_command_line(void) {
+    if (g_tui.input_n) return;
+    g_tui.input[0] = ':';
+    g_tui.input_n = 1;
+    vim_insert_at(1);
+    completion_refresh();
+}
+
+static void vim_reset_pending(void) {
+    g_tui.vim_op = 0;
+    g_tui.vim_await = 0;
+    g_tui.vim_count = 0;
+}
+
+/* Escape sequences keep the meaning they have in insert: arrows are motions,
+ * the wheel and the page keys scroll, and the mouse still selects. */
+static void vim_escape(void) {
+    i32 key = read_escape();
+    size_t rows = vim_rows();
+    b8 inclusive = false;
+    switch (key) {
+        case KEY_LEFT:  vim_motion('h', 1, true, &inclusive); break;
+        case KEY_RIGHT: vim_motion('l', 1, true, &inclusive); break;
+        case KEY_UP:    vim_motion('k', 1, true, &inclusive); break;
+        case KEY_DOWN:  vim_motion('j', 1, true, &inclusive); break;
+        case KEY_HOME:  vim_motion('0', 1, true, &inclusive); break;
+        case KEY_END:   vim_motion('$', 1, true, &inclusive); break;
+        case KEY_PREV_WORD: vim_motion('b', 1, true, &inclusive); break;
+        case KEY_NEXT_WORD: vim_motion('w', 1, true, &inclusive); break;
+        case KEY_PAGE_UP:   vim_scroll((i64)(rows > 4 ? rows - 4 : 1)); break;
+        case KEY_PAGE_DOWN: vim_scroll(-(i64)(rows > 4 ? rows - 4 : 1)); break;
+        case KEY_WHEEL_UP:   vim_scroll(3); break;
+        case KEY_WHEEL_DOWN: vim_scroll(-3); break;
+        case KEY_MOUSE_DOWN:
+            /* A click is also how the cell cursor is thrown across the
+             * screen, so pointer and keyboard drive the same one. */
+            sel_begin(g_mouse_row, g_mouse_col);
+            g_tui.vim_row = g_tui.sel_ar;
+            g_tui.vim_col = g_tui.sel_ac;
+            if (g_tui.vim_mode == VIM_VISUAL) vim_visual_end();
+            vim_clamp();
+            return;
+        case KEY_MOUSE_DRAG: sel_extend(g_mouse_row, g_mouse_col); return;
+        case KEY_MOUSE_UP:   sel_finish(); return;
+        case KEY_NONE:
+            /* Esc unwinds one thing at a time, innermost first. */
+            if (g_tui.vim_op || g_tui.vim_await || g_tui.vim_count)
+                vim_reset_pending();
+            else if (g_tui.vim_mode == VIM_VISUAL) vim_visual_end();
+            else if (g_tui.notice_n) g_tui.notice_n = 0;
+            else if (g_tui.busy && g_tui.interrupt) *g_tui.interrupt = 1;
+            return;
+        default: return;
+    }
+    vim_clamp();
+    vim_sel_sync();
+}
+
+/* One key in normal or visual mode. Insert never reaches here. */
+static EdAction vim_key(i32 c) {
+    if (c == '\r' || c == '\n') { vim_reset_pending(); return ED_SUBMIT; }
+    if (c == 0x0c) { g_tui.frame_valid = false; return ED_EDIT; }
+    if (c == 0x1b) { vim_escape(); return ED_EDIT; }
+
+    /* A key the previous one asked for: a find target, a replacement, the
+     * second half of "gg", or a text object. */
+    if (g_tui.vim_await) {
+        u8 await = g_tui.vim_await;
+        u8 op = g_tui.vim_op;
+        u32 count = g_tui.vim_count ? g_tui.vim_count : 1;
+        g_tui.vim_await = 0;
+        if (await == 'g') {
+            vim_reset_pending();
+            if (c == 'g') {
+                vim_scroll((i64)g_tui.view_max_scroll);
+                g_tui.vim_row = 0;
+                g_tui.vim_col = vim_first_text(0);
+            }
+        } else if (await == 'r') {
+            vim_reset_pending();
+            vim_replace_char(c);
+        } else if (await == 'i' || await == 'a') {
+            vim_reset_pending();
+            if (c == 'w' && op) vim_apply_object(op, await == 'a');
+        } else {   /* f, F, t or T */
+            g_tui.vim_find = (char)c;
+            g_tui.vim_find_kind = await;
+            vim_reset_pending();
+            size_t r0 = g_tui.vim_row, c0 = g_tui.vim_col;
+            b8 inclusive = false;
+            vim_motion(';', count, !op, &inclusive);
+            if (op && (g_tui.vim_row != r0 || g_tui.vim_col != c0))
+                vim_apply(op, r0, c0, inclusive);
+        }
+        vim_clamp();
+        vim_sel_sync();
+        return ED_EDIT;
+    }
+
+    /* Counts: a leading zero is still the start-of-line motion. */
+    if (c >= '0' && c <= '9' && !(c == '0' && !g_tui.vim_count)) {
+        if (g_tui.vim_count < 10000)
+            g_tui.vim_count = g_tui.vim_count * 10 + (u32)(c - '0');
+        return ED_EDIT;
+    }
+
+    b8 visual = g_tui.vim_mode == VIM_VISUAL;
+    u32 count = g_tui.vim_count ? g_tui.vim_count : 1;
+    u8 op = g_tui.vim_op;
+    size_t rows = vim_rows();
+
+    /* An operator repeated is the linewise form: dd, cc, yy. */
+    if (op && c == (i32)op) {
+        vim_reset_pending();
+        vim_apply_line(op, count);
+        vim_clamp();
+        return ED_EDIT;
+    }
+
+    /* Motions serve navigation and operators alike. */
+    size_t r0 = g_tui.vim_row, c0 = g_tui.vim_col;
+    b8 inclusive = false;
+    if (vim_motion(c, count, !op, &inclusive)) {
+        g_tui.vim_count = 0;
+        if (op) {
+            g_tui.vim_op = 0;
+            vim_apply(op, r0, c0, inclusive);
+        }
+        vim_clamp();
+        vim_sel_sync();
+        return ED_EDIT;
+    }
+
+    switch (c) {
+        case 'f': case 'F': case 't': case 'T':
+        case 'r': case 'g':
+            g_tui.vim_await = (u8)c;
+            return ED_EDIT;
+        case 'i': case 'a':
+            if (op) { g_tui.vim_await = (u8)c; return ED_EDIT; }
+            vim_enter_insert(c);
+            return ED_EDIT;
+        case 'd': case 'c': case 'y':
+            if (!visual) {
+                g_tui.vim_op = (u8)c;
+                return ED_EDIT;
+            }
+            if (c == 'y') vim_visual_yank();
+            else vim_visual_cut(c == 'c');
+            break;
+        case 'G':
+            vim_scroll(-(i64)g_tui.view_max_scroll);
+            g_tui.vim_row = g_tui.view_rows ? g_tui.view_rows - 1 : 0;
+            break;
+        case 0x15: vim_scroll((i64)(rows / 2)); break;    /* ctrl-u */
+        case 0x04: vim_scroll(-(i64)(rows / 2)); break;   /* ctrl-d */
+        case 0x02: vim_scroll((i64)rows); break;          /* ctrl-b */
+        case 0x06: vim_scroll(-(i64)rows); break;         /* ctrl-f */
+        case 0x05: vim_scroll(-1); break;                 /* ctrl-e */
+        case 0x19: vim_scroll(1); break;                  /* ctrl-y */
+        case 'v': case 'V':
+            if (visual && g_tui.vim_linewise == (c == 'V')) vim_visual_end();
+            else {
+                g_tui.vim_mode = VIM_VISUAL;
+                g_tui.vim_linewise = c == 'V';
+                g_tui.sel_ar = g_tui.vim_row;
+                g_tui.sel_ac = g_tui.vim_col;
+            }
+            break;
+        case 'o':
+            if (visual) {   /* swap the ends, so the other one can be moved */
+                size_t r = g_tui.sel_ar, k = g_tui.sel_ac;
+                g_tui.sel_ar = g_tui.vim_row;
+                g_tui.sel_ac = g_tui.vim_col;
+                g_tui.vim_row = r;
+                g_tui.vim_col = k;
+            } else vim_enter_insert(c);
+            break;
+        case 'I': case 'A': case 'O':
+            vim_enter_insert(c);
+            return ED_EDIT;
+        case 'x': case 'X': case 's':
+            if (visual) { vim_visual_cut(c == 's'); break; }
+            else {
+                size_t off;
+                if (!vim_offset(&off)) break;
+                size_t a = off, b = off;
+                for (u32 i = 0; i < count; i++) {
+                    if (c == 'X') a = prev_glyph(g_tui.input, a);
+                    else b = next_glyph(g_tui.input, g_tui.input_n, b);
+                }
+                vim_cut(a, b, true);
+                if (c == 's') vim_insert_at(a);
+            }
+            break;
+        case 'S': vim_apply_line('c', count); break;
+        case 'D': case 'C': {
+            size_t off;
+            if (!vim_offset(&off)) break;
+            vim_cut(off, line_end(g_tui.input, g_tui.input_n, off), true);
+            if (c == 'C') vim_insert_at(off);
+            break;
+        }
+        case 'Y': vim_apply_line('y', count); break;
+        case 'p': case 'P': vim_put(c == 'p', count); break;
+        case '~': vim_toggle_case(count); break;
+        case 'J': vim_join(); break;
+        case 'u': vim_undo(); break;
+        case ':': vim_command_line(); return ED_EDIT;
+        default: break;
+    }
+
+    vim_reset_pending();
+    vim_clamp();
+    vim_sel_sync();
+    return ED_EDIT;
+}
+
 /* Apply one input byte to the shared composer. The caller decides whether a
  * submit is honoured, so the same editor drives both the prompt and the
  * keep-typing-while-busy path. */
 static EdAction editor_key(i32 c) {
+    if (g_tui.vim && g_tui.vim_mode != VIM_INSERT) return vim_key(c);
+
     char *buf = g_tui.input;
     const size_t cap = sizeof g_tui.input;
     size_t n = g_tui.input_n, cur = g_tui.input_cur;
@@ -1887,6 +2859,16 @@ static EdAction editor_key(i32 c) {
             completion_move(key == KEY_DOWN ? 1 : -1);
         } else if (key == KEY_UP || key == KEY_DOWN) {
             recalled = history_recall(key == KEY_UP ? -1 : 1, buf, &n, &cur);
+        } else if (key == KEY_NONE && g_tui.vim) {
+            /* Esc always ends insert: a mode that sometimes survives it is
+             * worse than no mode at all, so an open popup closes with it
+             * rather than eating the key. Cancelling a turn is then Ctrl-C's
+             * job, or a second Esc once normal mode has it. */
+            g_tui.comp_n = 0;
+            g_tui.comp_dismissed = true;
+            g_tui.vim_mode = VIM_NORMAL;
+            g_tui.vim_follow = true;
+            if (cur > 0 && buf[cur - 1] != '\n') cur = prev_glyph(buf, cur);
         } else if (key == KEY_NONE && g_tui.comp_n) {
             g_tui.comp_dismissed = true;   /* bare Esc closes the popup */
         } else if (key == KEY_NONE && g_tui.notice_n) {

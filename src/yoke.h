@@ -369,6 +369,13 @@ void tui_set_commands(const TuiCmd *cmds, size_t n);
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, size_t *out);
 /* Composer history for Up/Down recall; NULL disables it. */
 void tui_set_history(History *h);
+/* Vim keys, off until /vim turns them on. Normal and visual drive a cursor
+ * over the whole painted frame, the plane mouse selection already works in,
+ * so the transcript is navigable and yankable; insert is the composer alone,
+ * and editing keys aimed anywhere else are refused with a notice. Turning it
+ * on starts in normal mode, and the notice row names the current one. */
+void tui_set_vim(b8 on);
+b8   tui_vim(void);
 void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count);
 /* The model the status line names; the string must outlive the call. */
 void tui_set_model(Str model);
