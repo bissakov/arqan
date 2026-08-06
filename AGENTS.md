@@ -107,8 +107,16 @@ and the runner executes them in parallel; `-j 1` forces one at a time when
 debugging.
 
 A failing test means the source is wrong until proven otherwise. Do not
-relax an assertion to match clunky behaviour: fix it in `src/`, then keep the
+relax an assertion to match wrong behaviour: fix it in `src/`, then keep the
 test as the regression.
+
+**No throwaway tests.** Do not verify behavior with one-off `bash`
+invocations, temporary scripts, or scratch programs that live outside
+`tests/`. Every regression check for the TUI goes into `tests/` as a proper
+case so it runs under `make test`, is isolated like the rest, and stays
+reproducible. Ad-hoc commands are fine for exploration, but anything meant
+to prove a behavior is correct — or keep it correct — must be recorded as a
+test case, not left as a transient shell snippet.
 
 ## End of task
 
