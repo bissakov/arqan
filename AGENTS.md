@@ -193,6 +193,40 @@ reproducible. Ad-hoc commands are fine for exploration, but anything meant
 to prove a behavior is correct — or keep it correct — must be recorded as a
 test case, not left as a transient shell snippet.
 
+## Comments & documentation
+
+Comments and docs are slop-free or absent. A comment earns its place by saying
+something the code cannot: why a constant has that value, which invariant a
+branch protects, what a wire format looks like. If the code already says it,
+delete the comment. When touching a file, remove restatements you find rather
+than leaving them.
+
+Banned outright:
+
+- Verbosity: preamble, hedging, and words that carry nothing.
+- Awkward or padded phrasing.
+- Em dash, en dash, smart quotes, ellipsis character, arrows, checkmarks, emoji.
+  Use ASCII: `-`, `"`, `'`, `...`, `->`.
+- Repeating information that already exists elsewhere in the file, the header,
+  or this document.
+- Runs of short sentences that a single `and` would join.
+
+Write full sentences with a capital and a period, present tense, active voice,
+and keep them within the file's line width. Doc comments in `src/yoke.h`
+describe contracts: ownership, arena used, what a failure returns. They do not
+narrate the implementation.
+
+```c
+/* Bad */
+/* Loop over the messages and process each one. */
+/* This function -> returns the tool id. */
+
+/* Good */
+/* Slot 0 holds the prose; every later slot carries one tool_call_id. */
+```
+
+The same rules apply to `README`s, `tests/README.md`, and commit messages.
+
 ## End of task
 
 - Never add attributions to AI agents (or any automated tooling) in commit messages, PR
