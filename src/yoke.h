@@ -51,6 +51,9 @@ typedef bool     b8;
 #define YOKE_MAX_HISTORY_LINE (1u << 16)  /* longest prompt worth remembering  */
 #define YOKE_MAX_HISTORY_BYTES (8u << 20) /* largest history file we will read */
 #define YOKE_MAX_CONFIG_FILES 8           /* XDG config candidates we consider */
+#define YOKE_MAX_SESSIONS     64          /* saved sessions the picker offers  */
+#define YOKE_MAX_SESSION_BYTES (32u << 20)/* largest session file we will read */
+#define YOKE_MAX_POPUP        64          /* entries the popup can hold        */
 
 /* ---- arenas ------------------------------------------------------------- */
 typedef struct {
@@ -264,6 +267,50 @@ b8      conv_is_call(const Conv *c, size_t i);
 size_t  conv_room(const Conv *c);
 void    conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg);
 
+/* ---- sessions ------------------------------------------------------------
+ * The conversation as it happened, one JSON object per line under
+ * $XDG_DATA_HOME/yoke/sessions/<cwd>/<timestamp>.jsonl. Sessions are keyed by
+ * the directory yoke was launched in: that is the unit of work, so browsing
+ * from one project never surfaces another's.
+ *
+ * Paths live in the struct instead of an arena because /clear rewinds the
+ * session arena and the file the next message appends to has to outlive it.
+ */
+typedef struct {
+    char   dir_buf[YOKE_MAX_PATH];
+    char   path_buf[YOKE_MAX_PATH];
+    char   name_buf[32];
+    Str    dir;      /* per-cwd directory; empty when no XDG base resolves  */
+    Str    path;     /* live session file; empty disables persistence       */
+    Str    name;     /* its file name                                       */
+    size_t written;  /* conversation slots already on disk                  */
+} Session;
+
+/* SoA, like every other collection: the picker only reads names and previews. */
+typedef struct {
+    Str   *name;     /* [n] timestamp label, newest first                   */
+    Str   *path;     /* [n] nul-terminated file path                        */
+    Str   *preview;  /* [n] first prompt of the session, one line           */
+    size_t n;
+} SessionList;
+
+b8     session_init(Session *s, Arena *scratch);   /* resolve the cwd's dir  */
+b8     session_begin(Session *s);                  /* new timestamped file   */
+/* Append the messages produced since the last call; the file is created on
+ * the first one, so an untouched session never reaches the picker. */
+void   session_save(Session *s, const Conv *c);
+size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max);
+/* Reading is separate from replaying: replaying rewinds the live conversation
+ * and overwrites its storage, so whether the file can be read at all has to
+ * be known before anything is thrown away. `session_read` returns the raw
+ * contents in `scratch` (empty when unreadable); `session_apply` replays them
+ * into a conversation the caller has rewound to its system prompt and
+ * continues appending to that file. False means the conversation filled up
+ * and holds only part of the session. */
+Str    session_read(Str path, Arena *scratch);
+b8     session_apply(Session *s, Str src, Str path, Str name, Conv *c,
+                     Arena *persist, Arena *scratch);
+
 /* ---- provider ----------------------------------------------------------- */
 typedef struct {
     const Config      *cfg;
@@ -295,6 +342,10 @@ i32     provider_run(Provider *p, char *err, size_t err_cap);
  * owned by the caller (static storage) and only read by the TUI. */
 typedef struct { Str name; Str desc; } TuiCmd;
 void tui_set_commands(const TuiCmd *cmds, size_t n);
+/* Modal picker: the completion popup, driven over a caller-owned list instead
+ * of the command table. Enter chooses (index in *out), Esc/Ctrl-C cancels.
+ * Returns false when nothing was chosen or there is no fullscreen UI. */
+b8 tui_pick(const TuiCmd *items, size_t n, size_t *out);
 /* Composer history for Up/Down recall; NULL disables it. */
 void tui_set_history(History *h);
 void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count);
@@ -302,6 +353,10 @@ void tui_stop(void);
 void tui_set_status(const char *status);
 void tui_set_context_tokens(size_t tokens);
 void tui_clear(void);
+/* One line where the completion popup would be: the answer to a command that
+ * opened no popup, retired by the next keystroke. Empty clears it. The
+ * transcript is the conversation, so this never lands in it. */
+void tui_notice(Str msg);
 void tui_write(Str s);
 /* Append a user turn: rendered as a padded block with its own background,
  * which is what marks it apart from the agent's own output. */

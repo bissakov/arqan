@@ -108,13 +108,14 @@ class Ctx:
         cols: int = DEFAULT_COLS,
         rows: int = DEFAULT_ROWS,
         wait: bool = True,
+        cwd: str | None = None,
         **env_overrides,
     ) -> Session:
         """Start `yoke` on a pty and wait for the first frame."""
         s = Session(
             [str(BIN)],
             env=self.env(**env_overrides),
-            cwd=str(self.work),
+            cwd=cwd or str(self.work),
             cols=cols,
             rows=rows,
             name=self.case,

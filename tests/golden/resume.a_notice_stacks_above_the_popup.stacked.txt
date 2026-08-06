@@ -1,7 +1,6 @@
 --- screen 80x24 ---
 |
 |
-|
 |                                          _
 |                              _   _  ___ | | _____
 |                             | | | |/ _ \| |/ / _ \
@@ -15,6 +14,7 @@
 |
 |
 |
+|    no saved sessions in this directory
 |  › /clear   Start a fresh conversation
 |    /resume  Resume a saved session from this directory
 |    /exit    Quit yoke

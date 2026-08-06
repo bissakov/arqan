@@ -104,10 +104,15 @@ typedef struct {
      * of it the popup is currently showing. */
     const TuiCmd *cmds;
     size_t cmd_n;
-    u16 comp_idx[YOKE_MAX_COMMANDS];   /* matches, as indices into cmds       */
+    u16 comp_idx[YOKE_MAX_POPUP];      /* matches, as indices into cmds       */
     size_t comp_n;
     size_t comp_sel;
     b8 comp_dismissed;               /* Esc/Tab closed it until text changes */
+    /* A one-line answer to the last command, stacked above the popup (and so,
+     * with no popup, exactly where one would have been). The transcript is the
+     * conversation, and "there is nothing to pick from" is not part of it. */
+    char notice[160];
+    size_t notice_n;
     /* Prompt history recall: `draft` holds the text the first Up displaced. */
     History *hist;
     char draft[YOKE_LINE_BUF];
@@ -844,6 +849,29 @@ static size_t popup_name_cells(size_t first, size_t rows) {
     return widest + 4;   /* "\u203a " marker plus a two-cell gap */
 }
 
+/* The popup slot answering a command that opened no popup. */
+static void update_notice_row(size_t screen_row, Str text, size_t screen_col,
+                              size_t screen_cols, size_t body_cols, b8 force) {
+    u64 hash = row_hash(STR("notice"), text, ROW_POPUP);
+    size_t sel_c0, sel_c1;
+    sel_row_range(screen_row, &sel_c0, &sel_c1);
+    hash = hash_add(hash, &sel_c0, sizeof sel_c0);
+    hash = hash_add(hash, &sel_c1, sizeof sel_c1);
+    if (!row_changed(screen_row, hash, force)) return;
+
+    cup(screen_row, 1);
+    put_str(S_RESET "\033[2K");
+    style(S_POPUP_BG);
+    pad_row(0, screen_cols);
+    cup(screen_row, screen_col);
+    style(S_POPUP_BG S_YELLOW);
+    size_t used = 0;
+    put_safe_clipped(STR("  "), body_cols, &used);
+    if (used < body_cols) put_safe_clipped(text, body_cols - used, &used);
+    paint_sel_tail(screen_row, screen_cols);
+    style(S_RESET);
+}
+
 static void paint_completions(size_t top_row, size_t rows, size_t screen_col,
                               size_t screen_cols, size_t body_cols, b8 force) {
     if (!rows) return;
@@ -1011,10 +1039,17 @@ static void repaint(void) {
      * leaves one transcript row so the view never collapses entirely. */
     size_t body_rows = rows > composer_rows + chrome_rows
                      ? rows - composer_rows - chrome_rows : 1;
+    /* Overlays stack upward from the composer: notice, then popup, then the
+     * composer itself. They eat into the transcript, never into the composer,
+     * and always leave it one row so the view never collapses entirely. */
     size_t popup_rows = g_tui.comp_n < TUI_POPUP_ROWS
                       ? g_tui.comp_n : TUI_POPUP_ROWS;
-    if (popup_rows + 1 > body_rows) popup_rows = body_rows > 1 ? body_rows - 1 : 0;
-    size_t transcript_rows = body_rows - popup_rows;
+    size_t notice_rows = g_tui.notice_n ? 1 : 0;
+    size_t overlay_cap = body_rows > 1 ? body_rows - 1 : 0;
+    if (popup_rows > overlay_cap) popup_rows = overlay_cap;
+    if (notice_rows + popup_rows > overlay_cap)
+        notice_rows = overlay_cap - popup_rows;
+    size_t transcript_rows = body_rows - popup_rows - notice_rows;
     if (transcript_rows < 1) transcript_rows = 1;
 
     /* Transcript, pinned to its bottom unless PageUp has moved the viewport. */
@@ -1036,14 +1071,18 @@ static void repaint(void) {
     }
     paint_scrollbar(first, all_rows, transcript_rows, cols, force);
 
-    /* Completion popup, sitting between the transcript and the composer. */
-    paint_completions(transcript_rows + 1, popup_rows, body_col, cols,
-                      body_cols, force);
+    /* The overlays, in that order, between the transcript and the composer. */
+    if (notice_rows)
+        update_notice_row(transcript_rows + 1,
+                          (Str){ g_tui.notice, g_tui.notice_n }, body_col, cols,
+                          body_cols, force);
+    paint_completions(transcript_rows + notice_rows + 1, popup_rows, body_col,
+                      cols, body_cols, force);
 
     /* Composer, including one quiet row of breathing room on each side. */
     size_t input_first = cursor_row >= composer_rows
                        ? cursor_row - composer_rows + 1 : 0;
-    size_t composer_top_row = transcript_rows + popup_rows + 1;
+    size_t composer_top_row = transcript_rows + notice_rows + popup_rows + 1;
     size_t composer_screen_row = composer_top_row + composer_padding;
     if (composer_padding)
         update_text_row(composer_top_row, (Str){0}, (Str){0}, body_col,
@@ -1268,7 +1307,21 @@ void tui_set_context_tokens(size_t tokens) {
     repaint();
 }
 
+/* A single line where the popup would be, retired by the next keystroke.
+ * An empty message just clears it. */
+void tui_notice(Str msg) {
+    if (!g_tui.fullscreen) {   /* no popup slot to answer in: say it plainly */
+        if (msg.n) { tui_write(msg); tui_write(STR("\n")); }
+        return;
+    }
+    size_t n = msg.n < sizeof g_tui.notice ? msg.n : sizeof g_tui.notice;
+    if (n) memcpy(g_tui.notice, msg.p, n);
+    g_tui.notice_n = n;
+    repaint();
+}
+
 void tui_clear(void) {
+    g_tui.notice_n = 0;
     g_tui.transcript_n = 0;
     g_tui.user_n = 0;
     wrap_invalidate();
@@ -1289,6 +1342,8 @@ void tui_write(Str s) {
      * a pending resize, so an empty write still costs nothing here. */
     tui_poll_input();
     if (!s.p || s.n == 0) return;
+    /* Transcript output answers whatever the notice was about. */
+    g_tui.notice_n = 0;
     /* New output shifts the rows a highlight was drawn over; only an active
      * drag keeps it, since the pointer is still choosing the range. */
     if (!g_tui.sel_drag) sel_clear();
@@ -1587,6 +1642,57 @@ void tui_set_commands(const TuiCmd *cmds, size_t n) {
     g_tui.cmd_n = n < YOKE_MAX_COMMANDS ? n : YOKE_MAX_COMMANDS;
 }
 
+/* A modal list over the same popup the composer completes with: same rows,
+ * same highlight, same keys. Only the source of the entries differs, so the
+ * popup is swapped in and the composer's own state restored on the way out —
+ * text typed before the picker opened is still there afterwards. */
+b8 tui_pick(const TuiCmd *items, size_t n, size_t *out) {
+    if (!g_tui.fullscreen || !items || !n || !out) return false;
+    if (n > YOKE_MAX_POPUP) n = YOKE_MAX_POPUP;
+
+    const TuiCmd *saved_cmds = g_tui.cmds;
+    size_t saved_cmd_n = g_tui.cmd_n;
+    b8 saved_dismissed = g_tui.comp_dismissed;
+    char saved_status[sizeof g_tui.status];
+    memcpy(saved_status, g_tui.status, sizeof saved_status);
+
+    g_tui.cmds = items;
+    g_tui.cmd_n = n;
+    g_tui.comp_n = n;
+    g_tui.comp_sel = 0;
+    for (size_t i = 0; i < n; i++) g_tui.comp_idx[i] = (u16)i;
+    tui_set_status("pick a session");   /* repaints */
+
+    b8 chosen = false;
+    for (;;) {
+        i32 c = rbyte();
+        if (c == -3) { repaint(); continue; }
+        /* -2 is a signal that is not a resize — SIGINT while picking, which
+         * cancels here just as it abandons a draft at the prompt. */
+        if (c < 0 || c == 0x03 || c == 0x04) break;   /* EOF / signal / Ctrl-D */
+        if (c == '\r' || c == '\n') { *out = g_tui.comp_sel; chosen = true; break; }
+        if (c == 0x0e) completion_move(1);
+        else if (c == 0x10) completion_move(-1);
+        else if (c == 0x1b) {
+            i32 key = read_escape();
+            if (key == KEY_DOWN) completion_move(1);
+            else if (key == KEY_UP) completion_move(-1);
+            else if (key == KEY_NONE) break;          /* bare Esc cancels */
+        }
+        repaint();
+    }
+
+    g_tui.cmds = saved_cmds;
+    g_tui.cmd_n = saved_cmd_n;
+    g_tui.comp_dismissed = saved_dismissed;
+    /* The match list described the picker's entries; rebuild it from whatever
+     * the composer still holds. */
+    completion_refresh();
+    memcpy(g_tui.status, saved_status, sizeof saved_status);
+    repaint();
+    return chosen;
+}
+
 /* What a keystroke asked the caller to do; edits are already applied. */
 typedef enum { ED_EDIT = 0, ED_SUBMIT, ED_EOF } EdAction;
 
@@ -1692,6 +1798,8 @@ static EdAction editor_key(i32 c) {
             recalled = history_recall(key == KEY_UP ? -1 : 1, buf, &n, &cur);
         } else if (key == KEY_NONE && g_tui.comp_n) {
             g_tui.comp_dismissed = true;   /* bare Esc closes the popup */
+        } else if (key == KEY_NONE && g_tui.notice_n) {
+            g_tui.notice_n = 0;            /* … and then the notice above it */
         } else if (key == KEY_NONE && g_tui.busy && g_tui.interrupt) {
             /* Nothing to dismiss and a turn is running: Esc cancels it, the
              * same way Ctrl-C does, without touching the composed text. */
@@ -1717,7 +1825,11 @@ static EdAction editor_key(i32 c) {
     return action;
 }
 
+/* Called when a line is submitted or abandoned: the notice answered the last
+ * command, so the next one retires it. Keystrokes leave it alone — it has a
+ * row of its own and does not fight the popup for it. */
 static void composer_clear(void) {
+    g_tui.notice_n = 0;
     g_tui.input[0] = '\0';
     g_tui.input_n = 0;
     g_tui.input_cur = 0;

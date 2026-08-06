@@ -19,6 +19,7 @@
 #include "config.c"
 #include "tools.c"
 #include "provider.c"
+#include "session.c"
 #include "tui.c"
 
 #include <stdio.h>
@@ -40,6 +41,7 @@ static TuiCmd g_commands[YOKE_MAX_COMMANDS];
 static size_t commands_init(void) {
     size_t n = 0;
     g_commands[n++] = (TuiCmd){ STR("/clear"), STR("Start a fresh conversation") };
+    g_commands[n++] = (TuiCmd){ STR("/resume"), STR("Resume a saved session from this directory") };
     g_commands[n++] = (TuiCmd){ STR("/exit"), STR("Quit yoke") };
     return n;
 }
@@ -98,6 +100,81 @@ static b8 run_tool_calls(ToolRegistry *reg, Conv *conv, Arena *scratch,
     return true;
 }
 
+/* Repaint a resumed conversation: the transcript is a rendering of the
+ * messages, so replaying them is the same code path a live turn takes. */
+static void render_conv(const Conv *c) {
+    for (size_t i = 0; i < c->n; i++) {
+        switch (c->role[i]) {
+            case M_SYSTEM: break;
+            case M_USER: tui_write_user(c->text[i]); break;
+            case M_TOOL:
+                tui_write(STR("Result\n"));
+                tui_write(str_take(c->text[i], 400));
+                if (c->text[i].n > 400)
+                    tui_write(STR("\n… output truncated in transcript"));
+                tui_write(STR("\n"));
+                break;
+            case M_ASSISTANT:
+                if (conv_is_call(c, i)) {
+                    tui_write(STR("\nTool · "));
+                    tui_write(c->tool_name[i]);
+                    tui_write(STR("\n"));
+                    tui_write(c->text[i]);
+                    tui_write(STR("\n"));
+                } else if (c->text[i].n) {
+                    tui_write(c->text[i]);
+                    tui_write(STR("\n\n"));
+                }
+                break;
+        }
+    }
+}
+
+/* Offer the saved sessions for this directory and resume the chosen one.
+ * Nothing to open leaves the view exactly as it was — welcome screen included
+ * — and answers in the popup's own slot: a session that did not open is not
+ * part of the conversation, so it has no business in the transcript. */
+static void resume_session(Session *sess, Conv *conv, Arena *persist,
+                           Arena *scratch, size_t session_mark) {
+    arena_reset(scratch);
+    SessionList list;
+    size_t n = session_list(sess, scratch, &list, YOKE_MAX_SESSIONS);
+    if (!n) {
+        tui_notice(STR("no saved sessions in this directory"));
+        arena_reset(scratch);
+        return;
+    }
+    TuiCmd *items = arena_new(scratch, TuiCmd, n);
+    if (!items) {
+        tui_notice(STR("out of memory listing sessions"));
+        arena_reset(scratch);
+        return;
+    }
+    for (size_t i = 0; i < n; i++)
+        items[i] = (TuiCmd){ list.name[i], list.preview[i] };
+
+    size_t pick = 0;
+    if (!tui_pick(items, n, &pick)) { arena_reset(scratch); return; }
+
+    /* Read first: replaying rewinds the conversation and overwrites its
+     * storage, so a session that cannot be read must not cost the one that is
+     * running — the view stays exactly as it was. */
+    Str src = session_read(list.path[pick], scratch);
+    if (!src.n) {
+        tui_notice(STR("could not read that session"));
+        arena_reset(scratch);
+        return;
+    }
+    conv->n = 1;
+    persist->off = session_mark;
+    b8 whole = session_apply(sess, src, list.path[pick], list.name[pick], conv,
+                             persist, scratch);
+    tui_clear();
+    render_conv(conv);
+    if (!whole) tui_notice(STR("session truncated: the conversation is full"));
+    arena_reset(scratch);
+}
+
 i32 main(i32 argc, char **argv) {
     (void)argc; (void)argv;
 
@@ -137,6 +214,13 @@ i32 main(i32 argc, char **argv) {
     conv_add(&conv, M_SYSTEM, cfg.system_prompt);
     size_t session_mark = persist.off;
 
+    /* Sessions are per working directory; without a resolvable data dir the
+     * conversation simply is not persisted. */
+    static Session sess;
+    session_init(&sess, &scratch);
+    arena_reset(&scratch);
+    session_begin(&sess);
+
     /* SIGINT cancels line editing or the active provider request. */
     struct sigaction sa = {0}; sa.sa_handler = on_sigint;
     sigemptyset(&sa.sa_mask); sa.sa_flags = 0;
@@ -164,7 +248,12 @@ i32 main(i32 argc, char **argv) {
             conv.n = 1;
             persist.off = session_mark;
             arena_reset(&scratch);
+            session_begin(&sess);   /* the next message starts a new file */
             tui_clear();
+            continue;
+        }
+        if (!strcmp(line, "/resume")) {
+            resume_session(&sess, &conv, &persist, &scratch, session_mark);
             continue;
         }
 
@@ -178,6 +267,7 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
         tui_write_user((Str){ line, ln });
+        session_save(&sess, &conv);
 
         /* agent loop: keep running until the model emits no tool calls.
          * The composer stays editable throughout; only submitting waits. */
@@ -237,6 +327,7 @@ i32 main(i32 argc, char **argv) {
             tui_write(STR("\n"));
         }
         tui_set_busy(false);
+        session_save(&sess, &conv);
     }
 
     tui_stop();

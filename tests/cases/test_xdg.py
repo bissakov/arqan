@@ -1,8 +1,25 @@
 """XDG Base Directory compliance: where settings and state land.
 
-Settings come from the config dirs and prompt history lives in the state dir,
-so nothing yoke owns is written straight into $HOME.
+Settings come from the config dirs, prompt history lives in the state dir and
+saved sessions in the data dir, so nothing yoke owns is written straight into
+$HOME.
 """
+
+
+def test_sessions_land_in_the_data_dir(ctx):
+    """A conversation is saved under $XDG_DATA_HOME/yoke/sessions/<cwd>/."""
+    data = ctx.tmp / "data"
+    ctx.scenario("text=ok")
+    s = ctx.spawn(XDG_DATA_HOME=str(data))
+    s.submit("save me")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+
+    files = sorted((data / "yoke" / "sessions").rglob("*.jsonl"))
+    assert len(files) == 1, sorted(p.name for p in (data).rglob("*"))
+    assert "save me" in files[0].read_text()
+    assert not (ctx.home / ".local" / "share").exists(), "the default must stay unused"
 
 
 def test_history_lands_in_the_state_dir(ctx):
@@ -45,7 +62,8 @@ def test_state_home_env_is_honoured(ctx):
     s.wait_exit()
 
     assert (state / "yoke" / "history").read_text() == "into the state dir\n/exit\n"
-    assert not (ctx.home / ".local").exists(), "the default must stay unused"
+    # sessions still default under ~/.local/share; only the state dir moved
+    assert not (ctx.home / ".local" / "state").exists(), "the default must stay unused"
 
 
 def test_relative_state_home_is_ignored(ctx):

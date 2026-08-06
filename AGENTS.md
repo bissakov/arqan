@@ -85,6 +85,11 @@ an AoS layout.
   line to `$XDG_STATE_HOME/yoke/history` as they are submitted. It owns an
   arena because `/clear` rewinds the session's, and compacts that arena in
   place when it fills
+- `session.c` — saved conversations, keyed by the working directory yoke was
+  launched in: `$XDG_DATA_HOME/yoke/sessions/<percent-encoded cwd>/<timestamp>.jsonl`,
+  one JSON object per line, appended as messages are produced. It owns its
+  path buffers instead of an arena because `/clear` rewinds the session's and
+  the file the next message appends to has to outlive that
 - `config.c` — loads `Config` from env vars, then `$XDG_CONFIG_HOME/yoke/config`,
   then the `XDG_CONFIG_DIRS` entries at lower precedence
 - `tools.c` — the `ToolRegistry` and the four built-in tools (read/write/bash/edit)
@@ -92,7 +97,11 @@ an AoS layout.
   SSE deltas into text/tool-call callbacks and appends to `Conv`. Each event
   is parsed into a small arena that is reset per delta, so a turn's scratch
   use follows the size of the reply rather than the number of events
-- `tui.c` — alternate-screen terminal UI: viewport, scrollback, raw-mode
+- `tui.c` — alternate-screen terminal UI. Overlays stack upward from the
+  bottom — notice row, completion popup, composer, status line — and eat into
+  the transcript, never into each other or the composer. A notice is how a
+  command that opened no popup answers, so nothing but the conversation is
+  ever written into the transcript. Also: viewport, scrollback, raw-mode
   composer with Up/Down recall of the persisted prompt history, mouse wheel
   scrolling, drag-to-select with OSC 52 copy,
   SIGWINCH-aware repaint. Every visible glyph is painted through `put_text`,

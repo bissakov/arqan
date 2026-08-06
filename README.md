@@ -32,6 +32,7 @@ src/
   http.c          libcurl streaming POST (SSE)
   paths.c         XDG base directory resolution
   history.c       prompt history, mirrored to the XDG state dir
+  session.c       per-directory saved conversations (/resume)
   config.c        env + XDG config file loader
   provider.c      OpenAI-compatible chat-completions streaming + tool deltas
   tools.c         SoA tool registry + read/write/bash/edit tools
@@ -84,6 +85,7 @@ into `$HOME`:
 | --- | --- | --- |
 | settings | `$XDG_CONFIG_HOME/yoke/config` | every `$XDG_CONFIG_DIRS` entry is searched too, at lower precedence |
 | prompt history | `$XDG_STATE_HOME/yoke/history` | last 500 prompts, recalled in the composer with Up/Down |
+| sessions | `$XDG_DATA_HOME/yoke/sessions/<cwd>/<timestamp>.jsonl` | one file per conversation, keyed by the directory it ran in |
 
 Environment variables still win over every file. A relative value in an
 `XDG_*` variable is invalid per the spec and ignored as if unset, and
@@ -142,8 +144,23 @@ Redirected stdin/stdout automatically falls back to plain text.
 Typing `/` opens a completion popup above the composer listing the slash
 commands; it narrows as you type, Ctrl-N/Ctrl-P (or the arrow keys) move
 through it, Tab completes the highlighted entry, Enter completes *and* runs it
-in one keystroke, and Esc dismisses it. `/clear` clears the active conversation
-and `/exit` exits.
+in one keystroke, and Esc dismisses it. `/clear` clears the active conversation,
+`/resume` reopens a saved one and `/exit` exits.
+
+Conversations are saved as they happen, in a directory keyed by the working
+directory yoke was launched in: `/resume` in `~/src/foo` browses what was said
+in `~/src/foo` and nothing else. It opens the same popup, listing sessions by
+timestamp with their first prompt as a preview, navigated with the same keys;
+with nothing saved for this directory it says so instead of opening an empty
+list. Picking one replays it into the view and keeps appending to that file,
+and `/clear` starts a new one.
+
+Answers like that one are notices: a single line stacked above the popup — so
+the frame reads notice, popup, composer, status line from top to bottom — and
+never written into the transcript, which is the conversation and nothing else.
+The view underneath, welcome screen included, is left exactly as it was. A
+notice answers the last command, so the next one retires it; Esc dismisses the
+popup first and the notice after.
 
 The status line spells out what the session is doing — `ready`, `thinking`,
 `running <tool>` — rather than leaving it to the colour of the bullet, so it

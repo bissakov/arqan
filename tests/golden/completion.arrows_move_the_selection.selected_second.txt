@@ -15,9 +15,9 @@
 |
 |
 |
-|
-|    /clear  Start a fresh conversation
-|  › /exit   Quit yoke
+|    /clear   Start a fresh conversation
+|  › /resume  Resume a saved session from this directory
+|    /exit    Quit yoke
 |
 |  › /
 |
