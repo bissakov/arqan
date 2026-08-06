@@ -11,7 +11,9 @@ SRC     := src/main.c
 OBJ     := build/ah.o
 BIN     := bin/ah
 
-.PHONY: all clean run
+PYTHON  ?= python3
+
+.PHONY: all clean run test test-update mock
 
 all: $(BIN)
 
@@ -26,5 +28,18 @@ $(OBJ): $(SRC) $(wildcard src/*.c) $(wildcard src/*.h)
 run: $(BIN)
 	./$(BIN)
 
+# End-to-end TUI tests: ah is driven inside a pty against a dummy provider.
+# Python 3 only, no third-party packages.
+test: $(BIN)
+	$(PYTHON) tests/run.py $(T)
+
+test-update: $(BIN)
+	$(PYTHON) tests/run.py --update $(T)
+
+# Dummy OpenAI-compatible provider, for driving the UI by hand.
+mock:
+	$(PYTHON) -m tests.mockprovider.server $(MOCK_ARGS)
+
 clean:
 	rm -rf build bin
+	rm -rf tests/__pycache__ tests/*/__pycache__

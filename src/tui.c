@@ -59,7 +59,7 @@ typedef struct {
     Str cwd;
     size_t context_tokens;
     b8 context_known;
-    const char *status;
+    char status[32];
     char transcript[TUI_TRANSCRIPT_CAP];
     size_t transcript_n;
     size_t scroll_rows;
@@ -834,7 +834,7 @@ static void repaint(void) {
     if (status_gap)
         update_text_row(status_row - status_gap, (Str){0}, (Str){0}, body_col,
                         cols, ROW_PLAIN, force);
-    const char *status = g_tui.status ? g_tui.status : "ready";
+    const char *status = g_tui.status[0] ? g_tui.status : "ready";
     b8 copied = g_tui.copy_notice > g_tui.last_paint;
     size_t status_sel_c0, status_sel_c1;
     sel_row_range(status_row, &status_sel_c0, &status_sel_c1);
@@ -868,13 +868,22 @@ static void repaint(void) {
         if (!strcmp(status, "ready")) status_style = S_GREEN;
         else if (strstr(status, "error")) status_style = S_RED;
         else if (!strcmp(status, "thinking")) status_style = S_PURPLE;
-        style(status_style);
-        put_safe_clipped(STR("●  "), body_cols, &used);
-        style(S_TEXT);
-        if (used < body_cols)
-            put_safe_clipped(g_tui.model, body_cols - used, &used);
         Str separator = body_cols >= 64 ? STR("  ·  ") : STR(" · ");
         size_t separator_cells = body_cols >= 64 ? 5 : 3;
+        style(status_style);
+        put_safe_clipped(STR("●  "), body_cols, &used);
+        /* Spelled out rather than only coloured: the bullet says nothing on a
+         * NO_COLOR or dumb terminal, and whether a turn is running is the one
+         * thing the user is waiting to see. It leads the line so it is the
+         * last field to be clipped away on a narrow screen. */
+        if (used < body_cols)
+            put_safe_clipped(str_c(status), body_cols - used, &used);
+        if (body_cols - used >= separator_cells) {
+            style(S_MUTED);
+            put_safe_clipped(separator, body_cols - used, &used);
+            style(S_TEXT);
+            put_safe_clipped(g_tui.model, body_cols - used, &used);
+        }
         if (body_cols - used >= separator_cells) {
             style(S_MUTED);
             put_safe_clipped(separator, body_cols - used, &used);
@@ -916,13 +925,22 @@ static void repaint(void) {
     flush_out();
 }
 
+/* Log lines become transcript notices while the alternate screen is up: the
+ * row painter styles anything bracketed as a notice, so a curl failure reads
+ * like the rest of the conversation instead of tearing a hole in the frame. */
+static void tui_log_sink(i32 level, Str msg, void *ud) {
+    (void)ud;
+    static const char *tags[] = {"debug", "info", "warn", "error"};
+    tui_printf("\n[%s: %.*s]\n", tags[level], (i32)msg.n, msg.p);
+}
+
 void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count) {
     if (g_tui.raw) return;
     memset(&g_tui, 0, sizeof g_tui);
     g_tui.tty = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
     g_tui.model = model;
     g_tui.provider = provider_from_url(base_url);
-    g_tui.status = "ready";
+    tui_set_status("ready");
     capture_cwd();
     const char *term = getenv("TERM");
     g_tui.color = getenv("NO_COLOR") == NULL
@@ -968,6 +986,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count) {
 
     g_tui.raw = true;
     g_tui.fullscreen = true;
+    ah_log_set_sink(tui_log_sink, NULL);
     /* The composer is always live: it owns the cursor for the whole session. */
     g_tui.editing = true;
     /* 1002 reports drags (not just clicks) and 1006 keeps coordinates exact
@@ -979,6 +998,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count) {
 
 void tui_stop(void) {
     if (!g_tui.raw) return;
+    ah_log_set_sink(NULL, NULL);
     if (g_tui.fullscreen) {
         put_str("\033[?1006l\033[?1002l\033[?25h\033[?7h\033[?1049l");
         flush_out();
@@ -1005,7 +1025,13 @@ void tui_enter_raw(void) { tui_start((Str){0}, (Str){0}, false, 0); }
 void tui_exit_raw(void) { tui_stop(); }
 
 void tui_set_status(const char *status) {
-    g_tui.status = status;
+    /* Copied, not aliased: the status outlives the call — it is repainted on
+     * every frame until the next one — so callers get to build it on the
+     * stack, e.g. to name the tool that is running. */
+    size_t n = 0;
+    while (status[n] && n + 1 < sizeof g_tui.status) n++;
+    memcpy(g_tui.status, status, n);
+    g_tui.status[n] = '\0';
     repaint();
 }
 
@@ -1227,6 +1253,16 @@ static void completion_move(i32 delta) {
     g_tui.comp_sel = (g_tui.comp_sel + (delta > 0 ? 1 : n - 1)) % n;
 }
 
+/* Whether accepting would actually insert anything. A name typed out in full
+ * has nothing left to complete, so the completion keys must not consume the
+ * keystroke that finishes the command. */
+static b8 completion_would_change(void) {
+    if (!g_tui.comp_n) return false;
+    Str name = g_tui.cmds[g_tui.comp_idx[g_tui.comp_sel]].name;
+    return name.n != g_tui.input_n
+        || memcmp(name.p, g_tui.input, name.n) != 0;
+}
+
 static void completion_accept(void) {
     if (!g_tui.comp_n) return;
     Str name = g_tui.cmds[g_tui.comp_idx[g_tui.comp_sel]].name;
@@ -1265,14 +1301,25 @@ static EdAction editor_key(i32 c) {
 
     /* Popup keys are only stolen while it is open, so Tab and Ctrl-N/P keep
      * their usual do-nothing behaviour otherwise. Enter completes rather than
-     * submits while a command is still being chosen: the popup has to go away
-     * before a turn can start. */
+     * submits while a command is still being chosen; once the name is typed
+     * out in full there is nothing left to complete, and eating the keystroke
+     * would only make the user press Enter twice to run it. */
     if (g_tui.comp_n
         && (c == '\t' || c == '\r' || c == '\n' || c == 0x0e || c == 0x10)) {
         sel_clear();
-        if (c == 0x0e || c == 0x10) completion_move(c == 0x0e ? 1 : -1);
-        else completion_accept();
-        return ED_EDIT;
+        if (c == 0x0e || c == 0x10) {
+            completion_move(c == 0x0e ? 1 : -1);
+            return ED_EDIT;
+        }
+        if (completion_would_change()) {
+            completion_accept();
+            return ED_EDIT;
+        }
+        g_tui.comp_n = 0;
+        g_tui.comp_sel = 0;
+        g_tui.comp_dismissed = true;
+        if (c == '\t') return ED_EDIT;
+        return ED_SUBMIT;
     }
     if (c == '\r' || c == '\n') { sel_clear(); return ED_SUBMIT; }
     if (c == 0x04) {
@@ -1394,8 +1441,7 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
 
     /* The composer already holds anything typed during the previous turn. */
     g_tui.editing = true;
-    g_tui.status = "ready";
-    repaint();
+    tui_set_status("ready");   /* repaints */
 
     for (;;) {
         i32 c = rbyte();

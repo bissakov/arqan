@@ -1,0 +1,10 @@
+--- screen 20x8 ---
+|
+|
+|
+|
+| › Message ah…
+|
+|
+| ●  ready · mock-mo
+--- cursor row=5 col=4 visible=yes ---

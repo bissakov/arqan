@@ -30,6 +30,12 @@ src/
   tools.c         SoA tool registry + read/write/bash/edit tools
   tui.c           alternate-screen TUI, viewport, composer + raw input
   main.c          unity includes + main + agent loop
+tests/
+  run.py          test runner (Python 3, no third-party packages)
+  harness/        terminal emulator + pty driver
+  mockprovider/   dummy OpenAI-compatible provider (lorem ipsum, tool calls)
+  cases/          the tests
+  golden/         expected screen dumps
 ```
 
 `main.c` `#include`s every `*.c` so the whole project is one translation unit.
@@ -59,6 +65,28 @@ model=gpt-4o-mini
 api_key=sk-...
 ```
 
+## Tests
+
+```
+make test                    # run the suite
+make test T="-k composer"    # run matching cases
+make test-update             # accept intended golden-screen changes
+```
+
+`bin/ah` runs unmodified inside a pseudo-terminal against a dummy
+OpenAI-compatible provider, and its output is replayed into a small terminal
+emulator — so the tests assert on the rendered screen rather than on escape
+sequences. The provider streams customisable lorem ipsum, tool calls, token
+usage and HTTP errors, and doubles as a standalone server for driving the UI by
+hand without an API key:
+
+```
+make mock MOCK_ARGS="--port 8080 --scenario words=80,chunk=2,delay=0.05"
+AH_BASE_URL=http://127.0.0.1:8080/v1 AH_API_KEY=x AH_MODEL=mock ./bin/ah
+```
+
+See `tests/README.md` for the scenario language and how to write a case.
+
 ## Status
 
 This is the scaffolded core: arena memory, JSON, streaming HTTP, an
@@ -84,8 +112,14 @@ Redirected stdin/stdout automatically falls back to plain text.
 Typing `/` opens a completion popup above the composer listing the slash
 commands; it narrows as you type, Ctrl-N/Ctrl-P (or the arrow keys) move
 through it, Tab and Enter both complete the highlighted entry, and Esc
-dismisses it — nothing is sent while the popup is open. `/new` clears the
-active conversation and `/exit` exits.
+dismisses it. Once a name is typed out in full there is nothing left to
+complete, so Enter runs it straight away rather than swallowing the keystroke.
+`/new` clears the active conversation and `/exit` exits.
+
+The status line spells out what the session is doing — `ready`, `thinking`,
+`running <tool>` — rather than leaving it to the colour of the bullet, so it
+still reads under `NO_COLOR`. Diagnostics that would otherwise land on stderr,
+in the middle of the frame, are folded into the transcript as notices.
 
 The composer stays editable while a turn is running — the request waits on
 stdin alongside its socket — but Enter only sends once the turn is done; the

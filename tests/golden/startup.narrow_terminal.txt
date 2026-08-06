@@ -1,0 +1,18 @@
+--- screen 48x16 ---
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|  › Message ah…
+|
+|
+|  ●  ready · mock-model · local · work · —
+--- cursor row=13 col=5 visible=yes ---

@@ -10,12 +10,12 @@ built-in tool registry (read/write/bash/edit) that the model can call.
 ```
 make            # builds bin/ah
 make run        # builds and runs
+make test       # end-to-end TUI tests (Python 3, no third-party packages)
 make clean      # removes build/ and bin/
 ```
 
-There is no test suite and no linter target — `CFLAGS` already includes
-`-Wall -Wextra -Wpedantic -Wconversion`, so treat new warnings as build
-failures.
+There is no linter target — `CFLAGS` already includes `-Wall -Wextra
+-Wpedantic -Wconversion`, so treat new warnings as build failures.
 
 Runtime config comes from env vars or `~/.config/ah/config`:
 
@@ -92,6 +92,21 @@ while the model streams.
 *out, char *err, size_t err_cap)` function in `tools.c`, register it (name +
 description + JSON schema fragment) in `tools_init`, capped by
 `AH_MAX_TOOLS`.
+
+## Tests
+
+`tests/` drives the real `bin/ah` inside a pseudo-terminal against a dummy
+OpenAI-compatible provider, replaying its output through a small terminal
+emulator. Assertions are made against the rendered screen, not escape
+sequences; `tests/golden/` holds expected screen dumps (`make test-update`
+rewrites them, so read the diff first). `tests/README.md` documents the
+scenario language of the mock provider and the waiting primitives that keep
+cases reproducible — nothing sleeps for a fixed time, everything waits on a
+state.
+
+A failing test means the source is wrong until proven otherwise. Do not
+relax an assertion to match clunky behaviour: fix it in `src/`, then keep the
+test as the regression.
 
 ## End of task
 

@@ -73,7 +73,9 @@ static void run_tool_calls(ToolRegistry *reg, Conv *conv, Arena *scratch,
         tui_write(STR("\n"));
         tui_write(args[i]);
         tui_write(STR("\n"));
-        tui_set_status("running tool");
+        char status[32];
+        snprintf(status, sizeof status, "running %.*s", (i32)names[i].n, names[i].p);
+        tui_set_status(status);
         b8 ok = t && t->run(args[i], scratch, &out, err, sizeof err);
         Str result = buf_finish(&out);
         if (!ok) {

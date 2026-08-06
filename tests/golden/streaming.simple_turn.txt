@@ -1,0 +1,26 @@
+--- screen 80x24 ---
+|  ●  You
+|  say hi
+|
+|  ●  Assistant
+|  Hello from the mock provider.
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|  › Message ah…
+|
+|
+|  ●  ready  ·  mock-model  ·  local  ·  ~/work  ·  128
+--- cursor row=21 col=5 visible=yes ---

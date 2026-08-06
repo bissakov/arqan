@@ -1,0 +1,26 @@
+--- screen 80x24 ---
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|  › Message ah…
+|
+|
+|  ●  ready  ·  mock-model  ·  local  ·  ~/work  ·  —
+--- cursor row=21 col=5 visible=yes ---

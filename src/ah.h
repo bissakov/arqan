@@ -78,6 +78,11 @@ Str     buf_finish(Buf *b);                    /* nul-terminates, returns   */
 enum { AH_LOG_DEBUG, AH_LOG_INFO, AH_LOG_WARN, AH_LOG_ERROR };
 void    ah_log(i32 level, const char *fmt, ...) __attribute__((format(printf,2,3)));
 void    ah_log_set_level(i32 level);
+/* Whoever owns the terminal owns the log: while the fullscreen UI is up, raw
+ * stderr would paint over the frame, so the TUI redirects log lines into the
+ * transcript instead. NULL restores plain stderr. */
+typedef void (*AhLogSink)(i32 level, Str msg, void *ud);
+void    ah_log_set_sink(AhLogSink sink, void *ud);
 
 /* ---- time --------------------------------------------------------------- */
 f64  ah_now_seconds(void);   /* monotonic                                */

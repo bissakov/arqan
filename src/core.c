@@ -126,15 +126,20 @@ Str buf_finish(Buf *b) {
 
 /* ---- logging ------------------------------------------------------------ */
 static i32 g_level = AH_LOG_INFO;
+static AhLogSink g_log_sink;
+static void *g_log_ud;
 void ah_log_set_level(i32 level) { g_level = level; }
+void ah_log_set_sink(AhLogSink sink, void *ud) { g_log_sink = sink; g_log_ud = ud; }
 void ah_log(i32 level, const char *fmt, ...) {
     if (level < g_level) return;
     static const char *tags[] = {"DBG","INF","WRN","ERR"};
-    fprintf(stderr, "[ah %s] ", tags[level]);
+    char msg[512];
     va_list ap; va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
+    i32 w = vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
-    fputc('\n', stderr);
+    size_t n = w > 0 ? ((size_t)w < sizeof msg ? (size_t)w : sizeof msg - 1) : 0;
+    if (g_log_sink) { g_log_sink(level, (Str){ msg, n }, g_log_ud); return; }
+    fprintf(stderr, "[ah %s] %.*s\n", tags[level], (i32)n, msg);
 }
 
 /* ---- time --------------------------------------------------------------- */
