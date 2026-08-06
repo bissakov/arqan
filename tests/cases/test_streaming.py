@@ -114,6 +114,28 @@ def test_conversation_is_cumulative(ctx):
     assert contents[3] == "two", contents
 
 
+def test_reply_keeps_one_blank_row_before_the_next_turn(ctx):
+    """A reply and the user box that follows it are one blank row apart."""
+    ctx.scenario("text=first+answer")
+    s = ctx.spawn()
+    s.submit("one")
+    s.wait_text("first answer")
+    s.wait_turn_done()
+
+    ctx.scenario("text=second+answer")
+    s.submit("two")
+    s.wait_text("second answer")
+    s.wait_turn_done()
+
+    lines = s.screen.lines()
+    reply = s.screen.find_row("first answer")
+    box = s.screen.find_row("two")
+    blank = [i for i in range(reply + 1, box) if not lines[i]]
+    # One air row, then the box's own top padding row.
+    assert len(blank) == 2, s.screen.snapshot()
+    assert box - reply == 3, s.screen.snapshot()
+
+
 def test_long_output_scrolls_and_shows_a_scrollbar(ctx):
     """A reply taller than the viewport pins the transcript to its bottom."""
     ctx.scenario("words=400,paragraphs=4,chunk=8")

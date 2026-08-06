@@ -125,7 +125,7 @@ static void render_conv(const Conv *c) {
                     tui_write(STR("\n"));
                 } else if (c->text[i].n) {
                     tui_write(c->text[i]);
-                    tui_write(STR("\n\n"));
+                    tui_write(STR("\n"));
                 }
                 break;
         }
@@ -389,7 +389,9 @@ i32 main(i32 argc, char **argv) {
                 break;
             }
             if (rc == 0) {
-                tui_write(STR("\n\n"));
+                /* Close the reply's last row only: the air the next user box
+                 * writes above itself is the whole margin. */
+                tui_write(STR("\n"));
                 tui_set_status("ready");
                 break; /* no tool calls, turn done */
             }
