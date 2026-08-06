@@ -45,6 +45,23 @@ def test_selection_is_highlighted(ctx):
     assert not s.screen.attr_at(row - 1, 8).reverse
 
 
+def test_welcome_art_highlights_in_one_colour(ctx):
+    """Selecting across the welcome art keeps a uniform highlight.
+
+    The centering padding is styled like the art it precedes, so reverse
+    video shows one colour across the row instead of splitting where the
+    glyphs start.
+    """
+    s = ctx.spawn()
+    row = row_of(s, "__ _| |__")   # spans padding on the left, art on the right
+    s.mouse("down", row, 10)
+    s.mouse("drag", row, 45).sync()
+    attrs = [s.screen.attr_at(row - 1, c) for c in range(9, 45)]
+    assert all(a.reverse for a in attrs), attrs
+    fgs = {a.fg for a in attrs}
+    assert fgs == {81}, f"highlight is not uniformly S_CYAN: {fgs}"
+
+
 def test_copy_shows_a_status_notice(ctx):
     """The status line acknowledges the copy."""
     s = ctx.spawn()

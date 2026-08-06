@@ -563,6 +563,11 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
         put_text(prefix.p, prefix.n);
         style(S_PANEL_BG S_TEXT);
     } else if (prefix.n) {
+        /* The welcome rows centre themselves with a spaces prefix; style it
+         * like the text so a reverse-video selection highlights the whole
+         * row in one colour instead of splitting at the padding. */
+        if (kind == ROW_WELCOME_ART) style(S_CYAN);
+        else if (kind == ROW_WELCOME_TEXT) style(S_MUTED);
         put_text(prefix.p, prefix.n);
     }
 
