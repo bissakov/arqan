@@ -67,7 +67,10 @@ an AoS layout.
 - `provider.c` — OpenAI-compatible chat-completions streaming client; parses
   SSE deltas into text/tool-call callbacks and appends to `Conv`
 - `tui.c` — alternate-screen terminal UI: viewport, scrollback, raw-mode
-  composer, mouse wheel scrolling, SIGWINCH-aware repaint. Frames are built
+  composer, mouse wheel scrolling, drag-to-select with OSC 52 copy,
+  SIGWINCH-aware repaint. Every visible glyph is painted through `put_text`,
+  which mirrors it into the per-row screen snapshot selection highlights and
+  copies from. Frames are built
   in `TuiState.out` and hit the terminal as one `write`; the composer lives in
   `TuiState` for the whole session, so `tui_readline` (blocking, submits) and
   `tui_poll_input` (non-blocking, refuses Enter while `busy`) drive the same
@@ -92,6 +95,9 @@ description + JSON schema fragment) in `tools_init`, capped by
 
 ## End of task
 
+- Never add attributions to AI agents (or any automated tooling) in commit messages, PR
+  descriptions, code comments, changelogs, or any tracked content. Changes are authored by the
+  contributor; do not reference the assistant or its involvement anywhere.
 - If — and only if — the task created or modified files that git tracks (or
   would track, i.e. not ignored), end with a suggested commit message
   matching the project's convention:

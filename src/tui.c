@@ -23,6 +23,9 @@
 #define TUI_MAX_ROWS 4096
 #define TUI_BODY_GUTTER 2
 #define TUI_OUT_CAP (1u << 16)   /* one frame's escapes, written in one go */
+#define TUI_SEL_ROWS 512         /* screen rows mirrored for selection      */
+#define TUI_SEL_ROW_BYTES 2048   /* visible bytes kept per screen row       */
+#define TUI_SEL_BYTES (1u << 16) /* clipboard payload cap                   */
 
 /* A quiet 256-colour palette.  Styling is optional (NO_COLOR and dumb
  * terminals get the same layout without escape-heavy decoration). */
@@ -69,6 +72,18 @@ typedef struct {
     char input[AH_LINE_BUF];
     size_t input_n;
     size_t input_cur;
+    /* What the frame actually put on screen, one entry per row: the substrate
+     * mouse selection highlights and copies, so any painted cell — transcript,
+     * composer or status line — is selectable without re-deriving its source. */
+    char row_text[TUI_SEL_ROWS][TUI_SEL_ROW_BYTES];
+    u16 row_text_n[TUI_SEL_ROWS];
+    u16 row_text_w[TUI_SEL_ROWS];
+    b8 sel_active;    /* a range is highlighted                            */
+    b8 sel_drag;      /* the button is still down                          */
+    size_t sel_ar, sel_ac;   /* anchor cell (0-based row, column)          */
+    size_t sel_br, sel_bc;   /* head cell                                  */
+    char sel_text[TUI_SEL_BYTES];
+    f64 copy_notice;  /* status hint deadline after an OSC 52 copy         */
     char out[TUI_OUT_CAP];
     size_t out_n;
 } TuiState;
@@ -105,6 +120,11 @@ static void put_raw(const char *s, size_t n) {
 
 static void put_str(const char *s) { put_raw(s, strlen(s)); }
 static void style(const char *s) { if (g_tui.color) put_str(s); }
+
+/* Defined with the selection machinery below; cup() needs them first. */
+static void snap_seek(size_t row, size_t col);
+static void put_text(const char *s, size_t n);
+static void put_text_z(const char *s);
 
 static Str provider_from_url(Str url) {
     size_t start = 0;
@@ -162,6 +182,7 @@ static void cup(size_t row, size_t col) {
     char seq[48];
     i32 n = snprintf(seq, sizeof seq, "\033[%zu;%zuH", row, col);
     if (n > 0) put_raw(seq, (size_t)n);
+    snap_seek(row, col);
 }
 
 /* Decode one display glyph. Invalid input is deliberately one cell/byte so
@@ -195,6 +216,210 @@ static size_t next_glyph(const char *s, size_t n, size_t at) {
     size_t used = glyph(s + at, n - at, &width);
     (void)width;
     return at + (used ? used : 1);
+}
+
+/* ---- screen capture + mouse selection -----------------------------------
+ * Painting goes through put_text(), which mirrors every visible glyph into
+ * the per-row snapshot and inverts the cells the current selection covers.
+ * Selection therefore works over whatever is on screen, chrome included, and
+ * copying never has to know which buffer a row came from.
+ */
+static size_t g_cap_row;   /* 1-based row being captured, 0 = not capturing */
+static size_t g_cap_col;   /* 0-based column the next glyph lands on        */
+
+/* Byte offset of the first glyph at or after `cell`; *reached is the column
+ * actually landed on (a wide glyph can straddle the requested one). */
+static size_t row_byte_at(size_t r, size_t cell, size_t *reached) {
+    const char *p = g_tui.row_text[r];
+    size_t n = g_tui.row_text_n[r], bytes = 0, col = 0;
+    while (bytes < n && col < cell) {
+        i32 width = 0;
+        size_t used = glyph(p + bytes, n - bytes, &width);
+        col += width > 0 ? (size_t)width : 0;
+        bytes += used;
+    }
+    *reached = col;
+    return bytes;
+}
+
+static void snap_seek(size_t row, size_t col) {
+    g_cap_row = row && row <= TUI_SEL_ROWS ? row : 0;
+    g_cap_col = col ? col - 1 : 0;
+    if (!g_cap_row) return;
+    size_t r = g_cap_row - 1;
+    if (g_cap_col < g_tui.row_text_w[r]) {
+        /* Moving left means the painter is about to rewrite the tail. */
+        size_t reached = 0;
+        size_t bytes = row_byte_at(r, g_cap_col, &reached);
+        g_tui.row_text_n[r] = (u16)bytes;
+        g_tui.row_text_w[r] = (u16)reached;
+    }
+    /* Cells the painter skipped over are blanks on screen. */
+    while (g_tui.row_text_w[r] < g_cap_col
+           && (size_t)g_tui.row_text_n[r] + 1 < TUI_SEL_ROW_BYTES) {
+        g_tui.row_text[r][g_tui.row_text_n[r]++] = ' ';
+        g_tui.row_text_w[r]++;
+    }
+}
+
+static void snap_put(const char *s, size_t used, size_t width) {
+    if (g_cap_row) {
+        size_t r = g_cap_row - 1;
+        if ((size_t)g_tui.row_text_n[r] + used < TUI_SEL_ROW_BYTES
+            && (size_t)g_tui.row_text_w[r] + width < 0xffffu) {
+            memcpy(g_tui.row_text[r] + g_tui.row_text_n[r], s, used);
+            g_tui.row_text_n[r] = (u16)((size_t)g_tui.row_text_n[r] + used);
+            g_tui.row_text_w[r] = (u16)((size_t)g_tui.row_text_w[r] + width);
+        }
+    }
+    g_cap_col += width;
+}
+
+/* Anchor/head in document order, end column exclusive (the cell under the
+ * pointer is part of the selection). */
+static void sel_norm(size_t *r0, size_t *c0, size_t *r1, size_t *c1) {
+    b8 forward = g_tui.sel_ar < g_tui.sel_br
+              || (g_tui.sel_ar == g_tui.sel_br && g_tui.sel_ac <= g_tui.sel_bc);
+    *r0 = forward ? g_tui.sel_ar : g_tui.sel_br;
+    *c0 = forward ? g_tui.sel_ac : g_tui.sel_bc;
+    *r1 = forward ? g_tui.sel_br : g_tui.sel_ar;
+    *c1 = (forward ? g_tui.sel_bc : g_tui.sel_ac) + 1;
+}
+
+static void sel_row_range(size_t screen_row, size_t *c0, size_t *c1) {
+    *c0 = 0; *c1 = 0;
+    if (!g_tui.sel_active || !screen_row) return;
+    size_t r0, s0, r1, s1;
+    sel_norm(&r0, &s0, &r1, &s1);
+    size_t r = screen_row - 1;
+    if (r < r0 || r > r1) return;
+    *c0 = r == r0 ? s0 : 0;
+    *c1 = r == r1 ? s1 : (size_t)-1;   /* through the end of the row */
+}
+
+/* The one place visible text reaches the terminal: capture and highlight. */
+static void put_text(const char *s, size_t n) {
+    size_t sel_c0 = 0, sel_c1 = 0;
+    sel_row_range(g_cap_row, &sel_c0, &sel_c1);
+    /* Styles are re-emitted between calls and can drop reverse video, so the
+     * flag is per call rather than per row. */
+    b8 reverse = false;
+    for (size_t i = 0; i < n;) {
+        i32 width = 0;
+        size_t used = glyph(s + i, n - i, &width);
+        b8 selected = g_cap_col >= sel_c0 && g_cap_col < sel_c1;
+        if (selected != reverse) {
+            put_str(selected ? "\033[7m" : "\033[27m");
+            reverse = selected;
+        }
+        put_raw(s + i, used);
+        snap_put(s + i, used, width > 0 ? (size_t)width : 0);
+        i += used;
+    }
+    if (reverse) put_str("\033[27m");
+}
+
+static void put_text_z(const char *s) { put_text(s, strlen(s)); }
+
+/* Selection past the end of a row's text: paint the blanks so a multi-row
+ * highlight reads as one block instead of a ragged right edge. */
+static void paint_sel_tail(size_t screen_row, size_t screen_cols) {
+    size_t c0, c1;
+    sel_row_range(screen_row, &c0, &c1);
+    if (c1 > screen_cols) c1 = screen_cols;
+    size_t start = g_cap_col > c0 ? g_cap_col : c0;
+    if (start >= c1) return;
+    cup(screen_row, start + 1);
+    for (size_t i = start; i < c1; i++) put_text(" ", 1);
+}
+
+static size_t sel_extract(char *out, size_t cap) {
+    if (!g_tui.sel_active || cap == 0) return 0;
+    size_t r0, c0, r1, c1, n = 0;
+    sel_norm(&r0, &c0, &r1, &c1);
+    if (r1 >= TUI_SEL_ROWS) r1 = TUI_SEL_ROWS - 1;
+    for (size_t r = r0; r <= r1; r++) {
+        size_t reached = 0;
+        size_t a = row_byte_at(r, r == r0 ? c0 : 0, &reached);
+        size_t b = row_byte_at(r, r == r1 ? c1 : (size_t)-1, &reached);
+        while (b > a && g_tui.row_text[r][b - 1] == ' ') b--;  /* padding */
+        for (size_t i = a; i < b && n + 1 < cap; i++)
+            out[n++] = g_tui.row_text[r][i];
+        if (r < r1 && n + 1 < cap) out[n++] = '\n';
+    }
+    while (n && out[n - 1] == '\n') n--;
+    return n;
+}
+
+static void b64_put(const u8 *p, size_t n) {
+    static const char t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                            "abcdefghijklmnopqrstuvwxyz0123456789+/";
+    char q[4];
+    size_t i = 0;
+    for (; i + 3 <= n; i += 3) {
+        u32 v = (u32)p[i] << 16 | (u32)p[i + 1] << 8 | (u32)p[i + 2];
+        q[0] = t[v >> 18 & 63]; q[1] = t[v >> 12 & 63];
+        q[2] = t[v >> 6 & 63];  q[3] = t[v & 63];
+        put_raw(q, 4);
+    }
+    if (i < n) {
+        b8 two = i + 1 < n;
+        u32 v = (u32)p[i] << 16 | (two ? (u32)p[i + 1] << 8 : 0u);
+        q[0] = t[v >> 18 & 63]; q[1] = t[v >> 12 & 63];
+        q[2] = two ? t[v >> 6 & 63] : '='; q[3] = '=';
+        put_raw(q, 4);
+    }
+}
+
+/* OSC 52 hands the text to the terminal emulator, so the copy lands in the
+ * user's own clipboard even across ssh, with no helper process. */
+static void sel_copy(void) {
+    size_t n = sel_extract(g_tui.sel_text, sizeof g_tui.sel_text);
+    if (!n) return;
+    put_str("\033]52;c;");
+    b64_put((const u8 *)g_tui.sel_text, n);
+    put_str("\a");
+    flush_out();
+    g_tui.copy_notice = ah_now_seconds() + 2.0;
+}
+
+static void sel_clear(void) {
+    if (!g_tui.sel_active && !g_tui.sel_drag) return;
+    g_tui.sel_active = false;
+    g_tui.sel_drag = false;
+    g_tui.bar_valid = false;   /* the bar column may have been inverted */
+}
+
+static void sel_point(i32 mouse_row, i32 mouse_col, size_t *row, size_t *col) {
+    size_t rows = g_tui.painted_rows ? g_tui.painted_rows : 1;
+    size_t cols = g_tui.painted_cols ? g_tui.painted_cols : 1;
+    if (rows > TUI_SEL_ROWS) rows = TUI_SEL_ROWS;
+    size_t r = mouse_row > 1 ? (size_t)mouse_row - 1 : 0;
+    size_t c = mouse_col > 1 ? (size_t)mouse_col - 1 : 0;
+    *row = r < rows ? r : rows - 1;
+    *col = c < cols ? c : cols - 1;
+}
+
+static void sel_begin(i32 mouse_row, i32 mouse_col) {
+    sel_point(mouse_row, mouse_col, &g_tui.sel_ar, &g_tui.sel_ac);
+    g_tui.sel_br = g_tui.sel_ar;
+    g_tui.sel_bc = g_tui.sel_ac;
+    g_tui.sel_active = false;   /* a plain click just drops the old range */
+    g_tui.sel_drag = true;
+    g_tui.bar_valid = false;
+}
+
+static void sel_extend(i32 mouse_row, i32 mouse_col) {
+    if (!g_tui.sel_drag) return;
+    sel_point(mouse_row, mouse_col, &g_tui.sel_br, &g_tui.sel_bc);
+    g_tui.sel_active = g_tui.sel_br != g_tui.sel_ar
+                    || g_tui.sel_bc != g_tui.sel_ac;
+    g_tui.bar_valid = false;
+}
+
+static void sel_finish(void) {
+    if (g_tui.sel_drag && g_tui.sel_active) sel_copy();
+    g_tui.sel_drag = false;
 }
 
 /* Count visual rows and, optionally, locate a byte cursor. Prompt cells are
@@ -231,7 +456,7 @@ static void put_safe_clipped(Str s, size_t max_cells, size_t *used_cells) {
         size_t used = glyph(s.p + i, s.n - i, &width);
         size_t w = width > 0 ? (size_t)width : 0;
         if (cells + w > max_cells) break;
-        put_raw(s.p + i, used);
+        put_text(s.p + i, used);
         cells += w; i += used;
     }
     if (used_cells) *used_cells += cells;
@@ -291,6 +516,11 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
                             u8 kind, b8 force) {
     kind = display_kind(kind, text);
     u64 hash = row_hash(prefix, text, kind);
+    /* Highlighting is part of a row's appearance, so it belongs in the diff. */
+    size_t sel_c0, sel_c1;
+    sel_row_range(screen_row, &sel_c0, &sel_c1);
+    hash = hash_add(hash, &sel_c0, sizeof sel_c0);
+    hash = hash_add(hash, &sel_c1, sizeof sel_c1);
     if (!row_changed(screen_row, hash, force)) return;
     cup(screen_row, 1);
     put_str(S_RESET "\033[2K");
@@ -305,10 +535,10 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
 
     if (kind == ROW_COMPOSER && prefix.n) {
         style(g_tui.busy ? S_PANEL_BG S_MUTED : S_PANEL_BG S_CYAN);
-        put_raw(prefix.p, prefix.n);
+        put_text(prefix.p, prefix.n);
         style(S_PANEL_BG S_TEXT);
     } else if (prefix.n) {
-        put_raw(prefix.p, prefix.n);
+        put_text(prefix.p, prefix.n);
     }
 
     if (kind == ROW_COMPOSER && prefix.n && text.n == 0) {
@@ -318,19 +548,20 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
         style(S_PANEL_BG S_MUTED);
         put_safe_clipped(STR("Message ah…"), room, NULL);
     } else if (kind == ROW_USER) {
-        style(S_BLUE); put_str("●  "); put_raw(text.p, text.n);
+        style(S_BLUE); put_text_z("●  "); put_text(text.p, text.n);
     } else if (kind == ROW_ASSISTANT) {
-        style(S_PURPLE); put_str("●  "); put_raw(text.p, text.n);
+        style(S_PURPLE); put_text_z("●  "); put_text(text.p, text.n);
     } else if (kind == ROW_TOOL) {
-        style(S_YELLOW); put_str("◆  "); put_raw(text.p, text.n);
+        style(S_YELLOW); put_text_z("◆  "); put_text(text.p, text.n);
     } else if (kind == ROW_RESULT) {
-        style(S_GREEN); put_str("└─ "); put_raw(text.p, text.n);
+        style(S_GREEN); put_text_z("└─ "); put_text(text.p, text.n);
     } else if (kind == ROW_NOTICE) {
-        style(S_YELLOW); put_raw(text.p, text.n);
+        style(S_YELLOW); put_text(text.p, text.n);
     } else {
         if (kind == ROW_PLAIN) style(S_TEXT);
-        put_raw(text.p, text.n);
+        put_text(text.p, text.n);
     }
+    paint_sel_tail(screen_row, screen_cols);
     style(S_RESET);
 }
 
@@ -438,8 +669,12 @@ static void repaint(void) {
              || rows != g_tui.painted_rows || cols != g_tui.painted_cols;
     g_winch = 0;
     if (force) {
+        /* A cleared or resized screen has no cells left to select. */
+        sel_clear();
         put_str("\033[?25l\033[H\033[2J");
         memset(g_tui.row_hash, 0, sizeof g_tui.row_hash);
+        memset(g_tui.row_text_n, 0, sizeof g_tui.row_text_n);
+        memset(g_tui.row_text_w, 0, sizeof g_tui.row_text_w);
     } else {
         put_str("\033[?25l");
     }
@@ -497,7 +732,13 @@ static void repaint(void) {
         update_text_row(status_row - status_gap, (Str){0}, (Str){0}, body_col,
                         cols, ROW_PLAIN, force);
     const char *status = g_tui.status ? g_tui.status : "ready";
+    b8 copied = g_tui.copy_notice > g_tui.last_paint;
+    size_t status_sel_c0, status_sel_c1;
+    sel_row_range(status_row, &status_sel_c0, &status_sel_c1);
     u64 status_hash = row_hash(g_tui.model, g_tui.provider, ROW_STATUS);
+    status_hash = hash_add(status_hash, &copied, sizeof copied);
+    status_hash = hash_add(status_hash, &status_sel_c0, sizeof status_sel_c0);
+    status_hash = hash_add(status_hash, &status_sel_c1, sizeof status_sel_c1);
     status_hash = hash_add(status_hash, g_tui.cwd.p, g_tui.cwd.n);
     status_hash = hash_add(status_hash, status, strlen(status));
     status_hash = hash_add(status_hash, &g_tui.context_tokens,
@@ -549,6 +790,13 @@ static void repaint(void) {
             style(S_TEXT);
             put_safe_clipped(context, body_cols - used, &used);
         }
+        if (copied && body_cols - used >= separator_cells) {
+            style(S_MUTED);
+            put_safe_clipped(separator, body_cols - used, &used);
+            style(S_GREEN);
+            put_safe_clipped(STR("copied"), body_cols - used, &used);
+        }
+        paint_sel_tail(status_row, cols);
         style(S_RESET);
     }
 
@@ -619,14 +867,17 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count) {
     g_tui.fullscreen = true;
     /* The composer is always live: it owns the cursor for the whole session. */
     g_tui.editing = true;
-    put_str("\033[?1049h\033[?7l\033[?25l\033[?1000h\033[?1006h");
+    /* 1002 reports drags (not just clicks) and 1006 keeps coordinates exact
+     * past column 223 — both are what in-app text selection needs. Shift
+     * still falls through to the terminal's own selection. */
+    put_str("\033[?1049h\033[?7l\033[?25l\033[?1002h\033[?1006h");
     repaint();
 }
 
 void tui_stop(void) {
     if (!g_tui.raw) return;
     if (g_tui.fullscreen) {
-        put_str("\033[?1006l\033[?1000l\033[?25h\033[?7h\033[?1049l");
+        put_str("\033[?1006l\033[?1002l\033[?25h\033[?7h\033[?1049l");
         flush_out();
         (void)tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_tui.original_termios);
         (void)sigaction(SIGWINCH, &g_tui.original_winch, NULL);
@@ -680,6 +931,9 @@ void tui_write(Str s) {
      * a pending resize, so an empty write still costs nothing here. */
     tui_poll_input();
     if (!s.p || s.n == 0) return;
+    /* New output shifts the rows a highlight was drawn over; only an active
+     * drag keeps it, since the pointer is still choosing the range. */
+    if (!g_tui.sel_drag) sel_clear();
 
     /* Keep the newest half if the bounded scrollback fills. */
     if (s.n >= TUI_TRANSCRIPT_CAP) {
@@ -781,8 +1035,11 @@ static i32 read_csi(Csi *out) {
 enum {
     KEY_NONE = 0, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN, KEY_HOME, KEY_END,
     KEY_PREV_WORD, KEY_NEXT_WORD, KEY_NEWLINE, KEY_PAGE_UP, KEY_PAGE_DOWN,
-    KEY_WHEEL_UP, KEY_WHEEL_DOWN
+    KEY_WHEEL_UP, KEY_WHEEL_DOWN, KEY_MOUSE_DOWN, KEY_MOUSE_DRAG, KEY_MOUSE_UP
 };
+
+/* Coordinates of the mouse key just returned by read_escape (1-based). */
+static i32 g_mouse_row, g_mouse_col;
 
 static i32 read_escape(void) {
     i32 first = rbyte_soon();
@@ -794,6 +1051,12 @@ static i32 read_escape(void) {
         if (csi.mouse && (final == 'M' || final == 'm') && csi.nparams >= 1) {
             i32 button = csi.p[0];
             if (button & 64) return button & 1 ? KEY_WHEEL_DOWN : KEY_WHEEL_UP;
+            if (csi.nparams < 3) return KEY_NONE;
+            g_mouse_col = csi.p[1];
+            g_mouse_row = csi.p[2];
+            if (final == 'm') return KEY_MOUSE_UP;
+            if (button & 32) return KEY_MOUSE_DRAG;
+            if ((button & 3) == 0) return KEY_MOUSE_DOWN;
             return KEY_NONE;
         }
         i32 modifier = csi.nparams >= 2 ? csi.p[1] : 0;
@@ -846,8 +1109,11 @@ static EdAction editor_key(i32 c) {
     const size_t cap = sizeof g_tui.input;
     size_t n = g_tui.input_n, cur = g_tui.input_cur;
     EdAction action = ED_EDIT;
+    /* Anything but the mouse itself invalidates a highlight, exactly as a
+     * keystroke drops the terminal's own selection. */
+    b8 keep_sel = false;
 
-    if (c == '\r' || c == '\n') return ED_SUBMIT;
+    if (c == '\r' || c == '\n') { sel_clear(); return ED_SUBMIT; }
     if (c == 0x04) {
         if (n == 0) return ED_EOF;
         if (cur < n) {
@@ -895,6 +1161,12 @@ static EdAction editor_key(i32 c) {
         } else if (key == KEY_WHEEL_DOWN) {
             g_tui.scroll_rows = g_tui.scroll_rows > 3
                               ? g_tui.scroll_rows - 3 : 0;
+        } else if (key == KEY_MOUSE_DOWN) {
+            sel_begin(g_mouse_row, g_mouse_col); keep_sel = true;
+        } else if (key == KEY_MOUSE_DRAG) {
+            sel_extend(g_mouse_row, g_mouse_col); keep_sel = true;
+        } else if (key == KEY_MOUSE_UP) {
+            sel_finish(); keep_sel = true;
         } else if (key == KEY_NEWLINE && n + 1 < cap) {
             memmove(buf + cur + 1, buf + cur, n - cur);
             buf[cur++] = '\n'; n++; buf[n] = '\0';
@@ -906,6 +1178,7 @@ static EdAction editor_key(i32 c) {
         }
     }
 
+    if (!keep_sel) sel_clear();
     g_tui.input_n = n;
     g_tui.input_cur = cur;
     return action;

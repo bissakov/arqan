@@ -72,7 +72,13 @@ responses into a bounded transcript, and keeps a multiline composer at the
 bottom, with the status line just below it. Enter sends, Alt+Enter inserts a
 newline, PageUp/PageDown scroll the transcript, the mouse wheel scrolls it
 through a visible scrollbar, Ctrl-L repaints, Ctrl-C cancels, and Ctrl-D quits
-from an empty composer. `/new` clears the active conversation and `/exit`
+from an empty composer.
+
+Text is selectable with the mouse anywhere on screen — transcript, composer and
+status line alike. Dragging highlights the range, releasing copies it to the
+system clipboard via OSC 52 (so it works over ssh too) and the status line
+confirms with `copied`; any keystroke drops the highlight. Holding Shift while
+dragging bypasses the app and falls back to the terminal's own selection. `/new` clears the active conversation and `/exit`
 exits. Redirected stdin/stdout automatically falls back to plain text.
 
 The composer stays editable while a turn is running — the request waits on
