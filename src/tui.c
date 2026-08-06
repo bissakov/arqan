@@ -26,6 +26,7 @@
 #define TUI_SEL_ROWS 512         /* screen rows mirrored for selection      */
 #define TUI_SEL_ROW_BYTES 2048   /* visible bytes kept per screen row       */
 #define TUI_SEL_BYTES (1u << 16) /* clipboard payload cap                   */
+#define TUI_POPUP_ROWS 6         /* completion entries shown at once         */
 
 /* A quiet 256-colour palette.  Styling is optional (NO_COLOR and dumb
  * terminals get the same layout without escape-heavy decoration). */
@@ -39,6 +40,8 @@
 #define S_YELLOW      "\033[1;38;5;221m"
 #define S_RED         "\033[1;38;5;203m"
 #define S_PURPLE      "\033[1;38;5;177m"
+#define S_POPUP_BG    "\033[48;5;237m"
+#define S_POPUP_SEL   "\033[48;5;24m"
 
 typedef struct {
     struct termios original_termios;
@@ -72,6 +75,14 @@ typedef struct {
     char input[AH_LINE_BUF];
     size_t input_n;
     size_t input_cur;
+    /* Slash-command completion: the registered table plus the filtered view
+     * of it the popup is currently showing. */
+    const TuiCmd *cmds;
+    size_t cmd_n;
+    u16 comp_idx[AH_MAX_COMMANDS];   /* matches, as indices into cmds       */
+    size_t comp_n;
+    size_t comp_sel;
+    b8 comp_dismissed;               /* Esc/Tab closed it until text changes */
     /* What the frame actually put on screen, one entry per row: the substrate
      * mouse selection highlights and copies, so any painted cell — transcript,
      * composer or status line — is selectable without re-deriving its source. */
@@ -468,7 +479,7 @@ static void pad_row(size_t used, size_t cols) {
 
 enum {
     ROW_PLAIN = 1, ROW_COMPOSER, ROW_STATUS,
-    ROW_USER, ROW_ASSISTANT, ROW_TOOL, ROW_RESULT, ROW_NOTICE
+    ROW_USER, ROW_ASSISTANT, ROW_TOOL, ROW_RESULT, ROW_NOTICE, ROW_POPUP
 };
 
 static u64 hash_add(u64 h, const void *data, size_t n) {
@@ -498,6 +509,19 @@ static b8 row_changed(size_t row, u64 hash, b8 force) {
 
 static b8 str_starts(Str s, Str prefix) {
     return s.n >= prefix.n && !memcmp(s.p, prefix.p, prefix.n);
+}
+
+static char lower_ascii(char c) {
+    return c >= 'A' && c <= 'Z' ? (char)(c + 32) : c;
+}
+
+/* Command names are ASCII, so folding case here is enough to make "/NE"
+ * offer "/new". */
+static b8 str_starts_ci(Str s, Str prefix) {
+    if (s.n < prefix.n) return false;
+    for (size_t i = 0; i < prefix.n; i++)
+        if (lower_ascii(s.p[i]) != lower_ascii(prefix.p[i])) return false;
+    return true;
 }
 
 static u8 display_kind(u8 kind, Str text) {
@@ -611,6 +635,74 @@ static void update_text_rows(Str s, size_t cols, size_t prompt_cells,
     }
 }
 
+/* ---- slash-command completion popup -------------------------------------
+ * The popup is a plain list of rows painted directly above the composer, so
+ * it takes part in the same row-hash diff as everything else and needs no
+ * cursor save/restore or overlay bookkeeping.
+ */
+static void update_popup_row(size_t screen_row, Str name, Str desc,
+                             b8 selected, size_t name_cells,
+                             size_t screen_col, size_t screen_cols,
+                             size_t body_cols, b8 force) {
+    u64 hash = row_hash(name, desc, ROW_POPUP);
+    hash = hash_add(hash, &selected, sizeof selected);
+    hash = hash_add(hash, &name_cells, sizeof name_cells);
+    size_t sel_c0, sel_c1;
+    sel_row_range(screen_row, &sel_c0, &sel_c1);
+    hash = hash_add(hash, &sel_c0, sizeof sel_c0);
+    hash = hash_add(hash, &sel_c1, sizeof sel_c1);
+    if (!row_changed(screen_row, hash, force)) return;
+
+    const char *bg = selected ? S_POPUP_SEL : S_POPUP_BG;
+    cup(screen_row, 1);
+    put_str(S_RESET "\033[2K");
+    style(bg);
+    pad_row(0, screen_cols);
+    cup(screen_row, screen_col);
+
+    size_t used = 0;
+    style(bg);
+    style(selected ? S_CYAN : S_TEXT);
+    put_safe_clipped(selected ? STR("\u203a ") : STR("  "), body_cols, &used);
+    put_safe_clipped(name, body_cols > used ? body_cols - used : 0, &used);
+    while (used < name_cells && used < body_cols) { put_text(" ", 1); used++; }
+    style(bg);
+    style(S_MUTED);
+    if (used < body_cols) put_safe_clipped(desc, body_cols - used, &used);
+    paint_sel_tail(screen_row, screen_cols);
+    style(S_RESET);
+}
+
+/* Cells taken by the widest visible name, so descriptions line up. */
+static size_t popup_name_cells(size_t first, size_t rows) {
+    size_t widest = 0;
+    for (size_t i = first; i < first + rows && i < g_tui.comp_n; i++) {
+        Str name = g_tui.cmds[g_tui.comp_idx[i]].name;
+        size_t cells = 0;
+        for (size_t b = 0; b < name.n;) {
+            i32 width = 0;
+            b += glyph(name.p + b, name.n - b, &width);
+            cells += width > 0 ? (size_t)width : 0;
+        }
+        if (cells > widest) widest = cells;
+    }
+    return widest + 4;   /* "\u203a " marker plus a two-cell gap */
+}
+
+static void paint_completions(size_t top_row, size_t rows, size_t screen_col,
+                              size_t screen_cols, size_t body_cols, b8 force) {
+    if (!rows) return;
+    /* Keep the selection on screen when there are more matches than room. */
+    size_t first = g_tui.comp_sel >= rows ? g_tui.comp_sel - rows + 1 : 0;
+    size_t name_cells = popup_name_cells(first, rows);
+    for (size_t i = 0; i < rows; i++) {
+        const TuiCmd *cmd = &g_tui.cmds[g_tui.comp_idx[first + i]];
+        update_popup_row(top_row + i, cmd->name, cmd->desc,
+                         first + i == g_tui.comp_sel, name_cells, screen_col,
+                         screen_cols, body_cols, force);
+    }
+}
+
 /* The bar spans the transcript's rows in its own column, so it sits outside
  * the row-hash diff and keeps its own one-line cache instead. */
 static void paint_scrollbar(size_t first_row, size_t total_rows,
@@ -696,7 +788,14 @@ static void repaint(void) {
     size_t max_composer = rows > chrome_rows ? rows - chrome_rows : 1;
     if (max_composer > 1) max_composer--; /* always preserve a transcript row */
     if (composer_rows > max_composer) composer_rows = max_composer;
-    size_t transcript_rows = rows - composer_rows - chrome_rows;
+    /* The popup eats into the transcript, never into the composer, and always
+     * leaves one transcript row so the view never collapses entirely. */
+    size_t body_rows = rows > composer_rows + chrome_rows
+                     ? rows - composer_rows - chrome_rows : 1;
+    size_t popup_rows = g_tui.comp_n < TUI_POPUP_ROWS
+                      ? g_tui.comp_n : TUI_POPUP_ROWS;
+    if (popup_rows + 1 > body_rows) popup_rows = body_rows > 1 ? body_rows - 1 : 0;
+    size_t transcript_rows = body_rows - popup_rows;
     if (transcript_rows < 1) transcript_rows = 1;
 
     /* Transcript, pinned to its bottom unless PageUp has moved the viewport. */
@@ -710,10 +809,14 @@ static void repaint(void) {
                      body_col, cols, ROW_PLAIN, force);
     paint_scrollbar(first, all_rows, transcript_rows, cols, force);
 
+    /* Completion popup, sitting between the transcript and the composer. */
+    paint_completions(transcript_rows + 1, popup_rows, body_col, cols,
+                      body_cols, force);
+
     /* Composer, including one quiet row of breathing room on each side. */
     size_t input_first = cursor_row >= composer_rows
                        ? cursor_row - composer_rows + 1 : 0;
-    size_t composer_top_row = transcript_rows + 1;
+    size_t composer_top_row = transcript_rows + popup_rows + 1;
     size_t composer_screen_row = composer_top_row + composer_padding;
     if (composer_padding)
         update_text_row(composer_top_row, (Str){0}, (Str){0}, body_col,
@@ -1098,6 +1201,51 @@ static size_t next_word(const char *buf, size_t n, size_t cur) {
     return cur;
 }
 
+/* Recompute the match list from the composer's text. The popup is offered
+ * while the buffer is a single unfinished word starting with '/', which is
+ * exactly when a command name is still being typed. */
+static void completion_refresh(void) {
+    size_t previous = g_tui.comp_n ? g_tui.comp_idx[g_tui.comp_sel] : SIZE_MAX;
+    g_tui.comp_n = 0;
+    g_tui.comp_sel = 0;
+    if (g_tui.comp_dismissed || !g_tui.cmds || !g_tui.cmd_n) return;
+    Str in = { g_tui.input, g_tui.input_n };
+    if (in.n == 0 || in.p[0] != '/') return;
+    for (size_t i = 0; i < in.n; i++)
+        if (in.p[i] == ' ' || in.p[i] == '\t' || in.p[i] == '\n') return;
+    for (size_t i = 0; i < g_tui.cmd_n && g_tui.comp_n < AH_MAX_COMMANDS; i++) {
+        if (!str_starts_ci(g_tui.cmds[i].name, in)) continue;
+        /* Narrowing the list keeps the highlight on the same command. */
+        if (i == previous) g_tui.comp_sel = g_tui.comp_n;
+        g_tui.comp_idx[g_tui.comp_n++] = (u16)i;
+    }
+}
+
+static void completion_move(i32 delta) {
+    if (!g_tui.comp_n) return;
+    size_t n = g_tui.comp_n;
+    g_tui.comp_sel = (g_tui.comp_sel + (delta > 0 ? 1 : n - 1)) % n;
+}
+
+static void completion_accept(void) {
+    if (!g_tui.comp_n) return;
+    Str name = g_tui.cmds[g_tui.comp_idx[g_tui.comp_sel]].name;
+    size_t n = name.n < sizeof g_tui.input - 1 ? name.n : sizeof g_tui.input - 1;
+    memcpy(g_tui.input, name.p, n);
+    g_tui.input[n] = '\0';
+    g_tui.input_n = n;
+    g_tui.input_cur = n;
+    /* The name is complete: showing the one entry it still matches is noise. */
+    g_tui.comp_n = 0;
+    g_tui.comp_sel = 0;
+    g_tui.comp_dismissed = true;
+}
+
+void tui_set_commands(const TuiCmd *cmds, size_t n) {
+    g_tui.cmds = cmds;
+    g_tui.cmd_n = n < AH_MAX_COMMANDS ? n : AH_MAX_COMMANDS;
+}
+
 /* What a keystroke asked the caller to do; edits are already applied. */
 typedef enum { ED_EDIT = 0, ED_SUBMIT, ED_EOF } EdAction;
 
@@ -1113,6 +1261,19 @@ static EdAction editor_key(i32 c) {
      * keystroke drops the terminal's own selection. */
     b8 keep_sel = false;
 
+    size_t before_n = n;
+
+    /* Popup keys are only stolen while it is open, so Tab and Ctrl-N/P keep
+     * their usual do-nothing behaviour otherwise. Enter completes rather than
+     * submits while a command is still being chosen: the popup has to go away
+     * before a turn can start. */
+    if (g_tui.comp_n
+        && (c == '\t' || c == '\r' || c == '\n' || c == 0x0e || c == 0x10)) {
+        sel_clear();
+        if (c == 0x0e || c == 0x10) completion_move(c == 0x0e ? 1 : -1);
+        else completion_accept();
+        return ED_EDIT;
+    }
     if (c == '\r' || c == '\n') { sel_clear(); return ED_SUBMIT; }
     if (c == 0x04) {
         if (n == 0) return ED_EOF;
@@ -1167,6 +1328,10 @@ static EdAction editor_key(i32 c) {
             sel_extend(g_mouse_row, g_mouse_col); keep_sel = true;
         } else if (key == KEY_MOUSE_UP) {
             sel_finish(); keep_sel = true;
+        } else if (g_tui.comp_n && (key == KEY_DOWN || key == KEY_UP)) {
+            completion_move(key == KEY_DOWN ? 1 : -1);
+        } else if (g_tui.comp_n && key == KEY_NONE) {
+            g_tui.comp_dismissed = true;   /* bare Esc closes the popup */
         } else if (key == KEY_NEWLINE && n + 1 < cap) {
             memmove(buf + cur + 1, buf + cur, n - cur);
             buf[cur++] = '\n'; n++; buf[n] = '\0';
@@ -1181,6 +1346,9 @@ static EdAction editor_key(i32 c) {
     if (!keep_sel) sel_clear();
     g_tui.input_n = n;
     g_tui.input_cur = cur;
+    /* Any change to the text reopens a popup an earlier Esc/Tab closed. */
+    if (n != before_n) g_tui.comp_dismissed = false;
+    completion_refresh();
     return action;
 }
 
@@ -1188,6 +1356,9 @@ static void composer_clear(void) {
     g_tui.input[0] = '\0';
     g_tui.input_n = 0;
     g_tui.input_cur = 0;
+    g_tui.comp_n = 0;
+    g_tui.comp_sel = 0;
+    g_tui.comp_dismissed = false;
 }
 
 /* Drain whatever the terminal already has, without ever blocking. Enter is
@@ -1201,8 +1372,11 @@ void tui_poll_input(void) {
         if (c == -3) { dirty = true; continue; }
         if (c == -2) continue;
         if (c < 0) { g_tui.input_eof = true; break; }
-        /* Enter, Ctrl-C and Ctrl-D belong to the prompt, not to a live turn. */
-        if (c == '\r' || c == '\n' || c == 0x03 || c == 0x04) continue;
+        /* Enter, Ctrl-C and Ctrl-D belong to the prompt, not to a live turn —
+         * except that an open popup makes Enter a completion key, which is
+         * harmless mid-turn since it can never submit. */
+        if ((c == '\r' || c == '\n') && !g_tui.comp_n) continue;
+        if (c == 0x03 || c == 0x04) continue;
         editor_key(c);
         dirty = true;
     }

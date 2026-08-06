@@ -34,6 +34,7 @@ typedef bool     b8;
 #define AH_MAX_TOOLS        64
 #define AH_MAX_TOOL_CALLS   1024        /* per turn                          */
 #define AH_MAX_TOOL_ARGS    8
+#define AH_MAX_COMMANDS     32          /* slash commands offered by the TUI */
 #define AH_LINE_BUF         (1u << 20)  /* 1 MiB input line buffer          */
 #define AH_RESP_BUF         (1u << 22)  /* 4 MiB response accumulation      */
 
@@ -200,6 +201,10 @@ typedef struct {
 i32     provider_run(Provider *p, char *err, size_t err_cap);
 
 /* ---- TUI --------------------------------------------------------------- */
+/* A slash command the composer's completion popup can offer. The table is
+ * owned by the caller (static storage) and only read by the TUI. */
+typedef struct { Str name; Str desc; } TuiCmd;
+void tui_set_commands(const TuiCmd *cmds, size_t n);
 void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count);
 void tui_stop(void);
 void tui_set_status(const char *status);

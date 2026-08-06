@@ -78,8 +78,14 @@ Text is selectable with the mouse anywhere on screen — transcript, composer an
 status line alike. Dragging highlights the range, releasing copies it to the
 system clipboard via OSC 52 (so it works over ssh too) and the status line
 confirms with `copied`; any keystroke drops the highlight. Holding Shift while
-dragging bypasses the app and falls back to the terminal's own selection. `/new` clears the active conversation and `/exit`
-exits. Redirected stdin/stdout automatically falls back to plain text.
+dragging bypasses the app and falls back to the terminal's own selection.
+Redirected stdin/stdout automatically falls back to plain text.
+
+Typing `/` opens a completion popup above the composer listing the slash
+commands; it narrows as you type, Ctrl-N/Ctrl-P (or the arrow keys) move
+through it, Tab and Enter both complete the highlighted entry, and Esc
+dismisses it — nothing is sent while the popup is open. `/new` clears the
+active conversation and `/exit` exits.
 
 The composer stays editable while a turn is running — the request waits on
 stdin alongside its socket — but Enter only sends once the turn is done; the

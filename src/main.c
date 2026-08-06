@@ -32,6 +32,17 @@ static void on_sigint(i32 sig) { (void)sig; g_got_sigint = 1; }
 static alignas(64) u8 g_persist[AH_PERSIST_BYTES];
 static alignas(64) u8 g_scratch[AH_ARENA_BYTES];
 
+/* Slash commands handled below in the prompt loop; the TUI reads this table
+ * to drive the composer's completion popup. */
+static TuiCmd g_commands[AH_MAX_COMMANDS];
+
+static size_t commands_init(void) {
+    size_t n = 0;
+    g_commands[n++] = (TuiCmd){ STR("/new"),  STR("Start a fresh conversation") };
+    g_commands[n++] = (TuiCmd){ STR("/exit"), STR("Quit ah") };
+    return n;
+}
+
 /* Streaming sinks append to the TUI's transcript. */
 static void on_text(Str delta, void *ud) {
     (void)ud;
@@ -105,6 +116,7 @@ i32 main(i32 argc, char **argv) {
 
     setvbuf(stdout, NULL, _IONBF, 0);
     tui_start(cfg.model, cfg.base_url, !cfg.api_key.p, tools.n);
+    tui_set_commands(g_commands, commands_init());
     atexit(tui_stop);
 
     char line[AH_LINE_BUF];
@@ -112,7 +124,7 @@ i32 main(i32 argc, char **argv) {
         size_t ln = 0;
         if (!tui_readline("> ", line, sizeof line, &ln)) break;
         if (ln == 0) { g_got_sigint = 0; continue; }
-        if (!strcmp(line, "/exit") || !strcmp(line, "/q")) break;
+        if (!strcmp(line, "/exit")) break;
         if (!strcmp(line, "/new")) {
             /* Keep the configured system prompt, discard the visible and
              * conversational state. Session persistence will replace this. */
