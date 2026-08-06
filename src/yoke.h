@@ -1,10 +1,10 @@
-/* ah.h — umbrella header for the ah AI coding harness.
+/* yoke.h — umbrella header for the yoke AI coding harness.
  *
  * Every module includes this. Types are data-oriented (SoA) and everything
  * is backed by arenas; no malloc/free appears in the hot path.
  */
-#ifndef AH_H
-#define AH_H
+#ifndef YOKE_H
+#define YOKE_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -25,18 +25,18 @@ typedef float    f32;
 typedef double   f64;
 typedef bool     b8;
 
-#define AH_VERSION "0.1.0"
+#define YOKE_VERSION "0.1.0"
 
 /* ---- capacities (compile-time, no growth) ------------------------------- */
-#define AH_ARENA_BYTES      (1u << 28)  /* 256 MiB scratch arena            */
-#define AH_PERSIST_BYTES    (1u << 26)  /* 64  MiB persistent arena         */
-#define AH_MAX_MESSAGES     4096
-#define AH_MAX_TOOLS        64
-#define AH_MAX_TOOL_CALLS   1024        /* per turn                          */
-#define AH_MAX_TOOL_ARGS    8
-#define AH_MAX_COMMANDS     32          /* slash commands offered by the TUI */
-#define AH_LINE_BUF         (1u << 20)  /* 1 MiB input line buffer          */
-#define AH_RESP_BUF         (1u << 22)  /* 4 MiB response accumulation      */
+#define YOKE_ARENA_BYTES      (1u << 28)  /* 256 MiB scratch arena            */
+#define YOKE_PERSIST_BYTES    (1u << 26)  /* 64  MiB persistent arena         */
+#define YOKE_MAX_MESSAGES     4096
+#define YOKE_MAX_TOOLS        64
+#define YOKE_MAX_TOOL_CALLS   1024        /* per turn                          */
+#define YOKE_MAX_TOOL_ARGS    8
+#define YOKE_MAX_COMMANDS     32          /* slash commands offered by the TUI */
+#define YOKE_LINE_BUF         (1u << 20)  /* 1 MiB input line buffer          */
+#define YOKE_RESP_BUF         (1u << 22)  /* 4 MiB response accumulation      */
 
 /* ---- arenas ------------------------------------------------------------- */
 typedef struct {
@@ -75,17 +75,17 @@ void    buf_json_str(Buf *b, Str s);           /* JSON-escaped string      */
 Str     buf_finish(Buf *b);                    /* nul-terminates, returns   */
 
 /* ---- logging ------------------------------------------------------------ */
-enum { AH_LOG_DEBUG, AH_LOG_INFO, AH_LOG_WARN, AH_LOG_ERROR };
-void    ah_log(i32 level, const char *fmt, ...) __attribute__((format(printf,2,3)));
-void    ah_log_set_level(i32 level);
+enum { YOKE_LOG_DEBUG, YOKE_LOG_INFO, YOKE_LOG_WARN, YOKE_LOG_ERROR };
+void    yoke_log(i32 level, const char *fmt, ...) __attribute__((format(printf,2,3)));
+void    yoke_log_set_level(i32 level);
 /* Whoever owns the terminal owns the log: while the fullscreen UI is up, raw
  * stderr would paint over the frame, so the TUI redirects log lines into the
  * transcript instead. NULL restores plain stderr. */
-typedef void (*AhLogSink)(i32 level, Str msg, void *ud);
-void    ah_log_set_sink(AhLogSink sink, void *ud);
+typedef void (*YokeLogSink)(i32 level, Str msg, void *ud);
+void    yoke_log_set_sink(YokeLogSink sink, void *ud);
 
 /* ---- time --------------------------------------------------------------- */
-f64  ah_now_seconds(void);   /* monotonic                                */
+f64  yoke_now_seconds(void);   /* monotonic                                */
 
 /* ---- JSON ----------------------------------------------------------------
  * Minimal arena-backed DOM. Values live in the arena; no heap.
@@ -153,7 +153,7 @@ typedef struct {
 } ToolDef;
 
 typedef struct {
-    ToolDef *defs;        /* [AH_MAX_TOOLS] SoA: one big array             */
+    ToolDef *defs;        /* [YOKE_MAX_TOOLS] SoA: one big array             */
     size_t   n;
 } ToolRegistry;
 
@@ -227,4 +227,4 @@ void tui_set_busy(b8 busy);
 void tui_poll_input(void);
 i32  tui_input_fd(void);      /* readable-input fd, or -1 when not interactive */
 
-#endif /* AH_H */
+#endif /* YOKE_H */

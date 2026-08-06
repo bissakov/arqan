@@ -1,9 +1,9 @@
-/* config.c — load config from env and ~/.config/ah/config.
+/* config.c — load config from env and ~/.config/yoke/config.
  *
  * Keys: base_url=, model=, api_key=, system_prompt=, max_tokens=, stream=
- * First match wins: env var AH_<KEY> > file value.
+ * First match wins: env var YOKE_<KEY> > file value.
  */
-#include "ah.h"
+#include "yoke.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,10 +33,10 @@ b8 config_load(Config *c, Arena *persist) {
     c->max_tokens = 4096;
     c->stream     = true;
 
-    Str env_base = env_str(persist, "AH_BASE_URL");
-    Str env_model = env_str(persist, "AH_MODEL");
-    Str env_key   = env_str(persist, "AH_API_KEY");
-    Str env_sys   = env_str(persist, "AH_SYSTEM_PROMPT");
+    Str env_base = env_str(persist, "YOKE_BASE_URL");
+    Str env_model = env_str(persist, "YOKE_MODEL");
+    Str env_key   = env_str(persist, "YOKE_API_KEY");
+    Str env_sys   = env_str(persist, "YOKE_SYSTEM_PROMPT");
 
     /* read config file into a scratch arena */
     Arena scratch;
@@ -50,7 +50,7 @@ b8 config_load(Config *c, Arena *persist) {
         home = h;
     }
     char path[1024];
-    snprintf(path, sizeof path, "%s/ah/config", home);
+    snprintf(path, sizeof path, "%s/yoke/config", home);
 
     FILE *f = fopen(path, "rb");
     if (f) {
@@ -91,7 +91,7 @@ b8 config_load(Config *c, Arena *persist) {
 
     if (!c->system_prompt.p) {
         c->system_prompt = str_c(
-            "You are ah, a terminal coding agent. You edit files using tools.\n"
+            "You are yoke, a terminal coding agent. You edit files using tools.\n"
             "Call tools to accomplish the user's task. Be concise.\n");
     }
 

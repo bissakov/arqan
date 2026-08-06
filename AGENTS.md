@@ -1,6 +1,6 @@
 ## What this is
 
-`ah` is a terminal AI coding agent written in plain C17 — a minimal counterpoint
+`yoke` is a terminal AI coding agent written in plain C17 — a minimal counterpoint
 to Claude Code / Codex / OpenCode. It talks to any OpenAI-compatible
 chat-completions endpoint, streams responses via SSE, and exposes a small
 built-in tool registry (read/write/bash/edit) that the model can call.
@@ -8,7 +8,7 @@ built-in tool registry (read/write/bash/edit) that the model can call.
 ## Build & run
 
 ```
-make            # builds bin/ah
+make            # builds bin/yoke
 make run        # builds and runs
 make test       # end-to-end TUI tests (Python 3, no third-party packages)
 make clean      # removes build/ and bin/
@@ -17,12 +17,12 @@ make clean      # removes build/ and bin/
 There is no linter target — `CFLAGS` already includes `-Wall -Wextra
 -Wpedantic -Wconversion`, so treat new warnings as build failures.
 
-Runtime config comes from env vars or `~/.config/ah/config`:
+Runtime config comes from env vars or `~/.config/yoke/config`:
 
 ```
-export AH_BASE_URL=https://api.openai.com/v1
-export AH_MODEL=gpt-4o-mini
-export AH_API_KEY=sk-...
+export YOKE_BASE_URL=https://api.openai.com/v1
+export YOKE_MODEL=gpt-4o-mini
+export YOKE_API_KEY=sk-...
 ```
 
 (see `config.c` for the full key set and precedence).
@@ -34,13 +34,13 @@ translation unit; the Makefile compiles exactly one object and links once.
 When adding a new module, add the `.c` file and `#include` it from `main.c` —
 do not add it to a separate compile unit or the Makefile's `$(SRC)`.
 
-`src/ah.h` is the single umbrella header: every type, struct, and function
+`src/yoke.h` is the single umbrella header: every type, struct, and function
 signature used across modules lives there. Read it first when orienting —
 it's a complete map of the data model without needing to open every `.c`.
 
 **Data-oriented, no heap after startup.** Two large blocks are obtained once
 via static arrays in `main.c` (`g_persist`, `g_scratch`, sized by
-`AH_PERSIST_BYTES` / `AH_ARENA_BYTES` in `ah.h`) and wrapped in `Arena`s.
+`YOKE_PERSIST_BYTES` / `YOKE_ARENA_BYTES` in `yoke.h`) and wrapped in `Arena`s.
 All conversation state, tool registry entries, and JSON parsing live in one
 of these two arenas — `persist` for data that must survive the whole
 session, `scratch` for per-turn work that's thrown away via `arena_reset`
@@ -49,7 +49,7 @@ path (libcurl's internal allocations are the one exception, outside our
 control). New features should follow this: allocate from the right arena
 up front rather than introducing dynamic allocation.
 
-**SoA everywhere.** Conversation messages (`Conv` in `ah.h`), the tool
+**SoA everywhere.** Conversation messages (`Conv` in `yoke.h`), the tool
 registry (`ToolRegistry`), and other hot collections are structure-of-arrays
 (parallel arrays indexed by id), not arrays-of-structs. When extending
 `Conv` or `ToolRegistry`, add a new parallel array rather than switching to
@@ -62,7 +62,7 @@ an AoS layout.
   `provider.c`. Runs the transfer on the multi interface so one wait covers
   both curl's sockets and `HttpReq.idle_fd` (stdin), calling `on_idle` after
   every wait — that is what keeps the UI live mid-request, single-threaded
-- `config.c` — loads `Config` from env vars then `~/.config/ah/config`
+- `config.c` — loads `Config` from env vars then `~/.config/yoke/config`
 - `tools.c` — the `ToolRegistry` and the four built-in tools (read/write/bash/edit)
 - `provider.c` — OpenAI-compatible chat-completions streaming client; parses
   SSE deltas into text/tool-call callbacks and appends to `Conv`
@@ -91,11 +91,11 @@ while the model streams.
 **Adding a tool:** implement a `b8 (*run)(Str args_json, Arena *scratch, Buf
 *out, char *err, size_t err_cap)` function in `tools.c`, register it (name +
 description + JSON schema fragment) in `tools_init`, capped by
-`AH_MAX_TOOLS`.
+`YOKE_MAX_TOOLS`.
 
 ## Tests
 
-`tests/` drives the real `bin/ah` inside a pseudo-terminal against a dummy
+`tests/` drives the real `bin/yoke` inside a pseudo-terminal against a dummy
 OpenAI-compatible provider, replaying its output through a small terminal
 emulator. Assertions are made against the rendered screen, not escape
 sequences; `tests/golden/` holds expected screen dumps (`make test-update`

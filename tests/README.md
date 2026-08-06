@@ -1,6 +1,6 @@
 # Tests
 
-End-to-end tests for the terminal UI. `bin/ah` runs unmodified inside a
+End-to-end tests for the terminal UI. `bin/yoke` runs unmodified inside a
 pseudo-terminal, talking to a dummy OpenAI-compatible provider, and every byte
 it writes is replayed into a small terminal emulator. Assertions are therefore
 made against *what a user would see* — never against escape sequences.
@@ -29,7 +29,7 @@ waiting, so the suite is bounded by its slowest case, not by their sum.
 | `run.py` | discovery, isolation, reporting; the whole test framework |
 | `context.py` | per-test fixture: temp `HOME`/cwd, mock provider, pty sessions, golden files |
 | `harness/vt.py` | terminal emulator: CUP/ED/EL/SGR, alt screen, DEC modes, OSC 52 |
-| `harness/session.py` | spawns `ah` on a pty, sends keys, waits on screen states |
+| `harness/session.py` | spawns `yoke` on a pty, sends keys, waits on screen states |
 | `harness/keys.py` | symbolic key names and SGR mouse reports to bytes |
 | `mockprovider/server.py` | the dummy provider |
 | `mockprovider/lorem.py` | deterministic lorem ipsum (own LCG, so seeds are stable) |
@@ -45,7 +45,7 @@ fresh mock provider on an ephemeral port and a scrubbed environment.
 def test_something(ctx):
     """One line describing the behaviour, shown by the runner."""
     ctx.scenario("text=hello+there")       # what the provider will stream
-    s = ctx.spawn()                        # ah on an 80x24 pty
+    s = ctx.spawn()                        # yoke on an 80x24 pty
     s.submit("say hi")                     # type + Enter, returns once accepted
     s.wait_text("hello there")
     s.wait_turn_done()
@@ -68,7 +68,7 @@ Nothing sleeps for a fixed time; tests wait for states.
 “Quiet” means no output for a short window. The window has to outlast the
 largest gap the frames being waited on can contain, so it follows the
 scenario: a bare one settles in 60 ms, and `delay=` widens it to 2.5× the
-pacing. Set `AH_TEST_QUIET=0.2` to raise the floor on a machine too slow or
+pacing. Set `YOKE_TEST_QUIET=0.2` to raise the floor on a machine too slow or
 too loaded for the default.
 
 The environment is pinned so the rendered frame is reproducible: fixed
@@ -122,13 +122,13 @@ without an API key:
 ```
 make mock MOCK_ARGS="--port 8080 --scenario words=80,chunk=2,delay=0.05"
 
-AH_BASE_URL=http://127.0.0.1:8080/v1 AH_API_KEY=x AH_MODEL=mock ./bin/ah
+YOKE_BASE_URL=http://127.0.0.1:8080/v1 YOKE_API_KEY=x YOKE_MODEL=mock ./bin/yoke
 ```
 
 The model name doubles as a scenario, so you can change the reply without
 restarting the server:
 
 ```
-AH_MODEL='lorem:words=200,chunk=1,delay=0.02' ./bin/ah
-AH_MODEL='lorem:tool=bash:{"command":"ls"},final_text=there+you+go' ./bin/ah
+YOKE_MODEL='lorem:words=200,chunk=1,delay=0.02' ./bin/yoke
+YOKE_MODEL='lorem:tool=bash:{"command":"ls"},final_text=there+you+go' ./bin/yoke
 ```

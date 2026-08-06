@@ -3,21 +3,21 @@
 |
 |
 |
-|                                        _
-|                                   __ _| |__
-|                                  / _` | '_ \
-|                                 | (_| | | | |
-|                                  \__,_|_| |_|
+|                                          _
+|                              _   _  ___ | | _____
+|                             | | | |/ _ \| |/ / _ \
+|                             | |_| | (_) |   <  __/
+|                              \__, |\___/|_|\_\___|
+|                              |___/
 |
-|                    ah 0.1.0 · a tiny terminal coding agent
+|                   yoke 0.1.0 · a tiny terminal coding agent
 |
 |                    type a message and press Enter to begin
 |
 |
 |
 |
-|
-|  › /exit  Quit ah
+|  › /exit  Quit yoke
 |
 |  › /e
 |

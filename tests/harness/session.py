@@ -1,4 +1,4 @@
-"""Drive `ah` inside a pseudo-terminal and observe the rendered screen.
+"""Drive `yoke` inside a pseudo-terminal and observe the rendered screen.
 
 The pty gives the binary a real tty (so it takes the fullscreen path and
 enables raw mode), and every byte it writes is replayed into the emulator in
@@ -28,12 +28,12 @@ from . import keys as K
 from .vt import Terminal
 
 # A quiet window has to outlast the largest gap the frames it waits on can
-# have; below that floor we are only bridging one repaint, which `ah` emits as
+# have; below that floor we are only bridging one repaint, which `yoke` emits as
 # a single write. Scenarios that pace their deltas widen it (see `Ctx.quiet`),
-# and AH_TEST_QUIET raises the floor for machines too slow for the default.
-QUIET = max(0.06, float(os.environ.get("AH_TEST_QUIET") or 0))
+# and YOKE_TEST_QUIET raises the floor for machines too slow for the default.
+QUIET = max(0.06, float(os.environ.get("YOKE_TEST_QUIET") or 0))
 
-# `ah` keeps ISIG on, so Ctrl-C is a signal from the line discipline, not a
+# `yoke` keeps ISIG on, so Ctrl-C is a signal from the line discipline, not a
 # byte — which only happens if the child owns the pty as its controlling
 # terminal. setsid(1) does the setsid + TIOCSCTTY dance before exec with no
 # Python in between, which matters because cases run in parallel threads and
@@ -53,7 +53,7 @@ class Session:
         cwd=None,
         cols=80,
         rows=24,
-        name="ah",
+        name="yoke",
         quiet=QUIET,
     ):
         self.argv = list(argv)
@@ -327,7 +327,7 @@ class Session:
             self.term.row_text(last - count + 1 + i).rstrip() for i in range(count)
         ]
 
-    PLACEHOLDER = "Message ah\u2026"
+    PLACEHOLDER = "Message yoke\u2026"
 
     def transcript_height(self, composer_rows: int = 1, popup_rows: int = 0) -> int:
         """Rows the transcript occupies, from the fixed bottom chrome.

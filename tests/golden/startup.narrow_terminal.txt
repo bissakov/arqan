@@ -1,17 +1,17 @@
 --- screen 48x16 ---
 |
-|                        _
-|                   __ _| |__
-|                  / _` | '_ \
-|                 | (_| | | | |
-|                  \__,_|_| |_|
-|
-|    ah 0.1.0 · a tiny terminal coding agent
-|
-|    type a message and press Enter to begin
 |
 |
-|  › Message ah…
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|  › Message yoke…
 |
 |
 |  ●  ready · mock-model · local · work · -

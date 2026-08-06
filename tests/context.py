@@ -2,7 +2,7 @@
 
 Every test gets a fresh temp directory, a fresh mock server on an ephemeral
 port and a fresh request log, so tests never observe each other. The
-environment handed to `ah` is scrubbed down to a fixed set of variables — the
+environment handed to `yoke` is scrubbed down to a fixed set of variables — the
 status line renders the cwd and the model name, so anything leaking in from
 the developer's shell would show up in a golden file.
 """
@@ -21,7 +21,7 @@ from .harness.session import QUIET
 from .mockprovider import MockProvider, Scenario
 
 ROOT = Path(__file__).resolve().parent.parent
-BIN = ROOT / "bin" / "ah"
+BIN = ROOT / "bin" / "yoke"
 GOLDEN = Path(__file__).resolve().parent / "golden"
 
 # Enough room for the status line's model · provider · cwd · tokens groups.
@@ -38,7 +38,7 @@ class Ctx:
         self.case = case
         self.update = update
         self.keep = keep
-        self.tmp = Path(tempfile.mkdtemp(prefix="ah-test-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="yoke-test-"))
         # realpath: getcwd(3) resolves symlinks, and the status line shows it
         self.tmp = Path(os.path.realpath(self.tmp))
         self.home = self.tmp / "home"
@@ -73,7 +73,7 @@ class Ctx:
         return p
 
     def write_config(self, content: str) -> Path:
-        p = self.xdg / "ah" / "config"
+        p = self.xdg / "yoke" / "config"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
         return p
@@ -90,10 +90,10 @@ class Ctx:
             # Colour stays on: the UI encodes the turn state in the status
             # bullet's colour and nowhere in text, so tests need the attribute
             # grid. Golden snapshots only record glyphs, so they are unaffected.
-            "AH_BASE_URL": self.mock.base_url,
-            "AH_API_KEY": "test-key",
-            "AH_MODEL": "mock-model",
-            "AH_SYSTEM_PROMPT": "You are a test fixture.",
+            "YOKE_BASE_URL": self.mock.base_url,
+            "YOKE_API_KEY": "test-key",
+            "YOKE_MODEL": "mock-model",
+            "YOKE_SYSTEM_PROMPT": "You are a test fixture.",
         }
         for k, v in overrides.items():
             if v is None:
@@ -110,7 +110,7 @@ class Ctx:
         wait: bool = True,
         **env_overrides,
     ) -> Session:
-        """Start `ah` on a pty and wait for the first frame."""
+        """Start `yoke` on a pty and wait for the first frame."""
         s = Session(
             [str(BIN)],
             env=self.env(**env_overrides),
@@ -126,14 +126,14 @@ class Ctx:
             # The placeholder is the one piece of chrome that is always there
             # and never depends on the configured model or provider.
             s.wait_for(
-                lambda t: t.contains("Message ah") or t.contains("\u203a "),
+                lambda t: t.contains("Message yoke") or t.contains("\u203a "),
                 "first frame",
             )
             s.settle()
         return s
 
     def run_piped(self, stdin_text: str, timeout: float = 15.0, **env_overrides):
-        """Run `ah` with pipes instead of a tty (the line-oriented path)."""
+        """Run `yoke` with pipes instead of a tty (the line-oriented path)."""
         return subprocess.run(
             [str(BIN)],
             input=stdin_text,

@@ -1,6 +1,6 @@
 """A dummy OpenAI-compatible chat-completions provider.
 
-Speaks just enough of the API for `ah`: `POST /v1/chat/completions` with
+Speaks just enough of the API for `yoke`: `POST /v1/chat/completions` with
 `stream: true`, SSE deltas, tool calls, `stream_options.include_usage` and
 `[DONE]`. The body is lorem ipsum whose length, chunking and pacing come from
 a scenario, so a test can ask for "40 words in 5-word chunks, 20 ms apart,
@@ -10,14 +10,14 @@ Two ways to pick a scenario:
 
   * server default — `MockProvider(scenario="words=40,chunk=5")`, used by the
     test harness so the status line keeps a clean model name;
-  * the model name itself — `AH_MODEL=lorem:words=40,delay=0.02`, which makes
+  * the model name itself — `YOKE_MODEL=lorem:words=40,delay=0.02`, which makes
     the server useful standalone with no test code in the loop.
 
 Standalone:
 
     python3 -m tests.mockprovider.server --port 8080 --scenario words=80
 
-    AH_BASE_URL=http://127.0.0.1:8080/v1 AH_API_KEY=x AH_MODEL=mock ./bin/ah
+    YOKE_BASE_URL=http://127.0.0.1:8080/v1 YOKE_API_KEY=x YOKE_MODEL=mock ./bin/yoke
 """
 
 from __future__ import annotations
@@ -383,7 +383,7 @@ class _Server(ThreadingHTTPServer):
 
 
 class MockProvider:
-    """Owns the background server; `base_url` plugs straight into AH_BASE_URL."""
+    """Owns the background server; `base_url` plugs straight into YOKE_BASE_URL."""
 
     def __init__(self, scenario: str | Scenario | None = None, host="127.0.0.1", port=0):
         self.httpd = _Server((host, port), _Handler)
@@ -473,7 +473,7 @@ def main(argv=None):
     mock.httpd.verbose = args.verbose  # type: ignore[attr-defined]
     print(f"mock provider on {mock.base_url}  scenario: {args.scenario}")
     print(
-        f"  AH_BASE_URL={mock.base_url} AH_API_KEY=test AH_MODEL=mock ./bin/ah"
+        f"  YOKE_BASE_URL={mock.base_url} YOKE_API_KEY=test YOKE_MODEL=mock ./bin/yoke"
     )
     mock.start()
     try:

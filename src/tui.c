@@ -5,7 +5,7 @@
  * provider output never writes through the UI and corrupts the composer.
  * Pipes keep the conventional line-oriented behaviour.
  */
-#include "ah.h"
+#include "yoke.h"
 
 #include <errno.h>
 #include <locale.h>
@@ -72,14 +72,14 @@ typedef struct {
     b8 bar_valid;
     /* The composer outlives a single tui_readline: text typed while a turn is
      * running is still here when the next prompt opens. */
-    char input[AH_LINE_BUF];
+    char input[YOKE_LINE_BUF];
     size_t input_n;
     size_t input_cur;
     /* Slash-command completion: the registered table plus the filtered view
      * of it the popup is currently showing. */
     const TuiCmd *cmds;
     size_t cmd_n;
-    u16 comp_idx[AH_MAX_COMMANDS];   /* matches, as indices into cmds       */
+    u16 comp_idx[YOKE_MAX_COMMANDS];   /* matches, as indices into cmds       */
     size_t comp_n;
     size_t comp_sel;
     b8 comp_dismissed;               /* Esc/Tab closed it until text changes */
@@ -391,7 +391,7 @@ static void sel_copy(void) {
     b64_put((const u8 *)g_tui.sel_text, n);
     put_str("\a");
     flush_out();
-    g_tui.copy_notice = ah_now_seconds() + 2.0;
+    g_tui.copy_notice = yoke_now_seconds() + 2.0;
 }
 
 static void sel_clear(void) {
@@ -576,7 +576,7 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
         size_t body = screen_cols > gutter * 2 ? screen_cols - gutter * 2 : 0;
         size_t room = body > 2 ? body - 2 : 0;
         style(S_PANEL_BG S_MUTED);
-        put_safe_clipped(STR("Message ah…"), room, NULL);
+        put_safe_clipped(STR("Message yoke…"), room, NULL);
     } else if (kind == ROW_USER) {
         style(S_BLUE); put_text_z("●  "); put_text(text.p, text.n);
     } else if (kind == ROW_ASSISTANT) {
@@ -729,13 +729,14 @@ typedef struct { Str text; b8 art; } WelcomeLine;
  * initializer; spell the braces out instead. */
 #define WLINE(lit, is_art) { { (lit), sizeof(lit) - 1 }, (is_art) }
 static const WelcomeLine k_welcome[] = {
-    WLINE("       _",      true),
-    WLINE("  __ _| |__",   true),
-    WLINE(" / _` | '_ \\", true),
-    WLINE("| (_| | | | |", true),
-    WLINE(" \\__,_|_| |_|", true),
+    WLINE("             _",         true),
+    WLINE(" _   _  ___ | | _____",  true),
+    WLINE("| | | |/ _ \\| |/ / _ \\", true),
+    WLINE("| |_| | (_) |   <  __/", true),
+    WLINE(" \\__, |\\___/|_|\\_\\___|", true),
+    WLINE(" |___/",                 true),
     WLINE("",              false),
-    WLINE("ah " AH_VERSION " · a tiny terminal coding agent", false),
+    WLINE("yoke " YOKE_VERSION " · a tiny terminal coding agent", false),
     WLINE("",              false),
     WLINE("type a message and press Enter to begin",          false),
 };
@@ -831,7 +832,7 @@ static Str format_context_size(char *buf, size_t cap) {
 
 static void repaint(void) {
     if (!g_tui.fullscreen) return;
-    g_tui.last_paint = ah_now_seconds();
+    g_tui.last_paint = yoke_now_seconds();
 
     size_t rows, cols;
     screen_size(&rows, &cols);
@@ -1032,8 +1033,8 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count) {
         g_tui.raw = true;
         char banner[512];
         i32 n = snprintf(banner, sizeof banner,
-                         "ah %s · model=%.*s base=%.*s tools=%zu\n",
-                         AH_VERSION, (i32)model.n, model.p,
+                         "yoke %s · model=%.*s base=%.*s tools=%zu\n",
+                         YOKE_VERSION, (i32)model.n, model.p,
                          (i32)base_url.n, base_url.p, tool_count);
         if (n > 0) put_raw(banner, (size_t)n < sizeof banner
                                    ? (size_t)n : sizeof banner - 1);
@@ -1067,7 +1068,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count) {
 
     g_tui.raw = true;
     g_tui.fullscreen = true;
-    ah_log_set_sink(tui_log_sink, NULL);
+    yoke_log_set_sink(tui_log_sink, NULL);
     /* The composer is always live: it owns the cursor for the whole session. */
     g_tui.editing = true;
     /* 1002 reports drags (not just clicks) and 1006 keeps coordinates exact
@@ -1079,7 +1080,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count) {
 
 void tui_stop(void) {
     if (!g_tui.raw) return;
-    ah_log_set_sink(NULL, NULL);
+    yoke_log_set_sink(NULL, NULL);
     if (g_tui.fullscreen) {
         put_str("\033[?1006l\033[?1002l\033[?25h\033[?7h\033[?1049l");
         flush_out();
@@ -1175,7 +1176,7 @@ void tui_write(Str s) {
     /* SSE can deliver many tiny deltas. Row diffing keeps each paint small,
      * and 15 Hz is plenty for readable text streaming. Newlines/status
      * changes still make the final state visible immediately. */
-    f64 now = ah_now_seconds();
+    f64 now = yoke_now_seconds();
     b8 has_newline = memchr(s.p, '\n', s.n) != NULL;
     if (g_winch || has_newline || now - g_tui.last_paint >= 1.0 / 15.0)
         repaint();
@@ -1320,7 +1321,7 @@ static void completion_refresh(void) {
     if (in.n == 0 || in.p[0] != '/') return;
     for (size_t i = 0; i < in.n; i++)
         if (in.p[i] == ' ' || in.p[i] == '\t' || in.p[i] == '\n') return;
-    for (size_t i = 0; i < g_tui.cmd_n && g_tui.comp_n < AH_MAX_COMMANDS; i++) {
+    for (size_t i = 0; i < g_tui.cmd_n && g_tui.comp_n < YOKE_MAX_COMMANDS; i++) {
         if (!str_starts_ci(g_tui.cmds[i].name, in)) continue;
         /* Narrowing the list keeps the highlight on the same command. */
         if (i == previous) g_tui.comp_sel = g_tui.comp_n;
@@ -1360,7 +1361,7 @@ static void completion_accept(void) {
 
 void tui_set_commands(const TuiCmd *cmds, size_t n) {
     g_tui.cmds = cmds;
-    g_tui.cmd_n = n < AH_MAX_COMMANDS ? n : AH_MAX_COMMANDS;
+    g_tui.cmd_n = n < YOKE_MAX_COMMANDS ? n : YOKE_MAX_COMMANDS;
 }
 
 /* What a keystroke asked the caller to do; edits are already applied. */

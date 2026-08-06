@@ -1,4 +1,4 @@
-/* main.c — ah entry point. Unity build: includes every module as one TU.
+/* main.c — yoke entry point. Unity build: includes every module as one TU.
  *
  * Memory plan (all startup-time, no later heap):
  *   - two big blocks from aligned_alloc: persistent (messages) + scratch
@@ -9,7 +9,7 @@
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE 1
 
-#include "ah.h"
+#include "yoke.h"
 
 /* Unity includes — single translation unit. */
 #include "core.c"
@@ -29,17 +29,17 @@ static volatile sig_atomic_t g_got_sigint = 0;
 static void on_sigint(i32 sig) { (void)sig; g_got_sigint = 1; }
 
 /* static backing storage — no heap malloc in our code path */
-static alignas(64) u8 g_persist[AH_PERSIST_BYTES];
-static alignas(64) u8 g_scratch[AH_ARENA_BYTES];
+static alignas(64) u8 g_persist[YOKE_PERSIST_BYTES];
+static alignas(64) u8 g_scratch[YOKE_ARENA_BYTES];
 
 /* Slash commands handled below in the prompt loop; the TUI reads this table
  * to drive the composer's completion popup. */
-static TuiCmd g_commands[AH_MAX_COMMANDS];
+static TuiCmd g_commands[YOKE_MAX_COMMANDS];
 
 static size_t commands_init(void) {
     size_t n = 0;
     g_commands[n++] = (TuiCmd){ STR("/clear"), STR("Start a fresh conversation") };
-    g_commands[n++] = (TuiCmd){ STR("/exit"), STR("Quit ah") };
+    g_commands[n++] = (TuiCmd){ STR("/exit"), STR("Quit yoke") };
     return n;
 }
 
@@ -105,7 +105,7 @@ i32 main(i32 argc, char **argv) {
     tools_init(&tools, &persist);
 
     Conv conv;
-    conv_init(&conv, &persist, AH_MAX_MESSAGES);
+    conv_init(&conv, &persist, YOKE_MAX_MESSAGES);
 
     /* seed system prompt */
     conv_add(&conv, M_SYSTEM, cfg.system_prompt);
@@ -121,7 +121,7 @@ i32 main(i32 argc, char **argv) {
     tui_set_commands(g_commands, commands_init());
     atexit(tui_stop);
 
-    char line[AH_LINE_BUF];
+    char line[YOKE_LINE_BUF];
     for (;;) {
         size_t ln = 0;
         if (!tui_readline("> ", line, sizeof line, &ln)) break;

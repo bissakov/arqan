@@ -3,7 +3,7 @@
  * DOM lives entirely in the scratch arena. Objects are a singly linked list of
  * members (ordered). Arrays are contiguous JVal arrays.
  */
-#include "ah.h"
+#include "yoke.h"
 
 #include <stdio.h>
 #include <string.h>

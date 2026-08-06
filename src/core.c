@@ -1,5 +1,5 @@
 /* core.c — arena, strings, buffers, logging, time. */
-#include "ah.h"
+#include "yoke.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,7 +22,7 @@ void *arena_alloc(Arena *a, size_t n, size_t align) {
     size_t p = align_up(a->off, align);
     size_t end = p + n;
     if (end > a->cap) {
-        ah_log(AH_LOG_ERROR, "arena OOM: need %zu, have %zu", end, a->cap);
+        yoke_log(YOKE_LOG_ERROR, "arena OOM: need %zu, have %zu", end, a->cap);
         return NULL;
     }
     a->off = end;
@@ -70,7 +70,7 @@ void buf_grow(Buf *b, size_t need) {
     size_t nc = b->cap ? b->cap : 64;
     while (nc < need) nc *= 2;
     char *np = (char *)arena_alloc(b->a, nc, 1);
-    if (!np) { ah_log(AH_LOG_ERROR, "buf OOM"); return; }
+    if (!np) { yoke_log(YOKE_LOG_ERROR, "buf OOM"); return; }
     memcpy(np, b->p, b->n);
     b->p = np; b->cap = nc;
 }
@@ -125,12 +125,12 @@ Str buf_finish(Buf *b) {
 }
 
 /* ---- logging ------------------------------------------------------------ */
-static i32 g_level = AH_LOG_INFO;
-static AhLogSink g_log_sink;
+static i32 g_level = YOKE_LOG_INFO;
+static YokeLogSink g_log_sink;
 static void *g_log_ud;
-void ah_log_set_level(i32 level) { g_level = level; }
-void ah_log_set_sink(AhLogSink sink, void *ud) { g_log_sink = sink; g_log_ud = ud; }
-void ah_log(i32 level, const char *fmt, ...) {
+void yoke_log_set_level(i32 level) { g_level = level; }
+void yoke_log_set_sink(YokeLogSink sink, void *ud) { g_log_sink = sink; g_log_ud = ud; }
+void yoke_log(i32 level, const char *fmt, ...) {
     if (level < g_level) return;
     static const char *tags[] = {"DBG","INF","WRN","ERR"};
     char msg[512];
@@ -139,11 +139,11 @@ void ah_log(i32 level, const char *fmt, ...) {
     va_end(ap);
     size_t n = w > 0 ? ((size_t)w < sizeof msg ? (size_t)w : sizeof msg - 1) : 0;
     if (g_log_sink) { g_log_sink(level, (Str){ msg, n }, g_log_ud); return; }
-    fprintf(stderr, "[ah %s] %.*s\n", tags[level], (i32)n, msg);
+    fprintf(stderr, "[yoke %s] %.*s\n", tags[level], (i32)n, msg);
 }
 
 /* ---- time --------------------------------------------------------------- */
-f64 ah_now_seconds(void) {
+f64 yoke_now_seconds(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (f64)ts.tv_sec + (f64)ts.tv_nsec * 1e-9;

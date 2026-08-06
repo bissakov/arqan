@@ -4,7 +4,7 @@
  * an error buffer. No tool allocates on the heap; everything uses the scratch
  * arena (reset per turn by the agent loop).
  */
-#include "ah.h"
+#include "yoke.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -126,7 +126,7 @@ static b8 tool_edit(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
 
 /* ---- registry ---- */
 void tools_init(ToolRegistry *r, Arena *persist) {
-    r->defs = arena_new(persist, ToolDef, AH_MAX_TOOLS);
+    r->defs = arena_new(persist, ToolDef, YOKE_MAX_TOOLS);
     r->n = 0;
 #define ADD(nm, dsc, sch, fn) do { \
     r->defs[r->n].name = STR(nm); \

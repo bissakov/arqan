@@ -1,4 +1,4 @@
-# ah — a C17 AI coding harness
+# yoke
 
 A terminal AI coding agent written in plain C17, designed as a counterpoint to
 Claude Code, Codex, OpenCode and Pi.
@@ -21,11 +21,11 @@ Claude Code, Codex, OpenCode and Pi.
 
 ```
 src/
-  ah.h            single umbrella header (all types + fwd decls)
+  yoke.h            single umbrella header (all types + fwd decls)
   core.c          arena, Str, slices, log, time, dynamic arrays in arenas
   json.c          tiny arena JSON parser + serializer
   http.c          libcurl streaming POST (SSE)
-  config.c        env + ~/.config/ah/config loader
+  config.c        env + ~/.config/yoke/config loader
   provider.c      OpenAI-compatible chat-completions streaming + tool deltas
   tools.c         SoA tool registry + read/write/bash/edit tools
   tui.c           alternate-screen TUI, viewport, composer + raw input
@@ -46,18 +46,18 @@ under a second.
 
 ```
 make
-./ah
+./yoke
 ```
 
 Set at least a base URL, model and API key, e.g.:
 
 ```
-export AH_BASE_URL=https://api.openai.com/v1
-export AH_MODEL=gpt-4o-mini
-export AH_API_KEY=sk-...
+export YOKE_BASE_URL=https://api.openai.com/v1
+export YOKE_MODEL=gpt-4o-mini
+export YOKE_API_KEY=sk-...
 ```
 
-or put them in `~/.config/ah/config`:
+or put them in `~/.config/yoke/config`:
 
 ```
 base_url=https://api.openai.com/v1
@@ -73,7 +73,7 @@ make test T="-k composer"    # run matching cases
 make test-update             # accept intended golden-screen changes
 ```
 
-`bin/ah` runs unmodified inside a pseudo-terminal against a dummy
+`bin/yoke` runs unmodified inside a pseudo-terminal against a dummy
 OpenAI-compatible provider, and its output is replayed into a small terminal
 emulator — so the tests assert on the rendered screen rather than on escape
 sequences. The provider streams customisable lorem ipsum, tool calls, token
@@ -82,7 +82,7 @@ hand without an API key:
 
 ```
 make mock MOCK_ARGS="--port 8080 --scenario words=80,chunk=2,delay=0.05"
-AH_BASE_URL=http://127.0.0.1:8080/v1 AH_API_KEY=x AH_MODEL=mock ./bin/ah
+YOKE_BASE_URL=http://127.0.0.1:8080/v1 YOKE_API_KEY=x YOKE_MODEL=mock ./bin/yoke
 ```
 
 See `tests/README.md` for the scenario language and how to write a case.

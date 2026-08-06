@@ -3,7 +3,7 @@
  * We hand libcurl a write callback that buffers into a small stack buffer and
  * emits one line at a time to on_line. No heap use on our side.
  */
-#include "ah.h"
+#include "yoke.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -49,7 +49,7 @@ static size_t header_cb(char *p, size_t sz, size_t n, void *ud) {
 
 i32 http_sse_post(const HttpReq *r) {
     CURL *curl = curl_easy_init();
-    if (!curl) { ah_log(AH_LOG_ERROR, "curl init failed"); return 1; }
+    if (!curl) { yoke_log(YOKE_LOG_ERROR, "curl init failed"); return 1; }
 
     /* build URL: base_url + "/chat/completions" */
     size_t url_len = strlen(r->base_url) + 32;
@@ -81,7 +81,7 @@ i32 http_sse_post(const HttpReq *r) {
         curl_slist_free_all(hdrs);
         curl_easy_cleanup(curl);
         free(url);
-        ah_log(AH_LOG_ERROR, "curl multi init failed");
+        yoke_log(YOKE_LOG_ERROR, "curl multi init failed");
         return 1;
     }
     curl_multi_add_handle(multi, curl);
@@ -99,7 +99,7 @@ i32 http_sse_post(const HttpReq *r) {
                                  HTTP_POLL_MS, &numfds);
         }
         if (mc != CURLM_OK) {
-            ah_log(AH_LOG_ERROR, "curl multi: %s", curl_multi_strerror(mc));
+            yoke_log(YOKE_LOG_ERROR, "curl multi: %s", curl_multi_strerror(mc));
             rc = CURLE_RECV_ERROR;
             break;
         }
@@ -125,7 +125,7 @@ i32 http_sse_post(const HttpReq *r) {
 
     if (interrupted) return 3; /* expected user cancellation */
     if (rc != CURLE_OK) {
-        ah_log(AH_LOG_ERROR, "curl: %s", curl_easy_strerror(rc));
+        yoke_log(YOKE_LOG_ERROR, "curl: %s", curl_easy_strerror(rc));
         return 2;
     }
     if (http < 200 || http >= 300) {

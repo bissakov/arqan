@@ -8,7 +8,7 @@ def test_popup_opens_on_slash(ctx):
     text = s.text()
     assert "/clear" in text and "/exit" in text, text
     assert "Start a fresh conversation" in text, text
-    assert "Quit ah" in text, text
+    assert "Quit yoke" in text, text
     ctx.check_screen(s)
 
 
@@ -49,7 +49,7 @@ def test_tab_accepts_selection(ctx):
     s.type("/e").sync()
     s.key("tab").sync()
     assert s.composer_text() == "/exit", s.composer_lines()
-    assert "Quit ah" not in s.text(), "popup should be gone after accepting"
+    assert "Quit yoke" not in s.text(), "popup should be gone after accepting"
 
 
 def test_enter_accepts_and_submits(ctx):
@@ -93,7 +93,7 @@ def test_tab_on_exact_match_just_closes_the_popup(ctx):
     s.type("/exit").sync()
     s.key("tab").sync()
     assert s.composer_text() == "/exit", s.composer_lines()
-    assert "Quit ah" not in s.text(), "popup should be closed"
+    assert "Quit yoke" not in s.text(), "popup should be closed"
     assert s.proc.poll() is None, "Tab must not submit"
 
 

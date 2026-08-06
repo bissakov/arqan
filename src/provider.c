@@ -5,7 +5,7 @@
  * appends the assistant message and tool-call messages to the conversation
  * (living in the persistent arena).
  */
-#include "ah.h"
+#include "yoke.h"
 
 #include <stdio.h>
 #include <string.h>

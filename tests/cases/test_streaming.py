@@ -132,7 +132,7 @@ def test_provider_error_is_surfaced(ctx):
 
 def test_unreachable_provider_is_surfaced(ctx):
     """A dead endpoint reports a request failure instead of hanging."""
-    s = ctx.spawn(AH_BASE_URL="http://127.0.0.1:1/v1")
+    s = ctx.spawn(YOKE_BASE_URL="http://127.0.0.1:1/v1")
     s.submit("nobody home")
     s.wait_text("[provider error:")
     s.wait_turn_done()
@@ -186,7 +186,7 @@ def test_interrupt_stops_the_turn(ctx):
 
 def test_scenario_from_model_name(ctx):
     """The mock also takes its scenario from the model name, for manual runs."""
-    s = ctx.spawn(AH_MODEL="lorem:text=via+model+name")
+    s = ctx.spawn(YOKE_MODEL="lorem:text=via+model+name")
     s.submit("hi")
     s.wait_text("via model name")
     s.wait_turn_done()

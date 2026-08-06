@@ -2,14 +2,14 @@
 |
 |
 |
+|                                          _
+|                              _   _  ___ | | _____
+|                             | | | |/ _ \| |/ / _ \
+|                             | |_| | (_) |   <  __/
+|                              \__, |\___/|_|\_\___|
+|                              |___/
 |
-|                                        _
-|                                   __ _| |__
-|                                  / _` | '_ \
-|                                 | (_| | | | |
-|                                  \__,_|_| |_|
-|
-|                    ah 0.1.0 · a tiny terminal coding agent
+|                   yoke 0.1.0 · a tiny terminal coding agent
 |
 |                    type a message and press Enter to begin
 |
@@ -17,7 +17,7 @@
 |
 |
 |    /clear  Start a fresh conversation
-|  › /exit   Quit ah
+|  › /exit   Quit yoke
 |
 |  › /
 |

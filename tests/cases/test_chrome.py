@@ -76,14 +76,14 @@ def test_transcript_roles_are_styled(ctx):
 
 def test_log_output_becomes_a_transcript_notice(ctx):
     """Diagnostics go into the transcript, never raw onto the frame."""
-    s = ctx.spawn(AH_BASE_URL="http://127.0.0.1:1/v1")
+    s = ctx.spawn(YOKE_BASE_URL="http://127.0.0.1:1/v1")
     s.submit("nobody is listening")
     s.wait_text("[provider error:")
     s.wait_turn_done()
 
     text = s.text()
     assert "[error: curl:" in text, text
-    assert "[ah ERR]" not in text, "raw stderr must not reach the screen"
+    assert "[yoke ERR]" not in text, "raw stderr must not reach the screen"
     # the frame is still intact: chrome in its usual places
     assert s.PLACEHOLDER in text
     assert "ready" in s.status_line()
