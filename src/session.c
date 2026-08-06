@@ -1,9 +1,9 @@
-/* session.c — persistent conversations, one set per working directory.
+/* session.c: persistent conversations, one set per working directory.
  *
  * A session is the conversation as it happened: a JSON object per line in
  * $XDG_DATA_HOME/yoke/sessions/<cwd>/<timestamp>.jsonl, appended as messages
- * are produced rather than flushed at exit — the session worth resuming is
- * often the one that ended badly.
+ * are produced rather than flushed at exit, because the session worth resuming
+ * is often the one that ended badly.
  *
  * Sessions are keyed by the directory yoke was launched in, because that is
  * the unit of work: browsing them from ~/src/foo must not surface what was
@@ -105,7 +105,7 @@ static void sess_set_current(Session *s, Str path, Str name) {
     s->name = (Str){ s->name_buf, nn };
 }
 
-/* "20250607-134501" → "2025-06-07 13:45:01"; anything else is shown raw. */
+/* "20250607-134501" becomes "2025-06-07 13:45:01"; anything else is shown raw. */
 static Str sess_label(Arena *a, Str file) {
     Str stem = file;
     if (stem.n > 6 && !memcmp(stem.p + stem.n - 6, ".jsonl", 6)) stem.n -= 6;
@@ -253,7 +253,7 @@ static Str sess_preview(Arena *a, const char *path) {
     a->off = mark;
     Buf b; buf_init(&b, a, n + 8);
     buf_put(&b, tmp, n);
-    if (cut) buf_puts(&b, STR("…"));
+    if (cut) buf_puts(&b, STR("..."));
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
 }
 

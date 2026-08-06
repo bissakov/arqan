@@ -8,8 +8,8 @@
     python3 tests/run.py -v --keep       # verbose, keep temp dirs on failure
     python3 tests/run.py -j 1            # one at a time (default: auto)
 
-Cases are almost entirely idle — they wait on a pty and on a loopback socket —
-so they run in a thread pool. Every case owns its temp dir, its mock provider
+Cases are almost entirely idle, waiting on a pty and on a loopback socket, so
+they run in a thread pool. Every case owns its temp dir, its mock provider
 and its pty, so nothing is shared but the golden files, which are read-only
 outside `--update` and written per case.
 
@@ -126,7 +126,7 @@ def main(argv=None):
         return 1
 
     if not BIN.exists():
-        print(c.red(f"missing {BIN} — run `make` first"))
+        print(c.red(f"missing {BIN}, run `make` first"))
         return 2
 
     jobs = args.jobs if args.jobs > 0 else auto_jobs(len(cases) * args.repeat)
@@ -154,7 +154,7 @@ def main(argv=None):
         error: Exception | None = None
         try:
             fn(ctx)
-        except Exception as exc:  # noqa: BLE001 — a test failure is any throw
+        except Exception as exc:  # noqa: BLE001, a test failure is any throw
             failed, error, tb = True, exc, traceback.format_exc()
         finally:
             dt = time.monotonic() - t0

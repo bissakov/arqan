@@ -1,7 +1,7 @@
 """Limits and hostile input: what happens at the edges of every fixed buffer.
 
-Everything a provider streams is untrusted input — argument sizes, nesting
-depth, how many calls arrive in one turn — and every one of those used to be
+Everything a provider streams is untrusted input (argument sizes, nesting
+depth, how many calls arrive in one turn) and every one of those used to be
 clamped silently or not at all. These cases pin the behaviour at the edge.
 """
 

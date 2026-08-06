@@ -14,7 +14,7 @@ def test_status_text_tracks_the_turn(ctx):
 
 
 def test_status_is_readable_without_colour(ctx):
-    """NO_COLOR keeps the state legible — it is text, not just a colour."""
+    """NO_COLOR keeps the state legible: it is text, not just a colour."""
     ctx.scenario("words=30,chunk=1,delay=0.05,first_delay=0.15")
     s = ctx.spawn(NO_COLOR="1")
     assert s.status_kind() == "ready", s.status_line()

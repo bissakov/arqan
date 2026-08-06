@@ -117,7 +117,7 @@ def test_user_boxes_survive_deep_scrollback(ctx):
     """Scrolled far back, an old user turn is still painted as its own block.
 
     The painter starts from an index checkpoint rather than from byte zero, so
-    a row's offset has to stay in transcript coordinates the whole way down —
+    a row's offset has to stay in transcript coordinates the whole way down,
     otherwise the boxed rows drift away from the text they belong to.
     """
     s = ctx.spawn()

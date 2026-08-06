@@ -1,4 +1,4 @@
-/* json.c — tiny arena JSON parser + serializer.
+/* json.c: tiny arena JSON parser + serializer.
  *
  * DOM lives entirely in the scratch arena. Objects are a singly linked list of
  * members (ordered). Arrays are contiguous JVal arrays.
@@ -62,8 +62,8 @@ static size_t utf8_put(char *dst, u32 cp) {
     return 4;
 }
 
+/* Copies into the arena, unescaping \uXXXX, \\ and friends. */
 static Str unescape(JParser *p, Str raw) {
-    /* copy into arena, unescaping \uXXXX, \\, etc. */
     char *dst = arena_new(p->a, char, raw.n + 1);
     if (!dst) { p->oom = true; return (Str){0}; }
     size_t w = 0;
@@ -222,7 +222,7 @@ static JVal *parse_value(JParser *p) {
     if (c == '"') return parse_string(p);
     if (c == '{' || c == '[') {
         /* Nesting is recursion, and the depth comes from whatever the provider
-         * sends: without this cap a stream of "[[[[[…" is a stack overflow. */
+         * sends: without this cap a stream of "[[[[[..." is a stack overflow. */
         if (p->depth >= YOKE_MAX_JSON_DEPTH) return NULL;
         p->depth++;
         JVal *v = c == '{' ? parse_object(p) : parse_array(p);

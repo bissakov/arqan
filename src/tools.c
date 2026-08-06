@@ -1,4 +1,4 @@
-/* tools.c — SoA tool registry + built-in tools (read, write, bash, edit).
+/* tools.c: SoA tool registry + built-in tools (read, write, bash, edit).
  *
  * Each tool run() receives raw JSON args, a scratch arena, an output Buf, and
  * an error buffer. No tool allocates on the heap; everything uses the scratch
@@ -151,7 +151,6 @@ static b8 tool_edit(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
     Str s;
     if (!slurp(z, scratch, &s, err, err_cap)) return false;
 
-    /* find old_text */
     if (oldt.n == 0 || s.n < oldt.n) { snprintf(err, err_cap, "old_text not found"); return false; }
     const char *found = NULL;
     for (size_t i = 0; i + oldt.n <= s.n; i++) {

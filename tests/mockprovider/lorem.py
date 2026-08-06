@@ -1,7 +1,7 @@
 """Deterministic lorem ipsum.
 
 A self-contained LCG rather than `random` so the same seed produces the same
-text on every Python build — golden screen snapshots depend on it.
+text on every Python build, which golden screen snapshots depend on.
 """
 
 from __future__ import annotations

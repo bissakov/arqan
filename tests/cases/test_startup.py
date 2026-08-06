@@ -17,7 +17,7 @@ def test_status_line_fields(ctx):
     s = ctx.spawn()
     status = s.status_line()
     assert "mock-model" in status, status
-    # base_url is http://127.0.0.1:PORT/v1 → the loopback host reads as "local"
+    # base_url is http://127.0.0.1:PORT/v1, so the loopback host reads as "local"
     assert "local" in status, status
     assert "~/work" in status, status
     assert s.status_field(4) == "-", status  # dash: no usage reported yet

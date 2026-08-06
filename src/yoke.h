@@ -1,4 +1,4 @@
-/* yoke.h — umbrella header for the yoke AI coding harness.
+/* yoke.h: umbrella header for the yoke AI coding harness.
  *
  * Every module includes this. Types are data-oriented (SoA) and everything
  * is backed by arenas; no malloc/free appears in the hot path.
@@ -32,7 +32,7 @@ typedef bool     b8;
  * 4 MiB event arena, the accumulated reply, the tool output and the doubling
  * these go through, which lands an order of magnitude under the scratch
  * arena. Both are static storage, so this is address space, not startup
- * cost — but it is also what a core dump has to carry. */
+ * cost, but it is also what a core dump has to carry. */
 #define YOKE_ARENA_BYTES      (1u << 27)  /* 128 MiB scratch arena            */
 #define YOKE_PERSIST_BYTES    (1u << 26)  /* 64  MiB persistent arena         */
 #define YOKE_MAX_MESSAGES     4096        /* default; see Config.max_messages   */

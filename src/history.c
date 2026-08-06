@@ -1,4 +1,4 @@
-/* history.c — persistent prompt history.
+/* history.c: persistent prompt history.
  *
  * Entries live in $XDG_STATE_HOME/yoke/history, one per line, with backslash
  * escapes for the breaks a multi-line prompt carries. They are appended as

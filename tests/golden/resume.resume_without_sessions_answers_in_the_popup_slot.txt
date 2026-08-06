@@ -19,7 +19,7 @@
 |
 |    no saved sessions in this directory
 |
-|  › Message yoke…
+|  › Message yoke...
 |
 |
 |  ● ready · mock-model · local · ~/work · -

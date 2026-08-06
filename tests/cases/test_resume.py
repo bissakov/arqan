@@ -60,7 +60,7 @@ def test_resume_without_sessions_keeps_the_welcome_screen(ctx):
 
 
 def test_the_notice_survives_typing_and_goes_on_the_next_command(ctx):
-    """It answers the last command, so the next one retires it — not a keypress."""
+    """It answers the last command, so the next one retires it, not a keypress."""
     ctx.scenario("text=hello+back")
     s = ctx.spawn()
     s.submit("/resume")

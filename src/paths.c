@@ -1,4 +1,4 @@
-/* paths.c — XDG Base Directory resolution.
+/* paths.c: XDG Base Directory resolution.
  *
  * Two rules the spec is explicit about and this file enforces: a relative
  * value in an XDG_* variable is invalid and falls back to the default as if

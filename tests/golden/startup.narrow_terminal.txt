@@ -11,7 +11,7 @@
 |
 |
 |
-|  › Message yoke…
+|  › Message yoke...
 |
 |
 |  ● ready · mock-model · local · work · -

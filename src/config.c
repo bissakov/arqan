@@ -1,4 +1,4 @@
-/* config.c — load config from env and the XDG config files.
+/* config.c: load config from env and the XDG config files.
  *
  * Keys: base_url=, model=, api_key=, system_prompt=, max_tokens=, stream=
  * Precedence: env var YOKE_<KEY> > $XDG_CONFIG_HOME/yoke/config > the same

@@ -1,4 +1,4 @@
-/* http.c — libcurl streaming POST (SSE).
+/* http.c: libcurl streaming POST (SSE).
  *
  * We hand libcurl a write callback that buffers into a small stack buffer and
  * emits one line at a time to on_line. No heap use on our side.
@@ -47,7 +47,7 @@ static size_t write_cb(char *p, size_t sz, size_t n, void *ud) {
 
 static size_t header_cb(char *p, size_t sz, size_t n, void *ud) {
     (void)p; (void)ud;
-    return sz * n; /* ignore */
+    return sz * n;   /* headers are consumed and discarded */
 }
 
 /* How long a wait may last before we re-check the interrupt flag. Short enough

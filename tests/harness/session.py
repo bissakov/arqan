@@ -34,7 +34,7 @@ from .vt import Terminal
 QUIET = max(0.06, float(os.environ.get("YOKE_TEST_QUIET") or 0))
 
 # `yoke` keeps ISIG on, so Ctrl-C is a signal from the line discipline, not a
-# byte — which only happens if the child owns the pty as its controlling
+# byte, which only happens if the child owns the pty as its controlling
 # terminal. setsid(1) does the setsid + TIOCSCTTY dance before exec with no
 # Python in between, which matters because cases run in parallel threads and
 # a preexec_fn runs the interpreter in a forked, threaded child.
@@ -136,7 +136,7 @@ class Session:
     ) -> "Session":
         """Read until nothing arrives for `quiet` seconds.
 
-        With `require_output`, at least one byte must arrive first — that is
+        With `require_output`, at least one byte must arrive first, which is
         what makes "send a key, then assert" safe: the screen we inspect is
         never the one from before the key.
         """
@@ -242,7 +242,7 @@ class Session:
         """Type a message and press Enter, returning once it was accepted.
 
         Submitting is what empties the composer, so that is the signal a turn
-        actually started — waiting on the status would race the repaint that
+        actually started; waiting on the status would race the repaint that
         follows it.
         """
         if text is not None:
@@ -290,7 +290,7 @@ class Session:
     def status_line(self) -> str:
         return self.row(-1).strip()
 
-    # The status line reads "●  <state>  ·  <model>  ·  <provider>  · …".
+    # The status line reads "●  <state>  ·  <model>  ·  <provider>  · ...".
     def status_field(self, index: int = 0) -> str:
         parts = [p.strip() for p in self.status_line().split("\u00b7")]
         if not parts:
@@ -307,7 +307,7 @@ class Session:
         114: "ready",      # S_GREEN
         177: "thinking",   # S_PURPLE
         203: "error",      # S_RED
-        75: "working",     # S_BLUE — any other status string
+        75: "working",     # S_BLUE, any other status string
     }
 
     def status_colour(self) -> str | None:
@@ -327,13 +327,13 @@ class Session:
             self.term.row_text(last - count + 1 + i).rstrip() for i in range(count)
         ]
 
-    PLACEHOLDER = "Message yoke\u2026"
+    PLACEHOLDER = "Message yoke..."
 
     def transcript_height(self, composer_rows: int = 1, popup_rows: int = 0) -> int:
         """Rows the transcript occupies, from the fixed bottom chrome.
 
         Chrome is the status line, the blank row above it and the composer's
-        two padding rows — all of which collapse on a very short screen.
+        two padding rows, all of which collapse on a very short screen.
         """
         padding = 1 if self.term.rows >= 6 else 0
         chrome = 1 + padding * 3

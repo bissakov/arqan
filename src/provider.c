@@ -1,4 +1,4 @@
-/* provider.c — OpenAI-compatible chat-completions streaming with tool calls.
+/* provider.c: OpenAI-compatible chat-completions streaming with tool calls.
  *
  * Builds the request JSON from the conversation, POSTs with SSE, and dispatches
  * text deltas and tool-call deltas to the provided sinks. On stream end it

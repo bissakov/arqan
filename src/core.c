@@ -1,4 +1,4 @@
-/* core.c — arena, strings, buffers, logging, time. */
+/* core.c: arena, strings, buffers, logging, time. */
 #include "yoke.h"
 
 #include <stdio.h>

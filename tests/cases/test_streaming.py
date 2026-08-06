@@ -60,7 +60,7 @@ def reply_text(s, after="stream it"):
 
     The status line and composer change independently of the stream, so a
     length comparison has to look at the transcript alone. Before the user
-    turn is painted there is no reply yet — an empty string, not the whole
+    turn is painted there is no reply yet: an empty string, not the whole
     screen.
     """
     body = "\n".join(s.screen.lines()[: s.transcript_height()])

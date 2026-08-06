@@ -2,7 +2,7 @@
 
 Every test gets a fresh temp directory, a fresh mock server on an ephemeral
 port and a fresh request log, so tests never observe each other. The
-environment handed to `yoke` is scrubbed down to a fixed set of variables — the
+environment handed to `yoke` is scrubbed down to a fixed set of variables. The
 status line renders the cwd and the model name, so anything leaking in from
 the developer's shell would show up in a golden file.
 """
@@ -57,7 +57,7 @@ class Ctx:
 
         A paced scenario leaves gaps between deltas, and a quiet window
         shorter than one of those gaps would read a mid-stream pause as a
-        settled screen — so the window follows the pacing.
+        settled screen, so the window follows the pacing.
         """
         self.mock.scenario = spec
         self.quiet = max(QUIET, self.mock.scenario.delay * 2.5)

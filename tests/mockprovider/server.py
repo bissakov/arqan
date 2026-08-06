@@ -8,9 +8,9 @@ after a tool call to read()" and get exactly that every run.
 
 Two ways to pick a scenario:
 
-  * server default — `MockProvider(scenario="words=40,chunk=5")`, used by the
+  * server default: `MockProvider(scenario="words=40,chunk=5")`, used by the
     test harness so the status line keeps a clean model name;
-  * the model name itself — `YOKE_MODEL=lorem:words=40,delay=0.02`, which makes
+  * the model name itself: `YOKE_MODEL=lorem:words=40,delay=0.02`, which makes
     the server useful standalone with no test code in the loop.
 
 Standalone:

@@ -1,4 +1,4 @@
-/* main.c — yoke entry point. Unity build: includes every module as one TU.
+/* main.c: yoke entry point. Unity build: includes every module as one TU.
  *
  * Memory plan (no heap at all in our code):
  *   - two big static blocks wrapped in arenas: persistent (messages) + scratch
@@ -10,7 +10,7 @@
 
 #include "yoke.h"
 
-/* Unity includes — single translation unit. */
+/* Unity includes: single translation unit. */
 #include "core.c"
 #include "json.c"
 #include "http.c"
@@ -30,7 +30,7 @@
 static volatile sig_atomic_t g_got_sigint = 0;
 static void on_sigint(i32 sig) { (void)sig; g_got_sigint = 1; }
 
-/* static backing storage — no heap malloc in our code path */
+/* Static backing storage, so no malloc in our code path. */
 static alignas(64) u8 g_persist[YOKE_PERSIST_BYTES];
 static alignas(64) u8 g_scratch[YOKE_ARENA_BYTES];
 
@@ -61,8 +61,8 @@ static void on_idle(void *ud) {
     tui_poll_input();
 }
 
-/* Run the tool calls the turn just appended to `conv` — the carrier slots in
- * [first, last) — and append each result. Returns false when a result did not
+/* Run the tool calls the turn just appended to `conv`, the carrier slots in
+ * [first, last), and append each result. Returns false when a result did not
  * fit in the conversation, which ends the turn. */
 static b8 run_tool_calls(ToolRegistry *reg, Conv *conv, Arena *scratch,
                          Arena *persist, size_t first, size_t last) {
@@ -94,7 +94,7 @@ static b8 run_tool_calls(ToolRegistry *reg, Conv *conv, Arena *scratch,
         }
         tui_write(STR("Result\n"));
         tui_write(str_take(res_dup, 400));
-        if (res_dup.n > 400) tui_write(STR("\n… output truncated in transcript"));
+        if (res_dup.n > 400) tui_write(STR("\n... output truncated in transcript"));
         tui_write(STR("\n"));
     }
     return true;
@@ -111,7 +111,7 @@ static void render_conv(const Conv *c) {
                 tui_write(STR("Result\n"));
                 tui_write(str_take(c->text[i], 400));
                 if (c->text[i].n > 400)
-                    tui_write(STR("\n… output truncated in transcript"));
+                    tui_write(STR("\n... output truncated in transcript"));
                 tui_write(STR("\n"));
                 break;
             case M_ASSISTANT:
@@ -131,9 +131,9 @@ static void render_conv(const Conv *c) {
 }
 
 /* Offer the saved sessions for this directory and resume the chosen one.
- * Nothing to open leaves the view exactly as it was — welcome screen included
- * — and answers in the popup's own slot: a session that did not open is not
- * part of the conversation, so it has no business in the transcript. */
+ * Nothing to open leaves the view exactly as it was, welcome screen included,
+ * and answers in the popup's own slot: a session that did not open is not part
+ * of the conversation, so it has no business in the transcript. */
 static void resume_session(Session *sess, Conv *conv, Arena *persist,
                            Arena *scratch, size_t session_mark) {
     arena_reset(scratch);
@@ -158,7 +158,7 @@ static void resume_session(Session *sess, Conv *conv, Arena *persist,
 
     /* Read first: replaying rewinds the conversation and overwrites its
      * storage, so a session that cannot be read must not cost the one that is
-     * running — the view stays exactly as it was. */
+     * running, so the view stays exactly as it was. */
     Str src = session_read(list.path[pick], scratch);
     if (!src.n) {
         tui_notice(STR("could not read that session"));
@@ -210,7 +210,6 @@ i32 main(i32 argc, char **argv) {
         return 1;
     }
 
-    /* seed system prompt */
     conv_add(&conv, M_SYSTEM, cfg.system_prompt);
     size_t session_mark = persist.off;
 
@@ -314,7 +313,7 @@ i32 main(i32 argc, char **argv) {
             if (rc == 0) {
                 tui_write(STR("\n\n"));
                 tui_set_status("ready");
-                break; /* no tool calls → turn done */
+                break; /* no tool calls, turn done */
             }
             /* The turn appended one head slot plus a carrier per call at
              * [before, conv.n); run them straight off the conversation rather

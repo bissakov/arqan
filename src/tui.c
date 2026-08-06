@@ -1,4 +1,4 @@
-/* tui.c — small, dependency-free fullscreen terminal UI.
+/* tui.c: small, dependency-free fullscreen terminal UI.
  *
  * The tty path owns the alternate screen and repaints from an in-memory
  * transcript.  This makes redraw, Ctrl-L and terminal resize deterministic;
@@ -118,8 +118,8 @@ typedef struct {
     char draft[YOKE_LINE_BUF];
     size_t draft_n;
     /* What the frame actually put on screen, one entry per row: the substrate
-     * mouse selection highlights and copies, so any painted cell — transcript,
-     * composer or status line — is selectable without re-deriving its source. */
+     * mouse selection highlights and copies, so any painted cell (transcript,
+     * composer or status line) is selectable without re-deriving its source. */
     char row_text[TUI_SEL_ROWS][TUI_SEL_ROW_BYTES];
     u16 row_text_n[TUI_SEL_ROWS];
     u16 row_text_w[TUI_SEL_ROWS];
@@ -139,7 +139,7 @@ static volatile sig_atomic_t g_winch = 0;
 static void on_winch(i32 sig) { (void)sig; g_winch = 1; }
 
 /* A frame is assembled here and handed to the terminal as one write. Painting
- * escape by escape lets the terminal display half-drawn frames — that is what
+ * escape by escape lets the terminal display half-drawn frames, which is what
  * flicker looks like while typing quickly. */
 static void flush_out(void) {
     size_t off = 0;
@@ -642,7 +642,7 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
         size_t body = screen_cols > gutter * 2 ? screen_cols - gutter * 2 : 0;
         size_t room = body > 2 ? body - 2 : 0;
         style(S_PANEL_BG S_MUTED);
-        put_safe_clipped(STR("Message yoke…"), room, NULL);
+        put_safe_clipped(STR("Message yoke..."), room, NULL);
     } else if (kind == ROW_USER) {
         style(S_USER_BG S_TEXT); put_text(text.p, text.n);
     } else if (kind == ROW_TOOL) {
@@ -888,7 +888,7 @@ static void paint_completions(size_t top_row, size_t rows, size_t screen_col,
 
 /* ---- welcome screen ------------------------------------------------------
  * Shown centered in the transcript region until the first line of output
- * lands (a submit, a notice — anything). The art rows are centered as one
+ * lands (a submit, a notice, anything). The art rows are centered as one
  * block so the glyphs stay aligned; the prose rows are centered on their own.
  */
 typedef struct { Str text; b8 art; } WelcomeLine;
@@ -1256,7 +1256,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count) {
     /* The composer is always live: it owns the cursor for the whole session. */
     g_tui.editing = true;
     /* 1002 reports drags (not just clicks) and 1006 keeps coordinates exact
-     * past column 223 — both are what in-app text selection needs. Shift
+     * past column 223, both of which in-app text selection needs. Shift
      * still falls through to the terminal's own selection. */
     put_str("\033[?1049h\033[?7l\033[?25l\033[?1002h\033[?1006h");
     repaint();
@@ -1291,9 +1291,9 @@ void tui_enter_raw(void) { tui_start((Str){0}, (Str){0}, false, 0); }
 void tui_exit_raw(void) { tui_stop(); }
 
 void tui_set_status(const char *status) {
-    /* Copied, not aliased: the status outlives the call — it is repainted on
-     * every frame until the next one — so callers get to build it on the
-     * stack, e.g. to name the tool that is running. */
+    /* Copied, not aliased: the status outlives the call, repainted on every
+     * frame until the next one, so callers get to build it on the stack, for
+     * instance to name the tool that is running. */
     size_t n = 0;
     while (status[n] && n + 1 < sizeof g_tui.status) n++;
     memcpy(g_tui.status, status, n);
@@ -1440,7 +1440,7 @@ static i32 rbyte(void) {
 }
 
 /* Continuation byte of an escape sequence. A bare Esc must not park the reader
- * on a blocking read — especially when polling during a turn. */
+ * on a blocking read, especially when polling during a turn. */
 static i32 rbyte_soon(void) {
     return input_ready(50) ? rbyte() : -1;
 }
@@ -1644,7 +1644,7 @@ void tui_set_commands(const TuiCmd *cmds, size_t n) {
 
 /* A modal list over the same popup the composer completes with: same rows,
  * same highlight, same keys. Only the source of the entries differs, so the
- * popup is swapped in and the composer's own state restored on the way out —
+ * popup is swapped in and the composer's own state restored on the way out, so
  * text typed before the picker opened is still there afterwards. */
 b8 tui_pick(const TuiCmd *items, size_t n, size_t *out) {
     if (!g_tui.fullscreen || !items || !n || !out) return false;
@@ -1667,7 +1667,7 @@ b8 tui_pick(const TuiCmd *items, size_t n, size_t *out) {
     for (;;) {
         i32 c = rbyte();
         if (c == -3) { repaint(); continue; }
-        /* -2 is a signal that is not a resize — SIGINT while picking, which
+        /* -2 is a signal that is not a resize: SIGINT while picking, which
          * cancels here just as it abandons a draft at the prompt. */
         if (c < 0 || c == 0x03 || c == 0x04) break;   /* EOF / signal / Ctrl-D */
         if (c == '\r' || c == '\n') { *out = g_tui.comp_sel; chosen = true; break; }
@@ -1799,7 +1799,7 @@ static EdAction editor_key(i32 c) {
         } else if (key == KEY_NONE && g_tui.comp_n) {
             g_tui.comp_dismissed = true;   /* bare Esc closes the popup */
         } else if (key == KEY_NONE && g_tui.notice_n) {
-            g_tui.notice_n = 0;            /* … and then the notice above it */
+            g_tui.notice_n = 0;            /* and then the notice above it */
         } else if (key == KEY_NONE && g_tui.busy && g_tui.interrupt) {
             /* Nothing to dismiss and a turn is running: Esc cancels it, the
              * same way Ctrl-C does, without touching the composed text. */
@@ -1826,8 +1826,8 @@ static EdAction editor_key(i32 c) {
 }
 
 /* Called when a line is submitted or abandoned: the notice answered the last
- * command, so the next one retires it. Keystrokes leave it alone — it has a
- * row of its own and does not fight the popup for it. */
+ * command, so the next one retires it. Keystrokes leave it alone: it has a row
+ * of its own and does not fight the popup for it. */
 static void composer_clear(void) {
     g_tui.notice_n = 0;
     g_tui.input[0] = '\0';
@@ -1851,7 +1851,7 @@ void tui_poll_input(void) {
         if (c == -3) { dirty = true; continue; }
         if (c == -2) continue;
         if (c < 0) { g_tui.input_eof = true; break; }
-        /* Enter, Ctrl-C and Ctrl-D belong to the prompt, not to a live turn —
+        /* Enter, Ctrl-C and Ctrl-D belong to the prompt, not to a live turn,
          * except that an open popup makes Enter complete the highlighted
          * entry, which is harmless mid-turn since the submit is dropped. */
         if ((c == '\r' || c == '\n') && !g_tui.comp_n) continue;

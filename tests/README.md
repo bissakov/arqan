@@ -3,7 +3,7 @@
 End-to-end tests for the terminal UI. `bin/yoke` runs unmodified inside a
 pseudo-terminal, talking to a dummy OpenAI-compatible provider, and every byte
 it writes is replayed into a small terminal emulator. Assertions are therefore
-made against *what a user would see* — never against escape sequences.
+made against *what a user would see*, never against escape sequences.
 
 Python 3 only, no third-party packages.
 
@@ -57,17 +57,17 @@ def test_something(ctx):
 
 Nothing sleeps for a fixed time; tests wait for states.
 
-* `s.sync()` — wait for the repaint caused by the input just sent, then for
+* `s.sync()`: wait for the repaint caused by the input just sent, then for
   quiet. This is what makes "send a key, then assert" safe.
-* `s.wait_for(pred)` / `s.wait_text()` / `s.wait_status()` — poll the emulated
+* `s.wait_for(pred)` / `s.wait_text()` / `s.wait_status()`: poll the emulated
   screen until it holds.
-* `s.submit(text)` — returns once the composer clears, which is the signal a
+* `s.submit(text)`: returns once the composer clears, which is the signal a
   turn actually started.
-* `s.wait_turn_done()` — returns when the agent loop is idle again.
+* `s.wait_turn_done()`: returns when the agent loop is idle again.
 
-“Quiet” means no output for a short window. The window has to outlast the
+"Quiet" means no output for a short window. The window has to outlast the
 largest gap the frames being waited on can contain, so it follows the
-scenario: a bare one settles in 60 ms, and `delay=` widens it to 2.5× the
+scenario: a bare one settles in 60 ms, and `delay=` widens it to 2.5x the
 pacing. Set `YOKE_TEST_QUIET=0.2` to raise the floor on a machine too slow or
 too loaded for the default.
 
@@ -85,7 +85,7 @@ grid is what lets tests assert the transcript's role colours.
 
 `ctx.check_screen(s)` writes `golden/<case>.txt` the first time and compares
 afterwards, printing a unified diff on mismatch. Use `make test-update` to
-accept an intended change — and read the diff before you do.
+accept an intended change, and read the diff before you do.
 
 ## The dummy provider
 
