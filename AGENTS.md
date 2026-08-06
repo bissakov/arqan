@@ -17,6 +17,8 @@ make clean      # removes build/ and bin/
 There is no linter target — `CFLAGS` already includes `-Wall -Wextra
 -Wpedantic -Wconversion`, so treat new warnings as build failures.
 
+`make test` is not optional after touching `src/` — see [Tests](#tests).
+
 Runtime config comes from env vars or `~/.config/yoke/config`:
 
 ```
@@ -95,6 +97,29 @@ description + JSON schema fragment) in `tools_init`, capped by
 
 ## Tests
 
+**Every change to `src/` ends with `make test`.** Not "when it feels risky",
+not "before the PR" — after the change, every time. The suite drives the real
+binary end to end, runs in parallel, and finishes in seconds, so there is no
+budget argument for skipping it: the cost of running it is far below the cost
+of one regression that reaches a user. A change is not done when it compiles;
+it is done when the suite is green.
+
+**Every behavioural change also brings a case with it.** Testing this agent is
+cheap and direct — you script what the provider streams, drive real keystrokes
+into a real pty, and assert on the rendered screen. There is no mocking
+ceremony, no seam to invent, no dependency to inject. If a behaviour is worth
+implementing, it is worth ten lines in `tests/cases/`. So:
+
+- new feature → a case that exercises it through the UI;
+- bug fix → a case that fails before the fix and passes after (write it first,
+  watch it fail — that is the only proof the fix addresses the real cause);
+- refactor → no new case, but the existing suite must stay green *unchanged*;
+  if a refactor forces a test edit, the refactor changed behaviour.
+
+When a case is hard to write, that is a signal about the design, not about the
+harness — the seam is usually missing in `src/`, and adding it is part of the
+task.
+
 `tests/` drives the real `bin/yoke` inside a pseudo-terminal against a dummy
 OpenAI-compatible provider, replaying its output through a small terminal
 emulator. Assertions are made against the rendered screen, not escape
@@ -108,7 +133,13 @@ debugging.
 
 A failing test means the source is wrong until proven otherwise. Do not
 relax an assertion to match wrong behaviour: fix it in `src/`, then keep the
-test as the regression.
+test as the regression. The same applies to golden screens — `make
+test-update` is for changes you *intended* to make and have read in the diff,
+never a way to make red go away. An unexplained golden diff is a bug report.
+
+Flaky is failing. If a case only passes sometimes, `python3 tests/run.py
+--repeat 5` it and fix the race in `src/` or the missing wait in the case;
+never retry around it.
 
 **No throwaway tests.** Do not verify behavior with one-off `bash`
 invocations, temporary scripts, or scratch programs that live outside
