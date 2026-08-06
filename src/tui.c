@@ -173,7 +173,6 @@ static void style(const char *s) { if (g_tui.color) put_str(s); }
 /* Defined with the selection machinery below; cup() needs them first. */
 static void snap_seek(size_t row, size_t col);
 static void put_text(const char *s, size_t n);
-static void put_text_z(const char *s);
 
 static Str provider_from_url(Str url) {
     size_t start = 0;
@@ -368,7 +367,6 @@ static void put_text(const char *s, size_t n) {
     if (reverse) put_str("\033[27m");
 }
 
-static void put_text_z(const char *s) { put_text(s, strlen(s)); }
 
 /* Selection past the end of a row's text: paint the blanks so a multi-row
  * highlight reads as one block instead of a ragged right edge. */
@@ -517,8 +515,8 @@ static void pad_row(size_t used, size_t cols) {
 
 enum {
     ROW_PLAIN = 1, ROW_COMPOSER, ROW_STATUS,
-    ROW_USER, ROW_REASON, ROW_TOOL, ROW_RESULT, ROW_NOTICE, ROW_POPUP,
-    ROW_WELCOME_ART, ROW_WELCOME_TEXT
+    ROW_USER, ROW_REASON, ROW_TOOL, ROW_RESULT, ROW_ERROR, ROW_NOTICE,
+    ROW_POPUP, ROW_WELCOME_ART, ROW_WELCOME_TEXT
 };
 
 static u64 hash_add(u64 h, const void *data, size_t n) {
@@ -544,10 +542,6 @@ static b8 row_changed(size_t row, u64 hash, b8 force) {
     if (!force && g_tui.row_hash[index] == hash) return false;
     g_tui.row_hash[index] = hash;
     return true;
-}
-
-static b8 str_starts(Str s, Str prefix) {
-    return s.n >= prefix.n && !memcmp(s.p, prefix.p, prefix.n);
 }
 
 static char lower_ascii(char c) {
@@ -616,8 +610,6 @@ static u8 span_kind(size_t off) {
 
 static u8 display_kind(u8 kind, Str text) {
     if (kind != ROW_PLAIN) return kind;
-    if (str_starts(text, STR("Tool · "))) return ROW_TOOL;
-    if (str_eq(text, STR("Result"))) return ROW_RESULT;
     if (text.n >= 2 && text.p[0] == '[' && text.p[text.n - 1] == ']')
         return ROW_NOTICE;
     return kind;
@@ -671,9 +663,11 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
     } else if (kind == ROW_REASON) {
         style(S_MUTED); put_text(text.p, text.n);
     } else if (kind == ROW_TOOL) {
-        style(S_YELLOW); put_text_z("◆  "); put_text(text.p, text.n);
+        style(S_YELLOW); put_text(text.p, text.n);
     } else if (kind == ROW_RESULT) {
-        style(S_GREEN); put_text_z("└─ "); put_text(text.p, text.n);
+        style(S_GREEN); put_text(text.p, text.n);
+    } else if (kind == ROW_ERROR) {
+        style(S_RED); put_text(text.p, text.n);
     } else if (kind == ROW_NOTICE) {
         style(S_YELLOW); put_text(text.p, text.n);
     } else if (kind == ROW_WELCOME_ART) {
@@ -1454,16 +1448,23 @@ void tui_printf(const char *fmt, ...) {
 
 void tui_putstr(Str s) { tui_write(s); }
 
-/* Reasoning is transcript text like any other; only the byte range recorded
- * around it tells the painter to mute those rows.  A write that overflowed
- * the scrollback moved the bytes, and the span is dropped with them. */
-void tui_write_reason(Str s) {
+/* Styled output is transcript text like any other; only the byte range
+ * recorded around it tells the painter how to paint those rows. A write that
+ * overflowed the scrollback moved the bytes, and the span is dropped with
+ * them. */
+static void write_span(Str s, u8 kind) {
     if (!g_tui.fullscreen) { tui_write(s); return; }
     size_t a = g_tui.transcript_n;
     tui_write(s);
     size_t b = g_tui.transcript_n;
-    if (b > a) span_add(a, b, ROW_REASON);
+    if (b > a) span_add(a, b, kind);
 }
+
+void tui_write_reason(Str s) { write_span(s, ROW_REASON); }
+void tui_write_muted(Str s)  { write_span(s, ROW_REASON); }
+void tui_write_tool(Str s)   { write_span(s, ROW_TOOL); }
+void tui_write_result(Str s) { write_span(s, ROW_RESULT); }
+void tui_write_error(Str s)  { write_span(s, ROW_ERROR); }
 
 /* A user turn is a block of screen, not a labelled line: it is written with a
  * padding row above and below and the whole range is recorded so every row it

@@ -5,13 +5,13 @@
 |
 |
 |
-|  ◆  Tool · read
-|  {"path":"notes.txt"}
-|  └─ Result
-|  hello from disk
-|
+|  ◆  read notes.txt
+|  └─ 1 line
+|     hello from disk
 |
 |  I read the file.
+|
+|
 |
 |
 |

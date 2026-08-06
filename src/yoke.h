@@ -81,6 +81,7 @@ typedef struct { const char *p; size_t n; } Str;
 Str     str_c(const char *z);                  /* strlen-based              */
 Str     str_dup(Arena *a, Str s);              /* copies into arena         */
 b8    str_eq(Str a, Str b);
+b8    str_starts(Str s, Str prefix);
 Str     str_trim(Str s);
 Str     str_take(Str s, size_t n);
 Str     str_drop(Str s, size_t n);
@@ -416,6 +417,14 @@ void tui_write(Str s);
 /* Append reasoning output: same transcript, painted muted so a thinking trace
  * reads apart from the reply. */
 void tui_write_reason(Str s);
+/* Append transcript text under one of the styles a tool block is built from:
+ * muted for quoted input and output, yellow for a call's header, green for a
+ * result, red for a failure. Style is a recorded byte range, so a write that
+ * overflowed the scrollback simply loses it. */
+void tui_write_muted(Str s);
+void tui_write_tool(Str s);
+void tui_write_result(Str s);
+void tui_write_error(Str s);
 /* Append a user turn: rendered as a padded block with its own background,
  * which is what marks it apart from the agent's own output. */
 void tui_write_user(Str s);
@@ -431,5 +440,18 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n);
 void tui_set_busy(b8 busy);
 void tui_poll_input(void);
 i32  tui_input_fd(void);      /* readable-input fd, or -1 when not interactive */
+
+/* ---- render.c ------------------------------------------------------------ */
+/* Write one tool call, and later its result, into the transcript in the shape
+ * a reader wants: the JSON arguments are parsed in `scratch`, which is rewound
+ * before returning, and unparsable ones fall back to the raw text. `result`
+ * is the tool's own output, an "ERROR: " prefix included. */
+void render_tool_call(Str name, Str args, Arena *scratch);
+void render_tool_result(Str name, Str result);
+/* Verbose rendering shows every line of a call's input and its result, with no
+ * "... N more lines" tail and no per-line clip. Off by default: a tool that
+ * read a thousand lines would otherwise be the whole scrollback. */
+void render_set_verbose(b8 on);
+b8   render_verbose(void);
 
 #endif /* YOKE_H */

@@ -126,6 +126,10 @@ an AoS layout.
   byte-offset checkpoints, extended incrementally as output arrives and
   dropped whenever existing bytes move) so a frame costs the visible rows, not
   the whole scrollback
+- `render.c`: how a tool call and its result read in the transcript: a header
+  naming the tool and its target, a preview of the input it carries (a diff for
+  `edit`), and a result summarised by the tool's own shape. The JSON arguments
+  never reach the screen except for a tool this module knows nothing about
 - `main.c`: wires everything together and runs the agent loop
 
 **Agent loop shape** (`main.c`): each user turn calls `provider_run` in a

@@ -59,6 +59,10 @@ Str str_dup(Arena *a, Str s) {
     return (Str){ dst, s.n };
 }
 
+b8 str_starts(Str s, Str prefix) {
+    return s.n >= prefix.n && (prefix.n == 0 || !memcmp(s.p, prefix.p, prefix.n));
+}
+
 Str str_trim(Str s) {
     while (s.n && (s.p[0]==' '||s.p[0]=='\t'||s.p[0]=='\n'||s.p[0]=='\r')) { s.p++; s.n--; }
     while (s.n && (s.p[s.n-1]==' '||s.p[s.n-1]=='\t'||s.p[s.n-1]=='\n'||s.p[s.n-1]=='\r')) s.n--;

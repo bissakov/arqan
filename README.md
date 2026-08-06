@@ -96,8 +96,14 @@ back to the terminal's own selection.
 
 Typing `/` opens a completion popup: `/clear` starts a fresh conversation,
 `/resume` reopens one saved for this directory, `/model` switches model,
-`/copy` puts the last reply on the clipboard as the Markdown the model wrote
-and `/exit` quits.
+`/copy` puts the last reply on the clipboard as the Markdown the model wrote,
+`/verbose` toggles untruncated tool output and `/exit` quits.
+
+A tool call reads as the tool, what it acts on and a preview of what it
+carries, with an `edit` shown as a diff, and its result as a summary line: the
+exit status of a command, the size of a file, the error a failure returned.
+Both previews are capped so one tool cannot take the scrollback; `/verbose`
+lifts the caps and shows every line.
 
 `/model` lists what the provider's `/models` endpoint serves and remembers the
 choice for the next run. Past ten entries the popup takes the keyboard and

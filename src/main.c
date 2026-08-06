@@ -22,6 +22,7 @@
 #include "provider.c"
 #include "session.c"
 #include "tui.c"
+#include "render.c"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +46,7 @@ static size_t commands_init(void) {
     g_commands[n++] = (TuiCmd){ STR("/resume"), STR("Resume a saved session from this directory") };
     g_commands[n++] = (TuiCmd){ STR("/model"), STR("Pick the model, remembered for the next run") };
     g_commands[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
+    g_commands[n++] = (TuiCmd){ STR("/verbose"), STR("Toggle untruncated tool output") };
     g_commands[n++] = (TuiCmd){ STR("/exit"), STR("Quit yoke") };
     return n;
 }
@@ -94,11 +96,7 @@ static b8 run_tool_calls(ToolRegistry *reg, Conv *conv, Arena *scratch,
         size_t tool = tools_find(reg, name);
         Buf out; buf_init(&out, scratch, 4096);
         char err[256] = {0};
-        tui_write(STR("\nTool · "));
-        tui_write(name);
-        tui_write(STR("\n"));
-        tui_write(args);
-        tui_write(STR("\n"));
+        render_tool_call(name, args, scratch);
         char status[32];
         snprintf(status, sizeof status, "running %.*s", (i32)name.n, name.p);
         tui_set_status(status);
@@ -112,35 +110,34 @@ static b8 run_tool_calls(ToolRegistry *reg, Conv *conv, Arena *scratch,
             tui_write(STR("\n[conversation is full: /clear to start a new one]\n"));
             return false;
         }
-        tui_write(STR("Result\n"));
-        tui_write(str_take(res_dup, 400));
-        if (res_dup.n > 400) tui_write(STR("\n... output truncated in transcript"));
-        tui_write(STR("\n"));
+        render_tool_result(name, res_dup);
     }
     return true;
 }
 
+/* The tool a result answers: a result slot carries only the id of the call it
+ * belongs to, and how it reads depends on which tool produced it. */
+static Str call_name(const Conv *c, size_t result) {
+    for (size_t i = result; i-- > 0;)
+        if (conv_is_call(c, i) && str_eq(c->tool_call_id[i],
+                                         c->tool_call_id[result]))
+            return c->tool_name[i];
+    return (Str){0};
+}
+
 /* Repaint a resumed conversation: the transcript is a rendering of the
  * messages, so replaying them is the same code path a live turn takes. */
-static void render_conv(const Conv *c) {
+static void render_conv(const Conv *c, Arena *scratch) {
     for (size_t i = 0; i < c->n; i++) {
         switch (c->role[i]) {
             case M_SYSTEM: break;
             case M_USER: tui_write_user(c->text[i]); break;
             case M_TOOL:
-                tui_write(STR("Result\n"));
-                tui_write(str_take(c->text[i], 400));
-                if (c->text[i].n > 400)
-                    tui_write(STR("\n... output truncated in transcript"));
-                tui_write(STR("\n"));
+                render_tool_result(call_name(c, i), c->text[i]);
                 break;
             case M_ASSISTANT:
                 if (conv_is_call(c, i)) {
-                    tui_write(STR("\nTool · "));
-                    tui_write(c->tool_name[i]);
-                    tui_write(STR("\n"));
-                    tui_write(c->text[i]);
-                    tui_write(STR("\n"));
+                    render_tool_call(c->tool_name[i], c->text[i], scratch);
                 } else if (c->text[i].n) {
                     tui_write(c->text[i]);
                     tui_write(STR("\n"));
@@ -193,7 +190,7 @@ static void resume_session(Session *sess, Conv *conv, Arena *persist,
     b8 whole = session_apply(sess, src, list.path[pick], list.name[pick], conv,
                              persist, scratch);
     tui_clear();
-    render_conv(conv);
+    render_conv(conv, scratch);
     if (!whole) tui_notice(STR("session truncated: the conversation is full"));
     arena_reset(scratch);
 }
@@ -464,6 +461,13 @@ i32 main(i32 argc, char **argv) {
         }
         if (!strcmp(line, "/copy")) {
             copy_last_reply(&conv);
+            continue;
+        }
+        if (!strcmp(line, "/verbose")) {
+            render_set_verbose(!render_verbose());
+            tui_notice(render_verbose()
+                       ? STR("verbose: tool output is shown in full")
+                       : STR("verbose: tool output is truncated"));
             continue;
         }
         if (!strcmp(line, "/model")) {

@@ -99,12 +99,13 @@ def test_a_notice_stacks_above_the_popup(ctx):
 
     rows = s.screen.lines()
     bottom = s.screen.rows
-    assert "no saved sessions" in rows[bottom - 11], rows[bottom - 12 :]
-    assert "/clear" in rows[bottom - 10], rows[bottom - 12 :]
-    assert "/resume" in rows[bottom - 9], rows[bottom - 12 :]
-    assert "/model" in rows[bottom - 8], rows[bottom - 12 :]
-    assert "/copy" in rows[bottom - 7], rows[bottom - 12 :]
-    assert "/exit" in rows[bottom - 6], rows[bottom - 12 :]
+    assert "no saved sessions" in rows[bottom - 12], rows[bottom - 13 :]
+    assert "/clear" in rows[bottom - 11], rows[bottom - 13 :]
+    assert "/resume" in rows[bottom - 10], rows[bottom - 13 :]
+    assert "/model" in rows[bottom - 9], rows[bottom - 13 :]
+    assert "/copy" in rows[bottom - 8], rows[bottom - 13 :]
+    assert "/verbose" in rows[bottom - 7], rows[bottom - 13 :]
+    assert "/exit" in rows[bottom - 6], rows[bottom - 13 :]
     assert s.composer_text() == "/", s.composer_lines()
     ctx.check_screen(s, "stacked")
 
@@ -257,7 +258,11 @@ def test_tool_calls_survive_a_resume(ctx):
     s.wait_status("pick a session")
     s.key("enter")
     s.wait_text("I read it")
-    assert "hello from disk" in s.text(), s.text()
+    text = s.text()
+    # the replay renders the block a live turn rendered, result included
+    assert "\u25c6  read notes.txt" in text, text
+    assert "\u2514\u2500 1 line" in text, text
+    assert "hello from disk" in text, text
 
     # the replayed conversation still holds a tool result, which is what the
     # mock keys its follow-up reply off

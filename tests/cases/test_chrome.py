@@ -69,8 +69,8 @@ def test_transcript_roles_are_styled(ctx):
         assert row >= 0, f"{needle!r} missing\n{s.text()}"
         return s.screen.attr_at(row, 2).fg
 
-    assert fg_of("\u25c6  Tool") == 221         # S_YELLOW
-    assert fg_of("\u2514\u2500 Result") == 114  # S_GREEN
+    assert fg_of("\u25c6  read f.txt") == 221   # S_YELLOW
+    assert fg_of("\u2514\u2500 1 line") == 114  # S_GREEN
 
 
 def test_user_message_is_a_box(ctx):

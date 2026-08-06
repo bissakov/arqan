@@ -1,7 +1,6 @@
 --- screen 80x24 ---
 |
 |
-|
 |                                          _
 |                              _   _  ___ | | _____
 |                             | | | |/ _ \| |/ / _ \
@@ -13,11 +12,12 @@
 |
 |                    type a message and press Enter to begin
 |
-|  › /clear   Start a fresh conversation
-|    /resume  Resume a saved session from this directory
-|    /model   Pick the model, remembered for the next run
-|    /copy    Copy the last response to the clipboard
-|    /exit    Quit yoke
+|  › /clear    Start a fresh conversation
+|    /resume   Resume a saved session from this directory
+|    /model    Pick the model, remembered for the next run
+|    /copy     Copy the last response to the clipboard
+|    /verbose  Toggle untruncated tool output
+|    /exit     Quit yoke
 |
 |  › /
 |

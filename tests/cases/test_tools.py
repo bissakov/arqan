@@ -17,9 +17,9 @@ def test_read_tool_round_trip(ctx):
     s.wait_turn_done()
 
     text = s.text()
-    assert "\u25c6  Tool \u00b7 read" in text, text
-    assert '"path":"notes.txt"' in text.replace(" ", ""), text
-    assert "\u2514\u2500 Result" in text, text
+    assert "\u25c6  read notes.txt" in text, text
+    assert "{" not in text, text          # no JSON arguments on screen
+    assert "\u2514\u2500 1 line" in text, text
     assert "hello from disk" in text, text
     ctx.check_screen(s)
 
@@ -46,6 +46,59 @@ def test_tool_call_is_replayed_to_the_provider(ctx):
     assert json.loads(call["function"]["arguments"]) == {"path": "a.txt"}
     assert messages[3]["tool_call_id"] == call["id"]
     assert messages[3]["content"] == "content A"
+
+
+def test_write_tool_previews_the_content(ctx):
+    """A write shows the path and the head of what it writes, not JSON."""
+    body = "".join(f"line {i}\n" for i in range(12))
+    args = json.dumps({"path": "long.txt", "content": body})
+    ctx.scenario(f"tool=write:{args},final_text=written")
+    s = ctx.spawn()
+    s.submit("write a file")
+    s.wait_text("written")
+    s.wait_turn_done()
+
+    text = s.text()
+    assert "\u25c6  write long.txt" in text, text
+    assert "\u2502 line 0" in text, text
+    assert "\u2502 ... 4 more lines" in text, text
+    assert "line 8" not in text, text
+    assert "\u2514\u2500 wrote" in text, text
+
+
+def test_edit_tool_shows_a_diff(ctx):
+    """An edit call reads as the lines it removes and the ones it adds."""
+    ctx.write_file("diff.txt", "keep\nold one\nkeep\n")
+    args = json.dumps(
+        {"path": "diff.txt", "old_text": "old one", "new_text": "new one"}
+    )
+    ctx.scenario(f"tool=edit:{args},final_text=patched")
+    s = ctx.spawn()
+    s.submit("patch it")
+    s.wait_text("patched")
+    s.wait_turn_done()
+
+    text = s.text()
+    assert "\u25c6  edit diff.txt" in text, text
+    assert "\u2502 - old one" in text, text
+    assert "\u2502 + new one" in text, text
+    assert s.screen.attr_at(s.screen.find_row("\u2502 - old one"), 2).fg == 203
+    assert s.screen.attr_at(s.screen.find_row("\u2502 + new one"), 2).fg == 114
+
+
+def test_bash_result_is_summarised_by_its_exit_status(ctx):
+    """The command heads the call and its exit code heads the result."""
+    args = json.dumps({"command": "echo hi; exit 3"})
+    ctx.scenario(f"tool=bash:{args},final_text=it+failed")
+    s = ctx.spawn()
+    s.submit("run it")
+    s.wait_text("it failed")
+    s.wait_turn_done()
+
+    text = s.text()
+    assert "\u25c6  bash echo hi; exit 3" in text, text
+    assert "\u2514\u2500 exit 3" in text, text
+    assert "   hi" in text, text
 
 
 def test_write_tool_creates_a_file(ctx):
@@ -92,7 +145,10 @@ def test_failing_tool_reports_an_error(ctx):
     s.wait_turn_done()
     results = ctx.mock.tool_results()
     assert results and results[0].startswith("ERROR:"), results
-    assert "ERROR" in s.text()
+    text = s.text()
+    assert "\u2514\u2500 error: open missing.txt failed" in text, text
+    row = s.screen.find_row("\u2514\u2500 error:")
+    assert s.screen.attr_at(row, 2).fg == 203, text   # S_RED
 
 
 def test_unknown_tool_is_reported(ctx):
@@ -143,5 +199,57 @@ def test_large_tool_output_is_truncated_in_the_transcript(ctx):
     s.submit("read big.txt")
     s.wait_text("that is a lot")
     s.wait_turn_done()
-    assert "output truncated in transcript" in s.text()
+    assert "... 188 more lines" in s.text(), s.text()
     assert ctx.mock.tool_results()[0].strip().endswith("line 0199 of output")
+
+
+def test_verbose_shows_every_line_of_a_result(ctx):
+    """/verbose drops the transcript's caps; toggling it back restores them."""
+    body = "\n".join(f"line {i:04d} of output" for i in range(40))
+    ctx.write_file("big.txt", body)
+    ctx.scenario('tool=read:{"path":"big.txt"},final_text=all+of+it')
+    s = ctx.spawn()
+    s.submit("/verbose")
+    s.wait_text("verbose: tool output is shown in full")
+    s.submit("read big.txt")
+    s.wait_text("all of it")
+    s.wait_turn_done()
+
+    text = s.text()
+    assert "more lines" not in text, text
+    assert "line 0039 of output" in text, text
+    for _ in range(12):
+        s.mouse("wheel-up", 5, 10).sync()
+    assert "line 0000 of output" in s.text(), s.text()
+
+    s.submit("/verbose")
+    s.wait_text("verbose: tool output is truncated")
+    # tool_rounds counts the whole conversation's tool replies, and the
+    # verbose turn already left one behind
+    ctx.scenario(
+        'tool=read:{"path":"big.txt"},tool_rounds=2,final_text=just+the+head'
+    )
+    s.submit("read it again")
+    s.wait_text("just the head")
+    s.wait_turn_done()
+    assert "... 28 more lines" in s.text(), s.text()
+
+
+def test_verbose_shows_a_long_command_whole(ctx):
+    """A call header is clipped only while verbose is off."""
+    marker = "x" * 200
+    args = json.dumps({"command": f"echo {marker}"})
+    ctx.scenario(f"tool=bash:{args},final_text=ran")
+    s = ctx.spawn()
+    s.submit("run it")
+    s.wait_text("ran")
+    s.wait_turn_done()
+    assert " ..." in s.text(), s.text()
+
+    s.submit("/verbose")
+    s.wait_text("verbose: tool output is shown in full")
+    ctx.scenario(f"tool=bash:{args},tool_rounds=2,final_text=ran+again")
+    s.submit("run it again")
+    s.wait_text("ran again")
+    s.wait_turn_done()
+    assert " ..." not in s.text(), s.text()
