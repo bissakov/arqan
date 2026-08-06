@@ -1322,6 +1322,17 @@ void tui_set_model(Str model) {
     repaint();
 }
 
+b8 tui_copy(Str text) {
+    if (!text.n || text.n > TUI_SEL_BYTES) return false;
+    put_str("\033]52;c;");
+    b64_put((const u8 *)text.p, text.n);
+    put_str("\a");
+    flush_out();
+    g_tui.copy_notice = yoke_now_seconds() + 2.0;
+    repaint();
+    return true;
+}
+
 void tui_set_context_tokens(size_t tokens) {
     g_tui.context_tokens = tokens;
     g_tui.context_known = true;

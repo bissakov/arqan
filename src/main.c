@@ -43,6 +43,7 @@ static size_t commands_init(void) {
     g_commands[n++] = (TuiCmd){ STR("/clear"), STR("Start a fresh conversation") };
     g_commands[n++] = (TuiCmd){ STR("/resume"), STR("Resume a saved session from this directory") };
     g_commands[n++] = (TuiCmd){ STR("/model"), STR("Pick the model, remembered for the next run") };
+    g_commands[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
     g_commands[n++] = (TuiCmd){ STR("/exit"), STR("Quit yoke") };
     return n;
 }
@@ -179,6 +180,22 @@ static void resume_session(Session *sess, Conv *conv, Arena *persist,
     arena_reset(scratch);
 }
 
+/* Copy the model's last reply as the Markdown it wrote: the transcript is a
+ * rendering of that text, wrapped and interleaved with tool output, while the
+ * conversation still holds the source. Slots carrying a tool call hold JSON
+ * arguments, not prose, so they are not a reply. */
+static void copy_last_reply(const Conv *conv) {
+    for (size_t i = conv->n; i-- > 0;) {
+        if (conv->role[i] != M_ASSISTANT || conv_is_call(conv, i)) continue;
+        if (!conv->text[i].n) continue;
+        tui_notice(tui_copy(conv->text[i])
+                   ? STR("copied the last response")
+                   : STR("that response is too large to copy"));
+        return;
+    }
+    tui_notice(STR("no response to copy"));
+}
+
 /* Offer what the provider's /models endpoint lists and switch to the chosen
  * one for this session, remembering it for the next. The conversation is
  * untouched: a model change is not part of it. */
@@ -302,6 +319,10 @@ i32 main(i32 argc, char **argv) {
             arena_reset(&scratch);
             session_begin(&sess);   /* the next message starts a new file */
             tui_clear();
+            continue;
+        }
+        if (!strcmp(line, "/copy")) {
+            copy_last_reply(&conv);
             continue;
         }
         if (!strcmp(line, "/model")) {

@@ -372,6 +372,12 @@ void tui_set_history(History *h);
 void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count);
 /* The model the status line names; the string must outlive the call. */
 void tui_set_model(Str model);
+/* Hand `text` to the terminal's clipboard over OSC 52, the path a drag-select
+ * copy takes, and acknowledge it on the status line. Returns false for an
+ * empty payload or one past the sequence cap, which is refused rather than
+ * truncated: half a reply on the clipboard is not the one that was asked
+ * for. */
+b8 tui_copy(Str text);
 void tui_stop(void);
 void tui_set_status(const char *status);
 void tui_set_context_tokens(size_t tokens);

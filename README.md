@@ -81,8 +81,9 @@ screen and copies it over OSC 52 on release, so it works over ssh; Shift falls
 back to the terminal's own selection.
 
 Typing `/` opens a completion popup: `/clear` starts a fresh conversation,
-`/resume` reopens one saved for this directory, `/model` switches model and
-`/exit` quits.
+`/resume` reopens one saved for this directory, `/model` switches model,
+`/copy` puts the last reply on the clipboard as the Markdown the model wrote
+and `/exit` quits.
 
 `/model` lists what the provider's `/models` endpoint serves and remembers the
 choice for the next run. Past ten entries the popup takes the keyboard and
