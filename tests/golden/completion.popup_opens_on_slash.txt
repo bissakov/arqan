@@ -16,8 +16,8 @@
 |
 |
 |
-|  › /new   Start a fresh conversation
-|    /exit  Quit ah
+|  › /clear  Start a fresh conversation
+|    /exit   Quit ah
 |
 |  › /
 |

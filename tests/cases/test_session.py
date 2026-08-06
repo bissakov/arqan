@@ -31,8 +31,8 @@ def test_ctrl_d_on_empty_composer_exits(ctx):
     assert not s.screen.alt_active
 
 
-def test_new_command_clears_the_transcript(ctx):
-    """/new wipes the visible history and the token counter."""
+def test_clear_command_clears_the_transcript(ctx):
+    """/clear wipes the visible history and the token counter."""
     ctx.scenario("text=remember+this,usage=500/10")
     s = ctx.spawn()
     s.submit("first message")
@@ -40,7 +40,7 @@ def test_new_command_clears_the_transcript(ctx):
     s.wait_turn_done()
     assert "510" in s.status_line(), s.status_line()
 
-    s.submit("/new")
+    s.submit("/clear")
     s.wait_for(lambda t: "remember this" not in t.text(), "transcript to clear")
     assert "first message" not in s.text()
     assert "\u2014" in s.status_line(), s.status_line()
@@ -48,15 +48,15 @@ def test_new_command_clears_the_transcript(ctx):
     ctx.check_screen(s)
 
 
-def test_new_command_resets_the_conversation(ctx):
-    """After /new the provider sees a fresh conversation, system prompt kept."""
+def test_clear_command_resets_the_conversation(ctx):
+    """After /clear the provider sees a fresh conversation, system prompt kept."""
     ctx.scenario("text=one")
     s = ctx.spawn()
     s.submit("first")
     s.wait_text("one")
     s.wait_turn_done()
 
-    s.submit("/new")
+    s.submit("/clear")
     s.wait_for(lambda t: "one" not in t.text(), "transcript to clear")
 
     ctx.scenario("text=two")

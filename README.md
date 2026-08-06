@@ -111,10 +111,9 @@ Redirected stdin/stdout automatically falls back to plain text.
 
 Typing `/` opens a completion popup above the composer listing the slash
 commands; it narrows as you type, Ctrl-N/Ctrl-P (or the arrow keys) move
-through it, Tab and Enter both complete the highlighted entry, and Esc
-dismisses it. Once a name is typed out in full there is nothing left to
-complete, so Enter runs it straight away rather than swallowing the keystroke.
-`/new` clears the active conversation and `/exit` exits.
+through it, Tab completes the highlighted entry, Enter completes *and* runs it
+in one keystroke, and Esc dismisses it. `/clear` clears the active conversation
+and `/exit` exits.
 
 The status line spells out what the session is doing — `ready`, `thinking`,
 `running <tool>` — rather than leaving it to the colour of the bullet, so it

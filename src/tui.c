@@ -515,8 +515,8 @@ static char lower_ascii(char c) {
     return c >= 'A' && c <= 'Z' ? (char)(c + 32) : c;
 }
 
-/* Command names are ASCII, so folding case here is enough to make "/NE"
- * offer "/new". */
+/* Command names are ASCII, so folding case here is enough to make "/CL"
+ * offer "/clear". */
 static b8 str_starts_ci(Str s, Str prefix) {
     if (s.n < prefix.n) return false;
     for (size_t i = 0; i < prefix.n; i++)
@@ -1300,10 +1300,9 @@ static EdAction editor_key(i32 c) {
     size_t before_n = n;
 
     /* Popup keys are only stolen while it is open, so Tab and Ctrl-N/P keep
-     * their usual do-nothing behaviour otherwise. Enter completes rather than
-     * submits while a command is still being chosen; once the name is typed
-     * out in full there is nothing left to complete, and eating the keystroke
-     * would only make the user press Enter twice to run it. */
+     * their usual do-nothing behaviour otherwise. Tab completes the highlighted
+     * entry and stays in the composer; Enter picks it and runs it in one
+     * keystroke, so choosing from the popup never costs a second Enter. */
     if (g_tui.comp_n
         && (c == '\t' || c == '\r' || c == '\n' || c == 0x0e || c == 0x10)) {
         sel_clear();
@@ -1311,10 +1310,7 @@ static EdAction editor_key(i32 c) {
             completion_move(c == 0x0e ? 1 : -1);
             return ED_EDIT;
         }
-        if (completion_would_change()) {
-            completion_accept();
-            return ED_EDIT;
-        }
+        if (completion_would_change()) completion_accept();
         g_tui.comp_n = 0;
         g_tui.comp_sel = 0;
         g_tui.comp_dismissed = true;
@@ -1420,8 +1416,8 @@ void tui_poll_input(void) {
         if (c == -2) continue;
         if (c < 0) { g_tui.input_eof = true; break; }
         /* Enter, Ctrl-C and Ctrl-D belong to the prompt, not to a live turn —
-         * except that an open popup makes Enter a completion key, which is
-         * harmless mid-turn since it can never submit. */
+         * except that an open popup makes Enter complete the highlighted
+         * entry, which is harmless mid-turn since the submit is dropped. */
         if ((c == '\r' || c == '\n') && !g_tui.comp_n) continue;
         if (c == 0x03 || c == 0x04) continue;
         editor_key(c);

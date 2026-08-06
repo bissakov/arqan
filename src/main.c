@@ -38,7 +38,7 @@ static TuiCmd g_commands[AH_MAX_COMMANDS];
 
 static size_t commands_init(void) {
     size_t n = 0;
-    g_commands[n++] = (TuiCmd){ STR("/new"),  STR("Start a fresh conversation") };
+    g_commands[n++] = (TuiCmd){ STR("/clear"), STR("Start a fresh conversation") };
     g_commands[n++] = (TuiCmd){ STR("/exit"), STR("Quit ah") };
     return n;
 }
@@ -127,7 +127,7 @@ i32 main(i32 argc, char **argv) {
         if (!tui_readline("> ", line, sizeof line, &ln)) break;
         if (ln == 0) { g_got_sigint = 0; continue; }
         if (!strcmp(line, "/exit")) break;
-        if (!strcmp(line, "/new")) {
+        if (!strcmp(line, "/clear")) {
             /* Keep the configured system prompt, discard the visible and
              * conversational state. Session persistence will replace this. */
             conv.n = 1;
