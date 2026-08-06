@@ -14,6 +14,8 @@
 #include "core.c"
 #include "json.c"
 #include "http.c"
+#include "paths.c"
+#include "history.c"
 #include "config.c"
 #include "tools.c"
 #include "provider.c"
@@ -110,6 +112,20 @@ i32 main(i32 argc, char **argv) {
     ToolRegistry tools;
     tools_init(&tools, &persist);
 
+    /* Prompt history lives in the XDG state dir. Without a resolvable one,
+     * recall still works for this session and only the on-disk copy is lost. */
+    History hist = {0};
+    Arena hist_arena = {0};
+    void *hist_mem = arena_alloc(&persist, YOKE_HISTORY_BYTES, 64);
+    if (hist_mem) {
+        arena_init(&hist_arena, hist_mem, YOKE_HISTORY_BYTES);
+        if (history_init(&hist, &hist_arena, YOKE_MAX_HISTORY))
+            history_load(&hist,
+                         paths_file(YOKE_DIR_STATE, STR("history"), &persist),
+                         &scratch);
+    }
+    arena_reset(&scratch);
+
     Conv conv;
     if (!conv_init(&conv, &persist, cfg.max_messages)) {
         fprintf(stderr, "yoke: cannot reserve %zu conversation slots\n",
@@ -129,6 +145,7 @@ i32 main(i32 argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     tui_start(cfg.model, cfg.base_url, !cfg.api_key.p, tools.n);
     tui_set_commands(g_commands, commands_init());
+    tui_set_history(&hist);
     tui_set_interrupt_flag(&g_got_sigint);
     atexit(tui_stop);
 

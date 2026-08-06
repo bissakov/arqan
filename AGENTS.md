@@ -20,7 +20,7 @@ There is no linter target — `CFLAGS` already includes `-Wall -Wextra
 
 `make test` is not optional after touching `src/` — see [Tests](#tests).
 
-Runtime config comes from env vars or `~/.config/yoke/config`:
+Runtime config comes from env vars or `$XDG_CONFIG_HOME/yoke/config`:
 
 ```
 export YOKE_BASE_URL=https://api.openai.com/v1
@@ -77,14 +77,24 @@ an AoS layout.
   `provider.c`. Runs the transfer on the multi interface so one wait covers
   both curl's sockets and `HttpReq.idle_fd` (stdin), calling `on_idle` after
   every wait — that is what keeps the UI live mid-request, single-threaded
-- `config.c` — loads `Config` from env vars then `~/.config/yoke/config`
+- `paths.c` — XDG base directory resolution for config, data, state and
+  cache. Nothing goes directly in `$HOME`, a relative `XDG_*` value is
+  ignored as the spec demands, and created directories are 0700. New
+  persistent state picks a kind here instead of building its own path
+- `history.c` — prompt history: a ring of past submissions mirrored line by
+  line to `$XDG_STATE_HOME/yoke/history` as they are submitted. It owns an
+  arena because `/clear` rewinds the session's, and compacts that arena in
+  place when it fills
+- `config.c` — loads `Config` from env vars, then `$XDG_CONFIG_HOME/yoke/config`,
+  then the `XDG_CONFIG_DIRS` entries at lower precedence
 - `tools.c` — the `ToolRegistry` and the four built-in tools (read/write/bash/edit)
 - `provider.c` — OpenAI-compatible chat-completions streaming client; parses
   SSE deltas into text/tool-call callbacks and appends to `Conv`. Each event
   is parsed into a small arena that is reset per delta, so a turn's scratch
   use follows the size of the reply rather than the number of events
 - `tui.c` — alternate-screen terminal UI: viewport, scrollback, raw-mode
-  composer, mouse wheel scrolling, drag-to-select with OSC 52 copy,
+  composer with Up/Down recall of the persisted prompt history, mouse wheel
+  scrolling, drag-to-select with OSC 52 copy,
   SIGWINCH-aware repaint. Every visible glyph is painted through `put_text`,
   which mirrors it into the per-row screen snapshot selection highlights and
   copies from. Frames are built

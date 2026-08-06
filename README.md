@@ -30,7 +30,9 @@ src/
   core.c          arena, Str, slices, log, time, dynamic arrays in arenas
   json.c          tiny arena JSON parser + serializer
   http.c          libcurl streaming POST (SSE)
-  config.c        env + ~/.config/yoke/config loader
+  paths.c         XDG base directory resolution
+  history.c       prompt history, mirrored to the XDG state dir
+  config.c        env + XDG config file loader
   provider.c      OpenAI-compatible chat-completions streaming + tool deltas
   tools.c         SoA tool registry + read/write/bash/edit tools
   tui.c           alternate-screen TUI, viewport, composer + raw input
@@ -62,7 +64,8 @@ export YOKE_MODEL=gpt-4o-mini
 export YOKE_API_KEY=sk-...
 ```
 
-or put them in `~/.config/yoke/config`:
+or put them in `$XDG_CONFIG_HOME/yoke/config`, by default
+`~/.config/yoke/config`:
 
 ```
 base_url=https://api.openai.com/v1
@@ -71,6 +74,20 @@ api_key=sk-...
 max_tokens=4096
 max_messages=4096      # conversation capacity; a full one is reported, not overrun
 ```
+
+## Files
+
+yoke follows the XDG Base Directory Specification and writes nothing directly
+into `$HOME`:
+
+| what | where | note |
+| --- | --- | --- |
+| settings | `$XDG_CONFIG_HOME/yoke/config` | every `$XDG_CONFIG_DIRS` entry is searched too, at lower precedence |
+| prompt history | `$XDG_STATE_HOME/yoke/history` | last 500 prompts, recalled in the composer with Up/Down |
+
+Environment variables still win over every file. A relative value in an
+`XDG_*` variable is invalid per the spec and ignored as if unset, and
+directories yoke creates are mode 0700.
 
 ## Tests
 

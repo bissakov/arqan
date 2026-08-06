@@ -108,6 +108,10 @@ typedef struct {
     size_t comp_n;
     size_t comp_sel;
     b8 comp_dismissed;               /* Esc/Tab closed it until text changes */
+    /* Prompt history recall: `draft` holds the text the first Up displaced. */
+    History *hist;
+    char draft[YOKE_LINE_BUF];
+    size_t draft_n;
     /* What the frame actually put on screen, one entry per row: the substrate
      * mouse selection highlights and copies, so any painted cell — transcript,
      * composer or status line — is selectable without re-deriving its source. */
@@ -1542,6 +1546,42 @@ static void completion_accept(void) {
     g_tui.comp_dismissed = true;
 }
 
+void tui_set_history(History *h) {
+    g_tui.hist = h;
+    g_tui.draft_n = 0;
+    if (h) history_reset_cursor(h);
+}
+
+/* Replace the composer's text with a recalled entry. */
+static void composer_load(char *buf, size_t *n, size_t *cur, Str s) {
+    size_t take = s.n < YOKE_LINE_BUF - 1 ? s.n : YOKE_LINE_BUF - 1;
+    if (take) memcpy(buf, s.p, take);
+    buf[take] = '\0';
+    *n = take;
+    *cur = take;
+}
+
+/* Up/Down walk the history. Stepping off the newest entry brings back the
+ * draft the first Up put aside, so recall never eats typed text. */
+static b8 history_recall(i32 dir, char *buf, size_t *n, size_t *cur) {
+    History *h = g_tui.hist;
+    if (!h || !h->n) return false;
+    Str entry;
+    if (dir < 0) {
+        if (!history_browsing(h)) {
+            memcpy(g_tui.draft, buf, *n);
+            g_tui.draft_n = *n;
+        }
+        if (!history_prev(h, &entry)) return false;
+        composer_load(buf, n, cur, entry);
+        return true;
+    }
+    if (!history_browsing(h)) return false;
+    if (history_next(h, &entry)) { composer_load(buf, n, cur, entry); return true; }
+    composer_load(buf, n, cur, (Str){ g_tui.draft, g_tui.draft_n });
+    return true;
+}
+
 void tui_set_commands(const TuiCmd *cmds, size_t n) {
     g_tui.cmds = cmds;
     g_tui.cmd_n = n < YOKE_MAX_COMMANDS ? n : YOKE_MAX_COMMANDS;
@@ -1561,6 +1601,8 @@ static EdAction editor_key(i32 c) {
     /* Anything but the mouse itself invalidates a highlight, exactly as a
      * keystroke drops the terminal's own selection. */
     b8 keep_sel = false;
+    /* A recall is not typing: it must not reopen a dismissed popup. */
+    b8 recalled = false;
 
     size_t before_n = n;
 
@@ -1646,6 +1688,8 @@ static EdAction editor_key(i32 c) {
             sel_finish(); keep_sel = true;
         } else if (g_tui.comp_n && (key == KEY_DOWN || key == KEY_UP)) {
             completion_move(key == KEY_DOWN ? 1 : -1);
+        } else if (key == KEY_UP || key == KEY_DOWN) {
+            recalled = history_recall(key == KEY_UP ? -1 : 1, buf, &n, &cur);
         } else if (key == KEY_NONE && g_tui.comp_n) {
             g_tui.comp_dismissed = true;   /* bare Esc closes the popup */
         } else if (key == KEY_NONE && g_tui.busy && g_tui.interrupt) {
@@ -1667,7 +1711,8 @@ static EdAction editor_key(i32 c) {
     g_tui.input_n = n;
     g_tui.input_cur = cur;
     /* Any change to the text reopens a popup an earlier Esc/Tab closed. */
-    if (n != before_n) g_tui.comp_dismissed = false;
+    if (recalled) g_tui.comp_dismissed = true;
+    else if (n != before_n) g_tui.comp_dismissed = false;
     completion_refresh();
     return action;
 }
@@ -1679,6 +1724,8 @@ static void composer_clear(void) {
     g_tui.comp_n = 0;
     g_tui.comp_sel = 0;
     g_tui.comp_dismissed = false;
+    g_tui.draft_n = 0;
+    if (g_tui.hist) history_reset_cursor(g_tui.hist);
 }
 
 /* Drain whatever the terminal already has, without ever blocking. Enter is
@@ -1735,6 +1782,9 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
             size_t n = g_tui.input_n < cap ? g_tui.input_n : cap - 1;
             memcpy(buf, g_tui.input, n);
             buf[n] = '\0';
+            /* Recorded here, so the slash commands the caller consumes are
+             * recallable too. */
+            if (g_tui.hist) history_add(g_tui.hist, (Str){buf, n});
             composer_clear();
             *out_n = n;
             repaint();

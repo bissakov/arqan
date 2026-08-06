@@ -72,7 +72,8 @@ pacing. Set `YOKE_TEST_QUIET=0.2` to raise the floor on a machine too slow or
 too loaded for the default.
 
 The environment is pinned so the rendered frame is reproducible: fixed
-`TERM`, `LC_ALL=C.UTF-8`, an isolated `HOME`/`XDG_CONFIG_HOME`, a cwd of
+`TERM`, `LC_ALL=C.UTF-8`, an isolated `HOME`/`XDG_CONFIG_HOME` that the state
+and cache dirs default under, a cwd of
 `~/work` (the status line shows it) and a fixed model name and system prompt.
 The mock listens on an ephemeral port, and the status line renders loopback as
 `local`, so the port never leaks into a golden file.

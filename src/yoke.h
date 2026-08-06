@@ -46,6 +46,11 @@ typedef bool     b8;
 #define YOKE_MAX_COMMANDS     32          /* slash commands offered by the TUI */
 #define YOKE_LINE_BUF         (1u << 20)  /* 1 MiB input line buffer          */
 #define YOKE_RESP_BUF         (1u << 22)  /* 4 MiB response accumulation      */
+#define YOKE_MAX_HISTORY      500         /* recallable prompts kept on disk   */
+#define YOKE_HISTORY_BYTES    (1u << 20)  /* entry storage carved from persist */
+#define YOKE_MAX_HISTORY_LINE (1u << 16)  /* longest prompt worth remembering  */
+#define YOKE_MAX_HISTORY_BYTES (8u << 20) /* largest history file we will read */
+#define YOKE_MAX_CONFIG_FILES 8           /* XDG config candidates we consider */
 
 /* ---- arenas ------------------------------------------------------------- */
 typedef struct {
@@ -127,6 +132,49 @@ JVal   *json_parse(Arena *a, Str s);            /* NULL on error             */
 void    json_write(Buf *b, const JVal *v);
 const JVal *json_get(const JVal *obj, Str key);  /* object lookup            */
 const JVal *json_at(const JVal *arr, size_t i);
+
+/* ---- XDG base directories ------------------------------------------------
+ * Every file yoke owns is resolved here and none of them sits directly in
+ * $HOME. A relative XDG_* value is invalid and ignored, as the spec requires.
+ */
+typedef enum { YOKE_DIR_CONFIG, YOKE_DIR_DATA, YOKE_DIR_STATE, YOKE_DIR_CACHE } YokeDir;
+
+/* Absolute "<base>/yoke" path, empty when no base resolves. */
+Str    paths_dir(YokeDir kind, Arena *a);
+Str    paths_file(YokeDir kind, Str name, Arena *a);
+b8     paths_ensure_dir(Str dir);    /* mkdir -p, mode 0700                  */
+/* Candidates for a config file, lowest precedence first, so applying them in
+ * order leaves the user's own file on top. */
+size_t paths_config_files(Str name, Arena *a, Str *out, size_t max);
+
+/* ---- prompt history ------------------------------------------------------
+ * A ring of past prompts, mirrored to $XDG_STATE_HOME/yoke/history as they
+ * are submitted. `cursor` is the browse position and cursor == n means the
+ * live draft, which is what the composer restores on the way back down.
+ *
+ * Entries need an arena of their own because /clear rewinds the session's,
+ * and a recallable prompt has to outlive that. A full one is compacted in
+ * place: a bump allocator hands entries out in ascending address order, so
+ * the move never overlaps forward.
+ */
+typedef struct {
+    Str   *entry;   /* [cap] oldest first                                   */
+    size_t n, cap;
+    size_t cursor;
+    Str    path;    /* nul-terminated; empty disables persistence           */
+    Arena *a;       /* entry storage, used by nothing else                  */
+    size_t base_off;/* where entries start, past the index array            */
+} History;
+
+b8   history_init(History *h, Arena *own, size_t cap);
+void history_load(History *h, Str path, Arena *scratch);
+void history_rewrite(const History *h);
+void history_add(History *h, Str line);
+b8   history_prev(History *h, Str *out);
+/* false once it steps past the newest entry, where the draft belongs. */
+b8   history_next(History *h, Str *out);
+void history_reset_cursor(History *h);
+b8   history_browsing(const History *h);
 
 /* ---- config ------------------------------------------------------------- */
 typedef struct {
@@ -247,6 +295,8 @@ i32     provider_run(Provider *p, char *err, size_t err_cap);
  * owned by the caller (static storage) and only read by the TUI. */
 typedef struct { Str name; Str desc; } TuiCmd;
 void tui_set_commands(const TuiCmd *cmds, size_t n);
+/* Composer history for Up/Down recall; NULL disables it. */
+void tui_set_history(History *h);
 void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count);
 void tui_stop(void);
 void tui_set_status(const char *status);
