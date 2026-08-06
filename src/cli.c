@@ -15,6 +15,8 @@
 static const char g_usage[] =
     "usage: yoke [options] [prompt]\n"
     "\n"
+    "A tiny terminal coding agent.\n"
+    "\n"
     "options:\n"
     "  -p, --prompt TEXT   run one turn non-interactively and exit\n"
     "  -m, --model NAME    model to use\n"
