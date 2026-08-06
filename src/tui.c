@@ -479,7 +479,8 @@ static void pad_row(size_t used, size_t cols) {
 
 enum {
     ROW_PLAIN = 1, ROW_COMPOSER, ROW_STATUS,
-    ROW_USER, ROW_ASSISTANT, ROW_TOOL, ROW_RESULT, ROW_NOTICE, ROW_POPUP
+    ROW_USER, ROW_ASSISTANT, ROW_TOOL, ROW_RESULT, ROW_NOTICE, ROW_POPUP,
+    ROW_WELCOME_ART, ROW_WELCOME_TEXT
 };
 
 static u64 hash_add(u64 h, const void *data, size_t n) {
@@ -581,6 +582,10 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
         style(S_GREEN); put_text_z("└─ "); put_text(text.p, text.n);
     } else if (kind == ROW_NOTICE) {
         style(S_YELLOW); put_text(text.p, text.n);
+    } else if (kind == ROW_WELCOME_ART) {
+        style(S_CYAN); put_text(text.p, text.n);
+    } else if (kind == ROW_WELCOME_TEXT) {
+        style(S_MUTED); put_text(text.p, text.n);
     } else {
         if (kind == ROW_PLAIN) style(S_TEXT);
         put_text(text.p, text.n);
@@ -673,17 +678,22 @@ static void update_popup_row(size_t screen_row, Str name, Str desc,
     style(S_RESET);
 }
 
+/* Display cells a string occupies, tabs and control bytes aside. */
+static size_t text_cells(Str s) {
+    size_t cells = 0;
+    for (size_t b = 0; b < s.n;) {
+        i32 width = 0;
+        b += glyph(s.p + b, s.n - b, &width);
+        cells += width > 0 ? (size_t)width : 0;
+    }
+    return cells;
+}
+
 /* Cells taken by the widest visible name, so descriptions line up. */
 static size_t popup_name_cells(size_t first, size_t rows) {
     size_t widest = 0;
     for (size_t i = first; i < first + rows && i < g_tui.comp_n; i++) {
-        Str name = g_tui.cmds[g_tui.comp_idx[i]].name;
-        size_t cells = 0;
-        for (size_t b = 0; b < name.n;) {
-            i32 width = 0;
-            b += glyph(name.p + b, name.n - b, &width);
-            cells += width > 0 ? (size_t)width : 0;
-        }
+        size_t cells = text_cells(g_tui.cmds[g_tui.comp_idx[i]].name);
         if (cells > widest) widest = cells;
     }
     return widest + 4;   /* "\u203a " marker plus a two-cell gap */
@@ -700,6 +710,69 @@ static void paint_completions(size_t top_row, size_t rows, size_t screen_col,
         update_popup_row(top_row + i, cmd->name, cmd->desc,
                          first + i == g_tui.comp_sel, name_cells, screen_col,
                          screen_cols, body_cols, force);
+    }
+}
+
+/* ---- welcome screen ------------------------------------------------------
+ * Shown centered in the transcript region until the first line of output
+ * lands (a submit, a notice — anything). The art rows are centered as one
+ * block so the glyphs stay aligned; the prose rows are centered on their own.
+ */
+typedef struct { Str text; b8 art; } WelcomeLine;
+
+/* STR() is a compound literal, which -Wpedantic rejects as a static
+ * initializer; spell the braces out instead. */
+#define WLINE(lit, is_art) { { (lit), sizeof(lit) - 1 }, (is_art) }
+static const WelcomeLine k_welcome[] = {
+    WLINE("       _",      true),
+    WLINE("  __ _| |__",   true),
+    WLINE(" / _` | '_ \\", true),
+    WLINE("| (_| | | | |", true),
+    WLINE(" \\__,_|_| |_|", true),
+    WLINE("",              false),
+    WLINE("ah " AH_VERSION " · a tiny terminal coding agent", false),
+    WLINE("",              false),
+    WLINE("type a message and press Enter to begin",          false),
+};
+
+#define WELCOME_LINES (sizeof k_welcome / sizeof k_welcome[0])
+
+static size_t welcome_widest(b8 art_only) {
+    size_t widest = 0;
+    for (size_t i = 0; i < WELCOME_LINES; i++) {
+        if (art_only && !k_welcome[i].art) continue;
+        size_t cells = text_cells(k_welcome[i].text);
+        if (cells > widest) widest = cells;
+    }
+    return widest;
+}
+
+/* A cramped screen gets its transcript rows back: the art is only worth
+ * painting when it fits whole with a row of air above and below. */
+static b8 welcome_fits(size_t body_cols, size_t transcript_rows) {
+    return welcome_widest(false) <= body_cols
+        && WELCOME_LINES + 2 <= transcript_rows;
+}
+
+static void paint_welcome(size_t transcript_rows, size_t body_col,
+                          size_t body_cols, size_t screen_cols, b8 force) {
+    static char blanks[256];
+    if (blanks[0] != ' ') memset(blanks, ' ', sizeof blanks);
+    size_t top = (transcript_rows - WELCOME_LINES) / 2;
+    size_t art_pad = (body_cols - welcome_widest(true)) / 2;
+    for (size_t row = 1; row <= transcript_rows; row++) {
+        if (row <= top || row > top + WELCOME_LINES) {
+            update_text_row(row, (Str){0}, (Str){0}, body_col, screen_cols,
+                            ROW_PLAIN, force);
+            continue;
+        }
+        const WelcomeLine *line = &k_welcome[row - top - 1];
+        size_t pad = line->art ? art_pad
+                   : (body_cols - text_cells(line->text)) / 2;
+        if (pad > sizeof blanks) pad = sizeof blanks;
+        update_text_row(row, (Str){blanks, line->text.n ? pad : 0}, line->text,
+                        body_col, screen_cols,
+                        line->art ? ROW_WELCOME_ART : ROW_WELCOME_TEXT, force);
     }
 }
 
@@ -742,7 +815,7 @@ static Str format_context_size(char *buf, size_t cap) {
     size_t n = g_tui.context_tokens;
     i32 written;
     if (!g_tui.context_known) {
-        written = snprintf(buf, cap, "—");
+        written = snprintf(buf, cap, "-");
     } else {
         written = snprintf(buf, cap, "%zu", n);
     }
@@ -805,8 +878,11 @@ static void repaint(void) {
     if (g_tui.scroll_rows > max_scroll) g_tui.scroll_rows = max_scroll;
     size_t first = all_rows > transcript_rows + g_tui.scroll_rows
                  ? all_rows - transcript_rows - g_tui.scroll_rows : 0;
-    update_text_rows(transcript, body_cols, 0, first, transcript_rows, 1,
-                     body_col, cols, ROW_PLAIN, force);
+    if (g_tui.transcript_n == 0 && welcome_fits(body_cols, transcript_rows))
+        paint_welcome(transcript_rows, body_col, body_cols, cols, force);
+    else
+        update_text_rows(transcript, body_cols, 0, first, transcript_rows, 1,
+                         body_col, cols, ROW_PLAIN, force);
     paint_scrollbar(first, all_rows, transcript_rows, cols, force);
 
     /* Completion popup, sitting between the transcript and the composer. */
@@ -951,7 +1027,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count) {
         g_tui.raw = true;
         char banner[512];
         i32 n = snprintf(banner, sizeof banner,
-                         "ah %s — model=%.*s base=%.*s tools=%zu\n",
+                         "ah %s · model=%.*s base=%.*s tools=%zu\n",
                          AH_VERSION, (i32)model.n, model.p,
                          (i32)base_url.n, base_url.p, tool_count);
         if (n > 0) put_raw(banner, (size_t)n < sizeof banner

@@ -44,7 +44,7 @@ def test_usage_updates_context_counter(ctx):
     s.submit("count me")
     s.wait_text("counted")
     s.wait_for(lambda t: "1300" in t.row_text(t.rows - 1), "token total")
-    assert "\u2014" not in s.status_line()
+    assert s.status_field(4) != "-", s.status_line()
 
 
 def test_status_is_thinking_while_streaming(ctx):

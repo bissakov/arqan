@@ -1,5 +1,10 @@
 """Startup, chrome and layout at a range of terminal sizes."""
 
+# A fragment of the ASCII-art logo the welcome screen paints; nothing else
+# on any frame contains it.
+WELCOME_ART = "__ _| |__"
+WELCOME_HINT = "type a message and press Enter to begin"
+
 
 def test_first_frame(ctx):
     """Opening frame: empty composer, placeholder, status line."""
@@ -15,7 +20,7 @@ def test_status_line_fields(ctx):
     # base_url is http://127.0.0.1:PORT/v1 → the loopback host reads as "local"
     assert "local" in status, status
     assert "~/work" in status, status
-    assert "\u2014" in status, status  # em dash: no usage reported yet
+    assert s.status_field(4) == "-", status  # dash: no usage reported yet
     assert str(ctx.mock.port) not in status, "port must not leak into the UI"
 
 
@@ -52,6 +57,44 @@ def test_tiny_terminal(ctx):
     s = ctx.spawn(cols=20, rows=8)
     ctx.check_screen(s)
     assert "mock-model" in s.status_line() or "mock" in s.status_line()
+
+
+def test_welcome_screen_is_centered(ctx):
+    """An empty transcript shows the welcome art in the middle of the view."""
+    s = ctx.spawn()
+    assert WELCOME_ART in s.text()
+    assert WELCOME_HINT in s.text()
+    art_row = s.screen.find_row(WELCOME_ART)          # 0-based
+    assert 3 <= art_row <= s.rows - 7, f"art row {art_row} is not vertically centered"
+    line = s.row(s.screen.find_row(WELCOME_HINT))
+    left = len(line) - len(line.lstrip())
+    right = s.cols - len(line.rstrip())
+    assert abs(left - right) <= 4, f"hint not horizontally centered: {line!r}"
+
+
+def test_welcome_screen_goes_away_on_submit(ctx):
+    """The first submitted message replaces the welcome screen for good."""
+    ctx.scenario("text=hello")
+    s = ctx.spawn()
+    assert WELCOME_ART in s.text()
+    s.submit("hi")
+    s.wait_turn_done()
+    assert WELCOME_ART not in s.text()
+    assert WELCOME_HINT not in s.text()
+
+
+def test_welcome_screen_hidden_when_narrow(ctx):
+    """A terminal too narrow for the welcome text shows none of it."""
+    s = ctx.spawn(cols=42, rows=24)
+    assert WELCOME_ART not in s.text()
+    assert "type a message" not in s.text()
+
+
+def test_welcome_screen_hidden_when_short(ctx):
+    """A terminal too short for the art keeps its transcript rows blank."""
+    s = ctx.spawn(cols=80, rows=15)
+    assert WELCOME_ART not in s.text()
+    assert "type a message" not in s.text()
 
 
 def test_resize_repaints(ctx):

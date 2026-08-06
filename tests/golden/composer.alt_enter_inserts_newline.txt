@@ -3,15 +3,15 @@
 |
 |
 |
+|                                        _
+|                                   __ _| |__
+|                                  / _` | '_ \
+|                                 | (_| | | | |
+|                                  \__,_|_| |_|
 |
+|                    ah 0.1.0 · a tiny terminal coding agent
 |
-|
-|
-|
-|
-|
-|
-|
+|                    type a message and press Enter to begin
 |
 |
 |
@@ -22,5 +22,5 @@
 |  second line
 |
 |
-|  ●  ready  ·  mock-model  ·  local  ·  ~/work  ·  —
+|  ●  ready  ·  mock-model  ·  local  ·  ~/work  ·  -
 --- cursor row=21 col=14 visible=yes ---

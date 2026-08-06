@@ -43,9 +43,21 @@ def test_clear_command_clears_the_transcript(ctx):
     s.submit("/clear")
     s.wait_for(lambda t: "remember this" not in t.text(), "transcript to clear")
     assert "first message" not in s.text()
-    assert "\u2014" in s.status_line(), s.status_line()
+    assert s.status_field(4) == "-", s.status_line()
     assert s.PLACEHOLDER in s.text()
     ctx.check_screen(s)
+
+
+def test_clear_restores_the_welcome_screen(ctx):
+    """An emptied transcript is a fresh start, welcome art included."""
+    ctx.scenario("text=hi")
+    s = ctx.spawn()
+    s.submit("hello")
+    s.wait_turn_done()
+    assert "__ _| |__" not in s.text()
+
+    s.submit("/clear")
+    s.wait_text("__ _| |__")
 
 
 def test_clear_command_resets_the_conversation(ctx):

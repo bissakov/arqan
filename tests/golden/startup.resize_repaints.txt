@@ -1,20 +1,20 @@
 --- screen 60x18 ---
 |
 |
+|                              _
+|                         __ _| |__
+|                        / _` | '_ \
+|                       | (_| | | | |
+|                        \__,_|_| |_|
 |
+|          ah 0.1.0 · a tiny terminal coding agent
 |
-|
-|
-|
-|
-|
-|
-|
+|          type a message and press Enter to begin
 |
 |
 |
 |  › resize me
 |
 |
-|  ●  ready · mock-model · local · work · —
+|  ●  ready · mock-model · local · work · -
 --- cursor row=15 col=14 visible=yes ---

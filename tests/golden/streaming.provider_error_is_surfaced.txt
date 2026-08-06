@@ -22,5 +22,5 @@
 |  › Message ah…
 |
 |
-|  ●  ready  ·  mock-model  ·  local  ·  ~/work  ·  —
+|  ●  ready  ·  mock-model  ·  local  ·  ~/work  ·  -
 --- cursor row=21 col=5 visible=yes ---
