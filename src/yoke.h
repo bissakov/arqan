@@ -51,6 +51,10 @@ typedef bool     b8;
 #define YOKE_MAX_HISTORY_LINE (1u << 16)  /* longest prompt worth remembering  */
 #define YOKE_MAX_HISTORY_BYTES (8u << 20) /* largest history file we will read */
 #define YOKE_MAX_CONFIG_FILES 8           /* XDG config candidates we consider */
+/* Largest SYSTEM.md accepted, about 65k characters: a prompt that long is a
+ * mistake worth reporting, not a document worth loading. Past it yoke refuses
+ * to start rather than send a truncated prompt. */
+#define YOKE_MAX_PROMPT_FILE  (1u << 16)
 #define YOKE_MAX_SESSIONS     64          /* saved sessions the picker offers  */
 #define YOKE_MAX_SESSION_BYTES (32u << 20)/* largest session file we will read */
 #define YOKE_MAX_POPUP        256         /* entries the popup can hold        */
@@ -187,7 +191,7 @@ typedef struct {
     Str base_url;     /* e.g. https://api.openai.com/v1                    */
     Str model;
     Str api_key;
-    Str system_prompt;
+    Str system_prompt; /* Only --system and YOKE_SYSTEM_PROMPT set this. */
     i32  max_tokens;
     /* Conversation capacity. Configurable so the full-history path is
      * reachable in a test without streaming four thousand messages. */
@@ -201,6 +205,7 @@ b8    config_load(Config *c, Arena *persist, Arena *scratch);
  * config_load applies above the config files and below YOKE_MODEL. False when
  * no state directory resolves or the write failed. */
 b8    config_remember_model(Str model, Arena *scratch);
+
 
 /* ---- command line ------------------------------------------------------- */
 /* Every Str points into argv, so nothing is copied and nothing is freed. */
@@ -270,6 +275,16 @@ size_t      tools_find(const ToolRegistry *r, Str name);
 b8          tools_run(const ToolRegistry *r, size_t id, Str args,
                       Arena *scratch, Buf *out, char *err, size_t err_cap);
 void        tools_write_schemas(Buf *b, const ToolRegistry *r);
+
+/* ---- prompt ------------------------------------------------------------- */
+/* The system prompt, placeholders expanded. `configured` is what --system or
+ * YOKE_SYSTEM_PROMPT set, unset to take .yoke/SYSTEM.md, the global
+ * SYSTEM.md or the built-in template, in that order. Returned in `persist`,
+ * `scratch` holds the file while it is read; the unexpanded template is the
+ * fallback when `persist` cannot take the result. Empty with `err` set when a
+ * SYSTEM.md is larger than YOKE_MAX_PROMPT_FILE. */
+Str   prompt_build(const ToolRegistry *tools, Str configured, Arena *persist,
+                   Arena *scratch, char *err, size_t err_cap);
 
 /* ---- conversation (SoA) ------------------------------------------------- */
 typedef enum { M_SYSTEM = 0, M_USER, M_ASSISTANT, M_TOOL } MRole;

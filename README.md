@@ -30,6 +30,7 @@ src/
   history.c       prompt history, mirrored to the XDG state dir
   session.c       per-directory saved conversations (/resume)
   config.c        env + XDG config file loader
+  prompt.c        system prompt: SYSTEM.md lookup + placeholder expansion
   cli.c           command line parsing, above the config in precedence
   provider.c      chat-completions streaming + reasoning and tool deltas
   tools.c         SoA tool registry + read/write/bash/edit tools
@@ -85,6 +86,37 @@ yoke "summarise src/tui.c"       # the same: a bare argument is the prompt
 A one-shot run prints the reply and nothing else, exiting nonzero when the
 turn did not complete, so it composes with pipes and scripts.
 
+### The system prompt
+
+Write your own in `.yoke/SYSTEM.md` for one project, or in
+`$XDG_CONFIG_HOME/yoke/SYSTEM.md` for every session. The project file wins
+when both exist, and it is looked up from the working directory upwards, so a
+subdirectory still gets the project's prompt. `--system` and
+`YOKE_SYSTEM_PROMPT` outrank both; with none of them, a built-in prompt is
+used. It is not a config key: a prompt is a document, not a setting.
+
+What only startup knows goes in as a placeholder:
+
+| placeholder | expands to |
+| --- | --- |
+| `{tools}` | one `- name: description` line per registered tool |
+| `{cwd}` | the directory yoke was launched in |
+
+```markdown
+You are a terse reviewer for this C17 codebase.
+
+Available tools:
+{tools}
+Current working directory: {cwd}
+
+Run `make test` after touching src/.
+```
+
+So a prompt written once keeps describing the tools that exist now. Anything
+else in braces is left exactly as written, `{"a": 1}` included. A SYSTEM.md
+larger than 64 KiB (about 65k characters) is refused at startup with an error
+naming the file: a truncated prompt would be a different prompt.
+
 ## Using it
 
 Enter sends and Alt+Enter inserts a newline. Ctrl-C discards the draft or
@@ -119,6 +151,8 @@ and ignored as if unset, and directories yoke creates are mode 0700.
 | what | where | note |
 | --- | --- | --- |
 | settings | `$XDG_CONFIG_HOME/yoke/config` | every `$XDG_CONFIG_DIRS` entry is searched too, at lower precedence |
+| system prompt | `$XDG_CONFIG_HOME/yoke/SYSTEM.md` | used for every session; `$XDG_CONFIG_DIRS` searched too, at lower precedence |
+| project prompt | `.yoke/SYSTEM.md` | nearest one at or above the working directory, and it wins over the global one |
 | prompt history | `$XDG_STATE_HOME/yoke/history` | last 500 prompts, recalled in the composer with Up/Down |
 | chosen model | `$XDG_STATE_HOME/yoke/model` | what `/model` last picked |
 | sessions | `$XDG_DATA_HOME/yoke/sessions/<cwd>/<timestamp>.jsonl` | one file per conversation, keyed by the directory it ran in |

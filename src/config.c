@@ -1,6 +1,8 @@
 /* config.c: load config from env and the XDG config files.
  *
- * Keys: base_url=, model=, api_key=, system_prompt=, max_tokens=, stream=
+ * Keys: base_url=, model=, api_key=, max_tokens=, max_messages=, stream=
+ * The system prompt is not a key here: it is a document, so it lives in
+ * SYSTEM.md (see prompt.c).
  * Precedence: env var YOKE_<KEY> > $XDG_CONFIG_HOME/yoke/config > the same
  * file in each $XDG_CONFIG_DIRS entry. See paths.c for the directories.
  */
@@ -37,7 +39,7 @@ static size_t clamp_size(i64 v, size_t lo, size_t hi) {
 }
 
 /* Keys the environment already set: no config file may override them. */
-typedef struct { b8 base, model, key, sys, msgs; } EnvSet;
+typedef struct { b8 base, model, key, msgs; } EnvSet;
 
 static void config_apply_file(Config *c, Str path, EnvSet env,
                               Arena *persist, Arena *scratch) {
@@ -64,7 +66,6 @@ static void config_apply_file(Config *c, Str path, EnvSet env,
         if (str_eq(k, STR("base_url")) && !env.base) c->base_url = vd;
         else if (str_eq(k, STR("model")) && !env.model) c->model = vd;
         else if (str_eq(k, STR("api_key")) && !env.key) c->api_key = vd;
-        else if (str_eq(k, STR("system_prompt")) && !env.sys) c->system_prompt = vd;
         else if (str_eq(k, STR("max_tokens"))) { b8 ok; i64 m = str_int(vd,&ok); if (ok) c->max_tokens = (i32)clamp_size(m, 1, 1u << 20); }
         else if (str_eq(k, STR("max_messages"))) { b8 ok; i64 m = str_int(vd,&ok); if (ok && !env.msgs) c->max_messages = clamp_size(m, 8, 1u << 20); }
         else if (str_eq(k, STR("stream"))) c->stream = !str_eq(vd, STR("false"));
@@ -119,7 +120,6 @@ b8 config_load(Config *c, Arena *persist, Arena *scratch) {
         .base  = env_base.p != NULL,
         .model = env_model.p != NULL,
         .key   = env_key.p != NULL,
-        .sys   = env_sys.p != NULL,
         .msgs  = env_msgs != NULL && *env_msgs != '\0',
     };
     for (size_t ci = 0; ci < cand_n; ci++)
@@ -144,11 +144,8 @@ b8 config_load(Config *c, Arena *persist, Arena *scratch) {
     if (!c->base_url.p) c->base_url = str_c("https://api.openai.com/v1");
     if (!c->model.p)   c->model   = str_c("gpt-4o-mini");
 
-    if (!c->system_prompt.p) {
-        c->system_prompt = str_c(
-            "You are yoke, a terminal coding agent. You edit files using tools.\n"
-            "Call tools to accomplish the user's task. Be concise.\n");
-    }
+    /* An unset system prompt is prompt_build's cue to look for a SYSTEM.md
+     * and fall back to the built-in template. */
 
     return true;
 }

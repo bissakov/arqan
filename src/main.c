@@ -19,6 +19,7 @@
 #include "config.c"
 #include "cli.c"
 #include "tools.c"
+#include "prompt.c"
 #include "provider.c"
 #include "session.c"
 #include "tui.c"
@@ -381,6 +382,15 @@ i32 main(i32 argc, char **argv) {
 
     ToolRegistry tools;
     tools_init(&tools, &persist);
+    char prompt_err[YOKE_MAX_PATH + 128] = {0};
+    cfg.system_prompt = prompt_build(&tools, cfg.system_prompt, &persist,
+                                     &scratch, prompt_err,
+                                     sizeof prompt_err);
+    if (!cfg.system_prompt.n) {
+        fprintf(stderr, "yoke: %s\n", prompt_err);
+        return 2;
+    }
+    arena_reset(&scratch);
 
     /* Prompt history lives in the XDG state dir. Without a resolvable one,
      * recall still works for this session and only the on-disk copy is lost. */

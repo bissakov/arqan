@@ -95,6 +95,14 @@ an AoS layout.
   remembered in `$XDG_STATE_HOME/yoke/model`, then
   `$XDG_CONFIG_HOME/yoke/config`, then the `XDG_CONFIG_DIRS` entries at lower
   precedence
+- `prompt.c`: the system prompt, taken whole from one source: `--system` or
+  `YOKE_SYSTEM_PROMPT`, else the project's `.yoke/SYSTEM.md` found by walking
+  up from the working directory, else the global
+  `$XDG_CONFIG_HOME/yoke/SYSTEM.md`, else the built-in template. It is not a
+  config key: a prompt is a document, not a setting. Whichever source wins is
+  expanded before it is sent, `{tools}` becoming the registry listing and
+  `{cwd}` the working directory, so a prompt written once keeps describing the
+  tools that exist now; an unknown `{name}` stays verbatim
 - `cli.c`: argv parsing into `CliOpts`, applied over `Config` after
   `config_load`, so a flag outranks the environment and the files. `--help`
   and `--version` answer and exit; a prompt (`-p` or a bare argument) runs one
