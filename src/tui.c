@@ -928,11 +928,17 @@ static b8 welcome_fits(size_t body_cols, size_t transcript_rows) {
         && WELCOME_LINES + 2 <= transcript_rows;
 }
 
-static void paint_welcome(size_t transcript_rows, size_t body_col,
-                          size_t body_cols, size_t screen_cols, b8 force) {
+/* Centred on the whole body region rather than on what the overlays left of
+ * it, so opening a popup or a notice does not shift the art upward; it only
+ * moves when the remaining rows cannot hold the block plus a row of air. */
+static void paint_welcome(size_t body_rows, size_t transcript_rows,
+                          size_t body_col, size_t body_cols,
+                          size_t screen_cols, b8 force) {
     static char blanks[256];
     if (blanks[0] != ' ') memset(blanks, ' ', sizeof blanks);
-    size_t top = (transcript_rows - WELCOME_LINES) / 2;
+    size_t top = (body_rows - WELCOME_LINES) / 2;
+    size_t max_top = transcript_rows - WELCOME_LINES - 1;
+    if (top > max_top) top = max_top;
     size_t art_pad = (body_cols - welcome_widest(true)) / 2;
     for (size_t row = 1; row <= transcript_rows; row++) {
         if (row <= top || row > top + WELCOME_LINES) {
@@ -1059,7 +1065,8 @@ static void repaint(void) {
     size_t first = all_rows > transcript_rows + g_tui.scroll_rows
                  ? all_rows - transcript_rows - g_tui.scroll_rows : 0;
     if (g_tui.transcript_n == 0 && welcome_fits(body_cols, transcript_rows))
-        paint_welcome(transcript_rows, body_col, body_cols, cols, force);
+        paint_welcome(body_rows, transcript_rows, body_col, body_cols, cols,
+                      force);
     else {
         /* Start from the checkpoint nearest the first visible row instead of
          * re-deriving the wrap from byte zero. */

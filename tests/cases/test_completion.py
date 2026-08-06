@@ -127,6 +127,16 @@ def test_esc_dismisses_until_text_changes(ctx):
     assert "/clear" in s.text(), "editing reopens the popup"
 
 
+def test_popup_leaves_the_welcome_screen_in_place(ctx):
+    """The art is centred on the body, so overlays do not push it upward."""
+    s = ctx.spawn()
+    before = [i for i, row in enumerate(s.screen.lines()) if "|___/" in row]
+    s.type("/").sync()
+    assert "/clear" in s.text(), s.text()
+    after = [i for i, row in enumerate(s.screen.lines()) if "|___/" in row]
+    assert after == before, (before, after)
+
+
 def test_popup_eats_into_transcript_not_composer(ctx):
     """The popup grows upward: the composer keeps its row."""
     s = ctx.spawn()
