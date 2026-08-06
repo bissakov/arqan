@@ -30,6 +30,7 @@ src/
   history.c       prompt history, mirrored to the XDG state dir
   session.c       per-directory saved conversations (/resume)
   config.c        env + XDG config file loader
+  cli.c           command line parsing, above the config in precedence
   provider.c      chat-completions streaming + reasoning and tool deltas
   tools.c         SoA tool registry + read/write/bash/edit tools
   tui.c           alternate-screen TUI, viewport, composer + raw input
@@ -70,6 +71,19 @@ max_messages=4096      # conversation capacity; a full one is reported, not over
 
 Environment variables win over every file, and a model picked with `/model`
 wins over the files but not over `YOKE_MODEL`.
+
+Command line options outrank all of it, being the most local statement about
+one invocation:
+
+```
+yoke --help
+yoke -m gpt-4o --base-url https://api.openai.com/v1
+yoke -p "summarise src/tui.c"    # one turn, reply on stdout, then exit
+yoke "summarise src/tui.c"       # the same: a bare argument is the prompt
+```
+
+A one-shot run prints the reply and nothing else, exiting nonzero when the
+turn did not complete, so it composes with pipes and scripts.
 
 ## Using it
 

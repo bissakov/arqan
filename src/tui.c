@@ -1235,10 +1235,11 @@ static void tui_log_sink(i32 level, Str msg, void *ud) {
     tui_printf("\n[%s: %.*s]\n", tags[level], (i32)msg.n, msg.p);
 }
 
-void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count) {
+void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count,
+               b8 plain) {
     if (g_tui.raw) return;
     memset(&g_tui, 0, sizeof g_tui);
-    g_tui.tty = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
+    g_tui.tty = !plain && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
     g_tui.model = model;
     g_tui.provider = provider_from_url(base_url);
     tui_set_status("ready");
@@ -1250,6 +1251,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count) {
 
     if (!g_tui.tty) {
         g_tui.raw = true;
+        if (plain) return;
         char banner[512];
         i32 n = snprintf(banner, sizeof banner,
                          "yoke %s · model=%.*s base=%.*s tools=%zu\n",
@@ -1322,7 +1324,7 @@ i32 tui_input_fd(void) {
 }
 
 /* Compatibility wrappers retained for callers outside main.c. */
-void tui_enter_raw(void) { tui_start((Str){0}, (Str){0}, false, 0); }
+void tui_enter_raw(void) { tui_start((Str){0}, (Str){0}, false, 0, false); }
 void tui_exit_raw(void) { tui_stop(); }
 
 void tui_set_status(const char *status) {

@@ -201,6 +201,25 @@ b8    config_load(Config *c, Arena *persist, Arena *scratch);
  * no state directory resolves or the write failed. */
 b8    config_remember_model(Str model, Arena *scratch);
 
+/* ---- command line ------------------------------------------------------- */
+/* Every Str points into argv, so nothing is copied and nothing is freed. */
+typedef struct {
+    Str base_url, model, api_key, system_prompt;
+    Str prompt;        /* the one turn to run; see have_prompt              */
+    b8  have_prompt;   /* true even for an empty prompt, which is an error  */
+    i32 max_tokens;    /* 0 leaves the configured value alone               */
+} CliOpts;
+
+typedef enum {
+    CLI_RUN,     /* carry on starting up                                    */
+    CLI_DONE,    /* --help or --version was answered; exit 0                */
+    CLI_ERROR,   /* the usage error is already on stderr; exit 2            */
+} CliStatus;
+
+CliStatus cli_parse(i32 argc, char **argv, CliOpts *out);
+/* Applies the overrides above whatever config_load resolved. */
+void      cli_apply(const CliOpts *o, Config *c);
+
 /* ---- HTTP (libcurl) ----------------------------------------------------- */
 typedef struct {
     const char *base_url;
@@ -373,7 +392,10 @@ void tui_set_commands(const TuiCmd *cmds, size_t n);
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, size_t *out);
 /* Composer history for Up/Down recall; NULL disables it. */
 void tui_set_history(History *h);
-void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count);
+/* `plain` forces the line-oriented path and drops the banner even on a tty,
+ * which is what a one-shot -p run wants: its stdout is a reply, not a UI. */
+void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count,
+               b8 plain);
 /* The model the status line names; the string must outlive the call. */
 void tui_set_model(Str model);
 /* Hand `text` to the terminal's clipboard over OSC 52, the path a drag-select

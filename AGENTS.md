@@ -95,6 +95,10 @@ an AoS layout.
   remembered in `$XDG_STATE_HOME/yoke/model`, then
   `$XDG_CONFIG_HOME/yoke/config`, then the `XDG_CONFIG_DIRS` entries at lower
   precedence
+- `cli.c`: argv parsing into `CliOpts`, applied over `Config` after
+  `config_load`, so a flag outranks the environment and the files. `--help`
+  and `--version` answer and exit; a prompt (`-p` or a bare argument) runs one
+  turn without the UI and exits on its result
 - `tools.c`: the `ToolRegistry` and the four built-in tools (read/write/bash/edit)
 - `provider.c`: OpenAI-compatible chat-completions streaming client; parses
   SSE deltas into text/reasoning/tool-call callbacks and appends to `Conv`.

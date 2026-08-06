@@ -17,6 +17,7 @@
 #include "paths.c"
 #include "history.c"
 #include "config.c"
+#include "cli.c"
 #include "tools.c"
 #include "provider.c"
 #include "session.c"
@@ -262,8 +263,115 @@ static void choose_model(Config *cfg, Arena *persist, Arena *scratch) {
     arena_reset(scratch);
 }
 
+/* Everything one user turn touches, so the interactive loop and the one-shot
+ * -p run drive the same code. */
+typedef struct {
+    Config       *cfg;
+    ToolRegistry *tools;
+    Conv         *conv;
+    Arena        *persist;
+    Arena        *scratch;
+    Session      *sess;
+    b8            echo;   /* write the prompt into the transcript */
+} Agent;
+
+/* Appends `text` as a user message and streams completions until the model
+ * asks for no more tools. False when the turn ended on an error, an interrupt
+ * or a full conversation, which is the exit status of a one-shot run. */
+static b8 agent_turn(Agent *ag, Str text) {
+    Conv *conv = ag->conv;
+
+    Str user_text = str_dup(ag->persist, text);
+    if (text.n && !user_text.p) {
+        tui_write(STR("\n[out of memory: /clear to start a new session]\n\n"));
+        return false;
+    }
+    if (conv_add(conv, M_USER, user_text) == CONV_NONE) {
+        tui_write(STR("\n[conversation is full: /clear to start a new one]\n\n"));
+        return false;
+    }
+    if (ag->echo) tui_write_user(text);
+    session_save(ag->sess, conv);
+
+    /* The composer stays editable throughout; only submitting waits. */
+    b8 ok = false;
+    g_got_sigint = 0;
+    tui_set_busy(true);
+    for (i32 turn = 0; turn < 16; turn++) {
+        if (g_got_sigint) {
+            tui_write(STR("\n[interrupted]\n\n"));
+            tui_set_status("ready");
+            g_got_sigint = 0;
+            break;
+        }
+        tui_set_status("thinking");
+        g_reasoning = false;
+        Provider p = {
+            .cfg = ag->cfg,
+            .tools = ag->tools,
+            .conv = conv,
+            .persist = ag->persist,
+            .scratch = ag->scratch,
+            .on_text = on_text,
+            .on_reason = on_reason,
+            .on_tool_call = on_tool_call,
+            .ud = NULL,
+            .on_idle = on_idle,
+            .idle_fd = tui_input_fd(),
+            .interrupt_flag = &g_got_sigint,
+        };
+        char err[256] = {0};
+        arena_reset(ag->scratch);
+        /* snapshot conv tail to discover tool calls emitted this turn */
+        size_t before = conv->n;
+        i32 rc = provider_run(&p, err, sizeof err);
+        if (p.usage_valid) tui_set_context_tokens(p.total_tokens);
+        if (g_got_sigint) {
+            tui_write(STR("\n[interrupted]\n\n"));
+            tui_set_status("ready");
+            g_got_sigint = 0;
+            break;
+        }
+        if (rc < 0) {
+            tui_printf("\n[provider error: %s]\n\n", err);
+            tui_set_status("ready");
+            break;
+        }
+        if (rc == 0) {
+            /* Close the reply's last row only: the air the next user box
+             * writes above itself is the whole margin. */
+            tui_write(STR("\n"));
+            tui_set_status("ready");
+            ok = true;
+            break; /* no tool calls, turn done */
+        }
+        /* The turn appended one head slot plus a carrier per call at
+         * [before, conv->n); run them straight off the conversation rather
+         * than mirroring them into a second, separately capped array. */
+        size_t tail = conv->n;
+        if (!run_tool_calls(ag->tools, conv, ag->scratch, ag->persist,
+                            before, tail)) {
+            tui_set_status("ready");
+            break;
+        }
+        tui_write(STR("\n"));
+    }
+    tui_set_busy(false);
+    session_save(ag->sess, conv);
+    return ok;
+}
+
 i32 main(i32 argc, char **argv) {
-    (void)argc; (void)argv;
+    CliOpts opts;
+    switch (cli_parse(argc, argv, &opts)) {
+        case CLI_DONE:  return 0;
+        case CLI_ERROR: return 2;
+        case CLI_RUN:   break;
+    }
+    if (opts.have_prompt && !opts.prompt.n) {
+        fprintf(stderr, "yoke: the prompt is empty\n");
+        return 2;
+    }
 
     Arena persist, scratch;
     arena_init(&persist, g_persist, sizeof g_persist);
@@ -271,6 +379,7 @@ i32 main(i32 argc, char **argv) {
 
     Config cfg;
     config_load(&cfg, &persist, &scratch);
+    cli_apply(&opts, &cfg);
     arena_reset(&scratch);
 
     ToolRegistry tools;
@@ -313,11 +422,26 @@ i32 main(i32 argc, char **argv) {
     sigaction(SIGINT, &sa, NULL);
 
     setvbuf(stdout, NULL, _IONBF, 0);
-    tui_start(cfg.model, cfg.base_url, !cfg.api_key.p, tools.n);
+    tui_start(cfg.model, cfg.base_url, !cfg.api_key.p, tools.n,
+              opts.have_prompt);
     tui_set_commands(g_commands, commands_init());
     tui_set_history(&hist);
     tui_set_interrupt_flag(&g_got_sigint);
     atexit(tui_stop);
+
+    Agent agent = {
+        .cfg = &cfg, .tools = &tools, .conv = &conv,
+        .persist = &persist, .scratch = &scratch, .sess = &sess,
+        .echo = !opts.have_prompt,
+    };
+
+    /* One-shot: the reply is the output, so nothing else goes to stdout and
+     * the exit status reports whether the turn completed. */
+    if (opts.have_prompt) {
+        b8 ok = agent_turn(&agent, opts.prompt);
+        tui_stop();
+        return ok ? 0 : 1;
+    }
 
     /* Static, not automatic: a megabyte of stack for a line the composer
      * already holds is the kind of frame that turns a deep call into a
@@ -350,82 +474,7 @@ i32 main(i32 argc, char **argv) {
             resume_session(&sess, &conv, &persist, &scratch, session_mark);
             continue;
         }
-
-        Str user_text = str_dup(&persist, (Str){ line, ln });
-        if (ln && !user_text.p) {
-            tui_write(STR("\n[out of memory: /clear to start a new session]\n\n"));
-            continue;
-        }
-        if (conv_add(&conv, M_USER, user_text) == CONV_NONE) {
-            tui_write(STR("\n[conversation is full: /clear to start a new one]\n\n"));
-            continue;
-        }
-        tui_write_user((Str){ line, ln });
-        session_save(&sess, &conv);
-
-        /* agent loop: keep running until the model emits no tool calls.
-         * The composer stays editable throughout; only submitting waits. */
-        g_got_sigint = 0;
-        tui_set_busy(true);
-        for (i32 turn = 0; turn < 16; turn++) {
-            if (g_got_sigint) {
-                tui_write(STR("\n[interrupted]\n\n"));
-                tui_set_status("ready");
-                g_got_sigint = 0;
-                break;
-            }
-            tui_set_status("thinking");
-            g_reasoning = false;
-            Provider p = {
-                .cfg = &cfg,
-                .tools = &tools,
-                .conv = &conv,
-                .persist = &persist,
-                .scratch = &scratch,
-                .on_text = on_text,
-                .on_reason = on_reason,
-                .on_tool_call = on_tool_call,
-                .ud = NULL,
-                .on_idle = on_idle,
-                .idle_fd = tui_input_fd(),
-                .interrupt_flag = &g_got_sigint,
-            };
-            char err[256] = {0};
-            arena_reset(&scratch);
-            /* snapshot conv tail to discover tool calls emitted this turn */
-            size_t before = conv.n;
-            i32 rc = provider_run(&p, err, sizeof err);
-            if (p.usage_valid) tui_set_context_tokens(p.total_tokens);
-            if (g_got_sigint) {
-                tui_write(STR("\n[interrupted]\n\n"));
-                tui_set_status("ready");
-                g_got_sigint = 0;
-                break;
-            }
-            if (rc < 0) {
-                tui_printf("\n[provider error: %s]\n\n", err);
-                tui_set_status("ready");
-                break;
-            }
-            if (rc == 0) {
-                /* Close the reply's last row only: the air the next user box
-                 * writes above itself is the whole margin. */
-                tui_write(STR("\n"));
-                tui_set_status("ready");
-                break; /* no tool calls, turn done */
-            }
-            /* The turn appended one head slot plus a carrier per call at
-             * [before, conv.n); run them straight off the conversation rather
-             * than mirroring them into a second, separately capped array. */
-            size_t tail = conv.n;
-            if (!run_tool_calls(&tools, &conv, &scratch, &persist, before, tail)) {
-                tui_set_status("ready");
-                break;
-            }
-            tui_write(STR("\n"));
-        }
-        tui_set_busy(false);
-        session_save(&sess, &conv);
+        agent_turn(&agent, (Str){ line, ln });
     }
 
     tui_stop();

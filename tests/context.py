@@ -109,11 +109,12 @@ class Ctx:
         rows: int = DEFAULT_ROWS,
         wait: bool = True,
         cwd: str | None = None,
+        args: list[str] | None = None,
         **env_overrides,
     ) -> Session:
         """Start `yoke` on a pty and wait for the first frame."""
         s = Session(
-            [str(BIN)],
+            [str(BIN), *(args or [])],
             env=self.env(**env_overrides),
             cwd=cwd or str(self.work),
             cols=cols,
@@ -132,6 +133,19 @@ class Ctx:
             )
             s.settle()
         return s
+
+    def run_cli(self, *args: str, stdin_text: str = "", timeout: float = 15.0,
+                **env_overrides):
+        """Run `yoke` with arguments and pipes, for the non-interactive paths."""
+        return subprocess.run(
+            [str(BIN), *args],
+            input=stdin_text,
+            env=self.env(**env_overrides),
+            cwd=str(self.work),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
 
     def run_piped(self, stdin_text: str, timeout: float = 15.0, **env_overrides):
         """Run `yoke` with pipes instead of a tty (the line-oriented path)."""
