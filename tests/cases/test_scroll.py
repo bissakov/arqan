@@ -111,3 +111,36 @@ def test_scrolled_view_survives_a_resize(ctx):
         s.key("pagedown")
     s.sync()
     assert tail in s.text(), f"expected {tail!r} at the bottom\n{s.text()}"
+
+
+def test_user_boxes_survive_deep_scrollback(ctx):
+    """Scrolled far back, an old user turn is still painted as its own block.
+
+    The painter starts from an index checkpoint rather than from byte zero, so
+    a row's offset has to stay in transcript coordinates the whole way down —
+    otherwise the boxed rows drift away from the text they belong to.
+    """
+    s = ctx.spawn()
+    for i in range(4):
+        ctx.scenario(f"words=120,paragraphs=2,chunk=16,seed={i}")
+        s.submit(f"question number {i}")
+        s.wait_turn_done()
+    bottom = s.text()
+
+    # walk back until the first turn is on screen again
+    for _ in range(40):
+        s.key("pageup")
+    s.sync()
+    text = s.text()
+    assert "question number 0" in text, text
+
+    row = s.screen.find_row("question number 0")
+    assert row >= 0, text
+    assert s.screen.attr_at(row, 2).bg == 238, "the user turn kept its panel"
+    assert s.screen.attr_at(row - 1, 2).bg == 238, "padding row above"
+
+    # and walking forward again lands back on exactly the pinned view
+    for _ in range(40):
+        s.key("pagedown")
+    s.sync()
+    assert s.text() == bottom, "returning to the bottom should restore the view"

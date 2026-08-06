@@ -1,9 +1,8 @@
 /* main.c — yoke entry point. Unity build: includes every module as one TU.
  *
- * Memory plan (all startup-time, no later heap):
- *   - two big blocks from aligned_alloc: persistent (messages) + scratch
- *   - libcurl's own allocations happen inside curl and are out of our control,
- *     but our code touches no heap after init.
+ * Memory plan (no heap at all in our code):
+ *   - two big static blocks wrapped in arenas: persistent (messages) + scratch
+ *   - libcurl's own allocations happen inside curl and are out of our control.
  */
 #define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
@@ -58,37 +57,43 @@ static void on_idle(void *ud) {
     tui_poll_input();
 }
 
-/* run one tool call against the registry; append a tool result message */
-static void run_tool_calls(ToolRegistry *reg, Conv *conv, Arena *scratch,
-                           Arena *persist, i32 count, Str *ids, Str *names, Str *args) {
-    (void)count;
-    /* iterate the conv's just-added assistant toolcall slots: we instead use
-     * the arrays passed in from main, which mirror them. */
-    for (i32 i = 0; i < count; i++) {
-        const ToolDef *t = tools_find(reg, names[i]);
+/* Run the tool calls the turn just appended to `conv` — the carrier slots in
+ * [first, last) — and append each result. Returns false when a result did not
+ * fit in the conversation, which ends the turn. */
+static b8 run_tool_calls(ToolRegistry *reg, Conv *conv, Arena *scratch,
+                         Arena *persist, size_t first, size_t last) {
+    for (size_t i = first; i < last; i++) {
+        if (!conv_is_call(conv, i)) continue;
+        Str name = conv->tool_name[i];
+        Str args = conv->text[i];
+        Str id   = conv->tool_call_id[i];
+        size_t tool = tools_find(reg, name);
         Buf out; buf_init(&out, scratch, 4096);
         char err[256] = {0};
         tui_write(STR("\nTool · "));
-        tui_write(names[i]);
+        tui_write(name);
         tui_write(STR("\n"));
-        tui_write(args[i]);
+        tui_write(args);
         tui_write(STR("\n"));
         char status[32];
-        snprintf(status, sizeof status, "running %.*s", (i32)names[i].n, names[i].p);
+        snprintf(status, sizeof status, "running %.*s", (i32)name.n, name.p);
         tui_set_status(status);
-        b8 ok = t && t->run(args[i], scratch, &out, err, sizeof err);
+        b8 ok = tools_run(reg, tool, args, scratch, &out, err, sizeof err);
+        if (!ok && !err[0]) snprintf(err, sizeof err, "tool failed");
+        if (!ok) { out.n = 0; buf_putf(&out, "ERROR: %s", err); }
         Str result = buf_finish(&out);
-        if (!ok) {
-            buf_putf(&out, "ERROR: %s", err);
-            result = buf_finish(&out);
-        }
         Str res_dup = str_dup(persist, result);
-        conv_add_tool(conv, ids[i], res_dup);
+        if (result.n && !res_dup.p) res_dup = STR("ERROR: out of memory");
+        if (conv_add_tool(conv, id, res_dup) == CONV_NONE) {
+            tui_write(STR("\n[conversation is full: /clear to start a new one]\n"));
+            return false;
+        }
         tui_write(STR("Result\n"));
         tui_write(str_take(res_dup, 400));
         if (res_dup.n > 400) tui_write(STR("\n… output truncated in transcript"));
         tui_write(STR("\n"));
     }
+    return true;
 }
 
 i32 main(i32 argc, char **argv) {
@@ -99,13 +104,18 @@ i32 main(i32 argc, char **argv) {
     arena_init(&scratch,  g_scratch, sizeof g_scratch);
 
     Config cfg;
-    config_load(&cfg, &persist);
+    config_load(&cfg, &persist, &scratch);
+    arena_reset(&scratch);
 
     ToolRegistry tools;
     tools_init(&tools, &persist);
 
     Conv conv;
-    conv_init(&conv, &persist, YOKE_MAX_MESSAGES);
+    if (!conv_init(&conv, &persist, cfg.max_messages)) {
+        fprintf(stderr, "yoke: cannot reserve %zu conversation slots\n",
+                cfg.max_messages);
+        return 1;
+    }
 
     /* seed system prompt */
     conv_add(&conv, M_SYSTEM, cfg.system_prompt);
@@ -122,7 +132,10 @@ i32 main(i32 argc, char **argv) {
     tui_set_interrupt_flag(&g_got_sigint);
     atexit(tui_stop);
 
-    char line[YOKE_LINE_BUF];
+    /* Static, not automatic: a megabyte of stack for a line the composer
+     * already holds is the kind of frame that turns a deep call into a
+     * crash. */
+    static char line[YOKE_LINE_BUF];
     for (;;) {
         size_t ln = 0;
         if (!tui_readline("> ", line, sizeof line, &ln)) break;
@@ -138,7 +151,15 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
 
-        conv_add(&conv, M_USER, str_dup(&persist, str_c(line)));
+        Str user_text = str_dup(&persist, (Str){ line, ln });
+        if (ln && !user_text.p) {
+            tui_write(STR("\n[out of memory: /clear to start a new session]\n\n"));
+            continue;
+        }
+        if (conv_add(&conv, M_USER, user_text) == CONV_NONE) {
+            tui_write(STR("\n[conversation is full: /clear to start a new one]\n\n"));
+            continue;
+        }
         tui_write_user((Str){ line, ln });
 
         /* agent loop: keep running until the model emits no tool calls.
@@ -188,23 +209,14 @@ i32 main(i32 argc, char **argv) {
                 tui_set_status("ready");
                 break; /* no tool calls → turn done */
             }
-            /* collect tool calls from conv tail (pairs of assistant slots) */
-            /* The assistant message occupies slots [before .. n). Tool-call
-             * carrier slots are the ones after the first with has_tool_call
-             * and a tool_name. Gather ids/names/args. */
-            Str ids[16], names[16], argss[16];
-            i32 count = 0;
-            for (size_t i = before; i < conv.n && count < 16; i++) {
-                if (conv.role[i] == M_ASSISTANT && conv.has_tool_call[i]
-                    && conv.tool_name[i].p && i != before) {
-                    ids[count]    = conv.tool_call_id[i];
-                    names[count]  = conv.tool_name[i];
-                    argss[count]  = conv.text[i];
-                    count++;
-                }
+            /* The turn appended one head slot plus a carrier per call at
+             * [before, conv.n); run them straight off the conversation rather
+             * than mirroring them into a second, separately capped array. */
+            size_t tail = conv.n;
+            if (!run_tool_calls(&tools, &conv, &scratch, &persist, before, tail)) {
+                tui_set_status("ready");
+                break;
             }
-            if (count == 0) { break; }
-            run_tool_calls(&tools, &conv, &scratch, &persist, count, ids, names, argss);
             tui_write(STR("\n"));
         }
         tui_set_busy(false);

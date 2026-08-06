@@ -14,32 +14,39 @@ typedef struct {
     const HttpReq *r;
     char   line[8192];
     size_t llen;
+    b8     aborted;   /* on_line asked us to stop */
 } Ctx;
 
-static void dispatch_line(Ctx *c, const char *p, size_t n) {
-    /* accumulate into line[], dispatch on newline */
+/* Accumulate into line[], dispatch on newline. Returns false once a sink has
+ * asked for the stream to end, which is the contract HttpReq.on_line states. */
+static b8 dispatch_line(Ctx *c, const char *p, size_t n) {
     for (size_t i = 0; i < n; i++) {
         char ch = p[i];
         if (ch == '\n') {
             if (c->llen > 0 && c->line[c->llen-1] == '\r') c->llen--;
             Str ln = { c->line, c->llen };
-            if (c->r->on_line) c->r->on_line(ln, c->r->ud);
             c->llen = 0;
+            if (c->r->on_line && !c->r->on_line(ln, c->r->ud)) {
+                c->aborted = true;
+                return false;
+            }
         } else {
             if (c->llen < sizeof c->line - 1) c->line[c->llen++] = ch;
         }
     }
+    return true;
 }
 
 static size_t write_cb(char *p, size_t sz, size_t n, void *ud) {
     Ctx *c = (Ctx *)ud;
     size_t total = sz * n;
-    dispatch_line(c, p, total);
-    return total;
+    /* Anything other than `total` tells curl to fail the transfer, which is
+     * exactly what an aborting sink wants. */
+    return dispatch_line(c, p, total) ? total : 0;
 }
 
 static size_t header_cb(char *p, size_t sz, size_t n, void *ud) {
-    (void)ud;
+    (void)p; (void)ud;
     return sz * n; /* ignore */
 }
 
@@ -51,19 +58,33 @@ i32 http_sse_post(const HttpReq *r) {
     CURL *curl = curl_easy_init();
     if (!curl) { yoke_log(YOKE_LOG_ERROR, "curl init failed"); return 1; }
 
-    /* build URL: base_url + "/chat/completions" */
-    size_t url_len = strlen(r->base_url) + 32;
-    char *url = (char *)malloc(url_len);
-    snprintf(url, url_len, "%s/chat/completions", r->base_url);
+    /* build URL: base_url + "/chat/completions". Bounded and on the stack:
+     * one malloc/free pair per turn is the only heap traffic we own, and a
+     * URL that does not fit is a config error, not something to grow for. */
+    static const char k_path[] = "/chat/completions";
+    char url[2048];
+    size_t base_n = r->base_url ? strlen(r->base_url) : 0;
+    if (base_n == 0 || base_n + sizeof k_path > sizeof url) {
+        curl_easy_cleanup(curl);
+        yoke_log(YOKE_LOG_ERROR, "base_url is empty or too long");
+        return 1;
+    }
+    memcpy(url, r->base_url, base_n);
+    memcpy(url + base_n, k_path, sizeof k_path);
 
-    char auth[512];
-    snprintf(auth, sizeof auth, "Authorization: Bearer %s", r->api_key);
     struct curl_slist *hdrs = NULL;
     hdrs = curl_slist_append(hdrs, "Content-Type: application/json");
     hdrs = curl_slist_append(hdrs, "Accept: text/event-stream");
-    hdrs = curl_slist_append(hdrs, auth);
+    /* No key configured means no header: passing NULL to "%s" is undefined,
+     * and "Bearer (null)" is not a request worth sending. */
+    if (r->api_key && *r->api_key) {
+        char auth[1024];
+        i32 an = snprintf(auth, sizeof auth, "Authorization: Bearer %s", r->api_key);
+        if (an > 0 && (size_t)an < sizeof auth) hdrs = curl_slist_append(hdrs, auth);
+        else yoke_log(YOKE_LOG_WARN, "api key too long; sending no Authorization header");
+    }
 
-    Ctx ctx = { r, {0}, 0 };
+    Ctx ctx = { r, {0}, 0, false };
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, r->body);
@@ -72,6 +93,10 @@ i32 http_sse_post(const HttpReq *r) {
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_cb);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &ctx);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    /* We own SIGWINCH/SIGINT and run single-threaded; curl's signal-based
+     * resolver timeouts would fire into our handlers. */
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
 
     /* Driven through the multi interface so the wait covers our idle fd as
      * well as curl's sockets: the caller's UI stays live for the whole
@@ -80,7 +105,6 @@ i32 http_sse_post(const HttpReq *r) {
     if (!multi) {
         curl_slist_free_all(hdrs);
         curl_easy_cleanup(curl);
-        free(url);
         yoke_log(YOKE_LOG_ERROR, "curl multi init failed");
         return 1;
     }
@@ -114,14 +138,15 @@ i32 http_sse_post(const HttpReq *r) {
             if (msg->msg == CURLMSG_DONE) rc = msg->data.result;
     }
 
-    i64 http = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http);
+    /* curl writes a `long` through this pointer, whatever its width. */
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    i64 http = (i64)http_code;
 
     curl_multi_remove_handle(multi, curl);
     curl_multi_cleanup(multi);
     curl_slist_free_all(hdrs);
     curl_easy_cleanup(curl);
-    free(url);
 
     if (interrupted) return 3; /* expected user cancellation */
     if (rc != CURLE_OK) {

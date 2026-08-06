@@ -28,12 +28,21 @@ typedef bool     b8;
 #define YOKE_VERSION "0.1.0"
 
 /* ---- capacities (compile-time, no growth) ------------------------------- */
-#define YOKE_ARENA_BYTES      (1u << 28)  /* 256 MiB scratch arena            */
+/* Sized against the per-turn peak rather than picked round: a turn holds one
+ * 4 MiB event arena, the accumulated reply, the tool output and the doubling
+ * these go through, which lands an order of magnitude under the scratch
+ * arena. Both are static storage, so this is address space, not startup
+ * cost — but it is also what a core dump has to carry. */
+#define YOKE_ARENA_BYTES      (1u << 27)  /* 128 MiB scratch arena            */
 #define YOKE_PERSIST_BYTES    (1u << 26)  /* 64  MiB persistent arena         */
-#define YOKE_MAX_MESSAGES     4096
+#define YOKE_MAX_MESSAGES     4096        /* default; see Config.max_messages   */
 #define YOKE_MAX_TOOLS        64
 #define YOKE_MAX_TOOL_CALLS   1024        /* per turn                          */
 #define YOKE_MAX_TOOL_ARGS    8
+#define YOKE_MAX_JSON_DEPTH   64          /* nesting a provider may hand us    */
+#define YOKE_MAX_PATH         4096        /* longest path a tool will accept   */
+#define YOKE_MAX_COMMAND      (1u << 16)  /* longest shell command             */
+#define YOKE_MAX_FILE_BYTES   (16u << 20) /* largest file a tool will read     */
 #define YOKE_MAX_COMMANDS     32          /* slash commands offered by the TUI */
 #define YOKE_LINE_BUF         (1u << 20)  /* 1 MiB input line buffer          */
 #define YOKE_RESP_BUF         (1u << 22)  /* 4 MiB response accumulation      */
@@ -47,10 +56,13 @@ typedef struct {
 
 void    arena_init(Arena *a, void *mem, size_t cap);
 void   *arena_alloc(Arena *a, size_t n, size_t align);
+/* count * size with the multiplication checked: a size derived from provider
+ * or file data must never wrap into a small, satisfiable request. */
+void   *arena_alloc_array(Arena *a, size_t count, size_t size, size_t align);
 void    arena_reset(Arena *a);
 size_t  arena_used(const Arena *a);
-/* aligned, zeroed, typed helper */
-#define arena_new(a, T, n) ((T *)arena_alloc((a), sizeof(T) * (n), alignof(T)))
+/* aligned, typed helper (contents are uninitialised) */
+#define arena_new(a, T, n) ((T *)arena_alloc_array((a), (n), sizeof(T), alignof(T)))
 
 /* ---- string view + builder ---------------------------------------------- */
 typedef struct { const char *p; size_t n; } Str;
@@ -64,9 +76,13 @@ Str     str_take(Str s, size_t n);
 Str     str_drop(Str s, size_t n);
 i64    str_int(Str s, b8 *ok);
 
-/* growable char buffer living in an arena (no realloc: doubles into arena) */
-typedef struct { char *p; size_t n, cap; Arena *a; } Buf;
+/* Growable char buffer living in an arena (no realloc: doubles into arena).
+ * `oom` latches when the arena could not satisfy a growth: every later write
+ * is dropped rather than run past `cap`, and callers check buf_ok() before
+ * trusting the contents. */
+typedef struct { char *p; size_t n, cap; Arena *a; b8 oom; } Buf;
 void    buf_init(Buf *b, Arena *a, size_t cap);
+b8      buf_ok(const Buf *b);
 void    buf_putc(Buf *b, char c);
 void    buf_put(Buf *b, const void *p, size_t n);
 void    buf_puts(Buf *b, Str s);
@@ -105,7 +121,7 @@ struct JVal {
     JVal  *next;     /* next sibling in object                                */
 };
 
-typedef struct { Arena *a; const char *src; size_t pos, len; b8 oom; } JParser;
+typedef struct { Arena *a; const char *src; size_t pos, len; i32 depth; b8 oom; } JParser;
 
 JVal   *json_parse(Arena *a, Str s);            /* NULL on error             */
 void    json_write(Buf *b, const JVal *v);
@@ -119,10 +135,14 @@ typedef struct {
     Str api_key;
     Str system_prompt;
     i32  max_tokens;
+    /* Conversation capacity. Configurable so the full-history path is
+     * reachable in a test without streaming four thousand messages. */
+    size_t max_messages;
     b8 stream;
 } Config;
 
-b8    config_load(Config *c, Arena *persist);
+/* `scratch` holds the config file while it is parsed; nothing survives in it. */
+b8    config_load(Config *c, Arena *persist, Arena *scratch);
 
 /* ---- HTTP (libcurl) ----------------------------------------------------- */
 typedef struct {
@@ -144,25 +164,35 @@ typedef struct {
 
 i32     http_sse_post(const HttpReq *r);  /* 0 on success, nonzero on error */
 
-/* ---- tools (SoA registry) ---------------------------------------------- */
-typedef struct {
-    Str  name;
-    Str  desc;
-    Str  schema;          /* JSON schema fragment (object)                  */
-    b8 (*run)(Str args_json, Arena *scratch, Buf *out, char *err, size_t err_cap);
-} ToolDef;
+/* ---- tools (SoA registry) ----------------------------------------------
+ * Parallel arrays indexed by tool id. Lookup only ever touches `name`, so
+ * the names sit together instead of being spread across whole tool records.
+ */
+typedef b8 (*ToolRun)(Str args_json, Arena *scratch, Buf *out,
+                      char *err, size_t err_cap);
 
 typedef struct {
-    ToolDef *defs;        /* [YOKE_MAX_TOOLS] SoA: one big array             */
+    Str     *name;        /* [YOKE_MAX_TOOLS]                               */
+    Str     *desc;        /* [YOKE_MAX_TOOLS]                               */
+    Str     *schema;      /* [YOKE_MAX_TOOLS] JSON schema fragment (object) */
+    ToolRun *run;         /* [YOKE_MAX_TOOLS]                               */
     size_t   n;
 } ToolRegistry;
 
+/* Tool ids are indices into the registry; TOOL_NONE means "no such tool". */
+#define TOOL_NONE ((size_t)-1)
+
 void        tools_init(ToolRegistry *r, Arena *persist);
-const ToolDef *tools_find(const ToolRegistry *r, Str name);
+size_t      tools_find(const ToolRegistry *r, Str name);
+b8          tools_run(const ToolRegistry *r, size_t id, Str args,
+                      Arena *scratch, Buf *out, char *err, size_t err_cap);
 void        tools_write_schemas(Buf *b, const ToolRegistry *r);
 
 /* ---- conversation (SoA) ------------------------------------------------- */
 typedef enum { M_SYSTEM = 0, M_USER, M_ASSISTANT, M_TOOL } MRole;
+
+/* Returned by every conv_* append when the conversation is full. */
+#define CONV_NONE ((size_t)-1)
 
 typedef struct {
     /* SoA: parallel arrays indexed by message id                         */
@@ -174,10 +204,16 @@ typedef struct {
     size_t n, cap;
 } Conv;
 
-void    conv_init(Conv *c, Arena *persist, size_t cap);
+b8      conv_init(Conv *c, Arena *persist, size_t cap);
 size_t  conv_add(Conv *c, MRole role, Str text);
-size_t  conv_add_assistant_toolcall(Conv *c, Str content, Str id, Str name, Str args);
+/* An assistant turn with tool calls is a head slot (prose) followed by one
+ * carrier slot per call, each keeping its own id. `conv_is_call` picks the
+ * carriers out of a tail scan. */
+size_t  conv_add_assistant_calls(Conv *c, Str content);
+size_t  conv_add_call(Conv *c, Str id, Str name, Str args);
 size_t  conv_add_tool(Conv *c, Str tool_call_id, Str text);
+b8      conv_is_call(const Conv *c, size_t i);
+size_t  conv_room(const Conv *c);
 void    conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg);
 
 /* ---- provider ----------------------------------------------------------- */
@@ -202,7 +238,8 @@ typedef struct {
 } Provider;
 
 /* Run one completion turn. Appends the assistant message + tool calls to
- * conv (in the persistent arena). Returns number of tool calls emitted. */
+ * conv (in the persistent arena). Returns the number of tool calls emitted,
+ * or -1 with `err` filled in. */
 i32     provider_run(Provider *p, char *err, size_t err_cap);
 
 /* ---- TUI --------------------------------------------------------------- */

@@ -8,12 +8,17 @@ Claude Code, Codex, OpenCode and Pi.
 - **C17, single translation unit (unity) build** — sub-second full rebuilds.
 - **Structure-of-Arrays (SoA)** for hot data (messages, tool calls, tool registry).
 - **Data-oriented design** — cache-friendly, contiguous, typed arrays.
-- **No heap allocations after start-up.** Everything lives in a few big
-  preallocated blocks obtained once via `mmap`/`aligned_alloc`.
+- **No heap allocations at all in our code.** Everything lives in two big
+  static blocks wrapped in arenas; the only heap traffic is libcurl's own,
+  inside the library.
+- **Every bound is checked.** Sizes derived from a provider stream, a config
+  file or the filesystem are validated before they reach an allocation, and a
+  full arena or a full conversation is reported rather than written past.
 - **Arenas / bump allocators** for per-turn scratch; freed by resetting a
   pointer. No `free()` calls anywhere in the hot path.
 - **Fast start-up** — no runtime, no JIT, no modules to resolve. The binary
-  does one `mmap`, reads one config file, and enters the event loop.
+  wraps its static blocks in arenas, reads one config file, and enters the
+  event loop.
 - **Minimal deps** — only libc + libcurl (for HTTPS to OpenAI-compatible
   endpoints). Everything else is hand-written (JSON, SSE, TUI, tool runner).
 
@@ -63,6 +68,8 @@ or put them in `~/.config/yoke/config`:
 base_url=https://api.openai.com/v1
 model=gpt-4o-mini
 api_key=sk-...
+max_tokens=4096
+max_messages=4096      # conversation capacity; a full one is reported, not overrun
 ```
 
 ## Tests
@@ -71,6 +78,7 @@ api_key=sk-...
 make test                    # run the suite
 make test T="-k composer"    # run matching cases
 make test-update             # accept intended golden-screen changes
+make test-asan               # the same suite against an ASan+UBSan binary
 ```
 
 `bin/yoke` runs unmodified inside a pseudo-terminal against a dummy

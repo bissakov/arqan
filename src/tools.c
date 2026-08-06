@@ -21,26 +21,72 @@ static Str json_get_str(const JVal *args, Str key) {
     return v->u.s;
 }
 
+/* Copy a JSON string argument into a nul-terminated buffer, or fail.
+ * Clamping instead would run a *different* command, or touch a different
+ * file, than the one the model asked for and the user read. */
+static b8 arg_cstr(Str s, char *z, size_t cap, const char *what,
+                   char *err, size_t err_cap) {
+    if (!s.p) { snprintf(err, err_cap, "missing %s", what); return false; }
+    if (s.n >= cap) {
+        snprintf(err, err_cap, "%s too long: %zu bytes, limit %zu",
+                 what, s.n, cap - 1);
+        return false;
+    }
+    if (memchr(s.p, '\0', s.n)) {
+        snprintf(err, err_cap, "%s contains a nul byte", what);
+        return false;
+    }
+    memcpy(z, s.p, s.n); z[s.n] = '\0';
+    return true;
+}
+
+/* Slurp a file into the scratch arena. Every size here comes from the
+ * filesystem, so each one is validated before it reaches an allocation. */
+static b8 slurp(const char *z, Arena *scratch, Str *out,
+                char *err, size_t err_cap) {
+    FILE *f = fopen(z, "rb");
+    if (!f) { snprintf(err, err_cap, "open %s failed", z); return false; }
+    struct stat st;
+    if (fstat(fileno(f), &st) != 0) {
+        fclose(f); snprintf(err, err_cap, "stat %s failed", z); return false;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        fclose(f); snprintf(err, err_cap, "%s is not a regular file", z);
+        return false;
+    }
+    if ((u64)st.st_size > YOKE_MAX_FILE_BYTES) {
+        fclose(f);
+        snprintf(err, err_cap, "%s is too large: %llu bytes, limit %u",
+                 z, (unsigned long long)st.st_size, (unsigned)YOKE_MAX_FILE_BYTES);
+        return false;
+    }
+    size_t sz = (size_t)st.st_size;
+    char *buf = arena_new(scratch, char, sz + 1);
+    if (!buf) {
+        fclose(f); snprintf(err, err_cap, "out of memory reading %s", z);
+        return false;
+    }
+    size_t rd = fread(buf, 1, sz, f);
+    b8 failed = ferror(f) != 0;
+    fclose(f);
+    if (failed) { snprintf(err, err_cap, "read %s failed", z); return false; }
+    buf[rd] = '\0';
+    *out = (Str){ buf, rd };
+    return true;
+}
+
 /* ---- read ---- */
 static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
     JVal *j = json_parse(scratch, args);
     if (!j) { snprintf(err, err_cap, "bad args json"); return false; }
-    Str path = json_get_str(j, STR("path"));
-    if (!path.p) { snprintf(err, err_cap, "missing path"); return false; }
+    char z[YOKE_MAX_PATH];
+    if (!arg_cstr(json_get_str(j, STR("path")), z, sizeof z, "path", err, err_cap))
+        return false;
 
-    /* nul-terminate */
-    char z[4096]; size_t l = path.n < sizeof z - 1 ? path.n : sizeof z - 1;
-    memcpy(z, path.p, l); z[l] = '\0';
-
-    FILE *f = fopen(z, "rb");
-    if (!f) { snprintf(err, err_cap, "open %s failed", z); return false; }
-    fseek(f, 0, SEEK_END); i64 sz = ftell(f); fseek(f, 0, SEEK_SET);
-    if (sz < 0) { fclose(f); snprintf(err, err_cap, "ftell failed"); return false; }
-    char *buf = arena_new(scratch, char, (size_t)sz + 1);
-    size_t rd = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-    buf[rd] = '\0';
-    buf_puts(out, (Str){ buf, rd });
+    Str body;
+    if (!slurp(z, scratch, &body, err, err_cap)) return false;
+    buf_puts(out, body);
+    if (!buf_ok(out)) { snprintf(err, err_cap, "%s does not fit in memory", z); return false; }
     return true;
 }
 
@@ -48,15 +94,17 @@ static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
 static b8 tool_write(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
     JVal *j = json_parse(scratch, args);
     if (!j) { snprintf(err, err_cap, "bad args json"); return false; }
-    Str path = json_get_str(j, STR("path"));
     Str content = json_get_str(j, STR("content"));
-    if (!path.p || !content.p) { snprintf(err, err_cap, "missing path/content"); return false; }
-    char z[4096]; size_t l = path.n < sizeof z - 1 ? path.n : sizeof z - 1;
-    memcpy(z, path.p, l); z[l] = '\0';
+    char z[YOKE_MAX_PATH];
+    if (!arg_cstr(json_get_str(j, STR("path")), z, sizeof z, "path", err, err_cap))
+        return false;
+    if (!content.p) { snprintf(err, err_cap, "missing content"); return false; }
     FILE *f = fopen(z, "wb");
     if (!f) { snprintf(err, err_cap, "open %s for write failed", z); return false; }
-    fwrite(content.p, 1, content.n, f);
-    fclose(f);
+    size_t wr = content.n ? fwrite(content.p, 1, content.n, f) : 0;
+    b8 failed = wr != content.n || ferror(f) != 0;
+    if (fclose(f) != 0) failed = true;
+    if (failed) { snprintf(err, err_cap, "write %s failed", z); return false; }
     buf_putf(out, "wrote %zu bytes to %s", content.n, z);
     return true;
 }
@@ -65,11 +113,12 @@ static b8 tool_write(Str args, Arena *scratch, Buf *out, char *err, size_t err_c
 static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
     JVal *j = json_parse(scratch, args);
     if (!j) { snprintf(err, err_cap, "bad args json"); return false; }
-    Str cmd = json_get_str(j, STR("command"));
-    if (!cmd.p) { snprintf(err, err_cap, "missing command"); return false; }
-
-    char z[8192]; size_t l = cmd.n < sizeof z - 1 ? cmd.n : sizeof z - 1;
-    memcpy(z, cmd.p, l); z[l] = '\0';
+    /* One heap-free buffer for the command: a truncated shell line is a
+     * different program, so anything over the limit is refused outright. */
+    static char z[YOKE_MAX_COMMAND];
+    if (!arg_cstr(json_get_str(j, STR("command")), z, sizeof z, "command",
+                  err, err_cap))
+        return false;
 
     FILE *p = popen(z, "r");
     if (!p) { snprintf(err, err_cap, "popen failed"); return false; }
@@ -82,7 +131,9 @@ static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
         if (total > (1u << 20)) { buf_puts(out, STR("\n[output truncated]\n")); break; }
     }
     i32 rc = pclose(p);
-    buf_putf(out, "\n[exit %d]", WEXITSTATUS(rc));
+    if (rc < 0) buf_puts(out, STR("\n[exit unknown]"));
+    else if (WIFSIGNALED(rc)) buf_putf(out, "\n[killed by signal %d]", WTERMSIG(rc));
+    else buf_putf(out, "\n[exit %d]", WIFEXITED(rc) ? WEXITSTATUS(rc) : -1);
     return true;
 }
 
@@ -90,20 +141,15 @@ static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
 static b8 tool_edit(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
     JVal *j = json_parse(scratch, args);
     if (!j) { snprintf(err, err_cap, "bad args json"); return false; }
-    Str path = json_get_str(j, STR("path"));
     Str oldt = json_get_str(j, STR("old_text"));
     Str newt = json_get_str(j, STR("new_text"));
-    if (!path.p || !oldt.p || !newt.p) { snprintf(err, err_cap, "missing path/old_text/new_text"); return false; }
+    char z[YOKE_MAX_PATH];
+    if (!arg_cstr(json_get_str(j, STR("path")), z, sizeof z, "path", err, err_cap))
+        return false;
+    if (!oldt.p || !newt.p) { snprintf(err, err_cap, "missing old_text/new_text"); return false; }
 
-    char z[4096]; size_t l = path.n < sizeof z - 1 ? path.n : sizeof z - 1;
-    memcpy(z, path.p, l); z[l] = '\0';
-    FILE *f = fopen(z, "rb");
-    if (!f) { snprintf(err, err_cap, "open %s failed", z); return false; }
-    fseek(f, 0, SEEK_END); i64 sz = ftell(f); fseek(f, 0, SEEK_SET);
-    char *src = arena_new(scratch, char, (size_t)sz + 1);
-    size_t rd = fread(src, 1, (size_t)sz, f); fclose(f);
-    src[rd] = '\0';
-    Str s = { src, rd };
+    Str s;
+    if (!slurp(z, scratch, &s, err, err_cap)) return false;
 
     /* find old_text */
     if (oldt.n == 0 || s.n < oldt.n) { snprintf(err, err_cap, "old_text not found"); return false; }
@@ -115,24 +161,35 @@ static b8 tool_edit(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
 
     FILE *o = fopen(z, "wb");
     if (!o) { snprintf(err, err_cap, "re-open %s failed", z); return false; }
-    fwrite(s.p, 1, (size_t)(found - s.p), o);
-    fwrite(newt.p, 1, newt.n, o);
     const char *tail = found + oldt.n;
-    fwrite(tail, 1, s.n - (size_t)(tail - s.p), o);
-    fclose(o);
+    size_t head_n = (size_t)(found - s.p), tail_n = s.n - (size_t)(tail - s.p);
+    b8 failed = false;
+    if (head_n && fwrite(s.p, 1, head_n, o) != head_n) failed = true;
+    if (newt.n && fwrite(newt.p, 1, newt.n, o) != newt.n) failed = true;
+    if (tail_n && fwrite(tail, 1, tail_n, o) != tail_n) failed = true;
+    if (fclose(o) != 0) failed = true;
+    if (failed) { snprintf(err, err_cap, "write %s failed", z); return false; }
     buf_puts(out, STR("edit applied"));
     return true;
 }
 
 /* ---- registry ---- */
 void tools_init(ToolRegistry *r, Arena *persist) {
-    r->defs = arena_new(persist, ToolDef, YOKE_MAX_TOOLS);
+    r->name   = arena_new(persist, Str, YOKE_MAX_TOOLS);
+    r->desc   = arena_new(persist, Str, YOKE_MAX_TOOLS);
+    r->schema = arena_new(persist, Str, YOKE_MAX_TOOLS);
+    r->run    = arena_new(persist, ToolRun, YOKE_MAX_TOOLS);
     r->n = 0;
+    if (!r->name || !r->desc || !r->schema || !r->run) {
+        r->name = NULL;
+        return;
+    }
 #define ADD(nm, dsc, sch, fn) do { \
-    r->defs[r->n].name = STR(nm); \
-    r->defs[r->n].desc = STR(dsc); \
-    r->defs[r->n].schema = STR(sch); \
-    r->defs[r->n].run = fn; \
+    if (r->n >= YOKE_MAX_TOOLS) break; \
+    r->name[r->n] = STR(nm); \
+    r->desc[r->n] = STR(dsc); \
+    r->schema[r->n] = STR(sch); \
+    r->run[r->n] = fn; \
     r->n++; } while (0)
 
     ADD("read", "Read a file's contents.",
@@ -150,21 +207,33 @@ void tools_init(ToolRegistry *r, Arena *persist) {
 #undef ADD
 }
 
-const ToolDef *tools_find(const ToolRegistry *r, Str name) {
+size_t tools_find(const ToolRegistry *r, Str name) {
+    if (!r->name || !name.p) return TOOL_NONE;
     for (size_t i = 0; i < r->n; i++)
-        if (str_eq(r->defs[i].name, name)) return &r->defs[i];
-    return NULL;
+        if (str_eq(r->name[i], name)) return i;
+    return TOOL_NONE;
+}
+
+b8 tools_run(const ToolRegistry *r, size_t id, Str args, Arena *scratch,
+             Buf *out, char *err, size_t err_cap) {
+    if (!r->run || id >= r->n) {
+        snprintf(err, err_cap, "unknown tool");
+        return false;
+    }
+    return r->run[id](args, scratch, out, err, err_cap);
 }
 
 void tools_write_schemas(Buf *b, const ToolRegistry *r) {
     buf_putc(b, '[');
-    for (size_t i = 0; i < r->n; i++) {
-        if (i) buf_putc(b, ',');
-        buf_putf(b, "{\"type\":\"function\",\"function\":{\"name\":");
-        buf_json_str(b, r->defs[i].name);
-        buf_putf(b, ",\"description\":");
-        buf_json_str(b, r->defs[i].desc);
-        buf_putf(b, ",\"parameters\":%s}}", r->defs[i].schema.p);
+    if (r->name) {
+        for (size_t i = 0; i < r->n; i++) {
+            if (i) buf_putc(b, ',');
+            buf_putf(b, "{\"type\":\"function\",\"function\":{\"name\":");
+            buf_json_str(b, r->name[i]);
+            buf_putf(b, ",\"description\":");
+            buf_json_str(b, r->desc[i]);
+            buf_putf(b, ",\"parameters\":%s}}", r->schema[i].p);
+        }
     }
     buf_putc(b, ']');
 }

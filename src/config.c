@@ -28,20 +28,25 @@ static b8 file_kv(Str line, Str *k, Str *v) {
     return k->n > 0;
 }
 
-b8 config_load(Config *c, Arena *persist) {
+/* Bounds every numeric setting: a config file or environment is not a
+ * trusted source of array capacities. */
+static size_t clamp_size(i64 v, size_t lo, size_t hi) {
+    if (v < 0 || (u64)v < lo) return lo;
+    if ((u64)v > hi) return hi;
+    return (size_t)v;
+}
+
+b8 config_load(Config *c, Arena *persist, Arena *scratch) {
     memset(c, 0, sizeof *c);
-    c->max_tokens = 4096;
-    c->stream     = true;
+    c->max_tokens   = 4096;
+    c->max_messages = YOKE_MAX_MESSAGES;
+    c->stream       = true;
 
     Str env_base = env_str(persist, "YOKE_BASE_URL");
     Str env_model = env_str(persist, "YOKE_MODEL");
     Str env_key   = env_str(persist, "YOKE_API_KEY");
     Str env_sys   = env_str(persist, "YOKE_SYSTEM_PROMPT");
-
-    /* read config file into a scratch arena */
-    Arena scratch;
-    static u8 sbuf[1 << 20];
-    arena_init(&scratch, sbuf, sizeof sbuf);
+    const char *env_msgs = getenv("YOKE_MAX_MESSAGES");
 
     const char *home = getenv("XDG_CONFIG_HOME");
     if (!home || !*home) {
@@ -55,8 +60,10 @@ b8 config_load(Config *c, Arena *persist) {
     FILE *f = fopen(path, "rb");
     if (f) {
         fseek(f, 0, SEEK_END); i64 sz = ftell(f); fseek(f, 0, SEEK_SET);
-        if (sz > 0) {
-            char *buf = arena_new(&scratch, char, (size_t)sz + 1);
+        /* The file lives in scratch for the length of this function only. */
+        char *buf = sz > 0 && sz <= (1 << 20)
+                  ? arena_new(scratch, char, (size_t)sz + 1) : NULL;
+        if (buf) {
             size_t rd = fread(buf, 1, (size_t)sz, f);
             buf[rd] = '\0';
             Str src = { buf, rd };
@@ -71,7 +78,8 @@ b8 config_load(Config *c, Arena *persist) {
                         else if (str_eq(k, STR("model")) && !env_model.p) c->model = vd;
                         else if (str_eq(k, STR("api_key")) && !env_key.p) c->api_key = vd;
                         else if (str_eq(k, STR("system_prompt")) && !env_sys.p) c->system_prompt = vd;
-                        else if (str_eq(k, STR("max_tokens"))) { b8 ok; i64 m = str_int(vd,&ok); if (ok) c->max_tokens = (i32)m; }
+                        else if (str_eq(k, STR("max_tokens"))) { b8 ok; i64 m = str_int(vd,&ok); if (ok) c->max_tokens = (i32)clamp_size(m, 1, 1u << 20); }
+                        else if (str_eq(k, STR("max_messages"))) { b8 ok; i64 m = str_int(vd,&ok); if (ok && !env_msgs) c->max_messages = clamp_size(m, 8, 1u << 20); }
                         else if (str_eq(k, STR("stream"))) c->stream = !str_eq(vd, STR("false"));
                     }
                     s = i + 1;
@@ -81,6 +89,11 @@ b8 config_load(Config *c, Arena *persist) {
         fclose(f);
     }
 
+    if (env_msgs && *env_msgs) {
+        b8 ok = false;
+        i64 m = str_int(str_c(env_msgs), &ok);
+        if (ok) c->max_messages = clamp_size(m, 8, 1u << 20);
+    }
     if (env_base.p)  c->base_url = env_base;
     if (env_model.p) c->model = env_model;
     if (env_key.p)   c->api_key = env_key;

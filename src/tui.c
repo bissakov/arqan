@@ -28,6 +28,7 @@
 #define TUI_SEL_BYTES (1u << 16) /* clipboard payload cap                   */
 #define TUI_POPUP_ROWS 6         /* completion entries shown at once         */
 #define TUI_MAX_USER_SPANS 256   /* boxed user messages tracked in scrollback */
+#define TUI_CKPTS 4096           /* wrapped-row checkpoints into the transcript */
 
 /* A quiet 256-colour palette.  Styling is optional (NO_COLOR and dumb
  * terminals get the same layout without escape-heavy decoration). */
@@ -65,6 +66,18 @@ typedef struct {
     char transcript[TUI_TRANSCRIPT_CAP];
     size_t transcript_n;
     size_t scroll_rows;
+    /* Wrapped-row index over the transcript. A frame needs the total row count
+     * and the byte offset of the first visible row; deriving both by walking
+     * the whole scrollback made every repaint cost the size of the session.
+     * The scan is incremental (new output only) and checkpoints let the
+     * painter start near the rows it is about to paint. */
+    size_t wrap_cols;        /* width the index was built for; 0 = invalid  */
+    size_t wrap_scanned;     /* transcript bytes already accounted for      */
+    size_t wrap_rows;        /* row index reached at wrap_scanned           */
+    size_t wrap_col;         /* display column reached at wrap_scanned      */
+    size_t ckpt_off[TUI_CKPTS];
+    size_t ckpt_n;
+    size_t ckpt_step;        /* rows between checkpoints; doubles on overflow */
     /* Byte ranges of the transcript that are user messages: a row whose text
      * starts inside one is painted as the boxed user block. Keeping it beside
      * the transcript (rather than as markup inside it) means arbitrary model
@@ -641,8 +654,85 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
     style(S_RESET);
 }
 
-/* Diff and paint the requested visual rows of a wrapped text buffer. */
-static void update_text_rows(Str s, size_t cols, size_t prompt_cells,
+/* ---- wrapped-row index ---------------------------------------------------
+ * Rows are numbered from 0 and a row always starts at column 0, so a
+ * checkpoint is just the byte offset a row begins at: scanning can resume
+ * from one with no other state. Anything that rewrites existing transcript
+ * bytes (a shift, a clear, a width change) drops the index.
+ */
+static void wrap_invalidate(void) {
+    g_tui.wrap_cols = 0;
+    g_tui.wrap_scanned = 0;
+    g_tui.wrap_rows = 0;
+    g_tui.wrap_col = 0;
+    g_tui.ckpt_n = 0;
+    g_tui.ckpt_step = 64;
+}
+
+static void ckpt_record(size_t row, size_t off) {
+    if (!g_tui.ckpt_step) g_tui.ckpt_step = 64;
+    if (row % g_tui.ckpt_step || row / g_tui.ckpt_step != g_tui.ckpt_n) return;
+    if (g_tui.ckpt_n == TUI_CKPTS) {
+        /* Out of slots: keep every second one and space them twice as far
+         * apart, which bounds the index without bounding the scrollback. */
+        for (size_t i = 0; i * 2 < g_tui.ckpt_n; i++)
+            g_tui.ckpt_off[i] = g_tui.ckpt_off[i * 2];
+        g_tui.ckpt_n = (g_tui.ckpt_n + 1) / 2;
+        g_tui.ckpt_step *= 2;
+        if (row % g_tui.ckpt_step || row / g_tui.ckpt_step != g_tui.ckpt_n) return;
+    }
+    g_tui.ckpt_off[g_tui.ckpt_n++] = off;
+}
+
+/* Bring the index up to date with the transcript; returns the total rows. */
+static size_t wrap_scan(size_t cols) {
+    if (cols != g_tui.wrap_cols || g_tui.wrap_scanned > g_tui.transcript_n)
+        wrap_invalidate();
+    if (!g_tui.wrap_cols) {
+        g_tui.wrap_cols = cols;
+        ckpt_record(0, 0);
+    }
+    const char *s = g_tui.transcript;
+    size_t n = g_tui.transcript_n;
+    size_t i = g_tui.wrap_scanned, row = g_tui.wrap_rows, col = g_tui.wrap_col;
+    while (i < n) {
+        if (s[i] == '\n') {
+            i++;
+            row++; col = 0;
+            ckpt_record(row, i);
+            continue;
+        }
+        i32 width = 0;
+        size_t used = glyph(s + i, n - i, &width);
+        size_t w = width > 0 ? (size_t)width : 0;
+        if (w && col > 0 && col + w > cols) {
+            row++; col = 0;
+            ckpt_record(row, i);
+        }
+        i += used;
+        col += w;
+    }
+    g_tui.wrap_scanned = i;
+    g_tui.wrap_rows = row;
+    g_tui.wrap_col = col;
+    return row + 1;
+}
+
+/* Byte offset to start painting from for `row`, and the row it lands on. */
+static size_t wrap_seek(size_t row, size_t *at_row) {
+    size_t k = g_tui.ckpt_step ? row / g_tui.ckpt_step : 0;
+    if (g_tui.ckpt_n == 0) { *at_row = 0; return 0; }
+    if (k >= g_tui.ckpt_n) k = g_tui.ckpt_n - 1;
+    *at_row = k * g_tui.ckpt_step;
+    return g_tui.ckpt_off[k];
+}
+
+/* Diff and paint the requested visual rows of a wrapped text buffer.
+ * `base_off` is where `s` starts inside the transcript, so user spans (which
+ * are recorded in transcript coordinates) still line up when the painter is
+ * handed a slice. */
+static void update_text_rows(Str s, size_t base_off, size_t cols,
+                             size_t prompt_cells,
                              size_t first_row, size_t visible_rows,
                              size_t screen_row, size_t screen_col,
                              size_t screen_cols, u8 kind, b8 force) {
@@ -665,7 +755,7 @@ static void update_text_rows(Str s, size_t cols, size_t prompt_cells,
                 Str prefix = row == 0 && prompt_cells ? STR("› ") : (Str){0};
                 /* Only the transcript carries user spans; the composer
                  * indexes its own buffer. */
-                u8 row_kind = kind == ROW_PLAIN && span_holds(start)
+                u8 row_kind = kind == ROW_PLAIN && span_holds(base_off + start)
                             ? (u8)ROW_USER : kind;
                 update_text_row(screen_row + row - first_row, prefix,
                                 (Str){s.p + start, i - start}, screen_col,
@@ -924,17 +1014,22 @@ static void repaint(void) {
     if (transcript_rows < 1) transcript_rows = 1;
 
     /* Transcript, pinned to its bottom unless PageUp has moved the viewport. */
-    Str transcript = { g_tui.transcript, g_tui.transcript_n };
-    size_t all_rows = text_rows(transcript, body_cols, 0, 0, NULL, NULL);
+    size_t all_rows = wrap_scan(body_cols);
     size_t max_scroll = all_rows > transcript_rows ? all_rows - transcript_rows : 0;
     if (g_tui.scroll_rows > max_scroll) g_tui.scroll_rows = max_scroll;
     size_t first = all_rows > transcript_rows + g_tui.scroll_rows
                  ? all_rows - transcript_rows - g_tui.scroll_rows : 0;
     if (g_tui.transcript_n == 0 && welcome_fits(body_cols, transcript_rows))
         paint_welcome(transcript_rows, body_col, body_cols, cols, force);
-    else
-        update_text_rows(transcript, body_cols, 0, first, transcript_rows, 1,
-                         body_col, cols, ROW_PLAIN, force);
+    else {
+        /* Start from the checkpoint nearest the first visible row instead of
+         * re-deriving the wrap from byte zero. */
+        size_t at_row = 0;
+        size_t off = wrap_seek(first, &at_row);
+        Str slice = { g_tui.transcript + off, g_tui.transcript_n - off };
+        update_text_rows(slice, off, body_cols, 0, first - at_row,
+                         transcript_rows, 1, body_col, cols, ROW_PLAIN, force);
+    }
     paint_scrollbar(first, all_rows, transcript_rows, cols, force);
 
     /* Completion popup, sitting between the transcript and the composer. */
@@ -949,7 +1044,7 @@ static void repaint(void) {
     if (composer_padding)
         update_text_row(composer_top_row, (Str){0}, (Str){0}, body_col,
                         cols, ROW_COMPOSER, force);
-    update_text_rows(input, body_cols, 2, input_first, composer_rows,
+    update_text_rows(input, 0, body_cols, 2, input_first, composer_rows,
                      composer_screen_row, body_col, cols, ROW_COMPOSER, force);
     if (composer_padding)
         update_text_row(composer_screen_row + composer_rows, (Str){0}, (Str){0},
@@ -1172,6 +1267,7 @@ void tui_set_context_tokens(size_t tokens) {
 void tui_clear(void) {
     g_tui.transcript_n = 0;
     g_tui.user_n = 0;
+    wrap_invalidate();
     g_tui.scroll_rows = 0;
     g_tui.context_tokens = 0;
     g_tui.context_known = false;
@@ -1199,6 +1295,7 @@ void tui_write(Str s) {
         s.n = TUI_TRANSCRIPT_CAP - 1;
         g_tui.transcript_n = 0;
         g_tui.user_n = 0;
+        wrap_invalidate();   /* the bytes the index described are gone */
     } else if (g_tui.transcript_n + s.n >= TUI_TRANSCRIPT_CAP) {
         size_t room_for_old = TUI_TRANSCRIPT_CAP - 1 - s.n;
         size_t keep = g_tui.transcript_n;
@@ -1208,6 +1305,7 @@ void tui_write(Str s) {
                 g_tui.transcript + g_tui.transcript_n - keep, keep);
         spans_shift(g_tui.transcript_n - keep);
         g_tui.transcript_n = keep;
+        wrap_invalidate();   /* every offset in the index just moved */
     }
 
     /* Strip terminal control bytes. Expand tabs so wrapping is predictable. */
@@ -1606,6 +1704,7 @@ void tui_poll_input(void) {
 }
 
 b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
+    if (!buf || cap == 0) { if (out_n) *out_n = 0; return false; }
     if (!g_tui.tty) {
         if (prompt) { put_str(prompt); flush_out(); }
         if (!fgets(buf, (i32)cap, stdin)) { *out_n = 0; return false; }

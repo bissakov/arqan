@@ -11,6 +11,7 @@ built-in tool registry (read/write/bash/edit) that the model can call.
 make            # builds bin/yoke
 make run        # builds and runs
 make test       # end-to-end TUI tests (Python 3, no third-party packages)
+make test-asan  # the same suite against an ASan+UBSan build
 make clean      # removes build/ and bin/
 ```
 
@@ -25,6 +26,7 @@ Runtime config comes from env vars or `~/.config/yoke/config`:
 export YOKE_BASE_URL=https://api.openai.com/v1
 export YOKE_MODEL=gpt-4o-mini
 export YOKE_API_KEY=sk-...
+export YOKE_MAX_MESSAGES=4096   # conversation capacity
 ```
 
 (see `config.c` for the full key set and precedence).
@@ -46,10 +48,21 @@ via static arrays in `main.c` (`g_persist`, `g_scratch`, sized by
 All conversation state, tool registry entries, and JSON parsing live in one
 of these two arenas — `persist` for data that must survive the whole
 session, `scratch` for per-turn work that's thrown away via `arena_reset`
-after each provider turn. There are no `malloc`/`free` calls in the hot
-path (libcurl's internal allocations are the one exception, outside our
+after each provider turn. There are no `malloc`/`free` calls anywhere in our
+code (libcurl's internal allocations are the one exception, outside our
 control). New features should follow this: allocate from the right arena
 up front rather than introducing dynamic allocation.
+
+**Allocation can fail, and every caller checks.** The arenas are finite and
+their consumers are fed by a remote provider, so `arena_alloc` returning
+NULL is a normal path, not a theoretical one: it is checked at every call
+site, `Buf` latches an `oom` flag and drops writes instead of running past
+`cap` (`buf_ok` reports it), and `conv_*` returns `CONV_NONE` when the
+conversation is full. Sizes that come from outside — a JSON field, a file's
+length, a config value — are validated *before* they reach an allocation;
+`arena_alloc_array` exists so a `count * size` can never wrap into a small
+satisfiable request. Adding a code path that ignores one of these is the
+same class of bug as a missing bounds check.
 
 **SoA everywhere.** Conversation messages (`Conv` in `yoke.h`), the tool
 registry (`ToolRegistry`), and other hot collections are structure-of-arrays
@@ -67,7 +80,9 @@ an AoS layout.
 - `config.c` — loads `Config` from env vars then `~/.config/yoke/config`
 - `tools.c` — the `ToolRegistry` and the four built-in tools (read/write/bash/edit)
 - `provider.c` — OpenAI-compatible chat-completions streaming client; parses
-  SSE deltas into text/tool-call callbacks and appends to `Conv`
+  SSE deltas into text/tool-call callbacks and appends to `Conv`. Each event
+  is parsed into a small arena that is reset per delta, so a turn's scratch
+  use follows the size of the reply rather than the number of events
 - `tui.c` — alternate-screen terminal UI: viewport, scrollback, raw-mode
   composer, mouse wheel scrolling, drag-to-select with OSC 52 copy,
   SIGWINCH-aware repaint. Every visible glyph is painted through `put_text`,
@@ -76,24 +91,34 @@ an AoS layout.
   in `TuiState.out` and hit the terminal as one `write`; the composer lives in
   `TuiState` for the whole session, so `tui_readline` (blocking, submits) and
   `tui_poll_input` (non-blocking, refuses Enter while `busy`) drive the same
-  editor
+  editor. The transcript carries a wrapped-row index (row count plus periodic
+  byte-offset checkpoints, extended incrementally as output arrives and
+  dropped whenever existing bytes move) so a frame costs the visible rows, not
+  the whole scrollback
 - `main.c` — wires everything together and runs the agent loop
 
 **Agent loop shape** (`main.c`): each user turn calls `provider_run` in a
 loop capped at 16 iterations. `provider_run` streams one completion, appends
 the assistant message (and any tool calls) to `Conv`, and returns the tool
 call count. If nonzero, `main` scans the newly appended `Conv` tail for
-tool-call slots, executes each via `tools_find` + `ToolDef.run`, appends the
+tool-call slots — an assistant head slot carrying the prose followed by one
+carrier slot per call, each with its own `tool_call_id` (`conv_is_call`
+identifies them) — executes each via `tools_find` + `tools_run`, appends the
 results as `M_TOOL` messages, and loops again; a zero return ends the turn.
 `SIGINT` sets `g_got_sigint`, checked between and during provider calls to
 support cancellation. `main` marks the turn with `tui_set_busy` and passes
 `on_idle` + `tui_input_fd()` to the provider, which is how typing stays alive
 while the model streams.
 
-**Adding a tool:** implement a `b8 (*run)(Str args_json, Arena *scratch, Buf
-*out, char *err, size_t err_cap)` function in `tools.c`, register it (name +
-description + JSON schema fragment) in `tools_init`, capped by
-`YOKE_MAX_TOOLS`.
+**Adding a tool:** implement a `ToolRun` — `b8 (*)(Str args_json, Arena
+*scratch, Buf *out, char *err, size_t err_cap)` — in `tools.c` and register
+it (name + description + JSON schema fragment) in `tools_init`, capped by
+`YOKE_MAX_TOOLS`. The registry is SoA: `tools_find` returns a tool id (or
+`TOOL_NONE`) and `tools_run` dispatches on it. A tool never clamps an
+argument to fit a buffer — a truncated path or command is a *different*
+operation than the one the user reviewed, so oversized arguments are
+refused with an error (`YOKE_MAX_PATH`, `YOKE_MAX_COMMAND`,
+`YOKE_MAX_FILE_BYTES`).
 
 ## Tests
 
