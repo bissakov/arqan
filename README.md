@@ -25,7 +25,7 @@ src/
   yoke.h          single umbrella header (all types + fwd decls)
   core.c          arena, Str, Buf, log, time
   json.c          tiny arena JSON parser + serializer
-  http.c          libcurl streaming POST (SSE)
+  http.c          libcurl streaming POST (SSE) + plain GET
   paths.c         XDG base directory resolution
   history.c       prompt history, mirrored to the XDG state dir
   session.c       per-directory saved conversations (/resume)
@@ -68,7 +68,8 @@ max_tokens=4096
 max_messages=4096      # conversation capacity; a full one is reported, not overrun
 ```
 
-Environment variables win over every file.
+Environment variables win over every file, and a model picked with `/model`
+wins over the files but not over `YOKE_MODEL`.
 
 ## Using it
 
@@ -80,7 +81,13 @@ screen and copies it over OSC 52 on release, so it works over ssh; Shift falls
 back to the terminal's own selection.
 
 Typing `/` opens a completion popup: `/clear` starts a fresh conversation,
-`/resume` reopens one saved for this directory and `/exit` quits.
+`/resume` reopens one saved for this directory, `/model` switches model and
+`/exit` quits.
+
+`/model` lists what the provider's `/models` endpoint serves and remembers the
+choice for the next run. Past ten entries the popup takes the keyboard and
+typing filters it by literal substring, so nothing typed while it is open
+reaches the composer.
 
 ## Files
 
@@ -92,6 +99,7 @@ and ignored as if unset, and directories yoke creates are mode 0700.
 | --- | --- | --- |
 | settings | `$XDG_CONFIG_HOME/yoke/config` | every `$XDG_CONFIG_DIRS` entry is searched too, at lower precedence |
 | prompt history | `$XDG_STATE_HOME/yoke/history` | last 500 prompts, recalled in the composer with Up/Down |
+| chosen model | `$XDG_STATE_HOME/yoke/model` | what `/model` last picked |
 | sessions | `$XDG_DATA_HOME/yoke/sessions/<cwd>/<timestamp>.jsonl` | one file per conversation, keyed by the directory it ran in |
 
 ## Tests

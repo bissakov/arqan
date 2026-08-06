@@ -240,6 +240,38 @@ static b8 on_line(Str line, void *ud) {
     return true;
 }
 
+size_t provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
+                       char *err, size_t err_cap) {
+    if (!out || !max) return 0;
+    Buf body; buf_init(&body, scratch, 1u << 16);
+    i32 rc = http_get(cfg->base_url.p, "/models", cfg->api_key.p, &body);
+    if (rc != 0) {
+        if (rc < 0) snprintf(err, err_cap, "models: HTTP %d", -rc);
+        else snprintf(err, err_cap, "models: request failed (%d)", rc);
+        return 0;
+    }
+    Str raw = buf_finish(&body);
+    if (!buf_ok(&body) || raw.n > YOKE_MAX_MODEL_BYTES) {
+        snprintf(err, err_cap, "models: reply too large");
+        return 0;
+    }
+    JVal *doc = json_parse(scratch, raw);
+    const JVal *data = doc ? json_get(doc, STR("data")) : NULL;
+    if (!data || data->type != J_ARR) {
+        snprintf(err, err_cap, "models: unexpected reply");
+        return 0;
+    }
+    size_t n = 0;
+    for (size_t i = 0; i < data->u.arr.n && n < max; i++) {
+        const JVal *id = json_get(&data->u.arr.items[i], STR("id"));
+        if (!id || id->type != J_STR || !id->u.s.n) continue;
+        out[n] = id->u.s;   /* the DOM lives in `scratch` alongside the array */
+        n++;
+    }
+    if (!n) snprintf(err, err_cap, "the provider listed no models");
+    return n;
+}
+
 i32 provider_run(Provider *p, char *err, size_t err_cap) {
     Arena *scratch = p->scratch;
     arena_reset(scratch);

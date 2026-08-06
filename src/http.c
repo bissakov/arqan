@@ -45,9 +45,80 @@ static size_t write_cb(char *p, size_t sz, size_t n, void *ud) {
     return dispatch_line(c, p, total) ? total : 0;
 }
 
-static size_t header_cb(char *p, size_t sz, size_t n, void *ud) {
+static size_t body_cb(char *p, size_t sz, size_t n, void *ud) {
+    Buf *b = (Buf *)ud;
+    size_t total = sz * n;
+    buf_put(b, p, total);
+    /* A short buffer fails the transfer rather than silently truncating the
+     * document the caller is about to parse. */
+    return buf_ok(b) ? total : 0;
+}
+
+/* Headers curl hands us are of no use to either request we make. */
+static size_t drop_header_cb(char *p, size_t sz, size_t n, void *ud) {
     (void)p; (void)ud;
-    return sz * n;   /* headers are consumed and discarded */
+    return sz * n;
+}
+
+/* base_url + path into `url`; false when it does not fit, which is a config
+ * error rather than something to grow a buffer for. */
+static b8 build_url(char *url, size_t cap, const char *base_url,
+                    const char *path) {
+    size_t base_n = base_url ? strlen(base_url) : 0;
+    size_t path_n = strlen(path);
+    if (base_n == 0 || base_n + path_n + 1 > cap) return false;
+    memcpy(url, base_url, base_n);
+    memcpy(url + base_n, path, path_n + 1);
+    return true;
+}
+
+/* "Authorization: Bearer <key>" when there is a key: passing NULL to "%s" is
+ * undefined, and "Bearer (null)" is not a request worth sending. */
+static struct curl_slist *auth_header(struct curl_slist *hdrs,
+                                      const char *api_key) {
+    if (!api_key || !*api_key) return hdrs;
+    char auth[1024];
+    i32 an = snprintf(auth, sizeof auth, "Authorization: Bearer %s", api_key);
+    if (an > 0 && (size_t)an < sizeof auth) return curl_slist_append(hdrs, auth);
+    yoke_log(YOKE_LOG_WARN, "api key too long; sending no Authorization header");
+    return hdrs;
+}
+
+i32 http_get(const char *base_url, const char *path, const char *api_key,
+             Buf *out) {
+    char url[2048];
+    if (!build_url(url, sizeof url, base_url, path)) {
+        yoke_log(YOKE_LOG_ERROR, "base_url is empty or too long");
+        return 1;
+    }
+    CURL *curl = curl_easy_init();
+    if (!curl) { yoke_log(YOKE_LOG_ERROR, "curl init failed"); return 1; }
+
+    struct curl_slist *hdrs = curl_slist_append(NULL, "Accept: application/json");
+    hdrs = auth_header(hdrs, api_key);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, body_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, drop_header_cb);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+
+    CURLcode rc = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_slist_free_all(hdrs);
+    curl_easy_cleanup(curl);
+
+    if (rc != CURLE_OK) {
+        yoke_log(YOKE_LOG_ERROR, "curl: %s", curl_easy_strerror(rc));
+        return 2;
+    }
+    if (http_code < 200 || http_code >= 300) return -(i32)http_code;
+    return 0;
 }
 
 /* How long a wait may last before we re-check the interrupt flag. Short enough
@@ -58,31 +129,17 @@ i32 http_sse_post(const HttpReq *r) {
     CURL *curl = curl_easy_init();
     if (!curl) { yoke_log(YOKE_LOG_ERROR, "curl init failed"); return 1; }
 
-    /* build URL: base_url + "/chat/completions". Bounded and on the stack:
-     * one malloc/free pair per turn is the only heap traffic we own, and a
-     * URL that does not fit is a config error, not something to grow for. */
-    static const char k_path[] = "/chat/completions";
     char url[2048];
-    size_t base_n = r->base_url ? strlen(r->base_url) : 0;
-    if (base_n == 0 || base_n + sizeof k_path > sizeof url) {
+    if (!build_url(url, sizeof url, r->base_url, "/chat/completions")) {
         curl_easy_cleanup(curl);
         yoke_log(YOKE_LOG_ERROR, "base_url is empty or too long");
         return 1;
     }
-    memcpy(url, r->base_url, base_n);
-    memcpy(url + base_n, k_path, sizeof k_path);
 
     struct curl_slist *hdrs = NULL;
     hdrs = curl_slist_append(hdrs, "Content-Type: application/json");
     hdrs = curl_slist_append(hdrs, "Accept: text/event-stream");
-    /* No key configured means no header: passing NULL to "%s" is undefined,
-     * and "Bearer (null)" is not a request worth sending. */
-    if (r->api_key && *r->api_key) {
-        char auth[1024];
-        i32 an = snprintf(auth, sizeof auth, "Authorization: Bearer %s", r->api_key);
-        if (an > 0 && (size_t)an < sizeof auth) hdrs = curl_slist_append(hdrs, auth);
-        else yoke_log(YOKE_LOG_WARN, "api key too long; sending no Authorization header");
-    }
+    hdrs = auth_header(hdrs, r->api_key);
 
     Ctx ctx = { r, {0}, 0, false };
     curl_easy_setopt(curl, CURLOPT_URL, url);
@@ -90,8 +147,7 @@ i32 http_sse_post(const HttpReq *r) {
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, r->body);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
-    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_cb);
-    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &ctx);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, drop_header_cb);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     /* We own SIGWINCH/SIGINT and run single-threaded; curl's signal-based
      * resolver timeouts would fire into our handlers. */

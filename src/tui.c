@@ -27,6 +27,8 @@
 #define TUI_SEL_ROW_BYTES 2048   /* visible bytes kept per screen row       */
 #define TUI_SEL_BYTES (1u << 16) /* clipboard payload cap                   */
 #define TUI_POPUP_ROWS 6         /* completion entries shown at once         */
+#define TUI_PICK_SEARCH_MIN 10   /* entries above which a picker searches    */
+#define TUI_PICK_QUERY 64        /* longest search a picker accepts          */
 #define TUI_MAX_USER_SPANS 256   /* boxed user messages tracked in scrollback */
 #define TUI_CKPTS 4096           /* wrapped-row checkpoints into the transcript */
 
@@ -557,6 +559,13 @@ static b8 str_starts_ci(Str s, Str prefix) {
     for (size_t i = 0; i < prefix.n; i++)
         if (lower_ascii(s.p[i]) != lower_ascii(prefix.p[i])) return false;
     return true;
+}
+
+static b8 str_contains_ci(Str s, Str needle) {
+    if (needle.n > s.n) return false;
+    for (size_t i = 0; i + needle.n <= s.n; i++)
+        if (str_starts_ci(str_drop(s, i), needle)) return true;
+    return false;
 }
 
 /* ---- user message spans -------------------------------------------------- */
@@ -1308,6 +1317,11 @@ void tui_set_status(const char *status) {
     repaint();
 }
 
+void tui_set_model(Str model) {
+    g_tui.model = model;
+    repaint();
+}
+
 void tui_set_context_tokens(size_t tokens) {
     g_tui.context_tokens = tokens;
     g_tui.context_known = true;
@@ -1649,11 +1663,37 @@ void tui_set_commands(const TuiCmd *cmds, size_t n) {
     g_tui.cmd_n = n < YOKE_MAX_COMMANDS ? n : YOKE_MAX_COMMANDS;
 }
 
+/* Narrow the picker to the entries whose name contains `query`. The search is
+ * literal and case-insensitive: a name either holds what was typed or it does
+ * not, with no fuzzy ordering to explain. */
+static void pick_filter(Str query) {
+    g_tui.comp_n = 0;
+    g_tui.comp_sel = 0;
+    for (size_t i = 0; i < g_tui.cmd_n && g_tui.comp_n < YOKE_MAX_POPUP; i++)
+        if (str_contains_ci(g_tui.cmds[i].name, query))
+            g_tui.comp_idx[g_tui.comp_n++] = (u16)i;
+}
+
+/* The search box is the notice row: it already sits directly above the popup
+ * and is the slot a command answers in. */
+static void pick_search_row(Str query) {
+    char row[sizeof g_tui.notice];
+    i32 n = snprintf(row, sizeof row, "search: %.*s%s", (i32)query.n, query.p,
+                     g_tui.comp_n ? "" : "  (no match)");
+    if (n < 0) return;
+    size_t len = (size_t)n < sizeof row ? (size_t)n : sizeof row - 1;
+    tui_notice((Str){row, len});   /* repaints */
+}
+
 /* A modal list over the same popup the composer completes with: same rows,
  * same highlight, same keys. Only the source of the entries differs, so the
  * popup is swapped in and the composer's own state restored on the way out, so
- * text typed before the picker opened is still there afterwards. */
-b8 tui_pick(const TuiCmd *items, size_t n, size_t *out) {
+ * text typed before the picker opened is still there afterwards.
+ *
+ * A long list also takes the keyboard: scrolling six visible rows through
+ * hundreds of entries is not a way to choose one, so typing filters instead of
+ * reaching the composer. */
+b8 tui_pick(Str title, const TuiCmd *items, size_t n, size_t *out) {
     if (!g_tui.fullscreen || !items || !n || !out) return false;
     if (n > YOKE_MAX_POPUP) n = YOKE_MAX_POPUP;
 
@@ -1661,14 +1701,26 @@ b8 tui_pick(const TuiCmd *items, size_t n, size_t *out) {
     size_t saved_cmd_n = g_tui.cmd_n;
     b8 saved_dismissed = g_tui.comp_dismissed;
     char saved_status[sizeof g_tui.status];
+    char saved_notice[sizeof g_tui.notice];
+    size_t saved_notice_n = g_tui.notice_n;
     memcpy(saved_status, g_tui.status, sizeof saved_status);
+    memcpy(saved_notice, g_tui.notice, sizeof saved_notice);
+
+    b8 search = n > TUI_PICK_SEARCH_MIN;
+    char query[TUI_PICK_QUERY];
+    size_t query_n = 0;
 
     g_tui.cmds = items;
     g_tui.cmd_n = n;
     g_tui.comp_n = n;
     g_tui.comp_sel = 0;
     for (size_t i = 0; i < n; i++) g_tui.comp_idx[i] = (u16)i;
-    tui_set_status("pick a session");   /* repaints */
+    /* The status names the picker last, so a frame that announces it already
+     * carries the list and the search box. */
+    if (search) pick_search_row((Str){query, query_n});
+    char status[sizeof g_tui.status];
+    snprintf(status, sizeof status, "%.*s", (i32)title.n, title.p);
+    tui_set_status(status);   /* repaints */
 
     b8 chosen = false;
     for (;;) {
@@ -1677,7 +1729,12 @@ b8 tui_pick(const TuiCmd *items, size_t n, size_t *out) {
         /* -2 is a signal that is not a resize: SIGINT while picking, which
          * cancels here just as it abandons a draft at the prompt. */
         if (c < 0 || c == 0x03 || c == 0x04) break;   /* EOF / signal / Ctrl-D */
-        if (c == '\r' || c == '\n') { *out = g_tui.comp_sel; chosen = true; break; }
+        if (c == '\r' || c == '\n') {
+            if (!g_tui.comp_n) continue;
+            *out = g_tui.comp_idx[g_tui.comp_sel];
+            chosen = true;
+            break;
+        }
         if (c == 0x0e) completion_move(1);
         else if (c == 0x10) completion_move(-1);
         else if (c == 0x1b) {
@@ -1685,6 +1742,20 @@ b8 tui_pick(const TuiCmd *items, size_t n, size_t *out) {
             if (key == KEY_DOWN) completion_move(1);
             else if (key == KEY_UP) completion_move(-1);
             else if (key == KEY_NONE) break;          /* bare Esc cancels */
+        } else if (search) {
+            if (c == 0x7f || c == 0x08) {
+                if (query_n) query_n = prev_glyph(query, query_n);
+            } else if (c == 0x15) {
+                query_n = 0;
+            } else if (((c >= 0x20 && c < 0x7f) || c >= 0x80)
+                       && query_n + 1 < sizeof query) {
+                query[query_n++] = (char)c;
+            } else {
+                continue;
+            }
+            pick_filter((Str){query, query_n});
+            pick_search_row((Str){query, query_n});
+            continue;
         }
         repaint();
     }
@@ -1692,6 +1763,8 @@ b8 tui_pick(const TuiCmd *items, size_t n, size_t *out) {
     g_tui.cmds = saved_cmds;
     g_tui.cmd_n = saved_cmd_n;
     g_tui.comp_dismissed = saved_dismissed;
+    memcpy(g_tui.notice, saved_notice, sizeof saved_notice);
+    g_tui.notice_n = saved_notice_n;
     /* The match list described the picker's entries; rebuild it from whatever
      * the composer still holds. */
     completion_refresh();

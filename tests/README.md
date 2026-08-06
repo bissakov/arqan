@@ -111,6 +111,9 @@ ctx.scenario("status=500")
 | `final_text=` | reply sent after the tool results come back |
 | `usage=P/C` | pin prompt/completion tokens (otherwise estimated) |
 | `status=` | fail with this HTTP status instead of streaming |
+| `models=` | ids `GET /v1/models` serves, separated by `\|` |
+| `model_count=` | serve that many generated ids (`model-000`, ...) |
+| `models_status=` | fail `GET /v1/models` with this HTTP status |
 
 Requests are recorded: `ctx.mock.requests` is the parsed request bodies and
 `ctx.mock.tool_results()` the tool outputs that were fed back.

@@ -53,7 +53,9 @@ typedef bool     b8;
 #define YOKE_MAX_CONFIG_FILES 8           /* XDG config candidates we consider */
 #define YOKE_MAX_SESSIONS     64          /* saved sessions the picker offers  */
 #define YOKE_MAX_SESSION_BYTES (32u << 20)/* largest session file we will read */
-#define YOKE_MAX_POPUP        64          /* entries the popup can hold        */
+#define YOKE_MAX_POPUP        256         /* entries the popup can hold        */
+#define YOKE_MAX_MODELS       256         /* models the /model picker offers   */
+#define YOKE_MAX_MODEL_BYTES  (1u << 20)  /* largest /models reply we will read */
 
 /* ---- arenas ------------------------------------------------------------- */
 typedef struct {
@@ -194,6 +196,10 @@ typedef struct {
 
 /* `scratch` holds the config file while it is parsed; nothing survives in it. */
 b8    config_load(Config *c, Arena *persist, Arena *scratch);
+/* Remember the model picked with /model in $XDG_STATE_HOME/yoke/model, which
+ * config_load applies above the config files and below YOKE_MODEL. False when
+ * no state directory resolves or the write failed. */
+b8    config_remember_model(Str model, Arena *scratch);
 
 /* ---- HTTP (libcurl) ----------------------------------------------------- */
 typedef struct {
@@ -214,6 +220,12 @@ typedef struct {
 } HttpReq;
 
 i32     http_sse_post(const HttpReq *r);  /* 0 on success, nonzero on error */
+/* GET base_url + path, appending the whole body to `out`. Returns 0 on
+ * success, a negative HTTP status for a refused request, positive for a
+ * transport failure. Blocking: the callers fetch a short document between
+ * turns, not while one is streaming. */
+i32     http_get(const char *base_url, const char *path, const char *api_key,
+                Buf *out);
 
 /* ---- tools (SoA registry) ----------------------------------------------
  * Parallel arrays indexed by tool id. Lookup only ever touches `name`, so
@@ -337,18 +349,29 @@ typedef struct {
  * or -1 with `err` filled in. */
 i32     provider_run(Provider *p, char *err, size_t err_cap);
 
+/* Model ids from GET <base_url>/models, in the order the endpoint serves
+ * them. Names are allocated in `scratch`; returns how many landed in `out`,
+ * zero with `err` filled in when the endpoint could not be read. */
+size_t  provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
+                        char *err, size_t err_cap);
+
 /* ---- TUI --------------------------------------------------------------- */
 /* A slash command the composer's completion popup can offer. The table is
  * owned by the caller (static storage) and only read by the TUI. */
 typedef struct { Str name; Str desc; } TuiCmd;
 void tui_set_commands(const TuiCmd *cmds, size_t n);
 /* Modal picker: the completion popup, driven over a caller-owned list instead
- * of the command table. Enter chooses (index in *out), Esc/Ctrl-C cancels.
- * Returns false when nothing was chosen or there is no fullscreen UI. */
-b8 tui_pick(const TuiCmd *items, size_t n, size_t *out);
+ * of the command table. `title` names it in the status line. Enter chooses
+ * (index in *out), Esc/Ctrl-C cancels. Returns false when nothing was chosen
+ * or there is no fullscreen UI. Past ten entries the picker also takes the
+ * keyboard: typing filters the list by literal substring, and the composer's
+ * own text is left untouched. */
+b8 tui_pick(Str title, const TuiCmd *items, size_t n, size_t *out);
 /* Composer history for Up/Down recall; NULL disables it. */
 void tui_set_history(History *h);
 void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count);
+/* The model the status line names; the string must outlive the call. */
+void tui_set_model(Str model);
 void tui_stop(void);
 void tui_set_status(const char *status);
 void tui_set_context_tokens(size_t tokens);

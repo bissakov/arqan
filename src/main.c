@@ -42,6 +42,7 @@ static size_t commands_init(void) {
     size_t n = 0;
     g_commands[n++] = (TuiCmd){ STR("/clear"), STR("Start a fresh conversation") };
     g_commands[n++] = (TuiCmd){ STR("/resume"), STR("Resume a saved session from this directory") };
+    g_commands[n++] = (TuiCmd){ STR("/model"), STR("Pick the model, remembered for the next run") };
     g_commands[n++] = (TuiCmd){ STR("/exit"), STR("Quit yoke") };
     return n;
 }
@@ -154,7 +155,10 @@ static void resume_session(Session *sess, Conv *conv, Arena *persist,
         items[i] = (TuiCmd){ list.name[i], list.preview[i] };
 
     size_t pick = 0;
-    if (!tui_pick(items, n, &pick)) { arena_reset(scratch); return; }
+    if (!tui_pick(STR("pick a session"), items, n, &pick)) {
+        arena_reset(scratch);
+        return;
+    }
 
     /* Read first: replaying rewinds the conversation and overwrites its
      * storage, so a session that cannot be read must not cost the one that is
@@ -172,6 +176,55 @@ static void resume_session(Session *sess, Conv *conv, Arena *persist,
     tui_clear();
     render_conv(conv);
     if (!whole) tui_notice(STR("session truncated: the conversation is full"));
+    arena_reset(scratch);
+}
+
+/* Offer what the provider's /models endpoint lists and switch to the chosen
+ * one for this session, remembering it for the next. The conversation is
+ * untouched: a model change is not part of it. */
+static void choose_model(Config *cfg, Arena *persist, Arena *scratch) {
+    arena_reset(scratch);
+    tui_set_status("loading models");
+    Str names[YOKE_MAX_MODELS];
+    char err[128] = {0};
+    size_t n = provider_models(cfg, scratch, names, YOKE_MAX_MODELS,
+                               err, sizeof err);
+    tui_set_status("ready");
+    if (!n) {
+        tui_notice(str_c(err[0] ? err : "no models to pick from"));
+        arena_reset(scratch);
+        return;
+    }
+    TuiCmd *items = arena_new(scratch, TuiCmd, n);
+    if (!items) {
+        tui_notice(STR("out of memory listing models"));
+        arena_reset(scratch);
+        return;
+    }
+    for (size_t i = 0; i < n; i++)
+        items[i] = (TuiCmd){ names[i],
+                             str_eq(names[i], cfg->model) ? STR("current")
+                                                          : (Str){0} };
+
+    size_t pick = 0;
+    if (!tui_pick(STR("pick a model"), items, n, &pick)) {
+        arena_reset(scratch);
+        return;
+    }
+    Str chosen = str_dup(persist, names[pick]);
+    if (!chosen.p) {
+        tui_notice(STR("out of memory storing the model"));
+        arena_reset(scratch);
+        return;
+    }
+    cfg->model = chosen;
+    tui_set_model(chosen);
+    b8 saved = config_remember_model(chosen, scratch);
+    char msg[256];
+    i32 len = snprintf(msg, sizeof msg, "model: %.*s%s", (i32)chosen.n, chosen.p,
+                       saved ? "" : " (not remembered: no state directory)");
+    if (len > 0) tui_notice((Str){ msg, (size_t)len < sizeof msg
+                                        ? (size_t)len : sizeof msg - 1 });
     arena_reset(scratch);
 }
 
@@ -249,6 +302,10 @@ i32 main(i32 argc, char **argv) {
             arena_reset(&scratch);
             session_begin(&sess);   /* the next message starts a new file */
             tui_clear();
+            continue;
+        }
+        if (!strcmp(line, "/model")) {
+            choose_model(&cfg, &persist, &scratch);
             continue;
         }
         if (!strcmp(line, "/resume")) {

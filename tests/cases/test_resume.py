@@ -99,10 +99,11 @@ def test_a_notice_stacks_above_the_popup(ctx):
 
     rows = s.screen.lines()
     bottom = s.screen.rows
-    assert "no saved sessions" in rows[bottom - 9], rows[bottom - 10 :]
-    assert "/clear" in rows[bottom - 8], rows[bottom - 10 :]
-    assert "/resume" in rows[bottom - 7], rows[bottom - 10 :]
-    assert "/exit" in rows[bottom - 6], rows[bottom - 10 :]
+    assert "no saved sessions" in rows[bottom - 10], rows[bottom - 11 :]
+    assert "/clear" in rows[bottom - 9], rows[bottom - 11 :]
+    assert "/resume" in rows[bottom - 8], rows[bottom - 11 :]
+    assert "/model" in rows[bottom - 7], rows[bottom - 11 :]
+    assert "/exit" in rows[bottom - 6], rows[bottom - 11 :]
     assert s.composer_text() == "/", s.composer_lines()
     ctx.check_screen(s, "stacked")
 

@@ -62,6 +62,17 @@ class Scenario:
         self.completion_tokens = kw.get("completion_tokens")
         self.usage: bool = _truthy(kw.get("usage", True))
         self.prefix: str = kw.get("prefix", "")
+        # GET /v1/models: an explicit list, or `model_count` generated ids.
+        self.models: list[str] = kw.get("models", [])
+        self.model_count: int = int(kw.get("model_count", 0))
+        self.models_status: int = int(kw.get("models_status", 200))
+
+    def model_ids(self) -> list[str]:
+        if self.models:
+            return self.models
+        if self.model_count:
+            return [f"model-{i:03d}" for i in range(self.model_count)]
+        return ["mock"]
 
     # -- DSL ---------------------------------------------------------------
     @staticmethod
@@ -90,6 +101,8 @@ class Scenario:
                     kw["usage"] = "1"
                 else:
                     kw["usage"] = value
+            elif key == "models":
+                kw["models"] = [m for m in _unescape(value).split("|") if m]
             elif key in ("text", "final_text", "prefix", "error"):
                 kw[key] = _unescape(value)
             else:
@@ -225,11 +238,21 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/health"):
             self._json(200, {"ok": True, "requests": len(srv.requests)})
         elif self.path.startswith("/v1/models"):
+            scenario = srv.scenario
+            if scenario.models_status != 200:
+                self._json(
+                    scenario.models_status,
+                    {"error": {"message": scenario.error, "type": "mock_error"}},
+                )
+                return
             self._json(
                 200,
                 {
                     "object": "list",
-                    "data": [{"id": "mock", "object": "model", "owned_by": "mock"}],
+                    "data": [
+                        {"id": m, "object": "model", "owned_by": "mock"}
+                        for m in scenario.model_ids()
+                    ],
                 },
             )
         else:

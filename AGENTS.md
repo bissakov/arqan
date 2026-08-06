@@ -73,7 +73,8 @@ an AoS layout.
 **Module responsibilities:**
 - `core.c`: arena allocator, `Str`/`Buf` string types, logging, monotonic time
 - `json.c`: arena-backed JSON DOM: parser + serializer, no separate token stream
-- `http.c`: libcurl streaming POST or SSE (`http_sse_post`), used only by
+- `http.c`: libcurl streaming POST or SSE (`http_sse_post`) plus a blocking
+  `http_get` for short documents such as `/models`, used only by
   `provider.c`. Runs the transfer on the multi interface so one wait covers
   both curl's sockets and `HttpReq.idle_fd` (stdin), calling `on_idle` after
   every wait, which is what keeps the UI live mid-request and single-threaded
@@ -90,17 +91,22 @@ an AoS layout.
   one JSON object per line, appended as messages are produced. It owns its
   path buffers instead of an arena because `/clear` rewinds the session's and
   the file the next message appends to has to outlive that
-- `config.c`: loads `Config` from env vars, then `$XDG_CONFIG_HOME/yoke/config`,
-  then the `XDG_CONFIG_DIRS` entries at lower precedence
+- `config.c`: loads `Config` from env vars, then the model `/model` last
+  remembered in `$XDG_STATE_HOME/yoke/model`, then
+  `$XDG_CONFIG_HOME/yoke/config`, then the `XDG_CONFIG_DIRS` entries at lower
+  precedence
 - `tools.c`: the `ToolRegistry` and the four built-in tools (read/write/bash/edit)
 - `provider.c`: OpenAI-compatible chat-completions streaming client; parses
   SSE deltas into text/tool-call callbacks and appends to `Conv`. Each event
   is parsed into a small arena that is reset per delta, so a turn's scratch
-  use follows the size of the reply rather than the number of events
+  use follows the size of the reply rather than the number of events. Also
+  `provider_models`, the `/models` listing the `/model` picker offers
 - `tui.c`: alternate-screen terminal UI. Overlays stack upward from the
   bottom (notice row, completion popup, composer, status line) and eat into
-  the transcript, never into each other or the composer. A notice is how a
-  command that opened no popup answers, so nothing but the conversation is
+  the transcript, never into each other or the composer. `tui_pick` drives
+  that same popup as a modal list, and past ten entries it takes the keyboard:
+  typing filters by literal substring and the notice row becomes the search
+  box. A notice is how a command that opened no popup answers, so nothing but the conversation is
   ever written into the transcript. Also: viewport, scrollback, raw-mode
   composer with Up/Down recall of the persisted prompt history, mouse wheel
   scrolling, drag-to-select with OSC 52 copy, and SIGWINCH-aware repaint.

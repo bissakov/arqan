@@ -71,6 +71,33 @@ static void config_apply_file(Config *c, Str path, EnvSet env,
     }
 }
 
+/* The model /model last chose: the first line of the state file, empty when
+ * there is none. */
+static Str state_model(Arena *persist, Arena *scratch) {
+    Str path = paths_file(YOKE_DIR_STATE, STR("model"), scratch);
+    if (!path.n) return (Str){0};
+    FILE *f = fopen(path.p, "rb");
+    if (!f) return (Str){0};
+    char line[512];
+    char *got = fgets(line, sizeof line, f);
+    fclose(f);
+    if (!got) return (Str){0};
+    Str name = str_trim(str_c(line));
+    return name.n ? str_dup(persist, name) : (Str){0};
+}
+
+b8 config_remember_model(Str model, Arena *scratch) {
+    if (!model.n || model.n >= 256) return false;
+    Str dir = paths_dir(YOKE_DIR_STATE, scratch);
+    Str path = paths_file(YOKE_DIR_STATE, STR("model"), scratch);
+    if (!dir.n || !path.n || !paths_ensure_dir(dir)) return false;
+    FILE *f = fopen(path.p, "wb");
+    if (!f) return false;
+    size_t wrote = fwrite(model.p, 1, model.n, f);
+    fputc('\n', f);
+    return fclose(f) == 0 && wrote == model.n;
+}
+
 b8 config_load(Config *c, Arena *persist, Arena *scratch) {
     memset(c, 0, sizeof *c);
     c->max_tokens   = 4096;
@@ -102,6 +129,12 @@ b8 config_load(Config *c, Arena *persist, Arena *scratch) {
         b8 ok = false;
         i64 m = str_int(str_c(env_msgs), &ok);
         if (ok) c->max_messages = clamp_size(m, 8, 1u << 20);
+    }
+    /* An in-app choice outranks the config files: it was made later and more
+     * explicitly. The environment still wins, being per invocation. */
+    if (!env_model.p) {
+        Str remembered = state_model(persist, scratch);
+        if (remembered.n) c->model = remembered;
     }
     if (env_base.p)  c->base_url = env_base;
     if (env_model.p) c->model = env_model;
