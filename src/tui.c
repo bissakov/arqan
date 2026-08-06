@@ -1,0 +1,860 @@
+/* tui.c — small, dependency-free fullscreen terminal UI.
+ *
+ * The tty path owns the alternate screen and repaints from an in-memory
+ * transcript.  This makes redraw, Ctrl-L and terminal resize deterministic;
+ * provider output never writes through the UI and corrupts the composer.
+ * Pipes keep the conventional line-oriented behaviour.
+ */
+#include "ah.h"
+
+#include <errno.h>
+#include <locale.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <termios.h>
+#include <unistd.h>
+#include <wchar.h>
+
+#define TUI_TRANSCRIPT_CAP (8u << 20)
+#define TUI_MAX_ROWS 4096
+#define TUI_BODY_GUTTER 2
+
+/* A quiet 256-colour palette.  Styling is optional (NO_COLOR and dumb
+ * terminals get the same layout without escape-heavy decoration). */
+#define S_RESET       "\033[0m"
+#define S_PANEL_BG    "\033[48;5;236m"
+#define S_TEXT        "\033[38;5;253m"
+#define S_MUTED       "\033[38;5;245m"
+#define S_CYAN        "\033[1;38;5;81m"
+#define S_BLUE        "\033[1;38;5;75m"
+#define S_GREEN       "\033[1;38;5;114m"
+#define S_YELLOW      "\033[1;38;5;221m"
+#define S_RED         "\033[1;38;5;203m"
+#define S_PURPLE      "\033[1;38;5;177m"
+
+typedef struct {
+    struct termios original_termios;
+    struct sigaction original_winch;
+    b8 raw;
+    b8 tty;
+    b8 fullscreen;
+    b8 editing;
+    b8 color;
+    Str model;
+    Str provider;
+    char cwd_buf[4096];
+    Str cwd;
+    size_t context_tokens;
+    b8 context_known;
+    const char *status;
+    char transcript[TUI_TRANSCRIPT_CAP];
+    size_t transcript_n;
+    size_t scroll_rows;
+    f64 last_paint;
+    size_t painted_rows;
+    size_t painted_cols;
+    u64 row_hash[TUI_MAX_ROWS];
+    b8 frame_valid;
+    char *input;
+    size_t input_n;
+    size_t input_cur;
+} TuiState;
+
+static TuiState g_tui;
+static volatile sig_atomic_t g_winch = 0;
+
+static void on_winch(i32 sig) { (void)sig; g_winch = 1; }
+static void put_raw(const char *s, size_t n) { (void)fwrite(s, 1, n, stdout); }
+static void put_str(const char *s) { put_raw(s, strlen(s)); }
+static void flush_out(void) { (void)fflush(stdout); }
+static void style(const char *s) { if (g_tui.color) put_str(s); }
+
+static Str provider_from_url(Str url) {
+    size_t start = 0;
+    for (size_t i = 0; i + 2 < url.n; i++) {
+        if (url.p[i] == ':' && url.p[i + 1] == '/' && url.p[i + 2] == '/') {
+            start = i + 3;
+            break;
+        }
+    }
+    size_t end = start;
+    while (end < url.n && url.p[end] != '/' && url.p[end] != ':') end++;
+    Str host = {url.p + start, end - start};
+    if (str_eq(host, STR("api.openai.com"))) return STR("openai");
+    if (str_eq(host, STR("openrouter.ai"))) return STR("openrouter");
+    if (str_eq(host, STR("localhost")) || str_eq(host, STR("127.0.0.1")))
+        return STR("local");
+    return host.n ? host : STR("unknown");
+}
+
+static void capture_cwd(void) {
+    char full[sizeof g_tui.cwd_buf];
+    if (!getcwd(full, sizeof full)) {
+        memcpy(g_tui.cwd_buf, "?", 2);
+        g_tui.cwd = STR("?");
+        return;
+    }
+    const char *home = getenv("HOME");
+    size_t home_n = home ? strlen(home) : 0;
+    if (home_n && !strncmp(full, home, home_n)
+        && (full[home_n] == '/' || full[home_n] == '\0')) {
+        i32 n = snprintf(g_tui.cwd_buf, sizeof g_tui.cwd_buf, "~%s", full + home_n);
+        g_tui.cwd = (Str){g_tui.cwd_buf, n > 0 ? (size_t)n : 0};
+    } else {
+        size_t n = strlen(full);
+        memcpy(g_tui.cwd_buf, full, n + 1);
+        g_tui.cwd = (Str){g_tui.cwd_buf, n};
+    }
+}
+
+static void screen_size(size_t *rows, size_t *cols) {
+    struct winsize ws = {0};
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
+        *rows = ws.ws_row > 0 ? (size_t)ws.ws_row : 24;
+        *cols = ws.ws_col > 0 ? (size_t)ws.ws_col : 80;
+    } else {
+        *rows = 24;
+        *cols = 80;
+    }
+    if (*rows < 4) *rows = 4;
+    if (*rows > TUI_MAX_ROWS) *rows = TUI_MAX_ROWS;
+    if (*cols < 8) *cols = 8;
+}
+
+static void cup(size_t row, size_t col) {
+    char seq[48];
+    i32 n = snprintf(seq, sizeof seq, "\033[%zu;%zuH", row, col);
+    if (n > 0) put_raw(seq, (size_t)n);
+}
+
+/* Decode one display glyph. Invalid input is deliberately one cell/byte so
+ * arbitrary tool output cannot wedge the renderer. */
+static size_t glyph(const char *s, size_t n, i32 *width) {
+    if (n == 0) { *width = 0; return 0; }
+    u8 c = (u8)s[0];
+    if (c < 0x80) { *width = 1; return 1; }
+    mbstate_t st = {0};
+    wchar_t wc = 0;
+    size_t used = mbrtowc(&wc, s, n, &st);
+    if (used == (size_t)-1 || used == (size_t)-2 || used == 0) {
+        *width = 1;
+        return 1;
+    }
+    i32 w = wcwidth(wc);
+    *width = w < 0 ? 1 : w;
+    return used;
+}
+
+static size_t prev_glyph(const char *s, size_t at) {
+    if (at == 0) return 0;
+    size_t p = at - 1;
+    while (p > 0 && ((u8)s[p] & 0xc0u) == 0x80u) p--;
+    return p;
+}
+
+static size_t next_glyph(const char *s, size_t n, size_t at) {
+    if (at >= n) return n;
+    i32 width = 0;
+    size_t used = glyph(s + at, n - at, &width);
+    (void)width;
+    return at + (used ? used : 1);
+}
+
+/* Count visual rows and, optionally, locate a byte cursor. Prompt cells are
+ * included only for the composer. Newlines and soft wrapping both start a
+ * new visual row. */
+static size_t text_rows(Str s, size_t cols, size_t prompt_cells,
+                        size_t cursor, size_t *cursor_row, size_t *cursor_col) {
+    size_t row = 0, col = prompt_cells;
+    if (cursor_row && cursor == 0) { *cursor_row = row; *cursor_col = col; }
+    for (size_t i = 0; i < s.n;) {
+        if (s.p[i] == '\n') {
+            i++;
+            row++; col = 0;
+        } else {
+            i32 width = 0;
+            size_t used = glyph(s.p + i, s.n - i, &width);
+            size_t w = width > 0 ? (size_t)width : 0;
+            if (w && col > 0 && col + w > cols) { row++; col = 0; }
+            i += used;
+            col += w;
+        }
+        if (cursor_row && i == cursor) { *cursor_row = row; *cursor_col = col; }
+    }
+    if (cursor_row && cursor == s.n) { *cursor_row = row; *cursor_col = col; }
+    return row + 1;
+}
+
+static void put_safe_clipped(Str s, size_t max_cells, size_t *used_cells) {
+    size_t cells = 0;
+    for (size_t i = 0; i < s.n;) {
+        unsigned char c = (unsigned char)s.p[i];
+        if (c < 0x20 || c == 0x7f) { i++; continue; }
+        i32 width = 0;
+        size_t used = glyph(s.p + i, s.n - i, &width);
+        size_t w = width > 0 ? (size_t)width : 0;
+        if (cells + w > max_cells) break;
+        put_raw(s.p + i, used);
+        cells += w; i += used;
+    }
+    if (used_cells) *used_cells += cells;
+}
+
+static void pad_row(size_t used, size_t cols) {
+    while (used++ < cols) put_raw(" ", 1);
+}
+
+static u64 hash_add(u64 h, const void *data, size_t n) {
+    const u8 *p = (const u8 *)data;
+    for (size_t i = 0; i < n; i++) {
+        h ^= p[i];
+        h *= UINT64_C(1099511628211);
+    }
+    return h;
+}
+
+static u64 row_hash(Str prefix, Str text, u8 kind) {
+    u64 h = UINT64_C(1469598103934665603);
+    h = hash_add(h, &kind, sizeof kind);
+    h = hash_add(h, prefix.p, prefix.n);
+    return hash_add(h, text.p, text.n);
+}
+
+static b8 row_changed(size_t row, u64 hash, b8 force) {
+    size_t index = row - 1;
+    if (!force && g_tui.row_hash[index] == hash) return false;
+    g_tui.row_hash[index] = hash;
+    return true;
+}
+
+enum {
+    ROW_PLAIN = 1, ROW_COMPOSER, ROW_STATUS,
+    ROW_USER, ROW_ASSISTANT, ROW_TOOL, ROW_RESULT, ROW_NOTICE
+};
+
+static b8 str_starts(Str s, Str prefix) {
+    return s.n >= prefix.n && !memcmp(s.p, prefix.p, prefix.n);
+}
+
+static u8 display_kind(u8 kind, Str text) {
+    if (kind != ROW_PLAIN) return kind;
+    if (str_eq(text, STR("You"))) return ROW_USER;
+    if (str_eq(text, STR("Assistant"))) return ROW_ASSISTANT;
+    if (str_starts(text, STR("Tool · "))) return ROW_TOOL;
+    if (str_eq(text, STR("Result"))) return ROW_RESULT;
+    if (text.n >= 2 && text.p[0] == '[' && text.p[text.n - 1] == ']')
+        return ROW_NOTICE;
+    return kind;
+}
+
+static void update_text_row(size_t screen_row, Str prefix, Str text,
+                            size_t screen_col, size_t screen_cols,
+                            u8 kind, b8 force) {
+    kind = display_kind(kind, text);
+    u64 hash = row_hash(prefix, text, kind);
+    if (!row_changed(screen_row, hash, force)) return;
+    cup(screen_row, 1);
+    put_str(S_RESET "\033[2K");
+
+    if (kind == ROW_COMPOSER) {
+        style(S_PANEL_BG);
+        pad_row(0, screen_cols);
+        cup(screen_row, screen_col);
+    } else {
+        cup(screen_row, screen_col);
+    }
+
+    if (kind == ROW_COMPOSER && prefix.n) {
+        style(S_PANEL_BG S_CYAN);
+        put_raw(prefix.p, prefix.n);
+        style(S_PANEL_BG S_TEXT);
+    } else if (prefix.n) {
+        put_raw(prefix.p, prefix.n);
+    }
+
+    if (kind == ROW_COMPOSER && prefix.n && text.n == 0) {
+        size_t gutter = screen_col - 1;
+        size_t body = screen_cols > gutter * 2 ? screen_cols - gutter * 2 : 0;
+        size_t room = body > 2 ? body - 2 : 0;
+        style(S_PANEL_BG S_MUTED);
+        put_safe_clipped(STR("Message ah…"), room, NULL);
+    } else if (kind == ROW_USER) {
+        style(S_BLUE); put_str("●  "); put_raw(text.p, text.n);
+    } else if (kind == ROW_ASSISTANT) {
+        style(S_PURPLE); put_str("●  "); put_raw(text.p, text.n);
+    } else if (kind == ROW_TOOL) {
+        style(S_YELLOW); put_str("◆  "); put_raw(text.p, text.n);
+    } else if (kind == ROW_RESULT) {
+        style(S_GREEN); put_str("└─ "); put_raw(text.p, text.n);
+    } else if (kind == ROW_NOTICE) {
+        style(S_YELLOW); put_raw(text.p, text.n);
+    } else {
+        if (kind == ROW_PLAIN) style(S_TEXT);
+        put_raw(text.p, text.n);
+    }
+    style(S_RESET);
+}
+
+/* Diff and paint the requested visual rows of a wrapped text buffer. */
+static void update_text_rows(Str s, size_t cols, size_t prompt_cells,
+                             size_t first_row, size_t visible_rows,
+                             size_t screen_row, size_t screen_col,
+                             size_t screen_cols, u8 kind, b8 force) {
+    size_t row = 0, col = prompt_cells, start = 0;
+    size_t painted = 0;
+    for (size_t i = 0;;) {
+        b8 end = i == s.n;
+        b8 newline = !end && s.p[i] == '\n';
+        b8 wrap = false;
+        size_t used = 0, width = 0;
+        if (!end && !newline) {
+            i32 glyph_width = 0;
+            used = glyph(s.p + i, s.n - i, &glyph_width);
+            width = glyph_width > 0 ? (size_t)glyph_width : 0;
+            wrap = width && col > 0 && col + width > cols;
+        }
+
+        if (end || newline || wrap) {
+            if (row >= first_row && row < first_row + visible_rows) {
+                Str prefix = row == 0 && prompt_cells ? STR("› ") : (Str){0};
+                update_text_row(screen_row + row - first_row, prefix,
+                                (Str){s.p + start, i - start}, screen_col,
+                                screen_cols, kind, force);
+                painted++;
+            }
+            if (end) break;
+            row++;
+            col = 0;
+            if (newline) { i++; start = i; }
+            else start = i; /* wrapped glyph belongs to the new row */
+            continue;
+        }
+        i += used;
+        col += width;
+    }
+
+    /* Rows below short content are part of the frame too. */
+    while (painted < visible_rows) {
+        update_text_row(screen_row + painted, (Str){0}, (Str){0}, screen_col,
+                        screen_cols, kind, force);
+        painted++;
+    }
+}
+
+static void paint_scrollbar(size_t first_row, size_t total_rows,
+                            size_t visible_rows, size_t screen_col) {
+    b8 scrollable = total_rows > visible_rows;
+    size_t thumb_rows = visible_rows;
+    size_t thumb_top = 0;
+    if (scrollable) {
+        thumb_rows = visible_rows * visible_rows / total_rows;
+        if (thumb_rows < 1) thumb_rows = 1;
+        size_t travel = visible_rows - thumb_rows;
+        size_t scroll_range = total_rows - visible_rows;
+        thumb_top = scroll_range ? first_row * travel / scroll_range : 0;
+    }
+    for (size_t i = 0; i < visible_rows; i++) {
+        cup(i + 1, screen_col);
+        if (!scrollable) {
+            put_str(" ");
+        } else if (i >= thumb_top && i < thumb_top + thumb_rows) {
+            style(S_CYAN); put_str("┃");
+        } else {
+            style(S_MUTED); put_str("│");
+        }
+    }
+    style(S_RESET);
+}
+
+static Str format_context_size(char *buf, size_t cap) {
+    size_t n = g_tui.context_tokens;
+    i32 written;
+    if (!g_tui.context_known) {
+        written = snprintf(buf, cap, "—");
+    } else {
+        written = snprintf(buf, cap, "%zu", n);
+    }
+    size_t len = written > 0 ? (size_t)written : 0;
+    if (len >= cap) len = cap ? cap - 1 : 0;
+    return (Str){buf, len};
+}
+
+static void repaint(void) {
+    if (!g_tui.fullscreen) return;
+    g_tui.last_paint = ah_now_seconds();
+
+    size_t rows, cols;
+    screen_size(&rows, &cols);
+    b8 force = !g_tui.frame_valid || g_winch
+             || rows != g_tui.painted_rows || cols != g_tui.painted_cols;
+    g_winch = 0;
+    if (force) {
+        put_str("\033[?25l\033[H\033[2J");
+        memset(g_tui.row_hash, 0, sizeof g_tui.row_hash);
+    } else {
+        put_str("\033[?25l");
+    }
+    size_t gutter = cols >= 24 ? TUI_BODY_GUTTER : 1;
+    size_t body_cols = cols - gutter * 2;
+    size_t body_col = gutter + 1;
+    size_t cursor_row = 0, cursor_col = 2;
+    Str input = { g_tui.input ? g_tui.input : "", g_tui.input_n };
+    size_t input_rows = text_rows(input, body_cols, 2, g_tui.input_cur,
+                                  &cursor_row, &cursor_col);
+    size_t composer_padding = rows >= 6 ? 1 : 0;
+    size_t composer_cap = rows / 3;
+    if (composer_cap < 1) composer_cap = 1;
+    if (composer_cap > 8) composer_cap = 8;
+    size_t composer_rows = input_rows < composer_cap ? input_rows : composer_cap;
+    size_t chrome_rows = 1 + composer_padding * 2; /* status and padding */
+    size_t max_composer = rows > chrome_rows ? rows - chrome_rows : 1;
+    if (max_composer > 1) max_composer--; /* always preserve a transcript row */
+    if (composer_rows > max_composer) composer_rows = max_composer;
+    size_t transcript_rows = rows - composer_rows - chrome_rows;
+    if (transcript_rows < 1) transcript_rows = 1;
+
+    /* Transcript, pinned to its bottom unless PageUp has moved the viewport. */
+    Str transcript = { g_tui.transcript, g_tui.transcript_n };
+    size_t all_rows = text_rows(transcript, body_cols, 0, 0, NULL, NULL);
+    size_t max_scroll = all_rows > transcript_rows ? all_rows - transcript_rows : 0;
+    if (g_tui.scroll_rows > max_scroll) g_tui.scroll_rows = max_scroll;
+    size_t first = all_rows > transcript_rows + g_tui.scroll_rows
+                 ? all_rows - transcript_rows - g_tui.scroll_rows : 0;
+    update_text_rows(transcript, body_cols, 0, first, transcript_rows, 1,
+                     body_col, cols, ROW_PLAIN, force);
+    paint_scrollbar(first, all_rows, transcript_rows, cols);
+
+    /* Composer, including one quiet row of breathing room on each side. */
+    size_t input_first = cursor_row >= composer_rows
+                       ? cursor_row - composer_rows + 1 : 0;
+    size_t composer_top_row = transcript_rows + 1;
+    size_t composer_screen_row = composer_top_row + composer_padding;
+    if (composer_padding)
+        update_text_row(composer_top_row, (Str){0}, (Str){0}, body_col,
+                        cols, ROW_COMPOSER, force);
+    update_text_rows(input, body_cols, 2, input_first, composer_rows,
+                     composer_screen_row, body_col, cols, ROW_COMPOSER, force);
+    if (composer_padding)
+        update_text_row(composer_screen_row + composer_rows, (Str){0}, (Str){0},
+                        body_col, cols, ROW_COMPOSER, force);
+
+    /* Curated status line, always below the composer. */
+    size_t status_row = composer_screen_row + composer_rows + composer_padding;
+    const char *status = g_tui.status ? g_tui.status : "ready";
+    u64 status_hash = row_hash(g_tui.model, g_tui.provider, ROW_STATUS);
+    status_hash = hash_add(status_hash, g_tui.cwd.p, g_tui.cwd.n);
+    status_hash = hash_add(status_hash, status, strlen(status));
+    status_hash = hash_add(status_hash, &g_tui.context_tokens,
+                           sizeof g_tui.context_tokens);
+    status_hash = hash_add(status_hash, &g_tui.context_known,
+                           sizeof g_tui.context_known);
+    status_hash = hash_add(status_hash, &cols, sizeof cols);
+    if (row_changed(status_row, status_hash, force)) {
+        cup(status_row, 1); style(S_PANEL_BG); pad_row(0, cols);
+        cup(status_row, body_col); style(S_PANEL_BG);
+        char context_buf[48];
+        Str context = format_context_size(context_buf, sizeof context_buf);
+        Str cwd = g_tui.cwd;
+        if (body_cols < 72) {
+            for (size_t i = cwd.n; i > 0; i--) {
+                if (cwd.p[i - 1] == '/' && i < cwd.n) {
+                    cwd = (Str){cwd.p + i, cwd.n - i};
+                    break;
+                }
+            }
+        }
+        size_t used = 0;
+        const char *status_style = S_BLUE;
+        if (!strcmp(status, "ready")) status_style = S_GREEN;
+        else if (strstr(status, "error")) status_style = S_RED;
+        else if (!strcmp(status, "thinking")) status_style = S_PURPLE;
+        style(status_style);
+        put_safe_clipped(STR("●  "), body_cols, &used);
+        style(S_PANEL_BG S_TEXT);
+        if (used < body_cols)
+            put_safe_clipped(g_tui.model, body_cols - used, &used);
+        Str separator = body_cols >= 64 ? STR("  ·  ") : STR(" · ");
+        size_t separator_cells = body_cols >= 64 ? 5 : 3;
+        if (body_cols - used >= separator_cells) {
+            style(S_PANEL_BG S_MUTED);
+            put_safe_clipped(separator, body_cols - used, &used);
+            style(S_PANEL_BG S_TEXT);
+            put_safe_clipped(g_tui.provider, body_cols - used, &used);
+        }
+        if (body_cols - used >= separator_cells) {
+            style(S_PANEL_BG S_MUTED);
+            put_safe_clipped(separator, body_cols - used, &used);
+            style(S_PANEL_BG S_TEXT);
+            put_safe_clipped(cwd, body_cols - used, &used);
+        }
+        if (body_cols - used >= separator_cells) {
+            style(S_PANEL_BG S_MUTED);
+            put_safe_clipped(separator, body_cols - used, &used);
+            style(S_PANEL_BG S_TEXT);
+            put_safe_clipped(context, body_cols - used, &used);
+        }
+        style(S_RESET);
+    }
+
+    if (g_tui.editing) {
+        size_t screen_cursor_row = composer_screen_row + cursor_row - input_first;
+        size_t screen_cursor_col = gutter + cursor_col + 1;
+        if (screen_cursor_col > cols) screen_cursor_col = cols;
+        cup(screen_cursor_row, screen_cursor_col);
+        put_str("\033[?25h");
+    }
+    g_tui.painted_rows = rows;
+    g_tui.painted_cols = cols;
+    g_tui.frame_valid = true;
+    flush_out();
+}
+
+void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count) {
+    if (g_tui.raw) return;
+    memset(&g_tui, 0, sizeof g_tui);
+    g_tui.tty = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
+    g_tui.model = model;
+    g_tui.provider = provider_from_url(base_url);
+    g_tui.status = "ready";
+    capture_cwd();
+    const char *term = getenv("TERM");
+    g_tui.color = getenv("NO_COLOR") == NULL
+               && (!term || strcmp(term, "dumb"));
+    (void)setlocale(LC_CTYPE, "");
+
+    if (!g_tui.tty) {
+        g_tui.raw = true;
+        fprintf(stdout, "ah %s — model=%.*s base=%.*s tools=%zu\n",
+                AH_VERSION, (i32)model.n, model.p,
+                (i32)base_url.n, base_url.p, tool_count);
+        if (missing_key) fputs("warn: no API key set\n", stdout);
+        return;
+    }
+
+    if (tcgetattr(STDIN_FILENO, &g_tui.original_termios) != 0) {
+        g_tui.tty = false;
+        g_tui.raw = true;
+        return;
+    }
+    struct termios raw = g_tui.original_termios;
+    raw.c_lflag &= (tcflag_t)~(tcflag_t)(ECHO | ICANON | IEXTEN);
+    raw.c_iflag &= (tcflag_t)~(tcflag_t)(IXON | IXOFF | ICRNL | INLCR | ISTRIP);
+    raw.c_oflag |= (OPOST | ONLCR);
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0) {
+        g_tui.tty = false;
+        g_tui.raw = true;
+        return;
+    }
+
+    struct sigaction sa = {0};
+    sa.sa_handler = on_winch;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    (void)sigaction(SIGWINCH, &sa, &g_tui.original_winch);
+
+    g_tui.raw = true;
+    g_tui.fullscreen = true;
+    put_str("\033[?1049h\033[?7l\033[?25l\033[?1000h\033[?1006h");
+    repaint();
+}
+
+void tui_stop(void) {
+    if (!g_tui.raw) return;
+    if (g_tui.fullscreen) {
+        put_str("\033[?1006l\033[?1000l\033[?25h\033[?7h\033[?1049l");
+        flush_out();
+        (void)tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_tui.original_termios);
+        (void)sigaction(SIGWINCH, &g_tui.original_winch, NULL);
+    }
+    g_tui.fullscreen = false;
+    g_tui.raw = false;
+}
+
+/* Compatibility wrappers retained for callers outside main.c. */
+void tui_enter_raw(void) { tui_start((Str){0}, (Str){0}, false, 0); }
+void tui_exit_raw(void) { tui_stop(); }
+
+void tui_set_status(const char *status) {
+    g_tui.status = status;
+    repaint();
+}
+
+void tui_set_context_tokens(size_t tokens) {
+    g_tui.context_tokens = tokens;
+    g_tui.context_known = true;
+    repaint();
+}
+
+void tui_clear(void) {
+    g_tui.transcript_n = 0;
+    g_tui.scroll_rows = 0;
+    g_tui.context_tokens = 0;
+    g_tui.context_known = false;
+    g_tui.frame_valid = false;
+    repaint();
+}
+
+void tui_write(Str s) {
+    if (!s.p || s.n == 0) { if (g_winch) repaint(); return; }
+    if (!g_tui.fullscreen) {
+        put_raw(s.p, s.n);
+        flush_out();
+        return;
+    }
+
+    /* Keep the newest half if the bounded scrollback fills. */
+    if (s.n >= TUI_TRANSCRIPT_CAP) {
+        s.p += s.n - (TUI_TRANSCRIPT_CAP - 1);
+        s.n = TUI_TRANSCRIPT_CAP - 1;
+        g_tui.transcript_n = 0;
+    } else if (g_tui.transcript_n + s.n >= TUI_TRANSCRIPT_CAP) {
+        size_t room_for_old = TUI_TRANSCRIPT_CAP - 1 - s.n;
+        size_t keep = g_tui.transcript_n;
+        if (keep > TUI_TRANSCRIPT_CAP / 2) keep = TUI_TRANSCRIPT_CAP / 2;
+        if (keep > room_for_old) keep = room_for_old;
+        memmove(g_tui.transcript,
+                g_tui.transcript + g_tui.transcript_n - keep, keep);
+        g_tui.transcript_n = keep;
+    }
+
+    /* Strip terminal control bytes. Expand tabs so wrapping is predictable. */
+    for (size_t i = 0; i < s.n && g_tui.transcript_n + 4 < TUI_TRANSCRIPT_CAP; i++) {
+        unsigned char c = (unsigned char)s.p[i];
+        if (c == '\r') continue;
+        if (c == '\t') {
+            memcpy(g_tui.transcript + g_tui.transcript_n, "    ", 4);
+            g_tui.transcript_n += 4;
+        } else if (c == '\n' || c >= 0x20) {
+            g_tui.transcript[g_tui.transcript_n++] = (char)c;
+        }
+    }
+    g_tui.scroll_rows = 0;
+    /* SSE can deliver many tiny deltas. Row diffing keeps each paint small,
+     * and 15 Hz is plenty for readable text streaming. Newlines/status
+     * changes still make the final state visible immediately. */
+    f64 now = ah_now_seconds();
+    b8 has_newline = memchr(s.p, '\n', s.n) != NULL;
+    if (g_winch || has_newline || now - g_tui.last_paint >= 1.0 / 15.0)
+        repaint();
+}
+
+void tui_printf(const char *fmt, ...) {
+    char buf[4096];
+    va_list ap;
+    va_start(ap, fmt);
+    i32 n = vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    if (n <= 0) return;
+    size_t len = (size_t)n < sizeof buf ? (size_t)n : sizeof buf - 1;
+    tui_write((Str){buf, len});
+}
+
+void tui_putstr(Str s) { tui_write(s); }
+
+static i32 rbyte(void) {
+    unsigned char c = 0;
+    ssize_t n = read(STDIN_FILENO, &c, 1);
+    if (n < 0 && errno == EINTR) return g_winch ? -3 : -2;
+    if (n <= 0) return -1;
+    return (i32)c;
+}
+
+typedef struct { i32 final; i32 nparams; i32 p[4]; b8 mouse; } Csi;
+
+static i32 read_csi(Csi *out) {
+    memset(out, 0, sizeof *out);
+    i32 cur = 0;
+    b8 got = false;
+    for (;;) {
+        i32 c = rbyte();
+        if (c < 0) return -1;
+        if (c == '<' && out->nparams == 0 && !got) {
+            out->mouse = true;
+            continue;
+        }
+        if (c >= '0' && c <= '9') { cur = cur * 10 + c - '0'; got = true; continue; }
+        if (c == ';') {
+            if (out->nparams < 4) out->p[out->nparams] = cur;
+            out->nparams++; cur = 0; got = false; continue;
+        }
+        if (c >= 0x20 && c <= 0x2f) continue;
+        if (got) {
+            if (out->nparams < 4) out->p[out->nparams] = cur;
+            out->nparams++;
+        }
+        out->final = c;
+        return c;
+    }
+}
+
+enum {
+    KEY_NONE = 0, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN, KEY_HOME, KEY_END,
+    KEY_PREV_WORD, KEY_NEXT_WORD, KEY_NEWLINE, KEY_PAGE_UP, KEY_PAGE_DOWN,
+    KEY_WHEEL_UP, KEY_WHEEL_DOWN
+};
+
+static i32 read_escape(void) {
+    i32 first = rbyte();
+    if (first < 0) return KEY_NONE;
+    if (first == '\r' || first == '\n') return KEY_NEWLINE;
+    if (first == '[') {
+        Csi csi;
+        i32 final = read_csi(&csi);
+        if (csi.mouse && (final == 'M' || final == 'm') && csi.nparams >= 1) {
+            i32 button = csi.p[0];
+            if (button & 64) return button & 1 ? KEY_WHEEL_DOWN : KEY_WHEEL_UP;
+            return KEY_NONE;
+        }
+        i32 modifier = csi.nparams >= 2 ? csi.p[1] : 0;
+        b8 ctrl = modifier == 5;
+        switch (final) {
+            case 'D': return ctrl ? KEY_PREV_WORD : KEY_LEFT;
+            case 'C': return ctrl ? KEY_NEXT_WORD : KEY_RIGHT;
+            case 'A': return KEY_UP;
+            case 'B': return KEY_DOWN;
+            case 'H': return KEY_HOME;
+            case 'F': return KEY_END;
+            case '~':
+                if (csi.nparams < 1) return KEY_NONE;
+                if (csi.p[0] == 1 || csi.p[0] == 7) return KEY_HOME;
+                if (csi.p[0] == 4 || csi.p[0] == 8) return KEY_END;
+                if (csi.p[0] == 5) return KEY_PAGE_UP;
+                if (csi.p[0] == 6) return KEY_PAGE_DOWN;
+                return KEY_NONE;
+            default: return KEY_NONE;
+        }
+    }
+    if (first == 'O') {
+        i32 second = rbyte();
+        if (second == 'H') return KEY_HOME;
+        if (second == 'F') return KEY_END;
+    }
+    return KEY_NONE;
+}
+
+static size_t prev_word(const char *buf, size_t cur) {
+    while (cur > 0 && (buf[cur - 1] == ' ' || buf[cur - 1] == '\t')) cur--;
+    while (cur > 0 && buf[cur - 1] != ' ' && buf[cur - 1] != '\t') cur--;
+    return cur;
+}
+
+static size_t next_word(const char *buf, size_t n, size_t cur) {
+    while (cur < n && (buf[cur] == ' ' || buf[cur] == '\t')) cur++;
+    while (cur < n && buf[cur] != ' ' && buf[cur] != '\t') cur++;
+    return cur;
+}
+
+b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
+    if (!g_tui.tty) {
+        if (prompt) fputs(prompt, stdout);
+        flush_out();
+        if (!fgets(buf, (i32)cap, stdin)) { *out_n = 0; return false; }
+        size_t n = strlen(buf);
+        while (n && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) n--;
+        buf[n] = '\0'; *out_n = n; return true;
+    }
+
+    size_t n = 0, cur = 0;
+    buf[0] = '\0';
+    g_tui.input = buf;
+    g_tui.input_n = 0;
+    g_tui.input_cur = 0;
+    g_tui.editing = true;
+    g_tui.status = "ready";
+    repaint();
+
+    for (;;) {
+        i32 c = rbyte();
+        if (c == -3) { repaint(); continue; }
+        if (c == -2 || c == 0x03) {
+            g_tui.editing = false;
+            g_tui.input = NULL; g_tui.input_n = g_tui.input_cur = 0;
+            *out_n = 0;
+            tui_write(STR("^C\n"));
+            return true;
+        }
+        if (c < 0) {
+            g_tui.editing = false;
+            *out_n = n;
+            return n > 0;
+        }
+
+        if (c == '\r' || c == '\n') {
+            g_tui.editing = false;
+            g_tui.input = NULL; g_tui.input_n = g_tui.input_cur = 0;
+            buf[n] = '\0'; *out_n = n;
+            return true;
+        }
+        if (c == 0x04) {
+            if (n == 0) {
+                g_tui.editing = false; g_tui.input = NULL; *out_n = 0;
+                return false;
+            }
+            if (cur < n) {
+                size_t next = next_glyph(buf, n, cur);
+                memmove(buf + cur, buf + next, n - next);
+                n -= next - cur; buf[n] = '\0';
+            }
+        } else if (c == 0x01) cur = 0;
+        else if (c == 0x05) cur = n;
+        else if (c == 0x02) cur = prev_glyph(buf, cur);
+        else if (c == 0x06) cur = next_glyph(buf, n, cur);
+        else if (c == 0x0b) { n = cur; buf[n] = '\0'; }
+        else if (c == 0x15) {
+            memmove(buf, buf + cur, n - cur); n -= cur; cur = 0; buf[n] = '\0';
+        } else if (c == 0x17) {
+            size_t word = prev_word(buf, cur);
+            memmove(buf + word, buf + cur, n - cur);
+            n -= cur - word; cur = word; buf[n] = '\0';
+        } else if (c == 0x0c) {
+            /* Explicit repaint also repairs a terminal after stray output. */
+            g_tui.frame_valid = false;
+            repaint();
+            continue;
+        } else if (c == 0x7f || c == 0x08) {
+            if (cur > 0) {
+                size_t prev = prev_glyph(buf, cur);
+                memmove(buf + prev, buf + cur, n - cur);
+                n -= cur - prev; cur = prev; buf[n] = '\0';
+            }
+        } else if (c == 0x1b) {
+            i32 key = read_escape();
+            if (key == KEY_LEFT) cur = prev_glyph(buf, cur);
+            else if (key == KEY_RIGHT) cur = next_glyph(buf, n, cur);
+            else if (key == KEY_HOME) cur = 0;
+            else if (key == KEY_END) cur = n;
+            else if (key == KEY_PREV_WORD) cur = prev_word(buf, cur);
+            else if (key == KEY_NEXT_WORD) cur = next_word(buf, n, cur);
+            else if (key == KEY_PAGE_UP) {
+                size_t rows, cols; screen_size(&rows, &cols); (void)cols;
+                g_tui.scroll_rows += rows > 4 ? rows - 4 : 1;
+            } else if (key == KEY_PAGE_DOWN) {
+                size_t rows, cols; screen_size(&rows, &cols); (void)cols;
+                size_t page = rows > 4 ? rows - 4 : 1;
+                g_tui.scroll_rows = g_tui.scroll_rows > page ? g_tui.scroll_rows - page : 0;
+            } else if (key == KEY_WHEEL_UP) {
+                g_tui.scroll_rows += 3;
+            } else if (key == KEY_WHEEL_DOWN) {
+                g_tui.scroll_rows = g_tui.scroll_rows > 3
+                                  ? g_tui.scroll_rows - 3 : 0;
+            } else if (key == KEY_NEWLINE && n + 1 < cap) {
+                memmove(buf + cur + 1, buf + cur, n - cur);
+                buf[cur++] = '\n'; n++; buf[n] = '\0';
+            }
+        } else if ((c >= 0x20 && c < 0x7f) || c >= 0x80) {
+            if (n + 1 < cap) {
+                memmove(buf + cur + 1, buf + cur, n - cur);
+                buf[cur++] = (char)c; n++; buf[n] = '\0';
+            }
+        }
+
+        g_tui.input_n = n;
+        g_tui.input_cur = cur;
+        repaint();
+    }
+}
