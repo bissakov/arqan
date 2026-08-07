@@ -9,7 +9,7 @@ def test_copy_puts_the_last_reply_on_the_clipboard(ctx):
     ctx.scenario(f"text={MARKDOWN}")
     s = ctx.spawn()
     s.submit("write some markdown")
-    s.wait_text("- two")
+    s.wait_text("two")
     s.wait_turn_done()
     s.submit("/copy")
     s.wait_text("copied the last response")

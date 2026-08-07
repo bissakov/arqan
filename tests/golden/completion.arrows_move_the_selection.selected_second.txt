@@ -1,6 +1,5 @@
 --- screen 80x24 ---
 |
-|
 |                                          _
 |                              _   _  ___ | | _____
 |                             | | | |/ _ \| |/ / _ \
@@ -14,9 +13,10 @@
 |
 |    /clear    Start a fresh conversation
 |  › /resume   Resume a saved session from this directory
-|    /model    Pick the model, remembered for the next run
+|    /model    Pick the model
 |    /copy     Copy the last response to the clipboard
 |    /verbose  Toggle untruncated tool output
+|    /raw      Toggle raw Markdown
 |    /exit     Quit yoke
 |
 |  › /

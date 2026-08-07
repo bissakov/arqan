@@ -65,7 +65,7 @@ def test_enter_submits_the_highlighted_entry(ctx):
     """Enter runs whatever the popup highlights, not what was typed."""
     s = ctx.spawn()
     s.type("/").sync()
-    s.key("down", "down", "down", "down", "down").sync()  # highlight '/exit'
+    s.key(*(["down"] * 6)).sync()         # highlight '/exit'
     s.key("enter")
     assert s.wait_exit() == 0, "Enter should have run the highlighted entry"
 
@@ -112,7 +112,7 @@ def test_ctrl_n_p_move_the_selection(ctx):
     """Ctrl-N / Ctrl-P cycle the popup the same way as the arrows."""
     s = ctx.spawn()
     s.type("/").sync()
-    s.key(*(["ctrl-n"] * 6)).sync()   # wraps to the first
+    s.key(*(["ctrl-n"] * 7)).sync()   # wraps to the first
     s.key("tab").sync()
     assert s.composer_text() == "/clear", s.composer_lines()
 
@@ -149,9 +149,10 @@ def test_popup_eats_into_transcript_not_composer(ctx):
     assert s.composer_text() == "/", s.composer_lines()
     # the popup entries sit immediately above the composer padding row
     rows = s.screen.lines()
-    assert "/exit" in rows[s.screen.rows - 6], rows[s.screen.rows - 12 :]
-    assert "/verbose" in rows[s.screen.rows - 7], rows[s.screen.rows - 12 :]
-    assert "/copy" in rows[s.screen.rows - 8], rows[s.screen.rows - 12 :]
-    assert "/model" in rows[s.screen.rows - 9], rows[s.screen.rows - 12 :]
-    assert "/resume" in rows[s.screen.rows - 10], rows[s.screen.rows - 12 :]
-    assert "/clear" in rows[s.screen.rows - 11], rows[s.screen.rows - 12 :]
+    assert "/exit" in rows[s.screen.rows - 6], rows[s.screen.rows - 13 :]
+    assert "/raw" in rows[s.screen.rows - 7], rows[s.screen.rows - 13 :]
+    assert "/verbose" in rows[s.screen.rows - 8], rows[s.screen.rows - 13 :]
+    assert "/copy" in rows[s.screen.rows - 9], rows[s.screen.rows - 13 :]
+    assert "/model" in rows[s.screen.rows - 10], rows[s.screen.rows - 13 :]
+    assert "/resume" in rows[s.screen.rows - 11], rows[s.screen.rows - 13 :]
+    assert "/clear" in rows[s.screen.rows - 12], rows[s.screen.rows - 13 :]

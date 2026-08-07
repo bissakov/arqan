@@ -137,6 +137,14 @@ an AoS layout.
   byte-offset checkpoints, extended incrementally as output arrives and
   dropped whenever existing bytes move) so a frame costs the visible rows, not
   the whole scrollback
+- `markdown.c`: a reply is Markdown, and this renders it into the transcript:
+  headings, lists, block quotes, rules and fenced code become shapes, emphasis
+  and inline code become styles, and the markers are dropped. It renders as the
+  reply streams, buffering only what is undecided (the bytes that may still be
+  a block marker, and an opener whose closer has not arrived), both bounded by
+  the line they sit in, so a delta is painted as soon as its shape is known.
+  `/raw` turns it off, and so does the absence of a fullscreen UI, since a
+  one-shot run's stdout is a reply rather than a view
 - `render.c`: how a tool call and its result read in the transcript: a header
   naming the tool and its target, a preview of the input it carries (a diff for
   `edit`), and a result summarised by the tool's own shape. The JSON arguments

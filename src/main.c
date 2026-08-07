@@ -24,6 +24,7 @@
 #include "session.c"
 #include "tui.c"
 #include "render.c"
+#include "markdown.c"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,9 +46,10 @@ static size_t commands_init(void) {
     size_t n = 0;
     g_commands[n++] = (TuiCmd){ STR("/clear"), STR("Start a fresh conversation") };
     g_commands[n++] = (TuiCmd){ STR("/resume"), STR("Resume a saved session from this directory") };
-    g_commands[n++] = (TuiCmd){ STR("/model"), STR("Pick the model, remembered for the next run") };
+    g_commands[n++] = (TuiCmd){ STR("/model"), STR("Pick the model") };
     g_commands[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
     g_commands[n++] = (TuiCmd){ STR("/verbose"), STR("Toggle untruncated tool output") };
+    g_commands[n++] = (TuiCmd){ STR("/raw"), STR("Toggle raw Markdown") };
     g_commands[n++] = (TuiCmd){ STR("/exit"), STR("Quit yoke") };
     return n;
 }
@@ -72,7 +74,7 @@ static void on_text(Str delta, void *ud) {
         tui_set_status("thinking");
         tui_write(STR("\n\n"));
     }
-    tui_write(delta);
+    md_write(delta);
 }
 static void on_tool_call(i32 idx, Str id, Str name, Str args_delta, void *ud) {
     (void)ud; (void)idx; (void)id; (void)name; (void)args_delta;
@@ -140,7 +142,8 @@ static void render_conv(const Conv *c, Arena *scratch) {
                 if (conv_is_call(c, i)) {
                     render_tool_call(c->tool_name[i], c->text[i], scratch);
                 } else if (c->text[i].n) {
-                    tui_write(c->text[i]);
+                    md_write(c->text[i]);
+                    md_end();
                     tui_write(STR("\n"));
                 }
                 break;
@@ -323,6 +326,9 @@ static b8 agent_turn(Agent *ag, Str text) {
         /* snapshot conv tail to discover tool calls emitted this turn */
         size_t before = conv->n;
         i32 rc = provider_run(&p, err, sizeof err);
+        /* The completion is whole: whatever line the renderer still held back
+         * has no more bytes coming. */
+        md_end();
         if (p.usage_valid) tui_set_context_tokens(p.total_tokens);
         if (g_got_sigint) {
             tui_write(STR("\n[interrupted]\n\n"));
@@ -471,6 +477,13 @@ i32 main(i32 argc, char **argv) {
         }
         if (!strcmp(line, "/copy")) {
             copy_last_reply(&conv);
+            continue;
+        }
+        if (!strcmp(line, "/raw")) {
+            md_set_raw(!md_raw());
+            tui_notice(md_raw()
+                       ? STR("raw: replies are shown as the model wrote them")
+                       : STR("raw: off, Markdown is formatted"));
             continue;
         }
         if (!strcmp(line, "/verbose")) {

@@ -35,6 +35,7 @@ src/
   provider.c      chat-completions streaming + reasoning and tool deltas
   tools.c         SoA tool registry + read/write/bash/edit tools
   tui.c           alternate-screen TUI, viewport, composer + raw input
+  markdown.c      streaming Markdown rendering of a reply
   main.c          unity includes + main + agent loop
 tests/
   run.py          test runner (Python 3, no third-party packages)
@@ -138,7 +139,17 @@ back to the terminal's own selection.
 Typing `/` opens a completion popup: `/clear` starts a fresh conversation,
 `/resume` reopens one saved for this directory, `/model` switches model,
 `/copy` puts the last reply on the clipboard as the Markdown the model wrote,
-`/verbose` toggles untruncated tool output and `/exit` quits.
+`/verbose` toggles untruncated tool output, `/raw` toggles Markdown rendering
+off and `/exit` quits.
+
+A reply is Markdown, and the transcript renders it: headings, lists, block
+quotes, thematic breaks and fenced code become shapes, emphasis and inline
+code become styles, and the markers themselves are dropped. Rendering follows
+the stream, so a delta is painted as soon as its shape is known and only an
+unclosed marker waits for its closer. `/raw` turns it off and shows the reply
+exactly as the model wrote it; `/copy` copies that source either way, and a
+one-shot `-p` run is never rendered, since its stdout is a reply rather than a
+view.
 
 A tool call reads as the tool, what it acts on and a preview of what it
 carries, with an `edit` shown as a diff, and its result as a summary line: the

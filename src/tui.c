@@ -26,10 +26,13 @@
 #define TUI_SEL_ROWS 512         /* screen rows mirrored for selection      */
 #define TUI_SEL_ROW_BYTES 2048   /* visible bytes kept per screen row       */
 #define TUI_SEL_BYTES (1u << 16) /* clipboard payload cap                   */
-#define TUI_POPUP_ROWS 6         /* completion entries shown at once         */
+#define TUI_POPUP_ROWS 8         /* completion entries shown at once         */
 #define TUI_PICK_SEARCH_MIN 10   /* entries above which a picker searches    */
 #define TUI_PICK_QUERY 64        /* longest search a picker accepts          */
-#define TUI_MAX_SPANS 256        /* styled transcript ranges kept in scrollback */
+/* Styled transcript ranges kept in scrollback. Markdown claims one per
+ * emphasis run, so this is counted in words of a reply rather than in
+ * messages. */
+#define TUI_MAX_SPANS 4096
 #define TUI_CKPTS 4096           /* wrapped-row checkpoints into the transcript */
 
 /* A quiet 256-colour palette.  Styling is optional (NO_COLOR and dumb
@@ -44,7 +47,11 @@
 #define S_YELLOW      "\033[1;38;5;221m"
 #define S_RED         "\033[1;38;5;203m"
 #define S_PURPLE      "\033[1;38;5;177m"
+#define S_BOLD        "\033[1m"
+#define S_ITALIC      "\033[3m"
+#define S_MONO        "\033[38;5;180m"
 #define S_USER_BG     "\033[48;5;238m"
+#define S_CODE_BG     "\033[48;5;235m"
 #define S_POPUP_BG    "\033[48;5;237m"
 #define S_POPUP_SEL   "\033[48;5;24m"
 
@@ -516,8 +523,38 @@ static void pad_row(size_t used, size_t cols) {
 enum {
     ROW_PLAIN = 1, ROW_COMPOSER, ROW_STATUS,
     ROW_USER, ROW_REASON, ROW_TOOL, ROW_RESULT, ROW_ERROR, ROW_NOTICE,
-    ROW_POPUP, ROW_WELCOME_ART, ROW_WELCOME_TEXT
+    ROW_POPUP, ROW_WELCOME_ART, ROW_WELCOME_TEXT,
+    ROW_HEADING, ROW_CODE, ROW_QUOTE,      /* block: the row is theirs   */
+    ROW_BOLD, ROW_EMPH, ROW_MONO, ROW_MARKER  /* inline: bytes are theirs */
 };
+
+/* A block style owns every row it touches, so a row starting inside one is
+ * painted with it whole; an inline style only owns its own bytes. */
+static b8 kind_is_block(u8 kind) { return kind && kind < ROW_BOLD; }
+
+/* The escape a style paints with. Block styles keep whatever background the
+ * row was padded with, so they carry no reset of their own. */
+static const char *kind_style(u8 kind) {
+    switch (kind) {
+        case ROW_USER:         return S_USER_BG S_TEXT;
+        case ROW_REASON:       return S_MUTED;
+        case ROW_TOOL:         return S_YELLOW;
+        case ROW_RESULT:       return S_GREEN;
+        case ROW_ERROR:        return S_RED;
+        case ROW_NOTICE:       return S_YELLOW;
+        case ROW_WELCOME_ART:  return S_CYAN;
+        case ROW_WELCOME_TEXT: return S_MUTED;
+        case ROW_HEADING:      return S_CYAN;
+        case ROW_CODE:         return S_CODE_BG S_TEXT;
+        case ROW_QUOTE:        return S_MUTED;
+        case ROW_BOLD:         return S_BOLD S_TEXT;
+        case ROW_EMPH:         return S_ITALIC S_MUTED;
+        case ROW_MONO:         return S_MONO;
+        case ROW_MARKER:       return S_BLUE;
+        case ROW_PLAIN:        return S_TEXT;
+        default:               return NULL;
+    }
+}
 
 static u64 hash_add(u64 h, const void *data, size_t n) {
     const u8 *p = (const u8 *)data;
@@ -601,11 +638,64 @@ static void spans_shift(size_t delta) {
     g_tui.span_n = w;
 }
 
+/* Spans are appended in transcript order and never overlap, so the first one
+ * that can still cover `off` is found by bisecting on their ends. A rendered
+ * reply carries one span per emphasis run, and a frame asks per row. */
+static size_t span_first(size_t off) {
+    size_t lo = 0, hi = g_tui.span_n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (g_tui.span_b[mid] <= off) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+}
+
 /* The style a row starting at `off` takes, or 0 when it is plain. */
 static u8 span_kind(size_t off) {
-    for (size_t i = 0; i < g_tui.span_n; i++)
-        if (off >= g_tui.span_a[i] && off < g_tui.span_b[i]) return g_tui.span_k[i];
-    return 0;
+    size_t i = span_first(off);
+    return i < g_tui.span_n && off >= g_tui.span_a[i] ? g_tui.span_k[i] : 0;
+}
+
+/* The style covering `off` and the offset it stops at, never past `limit`. */
+static u8 span_run(size_t off, size_t limit, size_t *end) {
+    size_t i = span_first(off);
+    u8 kind = 0;
+    size_t stop = limit;
+    if (i < g_tui.span_n) {
+        if (off >= g_tui.span_a[i]) {
+            kind = g_tui.span_k[i];
+            if (g_tui.span_b[i] < stop) stop = g_tui.span_b[i];
+        } else if (g_tui.span_a[i] < stop) {
+            stop = g_tui.span_a[i];
+        }
+    }
+    *end = stop;
+    return kind;
+}
+
+/* Fold the styles covering [off, off+n) into a row's hash: a run that gained
+ * or lost emphasis has to redraw even though its bytes did not move. */
+static u64 hash_spans(u64 h, size_t off, size_t n) {
+    for (size_t i = span_first(off);
+         i < g_tui.span_n && g_tui.span_a[i] < off + n; i++) {
+        h = hash_add(h, &g_tui.span_a[i], sizeof g_tui.span_a[i]);
+        h = hash_add(h, &g_tui.span_b[i], sizeof g_tui.span_b[i]);
+        h = hash_add(h, &g_tui.span_k[i], sizeof g_tui.span_k[i]);
+    }
+    return h;
+}
+
+/* Paint a row whose bytes carry inline styles, switching style per run. */
+static void paint_runs(Str text, size_t off) {
+    for (size_t i = 0; i < text.n;) {
+        size_t end = 0;
+        u8 kind = span_run(off + i, off + text.n, &end);
+        size_t take = end - (off + i);
+        style(S_RESET);
+        style(kind_style(kind ? kind : ROW_PLAIN));
+        put_text(text.p + i, take);
+        i += take;
+    }
 }
 
 static u8 display_kind(u8 kind, Str text) {
@@ -615,11 +705,15 @@ static u8 display_kind(u8 kind, Str text) {
     return kind;
 }
 
+/* `text_off` is where the row's bytes sit in the transcript, or SIZE_MAX when
+ * they carry no inline styles (the composer, a block row, a chrome row). */
 static void update_text_row(size_t screen_row, Str prefix, Str text,
                             size_t screen_col, size_t screen_cols,
-                            u8 kind, b8 force) {
+                            u8 kind, size_t text_off, b8 force) {
     kind = display_kind(kind, text);
+    if (kind != ROW_PLAIN) text_off = SIZE_MAX;
     u64 hash = row_hash(prefix, text, kind);
+    if (text_off != SIZE_MAX) hash = hash_spans(hash, text_off, text.n);
     /* Highlighting is part of a row's appearance, so it belongs in the diff. */
     size_t sel_c0, sel_c1;
     sel_row_range(screen_row, &sel_c0, &sel_c1);
@@ -629,10 +723,12 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
     cup(screen_row, 1);
     put_str(S_RESET "\033[2K");
 
-    if (kind == ROW_COMPOSER || kind == ROW_USER) {
-        /* The whole row carries the panel colour, so a user turn reads as one
-         * block of screen rather than as a prefixed line. */
-        style(kind == ROW_USER ? S_USER_BG : S_PANEL_BG);
+    if (kind == ROW_COMPOSER || kind == ROW_USER || kind == ROW_CODE) {
+        /* The whole row carries the panel colour, so a user turn (or a fenced
+         * code block) reads as one block of screen rather than as a prefixed
+         * line. */
+        style(kind == ROW_USER ? S_USER_BG
+            : kind == ROW_CODE ? S_CODE_BG : S_PANEL_BG);
         pad_row(0, screen_cols);
         cup(screen_row, screen_col);
     } else {
@@ -658,24 +754,11 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
         size_t room = body > 2 ? body - 2 : 0;
         style(S_PANEL_BG S_MUTED);
         put_safe_clipped(STR("Message yoke..."), room, NULL);
-    } else if (kind == ROW_USER) {
-        style(S_USER_BG S_TEXT); put_text(text.p, text.n);
-    } else if (kind == ROW_REASON) {
-        style(S_MUTED); put_text(text.p, text.n);
-    } else if (kind == ROW_TOOL) {
-        style(S_YELLOW); put_text(text.p, text.n);
-    } else if (kind == ROW_RESULT) {
-        style(S_GREEN); put_text(text.p, text.n);
-    } else if (kind == ROW_ERROR) {
-        style(S_RED); put_text(text.p, text.n);
-    } else if (kind == ROW_NOTICE) {
-        style(S_YELLOW); put_text(text.p, text.n);
-    } else if (kind == ROW_WELCOME_ART) {
-        style(S_CYAN); put_text(text.p, text.n);
-    } else if (kind == ROW_WELCOME_TEXT) {
-        style(S_MUTED); put_text(text.p, text.n);
+    } else if (text_off != SIZE_MAX) {
+        paint_runs(text, text_off);
     } else {
-        if (kind == ROW_PLAIN) style(S_TEXT);
+        const char *s = kind_style(kind);
+        if (s) style(s);
         put_text(text.p, text.n);
     }
     paint_sel_tail(screen_row, screen_cols);
@@ -784,13 +867,15 @@ static void update_text_rows(Str s, size_t base_off, size_t cols,
                 /* Only the transcript carries styled spans; the composer
                  * indexes its own buffer. */
                 u8 row_kind = kind;
+                size_t text_off = SIZE_MAX;
                 if (kind == ROW_PLAIN) {
                     u8 sk = span_kind(base_off + start);
-                    if (sk) row_kind = sk;
+                    if (kind_is_block(sk)) row_kind = sk;
+                    else text_off = base_off + start;
                 }
                 update_text_row(screen_row + row - first_row, prefix,
                                 (Str){s.p + start, i - start}, screen_col,
-                                screen_cols, row_kind, force);
+                                screen_cols, row_kind, text_off, force);
                 painted++;
             }
             if (end) break;
@@ -807,7 +892,7 @@ static void update_text_rows(Str s, size_t base_off, size_t cols,
     /* Rows below short content are part of the frame too. */
     while (painted < visible_rows) {
         update_text_row(screen_row + painted, (Str){0}, (Str){0}, screen_col,
-                        screen_cols, kind, force);
+                        screen_cols, kind, SIZE_MAX, force);
         painted++;
     }
 }
@@ -965,7 +1050,7 @@ static void paint_welcome(size_t body_rows, size_t transcript_rows,
     for (size_t row = 1; row <= transcript_rows; row++) {
         if (row <= top || row > top + WELCOME_LINES) {
             update_text_row(row, (Str){0}, (Str){0}, body_col, screen_cols,
-                            ROW_PLAIN, force);
+                            ROW_PLAIN, SIZE_MAX, force);
             continue;
         }
         const WelcomeLine *line = &k_welcome[row - top - 1];
@@ -974,7 +1059,8 @@ static void paint_welcome(size_t body_rows, size_t transcript_rows,
         if (pad > sizeof blanks) pad = sizeof blanks;
         update_text_row(row, (Str){blanks, line->text.n ? pad : 0}, line->text,
                         body_col, screen_cols,
-                        line->art ? ROW_WELCOME_ART : ROW_WELCOME_TEXT, force);
+                        line->art ? ROW_WELCOME_ART : ROW_WELCOME_TEXT,
+                        SIZE_MAX, force);
     }
 }
 
@@ -1115,12 +1201,12 @@ static void repaint(void) {
     size_t composer_screen_row = composer_top_row + composer_padding;
     if (composer_padding)
         update_text_row(composer_top_row, (Str){0}, (Str){0}, body_col,
-                        cols, ROW_COMPOSER, force);
+                        cols, ROW_COMPOSER, SIZE_MAX, force);
     update_text_rows(input, 0, body_cols, 2, input_first, composer_rows,
                      composer_screen_row, body_col, cols, ROW_COMPOSER, force);
     if (composer_padding)
         update_text_row(composer_screen_row + composer_rows, (Str){0}, (Str){0},
-                        body_col, cols, ROW_COMPOSER, force);
+                        body_col, cols, ROW_COMPOSER, SIZE_MAX, force);
 
     /* Curated status line: its own chrome on the bottom row, separated from
      * the composer panel by a blank row and carrying no panel background. */
@@ -1128,7 +1214,7 @@ static void repaint(void) {
                       + status_gap;
     if (status_gap)
         update_text_row(status_row - status_gap, (Str){0}, (Str){0}, body_col,
-                        cols, ROW_PLAIN, force);
+                        cols, ROW_PLAIN, SIZE_MAX, force);
     const char *status = g_tui.status[0] ? g_tui.status : "ready";
     b8 copied = g_tui.copy_notice > g_tui.last_paint;
     size_t status_sel_c0, status_sel_c1;
@@ -1313,6 +1399,16 @@ void tui_set_busy(b8 busy) {
     repaint();
 }
 
+b8 tui_is_fullscreen(void) { return g_tui.fullscreen; }
+
+size_t tui_body_cols(void) {
+    if (!g_tui.fullscreen) return 0;
+    size_t rows, cols;
+    screen_size(&rows, &cols);
+    size_t gutter = cols >= 24 ? TUI_BODY_GUTTER : 1;
+    return cols - gutter * 2;
+}
+
 i32 tui_input_fd(void) {
     return g_tui.fullscreen && !g_tui.input_eof ? STDIN_FILENO : -1;
 }
@@ -1458,6 +1554,17 @@ static void write_span(Str s, u8 kind) {
     tui_write(s);
     size_t b = g_tui.transcript_n;
     if (b > a) span_add(a, b, kind);
+}
+
+void tui_write_styled(Str s, TuiStyle st) {
+    static const u8 kinds[] = {
+        [TUI_PLAIN] = ROW_PLAIN, [TUI_HEADING] = ROW_HEADING,
+        [TUI_CODE] = ROW_CODE,   [TUI_QUOTE] = ROW_QUOTE,
+        [TUI_BOLD] = ROW_BOLD,   [TUI_EMPH] = ROW_EMPH,
+        [TUI_MONO] = ROW_MONO,   [TUI_MARKER] = ROW_MARKER,
+    };
+    if (st == TUI_PLAIN || (size_t)st >= sizeof kinds) tui_write(s);
+    else write_span(s, kinds[st]);
 }
 
 void tui_write_reason(Str s) { write_span(s, ROW_REASON); }

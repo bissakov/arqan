@@ -1,0 +1,26 @@
+--- screen 80x24 ---
+|
+|
+|  show me code
+|
+|
+|  here:
+|
+|    int main(void)
+|
+|  done
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|  › Message yoke...
+|
+|
+|  ● ready · mock-model · local · ~/work · 33
+--- cursor row=21 col=5 visible=yes ---

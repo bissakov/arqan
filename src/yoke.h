@@ -401,6 +401,13 @@ size_t  provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
                         char *err, size_t err_cap);
 
 /* ---- TUI --------------------------------------------------------------- */
+/* Styles a range of transcript text can carry. The block styles claim whole
+ * rows (a wrapped continuation is painted like its first row); the inline
+ * ones apply to the bytes they cover, so several can share a row. */
+typedef enum {
+    TUI_PLAIN = 0, TUI_HEADING, TUI_CODE, TUI_QUOTE,   /* block */
+    TUI_BOLD, TUI_EMPH, TUI_MONO, TUI_MARKER           /* inline */
+} TuiStyle;
 /* A slash command the composer's completion popup can offer. The table is
  * owned by the caller (static storage) and only read by the TUI. */
 typedef struct { Str name; Str desc; } TuiCmd;
@@ -449,6 +456,13 @@ void tui_write_error(Str s);
 /* Append a user turn: rendered as a padded block with its own background,
  * which is what marks it apart from the agent's own output. */
 void tui_write_user(Str s);
+/* Append transcript text under one of the styles above; TUI_PLAIN records no
+ * style at all. This is how markdown.c paints a rendered reply. */
+void tui_write_styled(Str s, TuiStyle style);
+/* Cells a transcript row holds, 0 without a fullscreen UI. */
+size_t tui_body_cols(void);
+/* False on a pipe or in a one-shot run, where output is text, not a view. */
+b8 tui_is_fullscreen(void);
 /* Flag Esc raises to cancel an in-flight turn (same path as SIGINT). */
 void tui_set_interrupt_flag(volatile sig_atomic_t *flag);
 void tui_printf(const char *fmt, ...) __attribute__((format(printf,1,2)));
@@ -461,6 +475,21 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n);
 void tui_set_busy(b8 busy);
 void tui_poll_input(void);
 i32  tui_input_fd(void);      /* readable-input fd, or -1 when not interactive */
+
+/* ---- markdown ------------------------------------------------------------
+ * A reply is Markdown, and the transcript renders it: headings, lists, rules,
+ * block quotes and fenced code become shapes, emphasis becomes a style, and
+ * the markers themselves are dropped. Rendering is streaming, so a delta is
+ * painted as soon as its shape is known and only an unclosed marker waits.
+ * `md_end` closes whatever the turn left unterminated.
+ *
+ * `md_set_raw` sends the text through untouched, which is what /raw toggles.
+ * Without a fullscreen UI the text is a reply on stdout rather than a
+ * rendering, and is passed through the same way. */
+void md_write(Str delta);
+void md_end(void);
+void md_set_raw(b8 on);
+b8   md_raw(void);
 
 /* ---- render.c ------------------------------------------------------------ */
 /* Write one tool call, and later its result, into the transcript in the shape
