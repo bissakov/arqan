@@ -419,6 +419,10 @@ b8     session_begin(Session *s);                  /* new timestamped file   */
 /* Append the messages produced since the last call; the file is created on
  * the first one, so an untouched session never reaches the picker. */
 void   session_save(Session *s, const Conv *c);
+/* Start a new file holding the conversation whole and continue in it, leaving
+ * the one it was appending to as it is. False when the file could not be
+ * started or the copy could not be written. */
+b8     session_fork(Session *s, const Conv *c);
 size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max);
 /* Reading is separate from replaying: replaying rewinds the live conversation
  * and overwrites its storage, so whether the file can be read at all has to

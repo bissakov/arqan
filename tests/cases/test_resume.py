@@ -102,12 +102,12 @@ def test_a_notice_stacks_above_the_popup(ctx):
     assert "no saved sessions" in rows[bottom - 14], rows[bottom - 15 :]
     assert "/clear" in rows[bottom - 13], rows[bottom - 15 :]
     assert "/resume" in rows[bottom - 12], rows[bottom - 15 :]
-    assert "/model" in rows[bottom - 11], rows[bottom - 15 :]
-    assert "/provider" in rows[bottom - 10], rows[bottom - 15 :]
-    assert "/rewind" in rows[bottom - 9], rows[bottom - 15 :]
-    assert "/copy" in rows[bottom - 8], rows[bottom - 15 :]
-    assert "/verbose" in rows[bottom - 7], rows[bottom - 15 :]
-    assert "/raw" in rows[bottom - 6], rows[bottom - 15 :]
+    assert "/fork" in rows[bottom - 11], rows[bottom - 15 :]
+    assert "/model" in rows[bottom - 10], rows[bottom - 15 :]
+    assert "/provider" in rows[bottom - 9], rows[bottom - 15 :]
+    assert "/rewind" in rows[bottom - 8], rows[bottom - 15 :]
+    assert "/copy" in rows[bottom - 7], rows[bottom - 15 :]
+    assert "/verbose" in rows[bottom - 6], rows[bottom - 15 :]
     assert s.composer_text() == "/", s.composer_lines()
     ctx.check_screen(s, "stacked")
 
@@ -298,3 +298,108 @@ def test_sigint_cancels_the_picker(ctx):
     s.wait_text("carrying on")
     s.wait_turn_done()
     assert "[interrupted]" not in s.text(), s.text()
+
+
+def test_fork_without_a_conversation_answers_in_the_popup_slot(ctx):
+    """There is nothing to copy before the first turn, and nothing is written."""
+    s = ctx.spawn()
+    s.submit("/fork")
+    s.wait_text("nothing to fork yet")
+    assert s.status_kind() == "ready", s.status_line()
+    root = ctx.home / ".local" / "share" / "yoke" / "sessions"
+    assert not root.exists() or not list(root.iterdir()), "no file is started"
+
+
+def test_fork_continues_in_a_copy_and_leaves_the_original(ctx):
+    """The turns so far are duplicated; later ones only reach the fork."""
+    ctx.scenario("text=before+the+fork")
+    s = ctx.spawn()
+    s.submit("first")
+    s.wait_turn_done()
+
+    s.submit("/fork")
+    s.wait_text("forked: this copy continues, the original is unchanged")
+    assert "before the fork" in s.text(), "the transcript is untouched"
+
+    ctx.scenario("text=after+the+fork")
+    s.submit("second")
+    s.wait_text("after the fork")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+
+    files = sorted(sessions_dir(ctx).iterdir())
+    assert len(files) == 2, [p.name for p in files]
+    original, fork = (p.read_text() for p in files)
+    assert "first" in original and "before the fork" in original
+    assert "second" not in original and "after the fork" not in original
+    assert "first" in fork and "before the fork" in fork
+    assert "second" in fork and "after the fork" in fork
+
+
+def test_a_fork_keeps_the_conversation_it_copied(ctx):
+    """Only the file changes: the provider still sees the whole history."""
+    ctx.scenario("text=one")
+    s = ctx.spawn()
+    s.submit("first question")
+    s.wait_turn_done()
+    s.submit("/fork")
+    s.wait_text("forked")
+
+    ctx.scenario("text=two")
+    s.submit("second question")
+    s.wait_text("two")
+    s.wait_turn_done()
+
+    messages = ctx.mock.requests[-1]["messages"]
+    assert [m["role"] for m in messages] == [
+        "system", "user", "assistant", "user"
+    ], messages
+    assert messages[1]["content"] == "first question"
+    assert messages[3]["content"] == "second question"
+
+
+def test_a_fork_can_be_rewound_without_touching_the_original(ctx):
+    """Going back in the copy leaves the session it was forked from whole."""
+    ctx.scenario("text=first+reply")
+    s = ctx.spawn()
+    s.submit("keep me")
+    s.wait_turn_done()
+    s.submit("/fork")
+    s.wait_text("forked")
+
+    s.submit("/rewind")
+    s.wait_status("rewind to a message")
+    s.key("enter")
+    s.wait_gone("first reply")
+    assert s.composer_text() == "keep me", s.composer_lines()
+
+    original = sorted(sessions_dir(ctx).iterdir())[0].read_text()
+    assert "keep me" in original and "first reply" in original
+
+
+def test_resume_offers_both_sides_of_a_fork(ctx):
+    """Two sessions, so the one that was forked from is still reachable."""
+    ctx.scenario("text=shared+start")
+    s = ctx.spawn()
+    s.submit("shared prompt")
+    s.wait_turn_done()
+    s.submit("/fork")
+    s.wait_text("forked")
+
+    ctx.scenario("text=only+in+the+fork")
+    s.submit("branch prompt")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+
+    s = ctx.spawn()
+    s.submit("/resume")
+    s.wait_status("pick a session")
+    rows = s.screen.lines()
+    assert sum("shared prompt" in r for r in rows) == 2, rows[-12:]
+
+    s.key("down").sync()          # newest first, so this lands on the original
+    s.key("enter")
+    s.wait_text("shared start")
+    assert "only in the fork" not in s.text(), s.text()

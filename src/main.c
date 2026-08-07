@@ -48,6 +48,7 @@ static size_t commands_init(void) {
     size_t n = 0;
     g_commands[n++] = (TuiCmd){ STR("/clear"), STR("Start a fresh conversation") };
     g_commands[n++] = (TuiCmd){ STR("/resume"), STR("Resume a saved session from this directory") };
+    g_commands[n++] = (TuiCmd){ STR("/fork"), STR("Continue in a copy, leaving this session as it is") };
     g_commands[n++] = (TuiCmd){ STR("/model"), STR("Pick the model") };
     g_commands[n++] = (TuiCmd){ STR("/provider"), STR("Switch provider, or add one") };
     g_commands[n++] = (TuiCmd){ STR("/rewind"), STR("Go back to an earlier message and edit it") };
@@ -302,9 +303,28 @@ static void rewind_conversation(Conv *conv, Session *sess, Arena *scratch) {
     /* A session file is append-only and this one no longer describes the
      * conversation, so what is left of it continues in a new file, which the
      * next save writes whole. */
-    session_begin(sess);
-    session_save(sess, conv);
+    session_fork(sess, conv);
     arena_reset(scratch);
+}
+
+/* Continue in a copy of this conversation. Nothing on screen and nothing in
+ * the conversation moves: only the file underneath changes, so every message
+ * from here lands in a new session and the one it was forked from keeps what
+ * it had, where /resume can still find it. */
+static void fork_session(Session *sess, const Conv *conv) {
+    if (conv->n <= 1) {
+        tui_notice(STR("nothing to fork yet"));
+        return;
+    }
+    if (!sess->dir.n) {
+        tui_notice(STR("sessions are not saved here: nothing to fork"));
+        return;
+    }
+    if (!session_fork(sess, conv)) {
+        tui_notice(STR("could not start a forked session"));
+        return;
+    }
+    tui_notice(STR("forked: this copy continues, the original is unchanged"));
 }
 
 /* Copy the model's last reply as the Markdown it wrote: the transcript is a
@@ -816,6 +836,10 @@ i32 main(i32 argc, char **argv) {
             arena_reset(&scratch);
             session_begin(&sess);   /* the next message starts a new file */
             tui_clear();
+            continue;
+        }
+        if (!strcmp(line, "/fork")) {
+            fork_session(&sess, &conv);
             continue;
         }
         if (!strcmp(line, "/rewind")) {

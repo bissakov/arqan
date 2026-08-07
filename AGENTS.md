@@ -90,7 +90,9 @@ an AoS layout.
   launched in: `$XDG_DATA_HOME/yoke/sessions/<percent-encoded cwd>/<timestamp>.jsonl`,
   one JSON object per line, appended as messages are produced. It owns its
   path buffers instead of an arena because `/clear` rewinds the session's and
-  the file the next message appends to has to outlive that
+  the file the next message appends to has to outlive that. A file is
+  append-only, so `/fork` and `/rewind` both continue in a new one holding the
+  conversation as it stands, which leaves the one they came from as it was
 - `endpoints.c`: the providers `/provider` creates and switches to, since
   nothing is built in: they all speak the same protocol and only the user
   knows which ones exist. Settings live in `$XDG_CONFIG_HOME/yoke/providers`

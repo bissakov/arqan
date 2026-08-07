@@ -205,6 +205,15 @@ void session_save(Session *s, const Conv *c) {
     s->written = c->n;
 }
 
+/* Continue in a copy: a new file holding the conversation as it stands now,
+ * which every later save appends to. The file left behind keeps exactly what
+ * it had, so a fork costs the conversation it came from nothing. */
+b8 session_fork(Session *s, const Conv *c) {
+    if (!session_begin(s)) return false;
+    session_save(s, c);
+    return s->written >= c->n;
+}
+
 /* Read at most `max` bytes of a file into `a`. The size is measured before
  * anything is allocated, so a file that grew past what we will read can
  * never turn into an allocation we cannot satisfy. */

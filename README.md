@@ -29,7 +29,7 @@ src/
   paths.c         XDG base directory resolution
   endpoints.c     user-defined providers (/provider) and their stored keys
   history.c       prompt history, mirrored to the XDG state dir
-  session.c       per-directory saved conversations (/resume)
+  session.c       per-directory saved conversations (/resume, /fork)
   config.c        env + XDG config file loader
   prompt.c        system prompt: SYSTEM.md + AGENTS.md lookup, expansion
   cli.c           command line parsing, above the config in precedence
@@ -165,7 +165,9 @@ the model sees what was run on the next message, a saved session keeps it and
 `/resume` brings it back.
 
 Typing `/` opens a completion popup: `/clear` starts a fresh conversation,
-`/resume` reopens one saved for this directory, `/model` switches model,
+`/resume` reopens one saved for this directory,
+`/fork` continues in a copy of the conversation and leaves the session it was
+forked from where `/resume` can still find it, `/model` switches model,
 `/provider` switches provider or adds one,
 `/rewind` goes back to an earlier message, as the double Esc does,
 `/copy` puts the last reply on the clipboard as the Markdown the model wrote,
