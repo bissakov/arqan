@@ -22,5 +22,5 @@
 |  last
 |
 |
-|  ● ready · mock-model · local · work · -
+|  ● ready · mock-model · build · local · work · -
 --- cursor row=21 col=7 visible=yes ---

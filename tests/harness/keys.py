@@ -14,6 +14,7 @@ KEYS = {
     "return": "\r",
     "newline": ESC + "\r",      # alt-enter: insert a line break, do not submit
     "tab": "\t",
+    "shift-tab": ESC + "[Z",
     "esc": ESC,
     "backspace": "\x7f",
     "bs": "\x7f",

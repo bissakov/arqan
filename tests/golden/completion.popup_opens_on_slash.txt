@@ -15,12 +15,12 @@
 |    /fork      Continue in a copy, leaving this session as it is
 |    /model     Pick the model
 |    /provider  Switch provider, or add one
+|    /mode      Switch between Build and Plan mode (Shift+Tab)
 |    /rewind    Go back to an earlier message and edit it
 |    /copy      Copy the last response to the clipboard
-|    /verbose   Toggle untruncated tool output
 |
 |  › /
 |
 |
-|  ● ready · mock-model · local · ~/work · -
+|  ● ready · mock-model · build · local · ~/work · -
 --- cursor row=21 col=6 visible=yes ---

@@ -136,7 +136,7 @@ def test_context_counter_formats_tokens(ctx):
     """The token field shows a dash until the provider reports usage."""
     ctx.scenario("text=ok,usage=900/100")
     s = ctx.spawn()
-    assert s.status_field(4) == "-", s.status_line()
+    assert s.status_field(5) == "-", s.status_line()
     s.submit("count")
     s.wait_turn_done()
     assert s.status_line().endswith("1000"), s.status_line()

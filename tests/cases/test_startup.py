@@ -20,7 +20,7 @@ def test_status_line_fields(ctx):
     # base_url is http://127.0.0.1:PORT/v1, so the loopback host reads as "local"
     assert "local" in status, status
     assert "~/work" in status, status
-    assert s.status_field(4) == "-", status  # dash: no usage reported yet
+    assert s.status_field(5) == "-", status  # dash: no usage reported yet
     assert str(ctx.mock.port) not in status, "port must not leak into the UI"
 
 

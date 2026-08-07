@@ -31,7 +31,7 @@ src/
   history.c       prompt history, mirrored to the XDG state dir
   session.c       per-directory saved conversations (/resume, /fork)
   config.c        env + XDG config file loader
-  prompt.c        system prompt: SYSTEM.md + AGENTS.md lookup, expansion
+  prompt.c        system prompts: SYSTEM.md / PLAN.md + AGENTS.md, expansion
   cli.c           command line parsing, above the config in precedence
   provider.c      chat-completions streaming + reasoning and tool deltas
   tools.c         SoA tool registry + read/write/bash/edit tools
@@ -169,10 +169,37 @@ Typing `/` opens a completion popup: `/clear` starts a fresh conversation,
 `/fork` continues in a copy of the conversation and leaves the session it was
 forked from where `/resume` can still find it, `/model` switches model,
 `/provider` switches provider or adds one,
+`/mode` switches between Build and Plan, as Shift+Tab does,
 `/rewind` goes back to an earlier message, as the double Esc does,
 `/copy` puts the last reply on the clipboard as the Markdown the model wrote,
 `/verbose` toggles untruncated tool output, `/raw` toggles Markdown rendering
 off and `/exit` quits.
+
+### Plan mode
+
+Shift+Tab switches between the two modes the status line names. Build is the
+one that works: it reads, writes, edits and runs commands. Plan reads and
+proposes, and changes nothing, because `write` and `edit` are not in the
+registry it is offered and are refused if it asks for one anyway. It has a
+system prompt of its own, resolved like the other one from `.yoke/PLAN.md`,
+the global `PLAN.md` or a built-in template, and two tools the other mode does
+not have.
+
+`ask_user` is how it asks: the question and its options open in the picker,
+the option it recommends is where the list opens, and a last row hands the
+composer over for an answer it did not think of. `submit_plan` is how it
+finishes: the plan is rendered as the Markdown it wrote, and the question
+under it is what happens next.
+
+| answer | what it does |
+| --- | --- |
+| Yes | switches to Build mode and carries the plan out in the same turn |
+| Yes, but from a new session | continues in a new session holding the plan alone, so the work starts without the conversation that produced it |
+| No | ends the turn in Plan mode, so the next message refines the plan |
+
+Escape is a No, since a dismissed question is not an approval. The session the
+handover left behind keeps everything that was said while planning, where
+`/resume` can still find it.
 
 A reply is Markdown, and the transcript renders it: headings, lists, block
 quotes, thematic breaks and fenced code become shapes, emphasis and inline
@@ -214,6 +241,7 @@ and ignored as if unset, and directories yoke creates are mode 0700.
 | settings | `$XDG_CONFIG_HOME/yoke/config` | every `$XDG_CONFIG_DIRS` entry is searched too, at lower precedence |
 | system prompt | `$XDG_CONFIG_HOME/yoke/SYSTEM.md` | used for every session; `$XDG_CONFIG_DIRS` searched too, at lower precedence |
 | project prompt | `.yoke/SYSTEM.md` | nearest one at or above the working directory, and it wins over the global one |
+| plan prompt | `.yoke/PLAN.md`, `$XDG_CONFIG_HOME/yoke/PLAN.md` | what Plan mode is told instead, resolved the same way |
 | project context | `AGENTS.md` | every one at or above the working directory, appended to the prompt |
 | prompt history | `$XDG_STATE_HOME/yoke/history` | last 500 prompts, recalled in the composer with Up/Down |
 | chosen model | `$XDG_STATE_HOME/yoke/model` | what `/model` last picked, with no provider selected |

@@ -22,5 +22,5 @@
 |  › Message yoke...
 |
 |
-|  ● ready · gpt-4o-mini · openai · ~/work · -
+|  ● ready · gpt-4o-mini · build · openai · ~/work · -
 --- cursor row=21 col=5 visible=yes ---

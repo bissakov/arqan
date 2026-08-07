@@ -43,7 +43,7 @@ def test_clear_command_clears_the_transcript(ctx):
     s.submit("/clear")
     s.wait_for(lambda t: "remember this" not in t.text(), "transcript to clear")
     assert "first message" not in s.text()
-    assert s.status_field(4) == "-", s.status_line()
+    assert s.status_field(5) == "-", s.status_line()
     assert s.PLACEHOLDER in s.text()
     ctx.check_screen(s)
 

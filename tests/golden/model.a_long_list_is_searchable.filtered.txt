@@ -22,5 +22,5 @@
 |  › Message yoke...
 |
 |
-|  ● pick a model · mock-model · local · ~/work · -
+|  ● pick a model · mock-model · build · local · ~/work · -
 --- cursor row=21 col=5 visible=yes ---

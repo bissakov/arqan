@@ -204,37 +204,74 @@ static b8 tool_edit(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
     return true;
 }
 
+/* ---- plan mode ----
+ * submit_plan and ask_user are registered like any other tool so the model is
+ * offered them in the usual place, but the agent loop intercepts both: each
+ * one is a question put to the user, and a ToolRun has no way to reach the
+ * screen. Reaching this body means the interception is gone. */
+static b8 tool_agent_only(Str args, Arena *scratch, Buf *out,
+                          char *err, size_t err_cap) {
+    (void)args; (void)scratch; (void)out;
+    snprintf(err, err_cap, "this tool is answered by the user, not run");
+    return false;
+}
+
 /* ---- registry ---- */
+static AgentMode g_mode;
+
+void tools_set_mode(AgentMode mode) { g_mode = mode; }
+
+b8 tools_available(const ToolRegistry *r, size_t id, AgentMode mode) {
+    if (!r->modes || id >= r->n) return false;
+    return (r->modes[id] & (mode == MODE_PLAN ? TOOL_IN_PLAN : TOOL_IN_BUILD))
+           != 0;
+}
+
 void tools_init(ToolRegistry *r, Arena *persist) {
     r->name   = arena_new(persist, Str, YOKE_MAX_TOOLS);
     r->desc   = arena_new(persist, Str, YOKE_MAX_TOOLS);
     r->schema = arena_new(persist, Str, YOKE_MAX_TOOLS);
     r->run    = arena_new(persist, ToolRun, YOKE_MAX_TOOLS);
+    r->modes  = arena_new(persist, u8, YOKE_MAX_TOOLS);
     r->n = 0;
-    if (!r->name || !r->desc || !r->schema || !r->run) {
+    if (!r->name || !r->desc || !r->schema || !r->run || !r->modes) {
         r->name = NULL;
         return;
     }
-#define ADD(nm, dsc, sch, fn) do { \
+#define ADD(nm, dsc, md, sch, fn) do { \
     if (r->n >= YOKE_MAX_TOOLS) break; \
     r->name[r->n] = STR(nm); \
     r->desc[r->n] = STR(dsc); \
     r->schema[r->n] = STR(sch); \
     r->run[r->n] = fn; \
+    r->modes[r->n] = (md); \
     r->n++; } while (0)
+#define BOTH (TOOL_IN_BUILD | TOOL_IN_PLAN)
 
-    ADD("read", "Read a file's contents.",
+    ADD("read", "Read a file's contents.", BOTH,
         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}",
         tool_read);
-    ADD("write", "Write content to a file (overwrite).",
+    ADD("write", "Write content to a file (overwrite).", TOOL_IN_BUILD,
         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}",
         tool_write);
-    ADD("bash", "Run a shell command and capture stdout/stderr.",
+    ADD("bash", "Run a shell command and capture stdout/stderr.", BOTH,
         "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}",
         tool_bash);
     ADD("edit", "Replace the first occurrence of old_text with new_text in a file.",
+        TOOL_IN_BUILD,
         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"old_text\":{\"type\":\"string\"},\"new_text\":{\"type\":\"string\"}},\"required\":[\"path\",\"old_text\",\"new_text\"]}",
         tool_edit);
+    ADD("ask_user", "Ask the user to choose between options while planning. "
+        "Mark the option you recommend; the user may also type an answer of "
+        "their own.", TOOL_IN_PLAN,
+        "{\"type\":\"object\",\"properties\":{\"question\":{\"type\":\"string\"},\"options\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"label\":{\"type\":\"string\"},\"detail\":{\"type\":\"string\"},\"recommended\":{\"type\":\"boolean\"}},\"required\":[\"label\"]}}},\"required\":[\"question\",\"options\"]}",
+        tool_agent_only);
+    ADD("submit_plan", "Hand the finished plan to the user, who decides "
+        "whether to carry it out. Call it once the plan is complete.",
+        TOOL_IN_PLAN,
+        "{\"type\":\"object\",\"properties\":{\"plan\":{\"type\":\"string\"}},\"required\":[\"plan\"]}",
+        tool_agent_only);
+#undef BOTH
 #undef ADD
 }
 
@@ -251,14 +288,26 @@ b8 tools_run(const ToolRegistry *r, size_t id, Str args, Arena *scratch,
         snprintf(err, err_cap, "unknown tool");
         return false;
     }
+    /* A tool withheld from this mode is refused even when the model asks for
+     * it anyway: the schemas it was offered earlier in the conversation are
+     * still in its context, so plan mode's read-only promise has to hold
+     * here rather than only in what was advertised. */
+    if (!tools_available(r, id, g_mode)) {
+        snprintf(err, err_cap, "%.*s is not available in plan mode",
+                 (int)r->name[id].n, r->name[id].p);
+        return false;
+    }
     return r->run[id](args, scratch, out, err, err_cap);
 }
 
 void tools_write_schemas(Buf *b, const ToolRegistry *r) {
     buf_putc(b, '[');
     if (r->name) {
+        b8 first = true;
         for (size_t i = 0; i < r->n; i++) {
-            if (i) buf_putc(b, ',');
+            if (!tools_available(r, i, g_mode)) continue;
+            if (!first) buf_putc(b, ',');
+            first = false;
             buf_putf(b, "{\"type\":\"function\",\"function\":{\"name\":");
             buf_json_str(b, r->name[i]);
             buf_putf(b, ",\"description\":");

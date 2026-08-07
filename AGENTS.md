@@ -117,14 +117,20 @@ an AoS layout.
   above the working directory is appended to whichever prompt won, outermost
   first, as project context rather than a competing prompt, and verbatim since
   it is a document about the project and not a template. Whichever source wins
-  is expanded before it is sent, `{tools}` becoming the registry listing and
+  is expanded before it is sent, `{tools}` becoming the registry listing for
+  the mode the prompt describes and
   `{cwd}` the working directory, so a prompt written once keeps describing the
   tools that exist now; an unknown `{name}` stays verbatim
 - `cli.c`: argv parsing into `CliOpts`, applied over `Config` after
   `config_load`, so a flag outranks the environment and the files. `--help`
   and `--version` answer and exit; a prompt (`-p` or a bare argument) runs one
   turn without the UI and exits on its result
-- `tools.c`: the `ToolRegistry` and the four built-in tools (read/write/bash/edit).
+- `tools.c`: the `ToolRegistry` and the built-in tools (read/write/bash/edit,
+  plus plan mode's `ask_user` and `submit_plan`). Each entry carries the modes
+  it is offered in, since Plan mode's read-only promise is a property of the
+  registry rather than a request made in the prompt: `tools_write_schemas`
+  withholds what the mode does not have and `tools_run` refuses it, because a
+  schema offered earlier in a conversation is still in the model's context.
   `shell_capture` is the shared command runner behind `bash` and the composer's
   `!` mode: it forks `/bin/sh` instead of using `popen` because stderr left
   inherited would paint over the frame and an inherited stdin would race the
@@ -150,7 +156,8 @@ an AoS layout.
   ever written into the transcript. Escape at an idle composer with nothing to
   dismiss arms a rewind and answers in that row; a second Escape submits
   `/rewind`, leaving the draft alone, so the key and the command reach `main.c`
-  as one request. Also: viewport, scrollback, raw-mode
+  as one request, and Shift+Tab submits `/mode` the same way; the status line
+  names the mode next to the model. Also: viewport, scrollback, raw-mode
   composer with Up/Down recall of the persisted prompt history, mouse wheel
   scrolling, drag-to-select with OSC 52 copy, and SIGWINCH-aware repaint.
   Every visible glyph is painted through `put_text`, which mirrors it into the
@@ -183,7 +190,9 @@ an AoS layout.
   keyed by the `Conv` slot it was rendered from, and `Conv.expanded` is what a
   click leaves behind, lifting that one block's caps the way `/verbose` lifts
   every block's. A replay writes the same air a live turn does, since the
-  transcript is one rendering either way
+  transcript is one rendering either way. A plan and the question that led to
+  it read as blocks of the same family, the plan as the Markdown it was
+  written in and never truncated, since it is what the user is approving
 - shell mode: a composed line whose first byte is `!` runs locally instead of
   reaching the model. The `!` is the composer's prompt marker rather than text,
   red in place of the blue one, and the run takes a `Conv` slot of its own
@@ -192,6 +201,20 @@ an AoS layout.
   conversation and a run living outside it would vanish on the next replay. It
   reaches the provider as the user message it is, the command then its output,
   and a session file keeps it as a `"name":"shell"` line with an `"output"`
+- plan mode: the second of the two `AgentMode`s, which the composer's
+  Shift+Tab switches by submitting `/mode` the way Escape submits `/rewind`.
+  It swaps slot 0 of the conversation for `Config.plan_prompt` and the
+  registry for the read-only half of itself, so the mode is one assignment
+  rather than a second agent. Its two tools are questions put to the user, so
+  the agent loop answers them instead of `tools_run`, which cannot reach the
+  screen: `ask_user` opens the picker on the option the model recommends, and
+  `submit_plan` renders the plan and asks whether to carry it out. "Yes"
+  flips the mode and continues the same turn; "yes, from a new session"
+  rewinds the conversation to its system prompt and re-enters with the plan as
+  the only message, which is why the plan is carried in the scratch arena that
+  the persistent rewind does not touch; "no" ends the turn with the mode
+  unchanged. Whichever it is, the answer reaches the model as the tool result
+  it asked for
 - `main.c`: wires everything together and runs the agent loop
 
 **Agent loop shape** (`main.c`): each user turn calls `provider_run` in a

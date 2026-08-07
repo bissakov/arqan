@@ -1,0 +1,26 @@
+--- screen 80x24 ---
+|
+|
+|  plan the storage
+|
+|
+|
+|  ◆  ask
+|  │ Which storage?
+|
+|
+|
+|
+|
+|
+|
+|
+|    sqlite            one file
+|  › postgres          recommended · a server
+|    + something else  Answer in your own words
+|
+|  › Message yoke...
+|
+|
+|  ● pick an answer · mock-model · plan · local · ~/work · 401
+--- cursor row=21 col=5 visible=yes ---

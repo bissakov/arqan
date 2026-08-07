@@ -88,7 +88,7 @@ def test_creating_a_provider_stores_it_and_switches_to_it(ctx):
     s.key("enter")
     s.wait_text("provider: work")
     assert s.status_field(1) == "alpha", s.status_line()
-    assert s.status_field(2) == "work", s.status_line()
+    assert s.status_field(3) == "work", s.status_line()
 
     assert store(ctx) == [
         {"name": "work", "base_url": ctx.mock.base_url, "model": "alpha"}
@@ -166,7 +166,7 @@ def test_a_stored_provider_configures_the_next_run(ctx):
     ctx.scenario("text=hi")
     s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
     assert s.status_field(1) == "beta", s.status_line()
-    assert s.status_field(2) == "work", s.status_line()
+    assert s.status_field(3) == "work", s.status_line()
     s.submit("hello")
     s.wait_turn_done()
     assert ctx.mock.requests[-1]["model"] == "beta"

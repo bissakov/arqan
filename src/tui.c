@@ -72,6 +72,7 @@ typedef struct {
     b8 color;
     Str model;
     Str provider;
+    AgentMode mode;   /* named on the status line; Shift+Tab switches it */
     Str base_url;     /* what provider is derived from when no name is set */
     /* A modal question owns the composer: the answer is not a message, so it
      * reaches neither the transcript nor the prompt history, and a secret one
@@ -1387,6 +1388,7 @@ static void repaint(void) {
     sel_row_range(status_row, &status_sel_c0, &status_sel_c1);
     u64 status_hash = row_hash(g_tui.model, g_tui.provider, ROW_STATUS);
     status_hash = hash_add(status_hash, &copied, sizeof copied);
+    status_hash = hash_add(status_hash, &g_tui.mode, sizeof g_tui.mode);
     status_hash = hash_add(status_hash, &status_sel_c0, sizeof status_sel_c0);
     status_hash = hash_add(status_hash, &status_sel_c1, sizeof status_sel_c1);
     status_hash = hash_add(status_hash, g_tui.cwd.p, g_tui.cwd.n);
@@ -1430,6 +1432,17 @@ static void repaint(void) {
             put_safe_clipped(separator, body_cols - used, &used);
             style(S_TEXT);
             put_safe_clipped(g_tui.model, body_cols - used, &used);
+        }
+        if (body_cols - used >= separator_cells) {
+            style(S_MUTED);
+            put_safe_clipped(separator, body_cols - used, &used);
+            /* Plan mode is the exceptional one and is coloured as such: the
+             * rest of the line describes where the turn goes, this says what
+             * it is allowed to do when it gets there. */
+            style(g_tui.mode == MODE_PLAN ? S_YELLOW : S_TEXT);
+            put_safe_clipped(g_tui.mode == MODE_PLAN ? STR("plan")
+                                                     : STR("build"),
+                             body_cols - used, &used);
         }
         if (body_cols - used >= separator_cells) {
             style(S_MUTED);
@@ -1603,6 +1616,11 @@ void tui_set_model(Str model) {
 
 void tui_set_provider(Str name) {
     g_tui.provider = name.n ? name : provider_from_url(g_tui.base_url);
+    repaint();
+}
+
+void tui_set_mode(AgentMode mode) {
+    g_tui.mode = mode;
     repaint();
 }
 
@@ -1888,7 +1906,7 @@ enum {
     KEY_NONE = 0, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN, KEY_HOME, KEY_END,
     KEY_PREV_WORD, KEY_NEXT_WORD, KEY_NEWLINE, KEY_PAGE_UP, KEY_PAGE_DOWN,
     KEY_WHEEL_UP, KEY_WHEEL_DOWN, KEY_MOUSE_DOWN, KEY_MOUSE_DRAG, KEY_MOUSE_UP,
-    KEY_MOUSE_MOVE
+    KEY_MOUSE_MOVE, KEY_SHIFT_TAB
 };
 
 /* Coordinates of the mouse key just returned by read_escape (1-based). */
@@ -1924,6 +1942,7 @@ static i32 read_escape(void) {
             case 'B': return KEY_DOWN;
             case 'H': return KEY_HOME;
             case 'F': return KEY_END;
+            case 'Z': return KEY_SHIFT_TAB;
             case '~':
                 if (csi.nparams < 1) return KEY_NONE;
                 if (csi.p[0] == 1 || csi.p[0] == 7) return KEY_HOME;
@@ -1978,12 +1997,18 @@ static void completion_refresh(void) {
     if (in.n == 0 || in.p[0] != '/') return;
     for (size_t i = 0; i < in.n; i++)
         if (in.p[i] == ' ' || in.p[i] == '\t' || in.p[i] == '\n') return;
+    size_t exact = SIZE_MAX;
     for (size_t i = 0; i < g_tui.cmd_n && g_tui.comp_n < YOKE_MAX_COMMANDS; i++) {
         if (!str_starts_ci(g_tui.cmds[i].name, in)) continue;
         /* Narrowing the list keeps the highlight on the same command. */
         if (i == previous) g_tui.comp_sel = g_tui.comp_n;
+        if (g_tui.cmds[i].name.n == in.n) exact = g_tui.comp_n;
         g_tui.comp_idx[g_tui.comp_n++] = (u16)i;
     }
+    /* A name typed out in full is the command that was asked for, even when a
+     * longer one also starts with it: Enter runs the highlighted entry, so
+     * "/mode" must not submit "/model". */
+    if (exact != SIZE_MAX) g_tui.comp_sel = exact;
 }
 
 static void completion_move(i32 delta) {
@@ -2097,8 +2122,8 @@ static void pick_search_row(Str query) {
  * A long list also takes the keyboard: scrolling six visible rows through
  * hundreds of entries is not a way to choose one, so typing filters instead of
  * reaching the composer. */
-b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
-            size_t *out) {
+static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
+                    TuiPickAnchor anchor, size_t start, size_t *out) {
     if (!g_tui.fullscreen || !items || !n || !out) return false;
     if (n > YOKE_MAX_POPUP) n = YOKE_MAX_POPUP;
 
@@ -2119,7 +2144,7 @@ b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
     g_tui.cmd_n = n;
     g_tui.comp_n = n;
     g_tui.pick_end = anchor == TUI_PICK_LAST;
-    g_tui.comp_sel = g_tui.pick_end ? n - 1 : 0;
+    g_tui.comp_sel = start < n ? start : (g_tui.pick_end ? n - 1 : 0);
     for (size_t i = 0; i < n; i++) g_tui.comp_idx[i] = (u16)i;
     /* The status names the picker last, so a frame that announces it already
      * carries the list and the search box. */
@@ -2178,6 +2203,16 @@ b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
     memcpy(g_tui.status, saved_status, sizeof saved_status);
     repaint();
     return chosen;
+}
+
+b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
+            size_t *out) {
+    return pick_impl(title, items, n, anchor, SIZE_MAX, out);
+}
+
+b8 tui_pick_from(Str title, const TuiCmd *items, size_t n, size_t start,
+                 size_t *out) {
+    return pick_impl(title, items, n, TUI_PICK_FIRST, start, out);
 }
 
 /* A question the composer answers, borrowed for the length of the call: the
@@ -2254,7 +2289,8 @@ b8 tui_ask(Str question, b8 secret, char *out, size_t cap) {
 }
 
 /* What a keystroke asked the caller to do; edits are already applied. */
-typedef enum { ED_EDIT = 0, ED_SUBMIT, ED_EOF, ED_REWIND, ED_EXPAND } EdAction;
+typedef enum { ED_EDIT = 0, ED_SUBMIT, ED_EOF, ED_REWIND, ED_EXPAND,
+               ED_MODE } EdAction;
 
 /* The zone under a mouse cell, 0 outside every one of them. */
 static u32 zone_at_cell(i32 mouse_row, i32 mouse_col) {
@@ -2374,6 +2410,10 @@ static EdAction editor_key(i32 c) {
             if (hit) { g_tui.click_id = g_tui.click_down; action = ED_EXPAND; }
             g_tui.click_down = 0;
             sel_finish(); keep_sel = true;
+        } else if (key == KEY_SHIFT_TAB) {
+            /* The mode is not text, so the key is a command rather than an
+             * edit: the draft it was typed over is left alone. */
+            action = ED_MODE;
         } else if (g_tui.comp_n && (key == KEY_DOWN || key == KEY_UP)) {
             completion_move(key == KEY_DOWN ? 1 : -1);
         } else if (key == KEY_UP || key == KEY_DOWN) {
@@ -2480,15 +2520,16 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
 
         EdAction action = editor_key(c);
         if (action == ED_EOF) { *out_n = 0; return false; }
-        if (action == ED_REWIND || action == ED_EXPAND) {
+        if (action == ED_REWIND || action == ED_EXPAND || action == ED_MODE) {
             /* The gesture and the command are the same request, so it answers
              * as the command. The composer is left alone: a rewind the picker
              * cancels, or a block a click unfolds, must not cost the draft it
              * was typed over. */
             char cmd[32];
-            i32 len = action == ED_REWIND
-                    ? snprintf(cmd, sizeof cmd, "/rewind")
-                    : snprintf(cmd, sizeof cmd, "/expand %u", g_tui.click_id);
+            i32 len;
+            if (action == ED_REWIND) len = snprintf(cmd, sizeof cmd, "/rewind");
+            else if (action == ED_MODE) len = snprintf(cmd, sizeof cmd, "/mode");
+            else len = snprintf(cmd, sizeof cmd, "/expand %u", g_tui.click_id);
             size_t n = len > 0 ? (size_t)len : 0;
             if (n >= cap) n = cap - 1;
             memcpy(buf, cmd, n);

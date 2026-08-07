@@ -1,0 +1,26 @@
+--- screen 80x24 ---
+|
+|
+|  plan the change
+|
+|
+|
+|  ◆  plan
+|
+|  Steps
+|
+|  1. Read the file
+|  2. Change the line
+|
+|
+|
+|
+|  › Yes                          Switch to Build mode and carry the plan out
+|    Yes, but from a new session  Start over with the plan as the only context
+|    No                           Keep planning; say what to change
+|
+|  › Message yoke...
+|
+|
+|  ● continue? · mock-model · plan · local · ~/work · 377
+--- cursor row=21 col=5 visible=yes ---

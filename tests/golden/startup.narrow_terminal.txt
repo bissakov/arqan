@@ -14,5 +14,5 @@
 |  › Message yoke...
 |
 |
-|  ● ready · mock-model · local · work · -
+|  ● ready · mock-model · build · local · work
 --- cursor row=13 col=5 visible=yes ---

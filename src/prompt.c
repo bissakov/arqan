@@ -21,6 +21,9 @@
  * compete with the prompt, it is appended to whichever prompt won. Every one
  * from the working directory up to the root applies rather than just the
  * nearest, since a subdirectory refines its parent instead of replacing it.
+ *
+ * Plan mode has a prompt of its own, resolved the same way from PLAN.md, and
+ * expanded against the tools plan mode actually offers.
  */
 #include "yoke.h"
 
@@ -52,6 +55,33 @@ static const char PROMPT_BUILTIN[] =
     "\n"
     "Current working directory: {cwd}\n";
 
+/* Plan mode's counterpart. It describes the same project with none of the
+ * tools that change it, so what it can promise is a plan rather than an
+ * edit. */
+static const char PROMPT_PLAN_BUILTIN[] =
+    "You are an expert software planner. You are in Plan mode: you "
+    "investigate the project and propose a plan, and you change nothing. No "
+    "file is written, no edit is applied; a tool that would do either is not "
+    "available to you here.\n"
+    "\n"
+    "Available tools:\n"
+    "{tools}\n"
+    "Guidelines:\n"
+    "- Read the code before planning it: a plan built on a guess about the "
+    "codebase is worse than no plan\n"
+    "- Call ask_user whenever a choice is the user's to make, offering the "
+    "options you see and marking the one you recommend\n"
+    "- Ask about one thing at a time, not a form of questions at once\n"
+    "- Call submit_plan once the plan is complete: the plan is its argument, "
+    "written as Markdown, and the user decides from it whether the work goes "
+    "ahead\n"
+    "- The plan states what changes, in which files, and in what order; it "
+    "carries no code beyond what a step needs to be unambiguous\n"
+    "- Assume the plan may be carried out in a session that has none of this "
+    "conversation, so it stands on its own\n"
+    "\n"
+    "Current working directory: {cwd}\n";
+
 /* Reads `path` into `a`, empty when it does not exist or holds only space.
  * A file past the limit sets `err` and reads nothing, which stops the search
  * rather than falling through to a prompt the user did not ask for. */
@@ -77,21 +107,22 @@ static Str prompt_read(Str path, Arena *a, char *err, size_t err_cap) {
     return str_trim((Str){ buf, n });
 }
 
-/* The SYSTEM.md of the nearest ancestor of `dir` that has one. Git's rule:
- * the project root is wherever the marker is, not where yoke started. */
-static Str prompt_project(Str dir, Arena *scratch, char *err, size_t err_cap) {
-    static const char suffix[] = "/.yoke/SYSTEM.md";
+/* The prompt of the nearest ancestor of `dir` that has one, `suffix` carrying
+ * its own leading separator ("/.yoke/SYSTEM.md"). Git's rule: the project
+ * root is wherever the marker is, not where yoke started. */
+static Str prompt_project(Str dir, const char *suffix, size_t suffix_size,
+                          Arena *scratch, char *err, size_t err_cap) {
     char path[YOKE_MAX_PATH];
     size_t n = dir.n;
-    if (!n || dir.p[0] != '/' || n + sizeof suffix > sizeof path)
+    if (!n || dir.p[0] != '/' || n + suffix_size > sizeof path)
         return (Str){0};
     memcpy(path, dir.p, n);
     while (n > 1 && path[n - 1] == '/') n--;
     for (;;) {
         /* At the root the directory is the separator the suffix carries. */
         size_t off = n == 1 ? 0 : n;
-        memcpy(path + off, suffix, sizeof suffix);
-        Str body = prompt_read((Str){ path, off + sizeof suffix - 1 }, scratch,
+        memcpy(path + off, suffix, suffix_size);
+        Str body = prompt_read((Str){ path, off + suffix_size - 1 }, scratch,
                                err, err_cap);
         if (body.n || *err) return body;
         if (n == 1) return (Str){0};
@@ -100,11 +131,11 @@ static Str prompt_project(Str dir, Arena *scratch, char *err, size_t err_cap) {
     }
 }
 
-/* The highest precedence SYSTEM.md that exists: the user's config dir first,
+/* The highest precedence `name` in the config dirs: the user's own first,
  * then the XDG_CONFIG_DIRS entries below it. */
-static Str prompt_global(Arena *scratch, char *err, size_t err_cap) {
+static Str prompt_global(Str name, Arena *scratch, char *err, size_t err_cap) {
     Str cand[YOKE_MAX_CONFIG_FILES];
-    size_t n = paths_config_files(STR("SYSTEM.md"), scratch, cand,
+    size_t n = paths_config_files(name, scratch, cand,
                                   YOKE_MAX_CONFIG_FILES);
     for (size_t i = n; i > 0; i--) {
         Str body = prompt_read(cand[i - 1], scratch, err, err_cap);
@@ -143,41 +174,49 @@ static size_t prompt_agents(Str dir, Arena *scratch, Str *body, Str *path_out,
     }
 }
 
-static void prompt_tools(Buf *b, const ToolRegistry *tools) {
+static void prompt_tools(Buf *b, const ToolRegistry *tools, AgentMode mode) {
     if (!tools) return;
-    for (size_t i = 0; i < tools->n; i++)
+    for (size_t i = 0; i < tools->n; i++) {
+        if (!tools_available(tools, i, mode)) continue;
         buf_putf(b, "- %.*s: %.*s\n",
                  (int)tools->name[i].n, tools->name[i].p,
                  (int)tools->desc[i].n, tools->desc[i].p);
+    }
 }
 
 /* Substitutes the placeholders of `tmpl` into `b`. */
 static void prompt_expand(Buf *b, Str tmpl, const ToolRegistry *tools,
-                          Str cwd) {
+                          AgentMode mode, Str cwd) {
     for (size_t i = 0; i < tmpl.n; i++) {
         if (tmpl.p[i] != '{') { buf_putc(b, tmpl.p[i]); continue; }
         size_t end = i + 1;
         while (end < tmpl.n && tmpl.p[end] != '}' && tmpl.p[end] != '\n') end++;
         Str name = { tmpl.p + i + 1, end - i - 1 };
         if (end == tmpl.n || tmpl.p[end] != '}') { buf_putc(b, '{'); continue; }
-        if (str_eq(name, STR("tools")))    prompt_tools(b, tools);
+        if (str_eq(name, STR("tools")))    prompt_tools(b, tools, mode);
         else if (str_eq(name, STR("cwd"))) buf_puts(b, cwd);
         else { buf_putc(b, '{'); continue; }
         i = end;
     }
 }
 
-Str prompt_build(const ToolRegistry *tools, Str configured, Arena *persist,
-                 Arena *scratch, char *err, size_t err_cap) {
+/* One prompt, whichever mode it describes: `configured` wins, else the
+ * project's file, else the global one, else `builtin`. */
+static Str prompt_for(const ToolRegistry *tools, AgentMode mode, Str configured,
+                      const char *project, size_t project_size, Str global,
+                      const char *builtin, Arena *persist, Arena *scratch,
+                      char *err, size_t err_cap) {
     char cwd_buf[YOKE_MAX_PATH];
     Str cwd = getcwd(cwd_buf, sizeof cwd_buf) ? str_c(cwd_buf) : (Str){0};
 
     if (err_cap) err[0] = '\0';
     Str tmpl = configured;
-    if (!tmpl.p) tmpl = prompt_project(cwd, scratch, err, err_cap);
-    if (!tmpl.n && !*err) tmpl = prompt_global(scratch, err, err_cap);
+    if (!tmpl.p)
+        tmpl = prompt_project(cwd, project, project_size, scratch, err,
+                              err_cap);
+    if (!tmpl.n && !*err) tmpl = prompt_global(global, scratch, err, err_cap);
     if (*err) return (Str){0};
-    if (!tmpl.n) tmpl = str_c(PROMPT_BUILTIN);
+    if (!tmpl.n) tmpl = str_c(builtin);
 
     Str agents[YOKE_MAX_AGENTS_FILES], agent_paths[YOKE_MAX_AGENTS_FILES];
     size_t n_agents = prompt_agents(cwd, scratch, agents, agent_paths,
@@ -190,7 +229,7 @@ Str prompt_build(const ToolRegistry *tools, Str configured, Arena *persist,
 
     Buf b;
     buf_init(&b, persist, tmpl.n + extra);
-    prompt_expand(&b, tmpl, tools, cwd);
+    prompt_expand(&b, tmpl, tools, mode, cwd);
     if (n_agents) {
         buf_puts(&b, STR("\n\nProject-specific instructions and "
                          "guidelines:\n"));
@@ -202,4 +241,20 @@ Str prompt_build(const ToolRegistry *tools, Str configured, Arena *persist,
     }
     if (!buf_ok(&b)) return tmpl;
     return buf_finish(&b);
+}
+
+Str prompt_build(const ToolRegistry *tools, Str configured, Arena *persist,
+                 Arena *scratch, char *err, size_t err_cap) {
+    static const char project[] = "/.yoke/SYSTEM.md";
+    return prompt_for(tools, MODE_BUILD, configured, project, sizeof project,
+                      STR("SYSTEM.md"), PROMPT_BUILTIN, persist, scratch, err,
+                      err_cap);
+}
+
+Str prompt_build_plan(const ToolRegistry *tools, Arena *persist,
+                      Arena *scratch, char *err, size_t err_cap) {
+    static const char project[] = "/.yoke/PLAN.md";
+    return prompt_for(tools, MODE_PLAN, (Str){0}, project, sizeof project,
+                      STR("PLAN.md"), PROMPT_PLAN_BUILTIN, persist, scratch,
+                      err, err_cap);
 }

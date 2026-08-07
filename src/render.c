@@ -184,6 +184,29 @@ void render_shell_call(Str cmd, u32 id, b8 expanded) {
     g_zone = 0;
 }
 
+/* The plan a handover carries is prose the model wrote, so it reads as the
+ * Markdown it is rather than as a quoted argument, and it is never truncated:
+ * it is the thing the user is being asked to approve. */
+void render_plan(Str plan) {
+    tui_write(STR("\n"));
+    tui_write_tool(STR("\u25c6  plan\n\n"));
+    md_write(plan);
+    md_end();
+    tui_write(STR("\n"));
+}
+
+void render_question(Str question) {
+    tui_write(STR("\n"));
+    tui_write_tool(STR("\u25c6  ask\n"));
+    size_t off = 0;
+    Str line;
+    while (next_line(question, &off, &line)) {
+        tui_write_muted(STR("\u2502 "));
+        tui_write(clip(line, R_LINE_BYTES));
+        tui_write(STR("\n"));
+    }
+}
+
 /* A shell run ends its output with a bracketed status line; it is the
  * result's summary, not part of what the command printed. */
 static b8 split_status(Str result, Str *body, Str *status) {

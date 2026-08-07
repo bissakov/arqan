@@ -236,6 +236,15 @@ b8     endpoints_set_key(Str name, Str key, Arena *scratch,
 Str    endpoints_active(Arena *a);
 b8     endpoints_remember_active(Str name, Arena *scratch);
 
+/* ---- agent modes ---------------------------------------------------------
+ * Build carries the work out; Plan reads and proposes without touching
+ * anything, and hands over through the submit_plan tool. The mode decides
+ * which system prompt slot 0 of the conversation holds and which tools the
+ * registry offers, so "read-only" is a property of the registry rather than a
+ * request made in the prompt.
+ */
+typedef enum { MODE_BUILD = 0, MODE_PLAN } AgentMode;
+
 /* ---- config ------------------------------------------------------------- */
 typedef struct {
     Str base_url;     /* e.g. https://api.openai.com/v1                    */
@@ -247,6 +256,8 @@ typedef struct {
      * asks for a provider instead of starting a conversation. */
     b8  base_url_set;
     Str system_prompt; /* Only --system and YOKE_SYSTEM_PROMPT set this. */
+    Str plan_prompt;   /* Plan mode's; built at startup, never configured. */
+    AgentMode mode;
     i32  max_tokens;
     /* Conversation capacity. Configurable so the full-history path is
      * reachable in a test without streaming four thousand messages. */
@@ -314,11 +325,16 @@ i32     http_get(const char *base_url, const char *path, const char *api_key,
 typedef b8 (*ToolRun)(Str args_json, Arena *scratch, Buf *out,
                       char *err, size_t err_cap);
 
+/* Which modes a tool is offered in, as a bit per mode in `modes`. */
+#define TOOL_IN_BUILD 1u
+#define TOOL_IN_PLAN  2u
+
 typedef struct {
     Str     *name;        /* [YOKE_MAX_TOOLS]                               */
     Str     *desc;        /* [YOKE_MAX_TOOLS]                               */
     Str     *schema;      /* [YOKE_MAX_TOOLS] JSON schema fragment (object) */
     ToolRun *run;         /* [YOKE_MAX_TOOLS]                               */
+    u8      *modes;       /* [YOKE_MAX_TOOLS] TOOL_IN_* bits                */
     size_t   n;
 } ToolRegistry;
 
@@ -326,6 +342,9 @@ typedef struct {
 #define TOOL_NONE ((size_t)-1)
 
 void        tools_init(ToolRegistry *r, Arena *persist);
+/* The mode tools_write_schemas offers and tools_run enforces. */
+void        tools_set_mode(AgentMode mode);
+b8          tools_available(const ToolRegistry *r, size_t id, AgentMode mode);
 size_t      tools_find(const ToolRegistry *r, Str name);
 b8          tools_run(const ToolRegistry *r, size_t id, Str args,
                       Arena *scratch, Buf *out, char *err, size_t err_cap);
@@ -351,6 +370,12 @@ b8          shell_capture(Str cmd, Buf *out, char *err, size_t err_cap);
  * verbatim, placeholders included. */
 Str   prompt_build(const ToolRegistry *tools, Str configured, Arena *persist,
                    Arena *scratch, char *err, size_t err_cap);
+/* The plan-mode prompt, resolved the same way from .yoke/PLAN.md, the global
+ * PLAN.md or the built-in template, with {tools} listing only what plan mode
+ * offers. Nothing configures it, since Build mode is what --system and
+ * YOKE_SYSTEM_PROMPT describe. */
+Str   prompt_build_plan(const ToolRegistry *tools, Arena *persist,
+                        Arena *scratch, char *err, size_t err_cap);
 
 /* ---- conversation (SoA) ------------------------------------------------- */
 typedef enum { M_SYSTEM = 0, M_USER, M_ASSISTANT, M_TOOL } MRole;
@@ -496,6 +521,11 @@ typedef enum { TUI_PICK_FIRST = 0, TUI_PICK_LAST } TuiPickAnchor;
  * own text is left untouched. */
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t *out);
+/* The same picker opened on `start` instead of on one of the ends, which is
+ * how a list carrying a recommendation offers it without reordering the
+ * entries it was given. */
+b8 tui_pick_from(Str title, const TuiCmd *items, size_t n, size_t start,
+                 size_t *out);
 /* Modal one-line question, answered in the composer with `question` in the
  * notice row. `secret` echoes the answer as dots and keeps it out of the
  * prompt history and the transcript, which is what an API key wants. Returns
@@ -510,6 +540,8 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count,
                b8 plain);
 /* The model the status line names; the string must outlive the call. */
 void tui_set_model(Str model);
+/* The mode the status line names. */
+void tui_set_mode(AgentMode mode);
 /* The provider the status line names. Empty restores the host derived from
  * the base URL, which is what an endpoint-less run shows. */
 void tui_set_provider(Str name);
@@ -580,7 +612,8 @@ void tui_exit_raw(void);
 void tui_putstr(Str s);
 /* Read one submitted line. Escape at an idle composer with nothing to dismiss
  * arms a rewind and the next Escape submits "/rewind", leaving the composed
- * text where it is: the key and the command are the same request. */
+ * text where it is: the key and the command are the same request. Shift+Tab
+ * submits "/mode" the same way. */
 b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n);
 /* Replace the composer's text, cursor at its end; ignored without a
  * fullscreen UI. This is how a rewind hands an earlier message back. */
@@ -619,6 +652,11 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded);
  * follows through render_tool_result under the name "shell". */
 void render_shell_call(Str cmd, u32 id, b8 expanded);
 void render_tool_result(Str name, Str result, u32 id, b8 expanded);
+/* A plan mode handover: the plan the model submitted, rendered as the
+ * Markdown it wrote, and the question it asked before that. The answer to
+ * either arrives as a tool result and reads like one. */
+void render_plan(Str plan);
+void render_question(Str question);
 /* Verbose rendering shows every line of a call's input and its result, with no
  * "... N more lines" tail and no per-line clip. Off by default: a tool that
  * read a thousand lines would otherwise be the whole scrollback. */

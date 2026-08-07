@@ -105,9 +105,9 @@ def test_a_notice_stacks_above_the_popup(ctx):
     assert "/fork" in rows[bottom - 11], rows[bottom - 15 :]
     assert "/model" in rows[bottom - 10], rows[bottom - 15 :]
     assert "/provider" in rows[bottom - 9], rows[bottom - 15 :]
-    assert "/rewind" in rows[bottom - 8], rows[bottom - 15 :]
-    assert "/copy" in rows[bottom - 7], rows[bottom - 15 :]
-    assert "/verbose" in rows[bottom - 6], rows[bottom - 15 :]
+    assert "/mode" in rows[bottom - 8], rows[bottom - 15 :]
+    assert "/rewind" in rows[bottom - 7], rows[bottom - 15 :]
+    assert "/copy" in rows[bottom - 6], rows[bottom - 15 :]
     assert s.composer_text() == "/", s.composer_lines()
     ctx.check_screen(s, "stacked")
 

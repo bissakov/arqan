@@ -51,6 +51,7 @@ static size_t commands_init(void) {
     g_commands[n++] = (TuiCmd){ STR("/fork"), STR("Continue in a copy, leaving this session as it is") };
     g_commands[n++] = (TuiCmd){ STR("/model"), STR("Pick the model") };
     g_commands[n++] = (TuiCmd){ STR("/provider"), STR("Switch provider, or add one") };
+    g_commands[n++] = (TuiCmd){ STR("/mode"), STR("Switch between Build and Plan mode (Shift+Tab)") };
     g_commands[n++] = (TuiCmd){ STR("/rewind"), STR("Go back to an earlier message and edit it") };
     g_commands[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
     g_commands[n++] = (TuiCmd){ STR("/verbose"), STR("Toggle untruncated tool output") };
@@ -91,38 +92,182 @@ static void on_idle(void *ud) {
     tui_poll_input();
 }
 
+/* Everything one user turn touches, so the interactive loop and the one-shot
+ * -p run drive the same code. */
+typedef struct {
+    Config       *cfg;
+    ToolRegistry *tools;
+    Conv         *conv;
+    Arena        *persist;
+    Arena        *scratch;
+    Session      *sess;
+    size_t        mark;   /* persist offset a conversation starts at */
+    /* An approved plan on its way to a session of its own: it lives in the
+     * scratch arena until the turn that carries it re-anchors it in persist,
+     * which is what lets the conversation it came from be dropped whole. */
+    Str           handoff;
+    b8            echo;   /* write the prompt into the transcript */
+} Agent;
+
+/* What the tool calls of one round asked the turn to do next. */
+typedef enum { TURN_CONTINUE, TURN_DONE, TURN_HANDOFF, TURN_FULL } TurnAction;
+
+/* The mode decides which prompt slot 0 carries and which tools exist, so both
+ * move together and the model never sees one without the other. */
+static void agent_set_mode(Agent *ag, AgentMode mode) {
+    ag->cfg->mode = mode;
+    tools_set_mode(mode);
+    if (ag->conv->n && ag->conv->role[0] == M_SYSTEM)
+        ag->conv->text[0] = mode == MODE_PLAN ? ag->cfg->plan_prompt
+                                              : ag->cfg->system_prompt;
+    tui_set_mode(mode);
+}
+
+/* Answer call `call` with `result` and render it under `name`. False when the
+ * conversation had no room left, which ends the turn. */
+static b8 add_result(Agent *ag, size_t call, Str name, Str result) {
+    Conv *conv = ag->conv;
+    size_t slot = conv_add_tool(conv, conv->tool_call_id[call], result);
+    if (slot == CONV_NONE) {
+        tui_write(STR("\n[conversation is full: /clear to start a new one]\n"));
+        return false;
+    }
+    render_tool_result(name, result, (u32)(slot + 1), conv->expanded[slot]);
+    return true;
+}
+
+static Str json_field(const JVal *j, Str key) {
+    const JVal *v = j ? json_get(j, key) : NULL;
+    return v && v->type == J_STR ? v->u.s : (Str){0};
+}
+
+/* ask_user: the model asks, the picker answers. The rows are the options it
+ * offered, the list opens on the one it recommends, and a last row hands the
+ * composer over for an answer it did not think of. The result is the chosen
+ * text alone, since that is what the user said. Empty when the question was
+ * dismissed. */
+static Str ask_user_answer(Agent *ag, Str args) {
+    JVal *j = json_parse(ag->scratch, args);
+    Str question = json_field(j, STR("question"));
+    const JVal *opts = j ? json_get(j, STR("options")) : NULL;
+    size_t n = opts && opts->type == J_ARR ? opts->u.arr.n : 0;
+    if (n > YOKE_MAX_POPUP - 1) n = YOKE_MAX_POPUP - 1;
+
+    render_question(question);
+
+    TuiCmd *items = arena_new(ag->scratch, TuiCmd, n + 1);
+    if (!items) return (Str){0};
+    size_t start = 0;
+    for (size_t i = 0; i < n; i++) {
+        const JVal *o = json_at(opts, i);
+        Str label = json_field(o, STR("label"));
+        Str detail = json_field(o, STR("detail"));
+        const JVal *rec = o ? json_get(o, STR("recommended")) : NULL;
+        if (rec && rec->type == J_BOOL && rec->u.b) {
+            start = i;
+            Buf b; buf_init(&b, ag->scratch, detail.n + 24);
+            buf_puts(&b, STR("recommended"));
+            if (detail.n) { buf_puts(&b, STR(" \u00b7 ")); buf_puts(&b, detail); }
+            if (buf_ok(&b)) detail = buf_finish(&b);
+        }
+        items[i] = (TuiCmd){ label, detail };
+    }
+    items[n] = (TuiCmd){ STR("+ something else"),
+                         STR("Answer in your own words") };
+
+    size_t pick = 0;
+    if (!tui_pick_from(STR("pick an answer"), items, n + 1, start, &pick))
+        return (Str){0};
+    if (pick < n) return str_dup(ag->persist, items[pick].name);
+
+    char typed[512];
+    if (!tui_ask(STR("your answer"), false, typed, sizeof typed))
+        return (Str){0};
+    return str_dup(ag->persist, str_c(typed));
+}
+
+/* submit_plan: the plan is rendered as the Markdown it was written in, and
+ * the three answers to it are the three ways a turn can go on. */
+static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
+    Str plan = json_field(json_parse(ag->scratch, args), STR("plan"));
+    render_plan(plan);
+
+    const TuiCmd items[] = {
+        { STR("Yes"), STR("Switch to Build mode and carry the plan out") },
+        { STR("Yes, but from a new session"),
+          STR("Start over with the plan as the only context") },
+        { STR("No"), STR("Keep planning; say what to change") },
+    };
+    size_t pick = 2;
+    /* A dismissed question is not an approval, so cancelling is "No". */
+    if (!tui_pick(STR("continue?"), items, 3, TUI_PICK_FIRST, &pick)) pick = 2;
+    if (pick == 2) {
+        *result = STR("The user rejected the plan. Stop and wait for what "
+                      "they want changed.");
+        return TURN_DONE;
+    }
+    if (pick == 0) {
+        agent_set_mode(ag, MODE_BUILD);
+        *result = STR("The user approved the plan. You are in Build mode "
+                      "now: carry it out.");
+        return TURN_CONTINUE;
+    }
+    ag->handoff = plan;
+    *result = STR("The user approved the plan and moved it to a new "
+                  "session, which carries it out from the plan alone.");
+    return TURN_HANDOFF;
+}
+
 /* Run the tool calls the turn just appended to `conv`, the carrier slots in
- * [first, last), and append each result. Returns false when a result did not
- * fit in the conversation, which ends the turn. */
-static b8 run_tool_calls(ToolRegistry *reg, Conv *conv, Arena *scratch,
-                         Arena *persist, size_t first, size_t last) {
+ * [first, last), and append each result. The two plan mode tools are
+ * questions put to the user rather than work, so they are answered here
+ * instead of through tools_run, which has no way to reach the screen. */
+static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
+    Conv *conv = ag->conv;
+    /* Every call of the round is answered even once the user has ended the
+     * turn: a call left without its result is a conversation the provider
+     * refuses on the next message. */
+    TurnAction pending = TURN_CONTINUE;
     for (size_t i = first; i < last; i++) {
         if (!conv_is_call(conv, i)) continue;
         Str name = conv->tool_name[i];
         Str args = conv->text[i];
-        Str id   = conv->tool_call_id[i];
-        size_t tool = tools_find(reg, name);
-        Buf out; buf_init(&out, scratch, 4096);
+        if (str_eq(name, STR("submit_plan"))) {
+            Str result = {0};
+            TurnAction act = submit_plan_answer(ag, args, &result);
+            if (!add_result(ag, i, STR("plan"), result)) return TURN_FULL;
+            if (act != TURN_CONTINUE) pending = act;
+            continue;
+        }
+        if (str_eq(name, STR("ask_user"))) {
+            Str answer = ask_user_answer(ag, args);
+            b8 dismissed = !answer.n;
+            if (dismissed)
+                answer = STR("The user dismissed the question without "
+                             "answering. Stop and wait for their next "
+                             "message.");
+            if (!add_result(ag, i, STR("ask"), answer)) return TURN_FULL;
+            if (dismissed) pending = TURN_DONE;
+            continue;
+        }
+        size_t tool = tools_find(ag->tools, name);
+        Buf out; buf_init(&out, ag->scratch, 4096);
         char err[256] = {0};
-        render_tool_call(name, args, scratch, (u32)(i + 1), conv->expanded[i]);
+        render_tool_call(name, args, ag->scratch, (u32)(i + 1),
+                         conv->expanded[i]);
         char status[32];
         snprintf(status, sizeof status, "running %.*s", (i32)name.n, name.p);
         tui_set_status(status);
-        b8 ok = tools_run(reg, tool, args, scratch, &out, err, sizeof err);
+        b8 ok = tools_run(ag->tools, tool, args, ag->scratch, &out, err,
+                          sizeof err);
         if (!ok && !err[0]) snprintf(err, sizeof err, "tool failed");
         if (!ok) { out.n = 0; buf_putf(&out, "ERROR: %s", err); }
         Str result = buf_finish(&out);
-        Str res_dup = str_dup(persist, result);
+        Str res_dup = str_dup(ag->persist, result);
         if (result.n && !res_dup.p) res_dup = STR("ERROR: out of memory");
-        size_t slot = conv_add_tool(conv, id, res_dup);
-        if (slot == CONV_NONE) {
-            tui_write(STR("\n[conversation is full: /clear to start a new one]\n"));
-            return false;
-        }
-        render_tool_result(name, res_dup, (u32)(slot + 1),
-                           conv->expanded[slot]);
+        if (!add_result(ag, i, name, res_dup)) return TURN_FULL;
     }
-    return true;
+    return pending;
 }
 
 /* The tool a result answers: a result slot carries only the id of the call it
@@ -573,18 +718,6 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
     arena_reset(scratch);
 }
 
-/* Everything one user turn touches, so the interactive loop and the one-shot
- * -p run drive the same code. */
-typedef struct {
-    Config       *cfg;
-    ToolRegistry *tools;
-    Conv         *conv;
-    Arena        *persist;
-    Arena        *scratch;
-    Session      *sess;
-    b8            echo;   /* write the prompt into the transcript */
-} Agent;
-
 /* A line typed in shell mode ('!' as its first byte): it runs here rather than
  * reaching the model, and takes a conversation slot of its own, so the model
  * sees what the user ran, a replay renders it and the session keeps it. */
@@ -625,6 +758,24 @@ static void run_shell(Agent *ag, Str cmd) {
 /* Appends `text` as a user message and streams completions until the model
  * asks for no more tools. False when the turn ended on an error, an interrupt
  * or a full conversation, which is the exit status of a one-shot run. */
+static b8 agent_turn(Agent *ag, Str text);
+
+/* An approved plan, continued in a session of its own: the conversation that
+ * produced it is dropped whole and the plan becomes the first message of the
+ * next one, so the work starts with the plan as its entire context. The plan
+ * still lives in the scratch arena, which the persistent rewind does not
+ * touch, and the turn below re-anchors it in persist. */
+static b8 agent_handoff(Agent *ag) {
+    Str plan = ag->handoff;
+    ag->handoff = (Str){0};
+    ag->conv->n = 1;
+    ag->persist->off = ag->mark;
+    agent_set_mode(ag, MODE_BUILD);
+    session_begin(ag->sess);
+    tui_clear();
+    return agent_turn(ag, plan);
+}
+
 static b8 agent_turn(Agent *ag, Str text) {
     Conv *conv = ag->conv;
 
@@ -699,15 +850,20 @@ static b8 agent_turn(Agent *ag, Str text) {
          * [before, conv->n); run them straight off the conversation rather
          * than mirroring them into a second, separately capped array. */
         size_t tail = conv->n;
-        if (!run_tool_calls(ag->tools, conv, ag->scratch, ag->persist,
-                            before, tail)) {
+        TurnAction act = run_tool_calls(ag, before, tail);
+        if (act == TURN_FULL) { tui_set_status("ready"); break; }
+        if (act == TURN_HANDOFF) { ok = true; break; }
+        if (act == TURN_DONE) {
+            tui_write(STR("\n"));
             tui_set_status("ready");
+            ok = true;
             break;
         }
         tui_write(STR("\n"));
     }
     tui_set_busy(false);
     session_save(ag->sess, conv);
+    if (ag->handoff.n) return agent_handoff(ag);
     return ok;
 }
 
@@ -743,6 +899,16 @@ i32 main(i32 argc, char **argv) {
         return 2;
     }
     arena_reset(&scratch);
+    /* Both prompts are built before the conversation starts, so switching
+     * mode later is an assignment rather than a file read mid-turn. */
+    cfg.plan_prompt = prompt_build_plan(&tools, &persist, &scratch, prompt_err,
+                                        sizeof prompt_err);
+    if (!cfg.plan_prompt.n) {
+        fprintf(stderr, "yoke: %s\n", prompt_err);
+        return 2;
+    }
+    arena_reset(&scratch);
+    tools_set_mode(cfg.mode);
 
     /* Prompt history lives in the XDG state dir. Without a resolvable one,
      * recall still works for this session and only the on-disk copy is lost. */
@@ -792,6 +958,7 @@ i32 main(i32 argc, char **argv) {
     Agent agent = {
         .cfg = &cfg, .tools = &tools, .conv = &conv,
         .persist = &persist, .scratch = &scratch, .sess = &sess,
+        .mark = session_mark,
         .echo = !opts.have_prompt,
     };
 
@@ -836,6 +1003,16 @@ i32 main(i32 argc, char **argv) {
             arena_reset(&scratch);
             session_begin(&sess);   /* the next message starts a new file */
             tui_clear();
+            continue;
+        }
+        if (!strcmp(line, "/mode")) {
+            agent_set_mode(&agent, cfg.mode == MODE_PLAN ? MODE_BUILD
+                                                         : MODE_PLAN);
+            tui_notice(cfg.mode == MODE_PLAN
+                       ? STR("plan mode: read-only, and it ends with a plan "
+                             "to approve")
+                       : STR("build mode: the agent edits files and runs "
+                             "commands"));
             continue;
         }
         if (!strcmp(line, "/fork")) {
