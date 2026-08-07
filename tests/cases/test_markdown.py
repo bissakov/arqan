@@ -137,6 +137,27 @@ def test_raw_toggles_formatting_off_and_back_on(ctx):
     assert "\u2022 one" in s.text(), s.text()
 
 
+def test_raw_repaints_the_reply_already_on_screen(ctx):
+    """'/raw' applies to the transcript, not only to the next reply."""
+    ctx.scenario("text=#+Title\\n-+one")
+    s = ctx.spawn()
+    s.submit("first")
+    s.wait_text("\u2022 one")
+    s.wait_turn_done()
+    assert "Title" in s.text() and "# Title" not in s.text(), s.text()
+
+    s.submit("/raw")
+    s.wait_text("raw: replies are shown as the model wrote them")
+    text = s.text()
+    assert "# Title" in text and "- one" in text, text
+    assert "\u2022 one" not in text, text
+
+    s.submit("/raw")
+    s.wait_text("raw: off, Markdown is formatted")
+    text = s.text()
+    assert "\u2022 one" in text and "# Title" not in text, text
+
+
 def test_streaming_stays_incremental(ctx):
     """Rendering is per delta: a long line shows up as it arrives."""
     ctx.scenario("words=60,chunk=2,delay=0.03")

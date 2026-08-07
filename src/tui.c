@@ -1467,16 +1467,20 @@ void tui_notice(Str msg) {
     repaint();
 }
 
-void tui_clear(void) {
+void tui_clear_transcript(void) {
     g_tui.notice_n = 0;
     g_tui.transcript_n = 0;
     g_tui.span_n = 0;
     wrap_invalidate();
     g_tui.scroll_rows = 0;
-    g_tui.context_tokens = 0;
-    g_tui.context_known = false;
     g_tui.frame_valid = false;
     repaint();
+}
+
+void tui_clear(void) {
+    g_tui.context_tokens = 0;
+    g_tui.context_known = false;
+    tui_clear_transcript();
 }
 
 void tui_write(Str s) {

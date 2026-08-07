@@ -562,6 +562,13 @@ i32 main(i32 argc, char **argv) {
         }
         if (!strcmp(line, "/raw")) {
             md_set_raw(!md_raw());
+            /* The transcript is a rendering of the conversation, so the
+             * setting that produced it applies to what is already on screen
+             * too: replay it under the new one. */
+            arena_reset(&scratch);
+            tui_clear_transcript();
+            render_conv(&conv, &scratch);
+            arena_reset(&scratch);
             tui_notice(md_raw()
                        ? STR("raw: replies are shown as the model wrote them")
                        : STR("raw: off, Markdown is formatted"));

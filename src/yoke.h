@@ -443,6 +443,9 @@ void tui_stop(void);
 void tui_set_status(const char *status);
 void tui_set_context_tokens(size_t tokens);
 void tui_clear(void);
+/* Drop the transcript alone, leaving the context counter as it is: the
+ * conversation is unchanged, only its rendering is about to be replayed. */
+void tui_clear_transcript(void);
 /* One line where the completion popup would be: the answer to a command that
  * opened no popup, retired by the next keystroke. Empty clears it. The
  * transcript is the conversation, so this never lands in it. */
