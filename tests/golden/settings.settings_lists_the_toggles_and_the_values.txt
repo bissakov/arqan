@@ -1,0 +1,26 @@
+--- screen 80x24 ---
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|    Space changes the selected row · Enter or Esc closes
+|  › [ ] Verbose tool output  Every line a tool printed, untruncated
+|    [ ] Raw Markdown         Replies as the model wrote them, unformatted
+|    [x] Stream replies       Paint a reply as it arrives, not once it is whole
+|    [ ] Telemetry            An anonymized debug log, for a bug report
+|        Mode                 Build: edits files and runs commands
+|        Model                mock-model
+|        Provider             none yet
+|        Max tokens           4096
+|
+|  › Message yoke...
+|
+|
+|  ● settings · mock-model · build · local · ~/work · -
+--- cursor row=21 col=5 visible=yes ---

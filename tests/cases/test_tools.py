@@ -204,13 +204,12 @@ def test_large_tool_output_is_truncated_in_the_transcript(ctx):
 
 
 def test_verbose_shows_every_line_of_a_result(ctx):
-    """/verbose drops the transcript's caps; toggling it back restores them."""
+    """Verbose drops the transcript's caps; toggling it back restores them."""
     body = "\n".join(f"line {i:04d} of output" for i in range(40))
     ctx.write_file("big.txt", body)
     ctx.scenario('tool=read:{"path":"big.txt"},final_text=all+of+it')
     s = ctx.spawn()
-    s.submit("/verbose")
-    s.wait_text("verbose: tool output is shown in full")
+    s.settings_toggle("Verbose tool output")
     s.submit("read big.txt")
     s.wait_text("all of it")
     s.wait_turn_done()
@@ -222,8 +221,7 @@ def test_verbose_shows_every_line_of_a_result(ctx):
         s.mouse("wheel-up", 5, 10).sync()
     assert "line 0000 of output" in s.text(), s.text()
 
-    s.submit("/verbose")
-    s.wait_text("verbose: tool output is truncated")
+    s.settings_toggle("Verbose tool output")
     # tool_rounds counts the whole conversation's tool replies, and the
     # verbose turn already left one behind
     ctx.scenario(
@@ -246,8 +244,7 @@ def test_verbose_shows_a_long_command_whole(ctx):
     s.wait_turn_done()
     assert " ..." in s.text(), s.text()
 
-    s.submit("/verbose")
-    s.wait_text("verbose: tool output is shown in full")
+    s.settings_toggle("Verbose tool output")
     ctx.scenario(f"tool=bash:{args},tool_rounds=2,final_text=ran+again")
     s.submit("run it again")
     s.wait_text("ran again")
@@ -279,19 +276,17 @@ def read_a_big_file(ctx, s, lines=40):
 
 
 def test_verbose_repaints_the_blocks_already_on_screen(ctx):
-    """/verbose applies to the transcript, not only to the next tool call."""
+    """Verbose applies to the transcript, not only to the next tool call."""
     s = ctx.spawn()
     read_a_big_file(ctx, s)
     assert "\u25be 28 more lines" in s.text(), s.text()
 
-    s.submit("/verbose")
-    s.wait_text("verbose: tool output is shown in full")
+    s.settings_toggle("Verbose tool output")
     text = s.text()
     assert "more lines" not in text, text
     assert "line 0039 of output" in text, text
 
-    s.submit("/verbose")
-    s.wait_text("verbose: tool output is truncated")
+    s.settings_toggle("Verbose tool output")
     assert "\u25be 28 more lines" in s.text(), s.text()
 
 

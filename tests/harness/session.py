@@ -252,6 +252,48 @@ class Session:
             lambda t: self.composer_text() == "", "the composer to clear", timeout
         )
 
+    # ---- the settings screen ---------------------------------------------
+    def popup_selected(self) -> str:
+        """The highlighted row of an open popup, picker or settings screen.
+
+        The composer carries the same marker, so this is the first such row:
+        every overlay is painted above it.
+        """
+        marker = "\u203a "
+        rows = [l.strip() for l in self.term.lines() if l.lstrip().startswith(marker)]
+        return rows[0] if rows else ""
+
+    def open_settings(self, timeout: float = 10.0) -> "Session":
+        self.submit("/settings")
+        return self.wait_text("Verbose tool output", timeout)
+
+    def settings_select(self, label: str) -> "Session":
+        """Move the selection onto the row holding `label`."""
+        for _ in range(16):
+            if label in self.popup_selected():
+                return self
+            self.key("down").sync()
+        raise AssertionError(f"no settings row for {label!r}\n{self.text()}")
+
+    def settings_act(self, label: str) -> "Session":
+        """Open the settings, act on `label` with Space, and leave it open."""
+        return self.open_settings().settings_select(label).key("space").sync()
+
+    def settings_toggle(self, label: str) -> "Session":
+        """Open, flip the checkbox on `label`, wait for it, close with Escape.
+
+        The box is the screen's own answer, so it is also what says the toggle
+        landed; nothing here waits on a message.
+        """
+        self.open_settings().settings_select(label)
+        want = "[ ] " if "[x] " in self.popup_selected() else "[x] "
+        self.key("space").sync()
+        self.wait_for(
+            lambda t: t.contains(want + label), f"{label} to read {want!r}"
+        )
+        self.key("esc")
+        return self.wait_gone("Verbose tool output")
+
     def wait_turn_done(self, timeout: float = 30.0) -> "Session":
         """Wait for the agent loop to go back to idle.
 

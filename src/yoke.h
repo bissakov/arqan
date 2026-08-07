@@ -374,6 +374,9 @@ typedef struct {
      * "data:" prefix). Return false to abort the stream. */
     b8 (*on_line)(Str line, void *ud);
     void *ud;
+    /* Non-streaming: the whole response body lands here and on_line is never
+     * called, since one JSON document is not a sequence of events. */
+    Buf *body_out;
     const char *body;     /* nul-terminated JSON request                    */
     const volatile sig_atomic_t *interrupt_flag;
     /* The transfer waits on curl's sockets and `idle_fd` together, so the UI
@@ -384,7 +387,11 @@ typedef struct {
     void *idle_ud;
 } HttpReq;
 
-i32     http_sse_post(const HttpReq *r);  /* 0 on success, nonzero on error */
+/* POST the body to <base_url>/chat/completions, delivering the reply through
+ * on_line or body_out. 0 on success, a negative HTTP status for a refused
+ * request, 3 for an interrupt, other positive values for a transport
+ * failure. */
+i32     http_post(const HttpReq *r);
 /* GET base_url + path, appending the whole body to `out`. Returns 0 on
  * success, a negative HTTP status for a refused request, positive for a
  * transport failure. Blocking: the callers fetch a short document between
@@ -602,6 +609,13 @@ b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
  * entries it was given. */
 b8 tui_pick_from(Str title, const TuiCmd *items, size_t n, size_t start,
                  size_t *out);
+/* The settings screen: the same list, read rather than chosen from. A row is
+ * its label and what it currently says, and Space acts on the selected one:
+ * true with *sel naming it, which is the caller's to interpret. Enter and
+ * Escape close, returning false. `sel` is in and out, so a caller that
+ * rebuilds the rows and reopens after a change opens where the reader left
+ * it. */
+b8 tui_settings(Str title, const TuiCmd *rows, size_t n, size_t *sel);
 /* Modal one-line question, answered in the composer with `question` in the
  * notice row. `secret` echoes the answer as dots and keeps it out of the
  * prompt history and the transcript, which is what an API key wants. Returns

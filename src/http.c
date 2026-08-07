@@ -1,7 +1,8 @@
-/* http.c: libcurl streaming POST (SSE).
+/* http.c: libcurl POST, streaming or not.
  *
- * We hand libcurl a write callback that buffers into a small stack buffer and
- * emits one line at a time to on_line. No heap use on our side.
+ * A stream is handed to libcurl with a write callback that buffers into a
+ * small stack buffer and emits one line at a time to on_line; a single reply
+ * accumulates whole into the caller's Buf. No heap use on our side.
  */
 #include "yoke.h"
 
@@ -213,7 +214,7 @@ i32 http_get(const char *base_url, const char *path, const char *api_key,
  * that Ctrl-C feels immediate, long enough to stay idle between events. */
 #define HTTP_POLL_MS 100
 
-i32 http_sse_post(const HttpReq *r) {
+i32 http_post(const HttpReq *r) {
     CURL *curl = curl_easy_init();
     if (!curl) { yoke_log(YOKE_LOG_ERROR, "curl init failed"); return 1; }
 
@@ -224,9 +225,11 @@ i32 http_sse_post(const HttpReq *r) {
         return 1;
     }
 
+    b8 stream = r->body_out == NULL;
     struct curl_slist *hdrs = NULL;
     hdrs = curl_slist_append(hdrs, "Content-Type: application/json");
-    hdrs = curl_slist_append(hdrs, "Accept: text/event-stream");
+    hdrs = curl_slist_append(hdrs, stream ? "Accept: text/event-stream"
+                                          : "Accept: application/json");
     hdrs = auth_header(hdrs, r->api_key);
 
     Ctx ctx = {0};
@@ -234,8 +237,9 @@ i32 http_sse_post(const HttpReq *r) {
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, r->body);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, stream ? write_cb : body_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, stream ? (void *)&ctx
+                                                     : (void *)r->body_out);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, drop_header_cb);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     /* We own SIGWINCH/SIGINT and run single-threaded; curl's signal-based
@@ -284,12 +288,17 @@ i32 http_sse_post(const HttpReq *r) {
             if (msg->msg == CURLMSG_DONE) rc = msg->data.result;
     }
 
+    /* A body that does not end in a newline still has a last line, and for a
+     * single JSON document that line is the whole reply. */
+    if (stream && !interrupted && rc == CURLE_OK && ctx.llen)
+        dispatch_line(&ctx, "\n", 1);
+
     /* curl writes a `long` through this pointer, whatever its width. */
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     i64 http = (i64)http_code;
-    http_record("POST", "/chat/completions", url, curl, rc, http, &ctx,
-                interrupted);
+    http_record("POST", "/chat/completions", url, curl, rc, http,
+                stream ? &ctx : NULL, interrupted);
 
     curl_multi_remove_handle(multi, curl);
     curl_multi_cleanup(multi);

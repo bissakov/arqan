@@ -2220,6 +2220,12 @@ static void pick_search_row(Str query) {
     tui_notice((Str){row, len});   /* repaints */
 }
 
+/* What the keys of an open list mean. A picker is answered by choosing one of
+ * its rows, so Enter takes it and Escape declines; a settings screen is a
+ * list of things to act on, so Space acts on the selected row and both Enter
+ * and Escape close it. */
+typedef enum { PICK_CHOOSE, PICK_SETTINGS } PickKind;
+
 /* A modal list over the same popup the composer completes with: same rows,
  * same highlight, same keys. Only the source of the entries differs, so the
  * popup is swapped in and the composer's own state restored on the way out, so
@@ -2229,7 +2235,8 @@ static void pick_search_row(Str query) {
  * hundreds of entries is not a way to choose one, so typing filters instead of
  * reaching the composer. */
 static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
-                    TuiPickAnchor anchor, size_t start, size_t *out) {
+                    TuiPickAnchor anchor, size_t start, PickKind kind,
+                    size_t *out) {
     if (!g_tui.fullscreen || !items || !n || !out) return false;
     if (n > YOKE_MAX_POPUP) n = YOKE_MAX_POPUP;
 
@@ -2242,7 +2249,7 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
     memcpy(saved_status, g_tui.status, sizeof saved_status);
     memcpy(saved_notice, g_tui.notice, sizeof saved_notice);
 
-    b8 search = n > TUI_PICK_SEARCH_MIN;
+    b8 search = kind == PICK_CHOOSE && n > TUI_PICK_SEARCH_MIN;
     char query[TUI_PICK_QUERY];
     size_t query_n = 0;
 
@@ -2255,6 +2262,12 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
     /* The status names the picker last, so a frame that announces it already
      * carries the list and the search box. */
     if (search) pick_search_row((Str){query, query_n});
+    /* The keys, in the row a command answers in, unless something already
+     * answered there: a screen reopened after acting on a row would otherwise
+     * paint its own hint over what the action had to say. */
+    if (kind == PICK_SETTINGS && !g_tui.notice_n)
+        tui_notice(STR("Space changes the selected row · Enter or Esc "
+                       "closes"));
     char status[sizeof g_tui.status];
     snprintf(status, sizeof status, "%.*s", (i32)title.n, title.p);
     tui_set_status(status);   /* repaints */
@@ -2267,8 +2280,14 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
          * cancels here just as it abandons a draft at the prompt. */
         if (c < 0 || c == 0x03 || c == 0x04) break;   /* EOF / signal / Ctrl-D */
         if (c == '\r' || c == '\n') {
+            if (kind == PICK_SETTINGS) break;
             if (!g_tui.comp_n) continue;
             *out = g_tui.comp_idx[g_tui.comp_sel];
+            chosen = true;
+            break;
+        }
+        if (c == ' ' && kind == PICK_SETTINGS) {
+            if (!g_tui.comp_n) continue;
             chosen = true;
             break;
         }
@@ -2298,6 +2317,12 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
         repaint();
     }
 
+    /* The row the reader left the selection on, whether they acted on it or
+     * closed: a settings screen that reopens after a change opens where it
+     * was, not back at the top. */
+    if (kind == PICK_SETTINGS && g_tui.comp_n)
+        *out = g_tui.comp_idx[g_tui.comp_sel];
+
     g_tui.cmds = saved_cmds;
     g_tui.cmd_n = saved_cmd_n;
     g_tui.pick_end = false;
@@ -2314,12 +2339,19 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
 
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t *out) {
-    return pick_impl(title, items, n, anchor, SIZE_MAX, out);
+    return pick_impl(title, items, n, anchor, SIZE_MAX, PICK_CHOOSE, out);
 }
 
 b8 tui_pick_from(Str title, const TuiCmd *items, size_t n, size_t start,
                  size_t *out) {
-    return pick_impl(title, items, n, TUI_PICK_FIRST, start, out);
+    return pick_impl(title, items, n, TUI_PICK_FIRST, start, PICK_CHOOSE, out);
+}
+
+b8 tui_settings(Str title, const TuiCmd *rows, size_t n, size_t *sel) {
+    if (!sel) return false;
+    size_t start = *sel;
+    return pick_impl(title, rows, n, TUI_PICK_FIRST, start, PICK_SETTINGS,
+                     sel);
 }
 
 /* A question the composer answers, borrowed for the length of the call: the

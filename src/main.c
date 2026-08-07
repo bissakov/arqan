@@ -58,10 +58,7 @@ static size_t commands_init(void) {
     g_commands[n++] = (TuiCmd){ STR("/mode"), STR("Switch between Build and Plan mode (Shift+Tab)") };
     g_commands[n++] = (TuiCmd){ STR("/rewind"), STR("Go back to an earlier message and edit it") };
     g_commands[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
-    g_commands[n++] = (TuiCmd){ STR("/verbose"), STR("Toggle untruncated tool output") };
-    g_commands[n++] = (TuiCmd){ STR("/raw"), STR("Toggle raw Markdown") };
-    g_commands[n++] = (TuiCmd){ STR("/telemetry"),
-                                STR("Toggle an anonymized debug log") };
+    g_commands[n++] = (TuiCmd){ STR("/settings"), STR("Change how yoke behaves") };
     g_commands[n++] = (TuiCmd){ STR("/exit"), STR("Quit yoke") };
     g_command_n = n;
     return n;
@@ -794,6 +791,114 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
     arena_reset(scratch);
 }
 
+/* ---- /settings -----------------------------------------------------------
+ * The settings the session has: three toggles that were once commands of
+ * their own, and the values that decide what a turn is sent to. The screen is
+ * its own answer, so nothing here writes a notice: a toggle that refused to
+ * change is a box that stayed empty, and a value that changed is a row that
+ * reads differently.
+ *
+ * Nothing is persisted here either. A setting that outlives the session is
+ * remembered by whoever owns it, which is the telemetry file, the endpoint
+ * store or the state directory's model.
+ */
+enum {
+    SET_VERBOSE, SET_RAW, SET_STREAM, SET_TELEMETRY,
+    SET_MODE, SET_MODEL, SET_PROVIDER, SET_MAX_TOKENS, SET_N
+};
+
+/* "[x] label" for a toggle, and the same column for a value row, so the two
+ * kinds read as one list. The label alone is the fallback: a row that lost
+ * its checkbox to a full arena is still the row it was. */
+static Str setting_label(Arena *a, Str label, const char *box) {
+    Buf b; buf_init(&b, a, label.n + 8);
+    buf_puts(&b, str_c(box));
+    buf_puts(&b, label);
+    return buf_ok(&b) ? buf_finish(&b) : label;
+}
+static Str setting_check(Arena *a, b8 on, Str label) {
+    return setting_label(a, label, on ? "[x] " : "[ ] ");
+}
+static Str setting_value(Arena *a, Str label) {
+    return setting_label(a, label, "    ");
+}
+
+/* How many tokens one reply may run to, asked for in the composer. An answer
+ * that is not a number leaves the setting alone, since the alternative is
+ * guessing at what was meant. */
+static void ask_max_tokens(Config *cfg) {
+    char typed[32];
+    if (!tui_ask(STR("max tokens for one reply"), false, typed, sizeof typed))
+        return;
+    b8 ok = false;
+    i64 v = str_int(str_trim(str_c(typed)), &ok);
+    if (!ok || v < 1) return;
+    cfg->max_tokens = v > (1 << 20) ? (1 << 20) : (i32)v;
+}
+
+static void choose_settings(Agent *ag) {
+    Config *cfg = ag->cfg;
+    Arena *scratch = ag->scratch;
+    size_t sel = 0;
+    for (;;) {
+        arena_reset(scratch);
+        char tokens[16];
+        snprintf(tokens, sizeof tokens, "%d", cfg->max_tokens);
+        TuiCmd rows[SET_N];
+        rows[SET_VERBOSE] = (TuiCmd){
+            setting_check(scratch, render_verbose(), STR("Verbose tool output")),
+            STR("Every line a tool printed, untruncated") };
+        rows[SET_RAW] = (TuiCmd){
+            setting_check(scratch, md_raw(), STR("Raw Markdown")),
+            STR("Replies as the model wrote them, unformatted") };
+        rows[SET_STREAM] = (TuiCmd){
+            setting_check(scratch, cfg->stream, STR("Stream replies")),
+            STR("Paint a reply as it arrives, not once it is whole") };
+        rows[SET_TELEMETRY] = (TuiCmd){
+            setting_check(scratch, telemetry_on(), STR("Telemetry")),
+            STR("An anonymized debug log, for a bug report") };
+        rows[SET_MODE] = (TuiCmd){
+            setting_value(scratch, STR("Mode")),
+            cfg->mode == MODE_PLAN ? STR("Plan: read-only, ends with a plan")
+                                   : STR("Build: edits files and runs commands") };
+        rows[SET_MODEL] = (TuiCmd){
+            setting_value(scratch, STR("Model")), cfg->model };
+        rows[SET_PROVIDER] = (TuiCmd){
+            setting_value(scratch, STR("Provider")),
+            cfg->provider.n ? cfg->provider : STR("none yet") };
+        rows[SET_MAX_TOKENS] = (TuiCmd){
+            setting_value(scratch, STR("Max tokens")), str_c(tokens) };
+
+        if (!tui_settings(STR("settings"), rows, SET_N, &sel)) break;
+        switch (sel) {
+            case SET_VERBOSE:
+                render_set_verbose(!render_verbose());
+                rerender_conv(ag->conv, scratch, 0);
+                break;
+            case SET_RAW:
+                md_set_raw(!md_raw());
+                rerender_conv(ag->conv, scratch, 0);
+                break;
+            case SET_STREAM:
+                cfg->stream = !cfg->stream;
+                break;
+            case SET_TELEMETRY:
+                if (telemetry_set(!telemetry_on(), scratch) && telemetry_on())
+                    telemetry_session(cfg, ag->tools);
+                break;
+            case SET_MODE:
+                agent_set_mode(ag, cfg->mode == MODE_PLAN ? MODE_BUILD
+                                                          : MODE_PLAN);
+                break;
+            case SET_MODEL:   choose_model(cfg, ag->persist, scratch); break;
+            case SET_PROVIDER:choose_provider(cfg, ag->persist, scratch); break;
+            case SET_MAX_TOKENS: ask_max_tokens(cfg); break;
+            default: break;
+        }
+    }
+    arena_reset(scratch);
+}
+
 /* A line typed in shell mode ('!' as its first byte): it runs here rather than
  * reaching the model, and takes a conversation slot of its own, so the model
  * sees what the user ran, a replay renders it and the session keeps it. */
@@ -1149,15 +1254,8 @@ i32 main(i32 argc, char **argv) {
             copy_last_reply(&conv);
             continue;
         }
-        if (!strcmp(line, "/raw")) {
-            md_set_raw(!md_raw());
-            /* The transcript is a rendering of the conversation, so the
-             * setting that produced it applies to what is already on screen
-             * too: replay it under the new one. */
-            rerender_conv(&conv, &scratch, 0);
-            tui_notice(md_raw()
-                       ? STR("raw: replies are shown as the model wrote them")
-                       : STR("raw: off, Markdown is formatted"));
+        if (!strcmp(line, "/settings")) {
+            choose_settings(&agent);
             continue;
         }
         if (!strncmp(line, "/expand ", 8)) {
@@ -1168,33 +1266,6 @@ i32 main(i32 argc, char **argv) {
                 conv.expanded[id - 1] = !conv.expanded[id - 1];
                 rerender_conv(&conv, &scratch, (u32)id);
             }
-            continue;
-        }
-        if (!strcmp(line, "/verbose")) {
-            render_set_verbose(!render_verbose());
-            rerender_conv(&conv, &scratch, 0);
-            tui_notice(render_verbose()
-                       ? STR("verbose: tool output is shown in full")
-                       : STR("verbose: tool output is truncated"));
-            continue;
-        }
-        if (!strcmp(line, "/telemetry")) {
-            b8 want = !telemetry_on();
-            if (!telemetry_set(want, &scratch)) {
-                tui_notice(STR("telemetry needs a state directory: "
-                               "nothing to record into"));
-                continue;
-            }
-            if (!want) {
-                tui_notice(STR("telemetry: off"));
-                continue;
-            }
-            /* Recording starts with what the run is, so a file collected
-             * from here on stands on its own. */
-            telemetry_session(&cfg, &tools);
-            Str path = telemetry_file();
-            notice_fmt("telemetry: on, recording to %.*s", (i32)path.n,
-                       path.p);
             continue;
         }
         if (!strcmp(line, "/model")) {

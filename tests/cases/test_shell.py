@@ -62,20 +62,18 @@ def test_empty_command_answers_in_the_notice_row(ctx):
 
 
 def test_a_run_survives_a_rerender(ctx):
-    """A replay of the transcript is a replay of the run: /verbose keeps it."""
+    """A replay of the transcript is a replay of the run: a setting keeps it."""
     s = ctx.spawn()
     s.submit("!echo still-here")
     s.wait_text("\u2514\u2500 exit 0")
 
-    s.submit("/verbose")
-    s.wait_text("verbose: tool output is shown in full")
+    s.settings_toggle("Verbose tool output")
     text = s.text()
     assert "\u25c6  shell echo still-here" in text, text
     assert "still-here" in text, text
     assert "| |_| | (_) |" not in text, "the welcome screen is not the answer"
 
-    s.submit("/raw")
-    s.wait_text("raw: replies are shown as the model wrote them")
+    s.settings_toggle("Raw Markdown")
     assert "\u25c6  shell echo still-here" in s.text(), s.text()
 
 

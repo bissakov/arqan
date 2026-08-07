@@ -306,6 +306,10 @@ class _Handler(BaseHTTPRequestHandler):
             scenario.tools
         )
 
+        if not body.get("stream", True):
+            self._completion(scenario, messages, tool_replies, emit_tools, model)
+            return
+
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -407,6 +411,54 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
+
+
+    def _completion(self, scenario, messages, tool_replies, emit_tools, model):
+        """`stream: false`: the same reply as one chat.completion document."""
+        message = {"role": "assistant", "content": None}
+        completion_chars = 0
+        if scenario.reasoning and tool_replies == 0:
+            message[scenario.reasoning_field] = scenario.reasoning
+        if emit_tools:
+            message["tool_calls"] = [
+                {
+                    "index": index,
+                    "id": f"call_{index}",
+                    "type": "function",
+                    "function": {"name": name, "arguments": args},
+                }
+                for index, (name, args) in enumerate(scenario.tools)
+            ]
+            completion_chars = sum(len(a) for _, a in scenario.tools)
+            finish = "tool_calls"
+        else:
+            text = scenario.body_text() if tool_replies == 0 else scenario.follow_up_text()
+            message["content"] = text
+            completion_chars = len(text)
+            finish = "stop"
+
+        payload = {
+            "id": "chatcmpl-mock",
+            "object": "chat.completion",
+            "created": 1700000000,
+            "model": model or "mock",
+            "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+        }
+        if scenario.usage:
+            prompt = scenario.prompt_tokens
+            if prompt is None:
+                prompt = max(1, len(json.dumps(messages)) // 4)
+            completion = scenario.completion_tokens
+            if completion is None:
+                completion = max(1, completion_chars // 4)
+            payload["usage"] = {
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "total_tokens": prompt + completion,
+            }
+        if scenario.first_delay:
+            time.sleep(scenario.first_delay)
+        self._json(200, payload)
 
 
 def _split(s: str, n: int) -> list[str]:

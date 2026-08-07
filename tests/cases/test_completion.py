@@ -11,8 +11,7 @@ def test_popup_opens_on_slash(ctx):
     assert "Start a fresh conversation" in text, text
     assert "Copy the last response to the clipboard" in text, text
     # More commands than rows: the rest are reached by moving the selection.
-    assert "/verbose" not in text, text
-    assert "/raw" not in text, text
+    assert "/settings" not in text, text
     assert "/exit" not in text, text
     ctx.check_screen(s)
 
@@ -69,7 +68,7 @@ def test_enter_submits_the_highlighted_entry(ctx):
     """Enter runs whatever the popup highlights, not what was typed."""
     s = ctx.spawn()
     s.type("/").sync()
-    s.key(*(["down"] * 11)).sync()        # highlight '/exit', the last entry
+    s.key(*(["down"] * 9)).sync()         # highlight '/exit', the last entry
     s.key("enter")
     assert s.wait_exit() == 0, "Enter should have run the highlighted entry"
 
@@ -116,7 +115,7 @@ def test_ctrl_n_p_move_the_selection(ctx):
     """Ctrl-N / Ctrl-P cycle the popup the same way as the arrows."""
     s = ctx.spawn()
     s.type("/").sync()
-    s.key(*(["ctrl-n"] * 12)).sync()  # one per command: wraps to the first
+    s.key(*(["ctrl-n"] * 10)).sync()  # one per command: wraps to the first
     s.key("tab").sync()
     assert s.composer_text() == "/clear", s.composer_lines()
 
@@ -153,8 +152,7 @@ def test_popup_eats_into_transcript_not_composer(ctx):
     assert s.composer_text() == "/", s.composer_lines()
     # the popup entries sit immediately above the composer padding row
     rows = s.screen.lines()
-    # the popup holds eight entries, so '/verbose', '/raw' and '/exit' wait
-    # below
+    # the popup holds eight entries, so '/settings' and '/exit' wait below
     assert "/copy" in rows[s.screen.rows - 6], rows[s.screen.rows - 13 :]
     assert "/rewind" in rows[s.screen.rows - 7], rows[s.screen.rows - 13 :]
     assert "/mode" in rows[s.screen.rows - 8], rows[s.screen.rows - 13 :]

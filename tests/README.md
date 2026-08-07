@@ -64,6 +64,10 @@ Nothing sleeps for a fixed time; tests wait for states.
 * `s.submit(text)`: returns once the composer clears, which is the signal a
   turn actually started.
 * `s.wait_turn_done()`: returns when the agent loop is idle again.
+* `s.settings_toggle(label)`: opens `/settings`, flips that checkbox, waits
+  for the box to read back, and closes. `open_settings`, `settings_select` and
+  `settings_act` are the same gesture in pieces, for a value row that opens a
+  picker or a question.
 
 "Quiet" means no output for a short window. The window has to outlast the
 largest gap the frames being waited on can contain, so it follows the
@@ -90,7 +94,8 @@ accept an intended change, and read the diff before you do.
 ## The dummy provider
 
 `mockprovider/server.py` serves `POST /v1/chat/completions` with SSE deltas,
-tool calls, `stream_options.include_usage` and `[DONE]`. What it streams comes
+tool calls, `stream_options.include_usage` and `[DONE]`, or, when the request
+asks for `stream: false`, the same reply as one `chat.completion` document. What it streams comes
 from a scenario string:
 
 ```python

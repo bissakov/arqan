@@ -25,7 +25,7 @@ src/
   yoke.h          single umbrella header (all types + fwd decls)
   core.c          arena, Str, Buf, log, time
   json.c          tiny arena JSON parser + serializer
-  http.c          libcurl streaming POST (SSE) + plain GET
+  http.c          libcurl POST (SSE or whole reply) + plain GET
   paths.c         XDG base directory resolution
   endpoints.c     user-defined providers (/provider) and their stored keys
   history.c       prompt history, mirrored to the XDG state dir
@@ -172,12 +172,25 @@ forked from where `/resume` can still find it, `/model` switches model,
 `/mode` switches between Build and Plan, as Shift+Tab does,
 `/rewind` goes back to an earlier message, as the double Esc does,
 `/copy` puts the last reply on the clipboard as the Markdown the model wrote,
-`/verbose` toggles untruncated tool output, `/raw` toggles Markdown rendering
-off, `/telemetry` toggles the debug record below and `/exit` quits.
+`/settings` opens the screen below and `/exit` quits.
+
+### Settings
+
+`/settings` is where the rest of them live, since a toggle is not worth a
+command of its own. The rows are the session's: untruncated tool output, raw
+Markdown, whether a reply is streamed or arrives whole, the telemetry record
+below, and the mode, model, provider and token cap a turn is sent with. Space
+acts on the selected row, flipping a checkbox or opening what changes a value,
+and Enter or Escape close. The screen is its own answer: a box that stayed
+empty is a setting that refused to change.
+
+Nothing is persisted here. A setting that outlives the session is remembered
+by whoever owns it, which is the telemetry file, the endpoint store or the
+state directory's model.
 
 ### Telemetry
 
-`/telemetry` records what a session did, for a bug report. It is off until it
+Telemetry records what a session did, for a bug report. It is off until it
 is asked for, and the answer is remembered, so a run that never reaches the
 composer records too. Events are JSON objects, one per line, appended to
 `$XDG_STATE_HOME/yoke/telemetry.jsonl`: the session and its settings, each
@@ -236,7 +249,7 @@ A reply is Markdown, and the transcript renders it: headings, lists, block
 quotes, thematic breaks and fenced code become shapes, emphasis and inline
 code become styles, and the markers themselves are dropped. Rendering follows
 the stream, so a delta is painted as soon as its shape is known and only an
-unclosed marker waits for its closer. `/raw` turns it off and shows the reply
+unclosed marker waits for its closer. The raw setting turns it off and shows the reply
 exactly as the model wrote it, transcript included, since what is on screen is
 a rendering of the conversation and the toggle applies to it too; `/copy`
 copies that source either way, and a
@@ -246,8 +259,8 @@ view.
 A tool call reads as the tool, what it acts on and a preview of what it
 carries, with an `edit` shown as a diff, and its result as a summary line: the
 exit status of a command, the size of a file, the error a failure returned.
-Both previews are capped so one tool cannot take the scrollback; `/verbose`
-lifts the caps and shows every line, for the blocks already on screen as well
+Both previews are capped so one tool cannot take the scrollback; the verbose
+setting lifts the caps and shows every line, for the blocks already on screen as well
 as the next ones. A single block answers to the pointer: its `N more lines`
 tail is drawn as a link and brightens under the cursor, clicking it unfolds
 that block alone, `show less` folds it back, and the block keeps its place on
@@ -279,7 +292,7 @@ and ignored as if unset, and directories yoke creates are mode 0700.
 | providers | `$XDG_CONFIG_HOME/yoke/providers` | one JSON object per line: name, base URL, model; never a key |
 | provider keys | `$XDG_STATE_HOME/yoke/credentials` | mode 0600, refused when anyone else can read it |
 | chosen provider | `$XDG_STATE_HOME/yoke/provider` | what `/provider` last picked |
-| telemetry | `$XDG_STATE_HOME/yoke/telemetry`, `telemetry.jsonl` | whether `/telemetry` is on, and the anonymized record it appends |
+| telemetry | `$XDG_STATE_HOME/yoke/telemetry`, `telemetry.jsonl` | whether telemetry is on, and the anonymized record it appends |
 | sessions | `$XDG_DATA_HOME/yoke/sessions/<cwd>/<timestamp>.jsonl` | one file per conversation, keyed by the directory it ran in |
 
 ## Tests

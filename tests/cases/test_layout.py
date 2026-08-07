@@ -64,7 +64,7 @@ def test_a_shell_run_is_spaced_like_a_tool_call(ctx):
 
 
 def test_a_replay_is_spaced_like_the_live_turn(ctx):
-    """/verbose re-renders the conversation; the air comes out the same."""
+    """A setting re-renders the conversation; the air comes out the same."""
     ctx.write_file("notes.txt", "written down\n")
     ctx.scenario('tool=read:{"path":"notes.txt"},final_text=I+read+it')
     s = ctx.spawn()
@@ -73,11 +73,8 @@ def test_a_replay_is_spaced_like_the_live_turn(ctx):
     s.wait_turn_done()
     live = transcript(s)
 
-    s.submit("/verbose")
-    s.wait_text("verbose: tool output is shown in full")
-    s.submit("/verbose")
-    s.wait_text("verbose: tool output is truncated")
-    s.key("esc").sync()   # the notice row is dismissed, not part of it
+    s.settings_toggle("Verbose tool output")
+    s.settings_toggle("Verbose tool output")
     assert transcript(s) == live, "\n".join(transcript(s))
 
 

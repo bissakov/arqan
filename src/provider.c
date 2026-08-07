@@ -1,9 +1,10 @@
-/* provider.c: OpenAI-compatible chat-completions streaming with tool calls.
+/* provider.c: OpenAI-compatible chat-completions with tool calls.
  *
- * Builds the request JSON from the conversation, POSTs with SSE, and dispatches
- * text deltas and tool-call deltas to the provided sinks. On stream end it
- * appends the assistant message and tool-call messages to the conversation
- * (living in the persistent arena).
+ * Builds the request JSON from the conversation, POSTs it, and dispatches text
+ * and tool-call deltas to the provided sinks. With Config.stream off the reply
+ * is one document instead of a sequence of events, so it reaches the same
+ * sinks in one piece. Either way the assistant message and its tool calls are
+ * appended to the conversation (living in the persistent arena) at the end.
  */
 #include "yoke.h"
 
@@ -212,6 +213,34 @@ static i32 slot(StreamState *s, i32 idx) {
     return idx;
 }
 
+/* With stream_options.include_usage the final event has no choices and
+ * carries authoritative token counts for the completed request; a
+ * non-streamed reply carries the same object at its top level. */
+static void read_usage(Provider *p, const JVal *root) {
+    const JVal *usage = json_get(root, STR("usage"));
+    if (!usage || usage->type != J_OBJ) return;
+    const JVal *prompt = json_get(usage, STR("prompt_tokens"));
+    const JVal *completion = json_get(usage, STR("completion_tokens"));
+    const JVal *total = json_get(usage, STR("total_tokens"));
+    if (!prompt || prompt->type != J_NUM
+        || !completion || completion->type != J_NUM) return;
+    p->prompt_tokens = (size_t)prompt->u.n;
+    p->completion_tokens = (size_t)completion->u.n;
+    p->total_tokens = total && total->type == J_NUM
+                    ? (size_t)total->u.n
+                    : p->prompt_tokens + p->completion_tokens;
+    p->usage_valid = true;
+}
+
+/* A provider that leads with a line break would otherwise open the reply on a
+ * blank row: the composer has already advanced past the submitted line. */
+static Str skip_leading_breaks(Str s, b8 started) {
+    size_t skip = 0;
+    if (!started)
+        while (skip < s.n && (s.p[skip] == '\r' || s.p[skip] == '\n')) skip++;
+    return str_drop(s, skip);
+}
+
 static b8 on_line(Str line, void *ud) {
     Provider *p = (Provider *)ud;
     StreamState *s = p->ud;
@@ -222,24 +251,7 @@ static b8 on_line(Str line, void *ud) {
         arena_reset(&s->ev);
         JVal *ev = json_parse(&s->ev, payload);
         if (!ev) return true;
-
-        /* With stream_options.include_usage, the final event has no choices
-         * and carries authoritative token counts for the completed request. */
-        const JVal *usage = json_get(ev, STR("usage"));
-        if (usage && usage->type == J_OBJ) {
-            const JVal *prompt = json_get(usage, STR("prompt_tokens"));
-            const JVal *completion = json_get(usage, STR("completion_tokens"));
-            const JVal *total = json_get(usage, STR("total_tokens"));
-            if (prompt && prompt->type == J_NUM
-                && completion && completion->type == J_NUM) {
-                p->prompt_tokens = (size_t)prompt->u.n;
-                p->completion_tokens = (size_t)completion->u.n;
-                p->total_tokens = total && total->type == J_NUM
-                                ? (size_t)total->u.n
-                                : p->prompt_tokens + p->completion_tokens;
-                p->usage_valid = true;
-            }
-        }
+        read_usage(p, ev);
 
         const JVal *choices = json_get(ev, STR("choices"));
         const JVal *ch0 = json_at(choices, 0);
@@ -251,13 +263,7 @@ static b8 on_line(Str line, void *ud) {
             const JVal *reason = json_get(delta, STR("reasoning_content"));
             if (!reason) reason = json_get(delta, STR("reasoning"));
             if (reason && reason->type == J_STR && reason->u.s.n) {
-                Str rt = reason->u.s;
-                if (!s->reason_started) {
-                    size_t skip = 0;
-                    while (skip < rt.n && (rt.p[skip] == '\r' || rt.p[skip] == '\n'))
-                        skip++;
-                    rt = str_drop(rt, skip);
-                }
+                Str rt = skip_leading_breaks(reason->u.s, s->reason_started);
                 if (rt.n) {
                     s->reason_started = true;
                     s->reason_bytes += rt.n;
@@ -266,17 +272,7 @@ static b8 on_line(Str line, void *ud) {
             }
             const JVal *content = json_get(delta, STR("content"));
             if (content && content->type == J_STR && content->u.s.n) {
-                Str text = content->u.s;
-                /* Some OpenAI-compatible providers begin assistant content
-                 * with a line break.  The editor has already advanced after
-                 * submit, so forwarding it creates an unwanted blank line. */
-                if (!s->text_started) {
-                    size_t skip = 0;
-                    while (skip < text.n &&
-                           (text.p[skip] == '\r' || text.p[skip] == '\n'))
-                        skip++;
-                    text = str_drop(text, skip);
-                }
+                Str text = skip_leading_breaks(content->u.s, s->text_started);
                 if (text.n) {
                     s->text_started = true;
                     buf_puts(&s->text, text);
@@ -314,6 +310,63 @@ static b8 on_line(Str line, void *ud) {
                 }
             }
         }
+    }
+    return true;
+}
+
+/* A reply that was not streamed: one chat.completion document, whose message
+ * holds whole what the deltas would have carried a piece at a time. It reaches
+ * the same sinks and the same slots, so everything downstream of here cannot
+ * tell the two apart. False with `err` filled in when the document is not one.
+ */
+static b8 read_completion(Provider *p, StreamState *s, Str raw, Arena *scratch,
+                          char *err, size_t err_cap) {
+    JVal *doc = json_parse(scratch, raw);
+    if (!doc) {
+        snprintf(err, err_cap, "the reply is not JSON");
+        return false;
+    }
+    read_usage(p, doc);
+    const JVal *msg = json_get(json_at(json_get(doc, STR("choices")), 0),
+                               STR("message"));
+    if (!msg) {
+        snprintf(err, err_cap, "the reply carries no message");
+        return false;
+    }
+
+    const JVal *reason = json_get(msg, STR("reasoning_content"));
+    if (!reason) reason = json_get(msg, STR("reasoning"));
+    if (reason && reason->type == J_STR) {
+        Str rt = skip_leading_breaks(reason->u.s, false);
+        if (rt.n) {
+            s->reason_bytes = rt.n;
+            if (p->on_reason) p->on_reason(rt, p->ud);
+        }
+    }
+    const JVal *content = json_get(msg, STR("content"));
+    if (content && content->type == J_STR) {
+        Str text = skip_leading_breaks(content->u.s, false);
+        if (text.n) {
+            buf_puts(&s->text, text);
+            if (p->on_text) p->on_text(text, p->ud);
+        }
+    }
+    const JVal *tcs = json_get(msg, STR("tool_calls"));
+    if (!tcs || tcs->type != J_ARR) return true;
+    for (size_t i = 0; i < tcs->u.arr.n; i++) {
+        const JVal *tc = &tcs->u.arr.items[i];
+        i32 sl = slot(s, (i32)i);
+        if (sl < 0) continue;
+        const JVal *idv = json_get(tc, STR("id"));
+        const JVal *fn = json_get(tc, STR("function"));
+        const JVal *nm = fn ? json_get(fn, STR("name")) : NULL;
+        const JVal *ag = fn ? json_get(fn, STR("arguments")) : NULL;
+        if (idv && idv->type == J_STR) s->id[sl] = idv->u.s;
+        if (nm && nm->type == J_STR && nm->u.s.n) s->name[sl] = nm->u.s;
+        if (ag && ag->type == J_STR) buf_puts(&s->args[sl], ag->u.s);
+        if (p->on_tool_call && s->name[sl].p)
+            p->on_tool_call(sl, s->id[sl], s->name[sl],
+                            (Str){ s->args[sl].p, s->args[sl].n }, p->ud);
     }
     return true;
 }
@@ -381,9 +434,10 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         buf_puts(&body, STR(",\"tools\":"));
         tools_write_schemas(&body, p->tools);
     }
-    buf_putf(&body, ",\"max_tokens\":%d,\"stream\":true,"
-                   "\"stream_options\":{\"include_usage\":true}}",
-             p->cfg->max_tokens);
+    buf_putf(&body, ",\"max_tokens\":%d", p->cfg->max_tokens);
+    buf_puts(&body, p->cfg->stream
+             ? STR(",\"stream\":true,\"stream_options\":{\"include_usage\":true}}")
+             : STR(",\"stream\":false}"));
     Str bstr = buf_finish(&body);
     if (!buf_ok(&body)) {
         snprintf(err, err_cap, "request too large for the scratch arena");
@@ -391,11 +445,16 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         return -1;
     }
 
+    /* A whole reply has no length to go by until it has arrived, so it grows
+     * into the scratch arena the way every other buffer here does. */
+    Buf whole;
+    if (!p->cfg->stream) buf_init(&whole, scratch, 1u << 16);
     HttpReq r = {
         .base_url = p->cfg->base_url.p,
         .api_key  = p->cfg->api_key.p,
         .on_line  = on_line,
         .ud       = p,
+        .body_out = p->cfg->stream ? NULL : &whole,
         .body     = bstr.p,
         .interrupt_flag = p->interrupt_flag,
         .idle_fd  = p->on_idle ? p->idle_fd : -1,
@@ -403,7 +462,18 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         .idle_ud  = saved_ud,
     };
     f64 started = yoke_now_seconds();
-    i32 rc = http_sse_post(&r);
+    i32 rc = http_post(&r);
+    char parse_err[128] = {0};
+    /* The document is read before the record below, so what it cost is
+     * reported whether or not it made sense. */
+    if (rc == 0 && !p->cfg->stream) {
+        p->ud = s;
+        if (!buf_ok(&whole))
+            snprintf(parse_err, sizeof parse_err, "the reply is too large");
+        else
+            read_completion(p, s, buf_finish(&whole), scratch, parse_err,
+                            sizeof parse_err);
+    }
     p->ud = saved_ud;
 
     /* The wire as it was: the request's size rather than its text, and what
@@ -415,6 +485,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     tel_int(&tev, "tools", (i64)(p->tools ? p->tools->n : 0));
     tel_int(&tev, "ms", (i64)((yoke_now_seconds() - started) * 1000.0));
     tel_int(&tev, "rc", rc);
+    tel_bool(&tev, "stream", p->cfg->stream);
     tel_int(&tev, "sse_events", (i64)s->events);
     tel_shape(&tev, "reply", (Str){ s->text.p, s->text.n });
     tel_int(&tev, "reason_bytes", (i64)s->reason_bytes);
@@ -426,6 +497,10 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     }
     tel_send(&tev);
 
+    if (parse_err[0]) {
+        snprintf(err, err_cap, "%s", parse_err);
+        return -1;
+    }
     if (rc != 0) {
         if (rc < 0) snprintf(err, err_cap, "HTTP %d", -rc);
         else snprintf(err, err_cap, "request failed (%d)", rc);

@@ -74,18 +74,20 @@ an AoS layout.
 **Module responsibilities:**
 - `core.c`: arena allocator, `Str`/`Buf` string types, logging, monotonic time
 - `json.c`: arena-backed JSON DOM: parser + serializer, no separate token stream
-- `http.c`: libcurl streaming POST or SSE (`http_sse_post`) plus a blocking
-  `http_get` for short documents such as `/models`, used only by
-  `provider.c`. Runs the transfer on the multi interface so one wait covers
+- `http.c`: libcurl POST (`http_post`) plus a blocking `http_get` for short
+  documents such as `/models`, used only by `provider.c`. A reply is delivered
+  a line at a time to `on_line` or whole into `HttpReq.body_out`, which is the
+  difference between a stream and the one document a turn with streaming off
+  comes back as. Runs the transfer on the multi interface so one wait covers
   both curl's sockets and `HttpReq.idle_fd` (stdin), calling `on_idle` after
   every wait, which is what keeps the UI live mid-request and single-threaded
 - `paths.c`: XDG base directory resolution for config, data, state and
   cache. Nothing goes directly in `$HOME`, a relative `XDG_*` value is
   ignored as the spec demands, and created directories are 0700. New
   persistent state picks a kind here instead of building its own path
-- `telemetry.c`: the record `/telemetry` collects for a bug report, appended as
-  JSON lines to `$XDG_STATE_HOME/yoke/telemetry.jsonl` with the answer to that
-  command remembered beside it, so a run that never reaches the composer
+- `telemetry.c`: the record the telemetry setting collects for a bug report,
+  appended as JSON lines to `$XDG_STATE_HOME/yoke/telemetry.jsonl` with the
+  answer remembered beside it, so a run that never reaches the composer
   records too. It holds the shape of a session and none of its content: a
   message is a byte and a line count, a tool call is its name and the keys of
   its arguments rather than the path or the command they carry, the working
@@ -167,8 +169,11 @@ an AoS layout.
   `!` mode: it forks `/bin/sh` instead of using `popen` because stderr left
   inherited would paint over the frame and an inherited stdin would race the
   composer for keystrokes
-- `provider.c`: OpenAI-compatible chat-completions streaming client; parses
-  SSE deltas into text/reasoning/tool-call callbacks and appends to `Conv`.
+- `provider.c`: OpenAI-compatible chat-completions client; parses SSE deltas
+  into text/reasoning/tool-call callbacks and appends to `Conv`. With
+  `Config.stream` off the reply is one `chat.completion` document instead, read
+  into the same slots and pushed through the same callbacks, so nothing
+  downstream of `read_completion` can tell the two apart.
   `conv_write_json` is where the conversation is charged for: a tool result
   older than `YOKE_ELIDE_TURNS` user turns goes out as a line naming what it
   was, since a file read four turns ago is either reflected in the work
@@ -179,7 +184,7 @@ an AoS layout.
   not produce itself. Each event
   is parsed into a small arena that is reset per delta, so a turn's scratch
   use follows the size of the reply rather than the number of events. Also
-  `provider_models`, the `/models` listing the `/model` picker offers
+  `provider_models`, the `/models` listing the model picker offers
 - `tui.c`: alternate-screen terminal UI. Overlays stack upward from the
   bottom (notice row, completion popup, composer, status line) and are drawn
   over the transcript's last rows rather than taking rows from it, never over
@@ -187,7 +192,10 @@ an AoS layout.
   way, so opening one hides the rows it covers and leaves every other one
   where the reader last saw it, and the keys that move the viewport work the
   same under a popup, a picker or a question. `tui_pick` drives
-  that same popup as a modal list, and `tui_ask` borrows the composer for one
+  that same popup as a modal list, `tui_settings` drives it as one that is read
+  rather than chosen from (Space acts on the selected row and hands it back to
+  the caller, Enter and Escape close, and the selection survives the reopen a
+  change costs), and `tui_ask` borrows the composer for one
   question, its answer echoed as dots when it is a secret and kept out of the
   history and the transcript either way, and past ten entries it takes the keyboard:
   typing filters by literal substring and the notice row becomes the search
@@ -233,8 +241,8 @@ an AoS layout.
   reply streams, buffering only what is undecided (the bytes that may still be
   a block marker, and an opener whose closer has not arrived), both bounded by
   the line they sit in, so a delta is painted as soon as its shape is known.
-  `/raw` turns it off, and so does the absence of a fullscreen UI, since a
-  one-shot run's stdout is a reply rather than a view
+  The raw setting turns it off, and so does the absence of a fullscreen UI,
+  since a one-shot run's stdout is a reply rather than a view
 - `render.c`: how a tool call and its result read in the transcript: a header
   naming the tool and its target, and for a `read` the page it asked for, since
   two reads of one file are otherwise the same header twice, a preview of the input it carries (a diff for
@@ -242,8 +250,8 @@ an AoS layout.
   never reach the screen except for a tool this module knows nothing about.
   The tail a truncated block ends on is its click target: it carries a TUI zone
   keyed by the `Conv` slot it was rendered from, and `Conv.expanded` is what a
-  click leaves behind, lifting that one block's caps the way `/verbose` lifts
-  every block's. A replay writes the same air a live turn does, since the
+  click leaves behind, lifting that one block's caps the way the verbose
+  setting lifts every block's. A replay writes the same air a live turn does, since the
   transcript is one rendering either way. A plan and the question that led to
   it read as blocks of the same family, the plan as the Markdown it was
   written in and never truncated, since it is what the user is approving
@@ -269,6 +277,16 @@ an AoS layout.
   the persistent rewind does not touch; "no" ends the turn with the mode
   unchanged. Whichever it is, the answer reaches the model as the tool result
   it asked for
+- `/settings`: the toggles and values of a session in one screen, built in
+  `main.c` over `tui_settings`. A toggle that was worth a command of its own
+  when it was the only one is not worth one when there are four, so verbose,
+  raw, streaming and telemetry live here rather than in the completion popup,
+  next to the mode, model, provider and token cap a turn is sent with. The
+  rows are rebuilt from the state they describe on every pass of the loop, so
+  the screen is its own answer and nothing in it writes a notice: a checkbox
+  that did not move is a setting that refused to change. Nothing is persisted
+  here either, since a setting that outlives the session is already remembered
+  by whoever owns it
 - `main.c`: wires everything together and runs the agent loop
 
 **Agent loop shape** (`main.c`): each user turn calls `provider_run` in a

@@ -1,4 +1,4 @@
-"""/telemetry: an anonymized record of a session, off until it is asked for."""
+"""Telemetry: an anonymized record of a session, off until it is asked for."""
 
 import json
 
@@ -32,8 +32,7 @@ def test_telemetry_toggle_records_the_turn(ctx):
     """With it on, a turn leaves the events a report is read from."""
     ctx.scenario("text=hello+there,usage=200/12")
     s = ctx.spawn()
-    s.submit("/telemetry")
-    s.wait_text("telemetry: on")
+    s.settings_toggle("Telemetry")
     s.submit("say hi")
     s.wait_turn_done()
 
@@ -58,8 +57,7 @@ def test_the_record_keeps_no_conversation(ctx):
         'tool=read:{"path":"secret.txt"},final_text=I+read+the+secret+file'
     )
     s = ctx.spawn()
-    s.submit("/telemetry")
-    s.wait_text("telemetry: on")
+    s.settings_toggle("Telemetry")
     s.submit("read secret.txt, my private question")
     s.wait_turn_done()
 
@@ -83,20 +81,18 @@ def test_telemetry_off_stops_the_recording(ctx):
     """Toggling it back leaves the file where it was."""
     ctx.scenario("text=ok")
     s = ctx.spawn()
-    s.submit("/telemetry")
-    s.wait_text("telemetry: on")
+    s.settings_toggle("Telemetry")
     s.submit("first")
     s.wait_turn_done()
 
-    s.submit("/telemetry")
-    s.wait_text("telemetry: off")
+    s.settings_toggle("Telemetry")
     s.submit("second")
     s.wait_turn_done()
 
     seen = events(ctx)
     # The command that stopped it is the last thing recorded, so the file
     # says why it ends rather than simply stopping.
-    assert seen[-1] == {**seen[-1], "ev": "command", "name": "/telemetry"}
+    assert seen[-1] == {**seen[-1], "ev": "command", "name": "/settings"}
     assert kinds(ctx).count("turn_start") == 1, kinds(ctx)
 
 
@@ -104,8 +100,7 @@ def test_the_setting_survives_the_session(ctx):
     """It is remembered, so a run that cannot type the command records too."""
     ctx.scenario("text=ok")
     s = ctx.spawn()
-    s.submit("/telemetry")
-    s.wait_text("telemetry: on")
+    s.settings_toggle("Telemetry")
     s.submit("/exit")
     s.wait_exit()
 
@@ -116,11 +111,10 @@ def test_the_setting_survives_the_session(ctx):
 
 
 def test_the_record_lands_in_the_state_dir(ctx):
-    """XDG_STATE_HOME moves the file, and the notice names it."""
+    """XDG_STATE_HOME moves the file, setting and record alike."""
     state = ctx.tmp / "state"
     s = ctx.spawn(XDG_STATE_HOME=str(state))
-    s.submit("/telemetry")
-    s.wait_text("telemetry: on")
+    s.settings_toggle("Telemetry")
     s.submit("/exit")
     s.wait_exit()
 
@@ -132,16 +126,14 @@ def test_the_record_lands_in_the_state_dir(ctx):
 def test_commands_and_mode_switches_are_recorded(ctx):
     """The hidden half of a session: what was toggled and when."""
     s = ctx.spawn()
-    s.submit("/telemetry")
-    s.wait_text("telemetry: on")
+    s.settings_toggle("Telemetry")
     s.submit("/mode")
     s.wait_text("plan mode")
-    s.submit("/verbose")
-    s.wait_text("verbose")
+    s.settings_toggle("Verbose tool output")
 
     seen = events(ctx)
     names = [e["name"] for e in seen if e["ev"] == "command"]
-    assert names == ["/mode", "/verbose"], names
+    assert names == ["/mode", "/settings"], names
     mode = [e for e in seen if e["ev"] == "mode"][-1]
     assert mode["from"] == "build" and mode["to"] == "plan", mode
 
@@ -150,8 +142,7 @@ def test_an_unknown_command_is_not_named(ctx):
     """A line yoke does not offer is the user's text, so it is not recorded."""
     ctx.scenario("text=ok")
     s = ctx.spawn()
-    s.submit("/telemetry")
-    s.wait_text("telemetry: on")
+    s.settings_toggle("Telemetry")
     s.submit("/my-private-note")
     s.wait_turn_done()
 
@@ -165,8 +156,7 @@ def test_the_transfer_is_recorded_with_its_timings(ctx):
     """A turn's request is a network event: curl's phases and counters."""
     ctx.scenario("text=hello+there,chunk=1")
     s = ctx.spawn()
-    s.submit("/telemetry")
-    s.wait_text("telemetry: on")
+    s.settings_toggle("Telemetry")
     s.submit("say hi")
     s.wait_turn_done()
 
@@ -186,8 +176,7 @@ def test_the_endpoint_is_a_hash_not_a_url(ctx):
     """A host names its owner, so it is recorded the way the cwd is."""
     ctx.scenario("text=ok")
     s = ctx.spawn()
-    s.submit("/telemetry")
-    s.wait_text("telemetry: on")
+    s.settings_toggle("Telemetry")
     s.submit("say hi")
     s.wait_turn_done()
 
@@ -202,8 +191,7 @@ def test_a_refused_request_records_its_status(ctx):
     """An HTTP failure is the status it came back with."""
     ctx.scenario("status=500")
     s = ctx.spawn()
-    s.submit("/telemetry")
-    s.wait_text("telemetry: on")
+    s.settings_toggle("Telemetry")
     s.submit("this will fail")
     s.wait_turn_done()
 
@@ -215,8 +203,7 @@ def test_the_model_listing_is_a_transfer_too(ctx):
     """/model reaches the network, so the record says so."""
     ctx.scenario("models=one|two")
     s = ctx.spawn()
-    s.submit("/telemetry")
-    s.wait_text("telemetry: on")
+    s.settings_toggle("Telemetry")
     s.submit("/model")
     s.wait_text("pick a model")
     s.key("esc").sync()
@@ -230,8 +217,7 @@ def test_diagnostics_land_beside_the_events(ctx):
     """A provider failure is recorded as the status it was."""
     ctx.scenario("status=500")
     s = ctx.spawn()
-    s.submit("/telemetry")
-    s.wait_text("telemetry: on")
+    s.settings_toggle("Telemetry")
     s.submit("this will fail")
     s.wait_turn_done()
 
