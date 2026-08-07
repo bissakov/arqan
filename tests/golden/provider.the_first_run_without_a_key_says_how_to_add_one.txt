@@ -1,0 +1,26 @@
+--- screen 80x24 ---
+|
+|
+|
+|
+|                                          _
+|                              _   _  ___ | | _____
+|                             | | | |/ _ \| |/ / _ \
+|                             | |_| | (_) |   <  __/
+|                              \__, |\___/|_|\_\___|
+|                              |___/
+|
+|                   yoke 0.1.0 · a tiny terminal coding agent
+|
+|            no provider yet: type /provider, then "+ add a provider"
+|
+|
+|
+|
+|
+|
+|  › Message yoke...
+|
+|
+|  ● ready · gpt-4o-mini · openai · ~/work · -
+--- cursor row=21 col=5 visible=yes ---

@@ -117,8 +117,10 @@ ctx.scenario("status=500")
 | `model_count=` | serve that many generated ids (`model-000`, ...) |
 | `models_status=` | fail `GET /v1/models` with this HTTP status |
 
-Requests are recorded: `ctx.mock.requests` is the parsed request bodies and
-`ctx.mock.tool_results()` the tool outputs that were fed back.
+Requests are recorded: `ctx.mock.requests` is the parsed request bodies,
+`ctx.mock.auth` the `Authorization` header each of them carried (`None` when
+there was none) and `ctx.mock.tool_results()` the tool outputs that were fed
+back.
 
 ### Driving the UI by hand
 

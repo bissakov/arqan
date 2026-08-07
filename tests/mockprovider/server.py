@@ -266,6 +266,7 @@ class _Handler(BaseHTTPRequestHandler):
         srv = self.server
         if self.path.startswith("/__reset"):
             srv.requests.clear()
+            srv.auth.clear()
             self._json(200, {"ok": True})
             return
         if self.path.startswith("/__scenario"):
@@ -283,6 +284,7 @@ class _Handler(BaseHTTPRequestHandler):
         srv = self.server
         body = self._read_body()
         srv.requests.append(body)
+        srv.auth.append(self.headers.get("Authorization"))
 
         model = str(body.get("model", ""))
         scenario = srv.scenario
@@ -422,6 +424,7 @@ class MockProvider:
     def __init__(self, scenario: str | Scenario | None = None, host="127.0.0.1", port=0):
         self.httpd = _Server((host, port), _Handler)
         self.httpd.requests = []           # type: ignore[attr-defined]
+        self.httpd.auth = []               # type: ignore[attr-defined]
         self.httpd.verbose = False         # type: ignore[attr-defined]
         self.scenario = scenario
         # socketserver's shutdown() only returns on the next poll tick, so the
@@ -459,8 +462,14 @@ class MockProvider:
     def requests(self) -> list:
         return self.httpd.requests  # type: ignore[attr-defined]
 
+    @property
+    def auth(self) -> list:
+        """The Authorization header of each completion request, None when absent."""
+        return self.httpd.auth  # type: ignore[attr-defined]
+
     def reset(self):
         self.requests.clear()
+        self.auth.clear()
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> "MockProvider":

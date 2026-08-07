@@ -103,11 +103,11 @@ def test_a_notice_stacks_above_the_popup(ctx):
     assert "/clear" in rows[bottom - 13], rows[bottom - 15 :]
     assert "/resume" in rows[bottom - 12], rows[bottom - 15 :]
     assert "/model" in rows[bottom - 11], rows[bottom - 15 :]
-    assert "/rewind" in rows[bottom - 10], rows[bottom - 15 :]
-    assert "/copy" in rows[bottom - 9], rows[bottom - 15 :]
-    assert "/verbose" in rows[bottom - 8], rows[bottom - 15 :]
-    assert "/raw" in rows[bottom - 7], rows[bottom - 15 :]
-    assert "/exit" in rows[bottom - 6], rows[bottom - 15 :]
+    assert "/provider" in rows[bottom - 10], rows[bottom - 15 :]
+    assert "/rewind" in rows[bottom - 9], rows[bottom - 15 :]
+    assert "/copy" in rows[bottom - 8], rows[bottom - 15 :]
+    assert "/verbose" in rows[bottom - 7], rows[bottom - 15 :]
+    assert "/raw" in rows[bottom - 6], rows[bottom - 15 :]
     assert s.composer_text() == "/", s.composer_lines()
     ctx.check_screen(s, "stacked")
 

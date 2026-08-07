@@ -27,6 +27,7 @@ src/
   json.c          tiny arena JSON parser + serializer
   http.c          libcurl streaming POST (SSE) + plain GET
   paths.c         XDG base directory resolution
+  endpoints.c     user-defined providers (/provider) and their stored keys
   history.c       prompt history, mirrored to the XDG state dir
   session.c       per-directory saved conversations (/resume)
   config.c        env + XDG config file loader
@@ -52,7 +53,21 @@ make
 ./bin/yoke
 ```
 
-Set at least a base URL, model and API key:
+The first run with nothing configured says so on the welcome screen and waits:
+`/provider`, then "+ add a provider", asks for a name, an OpenAI-compatible
+base URL and a key. The same command switches between the providers already
+stored. Until one exists a message is answered with that line rather than sent,
+since the only reply an unconfigured endpoint has is an HTTP 401. Nothing is
+built in, since every one of them speaks the same protocol and only you know
+which ones you have.
+
+The settings land in `$XDG_CONFIG_HOME/yoke/providers` and the keys, alone, in
+`$XDG_STATE_HOME/yoke/credentials` at mode 0600, so the file worth keeping in
+a dotfile repository carries no secret. A credentials file anyone else can
+read is refused rather than loaded: that key wants rotating, not using.
+
+An endpoint can also be named per invocation, which is what a script or a
+throwaway local server wants:
 
 ```
 export YOKE_BASE_URL=https://api.openai.com/v1
@@ -71,8 +86,10 @@ max_tokens=4096
 max_messages=4096      # conversation capacity; a full one is reported, not overrun
 ```
 
-Environment variables win over every file, and a model picked with `/model`
-wins over the files but not over `YOKE_MODEL`.
+Environment variables win over every file, the provider chosen with
+`/provider` wins over the files but not over the environment, and a model
+picked with `/model` is remembered on that provider (or, with none selected,
+in `$XDG_STATE_HOME/yoke/model`).
 
 Command line options outrank all of it, being the most local statement about
 one invocation:
@@ -149,6 +166,7 @@ the model sees what was run on the next message, a saved session keeps it and
 
 Typing `/` opens a completion popup: `/clear` starts a fresh conversation,
 `/resume` reopens one saved for this directory, `/model` switches model,
+`/provider` switches provider or adds one,
 `/rewind` goes back to an earlier message, as the double Esc does,
 `/copy` puts the last reply on the clipboard as the Markdown the model wrote,
 `/verbose` toggles untruncated tool output, `/raw` toggles Markdown rendering
@@ -176,7 +194,10 @@ that block alone, `show less` folds it back, and the block keeps its place on
 screen while the transcript is replayed around it.
 
 `/model` lists what the provider's `/models` endpoint serves and remembers the
-choice for the next run. Past ten entries the popup takes the keyboard and
+choice for the next run. `/provider` lists the endpoints you have stored,
+plus the entry that adds one; creating it ends on that same model picker,
+which is also the check that the URL and the key work, so a typo is answered
+in the form and nothing is written until the endpoint has answered. Past ten entries the popup takes the keyboard and
 typing filters it by literal substring, so nothing typed while it is open
 reaches the composer.
 
@@ -193,7 +214,10 @@ and ignored as if unset, and directories yoke creates are mode 0700.
 | project prompt | `.yoke/SYSTEM.md` | nearest one at or above the working directory, and it wins over the global one |
 | project context | `AGENTS.md` | every one at or above the working directory, appended to the prompt |
 | prompt history | `$XDG_STATE_HOME/yoke/history` | last 500 prompts, recalled in the composer with Up/Down |
-| chosen model | `$XDG_STATE_HOME/yoke/model` | what `/model` last picked |
+| chosen model | `$XDG_STATE_HOME/yoke/model` | what `/model` last picked, with no provider selected |
+| providers | `$XDG_CONFIG_HOME/yoke/providers` | one JSON object per line: name, base URL, model; never a key |
+| provider keys | `$XDG_STATE_HOME/yoke/credentials` | mode 0600, refused when anyone else can read it |
+| chosen provider | `$XDG_STATE_HOME/yoke/provider` | what `/provider` last picked |
 | sessions | `$XDG_DATA_HOME/yoke/sessions/<cwd>/<timestamp>.jsonl` | one file per conversation, keyed by the directory it ran in |
 
 ## Tests

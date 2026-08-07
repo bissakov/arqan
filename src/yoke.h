@@ -60,6 +60,11 @@ typedef bool     b8;
 #define YOKE_MAX_SESSION_BYTES (32u << 20)/* largest session file we will read */
 #define YOKE_MAX_POPUP        256         /* entries the popup can hold        */
 #define YOKE_MAX_MODELS       256         /* models the /model picker offers   */
+#define YOKE_MAX_ENDPOINTS    32          /* providers /provider can hold      */
+#define YOKE_MAX_ENDPOINT_NAME 64
+#define YOKE_MAX_URL          512
+#define YOKE_MAX_MODEL_NAME   128
+#define YOKE_MAX_API_KEY      512
 #define YOKE_MAX_MODEL_BYTES  (1u << 20)  /* largest /models reply we will read */
 
 /* ---- arenas ------------------------------------------------------------- */
@@ -189,11 +194,58 @@ b8   history_next(History *h, Str *out);
 void history_reset_cursor(History *h);
 b8   history_browsing(const History *h);
 
+/* ---- endpoints -----------------------------------------------------------
+ * The providers /provider creates and switches between: a name, an
+ * OpenAI-compatible base URL and the model last used against it. None are
+ * built in, since they all speak the same protocol and only the user knows
+ * which ones exist. Settings live in $XDG_CONFIG_HOME/yoke/providers and the
+ * keys in $XDG_STATE_HOME/yoke/credentials, so a shared configuration cannot
+ * carry a secret; $XDG_STATE_HOME/yoke/provider names the active one.
+ *
+ * SoA, indexed by entry, with the caps above enforced on load: an oversized
+ * field is dropped rather than truncated, since a cut URL or key names a
+ * different service.
+ */
+typedef struct {
+    Str    name[YOKE_MAX_ENDPOINTS];
+    Str    base_url[YOKE_MAX_ENDPOINTS];
+    Str    model[YOKE_MAX_ENDPOINTS];    /* empty when none was chosen yet  */
+    size_t n;
+} Endpoints;
+
+#define ENDPOINT_NONE ((size_t)-1)
+
+/* Every Str lands in `a` and lives as long as it does. */
+size_t endpoints_load(Endpoints *e, Arena *a);
+size_t endpoints_find(const Endpoints *e, Str name);
+/* Add an entry or replace the one of that name, copying into `a`. False when
+ * the store is full or a field is past its cap. */
+b8     endpoints_put(Endpoints *e, Str name, Str base_url, Str model,
+                     Arena *a);
+b8     endpoints_save(const Endpoints *e, Arena *scratch);
+/* Record the model in use against `name`, which is where /model writes while
+ * a provider is active. False when there is no such entry. */
+b8     endpoints_remember_model(Str name, Str model, Arena *scratch);
+/* The key stored for `name`, allocated in `out`. Empty when there is none,
+ * and empty with `err` filled in when the credentials file is readable by
+ * anyone but its owner, which is a key to rotate rather than one to load. */
+Str    endpoints_key(Str name, Arena *out, Arena *scratch,
+                     char *err, size_t err_cap);
+b8     endpoints_set_key(Str name, Str key, Arena *scratch,
+                         char *err, size_t err_cap);
+Str    endpoints_active(Arena *a);
+b8     endpoints_remember_active(Str name, Arena *scratch);
+
 /* ---- config ------------------------------------------------------------- */
 typedef struct {
     Str base_url;     /* e.g. https://api.openai.com/v1                    */
     Str model;
     Str api_key;
+    Str provider;     /* active endpoint name; empty when none is selected */
+    /* Whether anything named the endpoint, as opposed to the built-in
+     * default: a run with neither this nor a key has nothing to talk to, and
+     * asks for a provider instead of starting a conversation. */
+    b8  base_url_set;
     Str system_prompt; /* Only --system and YOKE_SYSTEM_PROMPT set this. */
     i32  max_tokens;
     /* Conversation capacity. Configurable so the full-history path is
@@ -440,6 +492,12 @@ typedef enum { TUI_PICK_FIRST = 0, TUI_PICK_LAST } TuiPickAnchor;
  * own text is left untouched. */
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t *out);
+/* Modal one-line question, answered in the composer with `question` in the
+ * notice row. `secret` echoes the answer as dots and keeps it out of the
+ * prompt history and the transcript, which is what an API key wants. Returns
+ * false when Esc or Ctrl-C cancelled, the answer was empty, or there is no
+ * fullscreen UI. The composer's own text is restored on the way out. */
+b8 tui_ask(Str question, b8 secret, char *out, size_t cap);
 /* Composer history for Up/Down recall; NULL disables it. */
 void tui_set_history(History *h);
 /* `plain` forces the line-oriented path and drops the banner even on a tty,
@@ -448,6 +506,16 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count,
                b8 plain);
 /* The model the status line names; the string must outlive the call. */
 void tui_set_model(Str model);
+/* The provider the status line names. Empty restores the host derived from
+ * the base URL, which is what an endpoint-less run shows. */
+void tui_set_provider(Str name);
+/* What a run with no endpoint says, on the welcome screen and again if a
+ * message is submitted anyway. */
+#define NO_PROVIDER_HINT \
+    STR("no provider yet: type /provider, then \"+ add a provider\"")
+/* With nothing to talk to, the welcome screen's closing line says how to name
+ * an endpoint instead of a form opening over it. */
+void tui_needs_provider(b8 on);
 /* Hand `text` to the terminal's clipboard over OSC 52, the path a drag-select
  * copy takes, and acknowledge it on the status line. Returns false for an
  * empty payload or one past the sequence cap, which is refused rather than

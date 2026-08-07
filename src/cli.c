@@ -29,7 +29,9 @@ static const char g_usage[] =
     "\n"
     "environment: YOKE_BASE_URL, YOKE_MODEL, YOKE_API_KEY, "
     "YOKE_SYSTEM_PROMPT,\n"
-    "YOKE_MAX_MESSAGES. Config file: $XDG_CONFIG_HOME/yoke/config.\n";
+    "YOKE_MAX_MESSAGES. Config file: $XDG_CONFIG_HOME/yoke/config.\n"
+    "Without any of them, yoke asks for a provider; /provider adds and "
+    "switches later.\n";
 
 static void cli_bad(const char *fmt, const char *arg) {
     fprintf(stderr, "yoke: ");
@@ -133,7 +135,7 @@ CliStatus cli_parse(i32 argc, char **argv, CliOpts *out) {
 
 void cli_apply(const CliOpts *o, Config *c) {
     if (o->model.p)         c->model = o->model;
-    if (o->base_url.p)      c->base_url = o->base_url;
+    if (o->base_url.p)      { c->base_url = o->base_url; c->base_url_set = true; }
     if (o->api_key.p)       c->api_key = o->api_key;
     if (o->system_prompt.p) c->system_prompt = o->system_prompt;
     if (o->max_tokens)      c->max_tokens = o->max_tokens;

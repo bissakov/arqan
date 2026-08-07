@@ -91,10 +91,22 @@ an AoS layout.
   one JSON object per line, appended as messages are produced. It owns its
   path buffers instead of an arena because `/clear` rewinds the session's and
   the file the next message appends to has to outlive that
-- `config.c`: loads `Config` from env vars, then the model `/model` last
+- `endpoints.c`: the providers `/provider` creates and switches to, since
+  nothing is built in: they all speak the same protocol and only the user
+  knows which ones exist. Settings live in `$XDG_CONFIG_HOME/yoke/providers`
+  as JSONL and the keys alone in `$XDG_STATE_HOME/yoke/credentials` at mode
+  0600, so a configuration that is shared carries no secret and one anyone
+  else can read is refused rather than loaded. A store is rewritten whole
+  through a temporary file and a rename, so an interrupted write leaves the
+  previous list rather than half a line
+- `config.c`: loads `Config` from env vars, then the provider
+  `$XDG_STATE_HOME/yoke/provider` names, then the model `/model` last
   remembered in `$XDG_STATE_HOME/yoke/model`, then
   `$XDG_CONFIG_HOME/yoke/config`, then the `XDG_CONFIG_DIRS` entries at lower
-  precedence
+  precedence. A run that names no endpoint and holds no key has nothing to
+  talk to, which is what puts `/provider` on the welcome screen rather than a
+  form in front of a user who asked for nothing yet, and what answers a
+  message submitted before one exists instead of sending it
 - `prompt.c`: the system prompt, taken whole from one source: `--system` or
   `YOKE_SYSTEM_PROMPT`, else the project's `.yoke/SYSTEM.md` found by walking
   up from the working directory, else the global
@@ -126,7 +138,9 @@ an AoS layout.
 - `tui.c`: alternate-screen terminal UI. Overlays stack upward from the
   bottom (notice row, completion popup, composer, status line) and eat into
   the transcript, never into each other or the composer. `tui_pick` drives
-  that same popup as a modal list, and past ten entries it takes the keyboard:
+  that same popup as a modal list, and `tui_ask` borrows the composer for one
+  question, its answer echoed as dots when it is a secret and kept out of the
+  history and the transcript either way, and past ten entries it takes the keyboard:
   typing filters by literal substring and the notice row becomes the search
   box. A caller says which end of its list the selection opens on and returns
   to after a search, since a list ordered like the transcript wants the entry

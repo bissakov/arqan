@@ -3,8 +3,9 @@
  * Keys: base_url=, model=, api_key=, max_tokens=, max_messages=, stream=
  * The system prompt is not a key here: it is a document, so it lives in
  * SYSTEM.md (see prompt.c).
- * Precedence: env var YOKE_<KEY> > $XDG_CONFIG_HOME/yoke/config > the same
- * file in each $XDG_CONFIG_DIRS entry. See paths.c for the directories.
+ * Precedence: env var YOKE_<KEY> > the active provider (see endpoints.c) >
+ * $XDG_CONFIG_HOME/yoke/config > the same file in each $XDG_CONFIG_DIRS
+ * entry. See paths.c for the directories.
  */
 #include "yoke.h"
 
@@ -63,7 +64,7 @@ static void config_apply_file(Config *c, Str path, EnvSet env,
         Str k, v;
         if (!file_kv(line, &k, &v)) continue;
         Str vd = str_dup(persist, v);
-        if (str_eq(k, STR("base_url")) && !env.base) c->base_url = vd;
+        if (str_eq(k, STR("base_url")) && !env.base) { c->base_url = vd; c->base_url_set = true; }
         else if (str_eq(k, STR("model")) && !env.model) c->model = vd;
         else if (str_eq(k, STR("api_key")) && !env.key) c->api_key = vd;
         else if (str_eq(k, STR("max_tokens"))) { b8 ok; i64 m = str_int(vd,&ok); if (ok) c->max_tokens = (i32)clamp_size(m, 1, 1u << 20); }
@@ -136,7 +137,31 @@ b8 config_load(Config *c, Arena *persist, Arena *scratch) {
         Str remembered = state_model(persist, scratch);
         if (remembered.n) c->model = remembered;
     }
-    if (env_base.p)  c->base_url = env_base;
+    /* The provider chosen with /provider: the endpoint the user last selected
+     * in the UI, so it outranks a file written once and forgotten. Its key is
+     * kept apart from its settings and read from the state directory. */
+    Str active = endpoints_active(scratch);
+    if (active.n) {
+        Endpoints eps;
+        endpoints_load(&eps, scratch);
+        size_t i = endpoints_find(&eps, active);
+        if (i != ENDPOINT_NONE) {
+            Str name = str_dup(persist, eps.name[i]);
+            Str url  = str_dup(persist, eps.base_url[i]);
+            if (name.p && url.p) {
+                c->provider = name;
+                c->base_url = url;
+                c->base_url_set = true;
+            }
+            if (eps.model[i].n) {
+                Str model = str_dup(persist, eps.model[i]);
+                if (model.p) c->model = model;
+            }
+            Str key = endpoints_key(active, persist, scratch, NULL, 0);
+            if (key.n) c->api_key = key;
+        }
+    }
+    if (env_base.p)  { c->base_url = env_base; c->base_url_set = true; }
     if (env_model.p) c->model = env_model;
     if (env_key.p)   c->api_key = env_key;
     if (env_sys.p)   c->system_prompt = env_sys;

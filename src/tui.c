@@ -29,6 +29,7 @@
 #define TUI_POPUP_ROWS 8         /* completion entries shown at once         */
 #define TUI_PICK_SEARCH_MIN 10   /* entries above which a picker searches    */
 #define TUI_PICK_QUERY 64        /* longest search a picker accepts          */
+#define TUI_ASK_MAX 1024         /* longest answer tui_ask accepts           */
 /* Styled transcript ranges kept in scrollback. Markdown claims one per
  * emphasis run, so this is counted in words of a reply rather than in
  * messages. */
@@ -71,6 +72,12 @@ typedef struct {
     b8 color;
     Str model;
     Str provider;
+    Str base_url;     /* what provider is derived from when no name is set */
+    /* A modal question owns the composer: the answer is not a message, so it
+     * reaches neither the transcript nor the prompt history, and a secret one
+     * is echoed as dots. */
+    b8 ask;
+    b8 ask_secret;
     char cwd_buf[4096];
     Str cwd;
     size_t context_tokens;
@@ -151,6 +158,9 @@ typedef struct {
      * conversation, and "there is nothing to pick from" is not part of it. */
     char notice[160];
     size_t notice_n;
+    /* A run with nothing to talk to: the welcome screen says how to fix it
+     * instead of a form opening over it. */
+    b8 needs_provider;
     /* Prompt history recall: `draft` holds the text the first Up displaced. */
     History *hist;
     char draft[YOKE_LINE_BUF];
@@ -602,8 +612,12 @@ static u64 hash_add(u64 h, const void *data, size_t n) {
 static u64 row_hash(Str prefix, Str text, u8 kind) {
     u64 h = UINT64_C(1469598103934665603);
     h = hash_add(h, &kind, sizeof kind);
-    /* the composer's prompt is dimmed while busy, so it has to redraw then */
-    if (kind == ROW_COMPOSER) h = hash_add(h, &g_tui.busy, sizeof g_tui.busy);
+    /* The composer's prompt is dimmed while busy and its placeholder names
+     * whatever it is standing in for, so both belong in the row's identity. */
+    if (kind == ROW_COMPOSER) {
+        h = hash_add(h, &g_tui.busy, sizeof g_tui.busy);
+        h = hash_add(h, &g_tui.ask, sizeof g_tui.ask);
+    }
     h = hash_add(h, prefix.p, prefix.n);
     return hash_add(h, text.p, text.n);
 }
@@ -833,7 +847,9 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
         put_text(prefix.p, prefix.n);
     }
 
-    if (kind == ROW_COMPOSER && prefix.n && text.n == 0) {
+    /* A question owns the composer, and the notice row above it already says
+     * what is being asked, so the placeholder would only argue with it. */
+    if (kind == ROW_COMPOSER && prefix.n && text.n == 0 && !g_tui.ask) {
         size_t gutter = screen_col - 1;
         size_t body = screen_cols > gutter * 2 ? screen_cols - gutter * 2 : 0;
         size_t room = body > 2 ? body - 2 : 0;
@@ -937,7 +953,7 @@ static size_t wrap_seek(size_t row, size_t *at_row) {
 /* Shell mode: a composed line whose first byte is '!' runs in the shell
  * instead of reaching the model, which the composer's marker announces. */
 static b8 composer_shell(void) {
-    return g_tui.input_n > 0 && g_tui.input[0] == '!';
+    return !g_tui.ask && g_tui.input_n > 0 && g_tui.input[0] == '!';
 }
 
 /* Diff and paint the requested visual rows of a wrapped text buffer.
@@ -1138,11 +1154,18 @@ static const WelcomeLine k_welcome[] = {
 
 #define WELCOME_LINES (sizeof k_welcome / sizeof k_welcome[0])
 
+/* Replaces the closing prose line while no endpoint is configured. */
+static Str welcome_text(size_t i) {
+    if (g_tui.needs_provider && i + 1 == WELCOME_LINES)
+        return NO_PROVIDER_HINT;
+    return k_welcome[i].text;
+}
+
 static size_t welcome_widest(b8 art_only) {
     size_t widest = 0;
     for (size_t i = 0; i < WELCOME_LINES; i++) {
         if (art_only && !k_welcome[i].art) continue;
-        size_t cells = text_cells(k_welcome[i].text);
+        size_t cells = text_cells(welcome_text(i));
         if (cells > widest) widest = cells;
     }
     return widest;
@@ -1174,10 +1197,11 @@ static void paint_welcome(size_t body_rows, size_t transcript_rows,
             continue;
         }
         const WelcomeLine *line = &k_welcome[row - top - 1];
+        Str text = welcome_text(row - top - 1);
         size_t pad = line->art ? art_pad
-                   : (body_cols - text_cells(line->text)) / 2;
+                   : (body_cols - text_cells(text)) / 2;
         if (pad > sizeof blanks) pad = sizeof blanks;
-        update_text_row(row, (Str){blanks, line->text.n ? pad : 0}, line->text,
+        update_text_row(row, (Str){blanks, text.n ? pad : 0}, text,
                         body_col, screen_cols,
                         line->art ? ROW_WELCOME_ART : ROW_WELCOME_TEXT,
                         SIZE_MAX, force);
@@ -1263,6 +1287,15 @@ static void repaint(void) {
     size_t cursor_row = 0, cursor_col = 2;
     Str input = { g_tui.input, g_tui.input_n };
     size_t input_cur = g_tui.input_cur;
+    /* One dot per byte, so the cursor column derived from the byte offset
+     * still lands where the caret is. */
+    char mask[TUI_ASK_MAX];
+    if (g_tui.ask_secret) {
+        size_t n = input.n < sizeof mask ? input.n : sizeof mask;
+        memset(mask, '*', n);
+        input = (Str){ mask, n };
+        if (input_cur > n) input_cur = n;
+    }
     if (composer_shell()) {
         /* The '!' is the marker, not text: it is painted in the prompt's own
          * cell, so the composer shows the command alone. */
@@ -1454,6 +1487,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count,
     memset(&g_tui, 0, sizeof g_tui);
     g_tui.tty = !plain && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
     g_tui.model = model;
+    g_tui.base_url = base_url;
     g_tui.provider = provider_from_url(base_url);
     tui_set_status("ready");
     capture_cwd();
@@ -1564,6 +1598,16 @@ void tui_set_status(const char *status) {
 
 void tui_set_model(Str model) {
     g_tui.model = model;
+    repaint();
+}
+
+void tui_set_provider(Str name) {
+    g_tui.provider = name.n ? name : provider_from_url(g_tui.base_url);
+    repaint();
+}
+
+void tui_needs_provider(b8 on) {
+    g_tui.needs_provider = on;
     repaint();
 }
 
@@ -2134,6 +2178,79 @@ b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
     memcpy(g_tui.status, saved_status, sizeof saved_status);
     repaint();
     return chosen;
+}
+
+/* A question the composer answers, borrowed for the length of the call: the
+ * editor is deliberately not the composer's own, since a question wants none
+ * of its history recall, completion or shell mode, and a secret answer must
+ * not survive in a buffer the next frame paints.
+ *
+ * The question sits in the notice row, directly above the composer, which is
+ * where every other answer to a command already appears. */
+b8 tui_ask(Str question, b8 secret, char *out, size_t cap) {
+    if (!g_tui.fullscreen || !out || cap < 2) return false;
+    size_t limit = cap - 1 < TUI_ASK_MAX ? cap - 1 : TUI_ASK_MAX;
+
+    char saved_input[YOKE_LINE_BUF];
+    size_t saved_n = g_tui.input_n, saved_cur = g_tui.input_cur;
+    char saved_notice[sizeof g_tui.notice];
+    size_t saved_notice_n = g_tui.notice_n;
+    size_t saved_comp_n = g_tui.comp_n;
+    b8 saved_editing = g_tui.editing;
+    memcpy(saved_input, g_tui.input, saved_n);
+    memcpy(saved_notice, g_tui.notice, sizeof saved_notice);
+
+    g_tui.ask = true;
+    g_tui.ask_secret = secret;
+    g_tui.editing = true;
+    g_tui.input_n = 0;
+    g_tui.input_cur = 0;
+    g_tui.comp_n = 0;
+    char row[sizeof g_tui.notice];
+    i32 rn = snprintf(row, sizeof row, "%.*s  (Esc cancels)",
+                      (i32)question.n, question.p);
+    tui_notice(rn > 0 ? (Str){ row, (size_t)rn < sizeof row ? (size_t)rn
+                                                            : sizeof row - 1 }
+                      : question);   /* repaints */
+
+    b8 answered = false;
+    for (;;) {
+        i32 c = rbyte();
+        if (c == -3) { repaint(); continue; }
+        if (c < 0 || c == 0x03 || c == 0x04) break;
+        if (c == '\r' || c == '\n') { answered = g_tui.input_n > 0; break; }
+        if (c == 0x1b) {
+            if (read_escape() == KEY_NONE) break;   /* bare Esc cancels */
+        } else if (c == 0x7f || c == 0x08) {
+            if (g_tui.input_n) g_tui.input_n = prev_glyph(g_tui.input, g_tui.input_n);
+        } else if (c == 0x15) {
+            g_tui.input_n = 0;
+        } else if (((c >= 0x20 && c < 0x7f) || c >= 0x80)
+                   && g_tui.input_n < limit) {
+            g_tui.input[g_tui.input_n++] = (char)c;
+        }
+        g_tui.input_cur = g_tui.input_n;
+        repaint();
+    }
+
+    size_t n = answered ? g_tui.input_n : 0;
+    memcpy(out, g_tui.input, n);
+    out[n] = '\0';
+
+    /* A secret has no reason to stay in a buffer the composer keeps for the
+     * rest of the session. */
+    memset(g_tui.input, 0, g_tui.input_n);
+    g_tui.ask = false;
+    g_tui.ask_secret = false;
+    g_tui.editing = saved_editing;
+    memcpy(g_tui.input, saved_input, saved_n);
+    g_tui.input_n = saved_n;
+    g_tui.input_cur = saved_cur;
+    g_tui.comp_n = saved_comp_n;
+    memcpy(g_tui.notice, saved_notice, sizeof saved_notice);
+    g_tui.notice_n = saved_notice_n;
+    repaint();
+    return answered;
 }
 
 /* What a keystroke asked the caller to do; edits are already applied. */

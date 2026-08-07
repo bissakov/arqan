@@ -16,6 +16,7 @@
 #include "http.c"
 #include "paths.c"
 #include "history.c"
+#include "endpoints.c"
 #include "config.c"
 #include "cli.c"
 #include "tools.c"
@@ -26,6 +27,7 @@
 #include "render.c"
 #include "markdown.c"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,6 +49,7 @@ static size_t commands_init(void) {
     g_commands[n++] = (TuiCmd){ STR("/clear"), STR("Start a fresh conversation") };
     g_commands[n++] = (TuiCmd){ STR("/resume"), STR("Resume a saved session from this directory") };
     g_commands[n++] = (TuiCmd){ STR("/model"), STR("Pick the model") };
+    g_commands[n++] = (TuiCmd){ STR("/provider"), STR("Switch provider, or add one") };
     g_commands[n++] = (TuiCmd){ STR("/rewind"), STR("Go back to an earlier message and edit it") };
     g_commands[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
     g_commands[n++] = (TuiCmd){ STR("/verbose"), STR("Toggle untruncated tool output") };
@@ -320,11 +323,25 @@ static void copy_last_reply(const Conv *conv) {
     tui_notice(STR("no response to copy"));
 }
 
-/* Offer what the provider's /models endpoint lists and switch to the chosen
- * one for this session, remembering it for the next. The conversation is
- * untouched: a model change is not part of it. */
-static void choose_model(Config *cfg, Arena *persist, Arena *scratch) {
-    arena_reset(scratch);
+/* A one-line answer built on the stack, which is what most commands leave
+ * behind: it lives for the length of the call, and tui_notice copies it. */
+static void notice_fmt(const char *fmt, ...)
+    __attribute__((format(printf, 1, 2)));
+static void notice_fmt(const char *fmt, ...) {
+    char msg[256];
+    va_list ap;
+    va_start(ap, fmt);
+    i32 len = vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    if (len <= 0) return;
+    size_t n = (size_t)len < sizeof msg ? (size_t)len : sizeof msg - 1;
+    tui_notice((Str){ msg, n });
+}
+
+/* Offer what `cfg`'s endpoint lists at /models. The pick points into
+ * `scratch`, so a caller that keeps it copies it out before resetting. False
+ * when nothing was listed or nothing was chosen, having said which. */
+static b8 pick_model(const Config *cfg, Arena *scratch, Str *out) {
     tui_set_status("loading models");
     Str names[YOKE_MAX_MODELS];
     char err[128] = {0};
@@ -333,26 +350,35 @@ static void choose_model(Config *cfg, Arena *persist, Arena *scratch) {
     tui_set_status("ready");
     if (!n) {
         tui_notice(str_c(err[0] ? err : "no models to pick from"));
-        arena_reset(scratch);
-        return;
+        return false;
     }
     TuiCmd *items = arena_new(scratch, TuiCmd, n);
     if (!items) {
         tui_notice(STR("out of memory listing models"));
-        arena_reset(scratch);
-        return;
+        return false;
     }
     for (size_t i = 0; i < n; i++)
         items[i] = (TuiCmd){ names[i],
                              str_eq(names[i], cfg->model) ? STR("current")
                                                           : (Str){0} };
-
     size_t pick = 0;
-    if (!tui_pick(STR("pick a model"), items, n, TUI_PICK_FIRST, &pick)) {
+    if (!tui_pick(STR("pick a model"), items, n, TUI_PICK_FIRST, &pick))
+        return false;
+    *out = names[pick];
+    return true;
+}
+
+/* Offer what the provider's /models endpoint lists and switch to the chosen
+ * one for this session, remembering it for the next. The conversation is
+ * untouched: a model change is not part of it. */
+static void choose_model(Config *cfg, Arena *persist, Arena *scratch) {
+    arena_reset(scratch);
+    Str picked = {0};
+    if (!pick_model(cfg, scratch, &picked)) {
         arena_reset(scratch);
         return;
     }
-    Str chosen = str_dup(persist, names[pick]);
+    Str chosen = str_dup(persist, picked);
     if (!chosen.p) {
         tui_notice(STR("out of memory storing the model"));
         arena_reset(scratch);
@@ -360,12 +386,170 @@ static void choose_model(Config *cfg, Arena *persist, Arena *scratch) {
     }
     cfg->model = chosen;
     tui_set_model(chosen);
-    b8 saved = config_remember_model(chosen, scratch);
-    char msg[256];
-    i32 len = snprintf(msg, sizeof msg, "model: %.*s%s", (i32)chosen.n, chosen.p,
-                       saved ? "" : " (not remembered: no state directory)");
-    if (len > 0) tui_notice((Str){ msg, (size_t)len < sizeof msg
-                                        ? (size_t)len : sizeof msg - 1 });
+    /* A model id only means something against the endpoint that served it, so
+     * with a provider selected it is remembered on that entry. */
+    b8 saved = cfg->provider.n
+             ? endpoints_remember_model(cfg->provider, chosen, scratch)
+             : config_remember_model(chosen, scratch);
+    notice_fmt("model: %.*s%s", (i32)chosen.n, chosen.p,
+               saved ? "" : " (not remembered: no state directory)");
+    arena_reset(scratch);
+}
+
+/* Nothing to talk to: no key, and no endpoint named by a flag, the
+ * environment, a config file or the store. The default base URL is a
+ * placeholder here, not a destination. */
+static b8 no_provider(const Config *cfg) {
+    return !cfg->api_key.p && !cfg->base_url_set;
+}
+
+/* Make `name` the provider this session and the next ones talk to. The
+ * strings are copied into `persist` because the endpoint store they came from
+ * lives in the scratch arena, which the next turn rewinds. */
+static b8 use_endpoint(Config *cfg, Str name, Str base_url, Str model,
+                       Str key, Arena *persist) {
+    Str n = str_dup(persist, name);
+    Str u = str_dup(persist, base_url);
+    Str m = model.n ? str_dup(persist, model) : (Str){0};
+    if (!n.p || !u.p || (model.n && !m.p)) return false;
+    cfg->provider = n;
+    cfg->base_url = u;
+    cfg->base_url_set = true;
+    cfg->api_key  = key;
+    if (m.n) cfg->model = m;
+    tui_set_provider(n);
+    tui_set_model(cfg->model);
+    tui_needs_provider(false);
+    return true;
+}
+
+/* Ask for a provider and store it: a name, an OpenAI-compatible base URL and
+ * a key, then the model, which is picked from what that endpoint actually
+ * lists. Listing is also the check that the URL and the key work, so a typo
+ * is answered here rather than on the first turn, and nothing is written
+ * until it succeeds. Returns false when the form was cancelled or refused. */
+static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
+    arena_reset(scratch);
+    char name[YOKE_MAX_ENDPOINT_NAME + 1];
+    char url[YOKE_MAX_URL + 1];
+    char key[YOKE_MAX_API_KEY + 1];
+    if (!tui_ask(STR("a name for this provider"), false, name, sizeof name))
+        return false;
+
+    Endpoints eps;
+    endpoints_load(&eps, scratch);
+    if (endpoints_find(&eps, str_c(name)) != ENDPOINT_NONE) {
+        notice_fmt("a provider named %s already exists", name);
+        return false;
+    }
+    if (eps.n >= YOKE_MAX_ENDPOINTS) {
+        notice_fmt("no room for another provider (%d)", YOKE_MAX_ENDPOINTS);
+        return false;
+    }
+    if (!tui_ask(STR("its base URL, ending in /v1"), false, url, sizeof url))
+        return false;
+    if (!str_starts(str_c(url), STR("http://"))
+        && !str_starts(str_c(url), STR("https://"))) {
+        tui_notice(STR("a base URL starts with http:// or https://"));
+        return false;
+    }
+    /* A local server needs no key, so an empty answer is a valid one and only
+     * the questions above can cancel the form. */
+    if (!tui_ask(STR("its API key (empty if it needs none)"), true, key,
+                 sizeof key))
+        key[0] = '\0';
+
+    Config probe = *cfg;
+    probe.base_url = str_c(url);
+    probe.api_key = key[0] ? str_c(key) : (Str){0};
+    probe.model = (Str){0};
+    Str model = {0};
+    if (!pick_model(&probe, scratch, &model)) return false;
+
+    char err[YOKE_MAX_PATH + 64] = {0};
+    if (!endpoints_put(&eps, str_c(name), str_c(url), model, scratch)
+        || !endpoints_save(&eps, scratch)) {
+        tui_notice(STR("could not write the provider store"));
+        return false;
+    }
+    if (key[0] && !endpoints_set_key(str_c(name), str_c(key), scratch,
+                                     err, sizeof err)) {
+        tui_notice(str_c(err[0] ? err : "could not store the API key"));
+        return false;
+    }
+    Str stored_key = key[0] ? str_dup(persist, str_c(key)) : (Str){0};
+    if (key[0] && !stored_key.p) {
+        tui_notice(STR("out of memory storing the provider"));
+        return false;
+    }
+    if (!use_endpoint(cfg, str_c(name), str_c(url), model, stored_key,
+                      persist)) {
+        tui_notice(STR("out of memory storing the provider"));
+        return false;
+    }
+    endpoints_remember_active(cfg->provider, scratch);
+    notice_fmt("provider: %.*s", (i32)cfg->provider.n, cfg->provider.p);
+    arena_reset(scratch);
+    return true;
+}
+
+/* Offer the providers already stored, plus the entry that creates one. With
+ * none stored there is nothing to pick from, so the form opens straight
+ * away. */
+static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
+    arena_reset(scratch);
+    Endpoints eps;
+    size_t n = endpoints_load(&eps, scratch);
+    if (!n) {
+        add_endpoint(cfg, persist, scratch);
+        arena_reset(scratch);
+        return;
+    }
+    TuiCmd *items = arena_new(scratch, TuiCmd, n + 1);
+    if (!items) {
+        tui_notice(STR("out of memory listing providers"));
+        arena_reset(scratch);
+        return;
+    }
+    for (size_t i = 0; i < n; i++) {
+        Str desc = eps.base_url[i];
+        if (str_eq(eps.name[i], cfg->provider)) {
+            Buf b; buf_init(&b, scratch, desc.n + 16);
+            buf_puts(&b, STR("current · "));
+            buf_puts(&b, eps.base_url[i]);
+            if (buf_ok(&b)) desc = buf_finish(&b);
+        }
+        items[i] = (TuiCmd){ eps.name[i], desc };
+    }
+    items[n] = (TuiCmd){ STR("+ add a provider"),
+                         STR("An OpenAI-compatible URL and key") };
+
+    size_t pick = 0;
+    if (!tui_pick(STR("pick a provider"), items, n + 1, TUI_PICK_FIRST,
+                  &pick)) {
+        arena_reset(scratch);
+        return;
+    }
+    if (pick == n) {
+        add_endpoint(cfg, persist, scratch);
+        arena_reset(scratch);
+        return;
+    }
+    char err[YOKE_MAX_PATH + 64] = {0};
+    Str key = endpoints_key(eps.name[pick], persist, scratch, err, sizeof err);
+    if (err[0]) {
+        tui_notice(str_c(err));
+        arena_reset(scratch);
+        return;
+    }
+    if (!use_endpoint(cfg, eps.name[pick], eps.base_url[pick], eps.model[pick],
+                      key, persist)) {
+        tui_notice(STR("out of memory switching provider"));
+        arena_reset(scratch);
+        return;
+    }
+    endpoints_remember_active(cfg->provider, scratch);
+    notice_fmt("provider: %.*s", (i32)cfg->provider.n, cfg->provider.p);
     arena_reset(scratch);
 }
 
@@ -579,6 +763,7 @@ i32 main(i32 argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     tui_start(cfg.model, cfg.base_url, !cfg.api_key.p, tools.n,
               opts.have_prompt);
+    if (cfg.provider.n) tui_set_provider(cfg.provider);
     tui_set_commands(g_commands, commands_init());
     tui_set_history(&hist);
     tui_set_interrupt_flag(&g_got_sigint);
@@ -593,10 +778,22 @@ i32 main(i32 argc, char **argv) {
     /* One-shot: the reply is the output, so nothing else goes to stdout and
      * the exit status reports whether the turn completed. */
     if (opts.have_prompt) {
+        if (no_provider(&cfg)) {
+            tui_stop();
+            fprintf(stderr, "yoke: no provider configured; run yoke without "
+                            "-p and use /provider to add one\n");
+            return 1;
+        }
         b8 ok = agent_turn(&agent, opts.prompt);
         tui_stop();
         return ok ? 0 : 1;
     }
+
+    /* Nothing to talk to and nothing stored to talk to it with. The welcome
+     * screen says so and names the command; a form opening unasked over an
+     * empty screen is a question the user did not ask yet. */
+    if (no_provider(&cfg) && tui_is_fullscreen())
+        tui_needs_provider(true);
 
     /* Static, not automatic: a megabyte of stack for a line the composer
      * already holds is the kind of frame that turns a deep call into a
@@ -662,8 +859,18 @@ i32 main(i32 argc, char **argv) {
             choose_model(&cfg, &persist, &scratch);
             continue;
         }
+        if (!strcmp(line, "/provider")) {
+            choose_provider(&cfg, &persist, &scratch);
+            continue;
+        }
         if (!strcmp(line, "/resume")) {
             resume_session(&sess, &conv, &persist, &scratch, session_mark);
+            continue;
+        }
+        /* A turn with no endpoint is an HTTP 401 the user cannot act on, so
+         * it is refused where it was asked and the conversation stays empty. */
+        if (no_provider(&cfg)) {
+            tui_notice(NO_PROVIDER_HINT);
             continue;
         }
         agent_turn(&agent, (Str){ line, ln });
