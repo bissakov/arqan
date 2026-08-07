@@ -62,6 +62,9 @@ def mouse(event: str, row: int, col: int, button: int = 0) -> bytes:
         code, final = button, "M"
     elif event == "drag":
         code, final = button + 32, "M"
+    elif event == "move":
+        # motion with no button held: 3 (no button) plus the motion bit
+        code, final = 35, "M"
     elif event == "up":
         code, final = button, "m"
     elif event == "wheel-up":

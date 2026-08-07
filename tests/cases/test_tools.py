@@ -61,7 +61,7 @@ def test_write_tool_previews_the_content(ctx):
     text = s.text()
     assert "\u25c6  write long.txt" in text, text
     assert "\u2502 line 0" in text, text
-    assert "\u2502 ... 4 more lines" in text, text
+    assert "\u2502 \u25be 4 more lines" in text, text
     assert "line 8" not in text, text
     assert "\u2514\u2500 wrote" in text, text
 
@@ -199,7 +199,7 @@ def test_large_tool_output_is_truncated_in_the_transcript(ctx):
     s.submit("read big.txt")
     s.wait_text("that is a lot")
     s.wait_turn_done()
-    assert "... 188 more lines" in s.text(), s.text()
+    assert "\u25be 188 more lines" in s.text(), s.text()
     assert ctx.mock.tool_results()[0].strip().endswith("line 0199 of output")
 
 
@@ -232,7 +232,7 @@ def test_verbose_shows_every_line_of_a_result(ctx):
     s.submit("read it again")
     s.wait_text("just the head")
     s.wait_turn_done()
-    assert "... 28 more lines" in s.text(), s.text()
+    assert "\u25be 28 more lines" in s.text(), s.text()
 
 
 def test_verbose_shows_a_long_command_whole(ctx):
@@ -253,3 +253,155 @@ def test_verbose_shows_a_long_command_whole(ctx):
     s.wait_text("ran again")
     s.wait_turn_done()
     assert " ..." not in s.text(), s.text()
+
+
+def row_of(s, needle):
+    """1-based screen row containing `needle`."""
+    r = s.screen.find_row(needle)
+    assert r >= 0, f"{needle!r} not on screen\n{s.text()}"
+    return r + 1
+
+
+def click(s, needle, col=6):
+    s.mouse("down", row_of(s, needle), col)
+    s.mouse("up", row_of(s, needle), col)
+    return s.sync()
+
+
+def read_a_big_file(ctx, s, lines=40):
+    body = "\n".join(f"line {i:04d} of output" for i in range(lines))
+    ctx.write_file("big.txt", body)
+    ctx.scenario('tool=read:{"path":"big.txt"},final_text=that+is+a+lot')
+    s.submit("read big.txt")
+    s.wait_text("that is a lot")
+    s.wait_turn_done()
+    return s
+
+
+def test_verbose_repaints_the_blocks_already_on_screen(ctx):
+    """/verbose applies to the transcript, not only to the next tool call."""
+    s = ctx.spawn()
+    read_a_big_file(ctx, s)
+    assert "\u25be 28 more lines" in s.text(), s.text()
+
+    s.submit("/verbose")
+    s.wait_text("verbose: tool output is shown in full")
+    text = s.text()
+    assert "more lines" not in text, text
+    assert "line 0039 of output" in text, text
+
+    s.submit("/verbose")
+    s.wait_text("verbose: tool output is truncated")
+    assert "\u25be 28 more lines" in s.text(), s.text()
+
+
+def test_clicking_a_truncated_block_expands_and_folds_it(ctx):
+    """The '... N more lines' tail is a click target for that block alone."""
+    s = ctx.spawn()
+    read_a_big_file(ctx, s)
+    assert "\u25be 28 more lines" in s.text(), s.text()
+
+    click(s, "\u25be 28 more lines")
+    s.wait_text("\u25b4 show less")
+    text = s.text()
+    assert "more lines" not in text, text
+    assert "line 0039 of output" in text, text
+
+    click(s, "\u25b4 show less")
+    s.wait_text("\u25be 28 more lines")
+    assert "line 0039 of output" not in s.text(), s.text()
+
+
+def test_expanding_one_block_leaves_the_other_truncated(ctx):
+    """Expansion is per block: the call's preview is not the result's."""
+    body = "".join(f"line {i}\n" for i in range(12))
+    args = json.dumps({"path": "long.txt", "content": body})
+    ctx.scenario(f"tool=write:{args},final_text=written")
+    s = ctx.spawn()
+    s.submit("write a file")
+    s.wait_text("written")
+    s.wait_turn_done()
+    assert "\u2502 \u25be 4 more lines" in s.text(), s.text()
+
+    click(s, "\u2502 \u25be 4 more lines")
+    s.wait_text("line 11")
+    text = s.text()
+    assert "more lines" not in text, text
+    assert "\u2514\u2500 wrote" in text, text
+
+
+def test_dragging_over_the_tail_selects_instead_of_expanding(ctx):
+    """A drag is a copy; only a click on the same row folds a block."""
+    s = ctx.spawn()
+    read_a_big_file(ctx, s)
+    row = row_of(s, "\u25be 28 more lines")
+    s.mouse("down", row, 6)
+    s.mouse("drag", row, 12)
+    s.mouse("up", row, 12).sync()
+    assert "\u25be 28 more lines" in s.text(), s.text()
+    assert s.screen.clipboard, "the drag should have copied"
+
+
+def test_expanding_from_a_scrolled_view_keeps_the_block_in_place(ctx):
+    """A block unfolded above the viewport's bottom stays where it was."""
+    s = ctx.spawn()
+    read_a_big_file(ctx, s, lines=200)
+    # push the tail row up the screen, so the viewport is no longer pinned
+    s.mouse("wheel-up", 5, 10)
+    s.sync()
+    before = row_of(s, "\u25be 188 more lines")
+
+    click(s, "\u25be 188 more lines")
+    s.wait_text("\u25b4 show less")
+    assert row_of(s, "\u25b4 show less") == before, s.text()
+
+
+def test_a_foldable_block_looks_clickable_and_answers_the_pointer(ctx):
+    """The tail reads as a link and brightens while the pointer is on it."""
+    s = ctx.spawn()
+    read_a_big_file(ctx, s)
+    row = row_of(s, "\u25be 28 more lines")
+    col = s.screen.row_text(row - 1).index("\u25be")   # 0-based, the marker
+
+    idle = s.screen.attr_at(row - 1, col)
+    assert idle.underline, idle
+    assert not idle.bold, idle
+
+    s.mouse("move", row, col + 3).sync()
+    hot = s.screen.attr_at(row - 1, col)
+    assert hot.underline and hot.bold, hot
+    assert hot.bg != idle.bg, (hot, idle)
+    # the highlight hugs the label: the block's indent is not part of it
+    assert s.screen.attr_at(row - 1, col - 1).bg is None, s.text()
+
+    s.mouse("move", row_of(s, "line 0000 of output"), col).sync()
+    assert s.screen.attr_at(row - 1, col) == idle, s.screen.attr_at(row - 1, col)
+
+
+def blank_above(s, needle):
+    """Whether the row above `needle` holds nothing but the scrollbar."""
+    row = s.screen.find_row(needle)
+    assert row > 0, f"{needle!r} not on screen\n{s.text()}"
+    return s.screen.row_text(row - 1).strip("\u2502\u2503 ") == ""
+
+
+def test_a_replayed_reply_keeps_its_air_above(ctx):
+    """A tool result and the reply below it stay one blank row apart."""
+    s = ctx.spawn()
+    read_a_big_file(ctx, s)
+    assert blank_above(s, "that is a lot"), s.text()
+
+    click(s, "\u25be 28 more lines")
+    s.wait_text("\u25b4 show less")
+    assert blank_above(s, "that is a lot"), s.text()
+
+
+def test_hovering_a_tail_leaves_the_scrollbar_alone(ctx):
+    """The bar keeps its own cell and its own style while a row lights up."""
+    s = ctx.spawn()
+    read_a_big_file(ctx, s, lines=300)
+    row = row_of(s, "\u25be 288 more lines")
+    last = s.screen.cols - 1
+    s.mouse("move", row, 8).sync()
+    assert s.screen.row_text(row - 1)[last] in "\u2502\u2503", s.text()
+    assert s.screen.attr_at(row - 1, last).bg is None, s.text()

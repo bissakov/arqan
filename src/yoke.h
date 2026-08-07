@@ -305,6 +305,7 @@ typedef struct {
     Str   *tool_name;     /* [cap] tool name (assistant tool-call entry) */
     Str   *tool_call_id;  /* [cap] tool call id                          */
     b8  *has_tool_call; /* [cap] true => assistant msg w/ a tool call  */
+    b8  *expanded;      /* [cap] this block's transcript caps are lifted */
     size_t n, cap;
 } Conv;
 
@@ -446,6 +447,19 @@ void tui_clear(void);
 /* Drop the transcript alone, leaving the context counter as it is: the
  * conversation is unchanged, only its rendering is about to be replayed. */
 void tui_clear_transcript(void);
+/* Mark the transcript bytes written between these calls as a click target
+ * carrying `id`, which must be nonzero. A click inside one makes tui_readline
+ * submit "/expand <id>", the same way Escape submits "/rewind": the gesture
+ * and the command are one request. Zones are dropped with the transcript.
+ * Ids are the caller's; a replay reuses them so a target survives a
+ * re-render. */
+void tui_zone_begin(u32 id);
+void tui_zone_end(void);
+/* Keep zone `id` where it is on screen across a re-render: anchor before the
+ * clear, restore after the replay. A viewport pinned to the bottom is left
+ * there, since the rows a replay added are what the reader asked for. */
+void tui_anchor_zone(u32 id);
+void tui_restore_anchor(void);
 /* One line where the completion popup would be: the answer to a command that
  * opened no popup, retired by the next keystroke. Empty clears it. The
  * transcript is the conversation, so this never lands in it. */
@@ -510,9 +524,12 @@ b8   md_raw(void);
 /* Write one tool call, and later its result, into the transcript in the shape
  * a reader wants: the JSON arguments are parsed in `scratch`, which is rewound
  * before returning, and unparsable ones fall back to the raw text. `result`
- * is the tool's own output, an "ERROR: " prefix included. */
-void render_tool_call(Str name, Str args, Arena *scratch);
-void render_tool_result(Str name, Str result);
+ * is the tool's own output, an "ERROR: " prefix included.
+ * `id` marks the block as a click target: the truncation tail it writes folds
+ * and unfolds it, and `expanded` is the state that click left behind, which
+ * lifts this block's caps the way /verbose lifts every block's. */
+void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded);
+void render_tool_result(Str name, Str result, u32 id, b8 expanded);
 /* Verbose rendering shows every line of a call's input and its result, with no
  * "... N more lines" tail and no per-line clip. Off by default: a tool that
  * read a thousand lines would otherwise be the whole scrollback. */

@@ -21,10 +21,18 @@ enum {
  * reaches the transcript whole. */
 static b8 g_verbose;
 
+/* The block being written: its caps are lifted while `g_expanded` holds, and
+ * the tail that folds it back carries `g_zone`. Both are set for the length of
+ * one render_tool_* call. */
+static b8 g_expanded;
+static u32 g_zone;
+
 void render_set_verbose(b8 on) { g_verbose = on; }
 b8 render_verbose(void) { return g_verbose; }
 
-static size_t line_cap(size_t max) { return g_verbose ? (size_t)-1 : max; }
+static b8 uncapped(void) { return g_verbose || g_expanded; }
+
+static size_t line_cap(size_t max) { return uncapped() ? (size_t)-1 : max; }
 
 static b8 next_line(Str s, size_t *off, Str *line) {
     if (*off >= s.n) return false;
@@ -47,7 +55,7 @@ static size_t count_lines(Str s) {
 /* Cutting mid-sequence would paint a replacement glyph, so the clip backs up
  * to a leading byte. */
 static Str clip(Str s, size_t max) {
-    if (g_verbose || s.n <= max) return s;
+    if (uncapped() || s.n <= max) return s;
     size_t n = max;
     while (n && ((unsigned char)s.p[n] & 0xc0) == 0x80) n--;
     return (Str){ s.p, n };
@@ -67,12 +75,15 @@ static void write_count(size_t n, const char *what, Sink sink) {
     if (len > 0) sink((Str){ buf, (size_t)len });
 }
 
-/* Writes at most `max` lines of `body`, each behind `gutter`, then how many
- * lines the transcript left out. */
+/* Writes at most `max` lines of `body`, each behind `gutter`, then a tail row
+ * saying what was left out. That row is the block's click target: it is where
+ * an expanded block offers to fold back, so a block whose lines all fit gets
+ * no tail either way. */
 static void write_lines(Str body, Str gutter, size_t max, Sink sink) {
+    size_t cap = line_cap(max);
     size_t off = 0, shown = 0;
     Str line;
-    while (shown < max && next_line(body, &off, &line)) {
+    while (shown < cap && next_line(body, &off, &line)) {
         sink(gutter);
         Str head = clip(line, R_LINE_BYTES);
         sink(head);
@@ -81,24 +92,36 @@ static void write_lines(Str body, Str gutter, size_t max, Sink sink) {
         shown++;
     }
     size_t rest = count_lines(str_drop(body, off));
-    if (!rest) return;
-    sink(gutter);
     char buf[64];
-    i32 len = snprintf(buf, sizeof buf, "... %zu more line%s\n",
+    i32 len;
+    if (rest) {
+        len = snprintf(buf, sizeof buf, "\u25be %zu more line%s\n",
                        rest, rest == 1 ? "" : "s");
+    } else if (g_expanded && !g_verbose && shown > max) {
+        /* Only a block this reader unfolded offers to fold: under /verbose
+         * nothing is hidden to begin with. */
+        len = snprintf(buf, sizeof buf, "\u25b4 show less\n");
+    } else {
+        return;
+    }
+    tui_zone_begin(g_zone);
+    sink(gutter);
     if (len > 0) sink((Str){ buf, (size_t)len });
+    tui_zone_end();
 }
 
 /* A diff is the only honest preview of an edit: the same lines the tool
  * matches, then the ones it leaves behind. */
 static void write_diff(Str old_text, Str new_text) {
-    write_lines(old_text, STR("\u2502 - "), line_cap(R_ARG_LINES / 2),
+    write_lines(old_text, STR("\u2502 - "), R_ARG_LINES / 2,
                 tui_write_error);
-    write_lines(new_text, STR("\u2502 + "), line_cap(R_ARG_LINES / 2),
+    write_lines(new_text, STR("\u2502 + "), R_ARG_LINES / 2,
                 tui_write_result);
 }
 
-void render_tool_call(Str name, Str args, Arena *scratch) {
+void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
+    g_zone = id;
+    g_expanded = expanded;
     size_t mark = scratch->off;
     JVal *j = json_parse(scratch, args);
 
@@ -121,20 +144,22 @@ void render_tool_call(Str name, Str args, Arena *scratch) {
 
     if (str_eq(name, STR("write"))) {
         Str content = str_arg(j, STR("content"));
-        write_lines(content, STR("\u2502 "), line_cap(R_ARG_LINES),
+        write_lines(content, STR("\u2502 "), R_ARG_LINES,
                     tui_write_muted);
     } else if (str_eq(name, STR("edit"))) {
         write_diff(str_arg(j, STR("old_text")), str_arg(j, STR("new_text")));
     } else if (cmd.n) {
         write_lines(str_drop(cmd, cmd_off), STR("\u2502 "),
-                    line_cap(R_ARG_LINES), tui_write_muted);
+                    R_ARG_LINES, tui_write_muted);
     } else if (!path.n) {
         /* No shape this renderer knows: the arguments as they came. */
-        write_lines(args, STR("\u2502 "), line_cap(R_ARG_LINES),
+        write_lines(args, STR("\u2502 "), R_ARG_LINES,
                     tui_write_muted);
     }
 
     scratch->off = mark;
+    g_expanded = false;
+    g_zone = 0;
 }
 
 /* The bash tool ends its output with a bracketed status line; it is the
@@ -152,7 +177,9 @@ static b8 split_status(Str result, Str *body, Str *status) {
     return true;
 }
 
-void render_tool_result(Str name, Str result) {
+void render_tool_result(Str name, Str result, u32 id, b8 expanded) {
+    g_zone = id;
+    g_expanded = expanded;
     if (str_starts(result, STR("ERROR: "))) {
         Str msg = str_drop(result, 7);
         size_t off = 0;
@@ -161,6 +188,8 @@ void render_tool_result(Str name, Str result) {
         tui_write_error(STR("\u2514\u2500 error: "));
         tui_write_error(clip(first, R_LINE_BYTES));
         tui_write_error(STR("\n"));
+        g_expanded = false;
+        g_zone = 0;
         return;
     }
 
@@ -181,5 +210,7 @@ void render_tool_result(Str name, Str result) {
         tui_write_result(STR("\n"));
         body = str_drop(body, off);
     }
-    write_lines(body, STR("   "), line_cap(R_RESULT_LINES), tui_write_muted);
+    write_lines(body, STR("   "), R_RESULT_LINES, tui_write_muted);
+    g_expanded = false;
+    g_zone = 0;
 }

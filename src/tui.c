@@ -34,6 +34,7 @@
  * messages. */
 #define TUI_MAX_SPANS 4096
 #define TUI_CKPTS 4096           /* wrapped-row checkpoints into the transcript */
+#define TUI_MAX_ZONES 512        /* clickable transcript ranges kept          */
 
 /* A quiet 256-colour palette.  Styling is optional (NO_COLOR and dumb
  * terminals get the same layout without escape-heavy decoration). */
@@ -54,6 +55,9 @@
 #define S_CODE_BG     "\033[48;5;235m"
 #define S_POPUP_BG    "\033[48;5;237m"
 #define S_POPUP_SEL   "\033[48;5;24m"
+/* A clickable row reads like a link, and brightens under the pointer. */
+#define S_LINK        "\033[4;38;5;81m"
+#define S_LINK_HOVER  "\033[1;4;38;5;81m"
 
 typedef struct {
     struct termios original_termios;
@@ -96,6 +100,25 @@ typedef struct {
     size_t span_b[TUI_MAX_SPANS];
     u8     span_k[TUI_MAX_SPANS];
     size_t span_n;
+    /* Byte ranges a click acts on, each carrying the caller's id: a row whose
+     * text starts inside one reports that id when the pointer is pressed and
+     * released on it. Like spans, they live beside the transcript, so no
+     * output can forge one. */
+    size_t zone_a[TUI_MAX_ZONES];
+    size_t zone_b[TUI_MAX_ZONES];
+    u32    zone_id[TUI_MAX_ZONES];
+    size_t zone_n;
+    u32    zone_open;        /* id of the range being written, 0 when none  */
+    size_t zone_open_a;
+    u32    click_down;       /* zone the press landed in                    */
+    u32    click_id;         /* zone the completed click landed in           */
+    u32    hover_id;         /* zone under the pointer, 0 when elsewhere    */
+    /* A re-render rebuilds the transcript from scratch, so a zone's place on
+     * screen is remembered as the rows below it and restored once the replay
+     * has put the rows back. */
+    u32    anchor_id;
+    size_t anchor_below;
+    size_t anchor_scroll;
     /* Raised by Esc while a turn is in flight, so the UI can cancel a request
      * through the same path SIGINT uses. */
     volatile sig_atomic_t *interrupt;
@@ -138,6 +161,10 @@ typedef struct {
     char row_text[TUI_SEL_ROWS][TUI_SEL_ROW_BYTES];
     u16 row_text_n[TUI_SEL_ROWS];
     u16 row_text_w[TUI_SEL_ROWS];
+    /* Where each painted transcript row starts in the transcript, SIZE_MAX for
+     * a row that came from anywhere else: this is what turns a click's cell
+     * into a byte offset, and so into a zone. */
+    size_t row_src[TUI_SEL_ROWS];
     b8 sel_active;    /* a range is highlighted                            */
     b8 sel_drag;      /* the button is still down                          */
     size_t sel_ar, sel_ac;   /* anchor cell (0-based row, column)          */
@@ -529,6 +556,7 @@ enum {
     ROW_USER, ROW_REASON, ROW_TOOL, ROW_RESULT, ROW_ERROR, ROW_NOTICE,
     ROW_POPUP, ROW_WELCOME_ART, ROW_WELCOME_TEXT,
     ROW_HEADING, ROW_CODE, ROW_QUOTE,      /* block: the row is theirs   */
+    ROW_ZONE, ROW_ZONE_HOVER,              /* block: a clickable row      */
     ROW_BOLD, ROW_EMPH, ROW_MONO, ROW_MARKER  /* inline: bytes are theirs */
 };
 
@@ -550,6 +578,8 @@ static const char *kind_style(u8 kind) {
         case ROW_WELCOME_TEXT: return S_MUTED;
         case ROW_HEADING:      return S_CYAN;
         case ROW_CODE:         return S_CODE_BG S_TEXT;
+        case ROW_ZONE:         return S_LINK;
+        case ROW_ZONE_HOVER:   return S_POPUP_BG S_LINK_HOVER;
         case ROW_QUOTE:        return S_MUTED;
         case ROW_BOLD:         return S_BOLD S_TEXT;
         case ROW_EMPH:         return S_ITALIC S_MUTED;
@@ -642,6 +672,50 @@ static void spans_shift(size_t delta) {
     g_tui.span_n = w;
 }
 
+/* Zones are bounded like spans, and an overflow drops the oldest: a click
+ * target scrolled out of the session is one nobody can reach anyway. */
+static void zone_add(size_t a, size_t b, u32 id) {
+    if (a >= b) return;
+    if (g_tui.zone_n == TUI_MAX_ZONES) {
+        memmove(g_tui.zone_a, g_tui.zone_a + 1,
+                sizeof g_tui.zone_a - sizeof g_tui.zone_a[0]);
+        memmove(g_tui.zone_b, g_tui.zone_b + 1,
+                sizeof g_tui.zone_b - sizeof g_tui.zone_b[0]);
+        memmove(g_tui.zone_id, g_tui.zone_id + 1,
+                sizeof g_tui.zone_id - sizeof g_tui.zone_id[0]);
+        g_tui.zone_n--;
+    }
+    g_tui.zone_a[g_tui.zone_n] = a;
+    g_tui.zone_b[g_tui.zone_n] = b;
+    g_tui.zone_id[g_tui.zone_n] = id;
+    g_tui.zone_n++;
+}
+
+static void zones_shift(size_t delta) {
+    size_t w = 0;
+    for (size_t i = 0; i < g_tui.zone_n; i++) {
+        if (g_tui.zone_b[i] <= delta) continue;
+        g_tui.zone_a[w] = g_tui.zone_a[i] > delta ? g_tui.zone_a[i] - delta : 0;
+        g_tui.zone_b[w] = g_tui.zone_b[i] - delta;
+        g_tui.zone_id[w] = g_tui.zone_id[i];
+        w++;
+    }
+    g_tui.zone_n = w;
+}
+
+/* The zone covering `off`, or 0 where the transcript is not clickable. Zones
+ * are appended in transcript order and never overlap, so this bisects on
+ * their ends: a frame asks once per painted row. */
+static u32 zone_at_off(size_t off) {
+    if (off == SIZE_MAX) return 0;
+    size_t lo = 0, hi = g_tui.zone_n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (g_tui.zone_b[mid] <= off) lo = mid + 1; else hi = mid;
+    }
+    return lo < g_tui.zone_n && off >= g_tui.zone_a[lo] ? g_tui.zone_id[lo] : 0;
+}
+
 /* Spans are appended in transcript order and never overlap, so the first one
  * that can still cover `off` is found by bisecting on their ends. A rendered
  * reply carries one span per emphasis run, and a frame asks per row. */
@@ -724,6 +798,9 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
     hash = hash_add(hash, &sel_c0, sizeof sel_c0);
     hash = hash_add(hash, &sel_c1, sizeof sel_c1);
     if (!row_changed(screen_row, hash, force)) return;
+    /* The row is erased whole, scrollbar cell included, so the bar has to be
+     * put back even when the viewport itself did not move. */
+    g_tui.bar_valid = false;
     cup(screen_row, 1);
     put_str(S_RESET "\033[2K");
 
@@ -758,6 +835,15 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
         size_t room = body > 2 ? body - 2 : 0;
         style(S_PANEL_BG S_MUTED);
         put_safe_clipped(STR("Message yoke..."), room, NULL);
+    } else if (kind == ROW_ZONE || kind == ROW_ZONE_HOVER) {
+        /* The indent belongs to the block, not to the target: styling it too
+         * would draw a bar across the transcript instead of a label. */
+        size_t lead = 0;
+        while (lead < text.n && text.p[lead] == ' ') lead++;
+        put_text(text.p, lead);
+        style(kind_style(kind));
+        put_text(text.p + lead, text.n - lead);
+        style(S_RESET);
     } else if (text_off != SIZE_MAX) {
         paint_runs(text, text_off);
     } else {
@@ -876,6 +962,16 @@ static void update_text_rows(Str s, size_t base_off, size_t cols,
                     u8 sk = span_kind(base_off + start);
                     if (kind_is_block(sk)) row_kind = sk;
                     else text_off = base_off + start;
+                    size_t sr = screen_row + row - first_row - 1;
+                    if (sr < TUI_SEL_ROWS) g_tui.row_src[sr] = base_off + start;
+                    /* A clickable row says so, and says louder under the
+                     * pointer: the style is the whole affordance. */
+                    u32 zone = zone_at_off(base_off + start);
+                    if (zone) {
+                        row_kind = zone == g_tui.hover_id ? ROW_ZONE_HOVER
+                                                          : ROW_ZONE;
+                        text_off = SIZE_MAX;
+                    }
                 }
                 update_text_row(screen_row + row - first_row, prefix,
                                 (Str){s.p + start, i - start}, screen_col,
@@ -918,6 +1014,9 @@ static void update_popup_row(size_t screen_row, Str name, Str desc,
     hash = hash_add(hash, &sel_c0, sizeof sel_c0);
     hash = hash_add(hash, &sel_c1, sizeof sel_c1);
     if (!row_changed(screen_row, hash, force)) return;
+    /* The row is erased whole, scrollbar cell included, so the bar has to be
+     * put back even when the viewport itself did not move. */
+    g_tui.bar_valid = false;
 
     const char *bg = selected ? S_POPUP_SEL : S_POPUP_BG;
     cup(screen_row, 1);
@@ -969,6 +1068,9 @@ static void update_notice_row(size_t screen_row, Str text, size_t screen_col,
     hash = hash_add(hash, &sel_c0, sizeof sel_c0);
     hash = hash_add(hash, &sel_c1, sizeof sel_c1);
     if (!row_changed(screen_row, hash, force)) return;
+    /* The row is erased whole, scrollbar cell included, so the bar has to be
+     * put back even when the viewport itself did not move. */
+    g_tui.bar_valid = false;
 
     cup(screen_row, 1);
     put_str(S_RESET "\033[2K");
@@ -1092,6 +1194,9 @@ static void paint_scrollbar(size_t first_row, size_t total_rows,
     }
     for (size_t i = 0; i < visible_rows; i++) {
         cup(i + 1, screen_col);
+        /* The row painted before this cell left its own style behind, and a
+         * bar that inherits it is a highlight bleeding past the row. */
+        style(S_RESET);
         if (!scrollable) {
             put_str(" ");
         } else if (i >= thumb_top && i < thumb_top + thumb_rows) {
@@ -1124,6 +1229,9 @@ static void repaint(void) {
     screen_size(&rows, &cols);
     b8 force = !g_tui.frame_valid || g_winch
              || rows != g_tui.painted_rows || cols != g_tui.painted_cols;
+    /* Rows the frame does not paint from the transcript carry no offset, so
+     * the mapping is rebuilt rather than aged. */
+    memset(g_tui.row_src, 0xff, sizeof g_tui.row_src);
     g_winch = 0;
     if (force) {
         /* A cleared or resized screen has no cells left to select. */
@@ -1376,10 +1484,11 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count,
     yoke_log_set_sink(tui_log_sink, NULL);
     /* The composer is always live: it owns the cursor for the whole session. */
     g_tui.editing = true;
-    /* 1002 reports drags (not just clicks) and 1006 keeps coordinates exact
-     * past column 223, both of which in-app text selection needs. Shift
-     * still falls through to the terminal's own selection. */
-    put_str("\033[?1049h\033[?7l\033[?25l\033[?1002h\033[?1006h");
+    /* 1003 reports motion with no button held, which is what a hovered click
+     * target needs, and 1006 keeps coordinates exact past column 223, which
+     * in-app text selection needs. Shift still falls through to the
+     * terminal's own selection. */
+    put_str("\033[?1049h\033[?7l\033[?25l\033[?1003h\033[?1006h");
     repaint();
 }
 
@@ -1387,7 +1496,7 @@ void tui_stop(void) {
     if (!g_tui.raw) return;
     yoke_log_set_sink(NULL, NULL);
     if (g_tui.fullscreen) {
-        put_str("\033[?1006l\033[?1002l\033[?25h\033[?7h\033[?1049l");
+        put_str("\033[?1006l\033[?1003l\033[?25h\033[?7h\033[?1049l");
         flush_out();
         (void)tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_tui.original_termios);
         (void)sigaction(SIGWINCH, &g_tui.original_winch, NULL);
@@ -1471,9 +1580,64 @@ void tui_clear_transcript(void) {
     g_tui.notice_n = 0;
     g_tui.transcript_n = 0;
     g_tui.span_n = 0;
+    g_tui.zone_n = 0;
+    g_tui.zone_open = 0;
+    g_tui.hover_id = 0;
     wrap_invalidate();
     g_tui.scroll_rows = 0;
     g_tui.frame_valid = false;
+    repaint();
+}
+
+void tui_zone_begin(u32 id) {
+    if (!g_tui.fullscreen || !id) return;
+    g_tui.zone_open = id;
+    g_tui.zone_open_a = g_tui.transcript_n;
+}
+
+void tui_zone_end(void) {
+    if (!g_tui.zone_open) return;
+    zone_add(g_tui.zone_open_a, g_tui.transcript_n, g_tui.zone_open);
+    g_tui.zone_open = 0;
+}
+
+/* Rows the transcript holds from `off` to its end, which is what a zone's
+ * place on screen is measured against: the rows above it are exactly what a
+ * re-render is free to change. */
+static size_t rows_below(size_t off) {
+    size_t cols = tui_body_cols();
+    if (!cols || off >= g_tui.transcript_n) return 0;
+    Str tail = { g_tui.transcript + off, g_tui.transcript_n - off };
+    return text_rows(tail, cols, 0, 0, NULL, NULL);
+}
+
+static size_t zone_start(u32 id) {
+    for (size_t i = g_tui.zone_n; i-- > 0;)
+        if (g_tui.zone_id[i] == id) return g_tui.zone_a[i];
+    return SIZE_MAX;
+}
+
+void tui_anchor_zone(u32 id) {
+    size_t off = zone_start(id);
+    g_tui.anchor_id = off == SIZE_MAX ? 0 : id;
+    g_tui.anchor_below = g_tui.anchor_id ? rows_below(off) : 0;
+    g_tui.anchor_scroll = g_tui.scroll_rows;
+}
+
+void tui_restore_anchor(void) {
+    u32 id = g_tui.anchor_id;
+    g_tui.anchor_id = 0;
+    /* A viewport pinned to the bottom stays there: what the replay added is
+     * what the reader asked to see. */
+    if (!id || !g_tui.anchor_scroll) return;
+    size_t off = zone_start(id);
+    if (off == SIZE_MAX) return;
+    size_t below = rows_below(off);
+    g_tui.scroll_rows = below > g_tui.anchor_below
+                      ? g_tui.anchor_scroll + (below - g_tui.anchor_below)
+                      : g_tui.anchor_scroll
+                        - (g_tui.anchor_below - below < g_tui.anchor_scroll
+                           ? g_tui.anchor_below - below : g_tui.anchor_scroll);
     repaint();
 }
 
@@ -1505,6 +1669,7 @@ void tui_write(Str s) {
         s.n = TUI_TRANSCRIPT_CAP - 1;
         g_tui.transcript_n = 0;
         g_tui.span_n = 0;
+        g_tui.zone_n = 0;
         wrap_invalidate();   /* the bytes the index described are gone */
     } else if (g_tui.transcript_n + s.n >= TUI_TRANSCRIPT_CAP) {
         size_t room_for_old = TUI_TRANSCRIPT_CAP - 1 - s.n;
@@ -1514,6 +1679,7 @@ void tui_write(Str s) {
         memmove(g_tui.transcript,
                 g_tui.transcript + g_tui.transcript_n - keep, keep);
         spans_shift(g_tui.transcript_n - keep);
+        zones_shift(g_tui.transcript_n - keep);
         g_tui.transcript_n = keep;
         wrap_invalidate();   /* every offset in the index just moved */
     }
@@ -1656,7 +1822,8 @@ static i32 read_csi(Csi *out) {
 enum {
     KEY_NONE = 0, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN, KEY_HOME, KEY_END,
     KEY_PREV_WORD, KEY_NEXT_WORD, KEY_NEWLINE, KEY_PAGE_UP, KEY_PAGE_DOWN,
-    KEY_WHEEL_UP, KEY_WHEEL_DOWN, KEY_MOUSE_DOWN, KEY_MOUSE_DRAG, KEY_MOUSE_UP
+    KEY_WHEEL_UP, KEY_WHEEL_DOWN, KEY_MOUSE_DOWN, KEY_MOUSE_DRAG, KEY_MOUSE_UP,
+    KEY_MOUSE_MOVE
 };
 
 /* Coordinates of the mouse key just returned by read_escape (1-based). */
@@ -1676,7 +1843,10 @@ static i32 read_escape(void) {
             g_mouse_col = csi.p[1];
             g_mouse_row = csi.p[2];
             if (final == 'm') return KEY_MOUSE_UP;
-            if (button & 32) return KEY_MOUSE_DRAG;
+            /* Motion carries 32, and no button held sets both low bits: that
+             * is a hover, not a drag. */
+            if (button & 32) return (button & 3) == 3 ? KEY_MOUSE_MOVE
+                                                      : KEY_MOUSE_DRAG;
             if ((button & 3) == 0) return KEY_MOUSE_DOWN;
             return KEY_NONE;
         }
@@ -1946,7 +2116,14 @@ b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
 }
 
 /* What a keystroke asked the caller to do; edits are already applied. */
-typedef enum { ED_EDIT = 0, ED_SUBMIT, ED_EOF, ED_REWIND } EdAction;
+typedef enum { ED_EDIT = 0, ED_SUBMIT, ED_EOF, ED_REWIND, ED_EXPAND } EdAction;
+
+/* The zone under a mouse cell, 0 outside every one of them. */
+static u32 zone_at_cell(i32 mouse_row, i32 mouse_col) {
+    size_t row, col;
+    sel_point(mouse_row, mouse_col, &row, &col);
+    return zone_at_off(row < TUI_SEL_ROWS ? g_tui.row_src[row] : SIZE_MAX);
+}
 
 /* Apply one input byte to the shared composer. The caller decides whether a
  * submit is honoured, so the same editor drives both the prompt and the
@@ -2045,9 +2222,19 @@ static EdAction editor_key(i32 c) {
                               ? g_tui.scroll_rows - 3 : 0;
         } else if (key == KEY_MOUSE_DOWN) {
             sel_begin(g_mouse_row, g_mouse_col); keep_sel = true;
+            g_tui.click_down = zone_at_cell(g_mouse_row, g_mouse_col);
         } else if (key == KEY_MOUSE_DRAG) {
             sel_extend(g_mouse_row, g_mouse_col); keep_sel = true;
+        } else if (key == KEY_MOUSE_MOVE) {
+            g_tui.hover_id = zone_at_cell(g_mouse_row, g_mouse_col);
+            keep_sel = true;
         } else if (key == KEY_MOUSE_UP) {
+            /* A click, not a drag: a range being selected is a copy, and the
+             * zone it happens to start in is not what the pointer meant. */
+            b8 hit = !g_tui.sel_active && g_tui.click_down
+                  && g_tui.click_down == zone_at_cell(g_mouse_row, g_mouse_col);
+            if (hit) { g_tui.click_id = g_tui.click_down; action = ED_EXPAND; }
+            g_tui.click_down = 0;
             sel_finish(); keep_sel = true;
         } else if (g_tui.comp_n && (key == KEY_DOWN || key == KEY_UP)) {
             completion_move(key == KEY_DOWN ? 1 : -1);
@@ -2155,13 +2342,18 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
 
         EdAction action = editor_key(c);
         if (action == ED_EOF) { *out_n = 0; return false; }
-        if (action == ED_REWIND) {
-            /* The key and the command are the same request, so it answers as
-             * the command. The composer is left alone: a rewind the picker
-             * cancels must not cost the draft it was typed over. */
-            Str cmd = STR("/rewind");
-            size_t n = cmd.n < cap ? cmd.n : cap - 1;
-            memcpy(buf, cmd.p, n);
+        if (action == ED_REWIND || action == ED_EXPAND) {
+            /* The gesture and the command are the same request, so it answers
+             * as the command. The composer is left alone: a rewind the picker
+             * cancels, or a block a click unfolds, must not cost the draft it
+             * was typed over. */
+            char cmd[32];
+            i32 len = action == ED_REWIND
+                    ? snprintf(cmd, sizeof cmd, "/rewind")
+                    : snprintf(cmd, sizeof cmd, "/expand %u", g_tui.click_id);
+            size_t n = len > 0 ? (size_t)len : 0;
+            if (n >= cap) n = cap - 1;
+            memcpy(buf, cmd, n);
             buf[n] = '\0';
             *out_n = n;
             repaint();

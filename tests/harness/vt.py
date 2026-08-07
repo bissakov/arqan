@@ -41,19 +41,21 @@ def text_width(s: str) -> int:
 class Attr:
     """Style flags of one cell, kept comparable and hashable."""
 
-    __slots__ = ("fg", "bg", "bold", "reverse")
+    __slots__ = ("fg", "bg", "bold", "reverse", "underline")
 
-    def __init__(self, fg=None, bg=None, bold=False, reverse=False):
+    def __init__(self, fg=None, bg=None, bold=False, reverse=False,
+                 underline=False):
         self.fg = fg
         self.bg = bg
         self.bold = bold
         self.reverse = reverse
+        self.underline = underline
 
     def copy(self) -> "Attr":
-        return Attr(self.fg, self.bg, self.bold, self.reverse)
+        return Attr(self.fg, self.bg, self.bold, self.reverse, self.underline)
 
     def key(self):
-        return (self.fg, self.bg, self.bold, self.reverse)
+        return (self.fg, self.bg, self.bold, self.reverse, self.underline)
 
     def __eq__(self, other):
         return isinstance(other, Attr) and self.key() == other.key()
@@ -71,6 +73,8 @@ class Attr:
             bits.append("bold")
         if self.reverse:
             bits.append("reverse")
+        if self.underline:
+            bits.append("underline")
         return "Attr(" + ",".join(bits) + ")"
 
 
@@ -420,6 +424,10 @@ class Terminal:
                 self.attr.bold = True
             elif v == 22:
                 self.attr.bold = False
+            elif v == 4:
+                self.attr.underline = True
+            elif v == 24:
+                self.attr.underline = False
             elif v == 7:
                 self.attr.reverse = True
             elif v == 27:

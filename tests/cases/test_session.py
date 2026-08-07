@@ -18,7 +18,7 @@ def test_exit_restores_the_terminal(ctx):
     t = s.screen
     assert not t.alt_active, "should be back on the primary screen"
     assert t.cursor_visible, "cursor must be visible again"
-    assert t.modes.get(1002) is False, "mouse tracking must be released"
+    assert t.modes.get(1003) is False, "mouse tracking must be released"
     assert t.modes.get(1006) is False
     assert t.modes.get(7) is True, "autowrap must be restored"
 

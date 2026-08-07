@@ -141,7 +141,12 @@ an AoS layout.
   editor. The transcript carries a wrapped-row index (row count plus periodic
   byte-offset checkpoints, extended incrementally as output arrives and
   dropped whenever existing bytes move) so a frame costs the visible rows, not
-  the whole scrollback
+  the whole scrollback. A byte range of the transcript can also be a zone: a
+  click inside one submits `/expand <id>` the way Escape submits `/rewind`,
+  a zone's rows are painted as a link and brighten while the pointer is on
+  them (which is why mouse mode 1003 rather than 1002 is claimed), and
+  `tui_anchor_zone`/`tui_restore_anchor` keep a zone where it is on screen
+  while the caller replays the transcript around it
 - `markdown.c`: a reply is Markdown, and this renders it into the transcript:
   headings, lists, block quotes, rules and fenced code become shapes, emphasis
   and inline code become styles, and the markers are dropped. It renders as the
@@ -153,7 +158,12 @@ an AoS layout.
 - `render.c`: how a tool call and its result read in the transcript: a header
   naming the tool and its target, a preview of the input it carries (a diff for
   `edit`), and a result summarised by the tool's own shape. The JSON arguments
-  never reach the screen except for a tool this module knows nothing about
+  never reach the screen except for a tool this module knows nothing about.
+  The tail a truncated block ends on is its click target: it carries a TUI zone
+  keyed by the `Conv` slot it was rendered from, and `Conv.expanded` is what a
+  click leaves behind, lifting that one block's caps the way `/verbose` lifts
+  every block's. A replay writes the same air a live turn does, since the
+  transcript is one rendering either way
 - `main.c`: wires everything together and runs the agent loop
 
 **Agent loop shape** (`main.c`): each user turn calls `provider_run` in a

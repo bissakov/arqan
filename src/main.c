@@ -100,7 +100,7 @@ static b8 run_tool_calls(ToolRegistry *reg, Conv *conv, Arena *scratch,
         size_t tool = tools_find(reg, name);
         Buf out; buf_init(&out, scratch, 4096);
         char err[256] = {0};
-        render_tool_call(name, args, scratch);
+        render_tool_call(name, args, scratch, (u32)(i + 1), conv->expanded[i]);
         char status[32];
         snprintf(status, sizeof status, "running %.*s", (i32)name.n, name.p);
         tui_set_status(status);
@@ -110,11 +110,13 @@ static b8 run_tool_calls(ToolRegistry *reg, Conv *conv, Arena *scratch,
         Str result = buf_finish(&out);
         Str res_dup = str_dup(persist, result);
         if (result.n && !res_dup.p) res_dup = STR("ERROR: out of memory");
-        if (conv_add_tool(conv, id, res_dup) == CONV_NONE) {
+        size_t slot = conv_add_tool(conv, id, res_dup);
+        if (slot == CONV_NONE) {
             tui_write(STR("\n[conversation is full: /clear to start a new one]\n"));
             return false;
         }
-        render_tool_result(name, res_dup);
+        render_tool_result(name, res_dup, (u32)(slot + 1),
+                           conv->expanded[slot]);
     }
     return true;
 }
@@ -137,12 +139,17 @@ static void render_conv(const Conv *c, Arena *scratch) {
             case M_SYSTEM: break;
             case M_USER: tui_write_user(c->text[i]); break;
             case M_TOOL:
-                render_tool_result(call_name(c, i), c->text[i]);
+                render_tool_result(call_name(c, i), c->text[i],
+                                   (u32)(i + 1), c->expanded[i]);
                 break;
             case M_ASSISTANT:
                 if (conv_is_call(c, i)) {
-                    render_tool_call(c->tool_name[i], c->text[i], scratch);
+                    render_tool_call(c->tool_name[i], c->text[i], scratch,
+                                     (u32)(i + 1), c->expanded[i]);
                 } else if (c->text[i].n) {
+                    /* A live turn separates a reply from the tool output it
+                     * followed; a replay is the same transcript. */
+                    if (i && c->role[i - 1] == M_TOOL) tui_write(STR("\n"));
                     md_write(c->text[i]);
                     md_end();
                     tui_write(STR("\n"));
@@ -150,6 +157,18 @@ static void render_conv(const Conv *c, Arena *scratch) {
                 break;
         }
     }
+}
+
+/* Replay the transcript after a change to how it renders. `zone` is the block
+ * the reader acted on, which keeps its place on screen while everything above
+ * it is rebuilt; 0 when the change was not about one block. */
+static void rerender_conv(const Conv *conv, Arena *scratch, u32 zone) {
+    arena_reset(scratch);
+    tui_anchor_zone(zone);
+    tui_clear_transcript();
+    render_conv(conv, scratch);
+    tui_restore_anchor();
+    arena_reset(scratch);
 }
 
 /* Offer the saved sessions for this directory and resume the chosen one.
@@ -565,17 +584,25 @@ i32 main(i32 argc, char **argv) {
             /* The transcript is a rendering of the conversation, so the
              * setting that produced it applies to what is already on screen
              * too: replay it under the new one. */
-            arena_reset(&scratch);
-            tui_clear_transcript();
-            render_conv(&conv, &scratch);
-            arena_reset(&scratch);
+            rerender_conv(&conv, &scratch, 0);
             tui_notice(md_raw()
                        ? STR("raw: replies are shown as the model wrote them")
                        : STR("raw: off, Markdown is formatted"));
             continue;
         }
+        if (!strncmp(line, "/expand ", 8)) {
+            /* A click on a block's truncation tail, which the TUI submits as
+             * this command: the id is the slot it was rendered from. */
+            unsigned long id = strtoul(line + 8, NULL, 10);
+            if (id && id <= conv.n) {
+                conv.expanded[id - 1] = !conv.expanded[id - 1];
+                rerender_conv(&conv, &scratch, (u32)id);
+            }
+            continue;
+        }
         if (!strcmp(line, "/verbose")) {
             render_set_verbose(!render_verbose());
+            rerender_conv(&conv, &scratch, 0);
             tui_notice(render_verbose()
                        ? STR("verbose: tool output is shown in full")
                        : STR("verbose: tool output is truncated"));

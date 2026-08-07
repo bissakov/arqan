@@ -39,7 +39,7 @@ def test_alt_screen_and_modes(ctx):
     t = s.screen
     assert t.alt_active, "should be on the alternate screen"
     assert t.modes.get(1049) is True
-    assert t.modes.get(1002) is True, "drag reporting is needed for selection"
+    assert t.modes.get(1003) is True, "motion reporting is needed for hover"
     assert t.modes.get(1006) is True, "SGR coordinates are needed past col 223"
     assert t.modes.get(7) is False, "autowrap off: the UI wraps text itself"
 

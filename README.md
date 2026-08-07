@@ -151,7 +151,9 @@ quotes, thematic breaks and fenced code become shapes, emphasis and inline
 code become styles, and the markers themselves are dropped. Rendering follows
 the stream, so a delta is painted as soon as its shape is known and only an
 unclosed marker waits for its closer. `/raw` turns it off and shows the reply
-exactly as the model wrote it; `/copy` copies that source either way, and a
+exactly as the model wrote it, transcript included, since what is on screen is
+a rendering of the conversation and the toggle applies to it too; `/copy`
+copies that source either way, and a
 one-shot `-p` run is never rendered, since its stdout is a reply rather than a
 view.
 
@@ -159,7 +161,11 @@ A tool call reads as the tool, what it acts on and a preview of what it
 carries, with an `edit` shown as a diff, and its result as a summary line: the
 exit status of a command, the size of a file, the error a failure returned.
 Both previews are capped so one tool cannot take the scrollback; `/verbose`
-lifts the caps and shows every line.
+lifts the caps and shows every line, for the blocks already on screen as well
+as the next ones. A single block answers to the pointer: its `N more lines`
+tail is drawn as a link and brightens under the cursor, clicking it unfolds
+that block alone, `show less` folds it back, and the block keeps its place on
+screen while the transcript is replayed around it.
 
 `/model` lists what the provider's `/models` endpoint serves and remembers the
 choice for the next run. Past ten entries the popup takes the keyboard and
