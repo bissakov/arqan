@@ -43,6 +43,28 @@ static Str str_arg(const JVal *args, Str key) {
     return v && v->type == J_STR ? v->u.s : (Str){0};
 }
 
+/* A count argument as the tool reads it: absent or malformed is 0. */
+static size_t num_arg(const JVal *args, Str key) {
+    const JVal *v = args ? json_get(args, key) : NULL;
+    if (!v || v->type != J_NUM || v->u.n < 1 || v->u.n > (f64)(1u << 30))
+        return 0;
+    return (size_t)v->u.n;
+}
+
+/* A read is a page of a file, and which page is as much of what it did as the
+ * path is: without it two reads of one file are the same header twice. */
+static void write_read_range(const JVal *args) {
+    size_t offset = num_arg(args, STR("offset"));
+    size_t limit = num_arg(args, STR("limit"));
+    if (!offset && !limit) return;
+    if (!offset) offset = 1;
+    char buf[64];
+    i32 len = limit
+        ? snprintf(buf, sizeof buf, " lines %zu-%zu", offset, offset + limit - 1)
+        : snprintf(buf, sizeof buf, " from line %zu", offset);
+    if (len > 0) tui_write_tool((Str){ buf, (size_t)len });
+}
+
 typedef void (*Sink)(Str);
 
 static void write_count(size_t n, const char *what, Sink sink) {
@@ -121,6 +143,7 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
         tui_write_tool(head);
         if (head.n < target.n) tui_write_tool(STR(" ..."));
     }
+    if (str_eq(name, STR("read"))) write_read_range(j);
     tui_write_tool(STR("\n"));
 
     if (str_eq(name, STR("write"))) {

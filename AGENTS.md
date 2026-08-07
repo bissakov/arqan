@@ -153,7 +153,9 @@ an AoS layout.
   command says why it failed on its last lines, and `grep` and `find` cap
   their results. Those two share one walk, sorted by name so a search is
   reproducible and skipping dotfiles; the match is a literal substring rather
-  than a regex, since `bash` still has the shell for the rest. `edit` requires
+  than a regex, since `bash` still has the shell for the rest. Their root may
+  name one file rather than a directory, since narrowing a query to the file it
+  is about is the same request with a smaller root. `edit` requires
   each `old_text` to match exactly once, and takes a list of them applied in
   order and written once at the end, so an ambiguous or impossible batch
   leaves the file as it was. Each entry carries the modes
@@ -218,7 +220,8 @@ an AoS layout.
   `/raw` turns it off, and so does the absence of a fullscreen UI, since a
   one-shot run's stdout is a reply rather than a view
 - `render.c`: how a tool call and its result read in the transcript: a header
-  naming the tool and its target, a preview of the input it carries (a diff for
+  naming the tool and its target, and for a `read` the page it asked for, since
+  two reads of one file are otherwise the same header twice, a preview of the input it carries (a diff for
   `edit`), and a result summarised by the tool's own shape. The JSON arguments
   never reach the screen except for a tool this module knows nothing about.
   The tail a truncated block ends on is its click target: it carries a TUI zone
@@ -253,7 +256,10 @@ an AoS layout.
 - `main.c`: wires everything together and runs the agent loop
 
 **Agent loop shape** (`main.c`): each user turn calls `provider_run` in a
-loop capped at 16 iterations. `provider_run` streams one completion, appends
+loop that runs until the model stops asking for tools, with no round cap: one
+would end a long build in the middle of itself, and a user who walked away from
+it is not there to lift it. Stopping the agent is theirs to do, through
+`SIGINT`. `provider_run` streams one completion, appends
 the assistant message (and any tool calls) to `Conv`, and returns the tool
 call count. If nonzero, `main` scans the newly appended `Conv` tail for
 tool-call slots (an assistant head slot carrying the prose followed by one

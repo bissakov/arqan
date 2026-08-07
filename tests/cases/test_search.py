@@ -143,3 +143,19 @@ def test_a_search_reads_as_what_it_looked_for(ctx):
     assert "\u25c6  grep alpha" in text, text
     assert "{" not in text, text
     assert "src/one.c:1: int alpha(void);" in text, text
+
+
+def test_grep_searches_a_path_naming_one_file(ctx):
+    """Narrowing a search to the file it is about is a smaller root, not an error."""
+    a_small_tree(ctx)
+    result = run_tool(ctx, "grep", {"pattern": "alpha", "path": "src/one.c"})
+    assert result.splitlines() == ["src/one.c:1: int alpha(void);"], result
+
+
+def test_find_matches_a_path_naming_one_file(ctx):
+    """find against a single file answers with it, or with nothing."""
+    a_small_tree(ctx)
+    assert run_tool(ctx, "find", {"name": "*.c", "path": "src/one.c"}) == "src/one.c\n"
+    assert run_tool(ctx, "find", {"name": "*.rs", "path": "src/one.c"}).startswith(
+        "no files"
+    )

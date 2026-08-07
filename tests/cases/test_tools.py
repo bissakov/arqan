@@ -491,3 +491,50 @@ def test_an_edit_sees_what_the_edit_before_it_left(ctx):
     s.wait_text("chained")
     s.wait_turn_done()
     assert (ctx.work / "chain.txt").read_text() == "three\n"
+
+
+def test_a_read_header_names_the_page_it_asked_for(ctx):
+    """Two reads of one file differ by their range, so the range is on screen."""
+    ctx.write_file("big.txt", "\n".join(f"line {i:04d}" for i in range(400)))
+    ctx.scenario(
+        'tool=read:{"path":"big.txt","offset":100,"limit":3},'
+        'tool=read:{"path":"big.txt","offset":398},'
+        'tool_rounds=1,final_text=two+pages'
+    )
+    s = ctx.spawn()
+    s.submit("read both pages")
+    s.wait_text("two pages")
+    s.wait_turn_done()
+
+    text = s.text()
+    assert "\u25c6  read big.txt lines 100-102" in text, text
+    assert "\u25c6  read big.txt from line 398" in text, text
+
+
+def test_a_read_of_the_whole_file_names_no_range(ctx):
+    """A call that asked for no page has none to report."""
+    ctx.write_file("notes.txt", "hello\n")
+    ctx.scenario('tool=read:{"path":"notes.txt"},final_text=read+it')
+    s = ctx.spawn()
+    s.submit("read notes.txt")
+    s.wait_text("read it")
+    s.wait_turn_done()
+    text = s.text()
+    assert "\u25c6  read notes.txt" in text, text
+    assert "line" not in text.split("\u25c6  read notes.txt")[1].split("\n")[0], text
+
+
+def test_a_long_turn_runs_to_its_end(ctx):
+    """No round cap: a turn wide enough to outrun one still reaches its reply."""
+    ctx.write_file("one.txt", "first file")
+    ctx.scenario(
+        'tool=read:{"path":"one.txt"},tool_rounds=40,final_text=all+the+way'
+    )
+    s = ctx.spawn()
+    s.submit("keep reading")
+    s.wait_text("all the way")
+    s.wait_turn_done()
+    # 40 rounds of tool calls, then the round that answered
+    assert len(ctx.mock.requests) == 41, len(ctx.mock.requests)
+    assert s.status_kind() == "ready"
+    assert "stopped" not in s.text(), s.text()

@@ -888,8 +888,12 @@ static b8 agent_turn(Agent *ag, Str text) {
     b8 ok = false;
     g_got_sigint = 0;
     tui_set_busy(true);
-    for (i32 turn = 0; turn < 16; turn++) {
-        rounds = turn + 1;
+    /* A turn runs until the model stops asking for tools. A cap here would
+     * end a long build in the middle of itself, and whoever started one is
+     * often not at the keyboard to answer for it; stopping the agent is
+     * theirs to do, and Ctrl-C is how they do it. */
+    for (;;) {
+        rounds++;
         if (g_got_sigint) {
             tui_write(STR("\n[interrupted]\n\n"));
             tui_set_status("ready");

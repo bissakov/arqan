@@ -379,6 +379,7 @@ typedef struct {
     size_t found;
     size_t skipped;       /* results past `max`                                */
     b8     ignore_case;
+    b8     single;         /* the root is one file rather than a tree      */
     char   path[YOKE_MAX_PATH];
     size_t path_n;
 } Walk;
@@ -445,6 +446,14 @@ static void walk_grep_file(Walk *w) {
     }
 }
 
+/* One regular file the walk reached, or the single file it was pointed at. */
+static void walk_file(Walk *w, const char *base) {
+    if (!name_matches(w, base)) return;
+    if (w->pattern.n) { walk_grep_file(w); return; }
+    if (w->found++ >= w->max) w->skipped++;
+    else buf_putf(w->out, "%s\n", walk_shown(w));
+}
+
 /* Appends "/name" to the walked path and restores it afterwards. */
 static b8 walk_enter(Walk *w, const char *name, size_t n) {
     if (w->path_n + n + 2 >= sizeof w->path) return false;
@@ -491,13 +500,8 @@ static b8 walk_dir(Walk *w, i32 depth) {
         if (lstat(w->path, &st) == 0) {
             if (S_ISDIR(st.st_mode)) {
                 room = walk_dir(w, depth + 1);
-            } else if (S_ISREG(st.st_mode) && name_matches(w, ent[i].p)) {
-                if (!w->pattern.n) {
-                    if (w->found++ >= w->max) w->skipped++;
-                    else buf_putf(w->out, "%s\n", walk_shown(w));
-                } else {
-                    walk_grep_file(w);
-                }
+            } else if (S_ISREG(st.st_mode)) {
+                walk_file(w, ent[i].p);
             }
         }
         w->path_n = base_n;
@@ -524,10 +528,13 @@ static b8 walk_start(Walk *w, Str root, char *err, size_t err_cap) {
         snprintf(err, err_cap, "%s does not exist", rel);
         return false;
     }
-    if (!S_ISDIR(st.st_mode)) {
-        snprintf(err, err_cap, "%s is not a directory", rel);
+    /* A path naming one file is a search of that file: narrowing a query to
+     * the file it is about is the same request with a smaller root. */
+    if (!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode)) {
+        snprintf(err, err_cap, "%s is not a file or a directory", rel);
         return false;
     }
+    w->single = !S_ISDIR(st.st_mode);
     return true;
 }
 
@@ -573,7 +580,13 @@ static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep,
     w.names = &names;
     w.file = &file;
 
-    b8 room = walk_dir(&w, 0);
+    b8 room = true;
+    if (w.single) {
+        const char *slash = strrchr(w.path, '/');
+        walk_file(&w, slash ? slash + 1 : w.path);
+    } else {
+        room = walk_dir(&w, 0);
+    }
     if (!w.found) {
         buf_putf(out, "no %s\n", grep ? "matches" : "files");
     } else if (w.skipped) {
@@ -647,7 +660,7 @@ void tools_init(ToolRegistry *r, Arena *persist) {
         tool_read);
     ADD("grep", "Search file contents for a literal string, recursively.", BOTH,
         "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},"
-        "\"path\":{\"type\":\"string\",\"description\":\"directory to search, default .\"},"
+        "\"path\":{\"type\":\"string\",\"description\":\"file or directory to search, default .\"},"
         "\"glob\":{\"type\":\"string\",\"description\":\"only files matching, e.g. *.c\"},"
         "\"ignore_case\":{\"type\":\"boolean\"},"
         "\"max_results\":{\"type\":\"integer\"}},\"required\":[\"pattern\"]}",
@@ -655,7 +668,7 @@ void tools_init(ToolRegistry *r, Arena *persist) {
     ADD("find", "List files whose name matches a glob, recursively.", BOTH,
         "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\","
         "\"description\":\"glob; matched against the path when it has a /\"},"
-        "\"path\":{\"type\":\"string\",\"description\":\"directory to search, default .\"},"
+        "\"path\":{\"type\":\"string\",\"description\":\"file or directory to search, default .\"},"
         "\"max_results\":{\"type\":\"integer\"}},\"required\":[\"name\"]}",
         tool_find);
     ADD("write", "Write content to a file (overwrite).", TOOL_IN_BUILD,
