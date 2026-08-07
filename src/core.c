@@ -215,6 +215,7 @@ void yoke_log(i32 level, const char *fmt, ...) {
     i32 w = vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
     size_t n = w > 0 ? ((size_t)w < sizeof msg ? (size_t)w : sizeof msg - 1) : 0;
+    telemetry_log(level, (Str){ msg, n });
     if (g_log_sink) { g_log_sink(level, (Str){ msg, n }, g_log_ud); return; }
     fprintf(stderr, "[yoke %s] %.*s\n", tags[level], (i32)n, msg);
 }

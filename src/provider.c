@@ -198,6 +198,8 @@ typedef struct {
     Buf  text;
     b8   text_started;
     b8   reason_started;
+    size_t events;       /* SSE data lines parsed, for telemetry           */
+    size_t reason_bytes; /* thinking trace streamed, which Conv never keeps */
 } StreamState;
 
 static i32 slot(StreamState *s, i32 idx) {
@@ -216,6 +218,7 @@ static b8 on_line(Str line, void *ud) {
     if (line.n >= 6 && !memcmp(line.p, "data:", 5)) {
         Str payload = str_trim(str_drop(line, 5));
         if (str_eq(payload, STR("[DONE]"))) return true;
+        s->events++;
         arena_reset(&s->ev);
         JVal *ev = json_parse(&s->ev, payload);
         if (!ev) return true;
@@ -257,6 +260,7 @@ static b8 on_line(Str line, void *ud) {
                 }
                 if (rt.n) {
                     s->reason_started = true;
+                    s->reason_bytes += rt.n;
                     if (p->on_reason) p->on_reason(rt, p->ud);
                 }
             }
@@ -398,8 +402,30 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         .on_idle  = p->on_idle,
         .idle_ud  = saved_ud,
     };
+    f64 started = yoke_now_seconds();
     i32 rc = http_sse_post(&r);
     p->ud = saved_ud;
+
+    /* The wire as it was: the request's size rather than its text, and what
+     * the stream cost, including the reasoning bytes the conversation drops. */
+    TelEvent tev;
+    tel_open(&tev, "request");
+    tel_int(&tev, "messages", (i64)p->conv->n);
+    tel_int(&tev, "body_bytes", (i64)bstr.n);
+    tel_int(&tev, "tools", (i64)(p->tools ? p->tools->n : 0));
+    tel_int(&tev, "ms", (i64)((yoke_now_seconds() - started) * 1000.0));
+    tel_int(&tev, "rc", rc);
+    tel_int(&tev, "sse_events", (i64)s->events);
+    tel_shape(&tev, "reply", (Str){ s->text.p, s->text.n });
+    tel_int(&tev, "reason_bytes", (i64)s->reason_bytes);
+    tel_int(&tev, "dropped_calls", s->dropped);
+    if (p->usage_valid) {
+        tel_int(&tev, "prompt_tokens", (i64)p->prompt_tokens);
+        tel_int(&tev, "completion_tokens", (i64)p->completion_tokens);
+        tel_int(&tev, "total_tokens", (i64)p->total_tokens);
+    }
+    tel_send(&tev);
+
     if (rc != 0) {
         if (rc < 0) snprintf(err, err_cap, "HTTP %d", -rc);
         else snprintf(err, err_cap, "request failed (%d)", rc);

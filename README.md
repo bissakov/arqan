@@ -173,7 +173,38 @@ forked from where `/resume` can still find it, `/model` switches model,
 `/rewind` goes back to an earlier message, as the double Esc does,
 `/copy` puts the last reply on the clipboard as the Markdown the model wrote,
 `/verbose` toggles untruncated tool output, `/raw` toggles Markdown rendering
-off and `/exit` quits.
+off, `/telemetry` toggles the debug record below and `/exit` quits.
+
+### Telemetry
+
+`/telemetry` records what a session did, for a bug report. It is off until it
+is asked for, and the answer is remembered, so a run that never reaches the
+composer records too. Events are JSON objects, one per line, appended to
+`$XDG_STATE_HOME/yoke/telemetry.jsonl`: the session and its settings, each
+turn and how long it took, every request with its size, its SSE event count
+and its token usage, every tool call with its duration and outcome, the
+commands and mode switches, the arenas as they fill, and the log lines yoke
+would otherwise only print to stderr.
+
+A transfer gets an event of its own, since most of what goes wrong with an
+endpoint is invisible from the transcript: the HTTP status and curl's own
+result, the phases it spent its time in (DNS, connect, TLS, time to first
+byte, total), the bytes each way, the HTTP version and address family, and,
+for a streamed turn, how many SSE lines arrived, how many waits the event loop
+took and the longest the stream went silent, which is what "it froze" looks
+like in numbers. The endpoint is a hash and a class (loopback, TLS) rather
+than a URL, because a private host names its owner as surely as a path does;
+the request path is yoke's own (`/chat/completions`, `/models`), so it is
+recorded as it is.
+
+What it records is the shape of a session and none of its content. A message
+is a byte and a line count, a tool call is its name and the *keys* of its
+arguments rather than the path or the command they carry, a reply is its size
+and its tokens, and the working directory is a hash, so two projects can be
+told apart without either being named. The strings in the file are the ones
+yoke formats itself: a tool name, a model id, an HTTP status, a log line. A
+command yoke does not offer is recorded as `(unknown)`, since a line it does
+not know is the user's own text.
 
 ### Plan mode
 
@@ -248,6 +279,7 @@ and ignored as if unset, and directories yoke creates are mode 0700.
 | providers | `$XDG_CONFIG_HOME/yoke/providers` | one JSON object per line: name, base URL, model; never a key |
 | provider keys | `$XDG_STATE_HOME/yoke/credentials` | mode 0600, refused when anyone else can read it |
 | chosen provider | `$XDG_STATE_HOME/yoke/provider` | what `/provider` last picked |
+| telemetry | `$XDG_STATE_HOME/yoke/telemetry`, `telemetry.jsonl` | whether `/telemetry` is on, and the anonymized record it appends |
 | sessions | `$XDG_DATA_HOME/yoke/sessions/<cwd>/<timestamp>.jsonl` | one file per conversation, keyed by the directory it ran in |
 
 ## Tests

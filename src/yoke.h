@@ -148,6 +148,55 @@ void    yoke_log_set_level(i32 level);
 typedef void (*YokeLogSink)(i32 level, Str msg, void *ud);
 void    yoke_log_set_sink(YokeLogSink sink, void *ud);
 
+/* ---- telemetry -----------------------------------------------------------
+ * An anonymized record of a session, appended as JSON lines to
+ * $XDG_STATE_HOME/yoke/telemetry.jsonl while /telemetry is on. The answer to
+ * that command is remembered in $XDG_STATE_HOME/yoke/telemetry, so a run that
+ * cannot type it records too.
+ *
+ * The record is the shape of a session, never its content: a message is a
+ * byte and a line count, a tool call is its name and the keys of its
+ * arguments, the working directory is a hash. A string field is for text yoke
+ * formats itself (a tool name, a model id, a log line); user and model text
+ * goes through tel_shape, which keeps no bytes of it.
+ *
+ * An event is built on the stack and written whole by tel_send. With
+ * telemetry off every call below is a no-op, so callers need no branch.
+ */
+/* One line. Sized for the widest event, which is the network one: a transfer
+ * is two dozen counters and curl's own timings. */
+typedef struct { char buf[1024]; size_t n; b8 full, live; } TelEvent;
+
+/* Resolve the paths and load the remembered setting. `scratch` holds the
+ * paths for the length of the call. */
+void telemetry_init(Arena *scratch);
+b8   telemetry_on(void);
+/* Turn recording on or off and remember it. False when no state directory
+ * resolves or the setting could not be written, leaving it unchanged. */
+b8   telemetry_set(b8 on, Arena *scratch);
+/* The file events are appended to; empty when no state directory resolves. */
+Str  telemetry_file(void);
+/* Mirror of a yoke_log line, so the diagnostics a run produced sit beside the
+ * events they explain. Called by yoke_log; recording is what decides. */
+void telemetry_log(i32 level, Str msg);
+
+void tel_open(TelEvent *e, const char *ev);
+void tel_int(TelEvent *e, const char *key, i64 v);
+void tel_bool(TelEvent *e, const char *key, b8 v);
+/* Escaped and clipped. Never pass text a user or a model wrote. */
+void tel_str(TelEvent *e, const char *key, Str v);
+/* "<key>_bytes" and "<key>_lines": what a message looked like, not what it
+ * said. */
+void tel_shape(TelEvent *e, const char *key, Str text);
+/* The top-level keys of a tool call's JSON arguments, comma-separated. The
+ * values are what carries a path or a command, so none of them is recorded.
+ * `scratch` is rewound before returning. */
+void tel_arg_keys(TelEvent *e, const char *key, Str args, Arena *scratch);
+/* `v` as a stable 64-bit hash: enough to tell two working directories or two
+ * endpoints apart across runs, not enough to name either. */
+void tel_hash_field(TelEvent *e, const char *key, Str v);
+void tel_send(TelEvent *e);
+
 /* ---- time --------------------------------------------------------------- */
 f64  yoke_now_seconds(void);   /* monotonic                                */
 

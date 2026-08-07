@@ -1,0 +1,239 @@
+"""/telemetry: an anonymized record of a session, off until it is asked for."""
+
+import json
+
+
+def log_path(ctx):
+    return ctx.home / ".local" / "state" / "yoke" / "telemetry.jsonl"
+
+
+def events(ctx):
+    path = log_path(ctx)
+    assert path.exists(), sorted(p.name for p in ctx.home.rglob("*"))
+    return [json.loads(line) for line in path.read_text().splitlines() if line]
+
+
+def kinds(ctx):
+    return [e["ev"] for e in events(ctx)]
+
+
+def test_recording_is_off_until_it_is_asked_for(ctx):
+    """A session records nothing of its own accord."""
+    ctx.scenario("text=hello+there")
+    s = ctx.spawn()
+    s.submit("say hi")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+    assert not log_path(ctx).exists()
+
+
+def test_telemetry_toggle_records_the_turn(ctx):
+    """With it on, a turn leaves the events a report is read from."""
+    ctx.scenario("text=hello+there,usage=200/12")
+    s = ctx.spawn()
+    s.submit("/telemetry")
+    s.wait_text("telemetry: on")
+    s.submit("say hi")
+    s.wait_turn_done()
+
+    seen = kinds(ctx)
+    assert seen[0] == "session", seen
+    for ev in ("turn_start", "request", "turn_end"):
+        assert ev in seen, seen
+
+    request = [e for e in events(ctx) if e["ev"] == "request"][-1]
+    assert request["prompt_tokens"] == 200
+    assert request["completion_tokens"] == 12
+    assert request["reply_bytes"] == len("hello there")
+    turn = [e for e in events(ctx) if e["ev"] == "turn_end"][-1]
+    assert turn["ok"] is True and turn["rounds"] == 1, turn
+    assert turn["persist_used"] > 0
+
+
+def test_the_record_keeps_no_conversation(ctx):
+    """A message is a size and a line count, never its text."""
+    ctx.write_file("secret.txt", "the passphrase is swordfish")
+    ctx.scenario(
+        'tool=read:{"path":"secret.txt"},final_text=I+read+the+secret+file'
+    )
+    s = ctx.spawn()
+    s.submit("/telemetry")
+    s.wait_text("telemetry: on")
+    s.submit("read secret.txt, my private question")
+    s.wait_turn_done()
+
+    body = log_path(ctx).read_text()
+    for leaked in ("private question", "swordfish", "secret.txt",
+                   "I read the secret file", str(ctx.work)):
+        assert leaked not in body, body
+
+    start = [e for e in events(ctx) if e["ev"] == "turn_start"][-1]
+    assert start["prompt_bytes"] == len("read secret.txt, my private question")
+    assert start["prompt_lines"] == 1
+
+    tool = [e for e in events(ctx) if e["ev"] == "tool"][-1]
+    assert tool["name"] == "read"
+    assert tool["args"] == "path", tool          # the key, never the path
+    assert tool["ok"] is True
+    assert tool["result_bytes"] > 0
+
+
+def test_telemetry_off_stops_the_recording(ctx):
+    """Toggling it back leaves the file where it was."""
+    ctx.scenario("text=ok")
+    s = ctx.spawn()
+    s.submit("/telemetry")
+    s.wait_text("telemetry: on")
+    s.submit("first")
+    s.wait_turn_done()
+
+    s.submit("/telemetry")
+    s.wait_text("telemetry: off")
+    s.submit("second")
+    s.wait_turn_done()
+
+    seen = events(ctx)
+    # The command that stopped it is the last thing recorded, so the file
+    # says why it ends rather than simply stopping.
+    assert seen[-1] == {**seen[-1], "ev": "command", "name": "/telemetry"}
+    assert kinds(ctx).count("turn_start") == 1, kinds(ctx)
+
+
+def test_the_setting_survives_the_session(ctx):
+    """It is remembered, so a run that cannot type the command records too."""
+    ctx.scenario("text=ok")
+    s = ctx.spawn()
+    s.submit("/telemetry")
+    s.wait_text("telemetry: on")
+    s.submit("/exit")
+    s.wait_exit()
+
+    again = ctx.spawn()
+    again.submit("later run")
+    again.wait_turn_done()
+    assert kinds(ctx).count("session") == 2, kinds(ctx)
+
+
+def test_the_record_lands_in_the_state_dir(ctx):
+    """XDG_STATE_HOME moves the file, and the notice names it."""
+    state = ctx.tmp / "state"
+    s = ctx.spawn(XDG_STATE_HOME=str(state))
+    s.submit("/telemetry")
+    s.wait_text("telemetry: on")
+    s.submit("/exit")
+    s.wait_exit()
+
+    assert (state / "yoke" / "telemetry").read_text() == "on\n"
+    assert (state / "yoke" / "telemetry.jsonl").exists()
+    assert not log_path(ctx).exists(), "the default must stay unused"
+
+
+def test_commands_and_mode_switches_are_recorded(ctx):
+    """The hidden half of a session: what was toggled and when."""
+    s = ctx.spawn()
+    s.submit("/telemetry")
+    s.wait_text("telemetry: on")
+    s.submit("/mode")
+    s.wait_text("plan mode")
+    s.submit("/verbose")
+    s.wait_text("verbose")
+
+    seen = events(ctx)
+    names = [e["name"] for e in seen if e["ev"] == "command"]
+    assert names == ["/mode", "/verbose"], names
+    mode = [e for e in seen if e["ev"] == "mode"][-1]
+    assert mode["from"] == "build" and mode["to"] == "plan", mode
+
+
+def test_an_unknown_command_is_not_named(ctx):
+    """A line yoke does not offer is the user's text, so it is not recorded."""
+    ctx.scenario("text=ok")
+    s = ctx.spawn()
+    s.submit("/telemetry")
+    s.wait_text("telemetry: on")
+    s.submit("/my-private-note")
+    s.wait_turn_done()
+
+    body = log_path(ctx).read_text()
+    assert "my-private-note" not in body, body
+    names = [e["name"] for e in events(ctx) if e["ev"] == "command"]
+    assert names == ["(unknown)"], names
+
+
+def test_the_transfer_is_recorded_with_its_timings(ctx):
+    """A turn's request is a network event: curl's phases and counters."""
+    ctx.scenario("text=hello+there,chunk=1")
+    s = ctx.spawn()
+    s.submit("/telemetry")
+    s.wait_text("telemetry: on")
+    s.submit("say hi")
+    s.wait_turn_done()
+
+    http = [e for e in events(ctx) if e["ev"] == "http"][-1]
+    assert http["method"] == "POST"
+    assert http["path"] == "/chat/completions"
+    assert http["status"] == 200 and http["curl"] == 0, http
+    assert http["loopback"] is True and http["tls"] is False, http
+    assert http["up_bytes"] > 0 and http["down_bytes"] > 0, http
+    assert http["sse_lines"] > 0 and http["polls"] > 0, http
+    assert http["ip"] == "v4", http
+    for phase in ("dns_ms", "connect_ms", "ttfb_ms", "total_ms", "stall_ms"):
+        assert phase in http, http
+
+
+def test_the_endpoint_is_a_hash_not_a_url(ctx):
+    """A host names its owner, so it is recorded the way the cwd is."""
+    ctx.scenario("text=ok")
+    s = ctx.spawn()
+    s.submit("/telemetry")
+    s.wait_text("telemetry: on")
+    s.submit("say hi")
+    s.wait_turn_done()
+
+    body = log_path(ctx).read_text()
+    assert "127.0.0.1" not in body, body
+    assert ctx.mock.base_url not in body, body
+    http = [e for e in events(ctx) if e["ev"] == "http"][-1]
+    assert len(http["host"]) == 16 and int(http["host"], 16) >= 0, http
+
+
+def test_a_refused_request_records_its_status(ctx):
+    """An HTTP failure is the status it came back with."""
+    ctx.scenario("status=500")
+    s = ctx.spawn()
+    s.submit("/telemetry")
+    s.wait_text("telemetry: on")
+    s.submit("this will fail")
+    s.wait_turn_done()
+
+    http = [e for e in events(ctx) if e["ev"] == "http"][-1]
+    assert http["status"] == 500 and http["curl"] == 0, http
+
+
+def test_the_model_listing_is_a_transfer_too(ctx):
+    """/model reaches the network, so the record says so."""
+    ctx.scenario("models=one|two")
+    s = ctx.spawn()
+    s.submit("/telemetry")
+    s.wait_text("telemetry: on")
+    s.submit("/model")
+    s.wait_text("pick a model")
+    s.key("esc").sync()
+
+    gets = [e for e in events(ctx) if e["ev"] == "http" and e["method"] == "GET"]
+    assert gets and gets[-1]["path"] == "/models", events(ctx)
+    assert gets[-1]["status"] == 200, gets[-1]
+
+
+def test_diagnostics_land_beside_the_events(ctx):
+    """A provider failure is recorded as the status it was."""
+    ctx.scenario("status=500")
+    s = ctx.spawn()
+    s.submit("/telemetry")
+    s.wait_text("telemetry: on")
+    s.submit("this will fail")
+    s.wait_turn_done()
+
+    errors = [e for e in events(ctx) if e["ev"] == "error"]
+    assert errors and errors[-1]["detail"] == "HTTP 500", events(ctx)

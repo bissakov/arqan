@@ -83,6 +83,23 @@ an AoS layout.
   cache. Nothing goes directly in `$HOME`, a relative `XDG_*` value is
   ignored as the spec demands, and created directories are 0700. New
   persistent state picks a kind here instead of building its own path
+- `telemetry.c`: the record `/telemetry` collects for a bug report, appended as
+  JSON lines to `$XDG_STATE_HOME/yoke/telemetry.jsonl` with the answer to that
+  command remembered beside it, so a run that never reaches the composer
+  records too. It holds the shape of a session and none of its content: a
+  message is a byte and a line count, a tool call is its name and the keys of
+  its arguments rather than the path or the command they carry, the working
+  directory is a hash. A string field is for text yoke formats itself (a tool
+  name, a model id, an HTTP status, a `yoke_log` line, which is mirrored here
+  so the diagnostics sit beside the events they explain); anything a user or a
+  model wrote goes through `tel_shape`, which keeps none of its bytes. An
+  event is built on the stack and appended whole, so an interrupted run leaves
+  whole lines and a recorder that cannot write costs the session nothing.
+  `http.c` records a transfer here because most of what goes wrong with an
+  endpoint is invisible from the transcript: curl's status, phase timings,
+  bytes each way, and for a stream its SSE line count, its poll count and the
+  longest silence between writes. The endpoint is a hash and a class rather
+  than a URL, since a private host names its owner the way a path does
 - `history.c`: prompt history: a ring of past submissions mirrored line by
   line to `$XDG_STATE_HOME/yoke/history` as they are submitted. It owns an
   arena because `/clear` rewinds the session's, and compacts that arena in

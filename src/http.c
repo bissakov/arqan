@@ -15,6 +15,13 @@ typedef struct {
     char   line[8192];
     size_t llen;
     b8     aborted;   /* on_line asked us to stop */
+    /* What the transfer felt like, which no return code carries: how many
+     * lines arrived and the longest the stream went silent between them,
+     * which is the shape of the "it froze" report. */
+    size_t lines;
+    size_t polls;
+    f64    last_write;
+    f64    stall;
 } Ctx;
 
 /* Accumulate into line[], dispatch on newline. Returns false once a sink has
@@ -26,6 +33,7 @@ static b8 dispatch_line(Ctx *c, const char *p, size_t n) {
             if (c->llen > 0 && c->line[c->llen-1] == '\r') c->llen--;
             Str ln = { c->line, c->llen };
             c->llen = 0;
+            c->lines++;
             if (c->r->on_line && !c->r->on_line(ln, c->r->ud)) {
                 c->aborted = true;
                 return false;
@@ -40,6 +48,10 @@ static b8 dispatch_line(Ctx *c, const char *p, size_t n) {
 static size_t write_cb(char *p, size_t sz, size_t n, void *ud) {
     Ctx *c = (Ctx *)ud;
     size_t total = sz * n;
+    f64 now = yoke_now_seconds();
+    if (c->last_write > 0 && now - c->last_write > c->stall)
+        c->stall = now - c->last_write;
+    c->last_write = now;
     /* Anything other than `total` tells curl to fail the transfer, which is
      * exactly what an aborting sink wants. */
     return dispatch_line(c, p, total) ? total : 0;
@@ -84,6 +96,81 @@ static struct curl_slist *auth_header(struct curl_slist *hdrs,
     return hdrs;
 }
 
+/* The host of a URL, without the scheme, the port or anything after it. */
+static Str url_host(const char *url) {
+    Str s = str_c(url ? url : "");
+    const char *sep = strstr(s.p, "://");
+    if (sep) s = str_drop(s, (size_t)(sep - s.p) + 3);
+    size_t n = 0;
+    while (n < s.n && s.p[n] != '/' && s.p[n] != ':') n++;
+    return (Str){ s.p, n };
+}
+
+static b8 host_is_loopback(Str host) {
+    return str_eq(host, STR("localhost")) || str_eq(host, STR("::1"))
+        || str_eq(host, STR("[::1]")) || str_starts(host, STR("127."));
+}
+
+/* curl reports its phases in microseconds; a report reads them in
+ * milliseconds like every other duration in the record. */
+static i64 curl_ms(CURL *curl, CURLINFO info) {
+    curl_off_t us = 0;
+    if (curl_easy_getinfo(curl, info, &us) != CURLE_OK || us < 0) return -1;
+    return (i64)(us / 1000);
+}
+
+/* One transfer as the network saw it: curl's own timings and counters, which
+ * nothing else in yoke can reach. The endpoint is a hash and a class rather
+ * than a URL, since a private host names its owner as surely as a path does;
+ * the request path is yoke's own constant and is recorded as it is. */
+static void http_record(const char *method, const char *path, const char *url,
+                        CURL *curl, CURLcode rc, i64 status, const Ctx *sse,
+                        b8 interrupted) {
+    TelEvent e;
+    tel_open(&e, "http");
+    tel_str(&e, "method", str_c(method));
+    tel_str(&e, "path", str_c(path));
+    Str host = url_host(url);
+    tel_hash_field(&e, "host", host);
+    tel_bool(&e, "loopback", host_is_loopback(host));
+    tel_bool(&e, "tls", str_starts(str_c(url ? url : ""), STR("https://")));
+    tel_int(&e, "status", status);
+    tel_int(&e, "curl", (i64)rc);
+    /* curl's own message: a fixed catalogue string, not anything of ours. */
+    if (rc != CURLE_OK) tel_str(&e, "curl_error", str_c(curl_easy_strerror(rc)));
+    tel_bool(&e, "interrupted", interrupted);
+
+    tel_int(&e, "dns_ms", curl_ms(curl, CURLINFO_NAMELOOKUP_TIME_T));
+    tel_int(&e, "connect_ms", curl_ms(curl, CURLINFO_CONNECT_TIME_T));
+    tel_int(&e, "tls_ms", curl_ms(curl, CURLINFO_APPCONNECT_TIME_T));
+    tel_int(&e, "ttfb_ms", curl_ms(curl, CURLINFO_STARTTRANSFER_TIME_T));
+    tel_int(&e, "total_ms", curl_ms(curl, CURLINFO_TOTAL_TIME_T));
+
+    curl_off_t up = 0, down = 0;
+    curl_easy_getinfo(curl, CURLINFO_SIZE_UPLOAD_T, &up);
+    curl_easy_getinfo(curl, CURLINFO_SIZE_DOWNLOAD_T, &down);
+    tel_int(&e, "up_bytes", (i64)up);
+    tel_int(&e, "down_bytes", (i64)down);
+
+    long version = 0, redirects = 0;
+    curl_easy_getinfo(curl, CURLINFO_HTTP_VERSION, &version);
+    curl_easy_getinfo(curl, CURLINFO_REDIRECT_COUNT, &redirects);
+    tel_int(&e, "http_version", (i64)version);
+    tel_int(&e, "redirects", (i64)redirects);
+    /* Which family the connection ended up on, never the address itself. */
+    char *ip = NULL;
+    if (curl_easy_getinfo(curl, CURLINFO_PRIMARY_IP, &ip) == CURLE_OK && ip)
+        tel_str(&e, "ip", strchr(ip, ':') ? STR("v6") : STR("v4"));
+
+    if (sse) {
+        tel_int(&e, "sse_lines", (i64)sse->lines);
+        tel_int(&e, "polls", (i64)sse->polls);
+        tel_int(&e, "stall_ms", (i64)(sse->stall * 1000.0));
+        tel_bool(&e, "aborted", sse->aborted);
+    }
+    tel_send(&e);
+}
+
 i32 http_get(const char *base_url, const char *path, const char *api_key,
              Buf *out) {
     char url[2048];
@@ -110,6 +197,7 @@ i32 http_get(const char *base_url, const char *path, const char *api_key,
     CURLcode rc = curl_easy_perform(curl);
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    http_record("GET", path, url, curl, rc, (i64)http_code, NULL, false);
     curl_slist_free_all(hdrs);
     curl_easy_cleanup(curl);
 
@@ -141,7 +229,8 @@ i32 http_sse_post(const HttpReq *r) {
     hdrs = curl_slist_append(hdrs, "Accept: text/event-stream");
     hdrs = auth_header(hdrs, r->api_key);
 
-    Ctx ctx = { r, {0}, 0, false };
+    Ctx ctx = {0};
+    ctx.r = r;
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, r->body);
@@ -177,6 +266,7 @@ i32 http_sse_post(const HttpReq *r) {
             i32 numfds = 0;
             mc = curl_multi_poll(multi, watch ? &extra : NULL, watch ? 1u : 0u,
                                  HTTP_POLL_MS, &numfds);
+            ctx.polls++;
         }
         if (mc != CURLM_OK) {
             yoke_log(YOKE_LOG_ERROR, "curl multi: %s", curl_multi_strerror(mc));
@@ -198,6 +288,8 @@ i32 http_sse_post(const HttpReq *r) {
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     i64 http = (i64)http_code;
+    http_record("POST", "/chat/completions", url, curl, rc, http, &ctx,
+                interrupted);
 
     curl_multi_remove_handle(multi, curl);
     curl_multi_cleanup(multi);

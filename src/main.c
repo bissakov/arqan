@@ -15,6 +15,7 @@
 #include "json.c"
 #include "http.c"
 #include "paths.c"
+#include "telemetry.c"
 #include "history.c"
 #include "endpoints.c"
 #include "config.c"
@@ -32,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <unistd.h>
 
 static volatile sig_atomic_t g_got_sigint = 0;
 static void on_sigint(i32 sig) { (void)sig; g_got_sigint = 1; }
@@ -43,6 +45,8 @@ static alignas(64) u8 g_scratch[YOKE_ARENA_BYTES];
 /* Slash commands handled below in the prompt loop; the TUI reads this table
  * to drive the composer's completion popup. */
 static TuiCmd g_commands[YOKE_MAX_COMMANDS];
+
+static size_t g_command_n;
 
 static size_t commands_init(void) {
     size_t n = 0;
@@ -56,7 +60,10 @@ static size_t commands_init(void) {
     g_commands[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
     g_commands[n++] = (TuiCmd){ STR("/verbose"), STR("Toggle untruncated tool output") };
     g_commands[n++] = (TuiCmd){ STR("/raw"), STR("Toggle raw Markdown") };
+    g_commands[n++] = (TuiCmd){ STR("/telemetry"),
+                                STR("Toggle an anonymized debug log") };
     g_commands[n++] = (TuiCmd){ STR("/exit"), STR("Quit yoke") };
+    g_command_n = n;
     return n;
 }
 
@@ -109,12 +116,43 @@ typedef struct {
     b8            echo;   /* write the prompt into the transcript */
 } Agent;
 
+/* The mode a telemetry event names. */
+static Str mode_name(AgentMode m) {
+    return m == MODE_PLAN ? STR("plan") : STR("build");
+}
+
+/* What the run is: the settings a report needs, the working directory as a
+ * hash and nothing that names it. Written when recording starts, whether that
+ * is at startup or at the /telemetry that turned it on. */
+static void telemetry_session(const Config *cfg, const ToolRegistry *tools) {
+    TelEvent e;
+    tel_open(&e, "session");
+    tel_str(&e, "version", STR(YOKE_VERSION));
+    tel_str(&e, "model", cfg->model);
+    tel_str(&e, "provider", cfg->provider);
+    tel_str(&e, "mode", mode_name(cfg->mode));
+    tel_int(&e, "tools", (i64)tools->n);
+    tel_int(&e, "max_tokens", cfg->max_tokens);
+    tel_int(&e, "max_messages", (i64)cfg->max_messages);
+    tel_bool(&e, "has_key", cfg->api_key.p != NULL);
+    tel_int(&e, "cols", (i64)tui_body_cols());
+    tel_bool(&e, "fullscreen", tui_is_fullscreen());
+    char cwd[YOKE_MAX_PATH];
+    if (getcwd(cwd, sizeof cwd)) tel_hash_field(&e, "cwd", str_c(cwd));
+    tel_send(&e);
+}
+
 /* What the tool calls of one round asked the turn to do next. */
 typedef enum { TURN_CONTINUE, TURN_DONE, TURN_HANDOFF, TURN_FULL } TurnAction;
 
 /* The mode decides which prompt slot 0 carries and which tools exist, so both
  * move together and the model never sees one without the other. */
 static void agent_set_mode(Agent *ag, AgentMode mode) {
+    TelEvent e;
+    tel_open(&e, "mode");
+    tel_str(&e, "from", mode_name(ag->cfg->mode));
+    tel_str(&e, "to", mode_name(mode));
+    tel_send(&e);
     ag->cfg->mode = mode;
     tools_set_mode(mode);
     if (ag->conv->n && ag->conv->role[0] == M_SYSTEM)
@@ -253,6 +291,7 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         size_t tool = tools_find(ag->tools, name);
         Buf out; buf_init(&out, ag->scratch, 4096);
         char err[256] = {0};
+        f64 started = yoke_now_seconds();
         render_tool_call(name, args, ag->scratch, (u32)(i + 1),
                          conv->expanded[i]);
         char status[32];
@@ -263,6 +302,19 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         if (!ok && !err[0]) snprintf(err, sizeof err, "tool failed");
         if (!ok) { out.n = 0; buf_putf(&out, "ERROR: %s", err); }
         Str result = buf_finish(&out);
+        /* The call as a report reads it: which tool, which arguments it was
+         * given, how long it took and how much it answered with. What the
+         * arguments said and what it answered stay out. */
+        TelEvent e;
+        tel_open(&e, "tool");
+        tel_str(&e, "name", name);
+        tel_bool(&e, "known", tool != TOOL_NONE);
+        tel_int(&e, "args_bytes", (i64)args.n);
+        tel_arg_keys(&e, "args", args, ag->scratch);
+        tel_int(&e, "ms", (i64)((yoke_now_seconds() - started) * 1000.0));
+        tel_bool(&e, "ok", ok);
+        tel_shape(&e, "result", result);
+        tel_send(&e);
         Str res_dup = str_dup(ag->persist, result);
         if (result.n && !res_dup.p) res_dup = STR("ERROR: out of memory");
         if (!add_result(ag, i, name, res_dup)) return TURN_FULL;
@@ -503,6 +555,21 @@ static void notice_fmt(const char *fmt, ...) {
     tui_notice((Str){ msg, n });
 }
 
+/* The command a line ran, for the record. Only the ones yoke offers are
+ * named: a line yoke does not know is the user's text, not ours. */
+static void telemetry_command(Str line) {
+    Str word = line;
+    for (size_t i = 0; i < line.n; i++)
+        if (line.p[i] == ' ') { word = str_take(line, i); break; }
+    b8 offered = false;
+    for (size_t i = 0; i < g_command_n && !offered; i++)
+        offered = str_eq(g_commands[i].name, word);
+    TelEvent e;
+    tel_open(&e, "command");
+    tel_str(&e, "name", offered ? word : STR("(unknown)"));
+    tel_send(&e);
+}
+
 /* Offer what `cfg`'s endpoint lists at /models. The pick points into
  * `scratch`, so a caller that keeps it copies it out before resetting. False
  * when nothing was listed or nothing was chosen, having said which. */
@@ -551,6 +618,10 @@ static void choose_model(Config *cfg, Arena *persist, Arena *scratch) {
     }
     cfg->model = chosen;
     tui_set_model(chosen);
+    TelEvent e;
+    tel_open(&e, "model");
+    tel_str(&e, "name", chosen);
+    tel_send(&e);
     /* A model id only means something against the endpoint that served it, so
      * with a provider selected it is remembered on that entry. */
     b8 saved = cfg->provider.n
@@ -585,6 +656,11 @@ static b8 use_endpoint(Config *cfg, Str name, Str base_url, Str model,
     tui_set_provider(n);
     tui_set_model(cfg->model);
     tui_needs_provider(false);
+    TelEvent e;
+    tel_open(&e, "provider");
+    tel_str(&e, "name", n);
+    tel_bool(&e, "has_key", key.p != NULL);
+    tel_send(&e);
     return true;
 }
 
@@ -738,6 +814,7 @@ static void run_shell(Agent *ag, Str cmd) {
     render_shell_call(stored, (u32)(slot + 1), false);
 
     tui_set_status("running shell");
+    f64 started = yoke_now_seconds();
     Buf out; buf_init(&out, ag->scratch, 4096);
     char err[256] = {0};
     if (!shell_capture(cmd, &out, err, sizeof err)) {
@@ -748,6 +825,13 @@ static void run_shell(Agent *ag, Str cmd) {
     tui_set_status("ready");
     Str result = str_dup(ag->persist, buf_finish(&out));
     if (!result.p) result = STR("ERROR: out of memory");
+    /* A command line is the user's own text, so only its size is recorded. */
+    TelEvent e;
+    tel_open(&e, "shell");
+    tel_shape(&e, "command", cmd);
+    tel_int(&e, "ms", (i64)((yoke_now_seconds() - started) * 1000.0));
+    tel_shape(&e, "output", result);
+    tel_send(&e);
     conv->shell_out[slot] = result;
     render_tool_result(STR("shell"), result, (u32)(slot + 1), false);
     tui_write(STR("\n"));
@@ -791,11 +875,21 @@ static b8 agent_turn(Agent *ag, Str text) {
     if (ag->echo) tui_write_user(text);
     session_save(ag->sess, conv);
 
+    TelEvent te;
+    tel_open(&te, "turn_start");
+    tel_shape(&te, "prompt", text);
+    tel_int(&te, "messages", (i64)conv->n);
+    tel_str(&te, "mode", mode_name(ag->cfg->mode));
+    tel_send(&te);
+    f64 turn_started = yoke_now_seconds();
+    i32 rounds = 0;
+
     /* The composer stays editable throughout; only submitting waits. */
     b8 ok = false;
     g_got_sigint = 0;
     tui_set_busy(true);
     for (i32 turn = 0; turn < 16; turn++) {
+        rounds = turn + 1;
         if (g_got_sigint) {
             tui_write(STR("\n[interrupted]\n\n"));
             tui_set_status("ready");
@@ -834,6 +928,13 @@ static b8 agent_turn(Agent *ag, Str text) {
             break;
         }
         if (rc < 0) {
+            /* Every one of these strings is formatted by yoke itself, so it
+             * carries a status or a limit and no conversation. */
+            TelEvent ee;
+            tel_open(&ee, "error");
+            tel_str(&ee, "where", STR("provider"));
+            tel_str(&ee, "detail", str_c(err));
+            tel_send(&ee);
             tui_printf("\n[provider error: %s]\n\n", err);
             tui_set_status("ready");
             break;
@@ -863,6 +964,16 @@ static b8 agent_turn(Agent *ag, Str text) {
     }
     tui_set_busy(false);
     session_save(ag->sess, conv);
+    tel_open(&te, "turn_end");
+    tel_bool(&te, "ok", ok);
+    tel_int(&te, "rounds", rounds);
+    tel_int(&te, "ms", (i64)((yoke_now_seconds() - turn_started) * 1000.0));
+    tel_int(&te, "messages", (i64)conv->n);
+    /* The two arenas are the budget a long session runs down, and nothing on
+     * screen says where they stand. */
+    tel_int(&te, "persist_used", (i64)arena_used(ag->persist));
+    tel_int(&te, "scratch_used", (i64)arena_used(ag->scratch));
+    tel_send(&te);
     if (ag->handoff.n) return agent_handoff(ag);
     return ok;
 }
@@ -955,6 +1066,11 @@ i32 main(i32 argc, char **argv) {
     tui_set_interrupt_flag(&g_got_sigint);
     atexit(tui_stop);
 
+    /* After tui_start: what the record says about the run includes the shape
+     * of the terminal it is running in. */
+    telemetry_init(&scratch);
+    telemetry_session(&cfg, &tools);
+
     Agent agent = {
         .cfg = &cfg, .tools = &tools, .conv = &conv,
         .persist = &persist, .scratch = &scratch, .sess = &sess,
@@ -994,6 +1110,7 @@ i32 main(i32 argc, char **argv) {
             run_shell(&agent, (Str){ line + 1, ln - 1 });
             continue;
         }
+        if (line[0] == '/') telemetry_command((Str){ line, ln });
         if (!strcmp(line, "/exit")) break;
         if (!strcmp(line, "/clear")) {
             /* Keep the configured system prompt, discard the visible and
@@ -1054,6 +1171,25 @@ i32 main(i32 argc, char **argv) {
             tui_notice(render_verbose()
                        ? STR("verbose: tool output is shown in full")
                        : STR("verbose: tool output is truncated"));
+            continue;
+        }
+        if (!strcmp(line, "/telemetry")) {
+            b8 want = !telemetry_on();
+            if (!telemetry_set(want, &scratch)) {
+                tui_notice(STR("telemetry needs a state directory: "
+                               "nothing to record into"));
+                continue;
+            }
+            if (!want) {
+                tui_notice(STR("telemetry: off"));
+                continue;
+            }
+            /* Recording starts with what the run is, so a file collected
+             * from here on stands on its own. */
+            telemetry_session(&cfg, &tools);
+            Str path = telemetry_file();
+            notice_fmt("telemetry: on, recording to %.*s", (i32)path.n,
+                       path.p);
             continue;
         }
         if (!strcmp(line, "/model")) {
