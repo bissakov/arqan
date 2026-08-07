@@ -3,7 +3,7 @@
 A terminal AI coding agent written in plain C17, designed as a counterpoint to
 Claude Code, Codex, OpenCode and Pi. It talks to any OpenAI-compatible
 chat-completions endpoint, streams the reply into a fullscreen TUI, and gives
-the model four tools: read, write, bash and edit.
+the model six tools: read, write, bash, edit, grep and find.
 
 ## Design principles
 
@@ -34,7 +34,7 @@ src/
   prompt.c        system prompts: SYSTEM.md / PLAN.md + AGENTS.md, expansion
   cli.c           command line parsing, above the config in precedence
   provider.c      chat-completions streaming + reasoning and tool deltas
-  tools.c         SoA tool registry + read/write/bash/edit tools
+  tools.c         SoA tool registry + read/write/bash/edit/grep/find tools
   tui.c           alternate-screen TUI, viewport, composer + raw input
   markdown.c      streaming Markdown rendering of a reply
   main.c          unity includes + main + agent loop

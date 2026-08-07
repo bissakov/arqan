@@ -81,11 +81,35 @@ b8 conv_is_call(const Conv *c, size_t i) {
         && c->tool_name[i].p != NULL;
 }
 
+/* First slot of the last `turns` user turns, or 0 when there are fewer. */
+static size_t conv_recent_start(const Conv *c, size_t turns) {
+    size_t seen = 0;
+    for (size_t i = c->n; i-- > 0;)
+        if (c->role[i] == M_USER && ++seen == turns) return i;
+    return 0;
+}
+
+/* The tool a result answers, for the line that replaces an elided one. */
+static Str conv_call_name(const Conv *c, size_t result) {
+    for (size_t i = result; i-- > 0;)
+        if (conv_is_call(c, i)
+            && str_eq(c->tool_call_id[i], c->tool_call_id[result]))
+            return c->tool_name[i];
+    return STR("tool");
+}
+
 /* Serialize messages to OpenAI chat format. Assistant tool calls are emitted
  * as a single message with a "tool_calls" array; the paired args slot is
- * consumed here and skipped in the main loop. */
+ * consumed here and skipped in the main loop.
+ *
+ * A tool result is charged again on every later turn of the session, so one
+ * older than YOKE_ELIDE_TURNS user turns goes out as a line naming what it
+ * was: a file read four turns ago is either already reflected in the work or
+ * worth reading again. The transcript keeps the text either way, since Conv
+ * is what the screen renders from. */
 void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
     (void)reg;
+    size_t recent = conv_recent_start(c, YOKE_ELIDE_TURNS);
     buf_putc(b, '[');
     for (size_t i = 0; i < c->n; i++) {
         if (i) buf_putc(b, ',');
@@ -112,7 +136,16 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
             buf_putf(b, ",\"tool_call_id\":");
             buf_json_str(b, c->tool_call_id[i]);
             buf_putf(b, ",\"content\":");
-            buf_json_str(b, c->text[i]);
+            if (i < recent && c->text[i].n > YOKE_ELIDE_BYTES) {
+                Str name = conv_call_name(c, i);
+                buf_puts(b, STR("\"["));
+                buf_json_chars(b, name);
+                buf_putf(b, " result elided after %u turns: %zu bytes. "
+                         "Call it again if you still need it.]\"",
+                         (unsigned)YOKE_ELIDE_TURNS, c->text[i].n);
+            } else {
+                buf_json_str(b, c->text[i]);
+            }
             buf_putc(b, '}');
             continue;
         }

@@ -3,7 +3,8 @@
 `yoke` is a terminal AI coding agent written in plain C17, a minimal counterpoint
 to Claude Code / Codex / OpenCode. It talks to any OpenAI-compatible
 chat-completions endpoint, streams responses via SSE, and exposes a small
-built-in tool registry (read/write/bash/edit) that the model can call.
+built-in tool registry (read/write/bash/edit/grep/find) that the model can
+call.
 
 ## Build & run
 
@@ -125,8 +126,20 @@ an AoS layout.
   `config_load`, so a flag outranks the environment and the files. `--help`
   and `--version` answer and exit; a prompt (`-p` or a bare argument) runs one
   turn without the UI and exits on its result
-- `tools.c`: the `ToolRegistry` and the built-in tools (read/write/bash/edit,
-  plus plan mode's `ask_user` and `submit_plan`). Each entry carries the modes
+- `tools.c`: the `ToolRegistry` and the built-in tools
+  (read/write/bash/edit/grep/find, plus plan mode's `ask_user` and
+  `submit_plan`). A result is not a view: it is replayed to the provider on
+  every later turn of the session, so each tool answers with a page rather
+  than everything it could say and names the call that continues it. `read`
+  stops at `YOKE_READ_LINES` or `YOKE_READ_BYTES` and takes an `offset`,
+  `shell_capture` keeps the last `YOKE_SHELL_OUT_BYTES` in a ring because a
+  command says why it failed on its last lines, and `grep` and `find` cap
+  their results. Those two share one walk, sorted by name so a search is
+  reproducible and skipping dotfiles; the match is a literal substring rather
+  than a regex, since `bash` still has the shell for the rest. `edit` requires
+  each `old_text` to match exactly once, and takes a list of them applied in
+  order and written once at the end, so an ambiguous or impossible batch
+  leaves the file as it was. Each entry carries the modes
   it is offered in, since Plan mode's read-only promise is a property of the
   registry rather than a request made in the prompt: `tools_write_schemas`
   withholds what the mode does not have and `tools_run` refuses it, because a
@@ -137,6 +150,11 @@ an AoS layout.
   composer for keystrokes
 - `provider.c`: OpenAI-compatible chat-completions streaming client; parses
   SSE deltas into text/reasoning/tool-call callbacks and appends to `Conv`.
+  `conv_write_json` is where the conversation is charged for: a tool result
+  older than `YOKE_ELIDE_TURNS` user turns goes out as a line naming what it
+  was, since a file read four turns ago is either reflected in the work
+  already or worth reading again. The transcript is unaffected, being a
+  rendering of `Conv` rather than of the wire.
   A `reasoning_content` or `reasoning` delta reaches `on_reason` and the
   screen but never `Conv`, since a provider rejects a thinking trace it did
   not produce itself. Each event
@@ -238,7 +256,9 @@ it (name + description + JSON schema fragment) in `tools_init`, capped by
 argument to fit a buffer: a truncated path or command is a *different*
 operation than the one the user reviewed, so oversized arguments are
 refused with an error (`YOKE_MAX_PATH`, `YOKE_MAX_COMMAND`,
-`YOKE_MAX_FILE_BYTES`).
+`YOKE_MAX_FILE_BYTES`). What it returns is capped separately and on purpose:
+pick a default that answers the question, say what was left out and how to ask
+for it, and never truncate silently.
 
 ## Tests
 

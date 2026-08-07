@@ -34,31 +34,8 @@ static b8 uncapped(void) { return g_verbose || g_expanded; }
 
 static size_t line_cap(size_t max) { return uncapped() ? (size_t)-1 : max; }
 
-static b8 next_line(Str s, size_t *off, Str *line) {
-    if (*off >= s.n) return false;
-    const char *p = s.p + *off;
-    size_t left = s.n - *off;
-    const char *nl = (const char *)memchr(p, '\n', left);
-    size_t n = nl ? (size_t)(nl - p) : left;
-    *line = (Str){ p, n };
-    *off += nl ? n + 1 : n;
-    return true;
-}
-
-static size_t count_lines(Str s) {
-    size_t off = 0, n = 0;
-    Str line;
-    while (next_line(s, &off, &line)) n++;
-    return n;
-}
-
-/* Cutting mid-sequence would paint a replacement glyph, so the clip backs up
- * to a leading byte. */
 static Str clip(Str s, size_t max) {
-    if (uncapped() || s.n <= max) return s;
-    size_t n = max;
-    while (n && ((unsigned char)s.p[n] & 0xc0) == 0x80) n--;
-    return (Str){ s.p, n };
+    return uncapped() ? s : str_clip_utf8(s, max);
 }
 
 static Str str_arg(const JVal *args, Str key) {
@@ -83,7 +60,7 @@ static void write_lines(Str body, Str gutter, size_t max, Sink sink) {
     size_t cap = line_cap(max);
     size_t off = 0, shown = 0;
     Str line;
-    while (shown < cap && next_line(body, &off, &line)) {
+    while (shown < cap && str_line(body, &off, &line)) {
         sink(gutter);
         Str head = clip(line, R_LINE_BYTES);
         sink(head);
@@ -91,7 +68,7 @@ static void write_lines(Str body, Str gutter, size_t max, Sink sink) {
         sink(STR("\n"));
         shown++;
     }
-    size_t rest = count_lines(str_drop(body, off));
+    size_t rest = str_lines(str_drop(body, off));
     char buf[64];
     i32 len;
     if (rest) {
@@ -127,9 +104,13 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
 
     Str path = str_arg(j, STR("path"));
     Str cmd  = str_arg(j, STR("command"));
-    Str target = path.n ? path : cmd;
+    /* What a search is about is what it looks for, not where it starts. */
+    Str query = str_eq(name, STR("grep")) ? str_arg(j, STR("pattern"))
+              : str_eq(name, STR("find")) ? str_arg(j, STR("name"))
+              : (Str){0};
+    Str target = query.n ? query : path.n ? path : cmd;
     size_t cmd_off = 0;
-    if (!path.n && cmd.n) next_line(cmd, &cmd_off, &target);
+    if (!path.n && cmd.n) str_line(cmd, &cmd_off, &target);
 
     tui_write(STR("\n"));
     tui_write_tool(STR("\u25c6  "));
@@ -147,11 +128,20 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
         write_lines(content, STR("\u2502 "), R_ARG_LINES,
                     tui_write_muted);
     } else if (str_eq(name, STR("edit"))) {
-        write_diff(str_arg(j, STR("old_text")), str_arg(j, STR("new_text")));
+        const JVal *edits = j ? json_get(j, STR("edits")) : NULL;
+        if (edits && edits->type == J_ARR) {
+            for (size_t k = 0; k < edits->u.arr.n; k++) {
+                const JVal *e = json_at(edits, k);
+                write_diff(str_arg(e, STR("old_text")),
+                           str_arg(e, STR("new_text")));
+            }
+        }
+        if (json_get(j, STR("old_text")))
+            write_diff(str_arg(j, STR("old_text")), str_arg(j, STR("new_text")));
     } else if (cmd.n) {
         write_lines(str_drop(cmd, cmd_off), STR("\u2502 "),
                     R_ARG_LINES, tui_write_muted);
-    } else if (!path.n) {
+    } else if (!path.n && !query.n) {
         /* No shape this renderer knows: the arguments as they came. */
         write_lines(args, STR("\u2502 "), R_ARG_LINES,
                     tui_write_muted);
@@ -169,7 +159,7 @@ void render_shell_call(Str cmd, u32 id, b8 expanded) {
     g_expanded = expanded;
     size_t off = 0;
     Str first = cmd;
-    next_line(cmd, &off, &first);
+    str_line(cmd, &off, &first);
 
     tui_write(STR("\n"));
     tui_write_tool(STR("\u25c6  shell "));
@@ -200,7 +190,7 @@ void render_question(Str question) {
     tui_write_tool(STR("\u25c6  ask\n"));
     size_t off = 0;
     Str line;
-    while (next_line(question, &off, &line)) {
+    while (str_line(question, &off, &line)) {
         tui_write_muted(STR("\u2502 "));
         tui_write(clip(line, R_LINE_BYTES));
         tui_write(STR("\n"));
@@ -212,7 +202,7 @@ void render_question(Str question) {
 static b8 split_status(Str result, Str *body, Str *status) {
     size_t off = 0, last = 0, start = 0;
     Str line;
-    while (next_line(result, &off, &line)) { last = start; start = off; }
+    while (str_line(result, &off, &line)) { last = start; start = off; }
     Str tail = { result.p + last, result.n - last };
     while (tail.n && tail.p[tail.n - 1] == '\n') tail.n--;
     if (tail.n < 2 || tail.p[0] != '[' || tail.p[tail.n - 1] != ']')
@@ -229,7 +219,7 @@ void render_tool_result(Str name, Str result, u32 id, b8 expanded) {
         Str msg = str_drop(result, 7);
         size_t off = 0;
         Str first = msg;
-        next_line(msg, &off, &first);
+        str_line(msg, &off, &first);
         tui_write_error(STR("\u2514\u2500 error: "));
         tui_write_error(clip(first, R_LINE_BYTES));
         tui_write_error(STR("\n"));
@@ -246,11 +236,11 @@ void render_tool_result(Str name, Str result, u32 id, b8 expanded) {
         tui_write_result(status);
         tui_write_result(STR("\n"));
     } else if (str_eq(name, STR("read"))) {
-        write_count(count_lines(result), "line", tui_write_result);
+        write_count(str_lines(result), "line", tui_write_result);
     } else {
         size_t off = 0;
         Str first = body;
-        next_line(body, &off, &first);
+        str_line(body, &off, &first);
         tui_write_result(clip(first, R_LINE_BYTES));
         tui_write_result(STR("\n"));
         body = str_drop(body, off);

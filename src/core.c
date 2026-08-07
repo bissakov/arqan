@@ -69,6 +69,33 @@ Str str_trim(Str s) {
     return s;
 }
 Str str_take(Str s, size_t n) { return (Str){ s.p, n < s.n ? n : s.n }; }
+
+b8 str_line(Str s, size_t *off, Str *line) {
+    if (*off >= s.n) return false;
+    const char *p = s.p + *off;
+    const char *nl = (const char *)memchr(p, '\n', s.n - *off);
+    size_t n = nl ? (size_t)(nl - p) : s.n - *off;
+    *line = (Str){ p, n };
+    *off += nl ? n + 1 : n;
+    return true;
+}
+
+size_t str_lines(Str s) {
+    size_t off = 0, n = 0;
+    Str line;
+    while (str_line(s, &off, &line)) n++;
+    return n;
+}
+
+/* Cutting mid-sequence leaves a byte no UTF-8 decoder accepts, which is a
+ * replacement glyph on screen and a rejected request on the wire, so the clip
+ * backs up to a leading byte. */
+Str str_clip_utf8(Str s, size_t max) {
+    if (s.n <= max) return s;
+    size_t n = max;
+    while (n && ((u8)s.p[n] & 0xc0) == 0x80) n--;
+    return (Str){ s.p, n };
+}
 Str str_drop(Str s, size_t n) { return n >= s.n ? (Str){0} : (Str){ s.p+n, s.n-n }; }
 
 i64 str_int(Str s, b8 *ok) {

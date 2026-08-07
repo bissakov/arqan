@@ -405,3 +405,89 @@ def test_hovering_a_tail_leaves_the_scrollbar_alone(ctx):
     s.mouse("move", row, 8).sync()
     assert s.screen.row_text(row - 1)[last] in "\u2502\u2503", s.text()
     assert s.screen.attr_at(row - 1, last).bg is None, s.text()
+
+
+def test_an_ambiguous_edit_is_refused(ctx):
+    """A repeated old_text names no hunk: patching the first is a coin toss."""
+    ctx.write_file("twice.txt", "same line\nkeep\nsame line\n")
+    args = json.dumps(
+        {"path": "twice.txt", "old_text": "same line", "new_text": "changed"}
+    )
+    ctx.scenario(f"tool=edit:{args},final_text=ambiguous")
+    s = ctx.spawn()
+    s.submit("patch it")
+    s.wait_text("ambiguous")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert result.startswith("ERROR:"), result
+    assert "appears 2 times" in result, result
+    assert (ctx.work / "twice.txt").read_text() == "same line\nkeep\nsame line\n"
+
+
+def test_one_edit_call_carries_several_replacements(ctx):
+    """Separate locations in one file are one call, not one call each."""
+    ctx.write_file("multi.txt", "alpha\nbeta\ngamma\n")
+    args = json.dumps(
+        {
+            "path": "multi.txt",
+            "edits": [
+                {"old_text": "alpha", "new_text": "ALPHA"},
+                {"old_text": "gamma", "new_text": "GAMMA"},
+            ],
+        }
+    )
+    ctx.scenario(f"tool=edit:{args},final_text=both+applied")
+    s = ctx.spawn()
+    s.submit("patch both")
+    s.wait_text("both applied")
+    s.wait_turn_done()
+
+    assert (ctx.work / "multi.txt").read_text() == "ALPHA\nbeta\nGAMMA\n"
+    assert ctx.mock.tool_results()[-1] == "2 edits applied"
+    text = s.text()
+    assert "\u2502 - alpha" in text and "\u2502 + ALPHA" in text, text
+    assert "\u2502 - gamma" in text and "\u2502 + GAMMA" in text, text
+
+
+def test_a_failing_edit_leaves_the_file_untouched(ctx):
+    """The batch is written once at the end, so it is all or nothing."""
+    ctx.write_file("multi.txt", "alpha\nbeta\n")
+    args = json.dumps(
+        {
+            "path": "multi.txt",
+            "edits": [
+                {"old_text": "alpha", "new_text": "ALPHA"},
+                {"old_text": "nowhere", "new_text": "x"},
+            ],
+        }
+    )
+    ctx.scenario(f"tool=edit:{args},final_text=nothing+changed")
+    s = ctx.spawn()
+    s.submit("patch it")
+    s.wait_text("nothing changed")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "edit 2: old_text not found" in result, result
+    assert (ctx.work / "multi.txt").read_text() == "alpha\nbeta\n"
+
+
+def test_an_edit_sees_what_the_edit_before_it_left(ctx):
+    """Replacements apply in order against the running text, not the original."""
+    ctx.write_file("chain.txt", "one\n")
+    args = json.dumps(
+        {
+            "path": "chain.txt",
+            "edits": [
+                {"old_text": "one", "new_text": "two"},
+                {"old_text": "two", "new_text": "three"},
+            ],
+        }
+    )
+    ctx.scenario(f"tool=edit:{args},final_text=chained")
+    s = ctx.spawn()
+    s.submit("chain them")
+    s.wait_text("chained")
+    s.wait_turn_done()
+    assert (ctx.work / "chain.txt").read_text() == "three\n"

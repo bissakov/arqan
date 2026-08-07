@@ -43,6 +43,25 @@ typedef bool     b8;
 #define YOKE_MAX_PATH         4096        /* longest path a tool will accept   */
 #define YOKE_MAX_COMMAND      (1u << 16)  /* longest shell command             */
 #define YOKE_MAX_FILE_BYTES   (16u << 20) /* largest file a tool will read     */
+/* What one tool call is allowed to spend of the context it shares with the
+ * rest of the conversation. A result is not a view, it is billed on every
+ * later turn of the same session, so each of these is a page of a file rather
+ * than a file: the call says where to continue and the model asks again. */
+#define YOKE_READ_LINES       2000        /* lines one read returns by default  */
+#define YOKE_READ_BYTES       (50u << 10) /* and the byte cap that beats it     */
+#define YOKE_SHELL_OUT_BYTES  (50u << 10) /* command output kept, from the tail */
+#define YOKE_GREP_RESULTS     100         /* matches one grep returns by default*/
+#define YOKE_FIND_RESULTS     200         /* paths one find returns by default  */
+#define YOKE_GREP_LINE        200         /* of a matched line, what is shown   */
+#define YOKE_WALK_DEPTH       32          /* directories a walk descends        */
+#define YOKE_WALK_ENTRIES     4096        /* names one directory level holds    */
+#define YOKE_WALK_BYTES       (4u << 20)  /* scratch a walk carves for names    */
+#define YOKE_MAX_GREP_FILE    (1u << 20)  /* larger files are not searched      */
+#define YOKE_MAX_EDITS        64          /* replacements one edit call carries */
+/* A tool result older than this many user turns is replaced on the wire by a
+ * line naming what it was; see conv_write_json. */
+#define YOKE_ELIDE_TURNS      2
+#define YOKE_ELIDE_BYTES      512         /* under this, saying so costs more   */
 #define YOKE_MAX_COMMANDS     32          /* slash commands offered by the TUI */
 #define YOKE_LINE_BUF         (1u << 20)  /* 1 MiB input line buffer          */
 #define YOKE_RESP_BUF         (1u << 22)  /* 4 MiB response accumulation      */
@@ -95,6 +114,12 @@ b8    str_starts(Str s, Str prefix);
 Str     str_trim(Str s);
 Str     str_take(Str s, size_t n);
 Str     str_drop(Str s, size_t n);
+/* Walks `s` one line at a time: `line` excludes the newline, `off` advances
+ * past it, false when nothing is left. */
+b8      str_line(Str s, size_t *off, Str *line);
+size_t  str_lines(Str s);
+/* At most `max` bytes of `s`, never cutting a UTF-8 sequence in half. */
+Str     str_clip_utf8(Str s, size_t max);
 i64    str_int(Str s, b8 *ok);
 
 /* Growable char buffer living in an arena (no realloc: doubles into arena).
@@ -351,9 +376,11 @@ b8          tools_run(const ToolRegistry *r, size_t id, Str args,
 void        tools_write_schemas(Buf *b, const ToolRegistry *r);
 /* Run `cmd` through the shell, appending its output to `out` followed by a
  * bracketed status line ("[exit 0]"), which is how the bash tool reports and
- * how render.c reads a result. False with `err` filled in when the command is
- * longer than YOKE_MAX_COMMAND or the shell could not be started; a command
- * is never clamped to fit, since a truncated one is a different program. */
+ * how render.c reads a result. Only the last YOKE_SHELL_OUT_BYTES are kept,
+ * behind a line saying how much was dropped. False with `err` filled in when
+ * the command is longer than YOKE_MAX_COMMAND or the shell could not be
+ * started; a command is never clamped to fit, since a truncated one is a
+ * different program. */
 b8          shell_capture(Str cmd, Buf *out, char *err, size_t err_cap);
 
 /* ---- prompt ------------------------------------------------------------- */
