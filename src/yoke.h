@@ -412,13 +412,19 @@ typedef enum {
  * owned by the caller (static storage) and only read by the TUI. */
 typedef struct { Str name; Str desc; } TuiCmd;
 void tui_set_commands(const TuiCmd *cmds, size_t n);
+/* Which end of a picker's list the selection sits on: where it opens, and
+ * where it returns to when a search narrows the list. A list ordered like the
+ * transcript it points into ends at the entry nearest the composer, which is
+ * the one a picker like that opens on. */
+typedef enum { TUI_PICK_FIRST = 0, TUI_PICK_LAST } TuiPickAnchor;
 /* Modal picker: the completion popup, driven over a caller-owned list instead
  * of the command table. `title` names it in the status line. Enter chooses
  * (index in *out), Esc/Ctrl-C cancels. Returns false when nothing was chosen
  * or there is no fullscreen UI. Past ten entries the picker also takes the
  * keyboard: typing filters the list by literal substring, and the composer's
  * own text is left untouched. */
-b8 tui_pick(Str title, const TuiCmd *items, size_t n, size_t *out);
+b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
+            size_t *out);
 /* Composer history for Up/Down recall; NULL disables it. */
 void tui_set_history(History *h);
 /* `plain` forces the line-oriented path and drops the banner even on a tty,
@@ -469,7 +475,13 @@ void tui_printf(const char *fmt, ...) __attribute__((format(printf,1,2)));
 void tui_enter_raw(void);
 void tui_exit_raw(void);
 void tui_putstr(Str s);
+/* Read one submitted line. Escape at an idle composer with nothing to dismiss
+ * arms a rewind and the next Escape submits "/rewind", leaving the composed
+ * text where it is: the key and the command are the same request. */
 b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n);
+/* Replace the composer's text, cursor at its end; ignored without a
+ * fullscreen UI. This is how a rewind hands an earlier message back. */
+void tui_set_input(Str s);
 /* Composer editing while a turn is in flight: keystrokes are accepted, Enter
  * is not. Callers pump tui_poll_input from wherever they wait. */
 void tui_set_busy(b8 busy);

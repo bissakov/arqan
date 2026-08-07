@@ -124,8 +124,13 @@ an AoS layout.
   the transcript, never into each other or the composer. `tui_pick` drives
   that same popup as a modal list, and past ten entries it takes the keyboard:
   typing filters by literal substring and the notice row becomes the search
-  box. A notice is how a command that opened no popup answers, so nothing but the conversation is
-  ever written into the transcript. Also: viewport, scrollback, raw-mode
+  box. A caller says which end of its list the selection opens on and returns
+  to after a search, since a list ordered like the transcript wants the entry
+  nearest the composer rather than the first row. A notice is how a command that opened no popup answers, so nothing but the conversation is
+  ever written into the transcript. Escape at an idle composer with nothing to
+  dismiss arms a rewind and answers in that row; a second Escape submits
+  `/rewind`, leaving the draft alone, so the key and the command reach `main.c`
+  as one request. Also: viewport, scrollback, raw-mode
   composer with Up/Down recall of the persisted prompt history, mouse wheel
   scrolling, drag-to-select with OSC 52 copy, and SIGWINCH-aware repaint.
   Every visible glyph is painted through `put_text`, which mirrors it into the

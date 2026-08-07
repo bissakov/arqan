@@ -118,7 +118,11 @@ typedef struct {
     u16 comp_idx[YOKE_MAX_POPUP];      /* matches, as indices into cmds       */
     size_t comp_n;
     size_t comp_sel;
+    b8 pick_end;                     /* the running picker selects from the end */
     b8 comp_dismissed;               /* Esc/Tab closed it until text changes */
+    /* Esc at an idle composer with nothing to dismiss arms a rewind, which the
+     * next Esc runs; any other key disarms it. */
+    b8 esc_armed;
     /* A one-line answer to the last command, stacked above the popup (and so,
      * with no popup, exactly where one would have been). The transcript is the
      * conversation, and "there is nothing to pick from" is not part of it. */
@@ -1809,6 +1813,14 @@ static b8 history_recall(i32 dir, char *buf, size_t *n, size_t *cur) {
     return true;
 }
 
+void tui_set_input(Str s) {
+    if (!g_tui.fullscreen) return;
+    composer_load(g_tui.input, &g_tui.input_n, &g_tui.input_cur, s);
+    g_tui.comp_dismissed = false;
+    completion_refresh();
+    repaint();
+}
+
 void tui_set_commands(const TuiCmd *cmds, size_t n) {
     g_tui.cmds = cmds;
     g_tui.cmd_n = n < YOKE_MAX_COMMANDS ? n : YOKE_MAX_COMMANDS;
@@ -1819,10 +1831,12 @@ void tui_set_commands(const TuiCmd *cmds, size_t n) {
  * not, with no fuzzy ordering to explain. */
 static void pick_filter(Str query) {
     g_tui.comp_n = 0;
-    g_tui.comp_sel = 0;
     for (size_t i = 0; i < g_tui.cmd_n && g_tui.comp_n < YOKE_MAX_POPUP; i++)
         if (str_contains_ci(g_tui.cmds[i].name, query))
             g_tui.comp_idx[g_tui.comp_n++] = (u16)i;
+    /* The narrowed list keeps the anchor it opened on, so a search never
+     * quietly moves the default choice to the other end of the list. */
+    g_tui.comp_sel = g_tui.pick_end && g_tui.comp_n ? g_tui.comp_n - 1 : 0;
 }
 
 /* The search box is the notice row: it already sits directly above the popup
@@ -1844,7 +1858,8 @@ static void pick_search_row(Str query) {
  * A long list also takes the keyboard: scrolling six visible rows through
  * hundreds of entries is not a way to choose one, so typing filters instead of
  * reaching the composer. */
-b8 tui_pick(Str title, const TuiCmd *items, size_t n, size_t *out) {
+b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
+            size_t *out) {
     if (!g_tui.fullscreen || !items || !n || !out) return false;
     if (n > YOKE_MAX_POPUP) n = YOKE_MAX_POPUP;
 
@@ -1864,7 +1879,8 @@ b8 tui_pick(Str title, const TuiCmd *items, size_t n, size_t *out) {
     g_tui.cmds = items;
     g_tui.cmd_n = n;
     g_tui.comp_n = n;
-    g_tui.comp_sel = 0;
+    g_tui.pick_end = anchor == TUI_PICK_LAST;
+    g_tui.comp_sel = g_tui.pick_end ? n - 1 : 0;
     for (size_t i = 0; i < n; i++) g_tui.comp_idx[i] = (u16)i;
     /* The status names the picker last, so a frame that announces it already
      * carries the list and the search box. */
@@ -1913,6 +1929,7 @@ b8 tui_pick(Str title, const TuiCmd *items, size_t n, size_t *out) {
 
     g_tui.cmds = saved_cmds;
     g_tui.cmd_n = saved_cmd_n;
+    g_tui.pick_end = false;
     g_tui.comp_dismissed = saved_dismissed;
     memcpy(g_tui.notice, saved_notice, sizeof saved_notice);
     g_tui.notice_n = saved_notice_n;
@@ -1925,7 +1942,7 @@ b8 tui_pick(Str title, const TuiCmd *items, size_t n, size_t *out) {
 }
 
 /* What a keystroke asked the caller to do; edits are already applied. */
-typedef enum { ED_EDIT = 0, ED_SUBMIT, ED_EOF } EdAction;
+typedef enum { ED_EDIT = 0, ED_SUBMIT, ED_EOF, ED_REWIND } EdAction;
 
 /* Apply one input byte to the shared composer. The caller decides whether a
  * submit is honoured, so the same editor drives both the prompt and the
@@ -1940,6 +1957,11 @@ static EdAction editor_key(i32 c) {
     b8 keep_sel = false;
     /* A recall is not typing: it must not reopen a dismissed popup. */
     b8 recalled = false;
+    /* Only a second Esc rewinds, so the arming is consumed here and the row
+     * that announced it goes with it. */
+    b8 was_armed = g_tui.esc_armed;
+    g_tui.esc_armed = false;
+    if (was_armed) g_tui.notice_n = 0;
 
     size_t before_n = n;
 
@@ -2029,12 +2051,19 @@ static EdAction editor_key(i32 c) {
             recalled = history_recall(key == KEY_UP ? -1 : 1, buf, &n, &cur);
         } else if (key == KEY_NONE && g_tui.comp_n) {
             g_tui.comp_dismissed = true;   /* bare Esc closes the popup */
+        } else if (key == KEY_NONE && was_armed) {
+            action = ED_REWIND;
         } else if (key == KEY_NONE && g_tui.notice_n) {
             g_tui.notice_n = 0;            /* and then the notice above it */
         } else if (key == KEY_NONE && g_tui.busy && g_tui.interrupt) {
             /* Nothing to dismiss and a turn is running: Esc cancels it, the
              * same way Ctrl-C does, without touching the composed text. */
             *g_tui.interrupt = 1;
+        } else if (key == KEY_NONE) {
+            /* An idle composer with nothing to dismiss: the key means going
+             * back a turn, which is destructive enough to ask twice. */
+            g_tui.esc_armed = true;
+            tui_notice(STR("Press Escape again to edit previous message"));
         } else if (key == KEY_NEWLINE && n + 1 < cap) {
             memmove(buf + cur + 1, buf + cur, n - cur);
             buf[cur++] = '\n'; n++; buf[n] = '\0';
@@ -2061,6 +2090,7 @@ static EdAction editor_key(i32 c) {
  * of its own and does not fight the popup for it. */
 static void composer_clear(void) {
     g_tui.notice_n = 0;
+    g_tui.esc_armed = false;
     g_tui.input[0] = '\0';
     g_tui.input_n = 0;
     g_tui.input_cur = 0;
@@ -2121,6 +2151,18 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
 
         EdAction action = editor_key(c);
         if (action == ED_EOF) { *out_n = 0; return false; }
+        if (action == ED_REWIND) {
+            /* The key and the command are the same request, so it answers as
+             * the command. The composer is left alone: a rewind the picker
+             * cancels must not cost the draft it was typed over. */
+            Str cmd = STR("/rewind");
+            size_t n = cmd.n < cap ? cmd.n : cap - 1;
+            memcpy(buf, cmd.p, n);
+            buf[n] = '\0';
+            *out_n = n;
+            repaint();
+            return true;
+        }
         if (action == ED_SUBMIT) {
             size_t n = g_tui.input_n < cap ? g_tui.input_n : cap - 1;
             memcpy(buf, g_tui.input, n);

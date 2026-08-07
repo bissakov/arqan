@@ -131,13 +131,17 @@ in it stay exactly as written and the same 64 KiB limit applies.
 
 Enter sends and Alt+Enter inserts a newline. Ctrl-C discards the draft or
 cancels a running turn, Esc also cancels one, and Ctrl-D quits from an empty
-composer. Up/Down recall past prompts, PageUp/PageDown and the mouse wheel
+composer. Esc at an idle composer, twice, goes back to an earlier message: the
+list is ordered like the transcript, so it opens on the last turn and Up walks
+further back, and the message picked returns to the composer with everything
+after it dropped. Up/Down recall past prompts, PageUp/PageDown and the mouse wheel
 scroll the transcript, and Ctrl-L repaints. Dragging selects any text on
 screen and copies it over OSC 52 on release, so it works over ssh; Shift falls
 back to the terminal's own selection.
 
 Typing `/` opens a completion popup: `/clear` starts a fresh conversation,
 `/resume` reopens one saved for this directory, `/model` switches model,
+`/rewind` goes back to an earlier message, as the double Esc does,
 `/copy` puts the last reply on the clipboard as the Markdown the model wrote,
 `/verbose` toggles untruncated tool output, `/raw` toggles Markdown rendering
 off and `/exit` quits.

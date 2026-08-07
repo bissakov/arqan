@@ -65,7 +65,7 @@ def test_enter_submits_the_highlighted_entry(ctx):
     """Enter runs whatever the popup highlights, not what was typed."""
     s = ctx.spawn()
     s.type("/").sync()
-    s.key(*(["down"] * 6)).sync()         # highlight '/exit'
+    s.key(*(["down"] * 7)).sync()         # highlight '/exit'
     s.key("enter")
     assert s.wait_exit() == 0, "Enter should have run the highlighted entry"
 
@@ -112,7 +112,7 @@ def test_ctrl_n_p_move_the_selection(ctx):
     """Ctrl-N / Ctrl-P cycle the popup the same way as the arrows."""
     s = ctx.spawn()
     s.type("/").sync()
-    s.key(*(["ctrl-n"] * 7)).sync()   # wraps to the first
+    s.key(*(["ctrl-n"] * 8)).sync()   # wraps to the first
     s.key("tab").sync()
     assert s.composer_text() == "/clear", s.composer_lines()
 
@@ -134,7 +134,7 @@ def test_popup_leaves_the_welcome_screen_in_place(ctx):
     The rows have to be there for that to hold: on a screen too short for the
     block plus a row of air the art does move up, so this asks for room.
     """
-    s = ctx.spawn(rows=30)
+    s = ctx.spawn(rows=32)
     before = [i for i, row in enumerate(s.screen.lines()) if "|___/" in row]
     s.type("/").sync()
     assert "/clear" in s.text(), s.text()
@@ -152,7 +152,8 @@ def test_popup_eats_into_transcript_not_composer(ctx):
     assert "/exit" in rows[s.screen.rows - 6], rows[s.screen.rows - 13 :]
     assert "/raw" in rows[s.screen.rows - 7], rows[s.screen.rows - 13 :]
     assert "/verbose" in rows[s.screen.rows - 8], rows[s.screen.rows - 13 :]
-    assert "/copy" in rows[s.screen.rows - 9], rows[s.screen.rows - 13 :]
-    assert "/model" in rows[s.screen.rows - 10], rows[s.screen.rows - 13 :]
-    assert "/resume" in rows[s.screen.rows - 11], rows[s.screen.rows - 13 :]
-    assert "/clear" in rows[s.screen.rows - 12], rows[s.screen.rows - 13 :]
+    assert "/copy" in rows[s.screen.rows - 9], rows[s.screen.rows - 14 :]
+    assert "/rewind" in rows[s.screen.rows - 10], rows[s.screen.rows - 14 :]
+    assert "/model" in rows[s.screen.rows - 11], rows[s.screen.rows - 14 :]
+    assert "/resume" in rows[s.screen.rows - 12], rows[s.screen.rows - 14 :]
+    assert "/clear" in rows[s.screen.rows - 13], rows[s.screen.rows - 14 :]

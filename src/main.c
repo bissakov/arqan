@@ -47,6 +47,7 @@ static size_t commands_init(void) {
     g_commands[n++] = (TuiCmd){ STR("/clear"), STR("Start a fresh conversation") };
     g_commands[n++] = (TuiCmd){ STR("/resume"), STR("Resume a saved session from this directory") };
     g_commands[n++] = (TuiCmd){ STR("/model"), STR("Pick the model") };
+    g_commands[n++] = (TuiCmd){ STR("/rewind"), STR("Go back to an earlier message and edit it") };
     g_commands[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
     g_commands[n++] = (TuiCmd){ STR("/verbose"), STR("Toggle untruncated tool output") };
     g_commands[n++] = (TuiCmd){ STR("/raw"), STR("Toggle raw Markdown") };
@@ -175,7 +176,7 @@ static void resume_session(Session *sess, Conv *conv, Arena *persist,
         items[i] = (TuiCmd){ list.name[i], list.preview[i] };
 
     size_t pick = 0;
-    if (!tui_pick(STR("pick a session"), items, n, &pick)) {
+    if (!tui_pick(STR("pick a session"), items, n, TUI_PICK_FIRST, &pick)) {
         arena_reset(scratch);
         return;
     }
@@ -196,6 +197,82 @@ static void resume_session(Session *sess, Conv *conv, Arena *persist,
     tui_clear();
     render_conv(conv, scratch);
     if (!whole) tui_notice(STR("session truncated: the conversation is full"));
+    arena_reset(scratch);
+}
+
+/* One popup row's worth of a message: control bytes become spaces and the cut
+ * lands on a UTF-8 boundary, so neither a newline nor half a glyph reaches the
+ * frame. */
+#define REWIND_PREVIEW_BYTES 72
+static Str preview_line(Arena *a, Str s) {
+    char tmp[REWIND_PREVIEW_BYTES];
+    size_t n = 0;
+    for (size_t i = 0; i < s.n && n < sizeof tmp; i++) {
+        u8 c = (u8)s.p[i];
+        tmp[n++] = c < 0x20 ? ' ' : (char)c;
+    }
+    while (n && ((u8)tmp[n - 1] & 0xc0u) == 0x80u) n--;
+    Buf b; buf_init(&b, a, n + 8);
+    buf_put(&b, tmp, n);
+    if (s.n > n) buf_puts(&b, STR("..."));
+    return buf_ok(&b) ? buf_finish(&b) : (Str){0};
+}
+
+/* Go back to an earlier user turn: the chosen message returns to the composer
+ * and everything from it onward leaves the conversation, so the next turn
+ * continues from where that one did. The persistent arena is not rewound: its
+ * messages are bump-allocated in conversation order, and the composer is
+ * loaded from the text that is about to be dropped. */
+static void rewind_conversation(Conv *conv, Session *sess, Arena *scratch) {
+    arena_reset(scratch);
+    size_t count = 0;
+    for (size_t i = 0; i < conv->n; i++)
+        if (conv->role[i] == M_USER) count++;
+    if (!count) {
+        tui_notice(STR("no message to go back to"));
+        return;
+    }
+    /* A conversation can hold more turns than the popup does. Which end is
+     * dropped is the caller's to decide, since the picker knows nothing about
+     * the order: going back a hundred turns is a session to resume, not a
+     * message to edit, so the oldest go. */
+    size_t skip = count > YOKE_MAX_POPUP ? count - YOKE_MAX_POPUP : 0;
+    size_t cap = count - skip;
+    size_t *at = arena_new(scratch, size_t, cap);
+    TuiCmd *items = arena_new(scratch, TuiCmd, cap);
+    if (!at || !items) {
+        tui_notice(STR("out of memory listing messages"));
+        arena_reset(scratch);
+        return;
+    }
+    size_t n = 0;
+    for (size_t i = 0; i < conv->n; i++) {
+        if (conv->role[i] != M_USER) continue;
+        if (skip) { skip--; continue; }
+        at[n] = i;
+        items[n] = (TuiCmd){ preview_line(scratch, conv->text[i]), (Str){0} };
+        n++;
+    }
+
+    /* The list points into the transcript above it, so it is ordered like it:
+     * oldest at the top, the newest turn on the row nearest the composer,
+     * which is where the selection opens. Going back further is Up, as it is
+     * in the composer's own history and in the scrollback. */
+    size_t pick = 0;
+    if (!tui_pick(STR("rewind to a message"), items, n, TUI_PICK_LAST, &pick)) {
+        arena_reset(scratch);
+        return;
+    }
+    size_t slot = at[pick];
+    tui_set_input(conv->text[slot]);
+    conv->n = slot;
+    tui_clear();
+    render_conv(conv, scratch);
+    /* A session file is append-only and this one no longer describes the
+     * conversation, so what is left of it continues in a new file, which the
+     * next save writes whole. */
+    session_begin(sess);
+    session_save(sess, conv);
     arena_reset(scratch);
 }
 
@@ -243,7 +320,7 @@ static void choose_model(Config *cfg, Arena *persist, Arena *scratch) {
                                                           : (Str){0} };
 
     size_t pick = 0;
-    if (!tui_pick(STR("pick a model"), items, n, &pick)) {
+    if (!tui_pick(STR("pick a model"), items, n, TUI_PICK_FIRST, &pick)) {
         arena_reset(scratch);
         return;
     }
@@ -473,6 +550,10 @@ i32 main(i32 argc, char **argv) {
             arena_reset(&scratch);
             session_begin(&sess);   /* the next message starts a new file */
             tui_clear();
+            continue;
+        }
+        if (!strcmp(line, "/rewind")) {
+            rewind_conversation(&conv, &sess, &scratch);
             continue;
         }
         if (!strcmp(line, "/copy")) {
