@@ -55,6 +55,7 @@ typedef bool     b8;
  * mistake worth reporting, not a document worth loading. Past it yoke refuses
  * to start rather than send a truncated prompt. */
 #define YOKE_MAX_PROMPT_FILE  (1u << 16)
+#define YOKE_MAX_AGENTS_FILES 8           /* AGENTS.md chain depth we collect  */
 #define YOKE_MAX_SESSIONS     64          /* saved sessions the picker offers  */
 #define YOKE_MAX_SESSION_BYTES (32u << 20)/* largest session file we will read */
 #define YOKE_MAX_POPUP        256         /* entries the popup can hold        */
@@ -282,7 +283,12 @@ void        tools_write_schemas(Buf *b, const ToolRegistry *r);
  * SYSTEM.md or the built-in template, in that order. Returned in `persist`,
  * `scratch` holds the file while it is read; the unexpanded template is the
  * fallback when `persist` cannot take the result. Empty with `err` set when a
- * SYSTEM.md is larger than YOKE_MAX_PROMPT_FILE. */
+ * SYSTEM.md is larger than YOKE_MAX_PROMPT_FILE.
+ *
+ * Whichever prompt wins, every AGENTS.md from the working directory up to the
+ * root is appended to it as project context, outermost first. It is a
+ * document about the project rather than a template, so it is appended
+ * verbatim, placeholders included. */
 Str   prompt_build(const ToolRegistry *tools, Str configured, Arena *persist,
                    Arena *scratch, char *err, size_t err_cap);
 

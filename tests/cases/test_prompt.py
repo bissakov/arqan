@@ -108,6 +108,64 @@ def test_oversized_system_md_refuses_startup(ctx):
     assert out.stdout == "", "no turn may run with a prompt that failed to load"
 
 
+def test_agents_md_is_appended_to_the_prompt(ctx):
+    """AGENTS.md is project context, so it joins the prompt instead of
+    replacing it."""
+    ctx.write_file("AGENTS.md", "Build with make.\n")
+    ctx.scenario("text=ok")
+    s = ctx.spawn(YOKE_SYSTEM_PROMPT=None)
+    content = system_message(ctx, s)
+
+    assert "expert coding assistant" in content, content
+    assert "Build with make." in content, content
+    assert f'path="{ctx.work}/AGENTS.md"' in content, content
+
+
+def test_agents_md_applies_to_an_explicit_prompt(ctx):
+    """--system is the operator's prompt; the project's context still
+    applies."""
+    ctx.write_file("AGENTS.md", "Build with make.\n")
+    ctx.scenario("text=ok")
+    s = ctx.spawn(YOKE_SYSTEM_PROMPT=None, args=["--system", "Only this."])
+    content = system_message(ctx, s)
+
+    assert content.startswith("Only this."), content
+    assert "Build with make." in content, content
+
+
+def test_agents_md_chain_applies_nearest_last(ctx):
+    """A subdirectory refines its parent, so both apply and the nearest is
+    read last."""
+    ctx.write_file("AGENTS.md", "ROOT CONTEXT\n")
+    ctx.write_file("src/AGENTS.md", "SRC CONTEXT\n")
+    ctx.scenario("text=ok")
+    s = ctx.spawn(YOKE_SYSTEM_PROMPT=None, cwd=str(ctx.work / "src"))
+    content = system_message(ctx, s)
+
+    assert content.index("ROOT CONTEXT") < content.index("SRC CONTEXT"), content
+
+
+def test_agents_md_is_not_a_template(ctx):
+    """A project doc talking about braces keeps them; only the prompt
+    expands."""
+    ctx.write_file("AGENTS.md", "Emit {cwd} and {tools} verbatim.\n")
+    ctx.scenario("text=ok")
+    s = ctx.spawn(YOKE_SYSTEM_PROMPT=None, args=["--system", "P"])
+    content = system_message(ctx, s)
+
+    assert "Emit {cwd} and {tools} verbatim." in content, content
+
+
+def test_oversized_agents_md_refuses_startup(ctx):
+    """The size limit is the prompt's, and it covers the context too."""
+    ctx.write_file("AGENTS.md", "x" * (1 << 17))
+    out = ctx.run_cli("-p", "hi", YOKE_SYSTEM_PROMPT=None)
+
+    assert out.returncode == 2, (out.returncode, out.stderr)
+    assert "AGENTS.md" in out.stderr and "limit" in out.stderr, out.stderr
+    assert out.stdout == "", "no turn may run with a prompt that failed to load"
+
+
 def test_env_prompt_outranks_the_files(ctx):
     """YOKE_SYSTEM_PROMPT does the same, which is what the fixture relies on."""
     ctx.write_file(".yoke/SYSTEM.md", "PROJECT PROMPT\n")

@@ -15,6 +15,12 @@
  * A SYSTEM.md past YOKE_MAX_PROMPT_FILE is refused, not truncated: half a
  * prompt is a different prompt, and one that silently drops its last
  * paragraph is worse than one that never ran.
+ *
+ * AGENTS.md is the other half of this file and the opposite kind of thing:
+ * not the operator's instructions to yoke but the project's, so it does not
+ * compete with the prompt, it is appended to whichever prompt won. Every one
+ * from the working directory up to the root applies rather than just the
+ * nearest, since a subdirectory refines its parent instead of replacing it.
  */
 #include "yoke.h"
 
@@ -107,6 +113,36 @@ static Str prompt_global(Arena *scratch, char *err, size_t err_cap) {
     return (Str){0};
 }
 
+/* Every AGENTS.md at or above `dir`, nearest first, as body/path pairs.
+ * Past YOKE_MAX_AGENTS_FILES the outermost are the ones dropped: the nearest
+ * statement is the one that describes the code being worked on. */
+static size_t prompt_agents(Str dir, Arena *scratch, Str *body, Str *path_out,
+                            size_t cap, char *err, size_t err_cap) {
+    static const char suffix[] = "/AGENTS.md";
+    char path[YOKE_MAX_PATH];
+    size_t n = dir.n, found = 0;
+    if (!n || dir.p[0] != '/' || n + sizeof suffix > sizeof path) return 0;
+    memcpy(path, dir.p, n);
+    while (n > 1 && path[n - 1] == '/') n--;
+    for (;;) {
+        size_t off = n == 1 ? 0 : n;
+        memcpy(path + off, suffix, sizeof suffix);
+        Str full = { path, off + sizeof suffix - 1 };
+        Str text = prompt_read(full, scratch, err, err_cap);
+        if (*err) return found;
+        if (text.n && found < cap) {
+            Str p = str_dup(scratch, full);
+            if (!p.p) return found;
+            body[found] = text;
+            path_out[found] = p;
+            found++;
+        }
+        if (n == 1) return found;
+        while (n > 1 && path[n - 1] != '/') n--;
+        while (n > 1 && path[n - 1] == '/') n--;
+    }
+}
+
 static void prompt_tools(Buf *b, const ToolRegistry *tools) {
     if (!tools) return;
     for (size_t i = 0; i < tools->n; i++)
@@ -143,9 +179,27 @@ Str prompt_build(const ToolRegistry *tools, Str configured, Arena *persist,
     if (*err) return (Str){0};
     if (!tmpl.n) tmpl = str_c(PROMPT_BUILTIN);
 
+    Str agents[YOKE_MAX_AGENTS_FILES], agent_paths[YOKE_MAX_AGENTS_FILES];
+    size_t n_agents = prompt_agents(cwd, scratch, agents, agent_paths,
+                                    YOKE_MAX_AGENTS_FILES, err, err_cap);
+    if (*err) return (Str){0};
+
+    size_t extra = 1024;
+    for (size_t i = 0; i < n_agents; i++)
+        extra += agents[i].n + agent_paths[i].n + 64;
+
     Buf b;
-    buf_init(&b, persist, tmpl.n + 1024);
+    buf_init(&b, persist, tmpl.n + extra);
     prompt_expand(&b, tmpl, tools, cwd);
+    if (n_agents) {
+        buf_puts(&b, STR("\n\nProject-specific instructions and "
+                         "guidelines:\n"));
+        for (size_t i = n_agents; i > 0; i--)
+            buf_putf(&b, "\n<project_instructions path=\"%.*s\">\n%.*s\n"
+                         "</project_instructions>\n",
+                     (int)agent_paths[i - 1].n, agent_paths[i - 1].p,
+                     (int)agents[i - 1].n, agents[i - 1].p);
+    }
     if (!buf_ok(&b)) return tmpl;
     return buf_finish(&b);
 }

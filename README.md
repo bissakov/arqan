@@ -30,7 +30,7 @@ src/
   history.c       prompt history, mirrored to the XDG state dir
   session.c       per-directory saved conversations (/resume)
   config.c        env + XDG config file loader
-  prompt.c        system prompt: SYSTEM.md lookup + placeholder expansion
+  prompt.c        system prompt: SYSTEM.md + AGENTS.md lookup, expansion
   cli.c           command line parsing, above the config in precedence
   provider.c      chat-completions streaming + reasoning and tool deltas
   tools.c         SoA tool registry + read/write/bash/edit tools
@@ -117,6 +117,15 @@ else in braces is left exactly as written, `{"a": 1}` included. A SYSTEM.md
 larger than 64 KiB (about 65k characters) is refused at startup with an error
 naming the file: a truncated prompt would be a different prompt.
 
+### Project context
+
+`AGENTS.md` is the project's instructions rather than yours, so it does not
+compete with the prompt: it is appended to whichever prompt won, `--system`
+included. Every one from the working directory up to the root applies,
+outermost first, because a subdirectory refines its parent instead of
+replacing it. It is a document about the project, not a template, so braces
+in it stay exactly as written and the same 64 KiB limit applies.
+
 ## Using it
 
 Enter sends and Alt+Enter inserts a newline. Ctrl-C discards the draft or
@@ -153,6 +162,7 @@ and ignored as if unset, and directories yoke creates are mode 0700.
 | settings | `$XDG_CONFIG_HOME/yoke/config` | every `$XDG_CONFIG_DIRS` entry is searched too, at lower precedence |
 | system prompt | `$XDG_CONFIG_HOME/yoke/SYSTEM.md` | used for every session; `$XDG_CONFIG_DIRS` searched too, at lower precedence |
 | project prompt | `.yoke/SYSTEM.md` | nearest one at or above the working directory, and it wins over the global one |
+| project context | `AGENTS.md` | every one at or above the working directory, appended to the prompt |
 | prompt history | `$XDG_STATE_HOME/yoke/history` | last 500 prompts, recalled in the composer with Up/Down |
 | chosen model | `$XDG_STATE_HOME/yoke/model` | what `/model` last picked |
 | sessions | `$XDG_DATA_HOME/yoke/sessions/<cwd>/<timestamp>.jsonl` | one file per conversation, keyed by the directory it ran in |

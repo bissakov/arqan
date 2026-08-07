@@ -99,8 +99,11 @@ an AoS layout.
   `YOKE_SYSTEM_PROMPT`, else the project's `.yoke/SYSTEM.md` found by walking
   up from the working directory, else the global
   `$XDG_CONFIG_HOME/yoke/SYSTEM.md`, else the built-in template. It is not a
-  config key: a prompt is a document, not a setting. Whichever source wins is
-  expanded before it is sent, `{tools}` becoming the registry listing and
+  config key: a prompt is a document, not a setting. Every `AGENTS.md` at or
+  above the working directory is appended to whichever prompt won, outermost
+  first, as project context rather than a competing prompt, and verbatim since
+  it is a document about the project and not a template. Whichever source wins
+  is expanded before it is sent, `{tools}` becoming the registry listing and
   `{cwd}` the working directory, so a prompt written once keeps describing the
   tools that exist now; an unknown `{name}` stays verbatim
 - `cli.c`: argv parsing into `CliOpts`, applied over `Config` after
