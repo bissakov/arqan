@@ -181,8 +181,12 @@ an AoS layout.
   use follows the size of the reply rather than the number of events. Also
   `provider_models`, the `/models` listing the `/model` picker offers
 - `tui.c`: alternate-screen terminal UI. Overlays stack upward from the
-  bottom (notice row, completion popup, composer, status line) and eat into
-  the transcript, never into each other or the composer. `tui_pick` drives
+  bottom (notice row, completion popup, composer, status line) and are drawn
+  over the transcript's last rows rather than taking rows from it, never over
+  each other or the composer: the viewport is the whole body region either
+  way, so opening one hides the rows it covers and leaves every other one
+  where the reader last saw it, and the keys that move the viewport work the
+  same under a popup, a picker or a question. `tui_pick` drives
   that same popup as a modal list, and `tui_ask` borrows the composer for one
   question, its answer echoed as dots when it is a secret and kept out of the
   history and the transcript either way, and past ten entries it takes the keyboard:

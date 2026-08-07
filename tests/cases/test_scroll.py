@@ -144,3 +144,58 @@ def test_user_boxes_survive_deep_scrollback(ctx):
         s.key("pagedown")
     s.sync()
     assert s.text() == bottom, "returning to the bottom should restore the view"
+
+
+def test_a_popup_does_not_shift_the_transcript(ctx):
+    """An overlay covers the last rows instead of pushing the view up."""
+    s = ctx.spawn()
+    fill_transcript(ctx, s)
+    before = s.screen.lines()
+
+    s.type("/").sync()
+    after = s.screen.lines()
+    assert "/clear" in "\n".join(after), "the popup is open"
+    # every row the popup does not sit on holds exactly what it held before
+    kept = s.screen.rows - 16
+    assert after[:kept] == before[:kept], (before[:kept], after[:kept])
+
+    s.key("esc").sync()
+    assert s.screen.lines()[:kept] == before[:kept], "closing it uncovers it"
+    assert "/clear" not in "\n".join(s.screen.lines()), "the popup is gone"
+
+
+def test_the_viewport_scrolls_with_a_popup_open(ctx):
+    """The transcript still takes wheel and PageUp while the popup is up."""
+    s = ctx.spawn()
+    fill_transcript(ctx, s)
+    s.type("/").sync()
+    pinned = s.text()
+
+    s.mouse("wheel-up", 5, 10).sync()
+    assert s.text() != pinned, "the wheel should move the viewport"
+    assert "/clear" in s.text(), "and leave the popup where it is"
+    s.mouse("wheel-down", 5, 10).sync()
+    assert s.text() == pinned, "and back down"
+
+    s.key("pageup").sync()
+    assert s.text() != pinned, "PageUp should move it too"
+    s.key("pagedown").sync()
+    assert s.text() == pinned, s.text()
+    assert s.composer_text() == "/", s.composer_lines()
+
+
+def test_the_viewport_scrolls_with_a_picker_open(ctx):
+    """A modal list is drawn over the transcript, which still scrolls."""
+    s = ctx.spawn()
+    fill_transcript(ctx, s)
+    s.key("esc").sync()
+    s.key("esc")
+    s.wait_status("rewind to a message")
+    pinned = s.text()
+
+    s.key("pageup").sync()
+    assert s.text() != pinned, "PageUp should move the viewport"
+    assert "write a lot" in s.text(), s.text()
+    assert s.status_line().count("rewind to a message"), s.status_line()
+    s.key("pagedown").sync()
+    assert s.text() == pinned, s.text()

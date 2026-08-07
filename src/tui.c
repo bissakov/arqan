@@ -1328,13 +1328,13 @@ static void repaint(void) {
     size_t max_composer = rows > chrome_rows ? rows - chrome_rows : 1;
     if (max_composer > 1) max_composer--; /* always preserve a transcript row */
     if (composer_rows > max_composer) composer_rows = max_composer;
-    /* The popup eats into the transcript, never into the composer, and always
-     * leaves one transcript row so the view never collapses entirely. */
     size_t body_rows = rows > composer_rows + chrome_rows
                      ? rows - composer_rows - chrome_rows : 1;
     /* Overlays stack upward from the composer: notice, then popup, then the
-     * composer itself. They eat into the transcript, never into the composer,
-     * and always leave it one row so the view never collapses entirely. */
+     * composer itself. They cover the bottom of the transcript rather than
+     * pushing it up: the viewport keeps the whole body region either way, so
+     * opening one hides the last lines and leaves every other row where the
+     * reader last saw it. One row always stays uncovered. */
     size_t popup_rows = g_tui.comp_n < TUI_POPUP_ROWS
                       ? g_tui.comp_n : TUI_POPUP_ROWS;
     size_t notice_rows = g_tui.notice_n ? 1 : 0;
@@ -1342,15 +1342,17 @@ static void repaint(void) {
     if (popup_rows > overlay_cap) popup_rows = overlay_cap;
     if (notice_rows + popup_rows > overlay_cap)
         notice_rows = overlay_cap - popup_rows;
-    size_t transcript_rows = body_rows - popup_rows - notice_rows;
-    if (transcript_rows < 1) transcript_rows = 1;
+    size_t overlay_rows = notice_rows + popup_rows;
+    size_t transcript_rows = body_rows - overlay_rows;
 
-    /* Transcript, pinned to its bottom unless PageUp has moved the viewport. */
+    /* Transcript, pinned to its bottom unless PageUp has moved the viewport.
+     * The window is the whole body region: the rows an overlay hides are the
+     * ones it is drawn on top of, not rows scrolled away. */
     size_t all_rows = wrap_scan(body_cols);
-    size_t max_scroll = all_rows > transcript_rows ? all_rows - transcript_rows : 0;
+    size_t max_scroll = all_rows > body_rows ? all_rows - body_rows : 0;
     if (g_tui.scroll_rows > max_scroll) g_tui.scroll_rows = max_scroll;
-    size_t first = all_rows > transcript_rows + g_tui.scroll_rows
-                 ? all_rows - transcript_rows - g_tui.scroll_rows : 0;
+    size_t first = all_rows > body_rows + g_tui.scroll_rows
+                 ? all_rows - body_rows - g_tui.scroll_rows : 0;
     if (g_tui.transcript_n == 0 && welcome_fits(body_cols, transcript_rows))
         paint_welcome(body_rows, transcript_rows, body_col, body_cols, cols,
                       force);
@@ -1380,7 +1382,7 @@ static void repaint(void) {
     /* Composer, including one quiet row of breathing room on each side. */
     size_t input_first = cursor_row >= composer_rows
                        ? cursor_row - composer_rows + 1 : 0;
-    size_t composer_top_row = overlay_top + notice_rows + popup_rows;
+    size_t composer_top_row = overlay_top + overlay_rows;
     size_t composer_screen_row = composer_top_row + composer_padding;
     if (composer_padding)
         update_text_row(composer_top_row, (Str){0}, (Str){0}, body_col,
@@ -2189,6 +2191,24 @@ static void pick_filter(Str query) {
     g_tui.comp_sel = g_tui.pick_end && g_tui.comp_n ? g_tui.comp_n - 1 : 0;
 }
 
+/* Viewport keys, shared by the composer and the modal picker: a list drawn
+ * over the transcript is no reason to lose the transcript. Returns false for
+ * a key that is not one of them. */
+static b8 scroll_key(i32 key) {
+    size_t rows, cols;
+    screen_size(&rows, &cols); (void)cols;
+    size_t page = rows > 4 ? rows - 4 : 1;
+    if (key == KEY_PAGE_UP) g_tui.scroll_rows += page;
+    else if (key == KEY_PAGE_DOWN)
+        g_tui.scroll_rows = g_tui.scroll_rows > page ? g_tui.scroll_rows - page
+                                                     : 0;
+    else if (key == KEY_WHEEL_UP) g_tui.scroll_rows += 3;
+    else if (key == KEY_WHEEL_DOWN)
+        g_tui.scroll_rows = g_tui.scroll_rows > 3 ? g_tui.scroll_rows - 3 : 0;
+    else return false;
+    return true;
+}
+
 /* The search box is the notice row: it already sits directly above the popup
  * and is the slot a command answers in. */
 static void pick_search_row(Str query) {
@@ -2258,6 +2278,7 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
             i32 key = read_escape();
             if (key == KEY_DOWN) completion_move(1);
             else if (key == KEY_UP) completion_move(-1);
+            else if (scroll_key(key)) { /* the transcript moves, not the list */ }
             else if (key == KEY_NONE) break;          /* bare Esc cancels */
         } else if (search) {
             if (c == 0x7f || c == 0x08) {
@@ -2341,7 +2362,9 @@ b8 tui_ask(Str question, b8 secret, char *out, size_t cap) {
         if (c < 0 || c == 0x03 || c == 0x04) break;
         if (c == '\r' || c == '\n') { answered = g_tui.input_n > 0; break; }
         if (c == 0x1b) {
-            if (read_escape() == KEY_NONE) break;   /* bare Esc cancels */
+            i32 key = read_escape();
+            if (key == KEY_NONE) break;             /* bare Esc cancels */
+            scroll_key(key);
         } else if (c == 0x7f || c == 0x08) {
             if (g_tui.input_n) g_tui.input_n = prev_glyph(g_tui.input, g_tui.input_n);
         } else if (c == 0x15) {
@@ -2468,18 +2491,8 @@ static EdAction editor_key(i32 c) {
         else if (key == KEY_END) cur = line_end(buf, n, cur);
         else if (key == KEY_PREV_WORD) cur = prev_word(buf, cur);
         else if (key == KEY_NEXT_WORD) cur = next_word(buf, n, cur);
-        else if (key == KEY_PAGE_UP) {
-            size_t rows, cols; screen_size(&rows, &cols); (void)cols;
-            g_tui.scroll_rows += rows > 4 ? rows - 4 : 1;
-        } else if (key == KEY_PAGE_DOWN) {
-            size_t rows, cols; screen_size(&rows, &cols); (void)cols;
-            size_t page = rows > 4 ? rows - 4 : 1;
-            g_tui.scroll_rows = g_tui.scroll_rows > page ? g_tui.scroll_rows - page : 0;
-        } else if (key == KEY_WHEEL_UP) {
-            g_tui.scroll_rows += 3;
-        } else if (key == KEY_WHEEL_DOWN) {
-            g_tui.scroll_rows = g_tui.scroll_rows > 3
-                              ? g_tui.scroll_rows - 3 : 0;
+        else if (scroll_key(key)) {
+            /* The viewport moved; the draft did not. */
         } else if (key == KEY_MOUSE_DOWN) {
             sel_begin(g_mouse_row, g_mouse_col); keep_sel = true;
             g_tui.click_down = zone_at_cell(g_mouse_row, g_mouse_col);
