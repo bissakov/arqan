@@ -137,7 +137,16 @@ static void render_conv(const Conv *c, Arena *scratch) {
     for (size_t i = 0; i < c->n; i++) {
         switch (c->role[i]) {
             case M_SYSTEM: break;
-            case M_USER: tui_write_user(c->text[i]); break;
+            case M_USER:
+                if (conv_is_shell(c, i)) {
+                    render_shell_call(c->text[i], (u32)(i + 1), c->expanded[i]);
+                    render_tool_result(STR("shell"), c->shell_out[i],
+                                       (u32)(i + 1), c->expanded[i]);
+                    tui_write(STR("\n"));
+                } else {
+                    tui_write_user(c->text[i]);
+                }
+                break;
             case M_TOOL:
                 render_tool_result(call_name(c, i), c->text[i],
                                    (u32)(i + 1), c->expanded[i]);
@@ -246,7 +255,7 @@ static void rewind_conversation(Conv *conv, Session *sess, Arena *scratch) {
     arena_reset(scratch);
     size_t count = 0;
     for (size_t i = 0; i < conv->n; i++)
-        if (conv->role[i] == M_USER) count++;
+        if (conv->role[i] == M_USER && !conv_is_shell(conv, i)) count++;
     if (!count) {
         tui_notice(STR("no message to go back to"));
         return;
@@ -266,7 +275,7 @@ static void rewind_conversation(Conv *conv, Session *sess, Arena *scratch) {
     }
     size_t n = 0;
     for (size_t i = 0; i < conv->n; i++) {
-        if (conv->role[i] != M_USER) continue;
+        if (conv->role[i] != M_USER || conv_is_shell(conv, i)) continue;
         if (skip) { skip--; continue; }
         at[n] = i;
         items[n] = (TuiCmd){ preview_line(scratch, conv->text[i]), (Str){0} };
@@ -371,6 +380,43 @@ typedef struct {
     Session      *sess;
     b8            echo;   /* write the prompt into the transcript */
 } Agent;
+
+/* A line typed in shell mode ('!' as its first byte): it runs here rather than
+ * reaching the model, and takes a conversation slot of its own, so the model
+ * sees what the user ran, a replay renders it and the session keeps it. */
+static void run_shell(Agent *ag, Str cmd) {
+    Conv *conv = ag->conv;
+    arena_reset(ag->scratch);
+    cmd = str_trim(cmd);
+    if (!cmd.n) {
+        tui_notice(STR("no command to run"));
+        return;
+    }
+    Str stored = str_dup(ag->persist, cmd);
+    size_t slot = stored.p ? conv_add_shell(conv, stored, (Str){0}) : CONV_NONE;
+    if (slot == CONV_NONE) {
+        tui_write(STR("\n[conversation is full: /clear to start a new one]\n\n"));
+        return;
+    }
+    render_shell_call(stored, (u32)(slot + 1), false);
+
+    tui_set_status("running shell");
+    Buf out; buf_init(&out, ag->scratch, 4096);
+    char err[256] = {0};
+    if (!shell_capture(cmd, &out, err, sizeof err)) {
+        if (!err[0]) snprintf(err, sizeof err, "shell failed");
+        out.n = 0;
+        buf_putf(&out, "ERROR: %s", err);
+    }
+    tui_set_status("ready");
+    Str result = str_dup(ag->persist, buf_finish(&out));
+    if (!result.p) result = STR("ERROR: out of memory");
+    conv->shell_out[slot] = result;
+    render_tool_result(STR("shell"), result, (u32)(slot + 1), false);
+    tui_write(STR("\n"));
+    session_save(ag->sess, conv);
+    arena_reset(ag->scratch);
+}
 
 /* Appends `text` as a user message and streams completions until the model
  * asks for no more tools. False when the turn ended on an error, an interrupt
@@ -560,6 +606,10 @@ i32 main(i32 argc, char **argv) {
         size_t ln = 0;
         if (!tui_readline("> ", line, sizeof line, &ln)) break;
         if (ln == 0) { g_got_sigint = 0; continue; }
+        if (line[0] == '!') {
+            run_shell(&agent, (Str){ line + 1, ln - 1 });
+            continue;
+        }
         if (!strcmp(line, "/exit")) break;
         if (!strcmp(line, "/clear")) {
             /* Keep the configured system prompt, discard the visible and

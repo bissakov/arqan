@@ -817,7 +817,11 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
     }
 
     if (kind == ROW_COMPOSER && prefix.n) {
-        style(g_tui.busy ? S_PANEL_BG S_MUTED : S_PANEL_BG S_CYAN);
+        /* The marker is the mode: a line bound for the shell says so in red
+         * before a key of it is sent anywhere. */
+        const char *mark = prefix.p[0] == '!' ? S_PANEL_BG S_RED
+                                              : S_PANEL_BG S_CYAN;
+        style(g_tui.busy ? S_PANEL_BG S_MUTED : mark);
         put_text(prefix.p, prefix.n);
         style(S_PANEL_BG S_TEXT);
     } else if (prefix.n) {
@@ -834,7 +838,9 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
         size_t body = screen_cols > gutter * 2 ? screen_cols - gutter * 2 : 0;
         size_t room = body > 2 ? body - 2 : 0;
         style(S_PANEL_BG S_MUTED);
-        put_safe_clipped(STR("Message yoke..."), room, NULL);
+        put_safe_clipped(prefix.p[0] == '!' ? STR("Run a shell command...")
+                                            : STR("Message yoke..."),
+                         room, NULL);
     } else if (kind == ROW_ZONE || kind == ROW_ZONE_HOVER) {
         /* The indent belongs to the block, not to the target: styling it too
          * would draw a bar across the transcript instead of a label. */
@@ -928,6 +934,12 @@ static size_t wrap_seek(size_t row, size_t *at_row) {
     return g_tui.ckpt_off[k];
 }
 
+/* Shell mode: a composed line whose first byte is '!' runs in the shell
+ * instead of reaching the model, which the composer's marker announces. */
+static b8 composer_shell(void) {
+    return g_tui.input_n > 0 && g_tui.input[0] == '!';
+}
+
 /* Diff and paint the requested visual rows of a wrapped text buffer.
  * `base_off` is where `s` starts inside the transcript, so user spans (which
  * are recorded in transcript coordinates) still line up when the painter is
@@ -953,7 +965,9 @@ static void update_text_rows(Str s, size_t base_off, size_t cols,
 
         if (end || newline || wrap) {
             if (row >= first_row && row < first_row + visible_rows) {
-                Str prefix = row == 0 && prompt_cells ? STR("› ") : (Str){0};
+                Str prefix = (Str){0};
+                if (row == 0 && prompt_cells)
+                    prefix = composer_shell() ? STR("! ") : STR("› ");
                 /* Only the transcript carries styled spans; the composer
                  * indexes its own buffer. */
                 u8 row_kind = kind;
@@ -1248,7 +1262,14 @@ static void repaint(void) {
     size_t body_col = gutter + 1;
     size_t cursor_row = 0, cursor_col = 2;
     Str input = { g_tui.input, g_tui.input_n };
-    size_t input_rows = text_rows(input, body_cols, 2, g_tui.input_cur,
+    size_t input_cur = g_tui.input_cur;
+    if (composer_shell()) {
+        /* The '!' is the marker, not text: it is painted in the prompt's own
+         * cell, so the composer shows the command alone. */
+        input = str_drop(input, 1);
+        if (input_cur) input_cur--;
+    }
+    size_t input_rows = text_rows(input, body_cols, 2, input_cur,
                                   &cursor_row, &cursor_col);
     size_t composer_padding = rows >= 6 ? 1 : 0;
     /* A blank row keeps the status line visually outside the composer box. */

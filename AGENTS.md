@@ -110,7 +110,11 @@ an AoS layout.
   `config_load`, so a flag outranks the environment and the files. `--help`
   and `--version` answer and exit; a prompt (`-p` or a bare argument) runs one
   turn without the UI and exits on its result
-- `tools.c`: the `ToolRegistry` and the four built-in tools (read/write/bash/edit)
+- `tools.c`: the `ToolRegistry` and the four built-in tools (read/write/bash/edit).
+  `shell_capture` is the shared command runner behind `bash` and the composer's
+  `!` mode: it forks `/bin/sh` instead of using `popen` because stderr left
+  inherited would paint over the frame and an inherited stdin would race the
+  composer for keystrokes
 - `provider.c`: OpenAI-compatible chat-completions streaming client; parses
   SSE deltas into text/reasoning/tool-call callbacks and appends to `Conv`.
   A `reasoning_content` or `reasoning` delta reaches `on_reason` and the
@@ -164,6 +168,14 @@ an AoS layout.
   click leaves behind, lifting that one block's caps the way `/verbose` lifts
   every block's. A replay writes the same air a live turn does, since the
   transcript is one rendering either way
+- shell mode: a composed line whose first byte is `!` runs locally instead of
+  reaching the model. The `!` is the composer's prompt marker rather than text,
+  red in place of the blue one, and the run takes a `Conv` slot of its own
+  (`conv_add_shell`: a user turn holding the command, with what it printed in
+  the parallel `shell_out`), because the transcript is a rendering of the
+  conversation and a run living outside it would vanish on the next replay. It
+  reaches the provider as the user message it is, the command then its output,
+  and a session file keeps it as a `"name":"shell"` line with an `"output"`
 - `main.c`: wires everything together and runs the agent loop
 
 **Agent loop shape** (`main.c`): each user turn calls `provider_run` in a

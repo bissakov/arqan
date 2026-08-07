@@ -21,12 +21,13 @@ b8 conv_init(Conv *c, Arena *persist, size_t cap) {
     c->text           = arena_new(persist, Str,   cap);
     c->tool_name      = arena_new(persist, Str,   cap);
     c->tool_call_id   = arena_new(persist, Str,   cap);
+    c->shell_out      = arena_new(persist, Str,   cap);
     c->has_tool_call  = arena_new(persist, b8,  cap);
     c->expanded       = arena_new(persist, b8,  cap);
     c->n = 0;
     c->cap = cap;
     if (!c->role || !c->text || !c->tool_name || !c->tool_call_id
-        || !c->has_tool_call || !c->expanded) {
+        || !c->shell_out || !c->has_tool_call || !c->expanded) {
         c->cap = 0;
         return false;
     }
@@ -44,6 +45,7 @@ static size_t conv_push(Conv *c, MRole role, Str text, Str id, Str name,
     c->text[i] = text;
     c->tool_call_id[i] = id;
     c->tool_name[i] = name;
+    c->shell_out[i] = (Str){0};
     c->has_tool_call[i] = has_call;
     c->expanded[i] = false;
     return i;
@@ -62,6 +64,15 @@ size_t conv_add_call(Conv *c, Str id, Str name, Str args) {
 }
 size_t conv_add_tool(Conv *c, Str tool_call_id, Str text) {
     return conv_push(c, M_TOOL, text, tool_call_id, (Str){0}, false);
+}
+size_t conv_add_shell(Conv *c, Str cmd, Str out) {
+    size_t i = conv_push(c, M_USER, cmd, (Str){0}, STR("shell"), false);
+    if (i != CONV_NONE) c->shell_out[i] = out;
+    return i;
+}
+b8 conv_is_shell(const Conv *c, size_t i) {
+    return i < c->n && c->role[i] == M_USER
+        && str_eq(c->tool_name[i], STR("shell"));
 }
 /* A carrier is the slot that holds one call: an assistant slot flagged with a
  * tool call *and* naming the tool. The head slot names nothing. */
@@ -87,6 +98,16 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
         }
         buf_putc(b, '{');
         buf_putf(b, "\"role\":\"%s\"", role);
+        if (conv_is_shell(c, i)) {
+            /* A '!' run is the user's own turn, and reads on the wire the way
+             * it was typed: the command, then what it printed. */
+            buf_puts(b, STR(",\"content\":\"!"));
+            buf_json_chars(b, c->text[i]);
+            buf_json_chars(b, STR("\n"));
+            buf_json_chars(b, c->shell_out[i]);
+            buf_puts(b, STR("\"}"));
+            continue;
+        }
         if (c->role[i] == M_TOOL) {
             buf_putf(b, ",\"tool_call_id\":");
             buf_json_str(b, c->tool_call_id[i]);

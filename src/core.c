@@ -143,6 +143,10 @@ void buf_putf(Buf *b, const char *fmt, ...) {
 }
 void buf_json_str(Buf *b, Str s) {
     buf_putc(b, '"');
+    buf_json_chars(b, s);
+    buf_putc(b, '"');
+}
+void buf_json_chars(Buf *b, Str s) {
     for (size_t i = 0; i < s.n; i++) {
         u8 c = (u8)s.p[i];
         switch (c) {
@@ -158,7 +162,6 @@ void buf_json_str(Buf *b, Str s) {
                 else buf_putc(b, (char)c);
         }
     }
-    buf_putc(b, '"');
 }
 Str buf_finish(Buf *b) {
     if (b->n == b->cap && !buf_grow(b, b->n + 1)) {

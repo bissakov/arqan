@@ -104,6 +104,8 @@ void    buf_put(Buf *b, const void *p, size_t n);
 void    buf_puts(Buf *b, Str s);
 void    buf_putf(Buf *b, const char *fmt, ...) __attribute__((format(printf,2,3)));
 void    buf_json_str(Buf *b, Str s);           /* JSON-escaped string      */
+/* Its body without the quotes, so several pieces can share one string. */
+void    buf_json_chars(Buf *b, Str s);
 Str     buf_finish(Buf *b);                    /* nul-terminates, returns   */
 
 /* ---- logging ------------------------------------------------------------ */
@@ -276,6 +278,12 @@ size_t      tools_find(const ToolRegistry *r, Str name);
 b8          tools_run(const ToolRegistry *r, size_t id, Str args,
                       Arena *scratch, Buf *out, char *err, size_t err_cap);
 void        tools_write_schemas(Buf *b, const ToolRegistry *r);
+/* Run `cmd` through the shell, appending its output to `out` followed by a
+ * bracketed status line ("[exit 0]"), which is how the bash tool reports and
+ * how render.c reads a result. False with `err` filled in when the command is
+ * longer than YOKE_MAX_COMMAND or the shell could not be started; a command
+ * is never clamped to fit, since a truncated one is a different program. */
+b8          shell_capture(Str cmd, Buf *out, char *err, size_t err_cap);
 
 /* ---- prompt ------------------------------------------------------------- */
 /* The system prompt, placeholders expanded. `configured` is what --system or
@@ -304,6 +312,7 @@ typedef struct {
     Str   *text;          /* [cap] content (prose / tool result / args)  */
     Str   *tool_name;     /* [cap] tool name (assistant tool-call entry) */
     Str   *tool_call_id;  /* [cap] tool call id                          */
+    Str   *shell_out;     /* [cap] what a '!' run printed; see conv_add_shell */
     b8  *has_tool_call; /* [cap] true => assistant msg w/ a tool call  */
     b8  *expanded;      /* [cap] this block's transcript caps are lifted */
     size_t n, cap;
@@ -317,6 +326,11 @@ size_t  conv_add(Conv *c, MRole role, Str text);
 size_t  conv_add_assistant_calls(Conv *c, Str content);
 size_t  conv_add_call(Conv *c, Str id, Str name, Str args);
 size_t  conv_add_tool(Conv *c, Str tool_call_id, Str text);
+/* A '!' shell run: one user slot holding the command and what it printed,
+ * because it is one turn the user took. The provider sees it as the user
+ * message it is; `conv_is_shell` picks it out of the user turns. */
+size_t  conv_add_shell(Conv *c, Str cmd, Str out);
+b8      conv_is_shell(const Conv *c, size_t i);
 b8      conv_is_call(const Conv *c, size_t i);
 size_t  conv_room(const Conv *c);
 void    conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg);
@@ -529,6 +543,9 @@ b8   md_raw(void);
  * and unfolds it, and `expanded` is the state that click left behind, which
  * lifts this block's caps the way /verbose lifts every block's. */
 void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded);
+/* The header of a '!' shell run, the same shape a tool call gets. Its output
+ * follows through render_tool_result under the name "shell". */
+void render_shell_call(Str cmd, u32 id, b8 expanded);
 void render_tool_result(Str name, Str result, u32 id, b8 expanded);
 /* Verbose rendering shows every line of a call's input and its result, with no
  * "... N more lines" tail and no per-line clip. Off by default: a tool that

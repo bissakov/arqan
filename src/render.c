@@ -162,7 +162,29 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
     g_zone = 0;
 }
 
-/* The bash tool ends its output with a bracketed status line; it is the
+/* A '!' run has no JSON to unpack: the command is the header and its trailing
+ * lines the input preview, the shape a tool call gets. */
+void render_shell_call(Str cmd, u32 id, b8 expanded) {
+    g_zone = id;
+    g_expanded = expanded;
+    size_t off = 0;
+    Str first = cmd;
+    next_line(cmd, &off, &first);
+
+    tui_write(STR("\n"));
+    tui_write_tool(STR("\u25c6  shell "));
+    Str head = clip(first, R_TARGET_BYTES);
+    tui_write_tool(head);
+    if (head.n < first.n) tui_write_tool(STR(" ..."));
+    tui_write_tool(STR("\n"));
+    write_lines(str_drop(cmd, off), STR("\u2502 "), R_ARG_LINES,
+                tui_write_muted);
+
+    g_expanded = false;
+    g_zone = 0;
+}
+
+/* A shell run ends its output with a bracketed status line; it is the
  * result's summary, not part of what the command printed. */
 static b8 split_status(Str result, Str *body, Str *status) {
     size_t off = 0, last = 0, start = 0;
@@ -194,8 +216,8 @@ void render_tool_result(Str name, Str result, u32 id, b8 expanded) {
     }
 
     Str body = result, status = {0};
-    b8 have_status = str_eq(name, STR("bash")) && split_status(result, &body,
-                                                               &status);
+    b8 shell = str_eq(name, STR("bash")) || str_eq(name, STR("shell"));
+    b8 have_status = shell && split_status(result, &body, &status);
     tui_write_result(STR("\u2514\u2500 "));
     if (have_status) {
         tui_write_result(status);

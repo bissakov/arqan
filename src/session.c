@@ -192,6 +192,11 @@ void session_save(Session *s, const Conv *c) {
         }
         if (c->role[i] == M_ASSISTANT && c->has_tool_call[i] && !c->tool_name[i].n)
             fputs(",\"calls\":true", f);
+        /* A '!' run keeps its output beside the command it ran. */
+        if (c->shell_out[i].n) {
+            fputs(",\"output\":", f);
+            sess_put_json(f, c->shell_out[i]);
+        }
         fputs(",\"content\":", f);
         sess_put_json(f, c->text[i]);
         fputs("}\n", f);
@@ -341,13 +346,17 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
         const JVal *id = json_get(v, STR("id"));
         const JVal *nm = json_get(v, STR("name"));
         const JVal *calls = json_get(v, STR("calls"));
+        const JVal *shell = json_get(v, STR("output"));
         Str text = content && content->type == J_STR
                  ? str_dup(persist, content->u.s) : (Str){0};
         Str call_id = id && id->type == J_STR ? str_dup(persist, id->u.s) : (Str){0};
         Str tool = nm && nm->type == J_STR ? str_dup(persist, nm->u.s) : (Str){0};
         size_t slot;
         if (str_eq(role->u.s, STR("user"))) {
-            slot = conv_add(c, M_USER, text);
+            Str out = shell && shell->type == J_STR
+                    ? str_dup(persist, shell->u.s) : (Str){0};
+            slot = str_eq(tool, STR("shell")) ? conv_add_shell(c, text, out)
+                                              : conv_add(c, M_USER, text);
         } else if (str_eq(role->u.s, STR("tool"))) {
             slot = conv_add_tool(c, call_id, text);
         } else if (tool.n) {

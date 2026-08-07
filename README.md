@@ -139,6 +139,14 @@ scroll the transcript, and Ctrl-L repaints. Dragging selects any text on
 screen and copies it over OSC 52 on release, so it works over ssh; Shift falls
 back to the terminal's own selection.
 
+A line starting with `!` is a shell command rather than a message: the `!`
+becomes the prompt marker itself, red in place of the blue one, so the composer
+holds the command alone. Submitting it runs it here rather than asking the
+model for anything, and the command and its output read in the transcript the
+way a tool call does. The run takes a turn of its own in the conversation, so
+the model sees what was run on the next message, a saved session keeps it and
+`/resume` brings it back.
+
 Typing `/` opens a completion popup: `/clear` starts a fresh conversation,
 `/resume` reopens one saved for this directory, `/model` switches model,
 `/rewind` goes back to an earlier message, as the double Esc does,

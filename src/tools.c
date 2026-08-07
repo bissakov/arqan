@@ -6,6 +6,7 @@
  */
 #include "yoke.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -109,32 +110,63 @@ static b8 tool_write(Str args, Arena *scratch, Buf *out, char *err, size_t err_c
     return true;
 }
 
-/* ---- bash ---- */
-static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
-    JVal *j = json_parse(scratch, args);
-    if (!j) { snprintf(err, err_cap, "bad args json"); return false; }
+/* ---- bash ----
+ * The child is spawned rather than popen'd because both of its output streams
+ * belong in the result and neither belongs on the terminal: stderr left
+ * inherited would paint over the frame the TUI owns, and an inherited stdin
+ * would race the composer for the user's keystrokes. */
+b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
     /* One heap-free buffer for the command: a truncated shell line is a
      * different program, so anything over the limit is refused outright. */
     static char z[YOKE_MAX_COMMAND];
-    if (!arg_cstr(json_get_str(j, STR("command")), z, sizeof z, "command",
-                  err, err_cap))
-        return false;
+    if (!arg_cstr(cmd, z, sizeof z, "command", err, err_cap)) return false;
 
-    FILE *p = popen(z, "r");
-    if (!p) { snprintf(err, err_cap, "popen failed"); return false; }
+    i32 fds[2];
+    if (pipe(fds) != 0) { snprintf(err, err_cap, "pipe failed"); return false; }
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(fds[0]); close(fds[1]);
+        snprintf(err, err_cap, "fork failed");
+        return false;
+    }
+    if (pid == 0) {
+        i32 null_fd = open("/dev/null", O_RDONLY);
+        if (null_fd >= 0) { dup2(null_fd, 0); close(null_fd); }
+        dup2(fds[1], 1);
+        dup2(fds[1], 2);
+        close(fds[0]); close(fds[1]);
+        execl("/bin/sh", "sh", "-c", z, (char *)NULL);
+        _exit(127);
+    }
+    close(fds[1]);
+
     char block[4096];
     size_t total = 0;
-    size_t n;
-    while ((n = fread(block, 1, sizeof block, p)) > 0) {
-        buf_put(out, block, n);
-        total += n;
+    for (;;) {
+        ssize_t n = read(fds[0], block, sizeof block);
+        if (n < 0) { if (errno == EINTR) continue; break; }
+        if (n == 0) break;
+        buf_put(out, block, (size_t)n);
+        total += (size_t)n;
         if (total > (1u << 20)) { buf_puts(out, STR("\n[output truncated]\n")); break; }
     }
-    i32 rc = pclose(p);
-    if (rc < 0) buf_puts(out, STR("\n[exit unknown]"));
-    else if (WIFSIGNALED(rc)) buf_putf(out, "\n[killed by signal %d]", WTERMSIG(rc));
-    else buf_putf(out, "\n[exit %d]", WIFEXITED(rc) ? WEXITSTATUS(rc) : -1);
+    close(fds[0]);
+
+    i32 status = 0;
+    pid_t done;
+    while ((done = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {}
+    if (done < 0) buf_puts(out, STR("\n[exit unknown]"));
+    else if (WIFSIGNALED(status))
+        buf_putf(out, "\n[killed by signal %d]", WTERMSIG(status));
+    else buf_putf(out, "\n[exit %d]",
+                  WIFEXITED(status) ? WEXITSTATUS(status) : -1);
     return true;
+}
+
+static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
+    JVal *j = json_parse(scratch, args);
+    if (!j) { snprintf(err, err_cap, "bad args json"); return false; }
+    return shell_capture(json_get_str(j, STR("command")), out, err, err_cap);
 }
 
 /* ---- edit (simple full-file replace) ---- */
