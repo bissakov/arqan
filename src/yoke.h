@@ -658,6 +658,12 @@ void tui_restore_anchor(void);
  * opened no popup, retired by the next keystroke. Empty clears it. The
  * transcript is the conversation, so this never lands in it. */
 void tui_notice(Str msg);
+/* Open a transcript block: the caller is about to write one, and this is the
+ * only place the air above it comes from. A block writes no leading and no
+ * trailing air of its own, so the gap between any two is one blank row
+ * wherever they meet, and a trailing newline the writer did emit is absorbed
+ * rather than stacked. */
+void tui_block(void);
 void tui_write(Str s);
 /* Append reasoning output: same transcript, painted muted so a thinking trace
  * reads apart from the reply. */

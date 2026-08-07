@@ -1,0 +1,26 @@
+--- screen 80x24 ---
+|
+|
+|  what is in notes?
+|
+|
+|  let me look
+|
+|  ◆  read notes.txt
+|  └─ 1 line
+|     written down
+|
+|  ◆  find notes
+|  └─ no files
+|
+|  that is all
+|
+|
+|
+|
+|
+|  › Message yoke...
+|
+|
+|  ● ready · mock-model · build · local · ~/work · 131
+--- cursor row=21 col=5 visible=yes ---

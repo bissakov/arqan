@@ -1,15 +1,15 @@
 --- screen 60x24 ---
 |
-|                                _
-|                    _   _  ___ | | _____
-|                   | | | |/ _ \| |/ / _ \
-|                   | |_| | (_) |   <  __/
-|                    \__, |\___/|_|\_\___|
-|                    |___/
 |
-|         yoke 0.1.0 · a tiny terminal coding agent
 |
-|          type a message and press Enter to begin
+|
+|
+|
+|
+|
+|
+|
+|
 |
 |
 |  line5

@@ -4,12 +4,12 @@
 |  what is in notes.txt?
 |
 |
-|
 |  ◆  read notes.txt
 |  └─ 1 line
 |     hello from disk
 |
 |  I read the file.
+|
 |
 |
 |

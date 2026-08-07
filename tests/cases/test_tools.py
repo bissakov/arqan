@@ -346,6 +346,11 @@ def test_expanding_from_a_scrolled_view_keeps_the_block_in_place(ctx):
     """A block unfolded above the viewport's bottom stays where it was."""
     s = ctx.spawn()
     read_a_big_file(ctx, s, lines=200)
+    # a second turn leaves the tail room to stay on screen once scrolled
+    ctx.scenario("final_text=and+more")
+    s.submit("go on")
+    s.wait_text("and more")
+    s.wait_turn_done()
     # push the tail row up the screen, so the viewport is no longer pinned
     s.mouse("wheel-up", 5, 10)
     s.sync()

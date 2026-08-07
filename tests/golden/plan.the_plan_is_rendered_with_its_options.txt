@@ -4,13 +4,13 @@
 |  plan the change
 |
 |
-|
 |  ◆  plan
 |
 |  Steps
 |
 |  1. Read the file
 |  2. Change the line
+|
 |
 |
 |

@@ -86,6 +86,13 @@ typedef struct {
     char status[32];
     char transcript[TUI_TRANSCRIPT_CAP];
     size_t transcript_n;
+    /* Newlines written but not committed. The transcript never ends with one:
+     * a block's last row is closed by whatever comes after it, so the air
+     * between two blocks is decided in one place (tui_block) instead of being
+     * split between the block that ended and the one that starts. */
+    size_t pend_nl;
+    size_t trail_nl;   /* newlines already committed after the last content */
+    b8 wrote_any;      /* content reached stdout; only the plain-output path */
     size_t scroll_rows;
     /* Wrapped-row index over the transcript. A frame needs the total row count
      * and the byte offset of the first visible row; deriving both by walking
@@ -222,6 +229,7 @@ static void style(const char *s) { if (g_tui.color) put_str(s); }
 /* Defined with the selection machinery below; cup() needs them first. */
 static void snap_seek(size_t row, size_t col);
 static void put_text(const char *s, size_t n);
+static void nl_commit(void);
 
 static Str provider_from_url(Str url) {
     size_t start = 0;
@@ -1308,11 +1316,15 @@ static void repaint(void) {
     size_t composer_padding = rows >= 6 ? 1 : 0;
     /* A blank row keeps the status line visually outside the composer box. */
     size_t status_gap = composer_padding;
+    /* And one keeps the transcript off whatever sits below it: a conversation
+     * long enough to fill the view would otherwise end against the composer's
+     * panel, which is the one gap the transcript cannot write for itself. */
+    size_t body_gap = composer_padding;
     size_t composer_cap = rows / 3;
     if (composer_cap < 1) composer_cap = 1;
     if (composer_cap > 8) composer_cap = 8;
     size_t composer_rows = input_rows < composer_cap ? input_rows : composer_cap;
-    size_t chrome_rows = 1 + composer_padding * 2 + status_gap;
+    size_t chrome_rows = 1 + composer_padding * 2 + status_gap + body_gap;
     size_t max_composer = rows > chrome_rows ? rows - chrome_rows : 1;
     if (max_composer > 1) max_composer--; /* always preserve a transcript row */
     if (composer_rows > max_composer) composer_rows = max_composer;
@@ -1352,19 +1364,23 @@ static void repaint(void) {
                          transcript_rows, 1, body_col, cols, ROW_PLAIN, force);
     }
     paint_scrollbar(first, all_rows, transcript_rows, cols, force);
+    if (body_gap)
+        update_text_row(transcript_rows + 1, (Str){0}, (Str){0}, body_col,
+                        cols, ROW_PLAIN, SIZE_MAX, force);
 
     /* The overlays, in that order, between the transcript and the composer. */
+    size_t overlay_top = transcript_rows + body_gap + 1;
     if (notice_rows)
-        update_notice_row(transcript_rows + 1,
+        update_notice_row(overlay_top,
                           (Str){ g_tui.notice, g_tui.notice_n }, body_col, cols,
                           body_cols, force);
-    paint_completions(transcript_rows + notice_rows + 1, popup_rows, body_col,
+    paint_completions(overlay_top + notice_rows, popup_rows, body_col,
                       cols, body_cols, force);
 
     /* Composer, including one quiet row of breathing room on each side. */
     size_t input_first = cursor_row >= composer_rows
                        ? cursor_row - composer_rows + 1 : 0;
-    size_t composer_top_row = transcript_rows + notice_rows + popup_rows + 1;
+    size_t composer_top_row = overlay_top + notice_rows + popup_rows;
     size_t composer_screen_row = composer_top_row + composer_padding;
     if (composer_padding)
         update_text_row(composer_top_row, (Str){0}, (Str){0}, body_col,
@@ -1561,6 +1577,13 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count,
 }
 
 void tui_stop(void) {
+    /* Plain output ends on a newline: the last row's is held back like every
+     * other, and here nothing follows it that would commit it. */
+    if (!g_tui.fullscreen && g_tui.wrote_any && !g_tui.trail_nl) {
+        put_raw("\n", 1);
+        g_tui.trail_nl = 1;
+        flush_out();
+    }
     if (!g_tui.raw) return;
     yoke_log_set_sink(NULL, NULL);
     if (g_tui.fullscreen) {
@@ -1650,7 +1673,7 @@ void tui_set_context_tokens(size_t tokens) {
  * An empty message just clears it. */
 void tui_notice(Str msg) {
     if (!g_tui.fullscreen) {   /* no popup slot to answer in: say it plainly */
-        if (msg.n) { tui_write(msg); tui_write(STR("\n")); }
+        if (msg.n) { tui_block(); tui_write(msg); tui_write(STR("\n")); }
         return;
     }
     size_t n = msg.n < sizeof g_tui.notice ? msg.n : sizeof g_tui.notice;
@@ -1662,6 +1685,8 @@ void tui_notice(Str msg) {
 void tui_clear_transcript(void) {
     g_tui.notice_n = 0;
     g_tui.transcript_n = 0;
+    g_tui.pend_nl = 0;
+    g_tui.trail_nl = 0;
     g_tui.span_n = 0;
     g_tui.zone_n = 0;
     g_tui.zone_open = 0;
@@ -1674,6 +1699,7 @@ void tui_clear_transcript(void) {
 
 void tui_zone_begin(u32 id) {
     if (!g_tui.fullscreen || !id) return;
+    nl_commit();   /* a zone starts at its first row, not at the air above it */
     g_tui.zone_open = id;
     g_tui.zone_open_a = g_tui.transcript_n;
 }
@@ -1730,16 +1756,9 @@ void tui_clear(void) {
     tui_clear_transcript();
 }
 
-void tui_write(Str s) {
-    if (!g_tui.fullscreen) {
-        if (s.p && s.n) { put_raw(s.p, s.n); flush_out(); }
-        return;
-    }
-    /* Streaming output is the busiest place we pass through, so it doubles as
-     * the pump that keeps the composer responsive mid-turn. It also services
-     * a pending resize, so an empty write still costs nothing here. */
-    tui_poll_input();
-    if (!s.p || s.n == 0) return;
+/* Append committed bytes: `s` carries no newline the layout has not decided
+ * on, since those are held in `pend_nl` until content follows them. */
+static void transcript_put(Str s) {
     /* Transcript output answers whatever the notice was about. */
     g_tui.notice_n = 0;
     /* New output shifts the rows a highlight was drawn over; only an active
@@ -1776,9 +1795,69 @@ void tui_write(Str s) {
             g_tui.transcript_n += 4;
         } else if (c == '\n' || c >= 0x20) {
             g_tui.transcript[g_tui.transcript_n++] = (char)c;
+        } else {
+            continue;
         }
+        g_tui.trail_nl = c == '\n' ? g_tui.trail_nl + 1 : 0;
     }
     g_tui.scroll_rows = 0;
+}
+
+/* One run of content bytes, wherever this run's output goes. */
+static void content_put(Str s) {
+    if (g_tui.fullscreen) {
+        transcript_put(s);
+        return;
+    }
+    put_raw(s.p, s.n);
+    g_tui.trail_nl = 0;
+    g_tui.wrote_any = true;
+}
+
+/* Write back the newlines held since the last content byte, at most one blank
+ * row's worth: a run of them is a block that ended, and how much air that
+ * leaves is tui_block's to say, not the writer's. */
+static void nl_commit(void) {
+    size_t n = g_tui.pend_nl;
+    if (!n) return;
+    g_tui.pend_nl = 0;
+    if (n > 2) n = 2;
+    if (g_tui.fullscreen) {
+        transcript_put((Str){ "\n\n", n });
+    } else {
+        put_raw("\n\n", n);
+        g_tui.trail_nl += n;
+    }
+}
+
+void tui_block(void) {
+    b8 empty = g_tui.fullscreen ? g_tui.transcript_n == 0 : !g_tui.wrote_any;
+    /* One newline closes the row the last block left open and the second
+     * leaves the blank one between them; with nothing written yet there is no
+     * row to close, so one is the same margin. A block that committed its own
+     * closing rows (a user box ends on a padding row of its own) needs fewer,
+     * and never fewer than the writer already asked for. */
+    size_t need = empty ? (g_tui.fullscreen ? 1 : 0)
+                : g_tui.trail_nl < 2 ? 2 - g_tui.trail_nl : 0;
+    if (g_tui.pend_nl < need) g_tui.pend_nl = need;
+}
+
+void tui_write(Str s) {
+    /* Streaming output is the busiest place we pass through, so in a
+     * fullscreen run it doubles as the pump that keeps the composer
+     * responsive mid-turn. It also services a pending resize, so an empty
+     * write still costs nothing here. */
+    if (g_tui.fullscreen) tui_poll_input();
+    if (!s.p || s.n == 0) return;
+    for (size_t i = 0; i < s.n;) {
+        if (s.p[i] == '\n') { g_tui.pend_nl++; i++; continue; }
+        size_t k = i;
+        while (k < s.n && s.p[k] != '\n') k++;
+        nl_commit();
+        content_put((Str){ s.p + i, k - i });
+        i = k;
+    }
+    if (!g_tui.fullscreen) { flush_out(); return; }
     /* SSE can deliver many tiny deltas. Row diffing keeps each paint small,
      * and 15 Hz is plenty for readable text streaming. Newlines/status
      * changes still make the final state visible immediately. */
@@ -1807,6 +1886,9 @@ void tui_putstr(Str s) { tui_write(s); }
  * them. */
 static void write_span(Str s, u8 kind) {
     if (!g_tui.fullscreen) { tui_write(s); return; }
+    /* The air above a block belongs to no style: committing it here keeps it
+     * out of the range the painter is about to be told about. */
+    nl_commit();
     size_t a = g_tui.transcript_n;
     tui_write(s);
     size_t b = g_tui.transcript_n;
@@ -1834,20 +1916,24 @@ void tui_write_error(Str s)  { write_span(s, ROW_ERROR); }
  * padding row above and below and the whole range is recorded so every row it
  * wraps onto is painted with the panel background. */
 void tui_write_user(Str s) {
+    tui_block();
     if (!g_tui.fullscreen) {
-        tui_write(STR("\n> "));
+        tui_write(STR("> "));
         tui_write(s);
-        tui_write(STR("\n\n"));
         return;
     }
-    tui_write(STR("\n"));                 /* air above the box */
+    nl_commit();                          /* the air above is not the box */
     size_t a = g_tui.transcript_n;
     tui_write(STR("\n"));                 /* the box's top padding row */
     tui_write(s);
-    tui_write(STR("\n\n"));               /* text row ends, padding row ends */
+    /* The padding row below belongs to the box, so it is committed here to
+     * fall inside the range recorded below rather than being left to the next
+     * block, which still owes its own blank row after it. */
+    tui_write(STR("\n\n"));
+    nl_commit();
     size_t b = g_tui.transcript_n;
     if (b > a) span_add(a, b, ROW_USER);
-    tui_write(STR("\n"));                 /* air below the box */
+    g_tui.pend_nl = 1;
 }
 
 void tui_set_interrupt_flag(volatile sig_atomic_t *flag) {

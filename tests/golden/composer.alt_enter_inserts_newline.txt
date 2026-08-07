@@ -2,7 +2,6 @@
 |
 |
 |
-|
 |                                          _
 |                              _   _  ___ | | _____
 |                             | | | |/ _ \| |/ / _ \
@@ -13,6 +12,7 @@
 |                   yoke 0.1.0 · a tiny terminal coding agent
 |
 |                    type a message and press Enter to begin
+|
 |
 |
 |

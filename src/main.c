@@ -68,24 +68,27 @@ static size_t commands_init(void) {
 }
 
 /* Streaming sinks append to the TUI's transcript. */
-/* Set while a reply's reasoning is still streaming, so the first word of the
- * answer proper can open a row of its own. */
+/* Whether the round's thinking trace and its reply have opened their block:
+ * each is one, so the first delta of either lands under one blank row and the
+ * ones after it do not open a second. */
 static b8 g_reasoning;
+static b8 g_replying;
 static void on_reason(Str delta, void *ud) {
     (void)ud;
     if (!g_reasoning) {
         g_reasoning = true;
         tui_set_status("reasoning");
-        tui_write(STR("\n"));
+        tui_block();
     }
     tui_write_reason(delta);
 }
 static void on_text(Str delta, void *ud) {
     (void)ud;
-    if (g_reasoning) {
+    if (!g_replying) {
+        g_replying = true;
         g_reasoning = false;
         tui_set_status("thinking");
-        tui_write(STR("\n\n"));
+        tui_block();
     }
     md_write(delta);
 }
@@ -167,7 +170,8 @@ static b8 add_result(Agent *ag, size_t call, Str name, Str result) {
     Conv *conv = ag->conv;
     size_t slot = conv_add_tool(conv, conv->tool_call_id[call], result);
     if (slot == CONV_NONE) {
-        tui_write(STR("\n[conversation is full: /clear to start a new one]\n"));
+        tui_block();
+        tui_write(STR("[conversation is full: /clear to start a new one]\n"));
         return false;
     }
     render_tool_result(name, result, (u32)(slot + 1), conv->expanded[slot]);
@@ -343,7 +347,6 @@ static void render_conv(const Conv *c, Arena *scratch) {
                     render_shell_call(c->text[i], (u32)(i + 1), c->expanded[i]);
                     render_tool_result(STR("shell"), c->shell_out[i],
                                        (u32)(i + 1), c->expanded[i]);
-                    tui_write(STR("\n"));
                 } else {
                     tui_write_user(c->text[i]);
                 }
@@ -357,12 +360,9 @@ static void render_conv(const Conv *c, Arena *scratch) {
                     render_tool_call(c->tool_name[i], c->text[i], scratch,
                                      (u32)(i + 1), c->expanded[i]);
                 } else if (c->text[i].n) {
-                    /* A live turn separates a reply from the tool output it
-                     * followed; a replay is the same transcript. */
-                    if (i && c->role[i - 1] == M_TOOL) tui_write(STR("\n"));
+                    tui_block();
                     md_write(c->text[i]);
                     md_end();
-                    tui_write(STR("\n"));
                 }
                 break;
         }
@@ -808,7 +808,8 @@ static void run_shell(Agent *ag, Str cmd) {
     Str stored = str_dup(ag->persist, cmd);
     size_t slot = stored.p ? conv_add_shell(conv, stored, (Str){0}) : CONV_NONE;
     if (slot == CONV_NONE) {
-        tui_write(STR("\n[conversation is full: /clear to start a new one]\n\n"));
+        tui_block();
+        tui_write(STR("[conversation is full: /clear to start a new one]\n"));
         return;
     }
     render_shell_call(stored, (u32)(slot + 1), false);
@@ -834,7 +835,6 @@ static void run_shell(Agent *ag, Str cmd) {
     tel_send(&e);
     conv->shell_out[slot] = result;
     render_tool_result(STR("shell"), result, (u32)(slot + 1), false);
-    tui_write(STR("\n"));
     session_save(ag->sess, conv);
     arena_reset(ag->scratch);
 }
@@ -865,11 +865,13 @@ static b8 agent_turn(Agent *ag, Str text) {
 
     Str user_text = str_dup(ag->persist, text);
     if (text.n && !user_text.p) {
-        tui_write(STR("\n[out of memory: /clear to start a new session]\n\n"));
+        tui_block();
+        tui_write(STR("[out of memory: /clear to start a new session]\n"));
         return false;
     }
     if (conv_add(conv, M_USER, user_text) == CONV_NONE) {
-        tui_write(STR("\n[conversation is full: /clear to start a new one]\n\n"));
+        tui_block();
+        tui_write(STR("[conversation is full: /clear to start a new one]\n"));
         return false;
     }
     if (ag->echo) tui_write_user(text);
@@ -895,13 +897,15 @@ static b8 agent_turn(Agent *ag, Str text) {
     for (;;) {
         rounds++;
         if (g_got_sigint) {
-            tui_write(STR("\n[interrupted]\n\n"));
+            tui_block();
+            tui_write(STR("[interrupted]\n"));
             tui_set_status("ready");
             g_got_sigint = 0;
             break;
         }
         tui_set_status("thinking");
         g_reasoning = false;
+        g_replying = false;
         Provider p = {
             .cfg = ag->cfg,
             .tools = ag->tools,
@@ -926,7 +930,8 @@ static b8 agent_turn(Agent *ag, Str text) {
         md_end();
         if (p.usage_valid) tui_set_context_tokens(p.total_tokens);
         if (g_got_sigint) {
-            tui_write(STR("\n[interrupted]\n\n"));
+            tui_block();
+            tui_write(STR("[interrupted]\n"));
             tui_set_status("ready");
             g_got_sigint = 0;
             break;
@@ -939,14 +944,12 @@ static b8 agent_turn(Agent *ag, Str text) {
             tel_str(&ee, "where", STR("provider"));
             tel_str(&ee, "detail", str_c(err));
             tel_send(&ee);
-            tui_printf("\n[provider error: %s]\n\n", err);
+            tui_block();
+            tui_printf("[provider error: %s]\n", err);
             tui_set_status("ready");
             break;
         }
         if (rc == 0) {
-            /* Close the reply's last row only: the air the next user box
-             * writes above itself is the whole margin. */
-            tui_write(STR("\n"));
             tui_set_status("ready");
             ok = true;
             break; /* no tool calls, turn done */
@@ -959,12 +962,10 @@ static b8 agent_turn(Agent *ag, Str text) {
         if (act == TURN_FULL) { tui_set_status("ready"); break; }
         if (act == TURN_HANDOFF) { ok = true; break; }
         if (act == TURN_DONE) {
-            tui_write(STR("\n"));
             tui_set_status("ready");
             ok = true;
             break;
         }
-        tui_write(STR("\n"));
     }
     tui_set_busy(false);
     session_save(ag->sess, conv);

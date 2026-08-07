@@ -134,7 +134,7 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
     size_t cmd_off = 0;
     if (!path.n && cmd.n) str_line(cmd, &cmd_off, &target);
 
-    tui_write(STR("\n"));
+    tui_block();
     tui_write_tool(STR("\u25c6  "));
     tui_write_tool(name);
     if (target.n) {
@@ -184,7 +184,7 @@ void render_shell_call(Str cmd, u32 id, b8 expanded) {
     Str first = cmd;
     str_line(cmd, &off, &first);
 
-    tui_write(STR("\n"));
+    tui_block();
     tui_write_tool(STR("\u25c6  shell "));
     Str head = clip(first, R_TARGET_BYTES);
     tui_write_tool(head);
@@ -201,15 +201,14 @@ void render_shell_call(Str cmd, u32 id, b8 expanded) {
  * Markdown it is rather than as a quoted argument, and it is never truncated:
  * it is the thing the user is being asked to approve. */
 void render_plan(Str plan) {
-    tui_write(STR("\n"));
+    tui_block();
     tui_write_tool(STR("\u25c6  plan\n\n"));
     md_write(plan);
     md_end();
-    tui_write(STR("\n"));
 }
 
 void render_question(Str question) {
-    tui_write(STR("\n"));
+    tui_block();
     tui_write_tool(STR("\u25c6  ask\n"));
     size_t off = 0;
     Str line;

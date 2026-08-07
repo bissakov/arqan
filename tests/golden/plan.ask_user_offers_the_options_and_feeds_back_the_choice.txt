@@ -4,9 +4,9 @@
 |  plan the storage
 |
 |
-|
 |  ◆  ask
 |  │ Which storage?
+|
 |
 |
 |

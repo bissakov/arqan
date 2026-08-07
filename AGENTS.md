@@ -210,7 +210,19 @@ an AoS layout.
   a zone's rows are painted as a link and brighten while the pointer is on
   them (which is why mouse mode 1003 rather than 1002 is claimed), and
   `tui_anchor_zone`/`tui_restore_anchor` keep a zone where it is on screen
-  while the caller replays the transcript around it
+  while the caller replays the transcript around it. The air between two
+  blocks is one blank row and comes from one place: a writer opens a block
+  with `tui_block` and writes none of its own, since a margin split between
+  the block that ended and the one that starts is a margin nobody owns. That
+  holds because a trailing newline is never committed when it is written: it
+  is held until content follows it, so a reply that ends on three of them and
+  a tool result that ends on one arrive at the next block the same way. A user
+  turn is the one block with padding rows of its own, which it commits so they
+  fall inside the range painted with its background. The row below the
+  transcript is the frame's, not a block's: a conversation long enough to fill
+  the view has no way to write air under itself, so the layout keeps one blank
+  row between it and the overlays, the way it keeps one between the composer
+  and the status line
 - `markdown.c`: a reply is Markdown, and this renders it into the transcript:
   headings, lists, block quotes, rules and fenced code become shapes, emphasis
   and inline code become styles, and the markers are dropped. It renders as the

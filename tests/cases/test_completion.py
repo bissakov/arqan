@@ -138,7 +138,7 @@ def test_popup_leaves_the_welcome_screen_in_place(ctx):
     The rows have to be there for that to hold: on a screen too short for the
     block plus a row of air the art does move up, so this asks for room.
     """
-    s = ctx.spawn(rows=32)
+    s = ctx.spawn(rows=33)
     before = [i for i, row in enumerate(s.screen.lines()) if "|___/" in row]
     s.type("/").sync()
     assert "/clear" in s.text(), s.text()

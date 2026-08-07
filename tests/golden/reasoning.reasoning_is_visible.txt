@@ -4,10 +4,10 @@
 |  how many?
 |
 |
-|
 |  let me count the rabbits
 |
 |  four rabbits
+|
 |
 |
 |

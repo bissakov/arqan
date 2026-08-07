@@ -332,11 +332,12 @@ class Session:
     def transcript_height(self, composer_rows: int = 1, popup_rows: int = 0) -> int:
         """Rows the transcript occupies, from the fixed bottom chrome.
 
-        Chrome is the status line, the blank row above it and the composer's
-        two padding rows, all of which collapse on a very short screen.
+        Chrome is the status line, the blank row above it, the composer's two
+        padding rows and the blank row that keeps the transcript off them, all
+        of which collapse on a very short screen.
         """
         padding = 1 if self.term.rows >= 6 else 0
-        chrome = 1 + padding * 3
+        chrome = 1 + padding * 4
         return max(1, self.term.rows - composer_rows - chrome - popup_rows)
 
     def scrollbar(self, composer_rows: int = 1, popup_rows: int = 0) -> list[str]:
