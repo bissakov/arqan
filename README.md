@@ -3,7 +3,7 @@
 A terminal AI coding agent written in plain C17, designed as a counterpoint to
 Claude Code, Codex, OpenCode and Pi. It talks to any OpenAI-compatible
 chat-completions endpoint, streams the reply into a fullscreen TUI, and gives
-the model six tools: read, write, bash, edit, grep and find.
+the model six tools: read, write, bash, patch, grep and find.
 
 ## Design principles
 
@@ -35,7 +35,7 @@ src/
   prompt.c        system prompts: SYSTEM.md / PLAN.md + AGENTS.md, expansion
   cli.c           command line parsing, above the config in precedence
   provider.c      chat-completions streaming + reasoning and tool deltas
-  tools.c         SoA tool registry + read/write/bash/edit/grep/find tools
+  tools.c         SoA tool registry + read/write/bash/patch/grep/find tools
   tui.c           alternate-screen TUI, viewport, composer + raw input
   markdown.c      streaming Markdown rendering of a reply
   main.c          unity includes + main + agent loop
@@ -274,8 +274,8 @@ not know is the user's own text.
 ### Plan mode
 
 Shift+Tab switches between the two modes the status line names. Build is the
-one that works: it reads, writes, edits and runs commands. Plan reads and
-proposes, and changes nothing, because `write` and `edit` are not in the
+one that works: it reads, writes, patches and runs commands. Plan reads and
+proposes, and changes nothing, because `write` and `patch` are not in the
 registry it is offered and are refused if it asks for one anyway. It has a
 system prompt of its own, resolved like the other one from `.yoke/PLAN.md`,
 the global `PLAN.md` or a built-in template, and two tools the other mode does
@@ -309,7 +309,7 @@ one-shot `-p` run is never rendered, since its stdout is a reply rather than a
 view.
 
 A tool call reads as the tool, what it acts on and a preview of what it
-carries, with an `edit` shown as a diff, and its result as a summary line: the
+carries, with a `patch` shown as the diff it is, and its result as a summary line: the
 exit status of a command, the size of a file, the error a failure returned.
 Both previews are capped so one tool cannot take the scrollback; the verbose
 setting lifts the caps and shows every line, for the blocks already on screen as well

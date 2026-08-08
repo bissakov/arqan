@@ -3,7 +3,7 @@
 `yoke` is a terminal AI coding agent written in plain C17, a minimal counterpoint
 to Claude Code / Codex / OpenCode. It talks to any OpenAI-compatible
 chat-completions endpoint, streams responses via SSE, and exposes a small
-built-in tool registry (read/write/bash/edit/grep/find) that the model can
+built-in tool registry (read/write/bash/patch/grep/find) that the model can
 call.
 
 ## Build & run
@@ -160,7 +160,7 @@ an AoS layout.
   and `--version` answer and exit; a prompt (`-p` or a bare argument) runs one
   turn without the UI and exits on its result
 - `tools.c`: the `ToolRegistry` and the built-in tools
-  (read/write/bash/edit/grep/find, plus plan mode's `ask_user` and
+  (read/write/bash/patch/grep/find, plus plan mode's `ask_user` and
   `submit_plan`). A result is not a view: it is replayed to the provider on
   every later turn of the session, so each tool answers with a page rather
   than everything it could say and names the call that continues it. `read`
@@ -171,10 +171,17 @@ an AoS layout.
   reproducible and skipping dotfiles; the match is a literal substring rather
   than a regex, since `bash` still has the shell for the rest. Their root may
   name one file rather than a directory, since narrowing a query to the file it
-  is about is the same request with a smaller root. `edit` requires
-  each `old_text` to match exactly once, and takes a list of them applied in
-  order and written once at the end, so an ambiguous or impossible batch
-  leaves the file as it was. Each entry carries the modes
+  is about is the same request with a smaller root. `patch` is the one tool
+  that changes a file in place, and it takes the unified diff a model writes
+  natively rather than a shape invented here: a hunk is located by its context
+  rather than by the numbers in its `@@` header, since nothing the model was
+  shown carries line numbers, and context matching twice is refused for the
+  reason an ambiguous replacement is. `--- /dev/null` creates a file and
+  `+++ /dev/null` deletes one, so a rename costs no tool of its own. Every
+  file is built whole in the arena and reaches the disk only once every hunk
+  of every file has landed, each through a temporary renamed over its target,
+  so a patch that cannot be finished leaves the tree as it was. Each entry
+  carries the modes
   it is offered in, since Plan mode's read-only promise is a property of the
   registry rather than a request made in the prompt: `tools_write_schemas`
   withholds what the mode does not have and `tools_run` refuses it, because a
@@ -297,8 +304,10 @@ an AoS layout.
   since a one-shot run's stdout is a reply rather than a view
 - `render.c`: how a tool call and its result read in the transcript: a header
   naming the tool and its target, and for a `read` the page it asked for, since
-  two reads of one file are otherwise the same header twice, a preview of the input it carries (a diff for
-  `edit`), and a result summarised by the tool's own shape. The JSON arguments
+  two reads of one file are otherwise the same header twice, a preview of the
+  input it carries (a `patch` coloured by its own markers, and headed by the
+  file it names, since a diff carries its target in its body), and a result
+  summarised by the tool's own shape. The JSON arguments
   never reach the screen except for a tool this module knows nothing about.
   The tail a truncated block ends on is its click target: it carries a TUI zone
   keyed by the `Conv` slot it was rendered from, and `Conv.expanded` is what a

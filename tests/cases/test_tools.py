@@ -66,24 +66,32 @@ def test_write_tool_previews_the_content(ctx):
     assert "\u2514\u2500 wrote" in text, text
 
 
-def test_edit_tool_shows_a_diff(ctx):
-    """An edit call reads as the lines it removes and the ones it adds."""
+def patch_call(diff, **kw):
+    """A scenario running one patch call over `diff`."""
+    args = json.dumps({"patch": diff})
+    rest = ",".join(f"{k}={v}" for k, v in kw.items())
+    return f"tool=patch:{args}" + (f",{rest}" if rest else "")
+
+
+def test_patch_shows_the_diff_it_applies(ctx):
+    """A patch call reads as the diff it carries, coloured by its markers."""
     ctx.write_file("diff.txt", "keep\nold one\nkeep\n")
-    args = json.dumps(
-        {"path": "diff.txt", "old_text": "old one", "new_text": "new one"}
+    diff = (
+        "--- a/diff.txt\n+++ b/diff.txt\n@@ -1,3 +1,3 @@\n"
+        " keep\n-old one\n+new one\n keep\n"
     )
-    ctx.scenario(f"tool=edit:{args},final_text=patched")
+    ctx.scenario(patch_call(diff, final_text="patched"))
     s = ctx.spawn()
     s.submit("patch it")
     s.wait_text("patched")
     s.wait_turn_done()
 
     text = s.text()
-    assert "\u25c6  edit diff.txt" in text, text
-    assert "\u2502 - old one" in text, text
-    assert "\u2502 + new one" in text, text
-    assert s.screen.attr_at(s.screen.find_row("\u2502 - old one"), 2).fg == 203
-    assert s.screen.attr_at(s.screen.find_row("\u2502 + new one"), 2).fg == 114
+    assert "\u25c6  patch diff.txt" in text, text
+    assert "\u2502 -old one" in text, text
+    assert "\u2502 +new one" in text, text
+    assert s.screen.attr_at(s.screen.find_row("\u2502 -old one"), 2).fg == 203
+    assert s.screen.attr_at(s.screen.find_row("\u2502 +new one"), 2).fg == 114
 
 
 def test_bash_result_is_summarised_by_its_exit_status(ctx):
@@ -112,16 +120,74 @@ def test_write_tool_creates_a_file(ctx):
     assert (ctx.work / "created.txt").read_text() == "written by a tool"
 
 
-def test_edit_tool_replaces_text(ctx):
-    """The edit tool rewrites the matched span in place."""
-    ctx.write_file("edit.txt", "alpha BETA gamma")
-    args = json.dumps({"path": "edit.txt", "old_text": "BETA", "new_text": "beta"})
-    ctx.scenario(f"tool=edit:{args},final_text=edited")
+def test_patch_rewrites_a_line_in_place(ctx):
+    """A hunk is located by its context and applied to the file."""
+    ctx.write_file("edit.txt", "alpha\nBETA\ngamma\n")
+    diff = (
+        "--- a/edit.txt\n+++ b/edit.txt\n@@ -1,3 +1,3 @@\n"
+        " alpha\n-BETA\n+beta\n gamma\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="edited"))
     s = ctx.spawn()
     s.submit("fix the case")
     s.wait_text("edited")
     s.wait_turn_done()
-    assert (ctx.work / "edit.txt").read_text() == "alpha beta gamma"
+    assert (ctx.work / "edit.txt").read_text() == "alpha\nbeta\ngamma\n"
+    assert ctx.mock.tool_results()[-1].strip() == "edit.txt +1 -1"
+
+
+def test_patch_keeps_a_file_that_ends_without_a_newline(ctx):
+    """A hunk ending at EOF matches a last line the file never terminated."""
+    ctx.write_file("tail.txt", "one\ntwo")
+    diff = (
+        "--- a/tail.txt\n+++ b/tail.txt\n@@ -1,2 +1,2 @@\n"
+        " one\n-two\n+three\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("patch the tail")
+    s.wait_text("done")
+    s.wait_turn_done()
+    assert (ctx.work / "tail.txt").read_text() == "one\nthree"
+
+
+def test_patch_creates_and_deletes_files(ctx):
+    """/dev/null on either side is a file appearing or going away."""
+    ctx.write_file("old.txt", "gone\n")
+    diff = (
+        "--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,2 @@\n+fresh\n+lines\n"
+        "--- a/old.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="swapped"))
+    s = ctx.spawn()
+    s.submit("replace the file")
+    s.wait_text("swapped")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "new.txt created +2 -0" in result, result
+    assert "old.txt deleted" in result, result
+    assert (ctx.work / "new.txt").read_text() == "fresh\nlines\n"
+    assert not (ctx.work / "old.txt").exists()
+
+
+def test_patch_over_several_files_is_one_call(ctx):
+    """Files of one change are one call, and the header says how many."""
+    ctx.write_file("a.txt", "alpha\n")
+    ctx.write_file("b.txt", "beta\n")
+    diff = (
+        "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-alpha\n+ALPHA\n"
+        "--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-beta\n+BETA\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="both+applied"))
+    s = ctx.spawn()
+    s.submit("patch both")
+    s.wait_text("both applied")
+    s.wait_turn_done()
+
+    assert (ctx.work / "a.txt").read_text() == "ALPHA\n"
+    assert (ctx.work / "b.txt").read_text() == "BETA\n"
+    assert "\u25c6  patch a.txt +1 more" in s.text(), s.text()
 
 
 def test_bash_tool_runs_a_command(ctx):
@@ -407,13 +473,11 @@ def test_hovering_a_tail_leaves_the_scrollbar_alone(ctx):
     assert s.screen.attr_at(row - 1, last).bg is None, s.text()
 
 
-def test_an_ambiguous_edit_is_refused(ctx):
-    """A repeated old_text names no hunk: patching the first is a coin toss."""
+def test_an_ambiguous_hunk_is_refused(ctx):
+    """Context matching twice names no hunk: patching the first is a coin toss."""
     ctx.write_file("twice.txt", "same line\nkeep\nsame line\n")
-    args = json.dumps(
-        {"path": "twice.txt", "old_text": "same line", "new_text": "changed"}
-    )
-    ctx.scenario(f"tool=edit:{args},final_text=ambiguous")
+    diff = "--- a/twice.txt\n+++ b/twice.txt\n@@ -1 +1 @@\n-same line\n+changed\n"
+    ctx.scenario(patch_call(diff, final_text="ambiguous"))
     s = ctx.spawn()
     s.submit("patch it")
     s.wait_text("ambiguous")
@@ -421,76 +485,44 @@ def test_an_ambiguous_edit_is_refused(ctx):
 
     result = ctx.mock.tool_results()[-1]
     assert result.startswith("ERROR:"), result
-    assert "appears 2 times" in result, result
+    assert "matches 2 places" in result, result
     assert (ctx.work / "twice.txt").read_text() == "same line\nkeep\nsame line\n"
 
 
-def test_one_edit_call_carries_several_replacements(ctx):
-    """Separate locations in one file are one call, not one call each."""
-    ctx.write_file("multi.txt", "alpha\nbeta\ngamma\n")
-    args = json.dumps(
-        {
-            "path": "multi.txt",
-            "edits": [
-                {"old_text": "alpha", "new_text": "ALPHA"},
-                {"old_text": "gamma", "new_text": "GAMMA"},
-            ],
-        }
+def test_a_failing_hunk_leaves_every_file_untouched(ctx):
+    """The patch is written once at the end, so it is all or nothing."""
+    ctx.write_file("a.txt", "alpha\n")
+    ctx.write_file("b.txt", "beta\n")
+    diff = (
+        "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-alpha\n+ALPHA\n"
+        "--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-nowhere\n+x\n"
     )
-    ctx.scenario(f"tool=edit:{args},final_text=both+applied")
-    s = ctx.spawn()
-    s.submit("patch both")
-    s.wait_text("both applied")
-    s.wait_turn_done()
-
-    assert (ctx.work / "multi.txt").read_text() == "ALPHA\nbeta\nGAMMA\n"
-    assert ctx.mock.tool_results()[-1] == "2 edits applied"
-    text = s.text()
-    assert "\u2502 - alpha" in text and "\u2502 + ALPHA" in text, text
-    assert "\u2502 - gamma" in text and "\u2502 + GAMMA" in text, text
-
-
-def test_a_failing_edit_leaves_the_file_untouched(ctx):
-    """The batch is written once at the end, so it is all or nothing."""
-    ctx.write_file("multi.txt", "alpha\nbeta\n")
-    args = json.dumps(
-        {
-            "path": "multi.txt",
-            "edits": [
-                {"old_text": "alpha", "new_text": "ALPHA"},
-                {"old_text": "nowhere", "new_text": "x"},
-            ],
-        }
-    )
-    ctx.scenario(f"tool=edit:{args},final_text=nothing+changed")
+    ctx.scenario(patch_call(diff, final_text="nothing+changed"))
     s = ctx.spawn()
     s.submit("patch it")
     s.wait_text("nothing changed")
     s.wait_turn_done()
 
     result = ctx.mock.tool_results()[-1]
-    assert "edit 2: old_text not found" in result, result
-    assert (ctx.work / "multi.txt").read_text() == "alpha\nbeta\n"
+    assert "b.txt hunk 1: context not found" in result, result
+    assert (ctx.work / "a.txt").read_text() == "alpha\n"
+    assert (ctx.work / "b.txt").read_text() == "beta\n"
 
 
-def test_an_edit_sees_what_the_edit_before_it_left(ctx):
-    """Replacements apply in order against the running text, not the original."""
-    ctx.write_file("chain.txt", "one\n")
-    args = json.dumps(
-        {
-            "path": "chain.txt",
-            "edits": [
-                {"old_text": "one", "new_text": "two"},
-                {"old_text": "two", "new_text": "three"},
-            ],
-        }
+def test_a_hunk_sees_what_the_hunk_before_it_left(ctx):
+    """Hunks apply in order against the running file, not the original."""
+    ctx.write_file("chain.txt", "one\ntail\n")
+    diff = (
+        "--- a/chain.txt\n+++ b/chain.txt\n"
+        "@@ -1,2 +1,2 @@\n-one\n+two\n tail\n"
+        "@@ -1,2 +1,2 @@\n-two\n+three\n tail\n"
     )
-    ctx.scenario(f"tool=edit:{args},final_text=chained")
+    ctx.scenario(patch_call(diff, final_text="chained"))
     s = ctx.spawn()
     s.submit("chain them")
     s.wait_text("chained")
     s.wait_turn_done()
-    assert (ctx.work / "chain.txt").read_text() == "three\n"
+    assert (ctx.work / "chain.txt").read_text() == "three\ntail\n"
 
 
 def test_a_read_header_names_the_page_it_asked_for(ctx):

@@ -72,19 +72,25 @@ static void write_count(size_t n, const char *what, Sink sink) {
     if (len > 0) sink((Str){ buf, (size_t)len });
 }
 
+/* Which sink one line is written through, for a block whose lines do not read
+ * alike; NULL means the block's own. */
+typedef Sink (*LineStyle)(Str line);
+
 /* At most `max` lines of `body`, each behind `gutter`, then a tail row saying
  * what was left out. That row is the block's click target, so a block whose
  * lines all fit gets no tail either way. */
-static void write_lines(Str body, Str gutter, size_t max, Sink sink) {
+static void write_styled(Str body, Str gutter, size_t max, Sink sink,
+                         LineStyle style) {
     size_t cap = line_cap(max);
     size_t off = 0, shown = 0;
     Str line;
     while (shown < cap && str_line(body, &off, &line)) {
-        sink(gutter);
+        Sink put = style ? style(line) : sink;
+        put(gutter);
         Str head = clip(line, R_LINE_BYTES);
-        sink(head);
-        if (head.n < line.n) sink(STR(" ..."));
-        sink(STR("\n"));
+        put(head);
+        if (head.n < line.n) put(STR(" ..."));
+        put(STR("\n"));
         shown++;
     }
     size_t rest = str_lines(str_drop(body, off));
@@ -105,13 +111,41 @@ static void write_lines(Str body, Str gutter, size_t max, Sink sink) {
     tui_zone_end();
 }
 
-/* The only honest preview of an edit: the lines the tool matches, then the
- * ones it leaves behind. */
-static void write_diff(Str old_text, Str new_text) {
-    write_lines(old_text, STR("\u2502 - "), R_ARG_LINES / 2,
-                tui_write_error);
-    write_lines(new_text, STR("\u2502 + "), R_ARG_LINES / 2,
-                tui_write_result);
+static void write_lines(Str body, Str gutter, size_t max, Sink sink) {
+    write_styled(body, gutter, max, sink, NULL);
+}
+
+/* A diff reads by its markers, so each line keeps the one it came with and is
+ * coloured by it; a file header carries the only path in a patch and is the
+ * one line of it worth the tool colour. */
+static Sink diff_style(Str line) {
+    if (str_starts(line, STR("+++ ")) || str_starts(line, STR("--- ")))
+        return tui_write_tool;
+    if (!line.n) return tui_write_muted;
+    if (line.p[0] == '+') return tui_write_result;
+    if (line.p[0] == '-') return tui_write_error;
+    return tui_write_muted;
+}
+
+/* The file a patch is about, taken from its first header, plus how many more
+ * it names: a diff carries its target in its body rather than in an argument. */
+static Str patch_target(Str patch, char *buf, size_t cap) {
+    size_t off = 0, files = 0;
+    Str line, first = {0};
+    while (str_line(patch, &off, &line)) {
+        if (!str_starts(line, STR("+++ "))) continue;
+        if (!files++) {
+            first = str_trim(str_drop(line, 4));
+            const char *tab = (const char *)memchr(first.p, '\t', first.n);
+            if (tab) first.n = (size_t)(tab - first.p);
+            if (str_starts(first, STR("b/"))) first = str_drop(first, 2);
+        }
+    }
+    if (files < 2) return first;
+    i32 len = snprintf(buf, cap, "%.*s +%zu more", (i32)first.n, first.p,
+                       files - 1);
+    return len > 0 ? (Str){ buf, (size_t)len < cap ? (size_t)len : cap - 1 }
+                   : first;
 }
 
 void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
@@ -122,6 +156,9 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
 
     Str path = str_arg(j, STR("path"));
     Str cmd  = str_arg(j, STR("command"));
+    Str patch = str_arg(j, STR("patch"));
+    char patch_buf[R_TARGET_BYTES + 32];
+    if (patch.n) path = patch_target(patch, patch_buf, sizeof patch_buf);
     /* What a search is about is what it looks for, not where it starts. */
     Str query = str_eq(name, STR("grep")) ? str_arg(j, STR("pattern"))
               : str_eq(name, STR("find")) ? str_arg(j, STR("name"))
@@ -146,17 +183,11 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
         Str content = str_arg(j, STR("content"));
         write_lines(content, STR("\u2502 "), R_ARG_LINES,
                     tui_write_muted);
-    } else if (str_eq(name, STR("edit"))) {
-        const JVal *edits = j ? json_get(j, STR("edits")) : NULL;
-        if (edits && edits->type == J_ARR) {
-            for (size_t k = 0; k < edits->u.arr.n; k++) {
-                const JVal *e = json_at(edits, k);
-                write_diff(str_arg(e, STR("old_text")),
-                           str_arg(e, STR("new_text")));
-            }
-        }
-        if (json_get(j, STR("old_text")))
-            write_diff(str_arg(j, STR("old_text")), str_arg(j, STR("new_text")));
+    } else if (patch.n) {
+        /* Twice a call's usual allowance: a hunk spends most of its lines on
+         * the context that locates it. */
+        write_styled(patch, STR("\u2502 "), R_ARG_LINES * 2, tui_write_muted,
+                     diff_style);
     } else if (cmd.n) {
         write_lines(str_drop(cmd, cmd_off), STR("\u2502 "),
                     R_ARG_LINES, tui_write_muted);

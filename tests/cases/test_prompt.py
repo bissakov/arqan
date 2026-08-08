@@ -26,7 +26,7 @@ def test_builtin_prompt_names_tools_and_cwd(ctx):
     content = system_message(ctx, s)
 
     assert "expert coding assistant" in content, content
-    for name in ("read", "write", "bash", "edit"):
+    for name in ("read", "write", "bash", "patch"):
         assert f"- {name}: " in content, content
     assert f"Current working directory: {ctx.work}" in content, content
     assert "{tools}" not in content and "{cwd}" not in content, content

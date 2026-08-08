@@ -7,6 +7,7 @@
 
 #include <ctype.h>
 #include <dirent.h>
+#include <stdarg.h>
 #include <errno.h>
 #include <fnmatch.h>
 #include <stdio.h>
@@ -260,9 +261,15 @@ static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
     return shell_capture(json_get_str(j, STR("command")), out, err, err_cap);
 }
 
-/* ---- edit ----
- * Exact replacements applied in order and written once at the end, so a call
- * that cannot be finished leaves the file as it was rather than half patched.
+/* ---- patch ----
+ * A unified diff, applied to every file it names or to none of them: each is
+ * built whole in the arena and only reaches the filesystem once every hunk of
+ * every file has landed.
+ *
+ * A hunk is located by its context rather than by the numbers in its @@
+ * header, since nothing the model was shown carries line numbers. Context
+ * that matches twice is refused for the reason an ambiguous replacement is:
+ * the first occurrence is rarely the reviewed one.
  */
 
 /* Offset of the single occurrence of `needle`, or SIZE_MAX with `count` set
@@ -280,80 +287,263 @@ static size_t find_unique(Str hay, Str needle, size_t *count) {
     return *count == 1 ? at : (size_t)-1;
 }
 
-static b8 apply_edit(Str *body, Str oldt, Str newt, Arena *scratch, size_t nth,
-                     char *err, size_t err_cap) {
-    if (!oldt.p || !newt.p) {
-        snprintf(err, err_cap, "edit %zu: missing old_text/new_text", nth);
-        return false;
+typedef struct {
+    char   path[YOKE_MAX_PATH];
+    Str    body;              /* the file as the hunks applied so far leave it */
+    size_t added, removed;
+    size_t hunk_n;            /* hunks seen, so an error names one per file  */
+    b8     create;
+    b8     unlink_it;
+} PatchFile;
+
+typedef struct {
+    PatchFile *file;
+    size_t     n;
+    size_t     hunks;
+    Arena     *scratch;
+    char      *err;
+    size_t     err_cap;
+} Patch;
+
+/* "a/src/x.c\t2024-01-01" names src/x.c, the way patch -p1 reads it. */
+static Str patch_path(Str s) {
+    const char *tab = (const char *)memchr(s.p, '\t', s.n);
+    if (tab) s.n = (size_t)(tab - s.p);
+    s = str_trim(s);
+    if (str_eq(s, STR("/dev/null"))) return s;
+    if (str_starts(s, STR("a/")) || str_starts(s, STR("b/"))) s = str_drop(s, 2);
+    return s;
+}
+
+static b8 patch_fail(Patch *p, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(p->err, p->err_cap, fmt, ap);
+    va_end(ap);
+    return false;
+}
+
+/* The header pair a file's hunks follow. A patch that names one file twice is
+ * refused rather than resolved: the second read would not see the first's
+ * changes, which are still in the arena. */
+static PatchFile *patch_open(Patch *p, Str oldp, Str newp) {
+    b8 create = str_eq(oldp, STR("/dev/null"));
+    b8 gone = str_eq(newp, STR("/dev/null"));
+    if (p->n >= YOKE_MAX_PATCH_FILES) {
+        patch_fail(p, "patch touches more than %u files", YOKE_MAX_PATCH_FILES);
+        return NULL;
     }
+    PatchFile *f = &p->file[p->n];
+    *f = (PatchFile){0};
+    if (!arg_cstr(gone ? oldp : newp, f->path, sizeof f->path, "path",
+                  p->err, p->err_cap))
+        return NULL;
+    for (size_t i = 0; i < p->n; i++) {
+        if (!strcmp(p->file[i].path, f->path)) {
+            patch_fail(p, "%s appears twice; put its hunks under one header",
+                       f->path);
+            return NULL;
+        }
+    }
+    f->create = create;
+    f->unlink_it = gone;
+    if (create) {
+        struct stat st;
+        if (stat(f->path, &st) == 0) {
+            patch_fail(p, "%s already exists", f->path);
+            return NULL;
+        }
+    } else if (!slurp(f->path, p->scratch, &f->body, p->err, p->err_cap)) {
+        return NULL;
+    }
+    p->n++;
+    return f;
+}
+
+/* Reads a hunk body from `off`, appending its old side to `o` and its new one
+ * to `n` when they are given, and returns the offset the hunk ends at. Called
+ * once with no buffers to measure the span, then again to fill them. */
+static size_t hunk_scan(Str text, size_t off, Buf *o, Buf *n, PatchFile *f) {
+    Str line;
+    char prev = ' ';
+    for (;;) {
+        size_t start = off;
+        if (!str_line(text, &off, &line)) return off;
+        /* A model that trims trailing space leaves an empty context line
+         * where the format wants a single one. */
+        char c = line.n ? line.p[0] : ' ';
+        if (c == '@' && str_starts(line, STR("@@"))) return start;
+        if (c == '\\') {                  /* "\ No newline at end of file" */
+            if (o && prev != '+' && o->n) o->n--;
+            if (n && prev != '-' && n->n) n->n--;
+            continue;
+        }
+        /* A "--- " line is a header only when "+++ " follows it: a removed
+         * line reading "-- x" is spelled the same way. */
+        if (str_starts(line, STR("--- "))) {
+            size_t peek = off;
+            Str next;
+            if (str_line(text, &peek, &next) && str_starts(next, STR("+++ ")))
+                return start;
+        }
+        if (c != ' ' && c != '-' && c != '+') return start;
+        Str body = line.n ? str_drop(line, 1) : line;
+        if (c != '+' && o) { buf_puts(o, body); buf_putc(o, '\n'); }
+        if (c != '-' && n) { buf_puts(n, body); buf_putc(n, '\n'); }
+        if (f && c == '+') f->added++;
+        if (f && c == '-') f->removed++;
+        prev = c;
+    }
+}
+
+/* The one place a hunk meets the file: its context and removed lines are the
+ * text to find, its context and added lines what replaces it. */
+static b8 patch_hunk(Patch *p, PatchFile *f, Str text, size_t *off) {
+    if (++p->hunks > YOKE_MAX_PATCH_HUNKS)
+        return patch_fail(p, "patch carries more than %u hunks",
+                          YOKE_MAX_PATCH_HUNKS);
+    f->hunk_n++;
+
+    /* A deleted file's hunk describes what goes away, which the delete says
+     * already: it is read for its line count and applied to nothing. */
+    if (f->unlink_it) {
+        *off = hunk_scan(text, *off, NULL, NULL, f);
+        return true;
+    }
+
+    size_t end = hunk_scan(text, *off, NULL, NULL, NULL);
+    /* Neither side of a hunk is longer than the hunk. */
+    size_t span = end - *off + 1;
+    Buf o, n;
+    buf_init(&o, p->scratch, span);
+    buf_init(&n, p->scratch, span);
+    hunk_scan(text, *off, &o, &n, f);
+    *off = end;
+    if (!buf_ok(&o) || !buf_ok(&n))
+        return patch_fail(p, "%s: patch does not fit in memory", f->path);
+    Str oldt = buf_finish(&o), newt = buf_finish(&n);
+
+    if (f->create) {
+        if (oldt.n)
+            return patch_fail(p, "%s hunk %zu: a new file has no lines to "
+                              "remove or keep", f->path, f->hunk_n);
+        Buf b;
+        buf_init(&b, p->scratch, f->body.n + newt.n + 1);
+        buf_puts(&b, f->body);
+        buf_puts(&b, newt);
+        if (!buf_ok(&b))
+            return patch_fail(p, "%s: patch does not fit in memory", f->path);
+        f->body = buf_finish(&b);
+        return true;
+    }
+    if (!oldt.n)
+        return patch_fail(p, "%s hunk %zu: nothing to locate it by; include "
+                          "the surrounding lines as context", f->path, f->hunk_n);
+
     size_t count;
-    size_t at = find_unique(*body, oldt, &count);
+    size_t at = find_unique(f->body, oldt, &count);
+    /* A file whose last line has no newline cannot be matched by a hunk that
+     * ends on one, so the same hunk is retried against the end of the file. */
+    if (at == (size_t)-1 && !count && oldt.p[oldt.n - 1] == '\n'
+        && (!f->body.n || f->body.p[f->body.n - 1] != '\n')) {
+        Str o2 = { oldt.p, oldt.n - 1 };
+        size_t at2 = find_unique(f->body, o2, &count);
+        if (at2 != (size_t)-1 && at2 + o2.n == f->body.n) {
+            at = at2;
+            oldt = o2;
+            if (newt.n && newt.p[newt.n - 1] == '\n') newt.n--;
+        }
+    }
     if (at == (size_t)-1) {
         if (count > 1)
-            snprintf(err, err_cap, "edit %zu: old_text appears %zu times; "
-                     "include the surrounding lines that make it unique",
-                     nth, count);
-        else
-            snprintf(err, err_cap, "edit %zu: old_text not found", nth);
-        return false;
+            return patch_fail(p, "%s hunk %zu: its context matches %zu places; "
+                              "widen it until it matches one", f->path,
+                              f->hunk_n, count);
+        return patch_fail(p, "%s hunk %zu: context not found; re-read the file "
+                          "and patch what it says now", f->path, f->hunk_n);
     }
+
     Buf b;
-    buf_init(&b, scratch, body->n + newt.n + 1);
-    buf_put(&b, body->p, at);
+    buf_init(&b, p->scratch, f->body.n + newt.n + 1);
+    buf_put(&b, f->body.p, at);
     buf_puts(&b, newt);
-    buf_put(&b, body->p + at + oldt.n, body->n - at - oldt.n);
-    if (!buf_ok(&b)) {
-        snprintf(err, err_cap, "edit %zu: out of memory", nth);
-        return false;
-    }
-    *body = buf_finish(&b);
+    buf_put(&b, f->body.p + at + oldt.n, f->body.n - at - oldt.n);
+    if (!buf_ok(&b))
+        return patch_fail(p, "%s: patch does not fit in memory", f->path);
+    f->body = buf_finish(&b);
     return true;
 }
 
-static b8 tool_edit(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
-    JVal *j = json_parse(scratch, args);
-    if (!j) { snprintf(err, err_cap, "bad args json"); return false; }
-    char z[YOKE_MAX_PATH];
-    if (!arg_cstr(json_get_str(j, STR("path")), z, sizeof z, "path", err, err_cap))
-        return false;
-
-    Str body;
-    if (!slurp(z, scratch, &body, err, err_cap)) return false;
-
-    const JVal *edits = json_get(j, STR("edits"));
-    size_t applied = 0;
-    if (edits && edits->type == J_ARR) {
-        if (edits->u.arr.n > YOKE_MAX_EDITS) {
-            snprintf(err, err_cap, "%zu edits, limit %u",
-                     edits->u.arr.n, YOKE_MAX_EDITS);
-            return false;
+static b8 patch_parse(Patch *p, Str text) {
+    size_t off = 0;
+    Str line;
+    PatchFile *f = NULL;
+    while (str_line(text, &off, &line)) {
+        if (str_starts(line, STR("--- "))) {
+            size_t peek = off;
+            Str next;
+            if (!str_line(text, &peek, &next) || !str_starts(next, STR("+++ ")))
+                continue;
+            off = peek;
+            f = patch_open(p, patch_path(str_drop(line, 4)),
+                           patch_path(str_drop(next, 4)));
+            if (!f) return false;
+        } else if (str_starts(line, STR("@@"))) {
+            if (!f) return patch_fail(p, "a hunk before any --- / +++ header");
+            if (!patch_hunk(p, f, text, &off)) return false;
         }
-        for (size_t i = 0; i < edits->u.arr.n; i++) {
-            const JVal *e = json_at(edits, i);
-            if (!apply_edit(&body, json_get_str(e, STR("old_text")),
-                            json_get_str(e, STR("new_text")), scratch, i + 1,
-                            err, err_cap))
-                return false;
-            applied++;
-        }
+        /* Anything else, "diff --git", "index", a mode line or prose around
+         * the diff, names no change and is skipped. */
     }
-    /* The single-replacement form is the same call with one edit inline. */
-    if (json_get(j, STR("old_text"))) {
-        if (!apply_edit(&body, json_get_str(j, STR("old_text")),
-                        json_get_str(j, STR("new_text")), scratch, applied + 1,
-                        err, err_cap))
-            return false;
-        applied++;
-    }
-    if (!applied) { snprintf(err, err_cap, "no edits given"); return false; }
+    if (!p->n) return patch_fail(p, "no --- / +++ file header in the patch");
+    return true;
+}
 
-    FILE *o = fopen(z, "wb");
-    if (!o) { snprintf(err, err_cap, "re-open %s failed", z); return false; }
-    b8 failed = body.n && fwrite(body.p, 1, body.n, o) != body.n;
+/* Renamed over the file it replaces, so an interrupted write leaves the
+ * previous one rather than half of this. */
+static b8 patch_write(Patch *p, const PatchFile *f) {
+    char tmp[YOKE_MAX_PATH];
+    i32 len = snprintf(tmp, sizeof tmp, "%s.yoke-tmp", f->path);
+    if (len < 0 || (size_t)len >= sizeof tmp)
+        return patch_fail(p, "%s: path too long to write", f->path);
+
+    FILE *o = fopen(tmp, "wb");
+    if (!o) return patch_fail(p, "open %s for write failed", f->path);
+    b8 failed = f->body.n && fwrite(f->body.p, 1, f->body.n, o) != f->body.n;
     if (ferror(o)) failed = true;
     if (fclose(o) != 0) failed = true;
-    if (failed) { snprintf(err, err_cap, "write %s failed", z); return false; }
-    buf_putf(out, "%zu edit%s applied", applied, applied == 1 ? "" : "s");
+    if (!failed && rename(tmp, f->path) != 0) failed = true;
+    if (failed) {
+        unlink(tmp);
+        return patch_fail(p, "write %s failed", f->path);
+    }
+    return true;
+}
+
+static b8 tool_patch(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
+    JVal *j = json_parse(scratch, args);
+    if (!j) { snprintf(err, err_cap, "bad args json"); return false; }
+    Str text = json_get_str(j, STR("patch"));
+    if (!text.n) { snprintf(err, err_cap, "missing patch"); return false; }
+
+    Patch p = { NULL, 0, 0, scratch, err, err_cap };
+    p.file = arena_new(scratch, PatchFile, YOKE_MAX_PATCH_FILES);
+    if (!p.file) { snprintf(err, err_cap, "out of memory"); return false; }
+    if (!patch_parse(&p, text)) return false;
+
+    for (size_t i = 0; i < p.n; i++) {
+        const PatchFile *f = &p.file[i];
+        if (f->unlink_it) {
+            if (unlink(f->path) != 0)
+                return patch_fail(&p, "delete %s failed", f->path);
+            buf_putf(out, "%s deleted\n", f->path);
+        } else {
+            if (!patch_write(&p, f)) return false;
+            buf_putf(out, "%s %s+%zu -%zu\n", f->path,
+                     f->create ? "created " : "", f->added, f->removed);
+        }
+    }
+    if (!buf_ok(out)) { snprintf(err, err_cap, "result does not fit in memory"); return false; }
     return true;
 }
 
@@ -643,41 +833,39 @@ void tools_init(ToolRegistry *r, Arena *persist) {
     r->n++; } while (0)
 #define BOTH (TOOL_IN_BUILD | TOOL_IN_PLAN)
 
-    ADD("read", "Read a file, by default its first 2000 lines or 50KB. "
-        "Continue past that with offset.", BOTH,
+    ADD("read", "Read a page of a file: 2000 lines or 50KB, from offset.", BOTH,
         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},"
         "\"offset\":{\"type\":\"integer\",\"description\":\"first line, 1-based\"},"
-        "\"limit\":{\"type\":\"integer\",\"description\":\"lines to read\"}},"
-        "\"required\":[\"path\"]}",
+        "\"limit\":{\"type\":\"integer\"}},\"required\":[\"path\"]}",
         tool_read);
     ADD("grep", "Search file contents for a literal string, recursively.", BOTH,
         "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},"
-        "\"path\":{\"type\":\"string\",\"description\":\"file or directory to search, default .\"},"
-        "\"glob\":{\"type\":\"string\",\"description\":\"only files matching, e.g. *.c\"},"
+        "\"path\":{\"type\":\"string\",\"description\":\"file or dir, default .\"},"
+        "\"glob\":{\"type\":\"string\",\"description\":\"e.g. *.c\"},"
         "\"ignore_case\":{\"type\":\"boolean\"},"
         "\"max_results\":{\"type\":\"integer\"}},\"required\":[\"pattern\"]}",
         tool_grep);
     ADD("find", "List files whose name matches a glob, recursively.", BOTH,
         "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\","
-        "\"description\":\"glob; matched against the path when it has a /\"},"
-        "\"path\":{\"type\":\"string\",\"description\":\"file or directory to search, default .\"},"
+        "\"description\":\"glob; matched on the path when it has a /\"},"
+        "\"path\":{\"type\":\"string\",\"description\":\"file or dir, default .\"},"
         "\"max_results\":{\"type\":\"integer\"}},\"required\":[\"name\"]}",
         tool_find);
-    ADD("write", "Write content to a file (overwrite).", TOOL_IN_BUILD,
-        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}",
-        tool_write);
-    ADD("bash", "Run a shell command and capture stdout/stderr.", BOTH,
+    ADD("bash", "Run a shell command; returns its stdout and stderr.", BOTH,
         "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}",
         tool_bash);
-    ADD("edit", "Replace exact text in a file. Each old_text must match "
-        "exactly once; pass several in edits to patch one file at once.",
+    ADD("patch", "Change files with a unified diff: hunks are located by "
+        "their context lines, not by @@ numbers, and every file applies or "
+        "none does. --- /dev/null creates a file, +++ /dev/null deletes one.",
         TOOL_IN_BUILD,
-        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},"
-        "\"old_text\":{\"type\":\"string\"},\"new_text\":{\"type\":\"string\"},"
-        "\"edits\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":"
-        "{\"old_text\":{\"type\":\"string\"},\"new_text\":{\"type\":\"string\"}},"
-        "\"required\":[\"old_text\",\"new_text\"]}}},\"required\":[\"path\"]}",
-        tool_edit);
+        "{\"type\":\"object\",\"properties\":{\"patch\":{\"type\":\"string\","
+        "\"description\":\"unified diff over one or more files\"}},"
+        "\"required\":[\"patch\"]}",
+        tool_patch);
+    ADD("write", "Write a file whole, creating or overwriting it.",
+        TOOL_IN_BUILD,
+        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}",
+        tool_write);
     ADD("ask_user", "Ask the user to choose between options. Mark the one you "
         "recommend; they may also answer in their own words.", TOOL_IN_PLAN,
         "{\"type\":\"object\",\"properties\":{\"question\":{\"type\":\"string\"},\"options\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"label\":{\"type\":\"string\"},\"detail\":{\"type\":\"string\"},\"recommended\":{\"type\":\"boolean\"}},\"required\":[\"label\"]}}},\"required\":[\"question\",\"options\"]}",

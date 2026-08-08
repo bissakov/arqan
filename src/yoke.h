@@ -48,7 +48,8 @@ typedef bool     b8;
 #define YOKE_WALK_ENTRIES     4096        /* names one directory level holds    */
 #define YOKE_WALK_BYTES       (4u << 20)  /* scratch a walk carves for names    */
 #define YOKE_MAX_GREP_FILE    (1u << 20)  /* larger files are not searched      */
-#define YOKE_MAX_EDITS        64          /* replacements one edit call carries */
+#define YOKE_MAX_PATCH_FILES  32          /* files one patch call may touch     */
+#define YOKE_MAX_PATCH_HUNKS  512         /* hunks one patch call may carry     */
 /* A tool result older than this many user turns is replaced on the wire by a
  * line naming what it was; see conv_write_json. */
 #define YOKE_ELIDE_TURNS      2
