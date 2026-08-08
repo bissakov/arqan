@@ -146,9 +146,10 @@ typedef void (*YokeLogSink)(i32 level, Str msg, void *ud);
 void    yoke_log_set_sink(YokeLogSink sink, void *ud);
 
 /* ---- telemetry -----------------------------------------------------------
- * An anonymized record of a session, appended as JSON lines to that session's
- * own $XDG_STATE_HOME/yoke/telemetry/<timestamp>-<run>.jsonl while /telemetry
- * is on.
+ * An anonymized record of a session, appended as JSON lines to that
+ * conversation's own $XDG_STATE_HOME/yoke/telemetry/<cwd>/<timestamp>.jsonl
+ * while /telemetry is on: the file is named after the session file and is
+ * rebound with it, so /clear starts a record and /resume continues one.
  *
  * The record is the shape of a session, never its content: a message is a
  * byte and a line count, a tool call is its name and the keys of its
@@ -162,10 +163,22 @@ typedef struct { char buf[1024]; size_t n; b8 full, live; } TelEvent;
 
 void telemetry_init(Arena *scratch);
 b8   telemetry_on(void);
+/* Records into the file named after `session_path`, under a directory named
+ * after its parent. Called by session.c when a session file is written or
+ * resumed. */
+void telemetry_bind(Str session_path);
+/* The conversation is over: what follows belongs to the run's own record
+ * until the next conversation names a file. */
+void telemetry_detach(void);
+/* Writes the session event: what the record needs to be read on its own.
+ * Called on the first event of a file, since a file that starts mid-run
+ * would otherwise say nothing about the run. */
+typedef void (*TelHeader)(void *ud);
+void telemetry_set_header(TelHeader fn, void *ud);
 /* False when no state directory resolves or the setting could not be
  * written, leaving it unchanged. */
 b8   telemetry_set(b8 on, Arena *scratch);
-/* This session's file. Empty when no state directory resolves. */
+/* The file being recorded to. Empty when no state directory resolves. */
 Str  telemetry_file(void);
 /* Mirror of a yoke_log line, so the diagnostics sit beside the events they
  * explain. Called by yoke_log. */

@@ -2,10 +2,14 @@
  *
  * Off until /telemetry turns it on, which is remembered as the state file's
  * `telemetry` key so a later run records without being asked again. Events
- * are JSON objects, one per line, appended to one file per session,
- * $XDG_STATE_HOME/yoke/telemetry/<timestamp>-<run>.jsonl, the way a
- * conversation gets a file of its own: the record a bug report carries is the
- * session it is about rather than every session that shared a machine.
+ * are JSON objects, one per line, appended to the file of the conversation
+ * they belong to: $XDG_STATE_HOME/yoke/telemetry/<cwd>/<timestamp>.jsonl,
+ * named after the session file under $XDG_DATA_HOME and rebound whenever the
+ * session is, so /clear starts a record as it starts a conversation and
+ * /resume appends to the record of the one it reopened. What happens before a
+ * conversation claims a file, a startup, a /provider, a model listing, has no
+ * session to belong to and goes to a record named after the run instead.
+ * Every file opens with a session event, so each is read on its own.
  *
  * The file holds the shape of a session and none of its content: a message is
  * a byte and a line count, a tool call is its name and the keys of its
@@ -32,13 +36,21 @@
 
 static struct {
     b8   on;
-    b8   ready;              /* the paths below resolved                    */
-    char dir_buf[YOKE_MAX_PATH];
-    char path_buf[YOKE_MAX_PATH];
+    b8   ready;              /* the root below resolved                     */
+    char root_buf[YOKE_MAX_PATH];  /* .../yoke/telemetry                    */
+    char dir_buf[YOKE_MAX_PATH];   /* the current file's directory          */
+    char path_buf[YOKE_MAX_PATH];  /* the current file                      */
+    char slug_buf[256];      /* the session directory's last component      */
+    char stem_buf[64];       /* the session file without its extension      */
+    char run_stem[40];       /* the name a session that has none falls to   */
     Str  dir;
-    u64  run;                /* names the session's file                    */
+    u64  run;
     f64  t0;
     u64  seq;
+    b8   header_due;         /* the file has no session event yet           */
+    b8   attached;           /* a file was chosen                           */
+    TelHeader header;
+    void *header_ud;
 } g_tel;
 
 static u64 tel_hash(Str s) {
@@ -59,8 +71,75 @@ static b8 tel_keep(char *dst, size_t cap, Str path) {
     return true;
 }
 
+/* A file the record continues in owes a session event, since a reader of it
+ * has no earlier line to learn the run from. */
+static void tel_attach(const char *dir, size_t dn, const char *path, size_t pn) {
+    if (dn >= sizeof g_tel.dir_buf || pn >= sizeof g_tel.path_buf) return;
+    memcpy(g_tel.dir_buf, dir, dn + 1);
+    memcpy(g_tel.path_buf, path, pn + 1);
+    g_tel.dir = (Str){ g_tel.dir_buf, dn };
+    g_tel.attached = true;
+    g_tel.header_due = true;
+}
+
+/* Where the events that belong to no conversation go: a startup, a /provider,
+ * a model listing, the diagnostics of a run that never got a message in. */
+static void tel_attach_run(void) {
+    char path[YOKE_MAX_PATH];
+    i32 pn = snprintf(path, sizeof path, "%s/%s.jsonl", g_tel.root_buf,
+                      g_tel.run_stem);
+    if (pn <= 0 || (size_t)pn >= sizeof path) return;
+    tel_attach(g_tel.root_buf, strlen(g_tel.root_buf), path, (size_t)pn);
+}
+
+/* The record of a conversation is named after its session file and sits under
+ * the same per-directory component, so one is found from the other. It is
+ * taken from the path rather than from Session.name, which is the label the
+ * picker shows. */
+void telemetry_bind(Str session_path) {
+    if (!g_tel.ready) return;
+    size_t base = session_path.n;
+    while (base && session_path.p[base - 1] != '/') base--;
+    Str name = str_drop(session_path, base);
+    Str dir = str_take(session_path, base ? base - 1 : 0);
+    if (name.n > 6 && !memcmp(name.p + name.n - 6, ".jsonl", 6)) name.n -= 6;
+    size_t cut = dir.n;
+    while (cut && dir.p[cut - 1] != '/') cut--;
+    Str slug = str_drop(dir, cut);
+    if (!name.n || name.n >= sizeof g_tel.stem_buf
+        || slug.n >= sizeof g_tel.slug_buf) return;
+    memcpy(g_tel.stem_buf, name.p, name.n);
+    g_tel.stem_buf[name.n] = '\0';
+    memcpy(g_tel.slug_buf, slug.p, slug.n);
+    g_tel.slug_buf[slug.n] = '\0';
+
+    char d[YOKE_MAX_PATH], path[YOKE_MAX_PATH];
+    i32 dn = slug.n ? snprintf(d, sizeof d, "%s/%s", g_tel.root_buf,
+                               g_tel.slug_buf)
+                    : snprintf(d, sizeof d, "%s", g_tel.root_buf);
+    if (dn <= 0 || (size_t)dn >= sizeof d) return;
+    i32 pn = snprintf(path, sizeof path, "%s/%s.jsonl", d, g_tel.stem_buf);
+    if (pn <= 0 || (size_t)pn >= sizeof path) return;
+    if (g_tel.attached && !strcmp(path, g_tel.path_buf)) return;
+    tel_attach(d, (size_t)dn, path, (size_t)pn);
+}
+
+/* The conversation the record was following is over: what follows belongs to
+ * the run rather than to it, until the next one claims a file of its own. */
+void telemetry_detach(void) {
+    g_tel.attached = false;
+    g_tel.stem_buf[0] = g_tel.slug_buf[0] = '\0';
+}
+
+void telemetry_set_header(TelHeader fn, void *ud) {
+    g_tel.header = fn;
+    g_tel.header_ud = ud;
+}
+
 static void tel_flush(const char *line, size_t n) {
     if (!g_tel.on || !g_tel.ready) return;
+    if (!g_tel.attached) tel_attach_run();
+    if (!g_tel.attached) return;
     paths_ensure_dir(g_tel.dir);
     FILE *f = fopen(g_tel.path_buf, "ab");
     if (!f) return;
@@ -72,16 +151,15 @@ static void tel_flush(const char *line, size_t n) {
 b8 telemetry_on(void) { return g_tel.on && g_tel.ready; }
 
 Str telemetry_file(void) {
-    return g_tel.ready ? str_c(g_tel.path_buf) : (Str){0};
+    return g_tel.ready && g_tel.path_buf[0] ? str_c(g_tel.path_buf) : (Str){0};
 }
 
 void telemetry_init(Arena *scratch) {
     g_tel.t0 = yoke_now_seconds();
     size_t mark = scratch->off;
-    g_tel.ready = tel_keep(g_tel.dir_buf, sizeof g_tel.dir_buf,
+    g_tel.ready = tel_keep(g_tel.root_buf, sizeof g_tel.root_buf,
                            paths_file(YOKE_DIR_STATE, STR("telemetry"), scratch));
     scratch->off = mark;
-    g_tel.dir = str_c(g_tel.dir_buf);
     if (!g_tel.ready) return;
 
     /* Enough to tell two sessions of the same second apart, and nothing that
@@ -98,13 +176,13 @@ void telemetry_init(Arena *scratch) {
         snprintf(stamp, sizeof stamp, "%04d%02d%02d-%02d%02d%02d",
                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
                  tm.tm_hour, tm.tm_min, tm.tm_sec);
-    n = snprintf(g_tel.path_buf, sizeof g_tel.path_buf, "%.*s/%s-%016llx.jsonl",
-                 (i32)g_tel.dir.n, g_tel.dir.p, stamp,
+    n = snprintf(g_tel.run_stem, sizeof g_tel.run_stem, "%s-%016llx", stamp,
                  (unsigned long long)g_tel.run);
-    if (n <= 0 || (size_t)n >= sizeof g_tel.path_buf) {
+    if (n <= 0 || (size_t)n >= sizeof g_tel.run_stem) {
         g_tel.ready = false;
         return;
     }
+    g_tel.header_due = true;
 
     mark = scratch->off;
     Str set = state_get(STR("telemetry"), scratch, scratch);
@@ -117,6 +195,7 @@ b8 telemetry_set(b8 on, Arena *scratch) {
     if (!state_set(STR("telemetry"), on ? STR("on") : STR("off"), scratch))
         return false;
     g_tel.on = on;
+    if (on) g_tel.header_due = true;
     return true;
 }
 
@@ -144,6 +223,10 @@ void tel_open(TelEvent *e, const char *ev) {
     e->full = false;
     e->live = telemetry_on();
     if (!e->live) return;
+    if (g_tel.header_due && g_tel.header) {
+        g_tel.header_due = false;   /* before the call, which records too */
+        g_tel.header(g_tel.header_ud);
+    }
     char head[96];
     u64 ms = (u64)((yoke_now_seconds() - g_tel.t0) * 1000.0);
     /* The run id names the file, so a line carries only its place in it. */

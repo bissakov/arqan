@@ -8,23 +8,28 @@ def log_dir(ctx, state=None):
 
 
 def log_files(ctx, state=None):
+    """Every record under the telemetry dir, oldest write first."""
     d = log_dir(ctx, state)
-    return sorted(d.glob("*.jsonl")) if d.is_dir() else []
+    if not d.is_dir():
+        return []
+    return sorted(d.rglob("*.jsonl"), key=lambda p: (p.stat().st_mtime, p.name))
 
 
 def body(ctx):
     return "".join(p.read_text() for p in log_files(ctx))
 
 
-def events(ctx, which=-1):
-    """One session's events; by default the last session recorded."""
+def events(ctx, which=None):
+    """Every event recorded, or one file's when `which` indexes log_files."""
     files = log_files(ctx)
     assert files, sorted(p.name for p in ctx.home.rglob("*"))
-    return [json.loads(line)
-            for line in files[which].read_text().splitlines() if line]
+    if which is not None:
+        files = [files[which]]
+    return [json.loads(line) for f in files
+            for line in f.read_text().splitlines() if line]
 
 
-def kinds(ctx, which=-1):
+def kinds(ctx, which=None):
     return [e["ev"] for e in events(ctx, which)]
 
 
@@ -281,3 +286,82 @@ def test_a_file_where_the_directory_goes_does_not_silence_it(ctx):
 
     assert d.is_dir(), sorted(p.name for p in d.parent.iterdir())
     assert kinds(ctx).count("turn_start") == 1, kinds(ctx)
+
+
+def test_the_record_is_the_conversation_it_belongs_to(ctx):
+    """/clear starts a session, so it starts a record: one file each."""
+    ctx.scenario("text=ok")
+    s = ctx.spawn()
+    s.settings_toggle("Telemetry")
+    s.submit("first conversation")
+    s.wait_turn_done()
+    first = log_files(ctx)
+    assert len(first) == 1, first
+
+    s.submit("/clear")
+    s.wait_for(lambda t: "first conversation" not in t.text(),
+               "transcript to clear")
+    s.submit("second conversation")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+
+    files = log_files(ctx)
+    assert len(files) == 2, files
+    # Each stands on its own: a header, then the turn it recorded.
+    for f in files:
+        seen = [json.loads(l)["ev"] for l in f.read_text().splitlines() if l]
+        assert seen[0] == "session", (f, seen)
+        assert seen.count("turn_start") == 1, (f, seen)
+
+
+def test_the_record_is_named_after_the_session_file(ctx):
+    """The record of a conversation is found from the conversation."""
+    ctx.scenario("text=ok")
+    s = ctx.spawn()
+    s.settings_toggle("Telemetry")
+    s.submit("hello")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+
+    sessions = sorted(
+        (ctx.home / ".local" / "share" / "yoke" / "sessions").rglob("*.jsonl")
+    )
+    assert len(sessions) == 1, sessions
+    record = log_files(ctx)[0]
+    assert record.name == sessions[0].name, (record, sessions)
+    assert record.parent.name == sessions[0].parent.name, (record, sessions)
+
+
+def test_resuming_continues_the_record_it_reopened(ctx):
+    """A resumed conversation appends to the record it already had."""
+    ctx.scenario("text=ok")
+    s = ctx.spawn()
+    s.settings_toggle("Telemetry")
+    s.submit("the first turn")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+    record = log_files(ctx)[0]
+    before = len(record.read_text().splitlines())
+
+    again = ctx.spawn()
+    again.submit("/resume")
+    again.wait_status("pick a session")
+    again.key("enter")
+    again.wait_text("the first turn")
+    again.submit("the second turn")
+    again.wait_turn_done()
+    again.submit("/exit")
+    again.wait_exit()
+
+    lines = [json.loads(l) for l in record.read_text().splitlines() if l]
+    assert len(lines) > before               # the same record, continued
+    # The resumed run opens with a session event of its own, since a reader
+    # of the file has to see where one run ended and the next began.
+    assert [e["ev"] for e in lines].count("session") == 2, lines
+    assert [e["ev"] for e in lines].count("turn_start") == 2, lines
+    # No record was started for the conversation the run replaced.
+    others = [p for p in log_files(ctx) if p != record]
+    assert all(p.parent == log_dir(ctx) for p in others), others

@@ -244,10 +244,13 @@ for the model and the telemetry answer.
 
 Telemetry records what a session did, for a bug report. It is off until it
 is asked for, and the answer is remembered, so a run that never reaches the
-composer records too. Events are JSON objects, one per line, appended to that
-session's own `$XDG_STATE_HOME/yoke/telemetry/<timestamp>-<run>.jsonl`, so the
-record a bug report carries is the session it is about rather than every
-session that shared a machine: the session and its settings, each
+composer records too. Events are JSON objects, one per line, appended to the
+record of the conversation they belong to,
+`$XDG_STATE_HOME/yoke/telemetry/<cwd>/<timestamp>.jsonl`, named after that
+conversation's session file: `/clear` starts a record as it starts a
+conversation, `/resume` continues the one it reopened, and what happens before
+any conversation claims a file goes to a record named after the run. Each file
+opens with the session and its settings, and then holds each
 turn and how long it took, every request with its size, its SSE event count
 and its token usage, every tool call with its duration and outcome, the
 commands and mode switches, the arenas as they fill, and the log lines yoke
@@ -344,7 +347,7 @@ and ignored as if unset, and directories yoke creates are mode 0700.
 | prompt history | `$XDG_STATE_HOME/yoke/history` | last 500 prompts, recalled in the composer with Up/Down |
 | remembered choices | `$XDG_STATE_HOME/yoke/state` | `model`, `provider` and `telemetry`: what the UI last picked |
 | provider keys | `$XDG_STATE_HOME/yoke/credentials` | one `key` per `[provider ...]` section, mode 0600, refused when anyone else can read it |
-| telemetry record | `$XDG_STATE_HOME/yoke/telemetry/<timestamp>-<run>.jsonl` | the anonymized record, one file per session, written while telemetry is on |
+| telemetry record | `$XDG_STATE_HOME/yoke/telemetry/<cwd>/<timestamp>.jsonl` | the anonymized record of one conversation, named after its session file |
 | sessions | `$XDG_DATA_HOME/yoke/sessions/<cwd>/<timestamp>.jsonl` | one file per conversation, keyed by the directory it ran in |
 
 ## Tests

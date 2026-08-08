@@ -162,8 +162,8 @@ static Str mode_name(AgentMode m) {
     return m == MODE_PLAN ? STR("plan") : STR("build");
 }
 
-/* The settings a report needs and the working directory as a hash. Written
- * when recording starts, at startup or at the /telemetry that turned it on. */
+/* The settings a report needs and the working directory as a hash. It opens
+ * every file the record is written to, so each one can be read on its own. */
 static void telemetry_session(const Config *cfg, const ToolRegistry *tools) {
     TelEvent e;
     tel_open(&e, "session");
@@ -180,6 +180,13 @@ static void telemetry_session(const Config *cfg, const ToolRegistry *tools) {
     char cwd[YOKE_MAX_PATH];
     if (getcwd(cwd, sizeof cwd)) tel_hash_field(&e, "cwd", str_c(cwd));
     tel_send(&e);
+}
+
+typedef struct { const Config *cfg; const ToolRegistry *tools; } TelHead;
+
+static void telemetry_header(void *ud) {
+    const TelHead *h = (const TelHead *)ud;
+    telemetry_session(h->cfg, h->tools);
 }
 
 /* What the tool calls of one round asked the turn to do next. */
@@ -901,8 +908,7 @@ static void choose_settings(Agent *ag) {
                 tui_set_show_ignored(!tui_show_ignored());
                 break;
             case SET_TELEMETRY:
-                if (telemetry_set(!telemetry_on(), scratch) && telemetry_on())
-                    telemetry_session(cfg, ag->tools);
+                telemetry_set(!telemetry_on(), scratch);
                 break;
             case SET_MODE:
                 agent_set_mode(ag, cfg->mode == MODE_PLAN ? MODE_BUILD
@@ -1196,7 +1202,10 @@ i32 main(i32 argc, char **argv) {
 
     /* After tui_start, since the record names the shape of the terminal. */
     telemetry_init(&scratch);
-    telemetry_session(&cfg, &tools);
+    static TelHead head;
+    head.cfg = &cfg;
+    head.tools = &tools;
+    telemetry_set_header(telemetry_header, &head);
 
     Agent agent = {
         .cfg = &cfg, .tools = &tools, .conv = &conv,

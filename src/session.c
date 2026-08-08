@@ -124,6 +124,10 @@ static Str sess_label(Arena *a, Str file) {
  * save, so an untouched session never shows up in the picker. */
 b8 session_begin(Session *s) {
     s->written = 0;
+    /* The name is reserved here, but the conversation starts with its first
+     * message: the record follows the file rather than the reservation, so
+     * whatever happens in between waits for the session that claims it. */
+    telemetry_detach();
     sess_set_current(s, (Str){0}, (Str){0});
     if (!s->dir.n) return false;
     time_t t = time(NULL);
@@ -173,6 +177,8 @@ static void sess_put_json(FILE *f, Str s) {
  * the time the session is resumed. */
 void session_save(Session *s, const Conv *c) {
     if (!s->path.n || s->written >= c->n) return;
+    /* The file exists from here on, so the record it owns starts here too. */
+    telemetry_bind(s->path);
     Str dir = s->dir;
     if (dir.n) paths_ensure_dir(dir);
     FILE *f = fopen(s->path.p, "ab");
@@ -336,6 +342,7 @@ Str session_read(Str path, Arena *scratch) {
 b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
                  Arena *persist, Arena *scratch) {
     sess_set_current(s, path, name);
+    telemetry_bind(s->path);          /* the record of the session reopened */
     s->written = c->n;
     if (!src.n) return false;
     size_t mark = scratch->off;
