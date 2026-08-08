@@ -107,3 +107,39 @@ def test_every_remembered_choice_lands_in_one_state_file(ctx):
     assert ctx.state() == {"model": "beta", "telemetry": "on"}, ctx.state()
     left = {p.name for p in state_dir(ctx).iterdir()}
     assert left == {"state", "history", "telemetry"}, left
+
+
+def test_an_older_per_key_state_file_is_folded_into_the_state_file(ctx):
+    """A word in a file of its own becomes a key, and the file is removed."""
+    d = state_dir(ctx)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "model").write_text("gamma\n")
+    (d / "telemetry").write_text("on\n")
+
+    s = ctx.spawn(YOKE_MODEL=None)
+    assert s.status_field(1) == "gamma", s.status_line()
+    s.submit("/exit")
+    s.wait_exit()
+
+    assert ctx.state()["model"] == "gamma", ctx.state()
+    assert ctx.state()["telemetry"] == "on", ctx.state()
+    left = {p.name for p in d.iterdir()}
+    assert "model" not in left, left
+    # The name is free again: the record is the directory that took it.
+    assert (d / "telemetry").is_dir(), left
+
+
+def test_the_state_file_wins_over_the_older_one(ctx):
+    """The file the UI has been writing since is the answer; the other goes."""
+    d = state_dir(ctx)
+    d.mkdir(parents=True, exist_ok=True)
+    ctx.state_file().write_text("model = current\n")
+    (d / "model").write_text("stale\n")
+
+    s = ctx.spawn(YOKE_MODEL=None)
+    assert s.status_field(1) == "current", s.status_line()
+    s.submit("/exit")
+    s.wait_exit()
+
+    assert ctx.state()["model"] == "current", ctx.state()
+    assert not (d / "model").exists()

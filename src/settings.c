@@ -252,3 +252,28 @@ b8 state_set(Str key, Str val, Arena *scratch) {
     if (!dir.n || !path.n || !paths_ensure_dir(dir)) return false;
     return settings_set_one(path, (Str){0}, key, val, 0600, scratch);
 }
+
+/* An older yoke kept each of these in a file of its own, holding a word.
+ * They are folded into the state file and removed, so the state directory
+ * holds files rather than a key per file, and a name freed this way is
+ * available to whatever wants it next. A value the state file already has
+ * wins, since it is the one the UI has been writing since. */
+void state_sweep(Arena *scratch) {
+    static const char *keys[] = { "model", "provider", "telemetry" };
+    for (size_t i = 0; i < sizeof keys / sizeof *keys; i++) {
+        size_t mark = scratch->off;
+        Str key = str_c(keys[i]);
+        Str path = paths_file(YOKE_DIR_STATE, key, scratch);
+        struct stat st;
+        if (path.n && stat(path.p, &st) == 0 && S_ISREG(st.st_mode)) {
+            Str src = settings_read_file(path, scratch, 4096), val = {0};
+            size_t off = 0;
+            if (str_line(src, &off, &val)) val = str_trim(val);
+            Str have = state_get(key, scratch, scratch);
+            if (val.n && !have.n)
+                state_set(key, val, scratch);
+            unlink(path.p);
+        }
+        scratch->off = mark;
+    }
+}

@@ -1122,6 +1122,7 @@ i32 main(i32 argc, char **argv) {
     arena_init(&scratch,  g_scratch, sizeof g_scratch);
 
     Config cfg;
+    state_sweep(&scratch);
     config_load(&cfg, &persist, &scratch);
     cli_apply(&opts, &cfg);
     arena_reset(&scratch);

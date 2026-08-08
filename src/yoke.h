@@ -263,6 +263,9 @@ b8     settings_set_one(Str path, Str section, Str key, Str val, u32 mode,
 /* $XDG_STATE_HOME/yoke/state: the choices the UI remembers between runs. */
 Str    state_get(Str key, Arena *out, Arena *scratch);
 b8     state_set(Str key, Str val, Arena *scratch);
+/* Folds an older yoke's one-file-per-key state into that file and removes
+ * the files. Call before anything reads the state. */
+void   state_sweep(Arena *scratch);
 
 /* ---- prompt history ------------------------------------------------------
  * A ring of past prompts, mirrored to $XDG_STATE_HOME/yoke/history as they

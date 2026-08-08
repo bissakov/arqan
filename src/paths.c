@@ -87,7 +87,10 @@ Str paths_file(YokeDir kind, Str name, Arena *a) {
     return out.n < YOKE_MAX_PATH ? out : (Str){0};
 }
 
-/* mkdir -p with 0700, as the spec requires for created XDG directories. */
+/* mkdir -p with 0700, as the spec requires for created XDG directories.
+ * mkdir reports EEXIST for a regular file too, so an existing component is
+ * confirmed to be a directory: the caller's next open would otherwise fail
+ * with ENOTDIR long after this said the path was ready. */
 b8 paths_ensure_dir(Str dir) {
     if (!dir.n || dir.p[0] != '/' || dir.n >= YOKE_MAX_PATH) return false;
     char path[YOKE_MAX_PATH];
@@ -97,7 +100,11 @@ b8 paths_ensure_dir(Str dir) {
         if (i != dir.n && path[i] != '/') continue;
         char saved = path[i];
         path[i] = '\0';
-        if (mkdir(path, 0700) != 0 && errno != EEXIST) return false;
+        if (mkdir(path, 0700) != 0) {
+            struct stat st;
+            if (errno != EEXIST) return false;
+            if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) return false;
+        }
         path[i] = saved;
     }
     return true;

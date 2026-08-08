@@ -264,3 +264,20 @@ def test_diagnostics_land_beside_the_events(ctx):
 
     errors = [e for e in events(ctx) if e["ev"] == "error"]
     assert errors and errors[-1]["detail"] == "HTTP 500", events(ctx)
+
+
+def test_a_file_where_the_directory_goes_does_not_silence_it(ctx):
+    """An older yoke left a file named `telemetry`; recording still happens."""
+    d = log_dir(ctx)
+    d.parent.mkdir(parents=True, exist_ok=True)
+    d.write_text("on\n")                 # the file the directory replaces
+    ctx.scenario("text=ok")
+
+    s = ctx.spawn()
+    s.submit("say hi")                   # the setting came from that file
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+
+    assert d.is_dir(), sorted(p.name for p in d.parent.iterdir())
+    assert kinds(ctx).count("turn_start") == 1, kinds(ctx)
