@@ -71,6 +71,15 @@ def test_max_tokens_reaches_the_request(ctx):
     assert ctx.mock.requests[-1]["max_tokens"] == 77, ctx.mock.requests[-1]
 
 
+def test_default_max_tokens_fits_a_long_reply(ctx):
+    """An unconfigured run sends a cap a long answer does not hit."""
+    ctx.scenario("text=ok")
+    s = ctx.spawn()
+    s.submit("hi")
+    s.wait_turn_done()
+    assert ctx.mock.requests[-1]["max_tokens"] == 32768, ctx.mock.requests[-1]
+
+
 def test_prompt_flag_runs_one_turn(ctx):
     """-p streams one reply to stdout, with no banner and no prompt echo."""
     ctx.scenario("text=one+shot+reply")

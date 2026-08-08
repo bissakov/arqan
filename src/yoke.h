@@ -29,6 +29,9 @@ typedef bool     b8;
 #define YOKE_ARENA_BYTES      (1u << 27)  /* 128 MiB scratch arena            */
 #define YOKE_PERSIST_BYTES    (1u << 26)  /* 64  MiB persistent arena         */
 #define YOKE_MAX_MESSAGES     4096        /* default; see Config.max_messages   */
+/* A reply that reaches this stops mid-sentence, so the default is above what
+ * a long answer or a large patch needs rather than at a provider's minimum. */
+#define YOKE_MAX_TOKENS       32768       /* default; see Config.max_tokens    */
 #define YOKE_MAX_TOOLS        64
 #define YOKE_MAX_TOOL_CALLS   1024        /* per turn                          */
 #define YOKE_MAX_TOOL_ARGS    8

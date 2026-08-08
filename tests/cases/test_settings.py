@@ -94,7 +94,7 @@ def test_an_unreadable_max_tokens_leaves_it_alone(ctx):
     s.type("lots")
     s.key("enter")
     s.wait_text("    Max tokens")
-    assert "4096" in s.text(), s.text()
+    assert "32768" in s.text(), s.text()
 
 
 def test_streaming_off_sends_one_document(ctx):

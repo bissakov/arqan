@@ -88,7 +88,7 @@ b8 config_remember_model(Str model, Arena *scratch) {
 
 b8 config_load(Config *c, Arena *persist, Arena *scratch) {
     memset(c, 0, sizeof *c);
-    c->max_tokens   = 4096;
+    c->max_tokens   = YOKE_MAX_TOKENS;
     c->max_messages = YOKE_MAX_MESSAGES;
     c->stream       = true;
     c->retries        = YOKE_RETRIES;

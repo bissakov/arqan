@@ -95,7 +95,7 @@ or put them in `$XDG_CONFIG_HOME/yoke/config`, by default
 base_url = https://api.openai.com/v1
 model = gpt-4o-mini
 api_key = sk-...
-max_tokens = 4096
+max_tokens = 32768       # cap on one reply; a turn that reaches it stops mid-sentence
 max_messages = 4096      # conversation capacity; a full one is reported, not overrun
 retries = 3              # further attempts for a request that reached nothing
 retry_delay_ms = 500     # the wait before the first, doubling up to 8s
