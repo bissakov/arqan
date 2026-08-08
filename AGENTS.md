@@ -183,7 +183,17 @@ an AoS layout.
   screen but never `Conv`, since a provider rejects a thinking trace it did
   not produce itself. Each event
   is parsed into a small arena that is reset per delta, so a turn's scratch
-  use follows the size of the reply rather than the number of events. Also
+  use follows the size of the reply rather than the number of events. A
+  request that reached nothing (no delta, no usage, no document) is sent again
+  up to `Config.retries` times, backing off from `Config.retry_delay_ms`, since
+  a transport failure or a 429/5xx is weather rather than an answer about the
+  request; a stream that died after a delta is not, because those bytes are on
+  screen and cannot be taken back, and a 401 or a 404 is not, because it will
+  say the same thing again. The wait is sliced so `on_idle` keeps running and
+  an interrupt ends it at once, and each attempt reaches `on_retry`, which
+  `main.c` writes into the transcript in red rather than into a notice: it
+  belongs to the turn being read. It never reaches `Conv`, so the model never
+  sees it and a replay never repeats it. Also
   `provider_models`, the `/models` listing the model picker offers
 - `tui.c`: alternate-screen terminal UI. Overlays stack upward from the
   bottom (notice row, completion popup, composer, status line) and are drawn

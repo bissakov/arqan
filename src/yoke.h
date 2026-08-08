@@ -62,6 +62,12 @@ typedef bool     b8;
  * line naming what it was; see conv_write_json. */
 #define YOKE_ELIDE_TURNS      2
 #define YOKE_ELIDE_BYTES      512         /* under this, saying so costs more   */
+/* A request that produced nothing is worth sending again: the failure was the
+ * network rather than the conversation. The delay doubles per attempt from
+ * Config.retry_delay_ms and stops growing here. */
+#define YOKE_RETRIES          3           /* extra attempts a turn is allowed  */
+#define YOKE_RETRY_DELAY_MS   500         /* wait before the first of them     */
+#define YOKE_MAX_RETRY_DELAY_MS 8000
 #define YOKE_MAX_COMMANDS     32          /* slash commands offered by the TUI */
 #define YOKE_LINE_BUF         (1u << 20)  /* 1 MiB input line buffer          */
 #define YOKE_RESP_BUF         (1u << 22)  /* 4 MiB response accumulation      */
@@ -337,6 +343,10 @@ typedef struct {
      * reachable in a test without streaming four thousand messages. */
     size_t max_messages;
     b8 stream;
+    /* How many further attempts a turn that reached nothing may make, and the
+     * wait before the first one. Zero retries sends each turn once. */
+    i32 retries;
+    i32 retry_delay_ms;
 } Config;
 
 /* `scratch` holds the config file while it is parsed; nothing survives in it. */
@@ -385,6 +395,10 @@ typedef struct {
     i32   idle_fd;        /* -1 disables the extra poll fd                  */
     void (*on_idle)(void *ud);
     void *idle_ud;
+    /* Filled with curl's own message for a transport failure, so a caller
+     * that reports one says what it was rather than a number. Optional. */
+    char  *fail_out;
+    size_t fail_cap;
 } HttpReq;
 
 /* POST the body to <base_url>/chat/completions, delivering the reply through
@@ -557,6 +571,12 @@ typedef struct {
      * rejects a thinking trace it did not produce itself. */
     void (*on_reason)(Str delta, void *ud);
     void (*on_tool_call)(i32 index, Str id, Str name, Str args_delta, void *ud);
+    /* A request that produced nothing failed and is about to be sent again.
+     * `attempt` is 1-based over `attempts` in total, `delay_ms` is the wait
+     * before the next one, and `reason` is yoke's own wording for the
+     * failure: an HTTP status or curl's catalogue string, never a URL. */
+    void (*on_retry)(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
+                     void *ud);
     void *ud;
     /* pumped while the request is in flight (see HttpReq.on_idle) */
     void (*on_idle)(void *ud);

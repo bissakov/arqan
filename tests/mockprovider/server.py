@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
+import struct
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -54,6 +56,14 @@ class Scenario:
         self.first_delay: float = float(kw.get("first_delay", 0.0))
         self.status: int = int(kw.get("status", 200))
         self.error: str = kw.get("error", "mock provider error")
+        # Transient failures: the first `fail_times` completion requests fail,
+        # with `status` (default 503) or, with fail_mode=close, by dropping the
+        # connection before answering. `abort_after` drops it mid-stream, after
+        # that many content deltas have been sent.
+        self.fail_times: int = int(kw.get("fail_times", 0))
+        self.fail_mode: str = kw.get("fail_mode", "status")
+        self.fail_status: int = int(kw.get("fail_status", 503))
+        self.abort_after: int = int(kw.get("abort_after", 0))
         # tools: "read:{...}" entries, repeatable via `|`
         self.tools: list[tuple[str, str]] = kw.get("tools", [])
         self.tool_rounds: int = int(kw.get("tool_rounds", 1))
@@ -217,6 +227,18 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
         self.close_connection = True
 
+    def _reset(self):
+        """Break the connection with an RST, so a client mid-stream sees a
+        transport failure rather than a body the close ended."""
+        try:
+            self.connection.setsockopt(
+                socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+            )
+            self.connection.close()
+        except OSError:
+            pass
+        self.close_connection = True
+
     def _read_body(self) -> dict:
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
@@ -296,6 +318,18 @@ class _Handler(BaseHTTPRequestHandler):
         if scenario.status != 200:
             self._json(
                 scenario.status,
+                {"error": {"message": scenario.error, "type": "mock_error"}},
+            )
+            return
+
+        if len(srv.requests) <= scenario.fail_times:
+            if scenario.fail_mode == "close":
+                # No response at all: curl reports an empty reply, which is the
+                # transport failure a retry is for.
+                self.close_connection = True
+                return
+            self._json(
+                scenario.fail_status,
                 {"error": {"message": scenario.error, "type": "mock_error"}},
             )
             return
@@ -381,8 +415,13 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             text = scenario.body_text() if tool_replies == 0 else scenario.follow_up_text()
             completion_chars = len(text)
+            sent = 0
             for piece in chunks(text, scenario.chunk):
                 if not self._sse(frame({"content": piece})):
+                    return
+                sent += 1
+                if scenario.abort_after and sent >= scenario.abort_after:
+                    self._reset()
                     return
                 if scenario.delay:
                     time.sleep(scenario.delay)

@@ -93,6 +93,27 @@ static void on_tool_call(i32 idx, Str id, Str name, Str args_delta, void *ud) {
     (void)ud; (void)idx; (void)id; (void)name; (void)args_delta;
     tui_set_status("preparing tool call");
 }
+/* A failed request that reached nothing, said in the transcript rather than
+ * in a notice: it belongs to the turn being read, not to the last keystroke.
+ * It never reaches Conv, so a replay of the conversation does not repeat it. */
+static void on_retry(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
+                     void *ud) {
+    (void)ud;
+    tui_set_status("retrying");
+    tui_block();
+    char wait[32];
+    if (delay_ms < 1000) snprintf(wait, sizeof wait, "%dms", delay_ms);
+    else snprintf(wait, sizeof wait, "%.1fs", (f64)delay_ms / 1000.0);
+    char row[256];
+    i32 n = snprintf(row, sizeof row,
+                     "[%.*s; retrying in %s (attempt %d of %d)]\n",
+                     (i32)reason.n, reason.p, wait, attempt + 1, attempts);
+    if (n > 0)
+        tui_write_error((Str){ row, (size_t)n < sizeof row ? (size_t)n
+                                                           : sizeof row - 1 });
+    g_replying = false;
+    g_reasoning = false;
+}
 /* Called from inside the request wait: keeps the composer typeable mid-turn. */
 static void on_idle(void *ud) {
     (void)ud;
@@ -1020,6 +1041,7 @@ static b8 agent_turn(Agent *ag, Str text) {
             .on_text = on_text,
             .on_reason = on_reason,
             .on_tool_call = on_tool_call,
+            .on_retry = on_retry,
             .ud = NULL,
             .on_idle = on_idle,
             .idle_fd = tui_input_fd(),

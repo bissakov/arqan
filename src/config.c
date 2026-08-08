@@ -1,6 +1,7 @@
 /* config.c: load config from env and the XDG config files.
  *
- * Keys: base_url=, model=, api_key=, max_tokens=, max_messages=, stream=
+ * Keys: base_url=, model=, api_key=, max_tokens=, max_messages=, stream=,
+ * retries=, retry_delay_ms=
  * The system prompt is not a key here: it is a document, so it lives in
  * SYSTEM.md (see prompt.c).
  * Precedence: env var YOKE_<KEY> > the active provider (see endpoints.c) >
@@ -70,6 +71,8 @@ static void config_apply_file(Config *c, Str path, EnvSet env,
         else if (str_eq(k, STR("max_tokens"))) { b8 ok; i64 m = str_int(vd,&ok); if (ok) c->max_tokens = (i32)clamp_size(m, 1, 1u << 20); }
         else if (str_eq(k, STR("max_messages"))) { b8 ok; i64 m = str_int(vd,&ok); if (ok && !env.msgs) c->max_messages = clamp_size(m, 8, 1u << 20); }
         else if (str_eq(k, STR("stream"))) c->stream = !str_eq(vd, STR("false"));
+        else if (str_eq(k, STR("retries"))) { b8 ok; i64 m = str_int(vd,&ok); if (ok) c->retries = (i32)clamp_size(m, 0, 16); }
+        else if (str_eq(k, STR("retry_delay_ms"))) { b8 ok; i64 m = str_int(vd,&ok); if (ok) c->retry_delay_ms = (i32)clamp_size(m, 0, YOKE_MAX_RETRY_DELAY_MS); }
     }
 }
 
@@ -105,12 +108,16 @@ b8 config_load(Config *c, Arena *persist, Arena *scratch) {
     c->max_tokens   = 4096;
     c->max_messages = YOKE_MAX_MESSAGES;
     c->stream       = true;
+    c->retries        = YOKE_RETRIES;
+    c->retry_delay_ms = YOKE_RETRY_DELAY_MS;
 
     Str env_base = env_str(persist, "YOKE_BASE_URL");
     Str env_model = env_str(persist, "YOKE_MODEL");
     Str env_key   = env_str(persist, "YOKE_API_KEY");
     Str env_sys   = env_str(persist, "YOKE_SYSTEM_PROMPT");
     const char *env_msgs = getenv("YOKE_MAX_MESSAGES");
+    const char *env_retries = getenv("YOKE_RETRIES");
+    const char *env_retry_ms = getenv("YOKE_RETRY_DELAY_MS");
 
     Str candidates[YOKE_MAX_CONFIG_FILES];
     size_t cand_n = paths_config_files(STR("config"), scratch, candidates,
@@ -130,6 +137,16 @@ b8 config_load(Config *c, Arena *persist, Arena *scratch) {
         b8 ok = false;
         i64 m = str_int(str_c(env_msgs), &ok);
         if (ok) c->max_messages = clamp_size(m, 8, 1u << 20);
+    }
+    if (env_retries && *env_retries) {
+        b8 ok = false;
+        i64 m = str_int(str_c(env_retries), &ok);
+        if (ok) c->retries = (i32)clamp_size(m, 0, 16);
+    }
+    if (env_retry_ms && *env_retry_ms) {
+        b8 ok = false;
+        i64 m = str_int(str_c(env_retry_ms), &ok);
+        if (ok) c->retry_delay_ms = (i32)clamp_size(m, 0, YOKE_MAX_RETRY_DELAY_MS);
     }
     /* An in-app choice outranks the config files: it was made later and more
      * explicitly. The environment still wins, being per invocation. */

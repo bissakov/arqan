@@ -84,7 +84,15 @@ model=gpt-4o-mini
 api_key=sk-...
 max_tokens=4096
 max_messages=4096      # conversation capacity; a full one is reported, not overrun
+retries=3              # further attempts for a request that reached nothing
+retry_delay_ms=500     # the wait before the first, doubling up to 8s
 ```
+
+A turn whose request failed before a single byte of the reply arrived is sent
+again, up to `retries` times, and the transcript says so in red each time. A
+stream that died halfway is not: those bytes are already on screen, so the
+turn ends on the error instead of repeating itself. Neither is a refusal that
+answers the request rather than the network: an HTTP 401 or 404 fails at once.
 
 Environment variables win over every file, the provider chosen with
 `/provider` wins over the files but not over the environment, and a model

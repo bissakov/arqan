@@ -94,6 +94,9 @@ class Ctx:
             "YOKE_API_KEY": "test-key",
             "YOKE_MODEL": "mock-model",
             "YOKE_SYSTEM_PROMPT": "You are a test fixture.",
+            # A failing request is an answer here, not weather: a case that
+            # wants the retry loop asks for it and pins its backoff.
+            "YOKE_RETRIES": "0",
         }
         for k, v in overrides.items():
             if v is None:

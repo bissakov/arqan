@@ -75,6 +75,10 @@ scenario: a bare one settles in 60 ms, and `delay=` widens it to 2.5x the
 pacing. Set `YOKE_TEST_QUIET=0.2` to raise the floor on a machine too slow or
 too loaded for the default.
 
+Retries are off in the fixture (`YOKE_RETRIES=0`), so a scenario that fails is
+read as an answer; a case about the retry loop turns it on and pins
+`YOKE_RETRY_DELAY_MS` so the backoff costs nothing.
+
 The environment is pinned so the rendered frame is reproducible: fixed
 `TERM`, `LC_ALL=C.UTF-8`, an isolated `HOME`/`XDG_CONFIG_HOME` that the state
 and cache dirs default under, a cwd of
@@ -118,6 +122,9 @@ ctx.scenario("status=500")
 | `final_text=` | reply sent after the tool results come back |
 | `usage=P/C` | pin prompt/completion tokens (otherwise estimated) |
 | `status=` | fail with this HTTP status instead of streaming |
+| `fail_times=` | fail the first N completion requests, then behave normally |
+| `fail_status=`, `fail_mode=` | how they fail: that status, or `close` to answer nothing |
+| `abort_after=` | reset the connection after that many content deltas |
 | `models=` | ids `GET /v1/models` serves, separated by `\|` |
 | `model_count=` | serve that many generated ids (`model-000`, ...) |
 | `models_status=` | fail `GET /v1/models` with this HTTP status |

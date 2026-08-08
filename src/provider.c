@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
 
 /* ---- conversation SoA ---------------------------------------------------
  * Every append is bounded: the parallel arrays are allocated once at their
@@ -403,6 +404,48 @@ size_t provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
     return n;
 }
 
+/* Whether a failed request is worth sending again. A transport failure and
+ * the statuses a server uses to say "not now" are weather; every other status
+ * is an answer about the request itself, and an interrupt is the user. */
+static b8 retryable(i32 rc) {
+    if (rc == 2) return true;
+    switch (-rc) {
+        case 408: case 425: case 429:
+        case 500: case 502: case 503: case 504: return true;
+        default: return false;
+    }
+}
+
+/* Nothing of the reply reached the screen or the state, which is what makes a
+ * second attempt a retry rather than a duplicate: a stream that died after a
+ * delta has already been painted and cannot be taken back. */
+static b8 stream_untouched(const StreamState *s, const Provider *p) {
+    return s->events == 0 && s->text.n == 0 && s->reason_bytes == 0
+        && s->count == 0 && s->dropped == 0 && !p->usage_valid;
+}
+
+/* Doubling from the configured base, capped: attempt 1 waits the base. */
+static i32 backoff_ms(i32 base, i32 attempt) {
+    i64 ms = base;
+    for (i32 i = 1; i < attempt && ms < YOKE_MAX_RETRY_DELAY_MS; i++) ms *= 2;
+    return ms > YOKE_MAX_RETRY_DELAY_MS ? YOKE_MAX_RETRY_DELAY_MS : (i32)ms;
+}
+
+/* Wait out the backoff in slices, pumping the caller's idle hook so the
+ * composer keeps painting and Esc or Ctrl-C ends the wait at once. Returns
+ * false when the turn was interrupted. */
+static b8 retry_wait(const Provider *p, i32 delay_ms) {
+    enum { SLICE_MS = 25 };
+    for (i32 waited = 0; waited < delay_ms; waited += SLICE_MS) {
+        if (p->interrupt_flag && *p->interrupt_flag) return false;
+        if (p->on_idle) p->on_idle(p->ud);
+        i32 slice = delay_ms - waited < SLICE_MS ? delay_ms - waited : SLICE_MS;
+        struct timespec ts = { 0, (long)slice * 1000000L };
+        nanosleep(&ts, NULL);
+    }
+    return !(p->interrupt_flag && *p->interrupt_flag);
+}
+
 i32 provider_run(Provider *p, char *err, size_t err_cap) {
     Arena *scratch = p->scratch;
     arena_reset(scratch);
@@ -460,9 +503,49 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         .idle_fd  = p->on_idle ? p->idle_fd : -1,
         .on_idle  = p->on_idle,
         .idle_ud  = saved_ud,
+        .fail_out = NULL,
+        .fail_cap = 0,
     };
+    char fail[128] = {0};
+    r.fail_out = fail;
+    r.fail_cap = sizeof fail;
+
     f64 started = yoke_now_seconds();
-    i32 rc = http_post(&r);
+    i32 attempts = p->cfg->retries > 0 ? p->cfg->retries + 1 : 1;
+    i32 attempt = 1;
+    i32 rc;
+    for (;;) {
+        fail[0] = '\0';
+        rc = http_post(&r);
+        if (rc == 0 || attempt >= attempts || !retryable(rc)) break;
+        if (!stream_untouched(s, p)) break;
+
+        i32 delay = backoff_ms(p->cfg->retry_delay_ms, attempt);
+        char reason[160];
+        if (rc < 0) snprintf(reason, sizeof reason, "HTTP %d", -rc);
+        else snprintf(reason, sizeof reason, "%s",
+                      fail[0] ? fail : "the connection failed");
+        TelEvent re;
+        tel_open(&re, "retry");
+        tel_int(&re, "attempt", attempt);
+        tel_int(&re, "attempts", attempts);
+        tel_int(&re, "delay_ms", delay);
+        tel_int(&re, "rc", rc);
+        tel_send(&re);
+        if (p->on_retry)
+            p->on_retry(attempt, attempts, delay, str_c(reason), saved_ud);
+        if (!retry_wait(p, delay)) { rc = 3; break; }
+
+        /* Nothing arrived, so the only state to clear is what a refused
+         * request still left behind. */
+        s->events = 0;
+        s->text.n = 0;
+        s->text.oom = false;
+        s->text_started = false;
+        s->reason_started = false;
+        if (!p->cfg->stream) { whole.n = 0; whole.oom = false; }
+        attempt++;
+    }
     char parse_err[128] = {0};
     /* The document is read before the record below, so what it cost is
      * reported whether or not it made sense. */
@@ -485,6 +568,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     tel_int(&tev, "tools", (i64)(p->tools ? p->tools->n : 0));
     tel_int(&tev, "ms", (i64)((yoke_now_seconds() - started) * 1000.0));
     tel_int(&tev, "rc", rc);
+    tel_int(&tev, "attempts", attempt);
     tel_bool(&tev, "stream", p->cfg->stream);
     tel_int(&tev, "sse_events", (i64)s->events);
     tel_shape(&tev, "reply", (Str){ s->text.p, s->text.n });
@@ -503,6 +587,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     }
     if (rc != 0) {
         if (rc < 0) snprintf(err, err_cap, "HTTP %d", -rc);
+        else if (fail[0]) snprintf(err, err_cap, "%s", fail);
         else snprintf(err, err_cap, "request failed (%d)", rc);
         return -1;
     }

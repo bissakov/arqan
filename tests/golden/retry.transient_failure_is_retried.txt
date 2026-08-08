@@ -1,0 +1,26 @@
+--- screen 80x24 ---
+|
+|
+|  say hi
+|
+|
+|  [HTTP 503; retrying in 10ms (attempt 2 of 4)]
+|
+|  [HTTP 503; retrying in 20ms (attempt 3 of 4)]
+|
+|  hello there
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|  › Message yoke...
+|
+|
+|  ● ready · mock-model · build · local · ~/work · 26
+--- cursor row=21 col=5 visible=yes ---

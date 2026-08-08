@@ -1,0 +1,93 @@
+"""Retrying a request that reached nothing, and saying so in the transcript."""
+
+import signal
+
+
+RETRY = {"YOKE_RETRIES": 3, "YOKE_RETRY_DELAY_MS": 10}
+
+
+def test_transient_failure_is_retried(ctx):
+    """Two refused requests are retried and the reply arrives on the third."""
+    ctx.scenario("fail_times=2,text=hello+there")
+    s = ctx.spawn(**RETRY)
+    s.submit("say hi")
+    s.wait_text("hello there")
+    s.wait_turn_done()
+    text = s.text()
+    assert "[HTTP 503; retrying in 10ms (attempt 2 of 4)]" in text, text
+    assert "[HTTP 503; retrying in 20ms (attempt 3 of 4)]" in text, text
+    assert len(ctx.mock.requests) == 3, ctx.mock.requests
+    ctx.check_screen(s)
+
+
+def test_retry_warning_is_red(ctx):
+    """The warning reads as a failure, not as an ordinary notice."""
+    ctx.scenario("fail_times=1,text=fine+now")
+    s = ctx.spawn(**RETRY)
+    s.submit("say hi")
+    s.wait_text("fine now")
+    s.wait_turn_done()
+    row = s.screen.find_row("; retrying in ")
+    assert s.screen.attr_at(row, 2).fg == 203, "S_RED failure row"
+
+
+def test_refused_request_is_not_retried(ctx):
+    """An authentication failure is an answer about the request, not weather."""
+    ctx.scenario("fail_times=1,fail_status=401")
+    s = ctx.spawn(**RETRY)
+    s.submit("say hi")
+    s.wait_text("[provider error: HTTP 401]")
+    s.wait_turn_done()
+    assert "retrying in" not in s.text(), s.text()
+    assert len(ctx.mock.requests) == 1, ctx.mock.requests
+
+
+def test_dropped_connection_is_retried(ctx):
+    """A transport failure before any byte arrived is retried too."""
+    ctx.scenario("fail_times=1,fail_mode=close,text=second+time+lucky")
+    s = ctx.spawn(**RETRY)
+    s.submit("say hi")
+    s.wait_text("second time lucky")
+    s.wait_turn_done()
+    assert "retrying in 10ms (attempt 2" in s.text(), s.text()
+    assert len(ctx.mock.requests) == 2, ctx.mock.requests
+
+
+def test_retries_are_exhausted(ctx):
+    """Past the last attempt the turn ends on the error and the UI stays usable."""
+    ctx.scenario("fail_times=9")
+    s = ctx.spawn(YOKE_RETRIES=2, YOKE_RETRY_DELAY_MS=10)
+    s.submit("say hi")
+    s.wait_text("[provider error: HTTP 503]")
+    s.wait_turn_done()
+    text = s.text()
+    assert "(attempt 2 of 3)" in text, text
+    assert "(attempt 3 of 3)" in text, text
+    assert len(ctx.mock.requests) == 3, ctx.mock.requests
+    s.type("still alive").sync()
+    assert s.composer_text() == "still alive", s.composer_lines()
+
+
+def test_partial_stream_is_not_retried(ctx):
+    """Bytes already on screen cannot be taken back, so the turn ends instead."""
+    ctx.scenario("text=one+two+three+four+five,chunk=1,abort_after=2,delay=0.01")
+    s = ctx.spawn(**RETRY)
+    s.submit("say hi")
+    s.wait_text("[provider error:")
+    s.wait_turn_done()
+    text = s.text()
+    assert "one two" in text, text
+    assert "retrying in" not in text, text
+    assert len(ctx.mock.requests) == 1, ctx.mock.requests
+
+
+def test_retry_wait_is_interruptible(ctx):
+    """Ctrl-C during the backoff ends the turn instead of waiting it out."""
+    ctx.scenario("fail_times=9")
+    s = ctx.spawn(YOKE_RETRIES=3, YOKE_RETRY_DELAY_MS=5000)
+    s.submit("say hi")
+    s.wait_text("; retrying in 5.0s")
+    s.signal(signal.SIGINT)
+    s.wait_text("[interrupted]")
+    s.wait_turn_done()
+    assert len(ctx.mock.requests) == 1, ctx.mock.requests

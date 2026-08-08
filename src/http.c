@@ -308,6 +308,8 @@ i32 http_post(const HttpReq *r) {
     if (interrupted) return 3; /* expected user cancellation */
     if (rc != CURLE_OK) {
         yoke_log(YOKE_LOG_ERROR, "curl: %s", curl_easy_strerror(rc));
+        if (r->fail_out && r->fail_cap)
+            snprintf(r->fail_out, r->fail_cap, "%s", curl_easy_strerror(rc));
         return 2;
     }
     if (http < 200 || http >= 300) {
