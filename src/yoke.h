@@ -1,8 +1,4 @@
-/* yoke.h: umbrella header for the yoke AI coding harness.
- *
- * Every module includes this. Types are data-oriented (SoA) and everything
- * is backed by arenas; no malloc/free appears in the hot path.
- */
+/* yoke.h: umbrella header. Every module includes this. */
 #ifndef YOKE_H
 #define YOKE_H
 
@@ -28,11 +24,8 @@ typedef bool     b8;
 #define YOKE_VERSION "0.1.0"
 
 /* ---- capacities (compile-time, no growth) ------------------------------- */
-/* Sized against the per-turn peak rather than picked round: a turn holds one
- * 4 MiB event arena, the accumulated reply, the tool output and the doubling
- * these go through, which lands an order of magnitude under the scratch
- * arena. Both are static storage, so this is address space, not startup
- * cost, but it is also what a core dump has to carry. */
+/* Both arenas are static storage, so this is address space rather than
+ * startup cost, sized an order of magnitude above the per-turn peak. */
 #define YOKE_ARENA_BYTES      (1u << 27)  /* 128 MiB scratch arena            */
 #define YOKE_PERSIST_BYTES    (1u << 26)  /* 64  MiB persistent arena         */
 #define YOKE_MAX_MESSAGES     4096        /* default; see Config.max_messages   */
@@ -43,10 +36,8 @@ typedef bool     b8;
 #define YOKE_MAX_PATH         4096        /* longest path a tool will accept   */
 #define YOKE_MAX_COMMAND      (1u << 16)  /* longest shell command             */
 #define YOKE_MAX_FILE_BYTES   (16u << 20) /* largest file a tool will read     */
-/* What one tool call is allowed to spend of the context it shares with the
- * rest of the conversation. A result is not a view, it is billed on every
- * later turn of the same session, so each of these is a page of a file rather
- * than a file: the call says where to continue and the model asks again. */
+/* A tool result is replayed on every later turn, so each cap below makes one
+ * call a page rather than a file; the call says where to continue. */
 #define YOKE_READ_LINES       2000        /* lines one read returns by default  */
 #define YOKE_READ_BYTES       (50u << 10) /* and the byte cap that beats it     */
 #define YOKE_SHELL_OUT_BYTES  (50u << 10) /* command output kept, from the tail */
@@ -62,9 +53,7 @@ typedef bool     b8;
  * line naming what it was; see conv_write_json. */
 #define YOKE_ELIDE_TURNS      2
 #define YOKE_ELIDE_BYTES      512         /* under this, saying so costs more   */
-/* A request that produced nothing is worth sending again: the failure was the
- * network rather than the conversation. The delay doubles per attempt from
- * Config.retry_delay_ms and stops growing here. */
+/* The delay doubles per attempt from Config.retry_delay_ms and stops here. */
 #define YOKE_RETRIES          3           /* extra attempts a turn is allowed  */
 #define YOKE_RETRY_DELAY_MS   500         /* wait before the first of them     */
 #define YOKE_MAX_RETRY_DELAY_MS 8000
@@ -76,9 +65,7 @@ typedef bool     b8;
 #define YOKE_MAX_HISTORY_LINE (1u << 16)  /* longest prompt worth remembering  */
 #define YOKE_MAX_HISTORY_BYTES (8u << 20) /* largest history file we will read */
 #define YOKE_MAX_CONFIG_FILES 8           /* XDG config candidates we consider */
-/* Largest SYSTEM.md accepted, about 65k characters: a prompt that long is a
- * mistake worth reporting, not a document worth loading. Past it yoke refuses
- * to start rather than send a truncated prompt. */
+/* Past this yoke refuses to start rather than send a truncated prompt. */
 #define YOKE_MAX_PROMPT_FILE  (1u << 16)
 #define YOKE_MAX_AGENTS_FILES 8           /* AGENTS.md chain depth we collect  */
 #define YOKE_MAX_SESSIONS     64          /* saved sessions the picker offers  */
@@ -106,31 +93,29 @@ void   *arena_alloc(Arena *a, size_t n, size_t align);
 void   *arena_alloc_array(Arena *a, size_t count, size_t size, size_t align);
 void    arena_reset(Arena *a);
 size_t  arena_used(const Arena *a);
-/* aligned, typed helper (contents are uninitialised) */
+/* Contents are uninitialised. */
 #define arena_new(a, T, n) ((T *)arena_alloc_array((a), (n), sizeof(T), alignof(T)))
 
 /* ---- string view + builder ---------------------------------------------- */
 typedef struct { const char *p; size_t n; } Str;
 #define STR(lit) ((Str){ (lit), sizeof(lit) - 1 })
 
-Str     str_c(const char *z);                  /* strlen-based              */
+Str     str_c(const char *z);
 Str     str_dup(Arena *a, Str s);              /* copies into arena         */
 b8    str_eq(Str a, Str b);
 b8    str_starts(Str s, Str prefix);
 Str     str_trim(Str s);
 Str     str_take(Str s, size_t n);
 Str     str_drop(Str s, size_t n);
-/* Walks `s` one line at a time: `line` excludes the newline, `off` advances
- * past it, false when nothing is left. */
+/* `line` excludes the newline, `off` advances past it. */
 b8      str_line(Str s, size_t *off, Str *line);
 size_t  str_lines(Str s);
 /* At most `max` bytes of `s`, never cutting a UTF-8 sequence in half. */
 Str     str_clip_utf8(Str s, size_t max);
 i64    str_int(Str s, b8 *ok);
 
-/* Growable char buffer living in an arena (no realloc: doubles into arena).
- * `oom` latches when the arena could not satisfy a growth: every later write
- * is dropped rather than run past `cap`, and callers check buf_ok() before
+/* Growable char buffer doubling into an arena. `oom` latches when a growth
+ * failed: every later write is dropped, and callers check buf_ok() before
  * trusting the contents. */
 typedef struct { char *p; size_t n, cap; Arena *a; b8 oom; } Buf;
 void    buf_init(Buf *b, Arena *a, size_t cap);
@@ -142,48 +127,40 @@ void    buf_putf(Buf *b, const char *fmt, ...) __attribute__((format(printf,2,3)
 void    buf_json_str(Buf *b, Str s);           /* JSON-escaped string      */
 /* Its body without the quotes, so several pieces can share one string. */
 void    buf_json_chars(Buf *b, Str s);
-Str     buf_finish(Buf *b);                    /* nul-terminates, returns   */
+Str     buf_finish(Buf *b);                    /* nul-terminates            */
 
 /* ---- logging ------------------------------------------------------------ */
 enum { YOKE_LOG_DEBUG, YOKE_LOG_INFO, YOKE_LOG_WARN, YOKE_LOG_ERROR };
 void    yoke_log(i32 level, const char *fmt, ...) __attribute__((format(printf,2,3)));
 void    yoke_log_set_level(i32 level);
-/* Whoever owns the terminal owns the log: while the fullscreen UI is up, raw
- * stderr would paint over the frame, so the TUI redirects log lines into the
- * transcript instead. NULL restores plain stderr. */
+/* Raw stderr would paint over the frame, so the TUI redirects log lines into
+ * the transcript while it is up. NULL restores plain stderr. */
 typedef void (*YokeLogSink)(i32 level, Str msg, void *ud);
 void    yoke_log_set_sink(YokeLogSink sink, void *ud);
 
 /* ---- telemetry -----------------------------------------------------------
  * An anonymized record of a session, appended as JSON lines to
- * $XDG_STATE_HOME/yoke/telemetry.jsonl while /telemetry is on. The answer to
- * that command is remembered in $XDG_STATE_HOME/yoke/telemetry, so a run that
- * cannot type it records too.
+ * $XDG_STATE_HOME/yoke/telemetry.jsonl while /telemetry is on.
  *
  * The record is the shape of a session, never its content: a message is a
  * byte and a line count, a tool call is its name and the keys of its
  * arguments, the working directory is a hash. A string field is for text yoke
- * formats itself (a tool name, a model id, a log line); user and model text
- * goes through tel_shape, which keeps no bytes of it.
- *
- * An event is built on the stack and written whole by tel_send. With
- * telemetry off every call below is a no-op, so callers need no branch.
+ * formats itself; user and model text goes through tel_shape, which keeps no
+ * bytes of it. With telemetry off every call below is a no-op.
  */
-/* One line. Sized for the widest event, which is the network one: a transfer
- * is two dozen counters and curl's own timings. */
+/* One line, sized for the widest event: a network transfer is two dozen
+ * counters and curl's own timings. */
 typedef struct { char buf[1024]; size_t n; b8 full, live; } TelEvent;
 
-/* Resolve the paths and load the remembered setting. `scratch` holds the
- * paths for the length of the call. */
 void telemetry_init(Arena *scratch);
 b8   telemetry_on(void);
-/* Turn recording on or off and remember it. False when no state directory
- * resolves or the setting could not be written, leaving it unchanged. */
+/* False when no state directory resolves or the setting could not be
+ * written, leaving it unchanged. */
 b8   telemetry_set(b8 on, Arena *scratch);
-/* The file events are appended to; empty when no state directory resolves. */
+/* Empty when no state directory resolves. */
 Str  telemetry_file(void);
-/* Mirror of a yoke_log line, so the diagnostics a run produced sit beside the
- * events they explain. Called by yoke_log; recording is what decides. */
+/* Mirror of a yoke_log line, so the diagnostics sit beside the events they
+ * explain. Called by yoke_log. */
 void telemetry_log(i32 level, Str msg);
 
 void tel_open(TelEvent *e, const char *ev);
@@ -194,21 +171,19 @@ void tel_str(TelEvent *e, const char *key, Str v);
 /* "<key>_bytes" and "<key>_lines": what a message looked like, not what it
  * said. */
 void tel_shape(TelEvent *e, const char *key, Str text);
-/* The top-level keys of a tool call's JSON arguments, comma-separated. The
- * values are what carries a path or a command, so none of them is recorded.
- * `scratch` is rewound before returning. */
+/* The top-level keys of a tool call's JSON arguments, comma-separated; the
+ * values carry the path or the command, so none is recorded. `scratch` is
+ * rewound before returning. */
 void tel_arg_keys(TelEvent *e, const char *key, Str args, Arena *scratch);
-/* `v` as a stable 64-bit hash: enough to tell two working directories or two
- * endpoints apart across runs, not enough to name either. */
+/* A stable 64-bit hash: enough to tell two directories apart across runs,
+ * not enough to name either. */
 void tel_hash_field(TelEvent *e, const char *key, Str v);
 void tel_send(TelEvent *e);
 
 /* ---- time --------------------------------------------------------------- */
 f64  yoke_now_seconds(void);   /* monotonic                                */
 
-/* ---- JSON ----------------------------------------------------------------
- * Minimal arena-backed DOM. Values live in the arena; no heap.
- */
+/* ---- JSON --------------------------------------------------------------- */
 typedef enum { J_NULL, J_BOOL, J_NUM, J_STR, J_ARR, J_OBJ } JType;
 typedef struct JVal JVal;
 struct JVal {
@@ -217,9 +192,9 @@ struct JVal {
     union {
         b8    b;
         f64  n;
-        Str     s;            /* for J_STR                              */
-        struct { JVal *items; size_t n; } arr;          /* J_ARR          */
-        struct { JVal *head; } obj;                     /* J_OBJ (linked) */
+        Str     s;
+        struct { JVal *items; size_t n; } arr;
+        struct { JVal *head; } obj;                     /* linked members */
     } u;
     JVal  *next;     /* next sibling in object                                */
 };
@@ -228,12 +203,12 @@ typedef struct { Arena *a; const char *src; size_t pos, len; i32 depth; b8 oom; 
 
 JVal   *json_parse(Arena *a, Str s);            /* NULL on error             */
 void    json_write(Buf *b, const JVal *v);
-const JVal *json_get(const JVal *obj, Str key);  /* object lookup            */
+const JVal *json_get(const JVal *obj, Str key);
 const JVal *json_at(const JVal *arr, size_t i);
 
 /* ---- XDG base directories ------------------------------------------------
- * Every file yoke owns is resolved here and none of them sits directly in
- * $HOME. A relative XDG_* value is invalid and ignored, as the spec requires.
+ * Every file yoke owns is resolved here; none sits directly in $HOME. A
+ * relative XDG_* value is invalid and ignored, as the spec requires.
  */
 typedef enum { YOKE_DIR_CONFIG, YOKE_DIR_DATA, YOKE_DIR_STATE, YOKE_DIR_CACHE } YokeDir;
 
@@ -241,19 +216,17 @@ typedef enum { YOKE_DIR_CONFIG, YOKE_DIR_DATA, YOKE_DIR_STATE, YOKE_DIR_CACHE } 
 Str    paths_dir(YokeDir kind, Arena *a);
 Str    paths_file(YokeDir kind, Str name, Arena *a);
 b8     paths_ensure_dir(Str dir);    /* mkdir -p, mode 0700                  */
-/* Candidates for a config file, lowest precedence first, so applying them in
- * order leaves the user's own file on top. */
+/* Candidates for a config file, lowest precedence first. */
 size_t paths_config_files(Str name, Arena *a, Str *out, size_t max);
 
 /* ---- prompt history ------------------------------------------------------
  * A ring of past prompts, mirrored to $XDG_STATE_HOME/yoke/history as they
- * are submitted. `cursor` is the browse position and cursor == n means the
- * live draft, which is what the composer restores on the way back down.
+ * are submitted. `cursor` is the browse position; cursor == n is the live
+ * draft the composer restores on the way back down.
  *
- * Entries need an arena of their own because /clear rewinds the session's,
- * and a recallable prompt has to outlive that. A full one is compacted in
- * place: a bump allocator hands entries out in ascending address order, so
- * the move never overlaps forward.
+ * Entries need an arena of their own because /clear rewinds the session's. A
+ * full one is compacted in place: a bump allocator hands entries out in
+ * ascending address order, so the move never overlaps forward.
  */
 typedef struct {
     Str   *entry;   /* [cap] oldest first                                   */
@@ -276,14 +249,11 @@ b8   history_browsing(const History *h);
 
 /* ---- endpoints -----------------------------------------------------------
  * The providers /provider creates and switches between: a name, an
- * OpenAI-compatible base URL and the model last used against it. None are
- * built in, since they all speak the same protocol and only the user knows
- * which ones exist. Settings live in $XDG_CONFIG_HOME/yoke/providers and the
- * keys in $XDG_STATE_HOME/yoke/credentials, so a shared configuration cannot
- * carry a secret; $XDG_STATE_HOME/yoke/provider names the active one.
- *
- * SoA, indexed by entry, with the caps above enforced on load: an oversized
- * field is dropped rather than truncated, since a cut URL or key names a
+ * OpenAI-compatible base URL and the model last used against it. Settings
+ * live in $XDG_CONFIG_HOME/yoke/providers and the keys in
+ * $XDG_STATE_HOME/yoke/credentials, so a shared configuration cannot carry a
+ * secret; $XDG_STATE_HOME/yoke/provider names the active one. An oversized
+ * field is dropped on load rather than truncated, since a cut URL names a
  * different service.
  */
 typedef struct {
@@ -298,17 +268,15 @@ typedef struct {
 /* Every Str lands in `a` and lives as long as it does. */
 size_t endpoints_load(Endpoints *e, Arena *a);
 size_t endpoints_find(const Endpoints *e, Str name);
-/* Add an entry or replace the one of that name, copying into `a`. False when
- * the store is full or a field is past its cap. */
+/* False when the store is full or a field is past its cap. */
 b8     endpoints_put(Endpoints *e, Str name, Str base_url, Str model,
                      Arena *a);
 b8     endpoints_save(const Endpoints *e, Arena *scratch);
-/* Record the model in use against `name`, which is where /model writes while
- * a provider is active. False when there is no such entry. */
+/* Where /model writes while a provider is active. */
 b8     endpoints_remember_model(Str name, Str model, Arena *scratch);
 /* The key stored for `name`, allocated in `out`. Empty when there is none,
  * and empty with `err` filled in when the credentials file is readable by
- * anyone but its owner, which is a key to rotate rather than one to load. */
+ * anyone but its owner: that is a key to rotate rather than one to load. */
 Str    endpoints_key(Str name, Arena *out, Arena *scratch,
                      char *err, size_t err_cap);
 b8     endpoints_set_key(Str name, Str key, Arena *scratch,
@@ -317,11 +285,10 @@ Str    endpoints_active(Arena *a);
 b8     endpoints_remember_active(Str name, Arena *scratch);
 
 /* ---- agent modes ---------------------------------------------------------
- * Build carries the work out; Plan reads and proposes without touching
- * anything, and hands over through the submit_plan tool. The mode decides
- * which system prompt slot 0 of the conversation holds and which tools the
- * registry offers, so "read-only" is a property of the registry rather than a
- * request made in the prompt.
+ * Build carries the work out; Plan reads and proposes, handing over through
+ * the submit_plan tool. The mode decides which system prompt slot 0 holds
+ * and which tools the registry offers, so "read-only" is a property of the
+ * registry rather than a request made in the prompt.
  */
 typedef enum { MODE_BUILD = 0, MODE_PLAN } AgentMode;
 
@@ -331,29 +298,26 @@ typedef struct {
     Str model;
     Str api_key;
     Str provider;     /* active endpoint name; empty when none is selected */
-    /* Whether anything named the endpoint, as opposed to the built-in
-     * default: a run with neither this nor a key has nothing to talk to, and
-     * asks for a provider instead of starting a conversation. */
+    /* A run with neither this nor a key has nothing to talk to, and asks for
+     * a provider instead of starting a conversation. */
     b8  base_url_set;
     Str system_prompt; /* Only --system and YOKE_SYSTEM_PROMPT set this. */
     Str plan_prompt;   /* Plan mode's; built at startup, never configured. */
     AgentMode mode;
     i32  max_tokens;
-    /* Conversation capacity. Configurable so the full-history path is
-     * reachable in a test without streaming four thousand messages. */
+    /* Configurable so the full-history path is reachable in a test without
+     * streaming four thousand messages. */
     size_t max_messages;
     b8 stream;
-    /* How many further attempts a turn that reached nothing may make, and the
-     * wait before the first one. Zero retries sends each turn once. */
+    /* Further attempts a turn that reached nothing may make, and the wait
+     * before the first one. */
     i32 retries;
     i32 retry_delay_ms;
 } Config;
 
-/* `scratch` holds the config file while it is parsed; nothing survives in it. */
 b8    config_load(Config *c, Arena *persist, Arena *scratch);
-/* Remember the model picked with /model in $XDG_STATE_HOME/yoke/model, which
- * config_load applies above the config files and below YOKE_MODEL. False when
- * no state directory resolves or the write failed. */
+/* Writes $XDG_STATE_HOME/yoke/model, which config_load applies above the
+ * config files and below YOKE_MODEL. */
 b8    config_remember_model(Str model, Arena *scratch);
 
 
@@ -373,30 +337,27 @@ typedef enum {
 } CliStatus;
 
 CliStatus cli_parse(i32 argc, char **argv, CliOpts *out);
-/* Applies the overrides above whatever config_load resolved. */
 void      cli_apply(const CliOpts *o, Config *c);
 
 /* ---- HTTP (libcurl) ----------------------------------------------------- */
 typedef struct {
     const char *base_url;
     const char *api_key;
-    /* SSE chunk callback: called with each accumulated line (without the
-     * "data:" prefix). Return false to abort the stream. */
+    /* Each accumulated SSE line, without the "data:" prefix. Return false to
+     * abort the stream. */
     b8 (*on_line)(Str line, void *ud);
     void *ud;
-    /* Non-streaming: the whole response body lands here and on_line is never
-     * called, since one JSON document is not a sequence of events. */
+    /* Non-streaming: the whole body lands here and on_line is never called. */
     Buf *body_out;
     const char *body;     /* nul-terminated JSON request                    */
     const volatile sig_atomic_t *interrupt_flag;
     /* The transfer waits on curl's sockets and `idle_fd` together, so the UI
-     * stays alive during a request without threads. on_idle runs after every
-     * wait (readable fd or timeout); it must not block. */
+     * stays alive without threads. on_idle runs after every wait and must
+     * not block. */
     i32   idle_fd;        /* -1 disables the extra poll fd                  */
     void (*on_idle)(void *ud);
     void *idle_ud;
-    /* Filled with curl's own message for a transport failure, so a caller
-     * that reports one says what it was rather than a number. Optional. */
+    /* Optional: curl's own message for a transport failure. */
     char  *fail_out;
     size_t fail_cap;
 } HttpReq;
@@ -406,21 +367,16 @@ typedef struct {
  * request, 3 for an interrupt, other positive values for a transport
  * failure. */
 i32     http_post(const HttpReq *r);
-/* GET base_url + path, appending the whole body to `out`. Returns 0 on
- * success, a negative HTTP status for a refused request, positive for a
- * transport failure. Blocking: the callers fetch a short document between
- * turns, not while one is streaming. */
+/* GET base_url + path, appending the whole body to `out`, with the statuses
+ * above. Blocking: callers fetch a short document between turns. */
 i32     http_get(const char *base_url, const char *path, const char *api_key,
                 Buf *out);
 
-/* ---- tools (SoA registry) ----------------------------------------------
- * Parallel arrays indexed by tool id. Lookup only ever touches `name`, so
- * the names sit together instead of being spread across whole tool records.
- */
+/* ---- tools (SoA registry) ----------------------------------------------- */
 typedef b8 (*ToolRun)(Str args_json, Arena *scratch, Buf *out,
                       char *err, size_t err_cap);
 
-/* Which modes a tool is offered in, as a bit per mode in `modes`. */
+/* A bit per mode in ToolRegistry.modes. */
 #define TOOL_IN_BUILD 1u
 #define TOOL_IN_PLAN  2u
 
@@ -433,7 +389,7 @@ typedef struct {
     size_t   n;
 } ToolRegistry;
 
-/* Tool ids are indices into the registry; TOOL_NONE means "no such tool". */
+/* Ids are indices into the registry. */
 #define TOOL_NONE ((size_t)-1)
 
 void        tools_init(ToolRegistry *r, Arena *persist);
@@ -445,32 +401,28 @@ b8          tools_run(const ToolRegistry *r, size_t id, Str args,
                       Arena *scratch, Buf *out, char *err, size_t err_cap);
 void        tools_write_schemas(Buf *b, const ToolRegistry *r);
 /* Run `cmd` through the shell, appending its output to `out` followed by a
- * bracketed status line ("[exit 0]"), which is how the bash tool reports and
- * how render.c reads a result. Only the last YOKE_SHELL_OUT_BYTES are kept,
- * behind a line saying how much was dropped. False with `err` filled in when
- * the command is longer than YOKE_MAX_COMMAND or the shell could not be
- * started; a command is never clamped to fit, since a truncated one is a
- * different program. */
+ * bracketed status line ("[exit 0]") that render.c reads back. Only the last
+ * YOKE_SHELL_OUT_BYTES are kept, behind a line saying how much was dropped.
+ * False with `err` filled in when the command is longer than
+ * YOKE_MAX_COMMAND or the shell could not be started; a command is never
+ * clamped to fit, since a truncated one is a different program. */
 b8          shell_capture(Str cmd, Buf *out, char *err, size_t err_cap);
 
 /* ---- prompt ------------------------------------------------------------- */
 /* The system prompt, placeholders expanded. `configured` is what --system or
  * YOKE_SYSTEM_PROMPT set, unset to take .yoke/SYSTEM.md, the global
  * SYSTEM.md or the built-in template, in that order. Returned in `persist`,
- * `scratch` holds the file while it is read; the unexpanded template is the
- * fallback when `persist` cannot take the result. Empty with `err` set when a
- * SYSTEM.md is larger than YOKE_MAX_PROMPT_FILE.
+ * falling back to the unexpanded template when it cannot take the result.
+ * Empty with `err` set when a SYSTEM.md is larger than YOKE_MAX_PROMPT_FILE.
  *
- * Whichever prompt wins, every AGENTS.md from the working directory up to the
- * root is appended to it as project context, outermost first. It is a
- * document about the project rather than a template, so it is appended
- * verbatim, placeholders included. */
+ * Every AGENTS.md from the working directory up to the root is appended to
+ * whichever prompt won, outermost first and verbatim: it is a document about
+ * the project rather than a template. */
 Str   prompt_build(const ToolRegistry *tools, Str configured, Arena *persist,
                    Arena *scratch, char *err, size_t err_cap);
 /* The plan-mode prompt, resolved the same way from .yoke/PLAN.md, the global
  * PLAN.md or the built-in template, with {tools} listing only what plan mode
- * offers. Nothing configures it, since Build mode is what --system and
- * YOKE_SYSTEM_PROMPT describe. */
+ * offers. Nothing configures it: --system describes Build mode. */
 Str   prompt_build_plan(const ToolRegistry *tools, Arena *persist,
                         Arena *scratch, char *err, size_t err_cap);
 
@@ -481,13 +433,12 @@ typedef enum { M_SYSTEM = 0, M_USER, M_ASSISTANT, M_TOOL } MRole;
 #define CONV_NONE ((size_t)-1)
 
 typedef struct {
-    /* SoA: parallel arrays indexed by message id                         */
     MRole *role;          /* [cap]                                       */
-    Str   *text;          /* [cap] content (prose / tool result / args)  */
-    Str   *tool_name;     /* [cap] tool name (assistant tool-call entry) */
-    Str   *tool_call_id;  /* [cap] tool call id                          */
-    Str   *shell_out;     /* [cap] what a '!' run printed; see conv_add_shell */
-    b8  *has_tool_call; /* [cap] true => assistant msg w/ a tool call  */
+    Str   *text;          /* [cap] prose, tool result or call arguments  */
+    Str   *tool_name;     /* [cap]                                       */
+    Str   *tool_call_id;  /* [cap]                                       */
+    Str   *shell_out;     /* [cap] what a '!' run printed                */
+    b8  *has_tool_call; /* [cap]                                       */
     b8  *expanded;      /* [cap] this block's transcript caps are lifted */
     size_t n, cap;
 } Conv;
@@ -501,8 +452,7 @@ size_t  conv_add_assistant_calls(Conv *c, Str content);
 size_t  conv_add_call(Conv *c, Str id, Str name, Str args);
 size_t  conv_add_tool(Conv *c, Str tool_call_id, Str text);
 /* A '!' shell run: one user slot holding the command and what it printed,
- * because it is one turn the user took. The provider sees it as the user
- * message it is; `conv_is_shell` picks it out of the user turns. */
+ * since it is one turn the user took. */
 size_t  conv_add_shell(Conv *c, Str cmd, Str out);
 b8      conv_is_shell(const Conv *c, size_t i);
 b8      conv_is_call(const Conv *c, size_t i);
@@ -511,9 +461,9 @@ void    conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg);
 
 /* ---- sessions ------------------------------------------------------------
  * The conversation as it happened, one JSON object per line under
- * $XDG_DATA_HOME/yoke/sessions/<cwd>/<timestamp>.jsonl. Sessions are keyed by
- * the directory yoke was launched in: that is the unit of work, so browsing
- * from one project never surfaces another's.
+ * $XDG_DATA_HOME/yoke/sessions/<cwd>/<timestamp>.jsonl, keyed by the
+ * directory yoke was launched in so browsing from one project never surfaces
+ * another's.
  *
  * Paths live in the struct instead of an arena because /clear rewinds the
  * session arena and the file the next message appends to has to outlive it.
@@ -528,7 +478,6 @@ typedef struct {
     size_t written;  /* conversation slots already on disk                  */
 } Session;
 
-/* SoA, like every other collection: the picker only reads names and previews. */
 typedef struct {
     Str   *name;     /* [n] timestamp label, newest first                   */
     Str   *path;     /* [n] nul-terminated file path                        */
@@ -541,18 +490,16 @@ b8     session_begin(Session *s);                  /* new timestamped file   */
 /* Append the messages produced since the last call; the file is created on
  * the first one, so an untouched session never reaches the picker. */
 void   session_save(Session *s, const Conv *c);
-/* Start a new file holding the conversation whole and continue in it, leaving
- * the one it was appending to as it is. False when the file could not be
- * started or the copy could not be written. */
+/* Continue in a new file holding the conversation whole, leaving the one it
+ * was appending to as it is. */
 b8     session_fork(Session *s, const Conv *c);
 size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max);
-/* Reading is separate from replaying: replaying rewinds the live conversation
- * and overwrites its storage, so whether the file can be read at all has to
- * be known before anything is thrown away. `session_read` returns the raw
- * contents in `scratch` (empty when unreadable); `session_apply` replays them
- * into a conversation the caller has rewound to its system prompt and
- * continues appending to that file. False means the conversation filled up
- * and holds only part of the session. */
+/* Reading is separate from replaying because replaying rewinds the live
+ * conversation, so a file that cannot be read has to be known before
+ * anything is thrown away. `session_read` returns the raw contents in
+ * `scratch` (empty when unreadable); `session_apply` replays them into a
+ * conversation the caller has rewound to its system prompt and continues
+ * appending to that file. False means the conversation filled up. */
 Str    session_read(Str path, Arena *scratch);
 b8     session_apply(Session *s, Str src, Str path, Str name, Conv *c,
                      Arena *persist, Arena *scratch);
@@ -562,23 +509,21 @@ typedef struct {
     const Config      *cfg;
     const ToolRegistry*tools;
     Conv              *conv;
-    Arena             *persist;   /* persistent arena (message storage)        */
-    Arena             *scratch;   /* per-turn scratch (reset each turn)        */
-    /* streaming sinks */
+    Arena             *persist;   /* message storage                           */
+    Arena             *scratch;   /* reset each turn                           */
     void (*on_text)(Str delta, void *ud);
-    /* Reasoning deltas ("reasoning_content" or "reasoning"): displayed as the
-     * turn streams, never appended to the conversation, since a provider
-     * rejects a thinking trace it did not produce itself. */
+    /* "reasoning_content" or "reasoning": displayed as the turn streams,
+     * never appended to the conversation, since a provider rejects a
+     * thinking trace it did not produce itself. */
     void (*on_reason)(Str delta, void *ud);
     void (*on_tool_call)(i32 index, Str id, Str name, Str args_delta, void *ud);
-    /* A request that produced nothing failed and is about to be sent again.
-     * `attempt` is 1-based over `attempts` in total, `delay_ms` is the wait
-     * before the next one, and `reason` is yoke's own wording for the
-     * failure: an HTTP status or curl's catalogue string, never a URL. */
+    /* A request that produced nothing is about to be sent again. `attempt`
+     * is 1-based over `attempts`, and `reason` is yoke's own wording: an
+     * HTTP status or curl's catalogue string, never a URL. */
     void (*on_retry)(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
                      void *ud);
     void *ud;
-    /* pumped while the request is in flight (see HttpReq.on_idle) */
+    /* Pumped while the request is in flight; see HttpReq.on_idle. */
     void (*on_idle)(void *ud);
     i32   idle_fd;                /* -1 when there is nothing to watch         */
     const volatile sig_atomic_t *interrupt_flag;
@@ -588,85 +533,71 @@ typedef struct {
     b8 usage_valid;
 } Provider;
 
-/* Run one completion turn. Appends the assistant message + tool calls to
- * conv (in the persistent arena). Returns the number of tool calls emitted,
- * or -1 with `err` filled in. */
+/* Run one completion turn, appending the assistant message and its tool
+ * calls to conv. Returns the number of tool calls, or -1 with `err` set. */
 i32     provider_run(Provider *p, char *err, size_t err_cap);
 
 /* Model ids from GET <base_url>/models, in the order the endpoint serves
- * them. Names are allocated in `scratch`; returns how many landed in `out`,
- * zero with `err` filled in when the endpoint could not be read. */
+ * them, allocated in `scratch`. Zero with `err` set when it could not be
+ * read. */
 size_t  provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
                         char *err, size_t err_cap);
 
 /* ---- TUI --------------------------------------------------------------- */
-/* Styles a range of transcript text can carry. The block styles claim whole
- * rows (a wrapped continuation is painted like its first row); the inline
- * ones apply to the bytes they cover, so several can share a row. */
+/* A block style claims whole rows (a wrapped continuation is painted like
+ * its first row); an inline one applies to the bytes it covers. */
 typedef enum {
     TUI_PLAIN = 0, TUI_HEADING, TUI_CODE, TUI_QUOTE,   /* block */
     TUI_BOLD, TUI_EMPH, TUI_MONO, TUI_MARKER           /* inline */
 } TuiStyle;
-/* A slash command the composer's completion popup can offer. The table is
- * owned by the caller (static storage) and only read by the TUI. */
+/* A slash command the completion popup offers. The table is owned by the
+ * caller and only read here. */
 typedef struct { Str name; Str desc; } TuiCmd;
 void tui_set_commands(const TuiCmd *cmds, size_t n);
-/* Which end of a picker's list the selection sits on: where it opens, and
- * where it returns to when a search narrows the list. A list ordered like the
- * transcript it points into ends at the entry nearest the composer, which is
- * the one a picker like that opens on. */
+/* Which end of a picker's list the selection opens on and returns to after a
+ * search: a list ordered like the transcript ends at the entry nearest the
+ * composer. */
 typedef enum { TUI_PICK_FIRST = 0, TUI_PICK_LAST } TuiPickAnchor;
-/* Modal picker: the completion popup, driven over a caller-owned list instead
- * of the command table. `title` names it in the status line. Enter chooses
- * (index in *out), Esc/Ctrl-C cancels. Returns false when nothing was chosen
- * or there is no fullscreen UI. Past ten entries the picker also takes the
- * keyboard: typing filters the list by literal substring, and the composer's
- * own text is left untouched. */
+/* Modal picker: the completion popup over a caller-owned list. `title` names
+ * it in the status line, Enter chooses (index in *out), Esc/Ctrl-C cancels.
+ * Past ten entries typing filters the list by literal substring, leaving the
+ * composer's own text untouched. */
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t *out);
-/* The same picker opened on `start` instead of on one of the ends, which is
- * how a list carrying a recommendation offers it without reordering the
- * entries it was given. */
+/* The same picker opened on `start`, which is how a list carrying a
+ * recommendation offers it without reordering its entries. */
 b8 tui_pick_from(Str title, const TuiCmd *items, size_t n, size_t start,
                  size_t *out);
-/* The settings screen: the same list, read rather than chosen from. A row is
- * its label and what it currently says, and Space acts on the selected one:
- * true with *sel naming it, which is the caller's to interpret. Enter and
- * Escape close, returning false. `sel` is in and out, so a caller that
- * rebuilds the rows and reopens after a change opens where the reader left
- * it. */
+/* The settings screen: the same list, read rather than chosen from. Space
+ * acts on the selected row (true, with *sel naming it), Enter and Escape
+ * close. `sel` is in and out, so a caller that rebuilds the rows and reopens
+ * after a change opens where the reader left it. */
 b8 tui_settings(Str title, const TuiCmd *rows, size_t n, size_t *sel);
 /* Modal one-line question, answered in the composer with `question` in the
  * notice row. `secret` echoes the answer as dots and keeps it out of the
- * prompt history and the transcript, which is what an API key wants. Returns
- * false when Esc or Ctrl-C cancelled, the answer was empty, or there is no
- * fullscreen UI. The composer's own text is restored on the way out. */
+ * prompt history and the transcript. False when it was cancelled, the answer
+ * was empty, or there is no fullscreen UI; the composer's own text is
+ * restored on the way out. */
 b8 tui_ask(Str question, b8 secret, char *out, size_t cap);
 /* Composer history for Up/Down recall; NULL disables it. */
 void tui_set_history(History *h);
 /* `plain` forces the line-oriented path and drops the banner even on a tty,
- * which is what a one-shot -p run wants: its stdout is a reply, not a UI. */
+ * which is what a one-shot -p run wants. */
 void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count,
                b8 plain);
-/* The model the status line names; the string must outlive the call. */
+/* The strings the status line names; they must outlive the call. An empty
+ * provider restores the host derived from the base URL. */
 void tui_set_model(Str model);
-/* The mode the status line names. */
 void tui_set_mode(AgentMode mode);
-/* The provider the status line names. Empty restores the host derived from
- * the base URL, which is what an endpoint-less run shows. */
 void tui_set_provider(Str name);
 /* What a run with no endpoint says, on the welcome screen and again if a
  * message is submitted anyway. */
 #define NO_PROVIDER_HINT \
     STR("no provider yet: type /provider, then \"+ add a provider\"")
-/* With nothing to talk to, the welcome screen's closing line says how to name
- * an endpoint instead of a form opening over it. */
 void tui_needs_provider(b8 on);
-/* Hand `text` to the terminal's clipboard over OSC 52, the path a drag-select
- * copy takes, and acknowledge it on the status line. Returns false for an
- * empty payload or one past the sequence cap, which is refused rather than
- * truncated: half a reply on the clipboard is not the one that was asked
- * for. */
+/* Hand `text` to the terminal's clipboard over OSC 52 and acknowledge it on
+ * the status line. False for an empty payload or one past the sequence cap,
+ * which is refused rather than truncated. */
 b8 tui_copy(Str text);
 void tui_stop(void);
 void tui_set_status(const char *status);
@@ -676,45 +607,39 @@ void tui_clear(void);
  * conversation is unchanged, only its rendering is about to be replayed. */
 void tui_clear_transcript(void);
 /* Mark the transcript bytes written between these calls as a click target
- * carrying `id`, which must be nonzero. A click inside one makes tui_readline
- * submit "/expand <id>", the same way Escape submits "/rewind": the gesture
- * and the command are one request. Zones are dropped with the transcript.
- * Ids are the caller's; a replay reuses them so a target survives a
- * re-render. */
+ * carrying nonzero `id`. A click inside one makes tui_readline submit
+ * "/expand <id>", the same way Escape submits "/rewind". Zones are dropped
+ * with the transcript; a replay reuses the ids so a target survives it. */
 void tui_zone_begin(u32 id);
 void tui_zone_end(void);
 /* Keep zone `id` where it is on screen across a re-render: anchor before the
  * clear, restore after the replay. A viewport pinned to the bottom is left
- * there, since the rows a replay added are what the reader asked for. */
+ * there. */
 void tui_anchor_zone(u32 id);
 void tui_restore_anchor(void);
 /* One line where the completion popup would be: the answer to a command that
- * opened no popup, retired by the next keystroke. Empty clears it. The
- * transcript is the conversation, so this never lands in it. */
+ * opened no popup, retired by the next keystroke. Empty clears it. */
 void tui_notice(Str msg);
-/* Open a transcript block: the caller is about to write one, and this is the
- * only place the air above it comes from. A block writes no leading and no
- * trailing air of its own, so the gap between any two is one blank row
- * wherever they meet, and a trailing newline the writer did emit is absorbed
- * rather than stacked. */
+/* Open a transcript block; the only place the air above one comes from. A
+ * block writes no air of its own, so the gap between any two is one blank
+ * row, and a trailing newline a writer did emit is absorbed rather than
+ * stacked. */
 void tui_block(void);
 void tui_write(Str s);
-/* Append reasoning output: same transcript, painted muted so a thinking trace
- * reads apart from the reply. */
+/* Muted, so a thinking trace reads apart from the reply. */
 void tui_write_reason(Str s);
-/* Append transcript text under one of the styles a tool block is built from:
- * muted for quoted input and output, yellow for a call's header, green for a
- * result, red for a failure. Style is a recorded byte range, so a write that
- * overflowed the scrollback simply loses it. */
+/* The styles a tool block is built from: muted for quoted input and output,
+ * yellow for a call's header, green for a result, red for a failure. Style
+ * is a recorded byte range, so a write that overflowed the scrollback loses
+ * it. */
 void tui_write_muted(Str s);
 void tui_write_tool(Str s);
 void tui_write_result(Str s);
 void tui_write_error(Str s);
-/* Append a user turn: rendered as a padded block with its own background,
- * which is what marks it apart from the agent's own output. */
+/* A padded block with its own background, which is what marks a user turn
+ * apart from the agent's output. */
 void tui_write_user(Str s);
-/* Append transcript text under one of the styles above; TUI_PLAIN records no
- * style at all. This is how markdown.c paints a rendered reply. */
+/* TUI_PLAIN records no style at all. This is how markdown.c paints. */
 void tui_write_styled(Str s, TuiStyle style);
 /* Cells a transcript row holds, 0 without a fullscreen UI. */
 size_t tui_body_cols(void);
@@ -728,54 +653,50 @@ void tui_exit_raw(void);
 void tui_putstr(Str s);
 /* Read one submitted line. Escape at an idle composer with nothing to dismiss
  * arms a rewind and the next Escape submits "/rewind", leaving the composed
- * text where it is: the key and the command are the same request. Shift+Tab
- * submits "/mode" the same way. */
+ * text where it is; Shift+Tab submits "/mode" the same way. */
 b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n);
 /* Replace the composer's text, cursor at its end; ignored without a
  * fullscreen UI. This is how a rewind hands an earlier message back. */
 void tui_set_input(Str s);
-/* Composer editing while a turn is in flight: keystrokes are accepted, Enter
- * is not. Callers pump tui_poll_input from wherever they wait. */
+/* While a turn is in flight keystrokes are accepted and Enter is not.
+ * Callers pump tui_poll_input from wherever they wait. */
 void tui_set_busy(b8 busy);
 void tui_poll_input(void);
 i32  tui_input_fd(void);      /* readable-input fd, or -1 when not interactive */
 
 /* ---- markdown ------------------------------------------------------------
- * A reply is Markdown, and the transcript renders it: headings, lists, rules,
- * block quotes and fenced code become shapes, emphasis becomes a style, and
- * the markers themselves are dropped. Rendering is streaming, so a delta is
- * painted as soon as its shape is known and only an unclosed marker waits.
- * `md_end` closes whatever the turn left unterminated.
+ * Renders a reply into the transcript: headings, lists, rules, block quotes
+ * and fenced code become shapes, emphasis becomes a style, and the markers
+ * are dropped. Rendering is streaming, so a delta is painted as soon as its
+ * shape is known and only an unclosed marker waits; `md_end` closes whatever
+ * the turn left unterminated.
  *
- * `md_set_raw` sends the text through untouched, which is what /raw toggles.
- * Without a fullscreen UI the text is a reply on stdout rather than a
- * rendering, and is passed through the same way. */
+ * `md_set_raw` sends the text through untouched, and so does the absence of
+ * a fullscreen UI, where the output is a reply rather than a view. */
 void md_write(Str delta);
 void md_end(void);
 void md_set_raw(b8 on);
 b8   md_raw(void);
 
 /* ---- render.c ------------------------------------------------------------ */
-/* Write one tool call, and later its result, into the transcript in the shape
- * a reader wants: the JSON arguments are parsed in `scratch`, which is rewound
- * before returning, and unparsable ones fall back to the raw text. `result`
- * is the tool's own output, an "ERROR: " prefix included.
- * `id` marks the block as a click target: the truncation tail it writes folds
- * and unfolds it, and `expanded` is the state that click left behind, which
- * lifts this block's caps the way /verbose lifts every block's. */
+/* Write one tool call, and later its result, into the transcript. The JSON
+ * arguments are parsed in `scratch`, which is rewound before returning, and
+ * unparsable ones fall back to the raw text. `result` is the tool's own
+ * output, an "ERROR: " prefix included. `id` marks the block as a click
+ * target and `expanded` is the state that click left behind, which lifts
+ * this block's caps the way /verbose lifts every block's. */
 void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded);
 /* The header of a '!' shell run, the same shape a tool call gets. Its output
  * follows through render_tool_result under the name "shell". */
 void render_shell_call(Str cmd, u32 id, b8 expanded);
 void render_tool_result(Str name, Str result, u32 id, b8 expanded);
-/* A plan mode handover: the plan the model submitted, rendered as the
- * Markdown it wrote, and the question it asked before that. The answer to
- * either arrives as a tool result and reads like one. */
+/* A plan mode handover and the question that led to it. The answer to either
+ * arrives as a tool result and reads like one. */
 void render_plan(Str plan);
 void render_question(Str question);
-/* Verbose rendering shows every line of a call's input and its result, with no
- * "... N more lines" tail and no per-line clip. Off by default: a tool that
- * read a thousand lines would otherwise be the whole scrollback. */
+/* Every line of a call's input and result, with no "... N more lines" tail
+ * and no per-line clip. Off by default: a tool that read a thousand lines
+ * would otherwise be the whole scrollback. */
 void render_set_verbose(b8 on);
 b8   render_verbose(void);
 

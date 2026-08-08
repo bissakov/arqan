@@ -1,8 +1,7 @@
 /* render.c: how a tool call and its result read in the transcript.
  *
- * The wire form of a call is a JSON blob and the wire form of a result is
- * whatever the tool printed; neither is what a reader wants to see. Every
- * tool here gets a header naming what it does to what, an optional preview of
+ * A call on the wire is a JSON blob and a result is whatever the tool
+ * printed, so each gets a header naming what it does to what, a preview of
  * the input it carries, and a result summarised by its own shape.
  */
 #include "yoke.h"
@@ -17,13 +16,12 @@ enum {
     R_TARGET_BYTES = 120   /* the header's path or command             */
 };
 
-/* Verbose mode drops every cap below: what the tool read, wrote or printed
- * reaches the transcript whole. */
+/* Verbose drops every cap below. */
 static b8 g_verbose;
 
-/* The block being written: its caps are lifted while `g_expanded` holds, and
- * the tail that folds it back carries `g_zone`. Both are set for the length of
- * one render_tool_* call. */
+/* The block being written, set for the length of one render_tool_* call: its
+ * caps are lifted while `g_expanded` holds, and the tail that folds it back
+ * carries `g_zone`. */
 static b8 g_expanded;
 static u32 g_zone;
 
@@ -43,7 +41,7 @@ static Str str_arg(const JVal *args, Str key) {
     return v && v->type == J_STR ? v->u.s : (Str){0};
 }
 
-/* A count argument as the tool reads it: absent or malformed is 0. */
+/* A count argument as the tool reads it; absent or malformed is 0. */
 static size_t num_arg(const JVal *args, Str key) {
     const JVal *v = args ? json_get(args, key) : NULL;
     if (!v || v->type != J_NUM || v->u.n < 1 || v->u.n > (f64)(1u << 30))
@@ -51,8 +49,8 @@ static size_t num_arg(const JVal *args, Str key) {
     return (size_t)v->u.n;
 }
 
-/* A read is a page of a file, and which page is as much of what it did as the
- * path is: without it two reads of one file are the same header twice. */
+/* Which page a read asked for, since without it two reads of one file are the
+ * same header twice. */
 static void write_read_range(const JVal *args) {
     size_t offset = num_arg(args, STR("offset"));
     size_t limit = num_arg(args, STR("limit"));
@@ -74,10 +72,9 @@ static void write_count(size_t n, const char *what, Sink sink) {
     if (len > 0) sink((Str){ buf, (size_t)len });
 }
 
-/* Writes at most `max` lines of `body`, each behind `gutter`, then a tail row
- * saying what was left out. That row is the block's click target: it is where
- * an expanded block offers to fold back, so a block whose lines all fit gets
- * no tail either way. */
+/* At most `max` lines of `body`, each behind `gutter`, then a tail row saying
+ * what was left out. That row is the block's click target, so a block whose
+ * lines all fit gets no tail either way. */
 static void write_lines(Str body, Str gutter, size_t max, Sink sink) {
     size_t cap = line_cap(max);
     size_t off = 0, shown = 0;
@@ -97,8 +94,7 @@ static void write_lines(Str body, Str gutter, size_t max, Sink sink) {
         len = snprintf(buf, sizeof buf, "\u25be %zu more line%s\n",
                        rest, rest == 1 ? "" : "s");
     } else if (g_expanded && !g_verbose && shown > max) {
-        /* Only a block this reader unfolded offers to fold: under /verbose
-         * nothing is hidden to begin with. */
+        /* Only an unfolded block offers to fold; verbose hides nothing. */
         len = snprintf(buf, sizeof buf, "\u25b4 show less\n");
     } else {
         return;
@@ -109,8 +105,8 @@ static void write_lines(Str body, Str gutter, size_t max, Sink sink) {
     tui_zone_end();
 }
 
-/* A diff is the only honest preview of an edit: the same lines the tool
- * matches, then the ones it leaves behind. */
+/* The only honest preview of an edit: the lines the tool matches, then the
+ * ones it leaves behind. */
 static void write_diff(Str old_text, Str new_text) {
     write_lines(old_text, STR("\u2502 - "), R_ARG_LINES / 2,
                 tui_write_error);
@@ -165,7 +161,7 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
         write_lines(str_drop(cmd, cmd_off), STR("\u2502 "),
                     R_ARG_LINES, tui_write_muted);
     } else if (!path.n && !query.n) {
-        /* No shape this renderer knows: the arguments as they came. */
+        /* No shape this renderer knows, so the arguments as they came. */
         write_lines(args, STR("\u2502 "), R_ARG_LINES,
                     tui_write_muted);
     }
@@ -176,7 +172,7 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
 }
 
 /* A '!' run has no JSON to unpack: the command is the header and its trailing
- * lines the input preview, the shape a tool call gets. */
+ * lines the input preview. */
 void render_shell_call(Str cmd, u32 id, b8 expanded) {
     g_zone = id;
     g_expanded = expanded;
@@ -197,9 +193,9 @@ void render_shell_call(Str cmd, u32 id, b8 expanded) {
     g_zone = 0;
 }
 
-/* The plan a handover carries is prose the model wrote, so it reads as the
- * Markdown it is rather than as a quoted argument, and it is never truncated:
- * it is the thing the user is being asked to approve. */
+/* A plan is prose the model wrote, so it reads as the Markdown it is rather
+ * than as a quoted argument, and is never truncated: it is what the user is
+ * being asked to approve. */
 void render_plan(Str plan) {
     tui_block();
     tui_write_tool(STR("\u25c6  plan\n\n"));
@@ -219,8 +215,8 @@ void render_question(Str question) {
     }
 }
 
-/* A shell run ends its output with a bracketed status line; it is the
- * result's summary, not part of what the command printed. */
+/* A shell run ends on a bracketed status line, which summarises the result
+ * rather than being part of what the command printed. */
 static b8 split_status(Str result, Str *body, Str *status) {
     size_t off = 0, last = 0, start = 0;
     Str line;

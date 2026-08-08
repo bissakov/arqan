@@ -1,10 +1,10 @@
 /* provider.c: OpenAI-compatible chat-completions with tool calls.
  *
- * Builds the request JSON from the conversation, POSTs it, and dispatches text
- * and tool-call deltas to the provided sinks. With Config.stream off the reply
- * is one document instead of a sequence of events, so it reaches the same
+ * Builds the request JSON from the conversation, POSTs it, and dispatches
+ * text and tool-call deltas to the caller's sinks. With Config.stream off the
+ * reply is one document instead of a sequence of events and reaches the same
  * sinks in one piece. Either way the assistant message and its tool calls are
- * appended to the conversation (living in the persistent arena) at the end.
+ * appended to the conversation at the end.
  */
 #include "yoke.h"
 
@@ -14,9 +14,8 @@
 #include <time.h>
 
 /* ---- conversation SoA ---------------------------------------------------
- * Every append is bounded: the parallel arrays are allocated once at their
- * final capacity, so a full conversation has to be reported to the caller
- * rather than written past.
+ * The parallel arrays are allocated once at their final capacity, so a full
+ * conversation is reported to the caller rather than written past.
  */
 b8 conv_init(Conv *c, Arena *persist, size_t cap) {
     c->role           = arena_new(persist, MRole, cap);
@@ -38,7 +37,7 @@ b8 conv_init(Conv *c, Arena *persist, size_t cap) {
 
 size_t conv_room(const Conv *c) { return c->cap - c->n; }
 
-/* Claim one slot, or CONV_NONE when the conversation is full. */
+/* CONV_NONE when the conversation is full. */
 static size_t conv_push(Conv *c, MRole role, Str text, Str id, Str name,
                         b8 has_call) {
     if (c->n >= c->cap) return CONV_NONE;
@@ -76,8 +75,8 @@ b8 conv_is_shell(const Conv *c, size_t i) {
     return i < c->n && c->role[i] == M_USER
         && str_eq(c->tool_name[i], STR("shell"));
 }
-/* A carrier is the slot that holds one call: an assistant slot flagged with a
- * tool call *and* naming the tool. The head slot names nothing. */
+/* A carrier holds one call: an assistant slot flagged with a tool call and
+ * naming the tool. The head slot names nothing. */
 b8 conv_is_call(const Conv *c, size_t i) {
     return i < c->n && c->role[i] == M_ASSISTANT && c->has_tool_call[i]
         && c->tool_name[i].p != NULL;
@@ -100,15 +99,13 @@ static Str conv_call_name(const Conv *c, size_t result) {
     return STR("tool");
 }
 
-/* Serialize messages to OpenAI chat format. Assistant tool calls are emitted
- * as a single message with a "tool_calls" array; the paired args slot is
- * consumed here and skipped in the main loop.
+/* Assistant tool calls are emitted as one message with a "tool_calls" array,
+ * the carrier slots consumed here and skipped in the main loop.
  *
- * A tool result is charged again on every later turn of the session, so one
- * older than YOKE_ELIDE_TURNS user turns goes out as a line naming what it
- * was: a file read four turns ago is either already reflected in the work or
- * worth reading again. The transcript keeps the text either way, since Conv
- * is what the screen renders from. */
+ * A tool result is charged again on every later turn, so one older than
+ * YOKE_ELIDE_TURNS user turns goes out as a line naming what it was: a file
+ * read four turns ago is either reflected in the work or worth reading again.
+ * The transcript keeps the text either way. */
 void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
     (void)reg;
     size_t recent = conv_recent_start(c, YOKE_ELIDE_TURNS);
@@ -125,8 +122,8 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
         buf_putc(b, '{');
         buf_putf(b, "\"role\":\"%s\"", role);
         if (conv_is_shell(c, i)) {
-            /* A '!' run is the user's own turn, and reads on the wire the way
-             * it was typed: the command, then what it printed. */
+            /* A '!' run reads on the wire the way it was typed: the command,
+             * then what it printed. */
             buf_puts(b, STR(",\"content\":\"!"));
             buf_json_chars(b, c->text[i]);
             buf_json_chars(b, STR("\n"));
@@ -152,8 +149,7 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
             continue;
         }
         if (c->role[i] == M_ASSISTANT && c->has_tool_call[i]) {
-            /* head slot: prose + the tool_calls array built from the carrier
-             * slots that follow it, each keeping its own id */
+            /* Prose, then the tool_calls array built from the carriers. */
             buf_putf(b, ",\"content\":");
             buf_json_str(b, c->text[i]);
             buf_puts(b, STR(",\"tool_calls\":["));
@@ -174,7 +170,7 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
             }
             buf_putc(b, ']');
             buf_putc(b, '}');
-            i = j - 1; /* skip consumed slots */
+            i = j - 1;   /* the carriers are consumed */
             continue;
         }
         buf_putf(b, ",\"content\":");
@@ -187,9 +183,9 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
 /* ---- streaming state (in scratch arena) --------------------------------- */
 typedef struct {
     Arena *scratch;
-    /* Each SSE event is parsed into its own region and thrown away again: a
-     * DOM per delta would otherwise make a turn's scratch use grow with the
-     * number of events rather than with the size of the reply. */
+    /* Each SSE event is parsed into its own region and thrown away, so a
+     * turn's scratch use follows the size of the reply rather than the number
+     * of events. */
     Arena  ev;
     Str  id[YOKE_MAX_TOOL_CALLS];
     Str  name[YOKE_MAX_TOOL_CALLS];
@@ -215,8 +211,8 @@ static i32 slot(StreamState *s, i32 idx) {
 }
 
 /* With stream_options.include_usage the final event has no choices and
- * carries authoritative token counts for the completed request; a
- * non-streamed reply carries the same object at its top level. */
+ * carries the request's token counts; a non-streamed reply carries the same
+ * object at its top level. */
 static void read_usage(Provider *p, const JVal *root) {
     const JVal *usage = json_get(root, STR("usage"));
     if (!usage || usage->type != J_OBJ) return;
@@ -233,8 +229,8 @@ static void read_usage(Provider *p, const JVal *root) {
     p->usage_valid = true;
 }
 
-/* A provider that leads with a line break would otherwise open the reply on a
- * blank row: the composer has already advanced past the submitted line. */
+/* The composer has already advanced past the submitted line, so a provider
+ * that leads with a line break would open the reply on a blank row. */
 static Str skip_leading_breaks(Str s, b8 started) {
     size_t skip = 0;
     if (!started)
@@ -285,8 +281,8 @@ static b8 on_line(Str line, void *ud) {
                 for (size_t i = 0; i < tcs->u.arr.n; i++) {
                     const JVal *tc = &tcs->u.arr.items[i];
                     const JVal *idxv = json_get(tc, STR("index"));
-                    /* A non-numeric "index" would read the union as a double;
-                     * treat anything but a number as "the first call". */
+                    /* A non-numeric "index" would read the union as a double,
+                     * so anything but a number is the first call. */
                     i32 idx = idxv && idxv->type == J_NUM
                             && idxv->u.n >= 0 && idxv->u.n < (f64)YOKE_MAX_TOOL_CALLS
                             ? (i32)idxv->u.n : 0;
@@ -315,11 +311,10 @@ static b8 on_line(Str line, void *ud) {
     return true;
 }
 
-/* A reply that was not streamed: one chat.completion document, whose message
- * holds whole what the deltas would have carried a piece at a time. It reaches
- * the same sinks and the same slots, so everything downstream of here cannot
- * tell the two apart. False with `err` filled in when the document is not one.
- */
+/* One chat.completion document, holding whole what the deltas would have
+ * carried a piece at a time. It reaches the same sinks and the same slots, so
+ * nothing downstream can tell the two apart. False with `err` filled in when
+ * the document is not one. */
 static b8 read_completion(Provider *p, StreamState *s, Str raw, Arena *scratch,
                           char *err, size_t err_cap) {
     JVal *doc = json_parse(scratch, raw);
@@ -397,16 +392,16 @@ size_t provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
     for (size_t i = 0; i < data->u.arr.n && n < max; i++) {
         const JVal *id = json_get(&data->u.arr.items[i], STR("id"));
         if (!id || id->type != J_STR || !id->u.s.n) continue;
-        out[n] = id->u.s;   /* the DOM lives in `scratch` alongside the array */
+        out[n] = id->u.s;   /* the DOM lives in `scratch` beside the array */
         n++;
     }
     if (!n) snprintf(err, err_cap, "the provider listed no models");
     return n;
 }
 
-/* Whether a failed request is worth sending again. A transport failure and
- * the statuses a server uses to say "not now" are weather; every other status
- * is an answer about the request itself, and an interrupt is the user. */
+/* A transport failure and the statuses a server uses to say "not now" are
+ * weather; every other status is an answer about the request itself, and an
+ * interrupt is the user. */
 static b8 retryable(i32 rc) {
     if (rc == 2) return true;
     switch (-rc) {
@@ -416,24 +411,23 @@ static b8 retryable(i32 rc) {
     }
 }
 
-/* Nothing of the reply reached the screen or the state, which is what makes a
+/* Whether anything reached the screen or the state, which is what makes a
  * second attempt a retry rather than a duplicate: a stream that died after a
- * delta has already been painted and cannot be taken back. */
+ * delta has been painted and cannot be taken back. */
 static b8 stream_untouched(const StreamState *s, const Provider *p) {
     return s->events == 0 && s->text.n == 0 && s->reason_bytes == 0
         && s->count == 0 && s->dropped == 0 && !p->usage_valid;
 }
 
-/* Doubling from the configured base, capped: attempt 1 waits the base. */
+/* Doubling from the configured base; attempt 1 waits the base. */
 static i32 backoff_ms(i32 base, i32 attempt) {
     i64 ms = base;
     for (i32 i = 1; i < attempt && ms < YOKE_MAX_RETRY_DELAY_MS; i++) ms *= 2;
     return ms > YOKE_MAX_RETRY_DELAY_MS ? YOKE_MAX_RETRY_DELAY_MS : (i32)ms;
 }
 
-/* Wait out the backoff in slices, pumping the caller's idle hook so the
- * composer keeps painting and Esc or Ctrl-C ends the wait at once. Returns
- * false when the turn was interrupted. */
+/* Sliced so the caller's idle hook keeps the composer painting and an
+ * interrupt ends the wait at once. False when the turn was interrupted. */
 static b8 retry_wait(const Provider *p, i32 delay_ms) {
     enum { SLICE_MS = 25 };
     for (i32 waited = 0; waited < delay_ms; waited += SLICE_MS) {
@@ -458,7 +452,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     if (!s) { snprintf(err, err_cap, "out of memory starting a turn"); return -1; }
     memset(s, 0, sizeof *s);
     s->scratch = scratch;
-    /* One event is at most an SSE line, so this is generous by design. */
+    /* One event is at most an SSE line, so this is generous. */
     enum { EVENT_ARENA_BYTES = 4u << 20 };
     void *ev_mem = arena_alloc(scratch, EVENT_ARENA_BYTES, 16);
     if (!ev_mem) { snprintf(err, err_cap, "out of memory starting a turn"); return -1; }
@@ -489,7 +483,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     }
 
     /* A whole reply has no length to go by until it has arrived, so it grows
-     * into the scratch arena the way every other buffer here does. */
+     * into the scratch arena like every other buffer here. */
     Buf whole;
     if (!p->cfg->stream) buf_init(&whole, scratch, 1u << 16);
     HttpReq r = {
@@ -536,8 +530,8 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
             p->on_retry(attempt, attempts, delay, str_c(reason), saved_ud);
         if (!retry_wait(p, delay)) { rc = 3; break; }
 
-        /* Nothing arrived, so the only state to clear is what a refused
-         * request still left behind. */
+        /* Nothing arrived, so only what a refused request left behind is
+         * cleared. */
         s->events = 0;
         s->text.n = 0;
         s->text.oom = false;
@@ -547,8 +541,8 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         attempt++;
     }
     char parse_err[128] = {0};
-    /* The document is read before the record below, so what it cost is
-     * reported whether or not it made sense. */
+    /* Read before the record below, so the cost is reported whether or not
+     * the document made sense. */
     if (rc == 0 && !p->cfg->stream) {
         p->ud = s;
         if (!buf_ok(&whole))
@@ -559,8 +553,8 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     }
     p->ud = saved_ud;
 
-    /* The wire as it was: the request's size rather than its text, and what
-     * the stream cost, including the reasoning bytes the conversation drops. */
+    /* The request's size rather than its text, and what the stream cost,
+     * reasoning bytes included. */
     TelEvent tev;
     tel_open(&tev, "request");
     tel_int(&tev, "messages", (i64)p->conv->n);
@@ -603,8 +597,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         return -1;
     }
 
-    /* Count first: a turn is appended whole or not at all, so a conversation
-     * that cannot hold every call never ends up half-written. */
+    /* Count first: a turn is appended whole or not at all. */
     i32 calls = 0;
     for (i32 i = 0; i < s->count; i++)
         if (s->used[i] && s->name[i].p) calls++;

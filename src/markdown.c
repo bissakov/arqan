@@ -1,11 +1,10 @@
 /* markdown.c: renders a reply's Markdown into the transcript.
  *
- * Rendering is streaming, because a reply is read as it arrives: bytes are
- * painted as soon as their shape is known and only an unresolved marker
- * waits. Two things are buffered, both bounded by the line they sit in: the
- * bytes that may still turn out to be a block marker (a heading's hashes, a
- * fence, a list bullet), and the bytes from an opener whose closer has not
- * arrived yet, since "*fast" is only emphasis once the second star lands.
+ * Rendering is streaming: bytes are painted as soon as their shape is known
+ * and only an unresolved marker waits. Two things are buffered, both bounded
+ * by the line they sit in: the bytes that may still be a block marker, and
+ * the bytes from an opener whose closer has not arrived, since "*fast" is
+ * only emphasis once the second star lands.
  */
 #include "yoke.h"
 
@@ -13,11 +12,10 @@
 
 /* A block marker plus its indent; anything longer is prose. */
 #define MD_PREFIX_MAX 24
-/* An unresolved emphasis run. Past it the opener is taken literally, which
- * bounds how far a stray '*' can hold the stream back. */
+/* Past this an unresolved opener is taken literally, which bounds how far a
+ * stray '*' holds the stream back. */
 #define MD_PEND_MAX 512
-/* Widest horizontal rule drawn, so a wide terminal does not get a rule that
- * reads as a wall. */
+/* Widest rule drawn, so a wide terminal does not get one reading as a wall. */
 #define MD_RULE_MAX 60
 
 enum { MD_BLOCK_PLAIN, MD_BLOCK_HEAD, MD_BLOCK_QUOTE, MD_BLOCK_CODE };
@@ -27,7 +25,7 @@ static struct {
     b8     raw;
     b8     fence;      /* inside a fenced code block */
     b8     in_body;    /* the line's block marker has been resolved */
-    b8     skip_line;  /* the rest of the line belongs to a marker (info string) */
+    b8     skip_line;  /* the rest of the line is a marker's info string */
     i32    block;
     char   prefix[MD_PREFIX_MAX];
     size_t prefix_n;
@@ -73,8 +71,8 @@ static void md_push(char c) {
 
 static char md_prev(size_t i) { return i ? g_md.pend[i - 1] : g_md.last; }
 
-/* One construct starting at `pend[i]`: emitted (DONE), still waiting for its
- * closer (WAIT), or no construct at all (NONE, so the marker is literal). */
+/* One construct starting at `pend[i]`: emitted, still waiting for its closer,
+ * or no construct at all, which makes the marker literal. */
 static i32 md_run(size_t i, size_t *used) {
     const char *p = g_md.pend;
     size_t n = g_md.pend_n;
@@ -107,10 +105,9 @@ static i32 md_run(size_t i, size_t *used) {
         return MD_SPAN_DONE;
     }
 
-    /* '*' and '_': doubled is strong, single is emphasis. An opener is
-     * followed by a non-space, which is what keeps "5 * 3" arithmetic, and an
-     * underscore also needs a boundary before it, which is what keeps
-     * snake_case a name. */
+    /* Doubled is strong, single is emphasis. An opener is followed by a
+     * non-space, which keeps "5 * 3" arithmetic, and an underscore also needs
+     * a boundary before it, which keeps snake_case a name. */
     size_t run = 1;
     if (i + 1 < n && p[i + 1] == c) run = 2;
     if (i + run >= n) return MD_SPAN_WAIT;
@@ -129,8 +126,8 @@ static i32 md_run(size_t i, size_t *used) {
     return MD_SPAN_WAIT;
 }
 
-/* Emit as much of the pending bytes as their style is decided. `flush` ends
- * the line: whatever is still open was never markup and reads literally. */
+/* Emit as much of the pending bytes as have a decided style. `flush` ends the
+ * line, so whatever is still open was never markup and reads literally. */
 static void md_drain(b8 flush) {
     if (g_md.block == MD_BLOCK_CODE) {
         md_emit((Str){ g_md.pend, g_md.pend_n }, TUI_CODE);
@@ -162,7 +159,7 @@ static void md_drain(b8 flush) {
 
 /* ---- block markers ------------------------------------------------------- */
 
-/* Can the bytes buffered so far still grow into a block marker? While they
+/* Whether the buffered bytes can still grow into a block marker. While they
  * can, the line's shape is undecided and nothing has been painted. */
 static b8 md_candidate(Str s) {
     size_t i = 0;
@@ -172,7 +169,7 @@ static b8 md_candidate(Str s) {
     if (!m.n) return true;
     char c = m.p[0];
     if (c == '`') return md_all(m, '`') && m.n <= 3;
-    if (g_md.fence) return false;   /* inside a fence only its closer matters */
+    if (g_md.fence) return false;   /* in a fence only its closer matters */
     if (c == '#') return md_all(m, '#') && m.n <= 6;
     if (c == '>') return m.n == 1;
     if (c == '-' || c == '*' || c == '+' || c == '_') return md_all(m, c);
@@ -206,8 +203,8 @@ static void md_rule(void) {
     md_emit((Str){ buf, cells * 3 }, TUI_MARKER);
 }
 
-/* Settle the line's shape, `next` being the byte after the buffered marker (0
- * at the end of the line), and paint whatever stands in for the marker. */
+/* Settle the line's shape and paint whatever stands in for the marker. `next`
+ * is the byte after the buffered marker, 0 at the end of the line. */
 static void md_resolve(char next) {
     Str p = { g_md.prefix, g_md.prefix_n };
     size_t indent = 0;
@@ -264,7 +261,7 @@ static void md_prefix_byte(char c) {
             size_t i = 0;
             while (i < m.n && m.p[i] == ' ') i++;
             if (md_all(str_drop(m, i), '`') && m.n - i == 3) {
-                /* The fence itself, and its info string, are not content. */
+                /* Neither the fence nor its info string is content. */
                 g_md.fence = !g_md.fence;
                 g_md.in_body = true;
                 g_md.skip_line = true;

@@ -1,8 +1,7 @@
-/* tools.c: SoA tool registry + built-in tools (read, write, bash, edit).
+/* tools.c: SoA tool registry and the built-in tools.
  *
- * Each tool run() receives raw JSON args, a scratch arena, an output Buf, and
- * an error buffer. No tool allocates on the heap; everything uses the scratch
- * arena (reset per turn by the agent loop).
+ * A ToolRun receives raw JSON args, a scratch arena the agent loop resets per
+ * turn, an output Buf and an error buffer.
  */
 #include "yoke.h"
 
@@ -18,16 +17,15 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-/* ---- helpers: pull a "path"/"command" string arg from JSON -------------- */
+/* ---- argument helpers ---------------------------------------------------- */
 static Str json_get_str(const JVal *args, Str key) {
     const JVal *v = json_get(args, key);
     if (!v || v->type != J_STR) return (Str){0};
     return v->u.s;
 }
 
-/* Copy a JSON string argument into a nul-terminated buffer, or fail.
- * Clamping instead would run a *different* command, or touch a different
- * file, than the one the model asked for and the user read. */
+/* Clamping instead would run a different command, or touch a different file,
+ * than the one the model asked for and the user read. */
 static b8 arg_cstr(Str s, char *z, size_t cap, const char *what,
                    char *err, size_t err_cap) {
     if (!s.p) { snprintf(err, err_cap, "missing %s", what); return false; }
@@ -44,8 +42,8 @@ static b8 arg_cstr(Str s, char *z, size_t cap, const char *what,
     return true;
 }
 
-/* Slurp a file into the scratch arena. Every size here comes from the
- * filesystem, so each one is validated before it reaches an allocation. */
+/* Every size here comes from the filesystem, so each is validated before it
+ * reaches an allocation. */
 static b8 slurp(const char *z, Arena *scratch, Str *out,
                 char *err, size_t err_cap) {
     FILE *f = fopen(z, "rb");
@@ -79,9 +77,8 @@ static b8 slurp(const char *z, Arena *scratch, Str *out,
     return true;
 }
 
-/* Read a whole-number argument, `dflt` when it is absent. A fractional or
- * negative count is a mistake worth naming rather than rounding: the caller
- * asked for something this tool cannot do. */
+/* `dflt` when absent. A fractional or negative count is named rather than
+ * rounded: the caller asked for something this tool cannot do. */
 static b8 arg_count(const JVal *j, Str key, size_t dflt, size_t max,
                     size_t *out, char *err, size_t err_cap) {
     const JVal *v = json_get(j, key);
@@ -97,9 +94,9 @@ static b8 arg_count(const JVal *j, Str key, size_t dflt, size_t max,
 }
 
 /* ---- read ----
- * A page of a file rather than the file: a whole one is charged to every
- * later turn of the conversation, so the default stops at YOKE_READ_LINES or
- * YOKE_READ_BYTES and says which call continues from there. */
+ * A page of a file rather than the file, since a whole one is charged to
+ * every later turn: the default stops at YOKE_READ_LINES or YOKE_READ_BYTES
+ * and says which call continues from there. */
 static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
     JVal *j = json_parse(scratch, args);
     if (!j) { snprintf(err, err_cap, "bad args json"); return false; }
@@ -133,7 +130,7 @@ static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
 
     /* The line the byte cap lands in is dropped rather than halved, so the
      * next call resumes on a line boundary. A single line past the cap has no
-     * boundary to fall back to and is cut, on a UTF-8 lead byte. */
+     * boundary to fall back on and is cut at a UTF-8 lead byte. */
     b8 cut_mid_line = false;
     if (off - start > YOKE_READ_BYTES) {
         size_t end = start + YOKE_READ_BYTES;
@@ -181,11 +178,11 @@ static b8 tool_write(Str args, Arena *scratch, Buf *out, char *err, size_t err_c
 
 /* ---- bash ----
  * The child is spawned rather than popen'd because both of its output streams
- * belong in the result and neither belongs on the terminal: stderr left
- * inherited would paint over the frame the TUI owns, and an inherited stdin
- * would race the composer for the user's keystrokes. */
-/* Appends `n` bytes to a ring holding the last `cap` of everything written:
- * `head` is the oldest byte, `len` how many are live. */
+ * belong in the result and neither belongs on the terminal: inherited stderr
+ * would paint over the frame the TUI owns, and inherited stdin would race the
+ * composer for keystrokes. */
+/* A ring holding the last `cap` bytes written: `head` is the oldest, `len`
+ * how many are live. */
 static void ring_put(char *ring, size_t cap, size_t *head, size_t *len,
                      const char *p, size_t n) {
     if (n > cap) { p += n - cap; n = cap; }
@@ -202,8 +199,8 @@ static void ring_put(char *ring, size_t cap, size_t *head, size_t *len,
 }
 
 b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
-    /* One heap-free buffer for the command: a truncated shell line is a
-     * different program, so anything over the limit is refused outright. */
+    /* A truncated shell line is a different program, so anything over the
+     * limit is refused rather than clamped. */
     static char z[YOKE_MAX_COMMAND];
     if (!arg_cstr(cmd, z, sizeof z, "command", err, err_cap)) return false;
 
@@ -226,10 +223,9 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
     }
     close(fds[1]);
 
-    /* The tail is kept rather than the head: a command that fails says why on
-     * its last lines, and the first 50 KB of a build log is the part nobody
-     * asked about. The child is drained to the end either way, since closing
-     * the pipe early would kill it with SIGPIPE mid-run. */
+    /* The tail is kept because a command that fails says why on its last
+     * lines. The child is drained to the end either way, since closing the
+     * pipe early would kill it with SIGPIPE mid-run. */
     static char ring[YOKE_SHELL_OUT_BYTES];
     size_t head = 0, len = 0, total = 0;
     char block[4096];
@@ -265,15 +261,13 @@ static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
 }
 
 /* ---- edit ----
- * One or more exact replacements against one file, applied in order and
- * written once at the end, so a call that cannot be finished leaves the file
- * as it was rather than half patched.
+ * Exact replacements applied in order and written once at the end, so a call
+ * that cannot be finished leaves the file as it was rather than half patched.
  */
 
-/* Offset of the single occurrence of `needle`, or SIZE_MAX with `count` set to
- * what was found instead. An ambiguous match is refused rather than resolved
- * by position: the first occurrence is rarely the one that was reviewed, and
- * silently patching the wrong hunk costs a read, a diff and a second edit. */
+/* Offset of the single occurrence of `needle`, or SIZE_MAX with `count` set
+ * to what was found instead. An ambiguous match is refused rather than
+ * resolved by position: the first occurrence is rarely the reviewed one. */
 static size_t find_unique(Str hay, Str needle, size_t *count) {
     size_t at = (size_t)-1;
     *count = 0;
@@ -364,10 +358,9 @@ static b8 tool_edit(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
 }
 
 /* ---- grep and find ----
- * One walk serves both: the tree in name order so a search is reproducible,
- * and results capped so a wide pattern costs a page rather than the repo.
- * The match is a literal substring, not a regex: what the model wants here is
- * a symbol, and shelling out to rg stays available for the rest.
+ * One walk serves both, in name order so a search is reproducible and capped
+ * so a wide pattern costs a page rather than the repo. The match is a literal
+ * substring rather than a regex, since bash still has the shell for the rest.
  */
 typedef struct {
     Buf   *out;
@@ -401,8 +394,8 @@ static b8 line_matches(Str line, Str pat, b8 ignore_case) {
     return false;
 }
 
-/* The path as a result names it: a relative walk starts at "./", which is two
- * bytes of nothing on every line it would be printed on. */
+/* A relative walk starts at "./", which is two bytes of nothing on every line
+ * it would be printed on. */
 static const char *walk_shown(const Walk *w) {
     return w->path[0] == '.' && w->path[1] == '/' ? w->path + 2 : w->path;
 }
@@ -415,8 +408,8 @@ static b8 name_matches(const Walk *w, const char *base) {
     return fnmatch(w->glob, walk_shown(w), FNM_PATHNAME) == 0;
 }
 
-/* The file arena is the walk's own: `out` grows in the scratch arena while
- * this runs, so rewinding scratch here would free the results. */
+/* The file arena is the walk's own, since `out` grows in the scratch arena
+ * while this runs and rewinding that would free the results. */
 static void walk_grep_file(Walk *w) {
     struct stat st;
     if (stat(w->path, &st) != 0 || !S_ISREG(st.st_mode)) return;
@@ -426,8 +419,8 @@ static void walk_grep_file(Walk *w) {
     Str body;
     char ignored[128];
     if (slurp(w->path, w->file, &body, ignored, sizeof ignored)) {
-        /* A nul byte says the file is not text, and a binary file's "match"
-         * is a line of noise nobody can read. */
+        /* A nul byte says the file is not text, and a binary "match" is a
+         * line of noise nobody can read. */
         Str head = str_take(body, 4096);
         if (!head.n || !memchr(head.p, '\0', head.n)) {
             size_t off = 0, ln = 0;
@@ -446,7 +439,7 @@ static void walk_grep_file(Walk *w) {
     }
 }
 
-/* One regular file the walk reached, or the single file it was pointed at. */
+/* One regular file the walk reached, or the one it was pointed at. */
 static void walk_file(Walk *w, const char *base) {
     if (!name_matches(w, base)) return;
     if (w->pattern.n) { walk_grep_file(w); return; }
@@ -474,8 +467,7 @@ static b8 walk_dir(Walk *w, i32 depth) {
     size_t n = 0;
     struct dirent *de;
     while (ent && n < YOKE_WALK_ENTRIES && (de = readdir(d))) {
-        /* A dotfile is not what a search is about, and .git alone would be
-         * most of the walk. */
+        /* .git alone would be most of the walk. */
         if (de->d_name[0] == '.') continue;
         Str name = str_dup(w->names, str_c(de->d_name));
         if (!name.p) break;
@@ -483,8 +475,8 @@ static b8 walk_dir(Walk *w, i32 depth) {
     }
     closedir(d);
 
-    /* readdir order is the filesystem's, so the same tree would answer in a
-     * different order on the next run. */
+    /* readdir order is the filesystem's, so the same tree would answer
+     * differently on the next run. */
     for (size_t i = 1; i < n; i++) {
         Str key = ent[i];
         size_t k = i;
@@ -528,8 +520,8 @@ static b8 walk_start(Walk *w, Str root, char *err, size_t err_cap) {
         snprintf(err, err_cap, "%s does not exist", rel);
         return false;
     }
-    /* A path naming one file is a search of that file: narrowing a query to
-     * the file it is about is the same request with a smaller root. */
+    /* Narrowing a query to the file it is about is the same request with a
+     * smaller root. */
     if (!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode)) {
         snprintf(err, err_cap, "%s is not a file or a directory", rel);
         return false;
@@ -570,8 +562,8 @@ static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep,
         return false;
     if (!walk_start(&w, json_get_str(j, STR("path")), err, err_cap)) return false;
 
-    /* Both arenas are carved once and never rewound past: `out` keeps growing
-     * in `scratch` above them for as long as the walk finds something. */
+    /* Carved once and never rewound past, since `out` keeps growing in
+     * `scratch` above them for as long as the walk finds something. */
     void *mem = arena_alloc(scratch, YOKE_WALK_BYTES + YOKE_MAX_GREP_FILE + 1, 16);
     if (!mem) { snprintf(err, err_cap, "out of memory"); return false; }
     Arena names, file;
@@ -590,8 +582,8 @@ static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep,
     if (!w.found) {
         buf_putf(out, "no %s\n", grep ? "matches" : "files");
     } else if (w.skipped) {
-        /* The walk finishes either way: the count a cap is judged against is
-         * worth the scan, and only the results were ever the expensive part. */
+        /* The walk finishes either way: the count the cap is judged against
+         * is worth the scan, and only the results were expensive. */
         buf_putf(out, "[%zu of %zu%s shown; narrow the search or raise "
                  "max_results]\n", w.max, w.found, room ? "" : "+");
     }
@@ -609,9 +601,9 @@ static b8 tool_find(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
 
 /* ---- plan mode ----
  * submit_plan and ask_user are registered like any other tool so the model is
- * offered them in the usual place, but the agent loop intercepts both: each
- * one is a question put to the user, and a ToolRun has no way to reach the
- * screen. Reaching this body means the interception is gone. */
+ * offered them in the usual place, but the agent loop intercepts both, since
+ * each is a question put to the user and a ToolRun cannot reach the screen.
+ * Reaching these bodies means the interception is gone. */
 static b8 tool_agent_only(Str args, Arena *scratch, Buf *out,
                           char *err, size_t err_cap) {
     (void)args; (void)scratch; (void)out;
@@ -711,10 +703,9 @@ b8 tools_run(const ToolRegistry *r, size_t id, Str args, Arena *scratch,
         snprintf(err, err_cap, "unknown tool");
         return false;
     }
-    /* A tool withheld from this mode is refused even when the model asks for
-     * it anyway: the schemas it was offered earlier in the conversation are
-     * still in its context, so plan mode's read-only promise has to hold
-     * here rather than only in what was advertised. */
+    /* A schema offered earlier in the conversation is still in the model's
+     * context, so plan mode's read-only promise has to hold here rather than
+     * only in what is advertised now. */
     if (!tools_available(r, id, g_mode)) {
         snprintf(err, err_cap, "%.*s is not available in plan mode",
                  (int)r->name[id].n, r->name[id].p);

@@ -1,8 +1,7 @@
 /* http.c: libcurl POST, streaming or not.
  *
- * A stream is handed to libcurl with a write callback that buffers into a
- * small stack buffer and emits one line at a time to on_line; a single reply
- * accumulates whole into the caller's Buf. No heap use on our side.
+ * A stream buffers into a small stack buffer and emits one line at a time to
+ * on_line; a single reply accumulates whole into the caller's Buf.
  */
 #include "yoke.h"
 
@@ -16,17 +15,16 @@ typedef struct {
     char   line[8192];
     size_t llen;
     b8     aborted;   /* on_line asked us to stop */
-    /* What the transfer felt like, which no return code carries: how many
-     * lines arrived and the longest the stream went silent between them,
-     * which is the shape of the "it froze" report. */
+    /* What no return code carries: how many lines arrived and the longest the
+     * stream went silent between them, which is the "it froze" report. */
     size_t lines;
     size_t polls;
     f64    last_write;
     f64    stall;
 } Ctx;
 
-/* Accumulate into line[], dispatch on newline. Returns false once a sink has
- * asked for the stream to end, which is the contract HttpReq.on_line states. */
+/* Accumulate into line[], dispatch on newline. False once a sink has asked
+ * for the stream to end. */
 static b8 dispatch_line(Ctx *c, const char *p, size_t n) {
     for (size_t i = 0; i < n; i++) {
         char ch = p[i];
@@ -53,8 +51,8 @@ static size_t write_cb(char *p, size_t sz, size_t n, void *ud) {
     if (c->last_write > 0 && now - c->last_write > c->stall)
         c->stall = now - c->last_write;
     c->last_write = now;
-    /* Anything other than `total` tells curl to fail the transfer, which is
-     * exactly what an aborting sink wants. */
+    /* Anything but `total` fails the transfer, which is what an aborting sink
+     * wants. */
     return dispatch_line(c, p, total) ? total : 0;
 }
 
@@ -62,19 +60,19 @@ static size_t body_cb(char *p, size_t sz, size_t n, void *ud) {
     Buf *b = (Buf *)ud;
     size_t total = sz * n;
     buf_put(b, p, total);
-    /* A short buffer fails the transfer rather than silently truncating the
-     * document the caller is about to parse. */
+    /* A short buffer fails the transfer rather than truncating the document
+     * the caller is about to parse. */
     return buf_ok(b) ? total : 0;
 }
 
-/* Headers curl hands us are of no use to either request we make. */
+/* Neither request here has any use for the headers. */
 static size_t drop_header_cb(char *p, size_t sz, size_t n, void *ud) {
     (void)p; (void)ud;
     return sz * n;
 }
 
-/* base_url + path into `url`; false when it does not fit, which is a config
- * error rather than something to grow a buffer for. */
+/* False when it does not fit, which is a config error rather than something
+ * to grow a buffer for. */
 static b8 build_url(char *url, size_t cap, const char *base_url,
                     const char *path) {
     size_t base_n = base_url ? strlen(base_url) : 0;
@@ -85,8 +83,7 @@ static b8 build_url(char *url, size_t cap, const char *base_url,
     return true;
 }
 
-/* "Authorization: Bearer <key>" when there is a key: passing NULL to "%s" is
- * undefined, and "Bearer (null)" is not a request worth sending. */
+/* Only when there is a key: "Bearer (null)" is not a request worth sending. */
 static struct curl_slist *auth_header(struct curl_slist *hdrs,
                                       const char *api_key) {
     if (!api_key || !*api_key) return hdrs;
@@ -112,18 +109,16 @@ static b8 host_is_loopback(Str host) {
         || str_eq(host, STR("[::1]")) || str_starts(host, STR("127."));
 }
 
-/* curl reports its phases in microseconds; a report reads them in
- * milliseconds like every other duration in the record. */
+/* curl reports its phases in microseconds; the record is in milliseconds. */
 static i64 curl_ms(CURL *curl, CURLINFO info) {
     curl_off_t us = 0;
     if (curl_easy_getinfo(curl, info, &us) != CURLE_OK || us < 0) return -1;
     return (i64)(us / 1000);
 }
 
-/* One transfer as the network saw it: curl's own timings and counters, which
- * nothing else in yoke can reach. The endpoint is a hash and a class rather
- * than a URL, since a private host names its owner as surely as a path does;
- * the request path is yoke's own constant and is recorded as it is. */
+/* curl's own timings and counters, which nothing else in yoke can reach. The
+ * endpoint is a hash and a class rather than a URL, since a private host
+ * names its owner the way a path does. */
 static void http_record(const char *method, const char *path, const char *url,
                         CURL *curl, CURLcode rc, i64 status, const Ctx *sse,
                         b8 interrupted) {
@@ -137,7 +132,7 @@ static void http_record(const char *method, const char *path, const char *url,
     tel_bool(&e, "tls", str_starts(str_c(url ? url : ""), STR("https://")));
     tel_int(&e, "status", status);
     tel_int(&e, "curl", (i64)rc);
-    /* curl's own message: a fixed catalogue string, not anything of ours. */
+    /* A fixed catalogue string of curl's, nothing of the conversation. */
     if (rc != CURLE_OK) tel_str(&e, "curl_error", str_c(curl_easy_strerror(rc)));
     tel_bool(&e, "interrupted", interrupted);
 
@@ -210,8 +205,8 @@ i32 http_get(const char *base_url, const char *path, const char *api_key,
     return 0;
 }
 
-/* How long a wait may last before we re-check the interrupt flag. Short enough
- * that Ctrl-C feels immediate, long enough to stay idle between events. */
+/* Short enough that Ctrl-C feels immediate, long enough to stay idle between
+ * events. */
 #define HTTP_POLL_MS 100
 
 i32 http_post(const HttpReq *r) {
@@ -242,14 +237,13 @@ i32 http_post(const HttpReq *r) {
                                                      : (void *)r->body_out);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, drop_header_cb);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    /* We own SIGWINCH/SIGINT and run single-threaded; curl's signal-based
-     * resolver timeouts would fire into our handlers. */
+    /* SIGWINCH and SIGINT are ours, and curl's signal-based resolver timeouts
+     * would fire into those handlers. */
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
 
-    /* Driven through the multi interface so the wait covers our idle fd as
-     * well as curl's sockets: the caller's UI stays live for the whole
-     * request without a second thread. */
+    /* The multi interface so one wait covers the idle fd as well as curl's
+     * sockets, which keeps the caller's UI live without a second thread. */
     CURLM *multi = curl_multi_init();
     if (!multi) {
         curl_slist_free_all(hdrs);
@@ -288,8 +282,8 @@ i32 http_post(const HttpReq *r) {
             if (msg->msg == CURLMSG_DONE) rc = msg->data.result;
     }
 
-    /* A body that does not end in a newline still has a last line, and for a
-     * single JSON document that line is the whole reply. */
+    /* A body not ending in a newline still has a last line, and for a single
+     * JSON document that line is the whole reply. */
     if (stream && !interrupted && rc == CURLE_OK && ctx.llen)
         dispatch_line(&ctx, "\n", 1);
 
@@ -305,7 +299,7 @@ i32 http_post(const HttpReq *r) {
     curl_slist_free_all(hdrs);
     curl_easy_cleanup(curl);
 
-    if (interrupted) return 3; /* expected user cancellation */
+    if (interrupted) return 3;
     if (rc != CURLE_OK) {
         yoke_log(YOKE_LOG_ERROR, "curl: %s", curl_easy_strerror(rc));
         if (r->fail_out && r->fail_cap)

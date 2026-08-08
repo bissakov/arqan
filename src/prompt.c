@@ -1,29 +1,22 @@
 /* prompt.c: the system prompt, as a template with placeholders.
  *
- * The prompt is a document, so it comes from one place at a time rather than
- * being assembled from layers: --system or YOKE_SYSTEM_PROMPT if either is
- * set, else the project's .yoke/SYSTEM.md found by walking up from the
- * working directory, else the global $XDG_CONFIG_HOME/yoke/SYSTEM.md, else
- * the built-in template below.
+ * A prompt is a document, so it comes from one place at a time rather than
+ * from layers: --system or YOKE_SYSTEM_PROMPT, else the project's
+ * .yoke/SYSTEM.md found by walking up from the working directory, else the
+ * global $XDG_CONFIG_HOME/yoke/SYSTEM.md, else the built-in template. One
+ * past YOKE_MAX_PROMPT_FILE is refused rather than truncated.
  *
- * Whichever it is, it is expanded before it is sent: what only startup knows
- * (the registered tools, the working directory) is written as a placeholder
- * and substituted here, so a prompt written months ago still describes the
- * tools that exist today. An unknown "{name}" is left exactly as written,
- * which keeps braces safe in a prompt that talks about JSON or C.
+ * Whichever wins is expanded before it is sent, so a prompt written months
+ * ago still describes the tools that exist today. An unknown "{name}" is left
+ * as written, which keeps braces safe in a prompt about JSON or C.
  *
- * A SYSTEM.md past YOKE_MAX_PROMPT_FILE is refused, not truncated: half a
- * prompt is a different prompt, and one that silently drops its last
- * paragraph is worse than one that never ran.
+ * AGENTS.md is the project's instructions rather than the operator's, so it
+ * does not compete with the prompt: every one from the working directory up
+ * to the root is appended to whichever won, since a subdirectory refines its
+ * parent instead of replacing it.
  *
- * AGENTS.md is the other half of this file and the opposite kind of thing:
- * not the operator's instructions to yoke but the project's, so it does not
- * compete with the prompt, it is appended to whichever prompt won. Every one
- * from the working directory up to the root applies rather than just the
- * nearest, since a subdirectory refines its parent instead of replacing it.
- *
- * Plan mode has a prompt of its own, resolved the same way from PLAN.md, and
- * expanded against the tools plan mode actually offers.
+ * Plan mode's prompt is resolved the same way from PLAN.md and expanded
+ * against the tools plan mode offers.
  */
 #include "yoke.h"
 
@@ -57,9 +50,8 @@ static const char PROMPT_BUILTIN[] =
     "\n"
     "Current working directory: {cwd}\n";
 
-/* Plan mode's counterpart. It describes the same project with none of the
- * tools that change it, so what it can promise is a plan rather than an
- * edit. */
+/* The same project with none of the tools that change it, so what it can
+ * promise is a plan rather than an edit. */
 static const char PROMPT_PLAN_BUILTIN[] =
     "You are an expert software planner. You are in Plan mode: you "
     "investigate the project and propose a plan, and you change nothing. No "
@@ -84,9 +76,9 @@ static const char PROMPT_PLAN_BUILTIN[] =
     "\n"
     "Current working directory: {cwd}\n";
 
-/* Reads `path` into `a`, empty when it does not exist or holds only space.
- * A file past the limit sets `err` and reads nothing, which stops the search
- * rather than falling through to a prompt the user did not ask for. */
+/* Empty when `path` does not exist or holds only space. A file past the limit
+ * sets `err` and reads nothing, which stops the search rather than falling
+ * through to a prompt the user did not ask for. */
 static Str prompt_read(Str path, Arena *a, char *err, size_t err_cap) {
     if (!path.n || path.n >= YOKE_MAX_PATH) return (Str){0};
     FILE *f = fopen(path.p, "rb");
@@ -110,8 +102,8 @@ static Str prompt_read(Str path, Arena *a, char *err, size_t err_cap) {
 }
 
 /* The prompt of the nearest ancestor of `dir` that has one, `suffix` carrying
- * its own leading separator ("/.yoke/SYSTEM.md"). Git's rule: the project
- * root is wherever the marker is, not where yoke started. */
+ * its own leading separator ("/.yoke/SYSTEM.md"). As git does it, the project
+ * root is wherever the marker is rather than where yoke started. */
 static Str prompt_project(Str dir, const char *suffix, size_t suffix_size,
                           Arena *scratch, char *err, size_t err_cap) {
     char path[YOKE_MAX_PATH];
@@ -133,8 +125,7 @@ static Str prompt_project(Str dir, const char *suffix, size_t suffix_size,
     }
 }
 
-/* The highest precedence `name` in the config dirs: the user's own first,
- * then the XDG_CONFIG_DIRS entries below it. */
+/* The highest precedence `name` in the config dirs. */
 static Str prompt_global(Str name, Arena *scratch, char *err, size_t err_cap) {
     Str cand[YOKE_MAX_CONFIG_FILES];
     size_t n = paths_config_files(name, scratch, cand,
@@ -146,9 +137,9 @@ static Str prompt_global(Str name, Arena *scratch, char *err, size_t err_cap) {
     return (Str){0};
 }
 
-/* Every AGENTS.md at or above `dir`, nearest first, as body/path pairs.
- * Past YOKE_MAX_AGENTS_FILES the outermost are the ones dropped: the nearest
- * statement is the one that describes the code being worked on. */
+/* Every AGENTS.md at or above `dir`, nearest first. Past
+ * YOKE_MAX_AGENTS_FILES the outermost are dropped, since the nearest
+ * describes the code being worked on. */
 static size_t prompt_agents(Str dir, Arena *scratch, Str *body, Str *path_out,
                             size_t cap, char *err, size_t err_cap) {
     static const char suffix[] = "/AGENTS.md";
@@ -186,7 +177,7 @@ static void prompt_tools(Buf *b, const ToolRegistry *tools, AgentMode mode) {
     }
 }
 
-/* Substitutes the placeholders of `tmpl` into `b`. */
+/* Expands the placeholders of `tmpl` into `b`. */
 static void prompt_expand(Buf *b, Str tmpl, const ToolRegistry *tools,
                           AgentMode mode, Str cwd) {
     for (size_t i = 0; i < tmpl.n; i++) {

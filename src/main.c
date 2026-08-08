@@ -1,16 +1,10 @@
-/* main.c: yoke entry point. Unity build: includes every module as one TU.
- *
- * Memory plan (no heap at all in our code):
- *   - two big static blocks wrapped in arenas: persistent (messages) + scratch
- *   - libcurl's own allocations happen inside curl and are out of our control.
- */
+/* main.c: yoke entry point. Unity build: includes every module as one TU. */
 #define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE 1
 
 #include "yoke.h"
 
-/* Unity includes: single translation unit. */
 #include "core.c"
 #include "json.c"
 #include "http.c"
@@ -38,12 +32,12 @@
 static volatile sig_atomic_t g_got_sigint = 0;
 static void on_sigint(i32 sig) { (void)sig; g_got_sigint = 1; }
 
-/* Static backing storage, so no malloc in our code path. */
+/* Static backing storage: no malloc anywhere in our code. */
 static alignas(64) u8 g_persist[YOKE_PERSIST_BYTES];
 static alignas(64) u8 g_scratch[YOKE_ARENA_BYTES];
 
-/* Slash commands handled below in the prompt loop; the TUI reads this table
- * to drive the composer's completion popup. */
+/* Handled below in the prompt loop; the TUI reads this to drive the
+ * composer's completion popup. */
 static TuiCmd g_commands[YOKE_MAX_COMMANDS];
 
 static size_t g_command_n;
@@ -64,10 +58,8 @@ static size_t commands_init(void) {
     return n;
 }
 
-/* Streaming sinks append to the TUI's transcript. */
 /* Whether the round's thinking trace and its reply have opened their block:
- * each is one, so the first delta of either lands under one blank row and the
- * ones after it do not open a second. */
+ * each is one, so the deltas after the first do not open a second. */
 static b8 g_reasoning;
 static b8 g_replying;
 static void on_reason(Str delta, void *ud) {
@@ -93,9 +85,8 @@ static void on_tool_call(i32 idx, Str id, Str name, Str args_delta, void *ud) {
     (void)ud; (void)idx; (void)id; (void)name; (void)args_delta;
     tui_set_status("preparing tool call");
 }
-/* A failed request that reached nothing, said in the transcript rather than
- * in a notice: it belongs to the turn being read, not to the last keystroke.
- * It never reaches Conv, so a replay of the conversation does not repeat it. */
+/* Said in the transcript rather than in a notice: it belongs to the turn
+ * being read. It never reaches Conv, so a replay does not repeat it. */
 static void on_retry(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
                      void *ud) {
     (void)ud;
@@ -114,14 +105,13 @@ static void on_retry(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
     g_replying = false;
     g_reasoning = false;
 }
-/* Called from inside the request wait: keeps the composer typeable mid-turn. */
+/* Called from inside the request wait, so the composer stays typeable. */
 static void on_idle(void *ud) {
     (void)ud;
     tui_poll_input();
 }
 
-/* Everything one user turn touches, so the interactive loop and the one-shot
- * -p run drive the same code. */
+/* Everything one user turn touches, so the interactive loop and -p share it. */
 typedef struct {
     Config       *cfg;
     ToolRegistry *tools;
@@ -130,21 +120,19 @@ typedef struct {
     Arena        *scratch;
     Session      *sess;
     size_t        mark;   /* persist offset a conversation starts at */
-    /* An approved plan on its way to a session of its own: it lives in the
-     * scratch arena until the turn that carries it re-anchors it in persist,
+    /* An approved plan on its way to a session of its own. It lives in the
+     * scratch arena until the turn carrying it re-anchors it in persist,
      * which is what lets the conversation it came from be dropped whole. */
     Str           handoff;
     b8            echo;   /* write the prompt into the transcript */
 } Agent;
 
-/* The mode a telemetry event names. */
 static Str mode_name(AgentMode m) {
     return m == MODE_PLAN ? STR("plan") : STR("build");
 }
 
-/* What the run is: the settings a report needs, the working directory as a
- * hash and nothing that names it. Written when recording starts, whether that
- * is at startup or at the /telemetry that turned it on. */
+/* The settings a report needs and the working directory as a hash. Written
+ * when recording starts, at startup or at the /telemetry that turned it on. */
 static void telemetry_session(const Config *cfg, const ToolRegistry *tools) {
     TelEvent e;
     tel_open(&e, "session");
@@ -166,8 +154,8 @@ static void telemetry_session(const Config *cfg, const ToolRegistry *tools) {
 /* What the tool calls of one round asked the turn to do next. */
 typedef enum { TURN_CONTINUE, TURN_DONE, TURN_HANDOFF, TURN_FULL } TurnAction;
 
-/* The mode decides which prompt slot 0 carries and which tools exist, so both
- * move together and the model never sees one without the other. */
+/* Prompt and registry move together, so the model never sees one without the
+ * other. */
 static void agent_set_mode(Agent *ag, AgentMode mode) {
     TelEvent e;
     tel_open(&e, "mode");
@@ -182,8 +170,7 @@ static void agent_set_mode(Agent *ag, AgentMode mode) {
     tui_set_mode(mode);
 }
 
-/* Answer call `call` with `result` and render it under `name`. False when the
- * conversation had no room left, which ends the turn. */
+/* False when the conversation had no room left, which ends the turn. */
 static b8 add_result(Agent *ag, size_t call, Str name, Str result) {
     Conv *conv = ag->conv;
     size_t slot = conv_add_tool(conv, conv->tool_call_id[call], result);
@@ -201,11 +188,9 @@ static Str json_field(const JVal *j, Str key) {
     return v && v->type == J_STR ? v->u.s : (Str){0};
 }
 
-/* ask_user: the model asks, the picker answers. The rows are the options it
- * offered, the list opens on the one it recommends, and a last row hands the
- * composer over for an answer it did not think of. The result is the chosen
- * text alone, since that is what the user said. Empty when the question was
- * dismissed. */
+/* The rows are the options the model offered, the list opens on the one it
+ * recommends, and a last row hands the composer over for an answer it did
+ * not think of. Empty when the question was dismissed. */
 static Str ask_user_answer(Agent *ag, Str args) {
     JVal *j = json_parse(ag->scratch, args);
     Str question = json_field(j, STR("question"));
@@ -246,8 +231,7 @@ static Str ask_user_answer(Agent *ag, Str args) {
     return str_dup(ag->persist, str_c(typed));
 }
 
-/* submit_plan: the plan is rendered as the Markdown it was written in, and
- * the three answers to it are the three ways a turn can go on. */
+/* The three answers to a submitted plan are the three ways a turn goes on. */
 static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
     Str plan = json_field(json_parse(ag->scratch, args), STR("plan"));
     render_plan(plan);
@@ -278,15 +262,13 @@ static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
     return TURN_HANDOFF;
 }
 
-/* Run the tool calls the turn just appended to `conv`, the carrier slots in
- * [first, last), and append each result. The two plan mode tools are
- * questions put to the user rather than work, so they are answered here
- * instead of through tools_run, which has no way to reach the screen. */
+/* Run the carrier slots in [first, last) and append each result. The two plan
+ * mode tools are questions put to the user rather than work, so they are
+ * answered here instead of through tools_run, which cannot reach the screen. */
 static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
     Conv *conv = ag->conv;
-    /* Every call of the round is answered even once the user has ended the
-     * turn: a call left without its result is a conversation the provider
-     * refuses on the next message. */
+    /* Every call is answered even once the user has ended the turn: one left
+     * without its result is a conversation the provider refuses. */
     TurnAction pending = TURN_CONTINUE;
     for (size_t i = first; i < last; i++) {
         if (!conv_is_call(conv, i)) continue;
@@ -324,8 +306,7 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         if (!ok && !err[0]) snprintf(err, sizeof err, "tool failed");
         if (!ok) { out.n = 0; buf_putf(&out, "ERROR: %s", err); }
         Str result = buf_finish(&out);
-        /* The call as a report reads it: which tool, which arguments it was
-         * given, how long it took and how much it answered with. What the
+        /* Which tool, which argument keys, how long, how much. What the
          * arguments said and what it answered stay out. */
         TelEvent e;
         tel_open(&e, "tool");
@@ -344,8 +325,8 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
     return pending;
 }
 
-/* The tool a result answers: a result slot carries only the id of the call it
- * belongs to, and how it reads depends on which tool produced it. */
+/* A result slot carries only the id of the call it belongs to, and how it
+ * reads depends on which tool produced it. */
 static Str call_name(const Conv *c, size_t result) {
     for (size_t i = result; i-- > 0;)
         if (conv_is_call(c, i) && str_eq(c->tool_call_id[i],
@@ -354,8 +335,8 @@ static Str call_name(const Conv *c, size_t result) {
     return (Str){0};
 }
 
-/* Repaint a resumed conversation: the transcript is a rendering of the
- * messages, so replaying them is the same code path a live turn takes. */
+/* The transcript is a rendering of the messages, so replaying them takes the
+ * same path a live turn does. */
 static void render_conv(const Conv *c, Arena *scratch) {
     for (size_t i = 0; i < c->n; i++) {
         switch (c->role[i]) {
@@ -387,9 +368,8 @@ static void render_conv(const Conv *c, Arena *scratch) {
     }
 }
 
-/* Replay the transcript after a change to how it renders. `zone` is the block
- * the reader acted on, which keeps its place on screen while everything above
- * it is rebuilt; 0 when the change was not about one block. */
+/* `zone` is the block the reader acted on, which keeps its place on screen
+ * while everything above it is rebuilt; 0 when no one block was involved. */
 static void rerender_conv(const Conv *conv, Arena *scratch, u32 zone) {
     arena_reset(scratch);
     tui_anchor_zone(zone);
@@ -399,10 +379,9 @@ static void rerender_conv(const Conv *conv, Arena *scratch, u32 zone) {
     arena_reset(scratch);
 }
 
-/* Offer the saved sessions for this directory and resume the chosen one.
- * Nothing to open leaves the view exactly as it was, welcome screen included,
- * and answers in the popup's own slot: a session that did not open is not part
- * of the conversation, so it has no business in the transcript. */
+/* Nothing to open leaves the view exactly as it was and answers in the
+ * popup's own slot: a session that did not open is not part of the
+ * conversation, so it has no business in the transcript. */
 static void resume_session(Session *sess, Conv *conv, Arena *persist,
                            Arena *scratch, size_t session_mark) {
     arena_reset(scratch);
@@ -428,9 +407,8 @@ static void resume_session(Session *sess, Conv *conv, Arena *persist,
         return;
     }
 
-    /* Read first: replaying rewinds the conversation and overwrites its
-     * storage, so a session that cannot be read must not cost the one that is
-     * running, so the view stays exactly as it was. */
+    /* Read first: replaying overwrites the live conversation's storage, so a
+     * session that cannot be read must not cost the one that is running. */
     Str src = session_read(list.path[pick], scratch);
     if (!src.n) {
         tui_notice(STR("could not read that session"));
@@ -447,9 +425,8 @@ static void resume_session(Session *sess, Conv *conv, Arena *persist,
     arena_reset(scratch);
 }
 
-/* One popup row's worth of a message: control bytes become spaces and the cut
- * lands on a UTF-8 boundary, so neither a newline nor half a glyph reaches the
- * frame. */
+/* One popup row of a message: control bytes become spaces and the cut lands
+ * on a UTF-8 boundary. */
 #define REWIND_PREVIEW_BYTES 72
 static Str preview_line(Arena *a, Str s) {
     char tmp[REWIND_PREVIEW_BYTES];
@@ -465,11 +442,9 @@ static Str preview_line(Arena *a, Str s) {
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
 }
 
-/* Go back to an earlier user turn: the chosen message returns to the composer
- * and everything from it onward leaves the conversation, so the next turn
- * continues from where that one did. The persistent arena is not rewound: its
- * messages are bump-allocated in conversation order, and the composer is
- * loaded from the text that is about to be dropped. */
+/* The chosen message returns to the composer and everything from it onward
+ * leaves the conversation. The persistent arena is not rewound: the composer
+ * is loaded from the text that is about to be dropped. */
 static void rewind_conversation(Conv *conv, Session *sess, Arena *scratch) {
     arena_reset(scratch);
     size_t count = 0;
@@ -479,10 +454,9 @@ static void rewind_conversation(Conv *conv, Session *sess, Arena *scratch) {
         tui_notice(STR("no message to go back to"));
         return;
     }
-    /* A conversation can hold more turns than the popup does. Which end is
-     * dropped is the caller's to decide, since the picker knows nothing about
-     * the order: going back a hundred turns is a session to resume, not a
-     * message to edit, so the oldest go. */
+    /* A conversation can hold more turns than the popup does, and going back
+     * a hundred of them is a session to resume rather than a message to
+     * edit, so the oldest go. */
     size_t skip = count > YOKE_MAX_POPUP ? count - YOKE_MAX_POPUP : 0;
     size_t cap = count - skip;
     size_t *at = arena_new(scratch, size_t, cap);
@@ -501,10 +475,9 @@ static void rewind_conversation(Conv *conv, Session *sess, Arena *scratch) {
         n++;
     }
 
-    /* The list points into the transcript above it, so it is ordered like it:
-     * oldest at the top, the newest turn on the row nearest the composer,
-     * which is where the selection opens. Going back further is Up, as it is
-     * in the composer's own history and in the scrollback. */
+    /* The list points into the transcript, so it is ordered like it: the
+     * newest turn sits nearest the composer and going back further is Up, as
+     * it is in the composer's own history. */
     size_t pick = 0;
     if (!tui_pick(STR("rewind to a message"), items, n, TUI_PICK_LAST, &pick)) {
         arena_reset(scratch);
@@ -516,16 +489,13 @@ static void rewind_conversation(Conv *conv, Session *sess, Arena *scratch) {
     tui_clear();
     render_conv(conv, scratch);
     /* A session file is append-only and this one no longer describes the
-     * conversation, so what is left of it continues in a new file, which the
-     * next save writes whole. */
+     * conversation, so what is left of it continues in a new file. */
     session_fork(sess, conv);
     arena_reset(scratch);
 }
 
-/* Continue in a copy of this conversation. Nothing on screen and nothing in
- * the conversation moves: only the file underneath changes, so every message
- * from here lands in a new session and the one it was forked from keeps what
- * it had, where /resume can still find it. */
+/* Continue in a copy: only the file underneath changes, so the session this
+ * was forked from keeps what it had, where /resume can still find it. */
 static void fork_session(Session *sess, const Conv *conv) {
     if (conv->n <= 1) {
         tui_notice(STR("nothing to fork yet"));
@@ -542,10 +512,9 @@ static void fork_session(Session *sess, const Conv *conv) {
     tui_notice(STR("forked: this copy continues, the original is unchanged"));
 }
 
-/* Copy the model's last reply as the Markdown it wrote: the transcript is a
- * rendering of that text, wrapped and interleaved with tool output, while the
- * conversation still holds the source. Slots carrying a tool call hold JSON
- * arguments, not prose, so they are not a reply. */
+/* The last reply as the Markdown it was written in, which the conversation
+ * still holds while the transcript has only a wrapped rendering of it. A slot
+ * carrying a tool call holds JSON arguments rather than prose. */
 static void copy_last_reply(const Conv *conv) {
     for (size_t i = conv->n; i-- > 0;) {
         if (conv->role[i] != M_ASSISTANT || conv_is_call(conv, i)) continue;
@@ -558,8 +527,7 @@ static void copy_last_reply(const Conv *conv) {
     tui_notice(STR("no response to copy"));
 }
 
-/* A one-line answer built on the stack, which is what most commands leave
- * behind: it lives for the length of the call, and tui_notice copies it. */
+/* tui_notice copies, so the stack buffer only has to outlive the call. */
 static void notice_fmt(const char *fmt, ...)
     __attribute__((format(printf, 1, 2)));
 static void notice_fmt(const char *fmt, ...) {
@@ -573,8 +541,8 @@ static void notice_fmt(const char *fmt, ...) {
     tui_notice((Str){ msg, n });
 }
 
-/* The command a line ran, for the record. Only the ones yoke offers are
- * named: a line yoke does not know is the user's text, not ours. */
+/* Only the commands yoke offers are named: a line it does not know is the
+ * user's text, not ours. */
 static void telemetry_command(Str line) {
     Str word = line;
     for (size_t i = 0; i < line.n; i++)
@@ -588,9 +556,8 @@ static void telemetry_command(Str line) {
     tel_send(&e);
 }
 
-/* Offer what `cfg`'s endpoint lists at /models. The pick points into
- * `scratch`, so a caller that keeps it copies it out before resetting. False
- * when nothing was listed or nothing was chosen, having said which. */
+/* The pick points into `scratch`, so a caller that keeps it copies it out
+ * before resetting. False when nothing was listed or chosen, having said so. */
 static b8 pick_model(const Config *cfg, Arena *scratch, Str *out) {
     tui_set_status("loading models");
     Str names[YOKE_MAX_MODELS];
@@ -618,9 +585,8 @@ static b8 pick_model(const Config *cfg, Arena *scratch, Str *out) {
     return true;
 }
 
-/* Offer what the provider's /models endpoint lists and switch to the chosen
- * one for this session, remembering it for the next. The conversation is
- * untouched: a model change is not part of it. */
+/* Switch model for this session and remember it for the next. The
+ * conversation is untouched: a model change is not part of it. */
 static void choose_model(Config *cfg, Arena *persist, Arena *scratch) {
     arena_reset(scratch);
     Str picked = {0};
@@ -640,8 +606,7 @@ static void choose_model(Config *cfg, Arena *persist, Arena *scratch) {
     tel_open(&e, "model");
     tel_str(&e, "name", chosen);
     tel_send(&e);
-    /* A model id only means something against the endpoint that served it, so
-     * with a provider selected it is remembered on that entry. */
+    /* A model id only means something against the endpoint that served it. */
     b8 saved = cfg->provider.n
              ? endpoints_remember_model(cfg->provider, chosen, scratch)
              : config_remember_model(chosen, scratch);
@@ -650,16 +615,14 @@ static void choose_model(Config *cfg, Arena *persist, Arena *scratch) {
     arena_reset(scratch);
 }
 
-/* Nothing to talk to: no key, and no endpoint named by a flag, the
- * environment, a config file or the store. The default base URL is a
- * placeholder here, not a destination. */
+/* No key and no endpoint from a flag, the environment, a config file or the
+ * store. The default base URL is a placeholder here, not a destination. */
 static b8 no_provider(const Config *cfg) {
     return !cfg->api_key.p && !cfg->base_url_set;
 }
 
-/* Make `name` the provider this session and the next ones talk to. The
- * strings are copied into `persist` because the endpoint store they came from
- * lives in the scratch arena, which the next turn rewinds. */
+/* Copies into `persist` because the endpoint store they came from lives in
+ * the scratch arena, which the next turn rewinds. */
 static b8 use_endpoint(Config *cfg, Str name, Str base_url, Str model,
                        Str key, Arena *persist) {
     Str n = str_dup(persist, name);
@@ -712,8 +675,7 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
         tui_notice(STR("a base URL starts with http:// or https://"));
         return false;
     }
-    /* A local server needs no key, so an empty answer is a valid one and only
-     * the questions above can cancel the form. */
+    /* A local server needs no key, so an empty answer is a valid one. */
     if (!tui_ask(STR("its API key (empty if it needs none)"), true, key,
                  sizeof key))
         key[0] = '\0';
@@ -752,9 +714,8 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
     return true;
 }
 
-/* Offer the providers already stored, plus the entry that creates one. With
- * none stored there is nothing to pick from, so the form opens straight
- * away. */
+/* The providers already stored, plus the entry that creates one. With none
+ * stored there is nothing to pick from, so the form opens straight away. */
 static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
     arena_reset(scratch);
     Endpoints eps;
@@ -813,24 +774,19 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
 }
 
 /* ---- /settings -----------------------------------------------------------
- * The settings the session has: three toggles that were once commands of
- * their own, and the values that decide what a turn is sent to. The screen is
- * its own answer, so nothing here writes a notice: a toggle that refused to
- * change is a box that stayed empty, and a value that changed is a row that
- * reads differently.
- *
- * Nothing is persisted here either. A setting that outlives the session is
- * remembered by whoever owns it, which is the telemetry file, the endpoint
- * store or the state directory's model.
+ * The screen is its own answer, so nothing here writes a notice: a toggle
+ * that refused to change is a box that stayed empty. Nothing is persisted
+ * here either, since a setting that outlives the session is already
+ * remembered by whoever owns it.
  */
 enum {
     SET_VERBOSE, SET_RAW, SET_STREAM, SET_TELEMETRY,
     SET_MODE, SET_MODEL, SET_PROVIDER, SET_MAX_TOKENS, SET_N
 };
 
-/* "[x] label" for a toggle, and the same column for a value row, so the two
- * kinds read as one list. The label alone is the fallback: a row that lost
- * its checkbox to a full arena is still the row it was. */
+/* "[x] label" for a toggle and the same column for a value row, so the two
+ * kinds read as one list. A row that lost its checkbox to a full arena is
+ * still the row it was. */
 static Str setting_label(Arena *a, Str label, const char *box) {
     Buf b; buf_init(&b, a, label.n + 8);
     buf_puts(&b, str_c(box));
@@ -844,9 +800,8 @@ static Str setting_value(Arena *a, Str label) {
     return setting_label(a, label, "    ");
 }
 
-/* How many tokens one reply may run to, asked for in the composer. An answer
- * that is not a number leaves the setting alone, since the alternative is
- * guessing at what was meant. */
+/* An answer that is not a number leaves the setting alone, since the
+ * alternative is guessing at what was meant. */
 static void ask_max_tokens(Config *cfg) {
     char typed[32];
     if (!tui_ask(STR("max tokens for one reply"), false, typed, sizeof typed))
@@ -920,9 +875,9 @@ static void choose_settings(Agent *ag) {
     arena_reset(scratch);
 }
 
-/* A line typed in shell mode ('!' as its first byte): it runs here rather than
- * reaching the model, and takes a conversation slot of its own, so the model
- * sees what the user ran, a replay renders it and the session keeps it. */
+/* A '!' line runs here rather than reaching the model, and takes a
+ * conversation slot of its own, so the model sees what the user ran, a
+ * replay renders it and the session keeps it. */
 static void run_shell(Agent *ag, Str cmd) {
     Conv *conv = ag->conv;
     arena_reset(ag->scratch);
@@ -952,7 +907,7 @@ static void run_shell(Agent *ag, Str cmd) {
     tui_set_status("ready");
     Str result = str_dup(ag->persist, buf_finish(&out));
     if (!result.p) result = STR("ERROR: out of memory");
-    /* A command line is the user's own text, so only its size is recorded. */
+    /* The command is the user's own text, so only its size is recorded. */
     TelEvent e;
     tel_open(&e, "shell");
     tel_shape(&e, "command", cmd);
@@ -966,15 +921,13 @@ static void run_shell(Agent *ag, Str cmd) {
 }
 
 /* Appends `text` as a user message and streams completions until the model
- * asks for no more tools. False when the turn ended on an error, an interrupt
- * or a full conversation, which is the exit status of a one-shot run. */
+ * asks for no more tools. False when the turn ended on an error, an
+ * interrupt or a full conversation, which is a one-shot run's exit status. */
 static b8 agent_turn(Agent *ag, Str text);
 
-/* An approved plan, continued in a session of its own: the conversation that
- * produced it is dropped whole and the plan becomes the first message of the
- * next one, so the work starts with the plan as its entire context. The plan
- * still lives in the scratch arena, which the persistent rewind does not
- * touch, and the turn below re-anchors it in persist. */
+/* The conversation that produced the plan is dropped whole and the plan
+ * becomes the first message of the next one. It still lives in the scratch
+ * arena, which the persistent rewind below does not touch. */
 static b8 agent_handoff(Agent *ag) {
     Str plan = ag->handoff;
     ag->handoff = (Str){0};
@@ -1016,10 +969,9 @@ static b8 agent_turn(Agent *ag, Str text) {
     b8 ok = false;
     g_got_sigint = 0;
     tui_set_busy(true);
-    /* A turn runs until the model stops asking for tools. A cap here would
-     * end a long build in the middle of itself, and whoever started one is
-     * often not at the keyboard to answer for it; stopping the agent is
-     * theirs to do, and Ctrl-C is how they do it. */
+    /* No round cap: it would end a long build in the middle of itself, and a
+     * user who walked away from one is not there to lift it. Stopping the
+     * agent is theirs to do, through Ctrl-C. */
     for (;;) {
         rounds++;
         if (g_got_sigint) {
@@ -1049,10 +1001,9 @@ static b8 agent_turn(Agent *ag, Str text) {
         };
         char err[256] = {0};
         arena_reset(ag->scratch);
-        /* snapshot conv tail to discover tool calls emitted this turn */
         size_t before = conv->n;
         i32 rc = provider_run(&p, err, sizeof err);
-        /* The completion is whole: whatever line the renderer still held back
+        /* The completion is whole, so whatever line the renderer held back
          * has no more bytes coming. */
         md_end();
         if (p.usage_valid) tui_set_context_tokens(p.total_tokens);
@@ -1064,8 +1015,8 @@ static b8 agent_turn(Agent *ag, Str text) {
             break;
         }
         if (rc < 0) {
-            /* Every one of these strings is formatted by yoke itself, so it
-             * carries a status or a limit and no conversation. */
+            /* `err` is formatted by yoke itself: a status or a limit, never
+             * anything from the conversation. */
             TelEvent ee;
             tel_open(&ee, "error");
             tel_str(&ee, "where", STR("provider"));
@@ -1079,7 +1030,7 @@ static b8 agent_turn(Agent *ag, Str text) {
         if (rc == 0) {
             tui_set_status("ready");
             ok = true;
-            break; /* no tool calls, turn done */
+            break;
         }
         /* The turn appended one head slot plus a carrier per call at
          * [before, conv->n); run them straight off the conversation rather
@@ -1101,8 +1052,8 @@ static b8 agent_turn(Agent *ag, Str text) {
     tel_int(&te, "rounds", rounds);
     tel_int(&te, "ms", (i64)((yoke_now_seconds() - turn_started) * 1000.0));
     tel_int(&te, "messages", (i64)conv->n);
-    /* The two arenas are the budget a long session runs down, and nothing on
-     * screen says where they stand. */
+    /* The budget a long session runs down; nothing on screen says where the
+     * arenas stand. */
     tel_int(&te, "persist_used", (i64)arena_used(ag->persist));
     tel_int(&te, "scratch_used", (i64)arena_used(ag->scratch));
     tel_send(&te);
@@ -1142,8 +1093,8 @@ i32 main(i32 argc, char **argv) {
         return 2;
     }
     arena_reset(&scratch);
-    /* Both prompts are built before the conversation starts, so switching
-     * mode later is an assignment rather than a file read mid-turn. */
+    /* Built up front, so switching mode later is an assignment rather than a
+     * file read mid-turn. */
     cfg.plan_prompt = prompt_build_plan(&tools, &persist, &scratch, prompt_err,
                                         sizeof prompt_err);
     if (!cfg.plan_prompt.n) {
@@ -1153,8 +1104,8 @@ i32 main(i32 argc, char **argv) {
     arena_reset(&scratch);
     tools_set_mode(cfg.mode);
 
-    /* Prompt history lives in the XDG state dir. Without a resolvable one,
-     * recall still works for this session and only the on-disk copy is lost. */
+    /* Without a resolvable state dir, recall still works for this session and
+     * only the on-disk copy is lost. */
     History hist = {0};
     Arena hist_arena = {0};
     void *hist_mem = arena_alloc(&persist, YOKE_HISTORY_BYTES, 64);
@@ -1177,8 +1128,7 @@ i32 main(i32 argc, char **argv) {
     conv_add(&conv, M_SYSTEM, cfg.system_prompt);
     size_t session_mark = persist.off;
 
-    /* Sessions are per working directory; without a resolvable data dir the
-     * conversation simply is not persisted. */
+    /* Without a resolvable data dir the conversation is not persisted. */
     static Session sess;
     session_init(&sess, &scratch);
     arena_reset(&scratch);
@@ -1198,8 +1148,7 @@ i32 main(i32 argc, char **argv) {
     tui_set_interrupt_flag(&g_got_sigint);
     atexit(tui_stop);
 
-    /* After tui_start: what the record says about the run includes the shape
-     * of the terminal it is running in. */
+    /* After tui_start, since the record names the shape of the terminal. */
     telemetry_init(&scratch);
     telemetry_session(&cfg, &tools);
 
@@ -1210,8 +1159,8 @@ i32 main(i32 argc, char **argv) {
         .echo = !opts.have_prompt,
     };
 
-    /* One-shot: the reply is the output, so nothing else goes to stdout and
-     * the exit status reports whether the turn completed. */
+    /* One-shot: the reply is the output and the exit status reports whether
+     * the turn completed. */
     if (opts.have_prompt) {
         if (no_provider(&cfg)) {
             tui_stop();
@@ -1224,15 +1173,13 @@ i32 main(i32 argc, char **argv) {
         return ok ? 0 : 1;
     }
 
-    /* Nothing to talk to and nothing stored to talk to it with. The welcome
-     * screen says so and names the command; a form opening unasked over an
-     * empty screen is a question the user did not ask yet. */
+    /* The welcome screen names the command instead of a form opening unasked
+     * over an empty screen. */
     if (no_provider(&cfg) && tui_is_fullscreen())
         tui_needs_provider(true);
 
     /* Static, not automatic: a megabyte of stack for a line the composer
-     * already holds is the kind of frame that turns a deep call into a
-     * crash. */
+     * already holds is a frame that turns a deep call into a crash. */
     static char line[YOKE_LINE_BUF];
     for (;;) {
         size_t ln = 0;
@@ -1245,8 +1192,7 @@ i32 main(i32 argc, char **argv) {
         if (line[0] == '/') telemetry_command((Str){ line, ln });
         if (!strcmp(line, "/exit")) break;
         if (!strcmp(line, "/clear")) {
-            /* Keep the configured system prompt, discard the visible and
-             * conversational state. Session persistence will replace this. */
+            /* Slot 0 stays; everything else goes. */
             conv.n = 1;
             persist.off = session_mark;
             arena_reset(&scratch);
@@ -1281,8 +1227,8 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
         if (!strncmp(line, "/expand ", 8)) {
-            /* A click on a block's truncation tail, which the TUI submits as
-             * this command: the id is the slot it was rendered from. */
+            /* Submitted by a click on a block's truncation tail; the id is
+             * the slot it was rendered from. */
             unsigned long id = strtoul(line + 8, NULL, 10);
             if (id && id <= conv.n) {
                 conv.expanded[id - 1] = !conv.expanded[id - 1];
@@ -1302,8 +1248,7 @@ i32 main(i32 argc, char **argv) {
             resume_session(&sess, &conv, &persist, &scratch, session_mark);
             continue;
         }
-        /* A turn with no endpoint is an HTTP 401 the user cannot act on, so
-         * it is refused where it was asked and the conversation stays empty. */
+        /* A turn with no endpoint is an HTTP 401 the user cannot act on. */
         if (no_provider(&cfg)) {
             tui_notice(NO_PROVIDER_HINT);
             continue;
