@@ -59,6 +59,29 @@ static size_t commands_init(void) {
     return n;
 }
 
+/* -Wpedantic rejects STR()'s compound literal as a static initializer. */
+#define ALIAS(a, b) { { (a), sizeof(a) - 1 }, { (b), sizeof(b) - 1 } }
+static const TuiAlias k_aliases[] = {
+    ALIAS("/config", "/settings"),
+    ALIAS("/new", "/clear"),
+    ALIAS("/quit", "/exit"),
+};
+#define ALIAS_N (sizeof k_aliases / sizeof k_aliases[0])
+
+/* A submitted alias is the command it stands for by the time anything reads
+ * the line, so the dispatch and the telemetry know one name per command. */
+static size_t resolve_alias(char *line, size_t ln, size_t cap) {
+    for (size_t i = 0; i < ALIAS_N; i++) {
+        Str name = k_aliases[i].name;
+        if (!str_eq((Str){ line, ln }, k_aliases[i].alias)) continue;
+        if (name.n + 1 > cap) break;
+        memcpy(line, name.p, name.n);
+        line[name.n] = '\0';
+        return name.n;
+    }
+    return ln;
+}
+
 /* Whether the round's thinking trace and its reply have opened their block:
  * each is one, so the deltas after the first do not open a second. */
 static b8 g_reasoning;
@@ -1151,6 +1174,7 @@ i32 main(i32 argc, char **argv) {
               opts.have_prompt);
     if (cfg.provider.n) tui_set_provider(cfg.provider);
     tui_set_commands(g_commands, commands_init());
+    tui_set_aliases(k_aliases, ALIAS_N);
     tui_set_history(&hist);
     tui_set_interrupt_flag(&g_got_sigint);
     atexit(tui_stop);
@@ -1196,7 +1220,10 @@ i32 main(i32 argc, char **argv) {
             run_shell(&agent, (Str){ line + 1, ln - 1 });
             continue;
         }
-        if (line[0] == '/') telemetry_command((Str){ line, ln });
+        if (line[0] == '/') {
+            ln = resolve_alias(line, ln, sizeof line);
+            telemetry_command((Str){ line, ln });
+        }
         if (!strcmp(line, "/exit")) break;
         if (!strcmp(line, "/clear")) {
             /* Slot 0 stays; everything else goes. */

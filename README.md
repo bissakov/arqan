@@ -198,7 +198,9 @@ forked from where `/resume` can still find it, `/model` switches model,
 `/mode` switches between Build and Plan, as Shift+Tab does,
 `/rewind` goes back to an earlier message, as the double Esc does,
 `/copy` puts the last reply on the clipboard as the Markdown the model wrote,
-`/settings` opens the screen below and `/exit` quits.
+`/settings` opens the screen below and `/exit` quits. A few of them answer to a
+second name: `/config` finds `/settings`, `/new` finds `/clear` and `/quit`
+finds `/exit`, and the popup lists the command rather than the alias.
 
 A word starting with `@` is a path being picked rather than typed: the same
 popup lists what the directory holds, folders first and marked with a slash

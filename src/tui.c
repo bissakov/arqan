@@ -153,6 +153,8 @@ typedef struct {
     /* The registered command table plus the filtered view of it on screen. */
     const TuiCmd *cmds;
     size_t cmd_n;
+    const TuiAlias *aliases;
+    size_t alias_n;
     u16 comp_idx[YOKE_MAX_POPUP];      /* matches, as indices into cmds       */
     /* The popup also completes a filesystem path: while `path_mode` is set it
      * is offering these entries instead of the command table, listed from the
@@ -2369,6 +2371,26 @@ static void completion_refresh(void) {
         if (g_tui.cmds[i].name.n == in.n) exact = g_tui.comp_n;
         g_tui.comp_idx[g_tui.comp_n++] = (u16)i;
     }
+    /* An alias is a way in, so what it matches is the command it stands for:
+     * the row is that command and appending it twice would list it twice. */
+    for (size_t a = 0; a < g_tui.alias_n && g_tui.comp_n < YOKE_MAX_COMMANDS;
+         a++) {
+        if (!str_starts_ci(g_tui.aliases[a].alias, in)) continue;
+        size_t cmd = SIZE_MAX;
+        for (size_t i = 0; i < g_tui.cmd_n; i++)
+            if (str_eq(g_tui.cmds[i].name, g_tui.aliases[a].name)) {
+                cmd = i;
+                break;
+            }
+        if (cmd == SIZE_MAX) continue;
+        b8 listed = false;
+        for (size_t i = 0; i < g_tui.comp_n; i++)
+            if (g_tui.comp_idx[i] == cmd) { listed = true; break; }
+        if (listed) continue;
+        if (cmd == previous) g_tui.comp_sel = g_tui.comp_n;
+        if (g_tui.aliases[a].alias.n == in.n) exact = g_tui.comp_n;
+        g_tui.comp_idx[g_tui.comp_n++] = (u16)cmd;
+    }
     /* A name typed out in full is the command asked for even when a longer
      * one starts with it, so "/mode" must not submit "/model". */
     if (exact != SIZE_MAX) g_tui.comp_sel = exact;
@@ -2483,6 +2505,11 @@ void tui_set_input(Str s) {
 void tui_set_commands(const TuiCmd *cmds, size_t n) {
     g_tui.cmds = cmds;
     g_tui.cmd_n = n < YOKE_MAX_COMMANDS ? n : YOKE_MAX_COMMANDS;
+}
+
+void tui_set_aliases(const TuiAlias *aliases, size_t n) {
+    g_tui.aliases = aliases;
+    g_tui.alias_n = n;
 }
 
 /* The search is literal and case-insensitive: a name either holds what was

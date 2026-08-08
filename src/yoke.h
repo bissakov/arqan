@@ -595,6 +595,11 @@ typedef enum {
  * caller and only read here. */
 typedef struct { Str name; Str desc; } TuiCmd;
 void tui_set_commands(const TuiCmd *cmds, size_t n);
+/* A second name a command answers to. It is a way to find the command rather
+ * than a command of its own: the popup lists the entry it stands for, and
+ * accepting one leaves that name in the composer. */
+typedef struct { Str alias; Str name; } TuiAlias;
+void tui_set_aliases(const TuiAlias *aliases, size_t n);
 /* Which end of a picker's list the selection opens on and returns to after a
  * search: a list ordered like the transcript ends at the entry nearest the
  * composer. */

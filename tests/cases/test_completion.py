@@ -172,3 +172,48 @@ def test_a_name_typed_in_full_wins_over_a_longer_one(ctx):
     assert selected and "/mode " in selected[0], rows
     s.key("enter")
     s.wait_text("plan mode: read-only")
+
+
+def test_alias_finds_the_command(ctx):
+    """'/qu' offers '/exit', the command the alias stands for."""
+    s = ctx.spawn()
+    s.type("/qu").sync()
+    text = s.text()
+    assert "/exit" in text and "Quit yoke" in text, text
+    assert "/quit" not in text, "the alias is a way in, not a row of its own"
+
+
+def test_alias_tab_completes_to_the_command(ctx):
+    """Accepting an alias leaves the canonical name in the composer."""
+    s = ctx.spawn()
+    s.type("/conf").sync()
+    assert "/settings" in s.text(), s.text()
+    s.key("tab").sync()
+    assert s.composer_text() == "/settings", s.composer_lines()
+
+
+def test_alias_is_listed_once(ctx):
+    """'/c' matches '/clear' by name and by the '/config' alias of another."""
+    s = ctx.spawn()
+    s.type("/c").sync()
+    text = s.text()
+    assert text.count("/clear") == 1, text
+    assert "/copy" in text and "/settings" in text, text
+
+
+def test_alias_runs_when_typed_out(ctx):
+    """A fully typed alias is the command it stands for."""
+    ctx.scenario("text=answered")
+    s = ctx.spawn()
+    s.submit("/quit")
+    assert s.wait_exit() == 0
+
+
+def test_alias_clears_the_conversation(ctx):
+    """'/new' does what '/clear' does."""
+    ctx.scenario("text=answered")
+    s = ctx.spawn()
+    s.submit("hello")
+    s.wait_for(lambda t: "answered" in t.text(), "the reply")
+    s.submit("/new")
+    s.wait_for(lambda t: "answered" not in t.text(), "the transcript to clear")

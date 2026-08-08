@@ -227,7 +227,11 @@ an AoS layout.
   dismiss arms a rewind and answers in that row; a second Escape submits
   `/rewind`, leaving the draft alone, so the key and the command reach `main.c`
   as one request, and Shift+Tab submits `/mode` the same way; the status line
-  names the mode next to the model. The popup completes a path as well as a
+  names the mode next to the model. A command may carry aliases
+  (`tui_set_aliases`): they are a way to find it rather than commands of their
+  own, so a match on one lists the command it stands for, accepting it leaves
+  that name in the composer, and `main.c` resolves a submitted alias before
+  anything reads the line. The popup completes a path as well as a
   command: a word at the cursor starting with `@` is listed from the
   filesystem, directories first and carrying a trailing slash, which is what
   makes accepting one a step into it rather than an answer, and what a picked
