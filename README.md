@@ -172,7 +172,9 @@ in it stay exactly as written and the same 64 KiB limit applies.
 
 ## Using it
 
-Enter sends and Alt+Enter inserts a newline. Ctrl-C discards the draft or
+Enter sends and Alt+Enter inserts a newline; a pasted line break is one too,
+so pasting several lines fills the composer rather than sending the first of
+them. Ctrl-C discards the draft or
 cancels a running turn, Esc also cancels one, and Ctrl-D quits from an empty
 composer. Esc at an idle composer, twice, goes back to an earlier message: the
 list is ordered like the transcript, so it opens on the last turn and Up walks

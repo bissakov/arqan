@@ -221,3 +221,68 @@ def test_application_cursor_keys_move_the_popup(ctx):
     s.key("ss3-down").sync()
     s.key("tab").sync()
     assert s.composer_text() == "/resume", s.composer_lines()
+
+
+def test_bracketed_paste_mode_is_enabled(ctx):
+    """The terminal is told to bracket a paste, which is what makes it text."""
+    s = ctx.spawn()
+    s.type("x").sync()
+    assert s.term.modes.get(2004) is True, s.term.modes
+
+
+def test_multiline_paste_keeps_every_line(ctx):
+    """A pasted line break grows the composer instead of submitting."""
+    s = ctx.spawn()
+    s.paste("first line\nsecond line\nthird line")
+    s.sync()
+    assert s.composer_body(3) == ["first line", "second line", "third line"], \
+        s.composer_lines(3)
+    assert ctx.mock.requests == [], "nothing should have been sent"
+    ctx.check_screen(s)
+
+
+def test_pasted_crlf_is_one_break(ctx):
+    """Windows line endings do not double the composer's rows."""
+    s = ctx.spawn()
+    s.paste("one\r\ntwo\rthree")
+    s.sync()
+    assert s.composer_body(3) == ["one", "two", "three"], s.composer_lines(3)
+
+
+def test_paste_then_enter_submits_the_whole_message(ctx):
+    """Enter after the paste sends every line as one message."""
+    ctx.scenario("text=got+it")
+    s = ctx.spawn()
+    s.paste("alpha\nbeta")
+    s.sync()
+    s.submit()
+    s.wait_turn_done()
+    body = ctx.mock.requests[-1]["messages"][-1]["content"]
+    assert body == "alpha\nbeta", body
+
+
+def test_paste_does_not_run_a_command(ctx):
+    """A pasted slash line is text: it neither completes nor submits."""
+    s = ctx.spawn()
+    s.paste("/clear\nrest")
+    s.sync()
+    assert s.composer_body(2) == ["/clear", "rest"], s.composer_lines(2)
+    assert ctx.mock.requests == []
+
+
+def test_paste_while_a_turn_runs_is_kept(ctx):
+    """Typing stays live mid-turn, and so does a multi-line paste."""
+    ctx.scenario("words=30,chunk=2,delay=0.02")
+    s = ctx.spawn()
+    s.submit("go")
+    s.paste("queued one\nqueued two")
+    s.wait_turn_done()
+    assert s.composer_body(2) == ["queued one", "queued two"], s.composer_lines(2)
+
+
+def test_pasted_tab_becomes_spaces(ctx):
+    """A tab stop would move the cursor out from under the row snapshot."""
+    s = ctx.spawn()
+    s.paste("if x:\n\tpass")
+    s.sync()
+    assert s.composer_body(2) == ["if x:", "    pass"], s.composer_lines(2)

@@ -254,7 +254,11 @@ an AoS layout.
   listed, rebuilt per listing rather than cached since a stale answer is a
   file the picker refuses to show. It is a default rather than a rule, lifted
   by the `show_ignored` setting, since a path typed by hand reaches anything;
-  `.git` is the one exclusion no setting lifts. Also: viewport, scrollback, raw-mode
+  `.git` is the one exclusion no setting lifts. A paste is bracketed (DEC 2004),
+  since a line break in pasted text is content rather than an Enter: between
+  the markers every byte edits and nothing submits, completes or recalls, a
+  CRLF costs one break and a tab four spaces because the composer paints its
+  own cells. Also: viewport, scrollback, raw-mode
   composer with Up/Down recall of the persisted prompt history, mouse wheel
   scrolling, drag-to-select with OSC 52 copy, and SIGWINCH-aware repaint.
   Every visible glyph is painted through `put_text`, which mirrors it into the

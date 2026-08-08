@@ -79,6 +79,10 @@ typedef struct {
     b8 busy;          /* a turn is running: edits allowed, submit is not */
     b8 input_eof;     /* terminal went away: stop polling a dead fd       */
     b8 color;
+    /* Between a bracketed paste's start and end markers every byte is text:
+     * a newline in it is a line break in the draft rather than a submit. */
+    b8 pasting;
+    b8 paste_cr;      /* a CR just seen, so a CRLF pair costs one break     */
     Str model;
     Str provider;
     AgentMode mode;   /* named on the status line; Shift+Tab switches it */
@@ -1571,7 +1575,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count,
      * target needs, and 1006 keeps coordinates exact past column 223, which
      * in-app text selection needs. Shift still falls through to the
      * terminal's own selection. */
-    put_str("\033[?1049h\033[?7l\033[?25l\033[?1003h\033[?1006h");
+    put_str("\033[?1049h\033[?7l\033[?25l\033[?1003h\033[?1006h\033[?2004h");
     repaint();
 }
 
@@ -1586,7 +1590,8 @@ void tui_stop(void) {
     if (!g_tui.raw) return;
     yoke_log_set_sink(NULL, NULL);
     if (g_tui.fullscreen) {
-        put_str("\033[?1006l\033[?1003l\033[?25h\033[?7h\033[?1049l");
+        put_str("\033[?2004l\033[?1006l\033[?1003l\033[?25h\033[?7h"
+                "\033[?1049l");
         flush_out();
         (void)tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_tui.original_termios);
         (void)sigaction(SIGWINCH, &g_tui.original_winch, NULL);
@@ -1976,7 +1981,7 @@ enum {
     KEY_NONE = 0, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN, KEY_HOME, KEY_END,
     KEY_PREV_WORD, KEY_NEXT_WORD, KEY_NEWLINE, KEY_PAGE_UP, KEY_PAGE_DOWN,
     KEY_WHEEL_UP, KEY_WHEEL_DOWN, KEY_MOUSE_DOWN, KEY_MOUSE_DRAG, KEY_MOUSE_UP,
-    KEY_MOUSE_MOVE, KEY_SHIFT_TAB
+    KEY_MOUSE_MOVE, KEY_SHIFT_TAB, KEY_PASTE
 };
 
 /* Coordinates of the mouse key just returned by read_escape (1-based). */
@@ -2018,6 +2023,13 @@ static i32 read_escape(void) {
                 if (csi.p[0] == 4 || csi.p[0] == 8) return KEY_END;
                 if (csi.p[0] == 5) return KEY_PAGE_UP;
                 if (csi.p[0] == 6) return KEY_PAGE_DOWN;
+                /* Bracketed paste: the markers are consumed here, so every
+                 * reader of a key sees the same paste state. */
+                if (csi.p[0] == 200 || csi.p[0] == 201) {
+                    g_tui.pasting = csi.p[0] == 200;
+                    g_tui.paste_cr = false;
+                    return KEY_PASTE;
+                }
                 return KEY_NONE;
             default: return KEY_NONE;
         }
@@ -2606,15 +2618,19 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
         if (c == -3) { repaint(); continue; }
         /* -2 is a signal that is not a resize, so SIGINT cancels here just as
          * it abandons a draft at the prompt. */
-        if (c < 0 || c == 0x03 || c == 0x04) break;   /* EOF / signal / Ctrl-D */
-        if (c == '\r' || c == '\n') {
+        /* Pasted text is a query rather than keys, so nothing in it picks,
+         * acts on a row or cancels. */
+        if (c < 0) break;
+        if ((c == 0x03 || c == 0x04) && !g_tui.pasting) break;
+        if (g_tui.pasting && (c == '\r' || c == '\n')) continue;
+        if ((c == '\r' || c == '\n') && !g_tui.pasting) {
             if (kind == PICK_SETTINGS) break;
             if (!g_tui.comp_n) continue;
             *out = g_tui.comp_idx[g_tui.comp_sel];
             chosen = true;
             break;
         }
-        if (c == ' ' && kind == PICK_SETTINGS) {
+        if (c == ' ' && kind == PICK_SETTINGS && !g_tui.pasting) {
             if (!g_tui.comp_n) continue;
             chosen = true;
             break;
@@ -2715,8 +2731,13 @@ b8 tui_ask(Str question, b8 secret, char *out, size_t cap) {
     for (;;) {
         i32 c = rbyte();
         if (c == -3) { repaint(); continue; }
-        if (c < 0 || c == 0x03 || c == 0x04) break;
-        if (c == '\r' || c == '\n') { answered = g_tui.input_n > 0; break; }
+        if (c < 0) break;
+        if ((c == 0x03 || c == 0x04) && !g_tui.pasting) break;
+        if ((c == '\r' || c == '\n') && !g_tui.pasting) {
+            answered = g_tui.input_n > 0;
+            break;
+        }
+        if (g_tui.pasting && (c == '\r' || c == '\n')) continue;
         if (c == 0x1b) {
             i32 key = read_escape();
             if (key == KEY_NONE) break;             /* bare Esc cancels */
@@ -2764,10 +2785,38 @@ static u32 zone_at_cell(i32 mouse_row, i32 mouse_col) {
     return zone_at_off(row < TUI_SEL_ROWS ? g_tui.row_src[row] : SIZE_MAX);
 }
 
+/* One byte of pasted text. It edits and nothing else: a paste carries no
+ * commands, so it neither submits nor completes nor recalls, and the
+ * completion list is rebuilt once when the end marker arrives. A tab becomes
+ * four spaces because the composer paints its own cells and a terminal tab
+ * stop would move the cursor out from under the snapshot. */
+static void paste_byte(i32 c) {
+    b8 was_cr = g_tui.paste_cr;
+    g_tui.paste_cr = c == '\r';
+    if (c == '\n' && was_cr) return;   /* CRLF is one line break */
+
+    char run[4];
+    size_t run_n = 0;
+    if (c == '\r' || c == '\n') run[run_n++] = '\n';
+    else if (c == '\t') while (run_n < sizeof run) run[run_n++] = ' ';
+    else if ((c >= 0x20 && c < 0x7f) || c >= 0x80) run[run_n++] = (char)c;
+    else return;
+
+    char *buf = g_tui.input;
+    size_t n = g_tui.input_n, cur = g_tui.input_cur;
+    if (n + run_n >= sizeof g_tui.input) return;
+    memmove(buf + cur + run_n, buf + cur, n - cur);
+    memcpy(buf + cur, run, run_n);
+    cur += run_n; n += run_n; buf[n] = '\0';
+    g_tui.input_n = n;
+    g_tui.input_cur = cur;
+}
+
 /* One input byte applied to the shared composer. The caller decides whether a
  * submit is honoured, so the same editor drives the prompt and the
  * keep-typing-while-busy path. */
 static EdAction editor_key(i32 c) {
+    if (g_tui.pasting && c != 0x1b) { paste_byte(c); return ED_EDIT; }
     char *buf = g_tui.input;
     const size_t cap = sizeof g_tui.input;
     size_t n = g_tui.input_n, cur = g_tui.input_cur;
@@ -2937,8 +2986,9 @@ void tui_poll_input(void) {
         /* Enter, Ctrl-C and Ctrl-D belong to the prompt rather than to a live
          * turn, except that an open popup lets Enter complete an entry, which
          * is harmless mid-turn since the submit is dropped. */
-        if ((c == '\r' || c == '\n') && !g_tui.comp_n) continue;
-        if (c == 0x03 || c == 0x04) continue;
+        if ((c == '\r' || c == '\n') && !g_tui.comp_n && !g_tui.pasting)
+            continue;
+        if ((c == 0x03 || c == 0x04) && !g_tui.pasting) continue;
         editor_key(c);
         dirty = true;
     }
@@ -2962,7 +3012,7 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
     for (;;) {
         i32 c = rbyte();
         if (c == -3) { repaint(); continue; }
-        if (c == -2 || c == 0x03) {
+        if (c == -2 || (c == 0x03 && !g_tui.pasting)) {
             /* Idle Ctrl-C abandons the draft and nothing else. */
             composer_clear();
             repaint();

@@ -235,6 +235,10 @@ class Session:
                 self.pump(0.01)
         return self
 
+    def paste(self, text: str) -> "Session":
+        """Bracketed paste, delivered in one write the way a terminal sends it."""
+        return self.send(K.encode("paste-start") + text + K.encode("paste-end"))
+
     def mouse(self, event: str, row: int, col: int, button: int = 0):
         return self.send(K.mouse(event, row, col, button))
 
