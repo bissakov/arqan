@@ -3,18 +3,29 @@
 import json
 
 
-def log_path(ctx):
-    return ctx.home / ".local" / "state" / "yoke" / "telemetry.jsonl"
+def log_dir(ctx, state=None):
+    return (state or ctx.home / ".local" / "state") / "yoke" / "telemetry"
 
 
-def events(ctx):
-    path = log_path(ctx)
-    assert path.exists(), sorted(p.name for p in ctx.home.rglob("*"))
-    return [json.loads(line) for line in path.read_text().splitlines() if line]
+def log_files(ctx, state=None):
+    d = log_dir(ctx, state)
+    return sorted(d.glob("*.jsonl")) if d.is_dir() else []
 
 
-def kinds(ctx):
-    return [e["ev"] for e in events(ctx)]
+def body(ctx):
+    return "".join(p.read_text() for p in log_files(ctx))
+
+
+def events(ctx, which=-1):
+    """One session's events; by default the last session recorded."""
+    files = log_files(ctx)
+    assert files, sorted(p.name for p in ctx.home.rglob("*"))
+    return [json.loads(line)
+            for line in files[which].read_text().splitlines() if line]
+
+
+def kinds(ctx, which=-1):
+    return [e["ev"] for e in events(ctx, which)]
 
 
 def test_recording_is_off_until_it_is_asked_for(ctx):
@@ -25,7 +36,7 @@ def test_recording_is_off_until_it_is_asked_for(ctx):
     s.wait_turn_done()
     s.submit("/exit")
     s.wait_exit()
-    assert not log_path(ctx).exists()
+    assert not log_files(ctx)
 
 
 def test_telemetry_toggle_records_the_turn(ctx):
@@ -61,10 +72,10 @@ def test_the_record_keeps_no_conversation(ctx):
     s.submit("read secret.txt, my private question")
     s.wait_turn_done()
 
-    body = log_path(ctx).read_text()
+    text = body(ctx)
     for leaked in ("private question", "swordfish", "secret.txt",
                    "I read the secret file", str(ctx.work)):
-        assert leaked not in body, body
+        assert leaked not in text, text
 
     start = [e for e in events(ctx) if e["ev"] == "turn_start"][-1]
     assert start["prompt_bytes"] == len("read secret.txt, my private question")
@@ -107,7 +118,36 @@ def test_the_setting_survives_the_session(ctx):
     again = ctx.spawn()
     again.submit("later run")
     again.wait_turn_done()
-    assert kinds(ctx).count("session") == 2, kinds(ctx)
+    # Each run owns a file, and each holds the session it recorded.
+    assert len(log_files(ctx)) == 2, log_files(ctx)
+    for i in (0, 1):
+        assert kinds(ctx, i).count("session") == 1, events(ctx, i)
+
+
+def test_a_second_session_does_not_touch_the_first(ctx):
+    """The record of a run is the run, so a later one appends nowhere near."""
+    ctx.scenario("text=ok")
+    s = ctx.spawn()
+    s.settings_toggle("Telemetry")
+    s.submit("first run")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+    first = log_files(ctx)[0]
+    kept = first.read_text()
+
+    again = ctx.spawn()
+    again.submit("second run")
+    again.wait_turn_done()
+    again.submit("/exit")
+    again.wait_exit()
+
+    assert first.read_text() == kept, first
+    files = log_files(ctx)
+    assert len(files) == 2 and first in files, files
+    second = [p for p in files if p != first][0]
+    lines = [json.loads(l) for l in second.read_text().splitlines() if l]
+    assert lines[0]["seq"] == 0 and lines[0]["ev"] == "session", lines[0]
 
 
 def test_the_record_lands_in_the_state_dir(ctx):
@@ -120,8 +160,8 @@ def test_the_record_lands_in_the_state_dir(ctx):
 
     settings = ctx.settings(state / "yoke" / "state")
     assert settings[""]["telemetry"] == "on", settings
-    assert (state / "yoke" / "telemetry.jsonl").exists()
-    assert not log_path(ctx).exists(), "the default must stay unused"
+    assert len(log_files(ctx, state)) == 1, log_dir(ctx, state)
+    assert not log_files(ctx), "the default must stay unused"
 
 
 def test_commands_and_mode_switches_are_recorded(ctx):
@@ -147,8 +187,8 @@ def test_an_unknown_command_is_not_named(ctx):
     s.submit("/my-private-note")
     s.wait_turn_done()
 
-    body = log_path(ctx).read_text()
-    assert "my-private-note" not in body, body
+    text = body(ctx)
+    assert "my-private-note" not in text, text
     names = [e["name"] for e in events(ctx) if e["ev"] == "command"]
     assert names == ["(unknown)"], names
 
@@ -181,9 +221,9 @@ def test_the_endpoint_is_a_hash_not_a_url(ctx):
     s.submit("say hi")
     s.wait_turn_done()
 
-    body = log_path(ctx).read_text()
-    assert "127.0.0.1" not in body, body
-    assert ctx.mock.base_url not in body, body
+    text = body(ctx)
+    assert "127.0.0.1" not in text, text
+    assert ctx.mock.base_url not in text, text
     http = [e for e in events(ctx) if e["ev"] == "http"][-1]
     assert len(http["host"]) == 16 and int(http["host"], 16) >= 0, http
 

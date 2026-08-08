@@ -2,8 +2,10 @@
  *
  * Off until /telemetry turns it on, which is remembered as the state file's
  * `telemetry` key so a later run records without being asked again. Events
- * are JSON objects, one per line, appended to
- * $XDG_STATE_HOME/yoke/telemetry.jsonl.
+ * are JSON objects, one per line, appended to one file per session,
+ * $XDG_STATE_HOME/yoke/telemetry/<timestamp>-<run>.jsonl, the way a
+ * conversation gets a file of its own: the record a bug report carries is the
+ * session it is about rather than every session that shared a machine.
  *
  * The file holds the shape of a session and none of its content: a message is
  * a byte and a line count, a tool call is its name and the keys of its
@@ -34,7 +36,7 @@ static struct {
     char dir_buf[YOKE_MAX_PATH];
     char path_buf[YOKE_MAX_PATH];
     Str  dir;
-    u64  run;                /* distinguishes runs sharing the file         */
+    u64  run;                /* names the session's file                    */
     f64  t0;
     u64  seq;
 } g_tel;
@@ -76,21 +78,33 @@ Str telemetry_file(void) {
 void telemetry_init(Arena *scratch) {
     g_tel.t0 = yoke_now_seconds();
     size_t mark = scratch->off;
-    g_tel.ready =
-        tel_keep(g_tel.dir_buf, sizeof g_tel.dir_buf,
-                 paths_dir(YOKE_DIR_STATE, scratch))
-        && tel_keep(g_tel.path_buf, sizeof g_tel.path_buf,
-                    paths_file(YOKE_DIR_STATE, STR("telemetry.jsonl"), scratch));
+    g_tel.ready = tel_keep(g_tel.dir_buf, sizeof g_tel.dir_buf,
+                           paths_file(YOKE_DIR_STATE, STR("telemetry"), scratch));
     scratch->off = mark;
     g_tel.dir = str_c(g_tel.dir_buf);
     if (!g_tel.ready) return;
 
-    /* Enough to tell two runs apart in one file, and nothing that says whose
-     * they are: a pid and two clocks, hashed. */
+    /* Enough to tell two sessions of the same second apart, and nothing that
+     * says whose they are: a pid and two clocks, hashed. */
+    time_t now = time(NULL);
     char seed[64];
     i32 n = snprintf(seed, sizeof seed, "%ld:%ld:%f", (long)getpid(),
-                     (long)time(NULL), g_tel.t0);
+                     (long)now, g_tel.t0);
     g_tel.run = tel_hash((Str){ seed, n > 0 ? (size_t)n : 0 });
+
+    struct tm tm;
+    char stamp[24] = "00000000-000000";
+    if (localtime_r(&now, &tm))
+        snprintf(stamp, sizeof stamp, "%04d%02d%02d-%02d%02d%02d",
+                 tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                 tm.tm_hour, tm.tm_min, tm.tm_sec);
+    n = snprintf(g_tel.path_buf, sizeof g_tel.path_buf, "%.*s/%s-%016llx.jsonl",
+                 (i32)g_tel.dir.n, g_tel.dir.p, stamp,
+                 (unsigned long long)g_tel.run);
+    if (n <= 0 || (size_t)n >= sizeof g_tel.path_buf) {
+        g_tel.ready = false;
+        return;
+    }
 
     mark = scratch->off;
     Str set = state_get(STR("telemetry"), scratch, scratch);
@@ -132,9 +146,9 @@ void tel_open(TelEvent *e, const char *ev) {
     if (!e->live) return;
     char head[96];
     u64 ms = (u64)((yoke_now_seconds() - g_tel.t0) * 1000.0);
-    i32 n = snprintf(head, sizeof head,
-                     "{\"t\":%llu,\"run\":\"%016llx\",\"seq\":%llu,\"ev\":\"%s\"",
-                     (unsigned long long)ms, (unsigned long long)g_tel.run,
+    /* The run id names the file, so a line carries only its place in it. */
+    i32 n = snprintf(head, sizeof head, "{\"t\":%llu,\"seq\":%llu,\"ev\":\"%s\"",
+                     (unsigned long long)ms,
                      (unsigned long long)g_tel.seq++, ev);
     if (n > 0) tel_add(e, head, (size_t)n);
 }

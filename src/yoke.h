@@ -146,8 +146,9 @@ typedef void (*YokeLogSink)(i32 level, Str msg, void *ud);
 void    yoke_log_set_sink(YokeLogSink sink, void *ud);
 
 /* ---- telemetry -----------------------------------------------------------
- * An anonymized record of a session, appended as JSON lines to
- * $XDG_STATE_HOME/yoke/telemetry.jsonl while /telemetry is on.
+ * An anonymized record of a session, appended as JSON lines to that session's
+ * own $XDG_STATE_HOME/yoke/telemetry/<timestamp>-<run>.jsonl while /telemetry
+ * is on.
  *
  * The record is the shape of a session, never its content: a message is a
  * byte and a line count, a tool call is its name and the keys of its
@@ -164,7 +165,7 @@ b8   telemetry_on(void);
 /* False when no state directory resolves or the setting could not be
  * written, leaving it unchanged. */
 b8   telemetry_set(b8 on, Arena *scratch);
-/* Empty when no state directory resolves. */
+/* This session's file. Empty when no state directory resolves. */
 Str  telemetry_file(void);
 /* Mirror of a yoke_log line, so the diagnostics sit beside the events they
  * explain. Called by yoke_log. */

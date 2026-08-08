@@ -106,4 +106,4 @@ def test_every_remembered_choice_lands_in_one_state_file(ctx):
 
     assert ctx.state() == {"model": "beta", "telemetry": "on"}, ctx.state()
     left = {p.name for p in state_dir(ctx).iterdir()}
-    assert left == {"state", "history", "telemetry.jsonl"}, left
+    assert left == {"state", "history", "telemetry"}, left
