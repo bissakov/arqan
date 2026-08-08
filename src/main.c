@@ -109,6 +109,13 @@ static void on_tool_call(i32 idx, Str id, Str name, Str args_delta, void *ud) {
     (void)ud; (void)idx; (void)id; (void)name; (void)args_delta;
     tui_set_status("preparing tool call");
 }
+/* The context the turn is being charged for, heard from the response while
+ * it streams: an interrupt cannot take it back, since nothing behind it is
+ * lost to the turn having ended early. */
+static void on_usage(size_t total, void *ud) {
+    (void)ud;
+    tui_set_context_tokens(total);
+}
 /* Said in the transcript rather than in a notice: it belongs to the turn
  * being read. It never reaches Conv, so a replay does not repeat it. */
 static void on_retry(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
@@ -1028,6 +1035,7 @@ static b8 agent_turn(Agent *ag, Str text) {
             .on_text = on_text,
             .on_reason = on_reason,
             .on_tool_call = on_tool_call,
+            .on_usage = on_usage,
             .on_retry = on_retry,
             .ud = NULL,
             .on_idle = on_idle,
@@ -1039,9 +1047,10 @@ static b8 agent_turn(Agent *ag, Str text) {
         size_t before = conv->n;
         i32 rc = provider_run(&p, err, sizeof err);
         /* The completion is whole, so whatever line the renderer held back
-         * has no more bytes coming. */
+         * has no more bytes coming. The context counter was already kept
+         * current by on_usage as the reply streamed, so an interrupt does not
+         * lose the context the response metadata reported. */
         md_end();
-        if (p.usage_valid) tui_set_context_tokens(p.total_tokens);
         if (g_got_sigint) {
             tui_block();
             tui_write(STR("[interrupted]\n"));

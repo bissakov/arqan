@@ -1,6 +1,6 @@
 /* http.c: libcurl POST, streaming or not.
  *
- * A stream buffers into a small stack buffer and emits one line at a time to
+ * A stream accumulates one line in the caller's arena and emits it to
  * on_line; a single reply accumulates whole into the caller's Buf.
  */
 #include "yoke.h"
@@ -12,9 +12,9 @@
 
 typedef struct {
     const HttpReq *r;
-    char   line[8192];
-    size_t llen;
+    Buf    line;      /* the event being accumulated, grown rather than clipped */
     b8     aborted;   /* on_line asked us to stop */
+    b8     oom;       /* a line outgrew the arena it accumulates in */
     /* What no return code carries: how many lines arrived and the longest the
      * stream went silent between them, which is the "it froze" report. */
     size_t lines;
@@ -23,24 +23,28 @@ typedef struct {
     f64    stall;
 } Ctx;
 
-/* Accumulate into line[], dispatch on newline. False once a sink has asked
- * for the stream to end. */
+/* Accumulate into `line`, dispatch on newline. False once a sink has asked
+ * for the stream to end, or once a line could not be held whole: delivering a
+ * truncated event would hand the parser something that is not JSON. */
 static b8 dispatch_line(Ctx *c, const char *p, size_t n) {
+    size_t start = 0;
     for (size_t i = 0; i < n; i++) {
-        char ch = p[i];
-        if (ch == '\n') {
-            if (c->llen > 0 && c->line[c->llen-1] == '\r') c->llen--;
-            Str ln = { c->line, c->llen };
-            c->llen = 0;
-            c->lines++;
-            if (c->r->on_line && !c->r->on_line(ln, c->r->ud)) {
-                c->aborted = true;
-                return false;
-            }
-        } else {
-            if (c->llen < sizeof c->line - 1) c->line[c->llen++] = ch;
+        if (p[i] != '\n') continue;
+        buf_put(&c->line, p + start, i - start);
+        start = i + 1;
+        if (!buf_ok(&c->line)) { c->oom = true; return false; }
+        size_t len = c->line.n;
+        if (len && c->line.p[len - 1] == '\r') len--;
+        Str ln = { c->line.p, len };
+        c->line.n = 0;
+        c->lines++;
+        if (c->r->on_line && !c->r->on_line(ln, c->r->ud)) {
+            c->aborted = true;
+            return false;
         }
     }
+    buf_put(&c->line, p + start, n - start);
+    if (!buf_ok(&c->line)) { c->oom = true; return false; }
     return true;
 }
 
@@ -163,6 +167,7 @@ static void http_record(const char *method, const char *path, const char *url,
         tel_int(&e, "polls", (i64)sse->polls);
         tel_int(&e, "stall_ms", (i64)(sse->stall * 1000.0));
         tel_bool(&e, "aborted", sse->aborted);
+        tel_bool(&e, "line_oom", sse->oom);
     }
     tel_send(&e);
 }
@@ -210,6 +215,10 @@ i32 http_get(const char *base_url, const char *path, const char *api_key,
 #define HTTP_POLL_MS 100
 
 i32 http_post(const HttpReq *r) {
+    if (r->body_out == NULL && !r->line_arena) {
+        yoke_log(YOKE_LOG_ERROR, "streaming request without a line arena");
+        return 1;
+    }
     CURL *curl = curl_easy_init();
     if (!curl) { yoke_log(YOKE_LOG_ERROR, "curl init failed"); return 1; }
 
@@ -229,6 +238,9 @@ i32 http_post(const HttpReq *r) {
 
     Ctx ctx = {0};
     ctx.r = r;
+    /* An event is one line, and providers send anything from a word to a whole
+     * reply in one; this is where it starts, not where it stops. */
+    if (stream) buf_init(&ctx.line, r->line_arena, 8192);
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, r->body);
@@ -284,7 +296,7 @@ i32 http_post(const HttpReq *r) {
 
     /* A body not ending in a newline still has a last line, and for a single
      * JSON document that line is the whole reply. */
-    if (stream && !interrupted && rc == CURLE_OK && ctx.llen)
+    if (stream && !interrupted && rc == CURLE_OK && ctx.line.n)
         dispatch_line(&ctx, "\n", 1);
 
     /* curl writes a `long` through this pointer, whatever its width. */
@@ -300,6 +312,12 @@ i32 http_post(const HttpReq *r) {
     curl_easy_cleanup(curl);
 
     if (interrupted) return 3;
+    if (ctx.oom) {
+        yoke_log(YOKE_LOG_ERROR, "an event did not fit in memory");
+        if (r->fail_out && r->fail_cap)
+            snprintf(r->fail_out, r->fail_cap, "an event did not fit in memory");
+        return 2;
+    }
     if (rc != CURLE_OK) {
         yoke_log(YOKE_LOG_ERROR, "curl: %s", curl_easy_strerror(rc));
         if (r->fail_out && r->fail_cap)

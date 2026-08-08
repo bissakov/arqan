@@ -387,10 +387,14 @@ void      cli_apply(const CliOpts *o, Config *c);
 typedef struct {
     const char *base_url;
     const char *api_key;
-    /* Each accumulated SSE line, without the "data:" prefix. Return false to
-     * abort the stream. */
+    /* Each accumulated SSE line. Return false to abort the stream. */
     b8 (*on_line)(Str line, void *ud);
     void *ud;
+    /* Where a streamed line is accumulated. An event carries as much as the
+     * provider chose to send, so the buffer grows instead of clipping: half a
+     * delta is not JSON, and the reply behind it would be lost without a
+     * word. Required whenever on_line is set. */
+    Arena *line_arena;
     /* Non-streaming: the whole body lands here and on_line is never called. */
     Buf *body_out;
     const char *body;     /* nul-terminated JSON request                    */
@@ -561,6 +565,11 @@ typedef struct {
      * thinking trace it did not produce itself. */
     void (*on_reason)(Str delta, void *ud);
     void (*on_tool_call)(i32 index, Str id, Str name, Str args_delta, void *ud);
+    /* The request's usage as it is heard: the mock and most providers send it
+     * once, on the last stream event, so `total` is the context the turn is
+     * being charged for. Fired from inside the request wait, so it reaches
+     * the status line even when the turn is interrupted before it ends. */
+    void (*on_usage)(size_t total, void *ud);
     /* A request that produced nothing is about to be sent again. `attempt`
      * is 1-based over `attempts`, and `reason` is yoke's own wording: an
      * HTTP status or curl's catalogue string, never a URL. */

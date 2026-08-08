@@ -79,7 +79,10 @@ an AoS layout.
   documents such as `/models`, used only by `provider.c`. A reply is delivered
   a line at a time to `on_line` or whole into `HttpReq.body_out`, which is the
   difference between a stream and the one document a turn with streaming off
-  comes back as. Runs the transfer on the multi interface so one wait covers
+  comes back as. A line grows in `HttpReq.line_arena` rather than into a fixed
+  buffer, since an event carries whatever the provider chose to send and half
+  of one is not JSON: the reply behind it would be lost without a word. Runs
+  the transfer on the multi interface so one wait covers
   both curl's sockets and `HttpReq.idle_fd` (stdin), calling `on_idle` after
   every wait, which is what keeps the UI live mid-request and single-threaded
 - `paths.c`: XDG base directory resolution for config, data, state and

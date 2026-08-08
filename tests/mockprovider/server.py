@@ -75,6 +75,10 @@ class Scenario:
         self.prompt_tokens = kw.get("prompt_tokens")
         self.completion_tokens = kw.get("completion_tokens")
         self.usage: bool = _truthy(kw.get("usage", True))
+        # Some providers report usage on an early event rather than the last;
+        # when set, yoke hears it before any reasoning or content, which is
+        # what an interrupt after that cannot take back.
+        self.usage_first: bool = _truthy(kw.get("usage_first", "0"))
         self.prefix: str = kw.get("prefix", "")
         # GET /v1/models: an explicit list, or `model_count` generated ids.
         self.models: list[str] = kw.get("models", [])
@@ -87,6 +91,19 @@ class Scenario:
         if self.model_count:
             return [f"model-{i:03d}" for i in range(self.model_count)]
         return ["mock"]
+
+    def _usage(self, messages, completion_chars):
+        prompt = self.prompt_tokens
+        if prompt is None:
+            prompt = max(1, len(json.dumps(messages)) // 4)
+        completion = self.completion_tokens
+        if completion is None:
+            completion = max(1, completion_chars // 4)
+        return {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": prompt + completion,
+        }
 
     # -- DSL ---------------------------------------------------------------
     @staticmethod
@@ -368,6 +385,11 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._sse(frame({"role": "assistant", "content": ""})):
             return
 
+        if scenario.usage and scenario.usage_first and tool_replies == 0:
+            usage = scenario._usage(messages, 0)
+            if not self._sse(dict(base, choices=[], usage=usage)):
+                return
+
         if scenario.first_delay:
             time.sleep(scenario.first_delay)
 
@@ -431,17 +453,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         if scenario.usage:
-            prompt = scenario.prompt_tokens
-            if prompt is None:
-                prompt = max(1, len(json.dumps(messages)) // 4)
-            completion = scenario.completion_tokens
-            if completion is None:
-                completion = max(1, completion_chars // 4)
-            usage = {
-                "prompt_tokens": prompt,
-                "completion_tokens": completion,
-                "total_tokens": prompt + completion,
-            }
+            usage = scenario._usage(messages, completion_chars)
             if not self._sse(dict(base, choices=[], usage=usage)):
                 return
 

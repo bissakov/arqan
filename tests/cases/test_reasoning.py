@@ -67,3 +67,15 @@ def test_reasoning_is_not_sent_back(ctx):
     assistant = [m for m in req["messages"] if m["role"] == "assistant"]
     assert assistant, req["messages"]
     assert all("secret scratchpad" not in m["content"] for m in assistant)
+
+
+def test_a_reasoning_delta_larger_than_the_line_buffer_arrives(ctx):
+    """A thinking trace sent as one huge event is shown, not dropped."""
+    trace = "+".join(f"thought{i}" for i in range(4000))
+    ctx.scenario(f"reasoning={trace},chunk=4000,text=finally+the+answer")
+    s = ctx.spawn()
+    s.submit("go")
+    s.wait_text("finally the answer")
+    s.wait_turn_done()
+    # The tail of the trace is the last thing above the reply.
+    assert "thought3999" in s.text(), s.text()

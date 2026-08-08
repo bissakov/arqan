@@ -46,6 +46,19 @@ def test_usage_updates_context_counter(ctx):
     assert s.status_field(5) != "-", s.status_line()
 
 
+def test_context_survives_an_interrupt_once_usage_was_heard(ctx):
+    """Usage heard mid-stream reaches the status line even if the turn ends
+    early: an interrupt cannot take back what the reply already cost."""
+    ctx.scenario("words=400,chunk=1,delay=0.02,usage_first=1,usage=5000/200")
+    s = ctx.spawn()
+    s.submit("go on")
+    s.wait_for(lambda t: s.status_field(5) == "5200", "context counter")
+    s.key("ctrl-c")
+    s.wait_text("[interrupted]")
+    s.wait_turn_done()
+    assert s.status_field(5) == "5200", s.status_line()
+
+
 def test_status_is_thinking_while_streaming(ctx):
     """The status line reads 'thinking' until the stream finishes."""
     ctx.scenario("words=30,chunk=1,delay=0.05,first_delay=0.2")
@@ -145,6 +158,30 @@ def test_long_output_scrolls_and_shows_a_scrollbar(ctx):
     bar = s.scrollbar()
     assert "\u2503" in bar, f"expected a scrollbar thumb, got {bar}"
     assert "\u2502" in bar, "expected an unfilled scrollbar track"
+
+
+def test_a_delta_larger_than_the_line_buffer_is_not_lost(ctx):
+    """A provider that sends the reply in one huge event is still rendered.
+
+    The event is accumulated whole; clipping it to a fixed buffer would hand
+    the parser something that is not JSON and the turn would say nothing.
+    """
+    ctx.scenario("words=4000,chunk=4000")
+    s = ctx.spawn()
+    s.submit("all at once")
+    s.wait_turn_done()
+    # The reply is taller than the viewport, so the user turn it followed has
+    # scrolled off: what is on screen is the reply.
+    body = s.screen.lines()[: s.transcript_height()]
+    assert any(row.strip() for row in body), s.text()
+
+    ctx.scenario("text=done")
+    s.submit("again")
+    s.wait_text("done")
+    s.wait_turn_done()
+    reply = [m["content"] for m in ctx.mock.requests[-1]["messages"]
+             if m["role"] == "assistant"][0]
+    assert len(reply) > 20000, len(reply)
 
 
 def test_provider_error_is_surfaced(ctx):

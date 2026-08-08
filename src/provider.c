@@ -197,6 +197,7 @@ typedef struct {
     b8   text_started;
     b8   reason_started;
     size_t events;       /* SSE data lines parsed, for telemetry           */
+    size_t bad_events;   /* data lines that were not JSON yoke could read   */
     size_t reason_bytes; /* thinking trace streamed, which Conv never keeps */
 } StreamState;
 
@@ -227,6 +228,9 @@ static void read_usage(Provider *p, const JVal *root) {
                     ? (size_t)total->u.n
                     : p->prompt_tokens + p->completion_tokens;
     p->usage_valid = true;
+    /* Fired wherever it is heard, so the caller's context counter is kept
+     * current even when the turn is interrupted before it ends. */
+    if (p->on_usage) p->on_usage(p->total_tokens, p->ud);
 }
 
 /* The composer has already advanced past the submitted line, so a provider
@@ -247,7 +251,10 @@ static b8 on_line(Str line, void *ud) {
         s->events++;
         arena_reset(&s->ev);
         JVal *ev = json_parse(&s->ev, payload);
-        if (!ev) return true;
+        /* The per-event arena is a fixed slice, so an event larger than it
+         * parses into the turn's scratch rather than being dropped. */
+        if (!ev) ev = json_parse(s->scratch, payload);
+        if (!ev) { s->bad_events++; return true; }
         read_usage(p, ev);
 
         const JVal *choices = json_get(ev, STR("choices"));
@@ -491,6 +498,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         .api_key  = p->cfg->api_key.p,
         .on_line  = on_line,
         .ud       = p,
+        .line_arena = scratch,
         .body_out = p->cfg->stream ? NULL : &whole,
         .body     = bstr.p,
         .interrupt_flag = p->interrupt_flag,
@@ -533,6 +541,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         /* Nothing arrived, so only what a refused request left behind is
          * cleared. */
         s->events = 0;
+        s->bad_events = 0;
         s->text.n = 0;
         s->text.oom = false;
         s->text_started = false;
@@ -565,6 +574,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     tel_int(&tev, "attempts", attempt);
     tel_bool(&tev, "stream", p->cfg->stream);
     tel_int(&tev, "sse_events", (i64)s->events);
+    tel_int(&tev, "bad_events", (i64)s->bad_events);
     tel_shape(&tev, "reply", (Str){ s->text.p, s->text.n });
     tel_int(&tev, "reason_bytes", (i64)s->reason_bytes);
     tel_int(&tev, "dropped_calls", s->dropped);
@@ -589,6 +599,14 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     if (s->dropped)
         yoke_log(YOKE_LOG_WARN, "dropped %d tool call(s) past the per-turn cap of %d",
                  s->dropped, (i32)YOKE_MAX_TOOL_CALLS);
+    /* A turn that said nothing because every event was unreadable is an error
+     * rather than an empty reply, which would otherwise reach the transcript
+     * as silence. */
+    if (s->bad_events && !s->text.n && !s->count && !s->reason_bytes) {
+        snprintf(err, err_cap, "the provider sent %zu event(s) yoke could not "
+                 "read", s->bad_events);
+        return -1;
+    }
 
     Str text = buf_finish(&s->text);
     Str text_dup = str_dup(p->persist, text);
