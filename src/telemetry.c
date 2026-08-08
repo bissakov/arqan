@@ -6,10 +6,13 @@
  * they belong to: $XDG_STATE_HOME/yoke/telemetry/<cwd>/<timestamp>.jsonl,
  * named after the session file under $XDG_DATA_HOME and rebound whenever the
  * session is, so /clear starts a record as it starts a conversation and
- * /resume appends to the record of the one it reopened. What happens before a
- * conversation claims a file, a startup, a /provider, a model listing, has no
- * session to belong to and goes to a record named after the run instead.
- * Every file opens with a session event, so each is read on its own.
+ * /resume appends to the record of the one it reopened. What is recorded
+ * before a conversation exists (a startup, a /provider, the /resume that
+ * picks one) waits in memory for the file the session that follows names, so
+ * opening yoke and resuming leaves the record of that conversation and
+ * nothing beside it. A run that ends with lines still waiting writes them to
+ * a record named after the run. Every file opens with a session event, so
+ * each is read on its own.
  *
  * The file holds the shape of a session and none of its content: a message is
  * a byte and a line count, a tool call is its name and the keys of its
@@ -49,6 +52,11 @@ static struct {
     u64  seq;
     b8   header_due;         /* the file has no session event yet           */
     b8   attached;           /* a file was chosen                           */
+    /* What was recorded before a session named a file. Sized for a startup
+     * and the commands that reach one: past that the run is a record of its
+     * own rather than a reason to drop lines. */
+    char pend[8192];
+    size_t pend_n;
     TelHeader header;
     void *header_ud;
 } g_tel;
@@ -71,19 +79,33 @@ static b8 tel_keep(char *dst, size_t cap, Str path) {
     return true;
 }
 
-/* A file the record continues in owes a session event, since a reader of it
- * has no earlier line to learn the run from. */
+static void tel_append(const char *data, size_t n) {
+    if (!n || !g_tel.path_buf[0]) return;
+    paths_ensure_dir(g_tel.dir);
+    FILE *f = fopen(g_tel.path_buf, "ab");
+    if (!f) return;
+    fwrite(data, 1, n, f);
+    fclose(f);
+}
+
+/* Take the file and the lines that were waiting for one. They open with the
+ * session event, so a file that receives them is owed no other; one that
+ * starts empty is, since a reader of it has no earlier line to learn the run
+ * from. */
 static void tel_attach(const char *dir, size_t dn, const char *path, size_t pn) {
     if (dn >= sizeof g_tel.dir_buf || pn >= sizeof g_tel.path_buf) return;
     memcpy(g_tel.dir_buf, dir, dn + 1);
     memcpy(g_tel.path_buf, path, pn + 1);
     g_tel.dir = (Str){ g_tel.dir_buf, dn };
     g_tel.attached = true;
-    g_tel.header_due = true;
+    g_tel.header_due = g_tel.pend_n == 0;
+    if (g_tel.pend_n) {
+        tel_append(g_tel.pend, g_tel.pend_n);
+        g_tel.pend_n = 0;
+    }
 }
 
-/* Where the events that belong to no conversation go: a startup, a /provider,
- * a model listing, the diagnostics of a run that never got a message in. */
+/* Where waiting lines go when no conversation ever claims them. */
 static void tel_attach_run(void) {
     char path[YOKE_MAX_PATH];
     i32 pn = snprintf(path, sizeof path, "%s/%s.jsonl", g_tel.root_buf,
@@ -125,10 +147,16 @@ void telemetry_bind(Str session_path) {
 }
 
 /* The conversation the record was following is over: what follows belongs to
- * the run rather than to it, until the next one claims a file of its own. */
+ * the next one, so it waits for the file that one will name. */
 void telemetry_detach(void) {
     g_tel.attached = false;
+    g_tel.pend_n = 0;
     g_tel.stem_buf[0] = g_tel.slug_buf[0] = '\0';
+    g_tel.header_due = true;
+}
+
+void telemetry_close(void) {
+    if (g_tel.ready && g_tel.pend_n) tel_attach_run();
 }
 
 void telemetry_set_header(TelHeader fn, void *ud) {
@@ -138,8 +166,16 @@ void telemetry_set_header(TelHeader fn, void *ud) {
 
 static void tel_flush(const char *line, size_t n) {
     if (!g_tel.on || !g_tel.ready) return;
-    if (!g_tel.attached) tel_attach_run();
-    if (!g_tel.attached) return;
+    if (!g_tel.attached) {
+        if (n + 1 <= sizeof g_tel.pend - g_tel.pend_n) {
+            memcpy(g_tel.pend + g_tel.pend_n, line, n);
+            g_tel.pend_n += n;
+            g_tel.pend[g_tel.pend_n++] = '\n';
+            return;
+        }
+        tel_attach_run();
+        if (!g_tel.attached) return;
+    }
     paths_ensure_dir(g_tel.dir);
     FILE *f = fopen(g_tel.path_buf, "ab");
     if (!f) return;

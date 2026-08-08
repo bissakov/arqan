@@ -164,12 +164,13 @@ typedef struct { char buf[1024]; size_t n; b8 full, live; } TelEvent;
 void telemetry_init(Arena *scratch);
 b8   telemetry_on(void);
 /* Records into the file named after `session_path`, under a directory named
- * after its parent. Called by session.c when a session file is written or
- * resumed. */
+ * after its parent, taking with it whatever was recorded while no session had
+ * a file. Called by session.c when a session file is written or resumed. */
 void telemetry_bind(Str session_path);
-/* The conversation is over: what follows belongs to the run's own record
- * until the next conversation names a file. */
+/* The conversation is over: what follows waits for the next one's file. */
 void telemetry_detach(void);
+/* Writes out whatever is still waiting, as a record named after the run. */
+void telemetry_close(void);
 /* Writes the session event: what the record needs to be read on its own.
  * Called on the first event of a file, since a file that starts mid-run
  * would otherwise say nothing about the run. */

@@ -176,10 +176,14 @@ def test_commands_and_mode_switches_are_recorded(ctx):
     s.submit("/mode")
     s.wait_text("plan mode")
     s.settings_toggle("Verbose tool output")
+    # The events of a run that started no conversation are written when it
+    # ends, so the file is read after it.
+    s.submit("/exit")
+    s.wait_exit()
 
     seen = events(ctx)
     names = [e["name"] for e in seen if e["ev"] == "command"]
-    assert names == ["/mode", "/settings"], names
+    assert names == ["/mode", "/settings", "/exit"], names
     mode = [e for e in seen if e["ev"] == "mode"][-1]
     assert mode["from"] == "build" and mode["to"] == "plan", mode
 
@@ -253,6 +257,8 @@ def test_the_model_listing_is_a_transfer_too(ctx):
     s.submit("/model")
     s.wait_text("pick a model")
     s.key("esc").sync()
+    s.submit("/exit")
+    s.wait_exit()
 
     gets = [e for e in events(ctx) if e["ev"] == "http" and e["method"] == "GET"]
     assert gets and gets[-1]["path"] == "/models", events(ctx)
@@ -362,6 +368,29 @@ def test_resuming_continues_the_record_it_reopened(ctx):
     # of the file has to see where one run ended and the next began.
     assert [e["ev"] for e in lines].count("session") == 2, lines
     assert [e["ev"] for e in lines].count("turn_start") == 2, lines
-    # No record was started for the conversation the run replaced.
-    others = [p for p in log_files(ctx) if p != record]
-    assert all(p.parent == log_dir(ctx) for p in others), others
+    # Opening yoke and resuming leaves that record and nothing beside it.
+    assert log_files(ctx) == [record], log_files(ctx)
+
+
+def test_opening_and_resuming_leaves_one_record(ctx):
+    """The /resume that picked a conversation belongs to the one it picked."""
+    ctx.scenario("text=ok")
+    s = ctx.spawn()
+    s.settings_toggle("Telemetry")
+    s.submit("the only turn")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+    record = log_files(ctx)[0]
+
+    again = ctx.spawn()
+    again.submit("/resume")
+    again.wait_status("pick a session")
+    again.key("enter")
+    again.wait_text("the only turn")
+    again.submit("/exit")
+    again.wait_exit()
+
+    assert log_files(ctx) == [record], log_files(ctx)
+    names = [e["name"] for e in events(ctx) if e["ev"] == "command"]
+    assert names.count("/resume") == 1, events(ctx)

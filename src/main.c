@@ -1206,6 +1206,7 @@ i32 main(i32 argc, char **argv) {
     head.cfg = &cfg;
     head.tools = &tools;
     telemetry_set_header(telemetry_header, &head);
+    atexit(telemetry_close);
 
     Agent agent = {
         .cfg = &cfg, .tools = &tools, .conv = &conv,

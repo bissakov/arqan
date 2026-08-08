@@ -248,9 +248,12 @@ composer records too. Events are JSON objects, one per line, appended to the
 record of the conversation they belong to,
 `$XDG_STATE_HOME/yoke/telemetry/<cwd>/<timestamp>.jsonl`, named after that
 conversation's session file: `/clear` starts a record as it starts a
-conversation, `/resume` continues the one it reopened, and what happens before
-any conversation claims a file goes to a record named after the run. Each file
-opens with the session and its settings, and then holds each
+conversation and `/resume` continues the one it reopened. What is recorded
+before a conversation exists, a startup or the `/resume` that picks one, waits
+for the file that session names, so opening yoke and resuming leaves that
+conversation's record and nothing beside it; a run that ends with lines still
+waiting writes them to a record named after the run. Each file opens with the
+session and its settings, and then holds each
 turn and how long it took, every request with its size, its SSE event count
 and its token usage, every tool call with its duration and outcome, the
 commands and mode switches, the arenas as they fill, and the log lines yoke
