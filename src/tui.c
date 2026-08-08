@@ -7,7 +7,10 @@
  */
 #include "yoke.h"
 
+#include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <fnmatch.h>
 #include <locale.h>
 #include <poll.h>
 #include <stdarg.h>
@@ -15,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <termios.h>
 #include <unistd.h>
 #include <wchar.h>
@@ -28,6 +32,12 @@
 #define TUI_SEL_BYTES (1u << 16) /* clipboard payload cap                   */
 #define TUI_POPUP_ROWS 8         /* completion entries shown at once         */
 #define TUI_PICK_SEARCH_MIN 10   /* entries above which a picker searches    */
+#define TUI_PATH_ENTS 256        /* paths the '@' popup keeps for one word    */
+#define TUI_PATH_SLOT 512        /* longest path one of them holds            */
+#define TUI_PATH_DEPTH 12        /* directories a fuzzy match descends through */
+#define TUI_PATH_SCAN 20000      /* entries one keystroke's walk may look at  */
+#define TUI_IGNORE_PATS 512      /* ignore patterns in force for one listing  */
+#define TUI_IGNORE_BUF (1u << 14)
 #define TUI_PICK_QUERY 64        /* longest search a picker accepts          */
 #define TUI_ASK_MAX 1024         /* longest answer tui_ask accepts           */
 /* Markdown claims one span per emphasis run, so this counts words of a reply
@@ -144,6 +154,27 @@ typedef struct {
     const TuiCmd *cmds;
     size_t cmd_n;
     u16 comp_idx[YOKE_MAX_POPUP];      /* matches, as indices into cmds       */
+    /* The popup also completes a filesystem path: while `path_mode` is set it
+     * is offering these entries instead of the command table, listed from the
+     * directory the word at the cursor names. */
+    b8 path_mode;
+    TuiCmd path_ents[TUI_PATH_ENTS];
+    char path_slot[TUI_PATH_ENTS][TUI_PATH_SLOT];
+    u8 path_rank[TUI_PATH_ENTS];
+    u16 path_depth[TUI_PATH_ENTS];
+    u16 path_ord[TUI_PATH_ENTS];     /* slots in the order they are shown   */
+    size_t path_n;
+    size_t path_at;                  /* offset of the '@' being completed   */
+    b8 show_ignored;                 /* offer what an ignore file excludes  */
+    /* The patterns in force for the directory being listed, gathered from
+     * every .gitignore and .ignore above it. NUL-terminated for fnmatch, each
+     * with the length of the path prefix it is relative to. */
+    const char *ig_pat[TUI_IGNORE_PATS];
+    u8 ig_flag[TUI_IGNORE_PATS];
+    u16 ig_base[TUI_IGNORE_PATS];
+    size_t ig_n;
+    char ig_buf[TUI_IGNORE_BUF];
+    size_t ig_buf_n;
     size_t comp_n;
     size_t comp_sel;
     b8 pick_end;                     /* the running picker selects from the end */
@@ -1012,6 +1043,12 @@ static void update_text_rows(Str s, size_t base_off, size_t cols,
  * in the same row-hash diff as everything else and needs no cursor save or
  * overlay bookkeeping.
  */
+/* What the popup is listing: the command table, or the directory entries the
+ * '@' completion built. */
+static const TuiCmd *popup_items(void) {
+    return g_tui.path_mode ? g_tui.path_ents : g_tui.cmds;
+}
+
 static void update_popup_row(size_t screen_row, Str name, Str desc,
                              b8 selected, size_t name_cells,
                              size_t screen_col, size_t screen_cols,
@@ -1062,7 +1099,7 @@ static size_t text_cells(Str s) {
 static size_t popup_name_cells(size_t first, size_t rows) {
     size_t widest = 0;
     for (size_t i = first; i < first + rows && i < g_tui.comp_n; i++) {
-        size_t cells = text_cells(g_tui.cmds[g_tui.comp_idx[i]].name);
+        size_t cells = text_cells(popup_items()[g_tui.comp_idx[i]].name);
         if (cells > widest) widest = cells;
     }
     return widest + 4;   /* "\u203a " marker plus a two-cell gap */
@@ -1100,7 +1137,7 @@ static void paint_completions(size_t top_row, size_t rows, size_t screen_col,
     size_t first = g_tui.comp_sel >= rows ? g_tui.comp_sel - rows + 1 : 0;
     size_t name_cells = popup_name_cells(first, rows);
     for (size_t i = 0; i < rows; i++) {
-        const TuiCmd *cmd = &g_tui.cmds[g_tui.comp_idx[first + i]];
+        const TuiCmd *cmd = &popup_items()[g_tui.comp_idx[first + i]];
         update_popup_row(top_row + i, cmd->name, cmd->desc,
                          first + i == g_tui.comp_sel, name_cells, screen_col,
                          screen_cols, body_cols, force);
@@ -1983,10 +2020,18 @@ static i32 read_escape(void) {
             default: return KEY_NONE;
         }
     }
+    /* SS3: what a terminal in application cursor key mode sends, which is
+     * whatever DECCKM the session was started under left set. */
     if (first == 'O') {
-        i32 second = rbyte_soon();
-        if (second == 'H') return KEY_HOME;
-        if (second == 'F') return KEY_END;
+        switch (rbyte_soon()) {
+            case 'A': return KEY_UP;
+            case 'B': return KEY_DOWN;
+            case 'C': return KEY_RIGHT;
+            case 'D': return KEY_LEFT;
+            case 'H': return KEY_HOME;
+            case 'F': return KEY_END;
+            default:  return KEY_NONE;
+        }
     }
     return KEY_NONE;
 }
@@ -2015,13 +2060,303 @@ static size_t next_word(const char *buf, size_t n, size_t cur) {
     return cur;
 }
 
+/* Results are kept in one bounded list held in order, so a walk that meets
+ * thousands of paths still costs the 256 it shows: a match better than the
+ * worst kept replaces it, and a worse one is dropped where it is found. The
+ * order is the match rank, then depth, so a shallow answer comes first, then
+ * the name, so a search is reproducible.
+ */
+static b8 entry_before(u8 rank_a, u16 depth_a, const char *name_a,
+                       u8 rank_b, u16 depth_b, const char *name_b) {
+    if (rank_a != rank_b) return rank_a < rank_b;
+    if (depth_a != depth_b) return depth_a < depth_b;
+    for (size_t i = 0;; i++) {
+        char ca = lower_ascii(name_a[i]), cb = lower_ascii(name_b[i]);
+        if (ca != cb) return ca < cb;
+        if (!ca) return false;
+    }
+}
+
+static void path_insert(const char *rel, size_t rel_n, u8 rank, u16 depth) {
+    /* A truncated path is a different path, so an oversized one is left out
+     * rather than clipped into the list. */
+    if (rel_n + 1 > TUI_PATH_SLOT) return;
+    size_t pos = 0;
+    while (pos < g_tui.path_n) {
+        u16 s = g_tui.path_ord[pos];
+        if (entry_before(rank, depth, rel,
+                         g_tui.path_rank[s], g_tui.path_depth[s],
+                         g_tui.path_slot[s])) break;
+        pos++;
+    }
+    u16 slot;
+    size_t shift;
+    if (g_tui.path_n < TUI_PATH_ENTS) {
+        slot = (u16)g_tui.path_n;
+        shift = g_tui.path_n - pos;
+        g_tui.path_n++;
+    } else {
+        if (pos + 1 >= TUI_PATH_ENTS) return;   /* worse than everything kept */
+        slot = g_tui.path_ord[TUI_PATH_ENTS - 1];
+        shift = TUI_PATH_ENTS - 1 - pos;
+    }
+    memmove(&g_tui.path_ord[pos + 1], &g_tui.path_ord[pos],
+            shift * sizeof g_tui.path_ord[0]);
+    g_tui.path_ord[pos] = slot;
+    memcpy(g_tui.path_slot[slot], rel, rel_n);
+    g_tui.path_slot[slot][rel_n] = '\0';
+    g_tui.path_rank[slot] = rank;
+    g_tui.path_depth[slot] = depth;
+    g_tui.path_ents[slot].name = (Str){ g_tui.path_slot[slot], rel_n };
+    g_tui.path_ents[slot].desc = (Str){0};
+}
+
+/* How well a path answers the typed word, lower being better: a name that
+ * starts with it, a name that holds it, a path that holds it, then a path its
+ * letters appear across in order, which is what reaches a deep file without
+ * naming the directories above it. */
+static b8 path_rank_of(Str rel, Str name, Str q, u8 *out) {
+    if (str_starts_ci(name, q))   { *out = 0; return true; }
+    if (str_contains_ci(name, q)) { *out = 1; return true; }
+    if (str_contains_ci(rel, q))  { *out = 2; return true; }
+    size_t k = 0;
+    for (size_t i = 0; i < rel.n && k < q.n; i++)
+        if (lower_ascii(rel.p[i]) == lower_ascii(q.p[k])) k++;
+    if (k < q.n) return false;
+    *out = 3;
+    return true;
+}
+
+static b8 path_is_dir(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/* ---- ignore files --------------------------------------------------------
+ * .gitignore and .ignore say the same thing about a path, so they are read as
+ * one list: what the project says is not part of the work. The picker hides
+ * what they exclude unless `show_ignored` is on, which is a default rather
+ * than a rule, since a path typed by hand still reaches anything.
+ *
+ * The subset understood is the one people write: comments, '!' negation with
+ * the last match winning, a trailing '/' for directories only, and a leading
+ * or embedded '/' anchoring the pattern to the file's own directory. '**' is
+ * left to fnmatch, which is enough while one directory is listed at a time.
+ */
+enum { IG_NEG = 1, IG_DIRONLY = 2, IG_PATHNAME = 4 };
+
+static void ignore_add(Str pat, size_t base_n) {
+    pat = str_trim(pat);
+    if (!pat.n || pat.p[0] == '#') return;
+    u8 flags = 0;
+    if (pat.p[0] == '!') { flags |= IG_NEG; pat = str_drop(pat, 1); }
+    if (pat.n && pat.p[pat.n - 1] == '/') { flags |= IG_DIRONLY; pat.n--; }
+    if (pat.n && pat.p[0] == '/') { flags |= IG_PATHNAME; pat = str_drop(pat, 1); }
+    else for (size_t i = 0; i + 1 < pat.n; i++)
+        if (pat.p[i] == '/') { flags |= IG_PATHNAME; break; }
+    if (!pat.n || g_tui.ig_n >= TUI_IGNORE_PATS) return;
+    if (g_tui.ig_buf_n + pat.n + 1 > sizeof g_tui.ig_buf) return;
+    char *slot = g_tui.ig_buf + g_tui.ig_buf_n;
+    memcpy(slot, pat.p, pat.n);
+    slot[pat.n] = '\0';
+    g_tui.ig_buf_n += pat.n + 1;
+    g_tui.ig_pat[g_tui.ig_n] = slot;
+    g_tui.ig_flag[g_tui.ig_n] = flags;
+    g_tui.ig_base[g_tui.ig_n] = (u16)base_n;
+    g_tui.ig_n++;
+}
+
+static void ignore_load(const char *path, size_t base_n) {
+    i32 fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return;
+    char buf[TUI_IGNORE_BUF];
+    ssize_t got = read(fd, buf, sizeof buf);
+    (void)close(fd);
+    if (got <= 0) return;
+    size_t n = (size_t)got, start = 0;
+    for (size_t i = 0; i <= n; i++)
+        if (i == n || buf[i] == '\n') {
+            ignore_add((Str){ buf + start, i - start }, base_n);
+            start = i + 1;
+        }
+}
+
+/* The ignore files of one directory, in force from it downward. */
+static void ignore_push(const char *dir, size_t n) {
+    static const char *names[] = { ".gitignore", ".ignore" };
+    char path[YOKE_MAX_PATH];
+    if (n + 12 >= sizeof path || n > UINT16_MAX) return;
+    memcpy(path, dir, n);
+    for (size_t k = 0; k < sizeof names / sizeof names[0]; k++) {
+        memcpy(path + n, names[k], strlen(names[k]) + 1);
+        ignore_load(path, n);
+    }
+}
+
+/* Every ignore file from the working directory down to `dir`, outermost
+ * first, since the last pattern that matches decides. Rebuilt per listing
+ * rather than cached: an ignore file edited mid-session is a few opens, and a
+ * stale answer is a file the picker refuses to show. */
+static void ignore_build(Str dir) {
+    g_tui.ig_n = 0;
+    g_tui.ig_buf_n = 0;
+    /* An absolute path is outside the project the ignore files describe. */
+    if (dir.n && dir.p[0] == '/') return;
+    for (size_t base = 0;;) {
+        ignore_push(dir.p, base);
+        if (base >= dir.n) break;
+        while (base < dir.n && dir.p[base] != '/') base++;
+        if (base < dir.n) base++;
+    }
+}
+
+static b8 ignore_match(const char *rel, size_t rel_n, b8 is_dir) {
+    b8 ignored = false;
+    for (size_t i = 0; i < g_tui.ig_n; i++) {
+        u8 f = g_tui.ig_flag[i];
+        if ((f & IG_DIRONLY) && !is_dir) continue;
+        if (g_tui.ig_base[i] > rel_n) continue;
+        const char *sub = rel + g_tui.ig_base[i];
+        if (!(f & IG_PATHNAME)) {
+            const char *slash = strrchr(sub, '/');
+            if (slash) sub = slash + 1;
+        }
+        i32 flags = f & IG_PATHNAME ? FNM_PATHNAME : 0;
+        if (fnmatch(g_tui.ig_pat[i], sub, flags) == 0) ignored = !(f & IG_NEG);
+    }
+    return ignored;
+}
+
+/* One directory, and every directory under it while a word is being matched.
+ * A directory keeps its trailing slash, so accepting one is a step into it
+ * rather than an answer, and recursing costs the slash already there. Its own
+ * ignore files are pushed for the subtree and popped on the way out. */
+static void path_walk(char *path, size_t n, size_t root_n, Str q, u16 depth,
+                      u16 max_depth, size_t *budget) {
+    DIR *d = opendir(n ? path : ".");
+    if (!d) return;
+    for (struct dirent *e; *budget && (e = readdir(d)) != NULL;) {
+        (*budget)--;
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        Str name = str_c(e->d_name);
+        if (n + name.n + 2 >= YOKE_MAX_PATH) continue;
+        memcpy(path + n, name.p, name.n);
+        size_t end = n + name.n;
+        path[end] = '\0';
+        b8 is_dir;
+        /* d_type answers for most entries; the rest, and a symlink, cost the
+         * stat they would have cost anyway. */
+        if (e->d_type == DT_DIR) is_dir = true;
+        else if (e->d_type == DT_UNKNOWN || e->d_type == DT_LNK)
+            is_dir = path_is_dir(path);
+        else is_dir = false;
+        /* Nothing inside a repository's own bookkeeping is worth mentioning
+         * to a model, whatever the ignore files say. */
+        if (is_dir && str_eq(name, STR(".git"))) continue;
+        if (!g_tui.show_ignored && ignore_match(path, end, is_dir)) continue;
+
+        u8 rank = is_dir ? 0 : 1;   /* with nothing typed, directories first */
+        Str rel = { path + root_n, end - root_n };
+        b8 hit = !q.n || path_rank_of(rel, name, q, &rank);
+        if (is_dir) {
+            path[end] = '/';
+            path[end + 1] = '\0';
+            if (hit) path_insert(path, end + 1, rank, depth);
+            if (depth < max_depth && *budget) {
+                size_t pats = g_tui.ig_n, bytes = g_tui.ig_buf_n;
+                ignore_push(path, end + 1);
+                path_walk(path, end + 1, root_n, q, (u16)(depth + 1),
+                          max_depth, budget);
+                g_tui.ig_n = pats;
+                g_tui.ig_buf_n = bytes;
+            }
+        } else if (hit) {
+            path_insert(path, end, rank, depth);
+        }
+    }
+    (void)closedir(d);
+}
+
+/* What the popup offers for the word after '@': the entries of the directory
+ * it names, and once something is typed after that directory, every path
+ * under it that the word matches. A dotfile is offered like `ls -A` does, an
+ * ignored path is not. */
+static void path_refresh(Str prefix, Str keep) {
+    size_t cut = 0;
+    for (size_t i = prefix.n; i-- > 0;)
+        if (prefix.p[i] == '/') { cut = i + 1; break; }
+    Str dir = { prefix.p, cut };
+    Str base = { prefix.p + cut, prefix.n - cut };
+    char path[YOKE_MAX_PATH];
+    if (dir.n + 1 >= sizeof path) return;
+    memcpy(path, dir.p, dir.n);
+    path[dir.n] = '\0';
+
+    g_tui.path_n = 0;
+    ignore_build(dir);
+    /* The walk is bounded rather than complete: a tree nobody ignored is
+     * still answered in the time a keystroke has. */
+    size_t budget = TUI_PATH_SCAN;
+    path_walk(path, dir.n, dir.n, base, 0,
+              base.n ? TUI_PATH_DEPTH : 0, &budget);
+
+    size_t n = g_tui.path_n;
+    for (size_t i = 0; i < n; i++) g_tui.comp_idx[i] = g_tui.path_ord[i];
+    g_tui.comp_n = n;
+    g_tui.comp_sel = 0;
+    /* A rebuilt list keeps the entry the selection was on, so moving it and
+     * then typing is not a move undone. */
+    for (size_t i = 0; keep.n && i < n; i++)
+        if (str_eq(g_tui.path_ents[g_tui.comp_idx[i]].name, keep)) {
+            g_tui.comp_sel = i;
+            break;
+        }
+    g_tui.path_mode = n > 0;
+}
+
+/* The word ending at the cursor, when it is a '@' starting one: that is a
+ * path being picked rather than text being typed. */
+static b8 path_prefix(Str *out) {
+    size_t cur = g_tui.input_cur;
+    size_t start = cur;
+    while (start > 0) {
+        char c = g_tui.input[start - 1];
+        if (c == ' ' || c == '\t' || c == '\n') break;
+        start--;
+    }
+    if (start >= cur || g_tui.input[start] != '@') return false;
+    g_tui.path_at = start;
+    *out = (Str){ g_tui.input + start + 1, cur - start - 1 };
+    return true;
+}
+
 /* The popup is offered while the buffer is a single unfinished word starting
- * with '/', which is when a command name is still being typed. */
+ * with '/', which is when a command name is still being typed, and for the
+ * '@' word at the cursor, which is a path. */
 static void completion_refresh(void) {
-    size_t previous = g_tui.comp_n ? g_tui.comp_idx[g_tui.comp_sel] : SIZE_MAX;
+    /* The selected path is copied out rather than aliased: the rebuild it
+     * survives is what overwrites the buffer it lives in. */
+    char keep[YOKE_MAX_PATH];
+    size_t keep_n = 0;
+    size_t previous = SIZE_MAX;
+    if (g_tui.comp_n) {
+        Str sel = popup_items()[g_tui.comp_idx[g_tui.comp_sel]].name;
+        if (!g_tui.path_mode) previous = g_tui.comp_idx[g_tui.comp_sel];
+        else if (sel.n <= sizeof keep) {
+            memcpy(keep, sel.p, sel.n);
+            keep_n = sel.n;
+        }
+    }
     g_tui.comp_n = 0;
     g_tui.comp_sel = 0;
-    if (g_tui.comp_dismissed || !g_tui.cmds || !g_tui.cmd_n) return;
+    g_tui.path_mode = false;
+    if (g_tui.comp_dismissed) return;
+    Str prefix;
+    if (path_prefix(&prefix)) {
+        path_refresh(prefix, (Str){ keep, keep_n });
+        return;
+    }
+    if (!g_tui.cmds || !g_tui.cmd_n) return;
     Str in = { g_tui.input, g_tui.input_n };
     if (in.n == 0 || in.p[0] != '/') return;
     for (size_t i = 0; i < in.n; i++)
@@ -2049,13 +2384,43 @@ static void completion_move(i32 delta) {
  * keys must not swallow the keystroke that finishes the command. */
 static b8 completion_would_change(void) {
     if (!g_tui.comp_n) return false;
+    if (g_tui.path_mode) return true;
     Str name = g_tui.cmds[g_tui.comp_idx[g_tui.comp_sel]].name;
     return name.n != g_tui.input_n
         || memcmp(name.p, g_tui.input, name.n) != 0;
 }
 
+/* The picked path replaces the word it was picked for, the '@' left in place
+ * as the marker it is. */
+static void path_accept(Str name) {
+    size_t start = g_tui.path_at + 1;
+    size_t cur = g_tui.input_cur;
+    size_t tail = g_tui.input_n - cur;
+    if (start + name.n + tail + 1 > sizeof g_tui.input) return;
+    memmove(g_tui.input + start + name.n, g_tui.input + cur, tail);
+    memcpy(g_tui.input + start, name.p, name.n);
+    g_tui.input_n = start + name.n + tail;
+    g_tui.input_cur = start + name.n;
+    g_tui.input[g_tui.input_n] = '\0';
+    /* A directory is a step rather than a choice, so its contents are the
+     * next list; a file is the answer and closes the popup. */
+    if (name.n && name.p[name.n - 1] == '/') {
+        g_tui.comp_dismissed = false;
+        completion_refresh();
+        return;
+    }
+    g_tui.comp_n = 0;
+    g_tui.comp_sel = 0;
+    g_tui.path_mode = false;
+    g_tui.comp_dismissed = true;
+}
+
 static void completion_accept(void) {
     if (!g_tui.comp_n) return;
+    if (g_tui.path_mode) {
+        path_accept(g_tui.path_ents[g_tui.comp_idx[g_tui.comp_sel]].name);
+        return;
+    }
     Str name = g_tui.cmds[g_tui.comp_idx[g_tui.comp_sel]].name;
     size_t n = name.n < sizeof g_tui.input - 1 ? name.n : sizeof g_tui.input - 1;
     memcpy(g_tui.input, name.p, n);
@@ -2067,6 +2432,10 @@ static void completion_accept(void) {
     g_tui.comp_sel = 0;
     g_tui.comp_dismissed = true;
 }
+
+b8 tui_show_ignored(void) { return g_tui.show_ignored; }
+
+void tui_set_show_ignored(b8 on) { g_tui.show_ignored = on; }
 
 void tui_set_history(History *h) {
     g_tui.hist = h;
@@ -2187,6 +2556,7 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
 
     g_tui.cmds = items;
     g_tui.cmd_n = n;
+    g_tui.path_mode = false;   /* the popup is the picker's now */
     g_tui.comp_n = n;
     g_tui.pick_end = anchor == TUI_PICK_LAST;
     g_tui.comp_sel = start < n ? start : (g_tui.pick_end ? n - 1 : 0);
@@ -2397,7 +2767,11 @@ static EdAction editor_key(i32 c) {
             completion_move(c == 0x0e ? 1 : -1);
             return ED_EDIT;
         }
+        /* A path is text in a message rather than a command, so accepting one
+         * leaves the composer where it is. */
+        b8 path = g_tui.path_mode;
         if (completion_would_change()) completion_accept();
+        if (path) return ED_EDIT;
         g_tui.comp_n = 0;
         g_tui.comp_sel = 0;
         g_tui.comp_dismissed = true;

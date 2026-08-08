@@ -200,3 +200,24 @@ def test_empty_enter_does_not_call_provider(ctx):
     s.key("enter").sync()
     assert ctx.mock.requests == []
     assert s.PLACEHOLDER in s.text()
+
+
+def test_application_cursor_keys_are_understood(ctx):
+    """A terminal in DECCKM sends SS3 arrows; they edit like the CSI ones."""
+    s = ctx.spawn()
+    s.type("abc").sync()
+    s.key("ss3-left", "ss3-left").sync()
+    s.type("X").sync()
+    assert s.composer_text() == "aXbc", s.composer_lines()
+    s.key("ss3-right").sync()
+    s.type("Y").sync()
+    assert s.composer_text() == "aXbYc", s.composer_lines()
+
+
+def test_application_cursor_keys_move_the_popup(ctx):
+    """And SS3 Down moves a popup selection the way CSI Down does."""
+    s = ctx.spawn()
+    s.type("/").sync()
+    s.key("ss3-down").sync()
+    s.key("tab").sync()
+    assert s.composer_text() == "/resume", s.composer_lines()

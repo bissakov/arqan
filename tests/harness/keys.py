@@ -24,6 +24,11 @@ KEYS = {
     "down": ESC + "[B",
     "right": ESC + "[C",
     "left": ESC + "[D",
+    # SS3, what a terminal left in application cursor key mode sends
+    "ss3-up": ESC + "OA",
+    "ss3-down": ESC + "OB",
+    "ss3-right": ESC + "OC",
+    "ss3-left": ESC + "OD",
     "home": ESC + "[H",
     "end": ESC + "[F",
     "home~": ESC + "[1~",

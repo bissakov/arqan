@@ -227,7 +227,27 @@ an AoS layout.
   dismiss arms a rewind and answers in that row; a second Escape submits
   `/rewind`, leaving the draft alone, so the key and the command reach `main.c`
   as one request, and Shift+Tab submits `/mode` the same way; the status line
-  names the mode next to the model. Also: viewport, scrollback, raw-mode
+  names the mode next to the model. The popup completes a path as well as a
+  command: a word at the cursor starting with `@` is listed from the
+  filesystem, directories first and carrying a trailing slash, which is what
+  makes accepting one a step into it rather than an answer, and what a picked
+  file leaves in the composer is text in a message rather than a command, so
+  Enter takes it without submitting. A word typed after the directory searches
+  the tree below it rather than that one directory, since naming every folder
+  on the way to a deep file is the work the picker exists to save: the ranking
+  is a name that starts with the word, a name that holds it, a path that holds
+  it, then a path its letters appear across in order, and shallower before
+  deeper, with the name breaking a tie so a search is reproducible. The walk
+  is bounded by `TUI_PATH_SCAN` and `TUI_PATH_DEPTH` because it runs on a
+  keystroke, and its results are held in one bounded list kept in order, so a
+  tree of any size costs the 256 entries the popup keeps rather than the
+  matches it met. What the project excludes is not offered:
+  `.gitignore` and `.ignore` say the same thing about a path and are read as
+  one list, every file from the working directory down to the one being
+  listed, rebuilt per listing rather than cached since a stale answer is a
+  file the picker refuses to show. It is a default rather than a rule, lifted
+  by the `show_ignored` setting, since a path typed by hand reaches anything;
+  `.git` is the one exclusion no setting lifts. Also: viewport, scrollback, raw-mode
   composer with Up/Down recall of the persisted prompt history, mouse wheel
   scrolling, drag-to-select with OSC 52 copy, and SIGWINCH-aware repaint.
   Every visible glyph is painted through `put_text`, which mirrors it into the
@@ -300,8 +320,9 @@ an AoS layout.
   it asked for
 - `/settings`: the toggles and values of a session in one screen, built in
   `main.c` over `tui_settings`. A toggle that was worth a command of its own
-  when it was the only one is not worth one when there are four, so verbose,
-  raw, streaming and telemetry live here rather than in the completion popup,
+  when it was the only one is not worth one when there are five, so verbose,
+  raw, streaming, ignored paths and telemetry live here rather than in the
+  completion popup,
   next to the mode, model, provider and token cap a turn is sent with. The
   rows are rebuilt from the state they describe on every pass of the loop, so
   the screen is its own answer and nothing in it writes a notice: a checkbox

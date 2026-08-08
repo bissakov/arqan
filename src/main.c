@@ -781,7 +781,7 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
  * remembered by whoever owns it.
  */
 enum {
-    SET_VERBOSE, SET_RAW, SET_STREAM, SET_TELEMETRY,
+    SET_VERBOSE, SET_RAW, SET_STREAM, SET_IGNORED, SET_TELEMETRY,
     SET_MODE, SET_MODEL, SET_PROVIDER, SET_MAX_TOKENS, SET_N
 };
 
@@ -831,6 +831,9 @@ static void choose_settings(Agent *ag) {
         rows[SET_STREAM] = (TuiCmd){
             setting_check(scratch, cfg->stream, STR("Stream replies")),
             STR("Paint a reply as it arrives, not once it is whole") };
+        rows[SET_IGNORED] = (TuiCmd){
+            setting_check(scratch, tui_show_ignored(), STR("Ignored files")),
+            STR("Offer what .gitignore and .ignore exclude") };
         rows[SET_TELEMETRY] = (TuiCmd){
             setting_check(scratch, telemetry_on(), STR("Telemetry")),
             STR("An anonymized debug log, for a bug report") };
@@ -858,6 +861,9 @@ static void choose_settings(Agent *ag) {
                 break;
             case SET_STREAM:
                 cfg->stream = !cfg->stream;
+                break;
+            case SET_IGNORED:
+                tui_set_show_ignored(!tui_show_ignored());
                 break;
             case SET_TELEMETRY:
                 if (telemetry_set(!telemetry_on(), scratch) && telemetry_on())

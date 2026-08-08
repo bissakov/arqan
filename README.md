@@ -200,12 +200,34 @@ forked from where `/resume` can still find it, `/model` switches model,
 `/copy` puts the last reply on the clipboard as the Markdown the model wrote,
 `/settings` opens the screen below and `/exit` quits.
 
+A word starting with `@` is a path being picked rather than typed: the same
+popup lists what the directory holds, folders first and marked with a slash
+the way `ls -A --group-directories-first --indicator-style=slash` does, and
+typing searches. The search is not the directory's own entries: it goes down
+the tree, so `@widget` finds `src/deep/widget.c` without naming a folder on
+the way, and the letters need only appear in order, so `@srmain` finds
+`src/main.c`. A name that starts with what was typed comes first, then one
+that holds it, then a path that does, then the scattered match, and shallower
+beats deeper. Descending still works: `@src/` lists that folder and scopes
+everything typed after it to what is below.
+Tab or Enter takes the highlighted entry into the composer,
+which for a folder is a step into it and lists its contents instead of
+answering. Nothing is submitted by picking: the path lands in the message, `@`
+and all, and the message is sent when you send it.
+
+What the project excludes is not offered. `.gitignore` and `.ignore` say the
+same thing about a path, so both are read, every one from the working
+directory down to the folder being listed, with `!` bringing a path back the
+way git does; `.git` is never offered at all. That is a default rather than a
+rule: "Ignored files" in `/settings` offers them anyway, and a path typed by
+hand always reaches anything.
+
 ### Settings
 
 `/settings` is where the rest of them live, since a toggle is not worth a
 command of its own. The rows are the session's: untruncated tool output, raw
-Markdown, whether a reply is streamed or arrives whole, the telemetry record
-below, and the mode, model, provider and token cap a turn is sent with. Space
+Markdown, whether a reply is streamed or arrives whole, whether the `@` picker
+offers ignored paths, the telemetry record below, and the mode, model, provider and token cap a turn is sent with. Space
 acts on the selected row, flipping a checkbox or opening what changes a value,
 and Enter or Escape close. The screen is its own answer: a box that stayed
 empty is a setting that refused to change.

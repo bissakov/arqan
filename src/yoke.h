@@ -620,6 +620,11 @@ b8 tui_settings(Str title, const TuiCmd *rows, size_t n, size_t *sel);
  * was empty, or there is no fullscreen UI; the composer's own text is
  * restored on the way out. */
 b8 tui_ask(Str question, b8 secret, char *out, size_t cap);
+/* The '@' picker hides what the project's .gitignore and .ignore exclude,
+ * and always hides .git; this offers them anyway. Off by default. A path
+ * typed by hand is unaffected either way. */
+void tui_set_show_ignored(b8 on);
+b8   tui_show_ignored(void);
 /* Composer history for Up/Down recall; NULL disables it. */
 void tui_set_history(History *h);
 /* `plain` forces the line-oriented path and drops the banner even on a tty,

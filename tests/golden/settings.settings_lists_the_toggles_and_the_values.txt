@@ -13,11 +13,11 @@
 |  › [ ] Verbose tool output  Every line a tool printed, untruncated
 |    [ ] Raw Markdown         Replies as the model wrote them, unformatted
 |    [x] Stream replies       Paint a reply as it arrives, not once it is whole
+|    [ ] Ignored files        Offer what .gitignore and .ignore exclude
 |    [ ] Telemetry            An anonymized debug log, for a bug report
 |        Mode                 Build: edits files and runs commands
 |        Model                mock-model
 |        Provider             none yet
-|        Max tokens           4096
 |
 |  › Message yoke...
 |
