@@ -9,6 +9,7 @@
 #include "json.c"
 #include "http.c"
 #include "paths.c"
+#include "settings.c"
 #include "telemetry.c"
 #include "history.c"
 #include "endpoints.c"
@@ -689,7 +690,7 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
 
     char err[YOKE_MAX_PATH + 64] = {0};
     if (!endpoints_put(&eps, str_c(name), str_c(url), model, scratch)
-        || !endpoints_save(&eps, scratch)) {
+        || !endpoints_save_one(str_c(name), str_c(url), model, scratch)) {
         tui_notice(STR("could not write the provider store"));
         return false;
     }

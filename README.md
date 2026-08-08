@@ -27,6 +27,7 @@ src/
   json.c          tiny arena JSON parser + serializer
   http.c          libcurl POST (SSE or whole reply) + plain GET
   paths.c         XDG base directory resolution
+  settings.c      the "key = value" file format, and the state file
   endpoints.c     user-defined providers (/provider) and their stored keys
   history.c       prompt history, mirrored to the XDG state dir
   session.c       per-directory saved conversations (/resume, /fork)
@@ -61,10 +62,22 @@ since the only reply an unconfigured endpoint has is an HTTP 401. Nothing is
 built in, since every one of them speaks the same protocol and only you know
 which ones you have.
 
-The settings land in `$XDG_CONFIG_HOME/yoke/providers` and the keys, alone, in
+A provider is a section of the config file, so what you edit by hand and what
+`/provider` writes are one document:
+
+```
+[provider openai]
+base_url = https://api.openai.com/v1
+model = gpt-4o-mini
+```
+
+The key is not there. It lives under the same section name in
 `$XDG_STATE_HOME/yoke/credentials` at mode 0600, so the file worth keeping in
 a dotfile repository carries no secret. A credentials file anyone else can
 read is refused rather than loaded: that key wants rotating, not using.
+
+A write by the UI touches the keys it owns and nothing else, so comments, key
+order and settings yoke knows nothing about survive it.
 
 An endpoint can also be named per invocation, which is what a script or a
 throwaway local server wants:
@@ -79,14 +92,19 @@ or put them in `$XDG_CONFIG_HOME/yoke/config`, by default
 `~/.config/yoke/config`:
 
 ```
-base_url=https://api.openai.com/v1
-model=gpt-4o-mini
-api_key=sk-...
-max_tokens=4096
-max_messages=4096      # conversation capacity; a full one is reported, not overrun
-retries=3              # further attempts for a request that reached nothing
-retry_delay_ms=500     # the wait before the first, doubling up to 8s
+base_url = https://api.openai.com/v1
+model = gpt-4o-mini
+api_key = sk-...
+max_tokens = 4096
+max_messages = 4096      # conversation capacity; a full one is reported, not overrun
+retries = 3              # further attempts for a request that reached nothing
+retry_delay_ms = 500     # the wait before the first, doubling up to 8s
 ```
+
+Every file yoke owns is written this way: `key = value` lines, `#` comments,
+values unquoted to the end of the line, grouped under `[section]` headers when
+there is more than one thing to configure. The keys above are the head of the
+file, above the first header.
 
 A turn whose request failed before a single byte of the reply arrived is sent
 again, up to `retries` times, and the transcript says so in red each time. A
@@ -97,7 +115,7 @@ answers the request rather than the network: an HTTP 401 or 404 fails at once.
 Environment variables win over every file, the provider chosen with
 `/provider` wins over the files but not over the environment, and a model
 picked with `/model` is remembered on that provider (or, with none selected,
-in `$XDG_STATE_HOME/yoke/model`).
+as `model` in `$XDG_STATE_HOME/yoke/state`).
 
 Command line options outrank all of it, being the most local statement about
 one invocation:
@@ -193,8 +211,8 @@ and Enter or Escape close. The screen is its own answer: a box that stayed
 empty is a setting that refused to change.
 
 Nothing is persisted here. A setting that outlives the session is remembered
-by whoever owns it, which is the telemetry file, the endpoint store or the
-state directory's model.
+by whoever owns it, which is the config file for a provider and the state file
+for the model and the telemetry answer.
 
 ### Telemetry
 
@@ -290,17 +308,15 @@ and ignored as if unset, and directories yoke creates are mode 0700.
 
 | what | where | note |
 | --- | --- | --- |
-| settings | `$XDG_CONFIG_HOME/yoke/config` | every `$XDG_CONFIG_DIRS` entry is searched too, at lower precedence |
+| settings | `$XDG_CONFIG_HOME/yoke/config` | keys and `[provider ...]` sections; every `$XDG_CONFIG_DIRS` entry is searched too, at lower precedence |
 | system prompt | `$XDG_CONFIG_HOME/yoke/SYSTEM.md` | used for every session; `$XDG_CONFIG_DIRS` searched too, at lower precedence |
 | project prompt | `.yoke/SYSTEM.md` | nearest one at or above the working directory, and it wins over the global one |
 | plan prompt | `.yoke/PLAN.md`, `$XDG_CONFIG_HOME/yoke/PLAN.md` | what Plan mode is told instead, resolved the same way |
 | project context | `AGENTS.md` | every one at or above the working directory, appended to the prompt |
 | prompt history | `$XDG_STATE_HOME/yoke/history` | last 500 prompts, recalled in the composer with Up/Down |
-| chosen model | `$XDG_STATE_HOME/yoke/model` | what `/model` last picked, with no provider selected |
-| providers | `$XDG_CONFIG_HOME/yoke/providers` | one JSON object per line: name, base URL, model; never a key |
-| provider keys | `$XDG_STATE_HOME/yoke/credentials` | mode 0600, refused when anyone else can read it |
-| chosen provider | `$XDG_STATE_HOME/yoke/provider` | what `/provider` last picked |
-| telemetry | `$XDG_STATE_HOME/yoke/telemetry`, `telemetry.jsonl` | whether telemetry is on, and the anonymized record it appends |
+| remembered choices | `$XDG_STATE_HOME/yoke/state` | `model`, `provider` and `telemetry`: what the UI last picked |
+| provider keys | `$XDG_STATE_HOME/yoke/credentials` | one `key` per `[provider ...]` section, mode 0600, refused when anyone else can read it |
+| telemetry record | `$XDG_STATE_HOME/yoke/telemetry.jsonl` | the anonymized record, appended while telemetry is on |
 | sessions | `$XDG_DATA_HOME/yoke/sessions/<cwd>/<timestamp>.jsonl` | one file per conversation, keyed by the directory it ran in |
 
 ## Tests

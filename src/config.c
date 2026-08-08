@@ -1,12 +1,13 @@
-/* config.c: load config from env and the XDG config files.
+/* config.c: load Config from the environment and the settings files.
  *
- * Keys: base_url=, model=, api_key=, max_tokens=, max_messages=, stream=,
- * retries=, retry_delay_ms=
+ * Keys, all at the head of the config file: base_url, model, api_key,
+ * max_tokens, max_messages, stream, retries, retry_delay_ms. A "[provider
+ * <name>]" section of the same file is an endpoint (see endpoints.c).
  * The system prompt is not a key here: it is a document, so it lives in
  * SYSTEM.md (see prompt.c).
- * Precedence: env var YOKE_<KEY> > the active provider (see endpoints.c) >
- * $XDG_CONFIG_HOME/yoke/config > the same file in each $XDG_CONFIG_DIRS
- * entry. See paths.c for the directories.
+ * Precedence: env var YOKE_<KEY> > the active provider > the state file's
+ * `model` > $XDG_CONFIG_HOME/yoke/config > the same file in each
+ * $XDG_CONFIG_DIRS entry. See paths.c for the directories.
  */
 #include "yoke.h"
 
@@ -21,17 +22,6 @@ static Str env_str(Arena *a, const char *name) {
     return str_dup(a, str_c(v));
 }
 
-static b8 file_kv(Str line, Str *k, Str *v) {
-    line = str_trim(line);
-    if (line.n == 0 || line.p[0] == '#') return false;
-    size_t eq = 0;
-    while (eq < line.n && line.p[eq] != '=') eq++;
-    if (eq == line.n) return false;
-    *k = str_trim(str_take(line, eq));
-    *v = str_trim(str_drop(line, eq + 1));
-    return k->n > 0;
-}
-
 /* Bounds every numeric setting: a config file or environment is not a
  * trusted source of array capacities. */
 static size_t clamp_size(i64 v, size_t lo, size_t hi) {
@@ -43,64 +33,57 @@ static size_t clamp_size(i64 v, size_t lo, size_t hi) {
 /* Keys the environment already set: no config file may override them. */
 typedef struct { b8 base, model, key, msgs; } EnvSet;
 
-static void config_apply_file(Config *c, Str path, EnvSet env,
-                              Arena *persist, Arena *scratch) {
-    FILE *f = fopen(path.p, "rb");
-    if (!f) return;
-    fseek(f, 0, SEEK_END); i64 sz = ftell(f); fseek(f, 0, SEEK_SET);
-    /* The file lives in scratch for the length of this function only. */
-    char *buf = sz > 0 && sz <= (1 << 20)
-              ? arena_new(scratch, char, (size_t)sz + 1) : NULL;
-    if (!buf) { fclose(f); return; }
-    size_t rd = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-    buf[rd] = '\0';
-
-    Str src = { buf, rd };
-    size_t s = 0;
-    for (size_t i = 0; i <= src.n; i++) {
-        if (i != src.n && src.p[i] != '\n') continue;
-        Str line = { src.p + s, i - s };
-        s = i + 1;
-        Str k, v;
-        if (!file_kv(line, &k, &v)) continue;
-        Str vd = str_dup(persist, v);
-        if (str_eq(k, STR("base_url")) && !env.base) { c->base_url = vd; c->base_url_set = true; }
-        else if (str_eq(k, STR("model")) && !env.model) c->model = vd;
-        else if (str_eq(k, STR("api_key")) && !env.key) c->api_key = vd;
-        else if (str_eq(k, STR("max_tokens"))) { b8 ok; i64 m = str_int(vd,&ok); if (ok) c->max_tokens = (i32)clamp_size(m, 1, 1u << 20); }
-        else if (str_eq(k, STR("max_messages"))) { b8 ok; i64 m = str_int(vd,&ok); if (ok && !env.msgs) c->max_messages = clamp_size(m, 8, 1u << 20); }
-        else if (str_eq(k, STR("stream"))) c->stream = !str_eq(vd, STR("false"));
-        else if (str_eq(k, STR("retries"))) { b8 ok; i64 m = str_int(vd,&ok); if (ok) c->retries = (i32)clamp_size(m, 0, 16); }
-        else if (str_eq(k, STR("retry_delay_ms"))) { b8 ok; i64 m = str_int(vd,&ok); if (ok) c->retry_delay_ms = (i32)clamp_size(m, 0, YOKE_MAX_RETRY_DELAY_MS); }
-    }
+static b8 config_num(const Settings *s, Str key, size_t lo, size_t hi,
+                     size_t *out) {
+    Str v = settings_get(s, (Str){0}, key);
+    if (!v.n) return false;
+    b8 ok = false;
+    i64 m = str_int(v, &ok);
+    if (!ok) return false;
+    *out = clamp_size(m, lo, hi);
+    return true;
 }
 
-/* The model /model last chose: the first line of the state file, empty when
- * there is none. */
-static Str state_model(Arena *persist, Arena *scratch) {
-    Str path = paths_file(YOKE_DIR_STATE, STR("model"), scratch);
-    if (!path.n) return (Str){0};
-    FILE *f = fopen(path.p, "rb");
-    if (!f) return (Str){0};
-    char line[512];
-    char *got = fgets(line, sizeof line, f);
-    fclose(f);
-    if (!got) return (Str){0};
-    Str name = str_trim(str_c(line));
-    return name.n ? str_dup(persist, name) : (Str){0};
+static void config_apply_file(Config *c, Str path, EnvSet env,
+                              Arena *persist, Arena *scratch) {
+    size_t mark = scratch->off;
+    Settings s;
+    if (!settings_load(&s, path, scratch)) { scratch->off = mark; return; }
+
+    Str base  = settings_get(&s, (Str){0}, STR("base_url"));
+    Str model = settings_get(&s, (Str){0}, STR("model"));
+    Str key   = settings_get(&s, (Str){0}, STR("api_key"));
+    if (base.n && !env.base) {
+        Str v = str_dup(persist, base);
+        if (v.p) { c->base_url = v; c->base_url_set = true; }
+    }
+    if (model.n && !env.model) {
+        Str v = str_dup(persist, model);
+        if (v.p) c->model = v;
+    }
+    if (key.n && !env.key) {
+        Str v = str_dup(persist, key);
+        if (v.p) c->api_key = v;
+    }
+
+    size_t n;
+    if (config_num(&s, STR("max_tokens"), 1, 1u << 20, &n))
+        c->max_tokens = (i32)n;
+    if (!env.msgs && config_num(&s, STR("max_messages"), 8, 1u << 20, &n))
+        c->max_messages = n;
+    if (config_num(&s, STR("retries"), 0, 16, &n))
+        c->retries = (i32)n;
+    if (config_num(&s, STR("retry_delay_ms"), 0, YOKE_MAX_RETRY_DELAY_MS, &n))
+        c->retry_delay_ms = (i32)n;
+    Str stream = settings_get(&s, (Str){0}, STR("stream"));
+    if (stream.n) c->stream = !str_eq(stream, STR("false"));
+
+    scratch->off = mark;
 }
 
 b8 config_remember_model(Str model, Arena *scratch) {
     if (!model.n || model.n >= 256) return false;
-    Str dir = paths_dir(YOKE_DIR_STATE, scratch);
-    Str path = paths_file(YOKE_DIR_STATE, STR("model"), scratch);
-    if (!dir.n || !path.n || !paths_ensure_dir(dir)) return false;
-    FILE *f = fopen(path.p, "wb");
-    if (!f) return false;
-    size_t wrote = fwrite(model.p, 1, model.n, f);
-    fputc('\n', f);
-    return fclose(f) == 0 && wrote == model.n;
+    return state_set(STR("model"), model, scratch);
 }
 
 b8 config_load(Config *c, Arena *persist, Arena *scratch) {
@@ -151,7 +134,7 @@ b8 config_load(Config *c, Arena *persist, Arena *scratch) {
     /* An in-app choice outranks the config files: it was made later and more
      * explicitly. The environment still wins, being per invocation. */
     if (!env_model.p) {
-        Str remembered = state_model(persist, scratch);
+        Str remembered = state_get(STR("model"), persist, scratch);
         if (remembered.n) c->model = remembered;
     }
     /* The provider chosen with /provider: the endpoint the user last selected

@@ -33,6 +33,25 @@ class GoldenMismatch(AssertionError):
     pass
 
 
+def parse_settings(text: str) -> dict:
+    """A settings file as {section: {key: value}}; "" holds its head."""
+    out: dict = {"": {}}
+    section = ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip()
+            out.setdefault(section, {})
+            continue
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[section][k.strip()] = v.strip()
+    return out
+
+
 class Ctx:
     def __init__(self, case: str, update: bool = False, keep: bool = False):
         self.case = case
@@ -77,6 +96,22 @@ class Ctx:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
         return p
+
+    def config_file(self) -> Path:
+        return self.xdg / "yoke" / "config"
+
+    def state_file(self) -> Path:
+        return self.home / ".local" / "state" / "yoke" / "state"
+
+    def settings(self, path: Path) -> dict:
+        """A settings file as {section: {key: value}}; "" is its head."""
+        if not path.exists():
+            return {}
+        return parse_settings(path.read_text())
+
+    def state(self) -> dict:
+        """The remembered choices: model, provider, telemetry."""
+        return self.settings(self.state_file()).get("", {})
 
     # ---- environment ------------------------------------------------------
     def env(self, **overrides) -> dict:

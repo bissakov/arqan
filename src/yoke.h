@@ -65,6 +65,9 @@ typedef bool     b8;
 #define YOKE_MAX_HISTORY_LINE (1u << 16)  /* longest prompt worth remembering  */
 #define YOKE_MAX_HISTORY_BYTES (8u << 20) /* largest history file we will read */
 #define YOKE_MAX_CONFIG_FILES 8           /* XDG config candidates we consider */
+#define YOKE_MAX_SETTINGS     512         /* key lines one settings file holds */
+#define YOKE_MAX_SETTINGS_BYTES (1u << 20)/* largest settings file we will read */
+#define YOKE_MAX_SET_KEYS     8           /* keys one settings_set writes      */
 /* Past this yoke refuses to start rather than send a truncated prompt. */
 #define YOKE_MAX_PROMPT_FILE  (1u << 16)
 #define YOKE_MAX_AGENTS_FILES 8           /* AGENTS.md chain depth we collect  */
@@ -219,6 +222,43 @@ b8     paths_ensure_dir(Str dir);    /* mkdir -p, mode 0700                  */
 /* Candidates for a config file, lowest precedence first. */
 size_t paths_config_files(Str name, Arena *a, Str *out, size_t max);
 
+/* ---- settings files ------------------------------------------------------
+ * One syntax for every setting yoke owns: "key = value" lines grouped under
+ * optional "[section]" headers, '#' comments, values unquoted to end of line.
+ * The config file carries the user's settings and their providers, the state
+ * file what the UI last chose, the credentials file the keys alone.
+ *
+ * Parsed Strs point into the arena copy of the file, so they live as long as
+ * the arena they were read into.
+ */
+typedef struct {
+    Str    section[YOKE_MAX_SETTINGS];   /* empty above the first header    */
+    Str    key[YOKE_MAX_SETTINGS];
+    Str    val[YOKE_MAX_SETTINGS];
+    size_t n;
+} Settings;
+
+/* False when the file is missing, empty or past YOKE_MAX_SETTINGS_BYTES. */
+b8     settings_load(Settings *s, Str path, Arena *a);
+/* Empty when the key is unset; a key repeated in one file reads as the last
+ * assignment wins. */
+Str    settings_get(const Settings *s, Str section, Str key);
+/* Distinct section names starting with `prefix`, in file order. */
+size_t settings_sections(const Settings *s, Str prefix, Str *out, size_t max);
+/* Upserts `n` keys in `section` (empty names the head of the file), keeping
+ * every other line, its order and its comments; an empty value removes the
+ * key. `mode` creates a new file; an existing one keeps its own. Written
+ * through a temporary file and renamed, so a failed write leaves the previous
+ * file. `scratch` is rewound before returning. */
+b8     settings_set(Str path, Str section, const Str *keys, const Str *vals,
+                   size_t n, u32 mode, Arena *scratch);
+b8     settings_set_one(Str path, Str section, Str key, Str val, u32 mode,
+                       Arena *scratch);
+
+/* $XDG_STATE_HOME/yoke/state: the choices the UI remembers between runs. */
+Str    state_get(Str key, Arena *out, Arena *scratch);
+b8     state_set(Str key, Str val, Arena *scratch);
+
 /* ---- prompt history ------------------------------------------------------
  * A ring of past prompts, mirrored to $XDG_STATE_HOME/yoke/history as they
  * are submitted. `cursor` is the browse position; cursor == n is the live
@@ -249,12 +289,12 @@ b8   history_browsing(const History *h);
 
 /* ---- endpoints -----------------------------------------------------------
  * The providers /provider creates and switches between: a name, an
- * OpenAI-compatible base URL and the model last used against it. Settings
- * live in $XDG_CONFIG_HOME/yoke/providers and the keys in
- * $XDG_STATE_HOME/yoke/credentials, so a shared configuration cannot carry a
- * secret; $XDG_STATE_HOME/yoke/provider names the active one. An oversized
- * field is dropped on load rather than truncated, since a cut URL names a
- * different service.
+ * OpenAI-compatible base URL and the model last used against it. Each is a
+ * "[provider <name>]" section of the config file, and its key alone lives
+ * under the same section of $XDG_STATE_HOME/yoke/credentials, so a shared
+ * configuration cannot carry a secret; the state file's `provider` key names
+ * the active one. An oversized field is dropped on load rather than
+ * truncated, since a cut URL names a different service.
  */
 typedef struct {
     Str    name[YOKE_MAX_ENDPOINTS];
@@ -271,7 +311,8 @@ size_t endpoints_find(const Endpoints *e, Str name);
 /* False when the store is full or a field is past its cap. */
 b8     endpoints_put(Endpoints *e, Str name, Str base_url, Str model,
                      Arena *a);
-b8     endpoints_save(const Endpoints *e, Arena *scratch);
+/* Writes one endpoint's section, leaving the rest of the config file alone. */
+b8     endpoints_save_one(Str name, Str base_url, Str model, Arena *scratch);
 /* Where /model writes while a provider is active. */
 b8     endpoints_remember_model(Str name, Str model, Arena *scratch);
 /* The key stored for `name`, allocated in `out`. Empty when there is none,
@@ -316,7 +357,7 @@ typedef struct {
 } Config;
 
 b8    config_load(Config *c, Arena *persist, Arena *scratch);
-/* Writes $XDG_STATE_HOME/yoke/model, which config_load applies above the
+/* Writes the state file's `model` key, which config_load applies above the
  * config files and below YOKE_MODEL. */
 b8    config_remember_model(Str model, Arena *scratch);
 

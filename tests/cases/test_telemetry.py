@@ -118,7 +118,8 @@ def test_the_record_lands_in_the_state_dir(ctx):
     s.submit("/exit")
     s.wait_exit()
 
-    assert (state / "yoke" / "telemetry").read_text() == "on\n"
+    settings = ctx.settings(state / "yoke" / "state")
+    assert settings[""]["telemetry"] == "on", settings
     assert (state / "yoke" / "telemetry.jsonl").exists()
     assert not log_path(ctx).exists(), "the default must stay unused"
 

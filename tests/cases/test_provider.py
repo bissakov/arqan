@@ -1,56 +1,52 @@
 """The /provider command: user-defined OpenAI-compatible endpoints."""
 
-import json
 import stat
-
-
-def providers_file(ctx):
-    return ctx.xdg / "yoke" / "providers"
 
 
 def credentials_file(ctx):
     return ctx.home / ".local" / "state" / "yoke" / "credentials"
 
 
-def active_file(ctx):
-    return ctx.home / ".local" / "state" / "yoke" / "provider"
-
-
 def store(ctx):
-    path = providers_file(ctx)
-    if not path.exists():
-        return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line]
+    """The [provider ...] sections of the config file, in file order."""
+    out = []
+    for section, keys in ctx.settings(ctx.config_file()).items():
+        if not section.startswith("provider "):
+            continue
+        out.append({"name": section[len("provider "):], **keys})
+    return out
 
 
 def creds(ctx):
-    path = credentials_file(ctx)
-    if not path.exists():
-        return {}
     return {
-        e["name"]: e["key"]
-        for e in (json.loads(l) for l in path.read_text().splitlines() if l)
+        section[len("provider "):]: keys["key"]
+        for section, keys in ctx.settings(credentials_file(ctx)).items()
+        if section.startswith("provider ")
     }
+
+
+def active(ctx):
+    return ctx.state().get("provider")
 
 
 def write_provider(ctx, name, base_url, model="mock-model", key="stored-key"):
     """Seed a stored provider, the way an earlier session would have left it."""
-    p = providers_file(ctx)
+    p = ctx.config_file()
     p.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps({"name": name, "base_url": base_url, "model": model})
     with p.open("a") as f:
-        f.write(line + "\n")
+        f.write(f"[provider {name}]\nbase_url = {base_url}\nmodel = {model}\n")
     if key is not None:
         c = credentials_file(ctx)
         c.parent.mkdir(parents=True, exist_ok=True)
         with c.open("a") as f:
-            f.write(json.dumps({"name": name, "key": key}) + "\n")
+            f.write(f"[provider {name}]\nkey = {key}\n")
         c.chmod(0o600)
 
 
 def select_provider(ctx, name):
-    active_file(ctx).parent.mkdir(parents=True, exist_ok=True)
-    active_file(ctx).write_text(name + "\n")
+    p = ctx.state_file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f"provider = {name}\n")
 
 
 def add_provider(s, ctx, name, url=None, key="sk-secret"):
@@ -94,7 +90,7 @@ def test_creating_a_provider_stores_it_and_switches_to_it(ctx):
         {"name": "work", "base_url": ctx.mock.base_url, "model": "alpha"}
     ], store(ctx)
     assert creds(ctx) == {"work": "sk-secret"}, creds(ctx)
-    assert active_file(ctx).read_text().strip() == "work"
+    assert active(ctx) == "work", ctx.state()
 
 
 def test_the_key_never_lands_in_the_config_directory(ctx):
@@ -134,7 +130,7 @@ def test_escape_cancels_the_form_and_writes_nothing(ctx):
     s.wait_text("a name for this provider")
     s.key("esc")
     s.wait_gone("a name for this provider")
-    assert not providers_file(ctx).exists(), store(ctx)
+    assert store(ctx) == [], store(ctx)
     assert s.composer_text() == "", s.composer_lines()
 
 
@@ -144,7 +140,7 @@ def test_a_url_without_a_scheme_is_refused(ctx):
     s.submit("/provider")
     add_provider(s, ctx, "work", url="api.example.com/v1", key=None)
     s.wait_text("starts with http:// or https://")
-    assert not providers_file(ctx).exists(), store(ctx)
+    assert store(ctx) == [], store(ctx)
 
 
 def test_an_endpoint_that_lists_nothing_is_not_stored(ctx):
@@ -155,7 +151,7 @@ def test_an_endpoint_that_lists_nothing_is_not_stored(ctx):
     add_provider(s, ctx, "work")
     s.key("enter")
     s.wait_text("models: HTTP 401")
-    assert not providers_file(ctx).exists(), store(ctx)
+    assert store(ctx) == [], store(ctx)
     assert not credentials_file(ctx).exists()
 
 
@@ -190,7 +186,7 @@ def test_switching_provider_picks_up_its_model_and_key(ctx):
     s.submit("hello")
     s.wait_turn_done()
     assert ctx.mock.auth[-1] == "Bearer sk-home", ctx.mock.auth[-1]
-    assert active_file(ctx).read_text().strip() == "home"
+    assert active(ctx) == "home", ctx.state()
 
 
 def test_the_model_picker_writes_to_the_active_provider(ctx):
@@ -205,7 +201,7 @@ def test_the_model_picker_writes_to_the_active_provider(ctx):
     s.key("enter")
     s.wait_text("model: beta")
     assert store(ctx)[0]["model"] == "beta", store(ctx)
-    assert not (ctx.home / ".local" / "state" / "yoke" / "model").exists()
+    assert "model" not in ctx.state(), ctx.state()
 
 
 def test_credentials_readable_by_others_are_refused(ctx):
@@ -217,7 +213,7 @@ def test_credentials_readable_by_others_are_refused(ctx):
     s.wait_status("pick a provider")
     s.key("enter")
     s.wait_text("readable by others")
-    assert active_file(ctx).exists() is False
+    assert active(ctx) is None, ctx.state()
 
 
 def test_the_first_run_without_a_key_says_how_to_add_one(ctx):

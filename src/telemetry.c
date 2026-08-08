@@ -1,8 +1,8 @@
 /* telemetry.c: an anonymized record of a session, for debugging.
  *
- * Off until /telemetry turns it on, which is remembered in
- * $XDG_STATE_HOME/yoke/telemetry so a later run records without being asked
- * again. Events are JSON objects, one per line, appended to
+ * Off until /telemetry turns it on, which is remembered as the state file's
+ * `telemetry` key so a later run records without being asked again. Events
+ * are JSON objects, one per line, appended to
  * $XDG_STATE_HOME/yoke/telemetry.jsonl.
  *
  * The file holds the shape of a session and none of its content: a message is
@@ -33,7 +33,6 @@ static struct {
     b8   ready;              /* the paths below resolved                    */
     char dir_buf[YOKE_MAX_PATH];
     char path_buf[YOKE_MAX_PATH];
-    char flag_buf[YOKE_MAX_PATH];
     Str  dir;
     u64  run;                /* distinguishes runs sharing the file         */
     f64  t0;
@@ -81,9 +80,7 @@ void telemetry_init(Arena *scratch) {
         tel_keep(g_tel.dir_buf, sizeof g_tel.dir_buf,
                  paths_dir(YOKE_DIR_STATE, scratch))
         && tel_keep(g_tel.path_buf, sizeof g_tel.path_buf,
-                    paths_file(YOKE_DIR_STATE, STR("telemetry.jsonl"), scratch))
-        && tel_keep(g_tel.flag_buf, sizeof g_tel.flag_buf,
-                    paths_file(YOKE_DIR_STATE, STR("telemetry"), scratch));
+                    paths_file(YOKE_DIR_STATE, STR("telemetry.jsonl"), scratch));
     scratch->off = mark;
     g_tel.dir = str_c(g_tel.dir_buf);
     if (!g_tel.ready) return;
@@ -95,21 +92,16 @@ void telemetry_init(Arena *scratch) {
                      (long)time(NULL), g_tel.t0);
     g_tel.run = tel_hash((Str){ seed, n > 0 ? (size_t)n : 0 });
 
-    FILE *f = fopen(g_tel.flag_buf, "rb");
-    if (!f) return;
-    char line[16] = {0};
-    char *got = fgets(line, sizeof line, f);
-    fclose(f);
-    if (got) g_tel.on = str_eq(str_trim(str_c(line)), STR("on"));
+    mark = scratch->off;
+    Str set = state_get(STR("telemetry"), scratch, scratch);
+    g_tel.on = str_eq(set, STR("on"));
+    scratch->off = mark;
 }
 
 b8 telemetry_set(b8 on, Arena *scratch) {
-    (void)scratch;
-    if (!g_tel.ready || !paths_ensure_dir(g_tel.dir)) return false;
-    FILE *f = fopen(g_tel.flag_buf, "wb");
-    if (!f) return false;
-    fputs(on ? "on\n" : "off\n", f);
-    if (fclose(f) != 0) return false;
+    if (!g_tel.ready) return false;
+    if (!state_set(STR("telemetry"), on ? STR("on") : STR("off"), scratch))
+        return false;
     g_tel.on = on;
     return true;
 }

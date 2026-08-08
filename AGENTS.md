@@ -21,7 +21,8 @@ There is no linter target: `CFLAGS` already includes `-Wall -Wextra
 
 `make test` is not optional after touching `src/`; see [Tests](#tests).
 
-Runtime config comes from env vars or `$XDG_CONFIG_HOME/yoke/config`:
+Runtime config comes from env vars or `$XDG_CONFIG_HOME/yoke/config`, which
+is `key = value` lines under optional `[section]` headers (see `settings.c`):
 
 ```
 export YOKE_BASE_URL=https://api.openai.com/v1
@@ -85,10 +86,21 @@ an AoS layout.
   cache. Nothing goes directly in `$HOME`, a relative `XDG_*` value is
   ignored as the spec demands, and created directories are 0700. New
   persistent state picks a kind here instead of building its own path
+- `settings.c`: the one file format every setting is written in, `key = value`
+  lines under optional `[section]` headers with `#` comments, shared by the
+  config file, the state file and the credentials file so a user has one
+  syntax to learn and three places to look. A write is a per-key upsert rather
+  than a rewrite, because a config file is a document its owner edits: the
+  comments, the order and the keys yoke knows nothing about survive
+  `/provider` writing a section, and the result is renamed over the old file so
+  an interrupted write leaves the previous one. It also owns
+  `$XDG_STATE_HOME/yoke/state`, the `state_get`/`state_set` pair holding what
+  the UI last chose (`model`, `provider`, `telemetry`), so a remembered answer
+  costs a key rather than a file
 - `telemetry.c`: the record the telemetry setting collects for a bug report,
   appended as JSON lines to `$XDG_STATE_HOME/yoke/telemetry.jsonl` with the
-  answer remembered beside it, so a run that never reaches the composer
-  records too. It holds the shape of a session and none of its content: a
+  answer remembered as the state file's `telemetry` key, so a run that never
+  reaches the composer records too. It holds the shape of a session and none of its content: a
   message is a byte and a line count, a tool call is its name and the keys of
   its arguments rather than the path or the command they carry, the working
   directory is a hash. A string field is for text yoke formats itself (a tool
@@ -115,15 +127,14 @@ an AoS layout.
   conversation as it stands, which leaves the one they came from as it was
 - `endpoints.c`: the providers `/provider` creates and switches to, since
   nothing is built in: they all speak the same protocol and only the user
-  knows which ones exist. Settings live in `$XDG_CONFIG_HOME/yoke/providers`
-  as JSONL and the keys alone in `$XDG_STATE_HOME/yoke/credentials` at mode
+  knows which ones exist. Each is a `[provider <name>]` section of the config
+  file, so the settings a user edits are one document, and its key alone sits
+  under the same section name in `$XDG_STATE_HOME/yoke/credentials` at mode
   0600, so a configuration that is shared carries no secret and one anyone
-  else can read is refused rather than loaded. A store is rewritten whole
-  through a temporary file and a rename, so an interrupted write leaves the
-  previous list rather than half a line
-- `config.c`: loads `Config` from env vars, then the provider
-  `$XDG_STATE_HOME/yoke/provider` names, then the model `/model` last
-  remembered in `$XDG_STATE_HOME/yoke/model`, then
+  else can read is refused rather than loaded. Only the section being changed
+  is written, since the rest of the file is the user's
+- `config.c`: loads `Config` from env vars, then the provider the state file
+  names, then the model `/model` last remembered in the same file, then
   `$XDG_CONFIG_HOME/yoke/config`, then the `XDG_CONFIG_DIRS` entries at lower
   precedence. A run that names no endpoint and holds no key has nothing to
   talk to, which is what puts `/provider` on the welcome screen rather than a

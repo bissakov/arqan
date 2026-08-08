@@ -110,8 +110,7 @@ def test_the_choice_is_remembered_across_runs(ctx):
     s.submit("/exit")
     s.wait_exit()
 
-    state = ctx.home / ".local" / "state" / "yoke" / "model"
-    assert state.read_text().strip() == "beta", state.read_text()
+    assert ctx.state().get("model") == "beta", ctx.state()
 
     again = ctx.spawn(YOKE_MODEL=None)
     assert again.status_field(1) == "beta", again.status_line()
