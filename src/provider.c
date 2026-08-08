@@ -370,7 +370,7 @@ static b8 read_completion(Provider *p, StreamState *s, Str raw, Arena *scratch,
 size_t provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
                        char *err, size_t err_cap) {
     if (!out || !max) return 0;
-    Buf body; buf_init(&body, scratch, 1u << 16);
+    Buf body; buf_init(&body, scratch, YOKE_MAX_MODEL_BYTES);
     i32 rc = http_get(cfg->base_url.p, "/models", cfg->api_key.p, &body);
     if (rc != 0) {
         if (rc < 0) snprintf(err, err_cap, "models: HTTP %d", -rc);

@@ -77,6 +77,17 @@ def test_a_long_list_is_searchable(ctx):
     s.wait_for(lambda t: s.status_field(1) == "model-017", "the picked model")
 
 
+def test_a_provider_serving_hundreds_of_models_lists_all_of_them(ctx):
+    """The last entry of a long list is searchable, not dropped by a cap."""
+    ctx.scenario("model_count=900")
+    s = ctx.spawn()
+    open_picker(ctx, s)
+    s.type("899").sync()
+    assert "model-899" in s.text(), s.text()
+    s.key("enter")
+    s.wait_for(lambda t: s.status_field(1) == "model-899", "the picked model")
+
+
 def test_search_is_a_literal_substring(ctx):
     """Nothing fuzzy: characters have to appear together, in order."""
     ctx.scenario("model_count=20")

@@ -584,10 +584,15 @@ static void telemetry_command(Str line) {
  * before resetting. False when nothing was listed or chosen, having said so. */
 static b8 pick_model(const Config *cfg, Arena *scratch, Str *out) {
     tui_set_status("loading models");
-    Str names[YOKE_MAX_MODELS];
+    Str *names = arena_new(scratch, Str, YOKE_MAX_MODELS);
+    if (!names) {
+        tui_set_status("ready");
+        tui_notice(STR("out of memory listing models"));
+        return false;
+    }
     char err[128] = {0};
     size_t n = provider_models(cfg, scratch, names, YOKE_MAX_MODELS,
-                               err, sizeof err);
+                              err, sizeof err);
     tui_set_status("ready");
     if (!n) {
         tui_notice(str_c(err[0] ? err : "no models to pick from"));

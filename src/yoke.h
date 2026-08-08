@@ -73,8 +73,11 @@ typedef bool     b8;
 #define YOKE_MAX_AGENTS_FILES 8           /* AGENTS.md chain depth we collect  */
 #define YOKE_MAX_SESSIONS     64          /* saved sessions the picker offers  */
 #define YOKE_MAX_SESSION_BYTES (32u << 20)/* largest session file we will read */
-#define YOKE_MAX_POPUP        256         /* entries the popup can hold        */
-#define YOKE_MAX_MODELS       256         /* models the /model picker offers   */
+/* A popup shows a handful of rows at a time, so this bounds what it can hold
+ * and scroll or search through, not what it can show: a provider that serves
+ * hundreds of models is the reason it is not the row count. */
+#define YOKE_MAX_POPUP        4096        /* entries the popup can hold        */
+#define YOKE_MAX_MODELS       YOKE_MAX_POPUP /* models the /model picker offers */
 #define YOKE_MAX_ENDPOINTS    32          /* providers /provider can hold      */
 #define YOKE_MAX_ENDPOINT_NAME 64
 #define YOKE_MAX_URL          512
