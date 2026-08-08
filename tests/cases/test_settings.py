@@ -8,13 +8,14 @@ def test_settings_lists_the_toggles_and_the_values(ctx):
     text = s.text()
     for row in ("[ ] Verbose tool output", "[ ] Raw Markdown",
                 "[x] Stream replies", "[ ] Ignored files", "[ ] Telemetry",
-                "Mode", "Model", "Provider"):
+                "Mode", "Tools", "Model"):
         assert row in text, text
     assert "Space changes the selected row" in text, text
     ctx.check_screen(s)
     # More rows than the popup holds: the last is reached by moving down.
-    s.key(*(["down"] * 8)).sync()
-    assert "Max tokens" in s.text(), s.text()
+    s.key(*(["down"] * 9)).sync()
+    text = s.text()
+    assert "Provider" in text and "Max tokens" in text, text
 
 
 def test_space_toggles_the_selected_row_only(ctx):

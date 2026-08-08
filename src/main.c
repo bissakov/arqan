@@ -172,6 +172,10 @@ static void telemetry_session(const Config *cfg, const ToolRegistry *tools) {
     tel_str(&e, "provider", cfg->provider);
     tel_str(&e, "mode", mode_name(cfg->mode));
     tel_int(&e, "tools", (i64)tools->n);
+    size_t off = 0;
+    for (size_t i = 0; i < tools->n; i++)
+        if (tools_disabled(tools, i)) off++;
+    tel_int(&e, "tools_off", (i64)off);
     tel_int(&e, "max_tokens", cfg->max_tokens);
     tel_int(&e, "max_messages", (i64)cfg->max_messages);
     tel_bool(&e, "has_key", cfg->api_key.p != NULL);
@@ -824,7 +828,7 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
  */
 enum {
     SET_VERBOSE, SET_RAW, SET_STREAM, SET_IGNORED, SET_TELEMETRY,
-    SET_MODE, SET_MODEL, SET_PROVIDER, SET_MAX_TOKENS, SET_N
+    SET_MODE, SET_TOOLS, SET_MODEL, SET_PROVIDER, SET_MAX_TOKENS, SET_N
 };
 
 /* "[x] label" for a toggle and the same column for a value row, so the two
@@ -855,6 +859,56 @@ static void ask_max_tokens(Config *cfg) {
     cfg->max_tokens = v > (1 << 20) ? (1 << 20) : (i32)v;
 }
 
+/* What the Tools row answers with, since a screen behind a row has to say
+ * what it holds. */
+static Str tools_summary(const Agent *ag, Arena *a) {
+    const ToolRegistry *reg = ag->tools;
+    size_t on = 0, total = 0;
+    for (size_t i = 0; i < reg->n; i++) {
+        if (!tools_can_disable(reg, i)) continue;
+        total++;
+        if (!tools_disabled(reg, i)) on++;
+    }
+    if (on == total) return STR("Every tool is available");
+    Buf b; buf_init(&b, a, 128);
+    buf_putf(&b, "%zu of %zu; off:", on, total);
+    for (size_t i = 0; i < reg->n; i++) {
+        if (!tools_disabled(reg, i)) continue;
+        buf_putc(&b, ' ');
+        buf_puts(&b, reg->name[i]);
+    }
+    return buf_ok(&b) ? buf_finish(&b) : STR("some tools are off");
+}
+
+/* The tools a turn may call, one checkbox each. A tool the mode does not
+ * offer is still listed, since the mode is a row above and turning bash off
+ * is a statement about the session rather than about plan mode. The two
+ * plan-mode tools are absent: the agent loop answers them, so "disabled"
+ * would mean a mode that cannot end. */
+static void choose_tools(Agent *ag) {
+    ToolRegistry *reg = ag->tools;
+    Arena *scratch = ag->scratch;
+    size_t sel = 0;
+    for (;;) {
+        arena_reset(scratch);
+        TuiCmd rows[YOKE_MAX_TOOLS];
+        size_t id[YOKE_MAX_TOOLS];
+        size_t n = 0;
+        for (size_t i = 0; i < reg->n; i++) {
+            if (!tools_can_disable(reg, i)) continue;
+            id[n] = i;
+            rows[n++] = (TuiCmd){
+                setting_check(scratch, !tools_disabled(reg, i), reg->name[i]),
+                reg->desc[i] };
+        }
+        if (!n) return;
+        if (!tui_settings(STR("tools"), rows, n, &sel)) break;
+        if (sel < n)
+            tools_set_disabled(reg, id[sel], !tools_disabled(reg, id[sel]));
+    }
+    arena_reset(scratch);
+}
+
 static void choose_settings(Agent *ag) {
     Config *cfg = ag->cfg;
     Arena *scratch = ag->scratch;
@@ -883,6 +937,8 @@ static void choose_settings(Agent *ag) {
             setting_value(scratch, STR("Mode")),
             cfg->mode == MODE_PLAN ? STR("Plan: read-only, ends with a plan")
                                    : STR("Build: edits files and runs commands") };
+        rows[SET_TOOLS] = (TuiCmd){
+            setting_value(scratch, STR("Tools")), tools_summary(ag, scratch) };
         rows[SET_MODEL] = (TuiCmd){
             setting_value(scratch, STR("Model")), cfg->model };
         rows[SET_PROVIDER] = (TuiCmd){
@@ -914,6 +970,7 @@ static void choose_settings(Agent *ag) {
                 agent_set_mode(ag, cfg->mode == MODE_PLAN ? MODE_BUILD
                                                           : MODE_PLAN);
                 break;
+            case SET_TOOLS:   choose_tools(ag); break;
             case SET_MODEL:   choose_model(cfg, ag->persist, scratch); break;
             case SET_PROVIDER:choose_provider(cfg, ag->persist, scratch); break;
             case SET_MAX_TOKENS: ask_max_tokens(cfg); break;
@@ -1135,6 +1192,15 @@ i32 main(i32 argc, char **argv) {
 
     ToolRegistry tools;
     tools_init(&tools, &persist);
+    /* Before the prompt is built, so a disabled tool is absent from the
+     * listing the model reads as well as from the schemas it is sent. */
+    char tools_err[128] = {0};
+    if (cfg.disable_tools.n &&
+        !tools_disable_list(&tools, cfg.disable_tools, tools_err,
+                            sizeof tools_err)) {
+        fprintf(stderr, "yoke: %s\n", tools_err);
+        return 2;
+    }
     char prompt_err[YOKE_MAX_PATH + 128] = {0};
     cfg.system_prompt = prompt_build(&tools, cfg.system_prompt, &persist,
                                      &scratch, prompt_err,

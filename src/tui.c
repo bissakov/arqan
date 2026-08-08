@@ -1929,13 +1929,19 @@ void tui_set_interrupt_flag(volatile sig_atomic_t *flag) {
     g_tui.interrupt = flag;
 }
 
+/* One byte read ahead of its key and handed to the next read, which is how
+ * an Esc that turned out to introduce nothing keeps the byte behind it. */
+static i32 g_pushback = -1;
+
 static b8 input_ready(i32 timeout_ms) {
+    if (g_pushback >= 0) return true;
     struct pollfd pfd = { STDIN_FILENO, POLLIN, 0 };
     i32 rc = poll(&pfd, 1, timeout_ms);
     return rc > 0 && (pfd.revents & (POLLIN | POLLHUP)) != 0;
 }
 
 static i32 rbyte(void) {
+    if (g_pushback >= 0) { i32 c = g_pushback; g_pushback = -1; return c; }
     unsigned char c = 0;
     ssize_t n = read(STDIN_FILENO, &c, 1);
     if (n < 0 && errno == EINTR) return g_winch ? -3 : -2;
@@ -1990,6 +1996,9 @@ static i32 g_mouse_row, g_mouse_col;
 static i32 read_escape(void) {
     i32 first = rbyte_soon();
     if (first < 0) return KEY_NONE;
+    /* Two Escapes in one burst are two keys: the second opens a sequence of
+     * its own rather than closing this one. */
+    if (first == 0x1b) { g_pushback = 0x1b; return KEY_NONE; }
     if (first == '\r' || first == '\n') return KEY_NEWLINE;
     if (first == '[') {
         Csi csi;

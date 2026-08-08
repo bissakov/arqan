@@ -379,6 +379,9 @@ typedef struct {
      * before the first one. */
     i32 retries;
     i32 retry_delay_ms;
+    /* Tools to turn off before the first turn, comma separated. Applied once
+     * the registry exists, since config_load runs before tools_init. */
+    Str disable_tools;
 } Config;
 
 b8    config_load(Config *c, Arena *persist, Arena *scratch);
@@ -391,6 +394,7 @@ b8    config_remember_model(Str model, Arena *scratch);
 /* Every Str points into argv, so nothing is copied and nothing is freed. */
 typedef struct {
     Str base_url, model, api_key, system_prompt;
+    Str disable_tools; /* comma separated names; replaces the configured set */
     Str prompt;        /* the one turn to run; see have_prompt              */
     b8  have_prompt;   /* true even for an empty prompt, which is an error  */
     i32 max_tokens;    /* 0 leaves the configured value alone               */
@@ -449,6 +453,9 @@ typedef b8 (*ToolRun)(Str args_json, Arena *scratch, Buf *out,
 /* A bit per mode in ToolRegistry.modes. */
 #define TOOL_IN_BUILD 1u
 #define TOOL_IN_PLAN  2u
+/* Answered by the agent loop rather than run, so the mode owns it: it is
+ * never offered as a toggle and never disabled. */
+#define TOOL_FIXED    4u
 
 typedef struct {
     Str     *name;        /* [YOKE_MAX_TOOLS]                               */
@@ -456,6 +463,7 @@ typedef struct {
     Str     *schema;      /* [YOKE_MAX_TOOLS] JSON schema fragment (object) */
     ToolRun *run;         /* [YOKE_MAX_TOOLS]                               */
     u8      *modes;       /* [YOKE_MAX_TOOLS] TOOL_IN_* bits                */
+    b8      *off;         /* [YOKE_MAX_TOOLS] turned off by the user        */
     size_t   n;
 } ToolRegistry;
 
@@ -465,8 +473,20 @@ typedef struct {
 void        tools_init(ToolRegistry *r, Arena *persist);
 /* The mode tools_write_schemas offers and tools_run enforces. */
 void        tools_set_mode(AgentMode mode);
+/* False for a tool the mode does not offer and for one the user turned off,
+ * which is what withholds it from the schemas and the prompt listing. */
 b8          tools_available(const ToolRegistry *r, size_t id, AgentMode mode);
 size_t      tools_find(const ToolRegistry *r, Str name);
+/* Whether the user may turn `id` off: everything but a TOOL_FIXED entry. */
+b8          tools_can_disable(const ToolRegistry *r, size_t id);
+b8          tools_disabled(const ToolRegistry *r, size_t id);
+void        tools_set_disabled(ToolRegistry *r, size_t id, b8 off);
+/* Turns off every tool named in a comma or space separated list, which is
+ * what disable_tools and --disable-tools carry. False with `err` filled in
+ * on a name no tool answers to or one that cannot be disabled: a typo in a
+ * list whose point is that bash cannot run is not worth ignoring. */
+b8          tools_disable_list(ToolRegistry *r, Str names,
+                               char *err, size_t err_cap);
 b8          tools_run(const ToolRegistry *r, size_t id, Str args,
                       Arena *scratch, Buf *out, char *err, size_t err_cap);
 void        tools_write_schemas(Buf *b, const ToolRegistry *r);

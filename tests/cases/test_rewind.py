@@ -46,6 +46,14 @@ def test_second_escape_opens_the_picker(ctx):
     assert older[0] < newer[0], rows
 
 
+def test_two_escapes_in_one_burst_still_open_the_picker(ctx):
+    """A fast pair is two keys: the second is not read as the first's sequence."""
+    s = ctx.spawn()
+    turn(ctx, s, "first question", "first answer")
+    s.key("esc", "esc")
+    s.wait_status("rewind to a message")
+
+
 def test_the_newest_message_is_selected(ctx):
     """The list opens on the turn nearest the composer, its last row."""
     s = ctx.spawn()

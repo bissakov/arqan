@@ -808,8 +808,44 @@ void tools_set_mode(AgentMode mode) { g_mode = mode; }
 
 b8 tools_available(const ToolRegistry *r, size_t id, AgentMode mode) {
     if (!r->modes || id >= r->n) return false;
+    if (r->off && r->off[id]) return false;
     return (r->modes[id] & (mode == MODE_PLAN ? TOOL_IN_PLAN : TOOL_IN_BUILD))
            != 0;
+}
+
+b8 tools_can_disable(const ToolRegistry *r, size_t id) {
+    if (!r->modes || id >= r->n) return false;
+    return (r->modes[id] & TOOL_FIXED) == 0;
+}
+
+b8 tools_disabled(const ToolRegistry *r, size_t id) {
+    return r->off && id < r->n && r->off[id];
+}
+
+void tools_set_disabled(ToolRegistry *r, size_t id, b8 off) {
+    if (!r->off || id >= r->n || !tools_can_disable(r, id)) return;
+    r->off[id] = off;
+}
+
+b8 tools_disable_list(ToolRegistry *r, Str names, char *err, size_t err_cap) {
+    size_t i = 0;
+    while (i < names.n) {
+        while (i < names.n && (names.p[i] == ',' || names.p[i] == ' ' ||
+                               names.p[i] == '\t')) i++;
+        size_t start = i;
+        while (i < names.n && names.p[i] != ',' && names.p[i] != ' ' &&
+               names.p[i] != '\t') i++;
+        if (i == start) break;
+        Str name = { names.p + start, i - start };
+        size_t id = tools_find(r, name);
+        if (id == TOOL_NONE || !tools_can_disable(r, id)) {
+            snprintf(err, err_cap, "no tool named '%.*s' can be disabled",
+                     (int)name.n, name.p);
+            return false;
+        }
+        tools_set_disabled(r, id, true);
+    }
+    return true;
 }
 
 void tools_init(ToolRegistry *r, Arena *persist) {
@@ -818,8 +854,10 @@ void tools_init(ToolRegistry *r, Arena *persist) {
     r->schema = arena_new(persist, Str, YOKE_MAX_TOOLS);
     r->run    = arena_new(persist, ToolRun, YOKE_MAX_TOOLS);
     r->modes  = arena_new(persist, u8, YOKE_MAX_TOOLS);
+    r->off    = arena_new(persist, b8, YOKE_MAX_TOOLS);
     r->n = 0;
-    if (!r->name || !r->desc || !r->schema || !r->run || !r->modes) {
+    if (!r->name || !r->desc || !r->schema || !r->run || !r->modes ||
+        !r->off) {
         r->name = NULL;
         return;
     }
@@ -830,6 +868,7 @@ void tools_init(ToolRegistry *r, Arena *persist) {
     r->schema[r->n] = STR(sch); \
     r->run[r->n] = fn; \
     r->modes[r->n] = (md); \
+    r->off[r->n] = false; \
     r->n++; } while (0)
 #define BOTH (TOOL_IN_BUILD | TOOL_IN_PLAN)
 
@@ -867,11 +906,12 @@ void tools_init(ToolRegistry *r, Arena *persist) {
         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}",
         tool_write);
     ADD("ask_user", "Ask the user to choose between options. Mark the one you "
-        "recommend; they may also answer in their own words.", TOOL_IN_PLAN,
+        "recommend; they may also answer in their own words.",
+        TOOL_IN_PLAN | TOOL_FIXED,
         "{\"type\":\"object\",\"properties\":{\"question\":{\"type\":\"string\"},\"options\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"label\":{\"type\":\"string\"},\"detail\":{\"type\":\"string\"},\"recommended\":{\"type\":\"boolean\"}},\"required\":[\"label\"]}}},\"required\":[\"question\",\"options\"]}",
         tool_agent_only);
     ADD("submit_plan", "Hand the finished plan to the user to approve.",
-        TOOL_IN_PLAN,
+        TOOL_IN_PLAN | TOOL_FIXED,
         "{\"type\":\"object\",\"properties\":{\"plan\":{\"type\":\"string\"}},\"required\":[\"plan\"]}",
         tool_agent_only);
 #undef BOTH
@@ -892,8 +932,14 @@ b8 tools_run(const ToolRegistry *r, size_t id, Str args, Arena *scratch,
         return false;
     }
     /* A schema offered earlier in the conversation is still in the model's
-     * context, so plan mode's read-only promise has to hold here rather than
-     * only in what is advertised now. */
+     * context, so plan mode's read-only promise and a tool the user turned
+     * off have to hold here rather than only in what is advertised now. */
+    if (tools_disabled(r, id)) {
+        snprintf(err, err_cap, "%.*s is disabled: it is not available in this "
+                 "session, so carry on without it",
+                 (int)r->name[id].n, r->name[id].p);
+        return false;
+    }
     if (!tools_available(r, id, g_mode)) {
         snprintf(err, err_cap, "%.*s is not available in plan mode",
                  (int)r->name[id].n, r->name[id].p);

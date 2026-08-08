@@ -24,12 +24,16 @@ static const char g_usage[] =
     "  -k, --api-key KEY   API key\n"
     "  -s, --system TEXT   system prompt\n"
     "  -t, --max-tokens N  cap the tokens a single reply may use\n"
+    "  -d, --disable-tools LIST\n"
+    "                      comma separated tools the model may not call,\n"
+    "                      e.g. bash,write,patch\n"
     "  -h, --help          print help\n"
     "  -v, --version       print version\n"
     "\n"
     "environment: YOKE_BASE_URL, YOKE_MODEL, YOKE_API_KEY, "
     "YOKE_SYSTEM_PROMPT,\n"
-    "YOKE_MAX_MESSAGES. Config file: $XDG_CONFIG_HOME/yoke/config.\n"
+    "YOKE_MAX_MESSAGES, YOKE_DISABLE_TOOLS.\n"
+    "Config file: $XDG_CONFIG_HOME/yoke/config.\n"
     "Without any of them, yoke asks for a provider; /provider adds and "
     "switches later.\n";
 
@@ -75,6 +79,7 @@ static b8 cli_option(CliArg *a, char c, const char *lng, b8 *done) {
     if (OPT('u', "base-url")) return cli_value(a, &o->base_url);
     if (OPT('k', "api-key")) return cli_value(a, &o->api_key);
     if (OPT('s', "system")) return cli_value(a, &o->system_prompt);
+    if (OPT('d', "disable-tools")) return cli_value(a, &o->disable_tools);
     if (OPT('t', "max-tokens")) {
         Str v;
         if (!cli_value(a, &v)) return false;
@@ -138,5 +143,6 @@ void cli_apply(const CliOpts *o, Config *c) {
     if (o->base_url.p)      { c->base_url = o->base_url; c->base_url_set = true; }
     if (o->api_key.p)       c->api_key = o->api_key;
     if (o->system_prompt.p) c->system_prompt = o->system_prompt;
+    if (o->disable_tools.p) c->disable_tools = o->disable_tools;
     if (o->max_tokens)      c->max_tokens = o->max_tokens;
 }

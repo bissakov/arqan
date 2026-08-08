@@ -99,6 +99,7 @@ max_tokens = 32768       # cap on one reply; a turn that reaches it stops mid-se
 max_messages = 4096      # conversation capacity; a full one is reported, not overrun
 retries = 3              # further attempts for a request that reached nothing
 retry_delay_ms = 500     # the wait before the first, doubling up to 8s
+disable_tools = bash     # tools no turn may call, comma separated
 ```
 
 Every file yoke owns is written this way: `key = value` lines, `#` comments,
@@ -125,6 +126,7 @@ yoke --help
 yoke -m gpt-4o --base-url https://api.openai.com/v1
 yoke -p "summarise src/tui.c"    # one turn, reply on stdout, then exit
 yoke "summarise src/tui.c"       # the same: a bare argument is the prompt
+yoke --disable-tools bash,write,patch   # a read-only run for a model you distrust
 ```
 
 A one-shot run prints the reply and nothing else, exiting nonzero when the
@@ -231,7 +233,8 @@ hand always reaches anything.
 `/settings` is where the rest of them live, since a toggle is not worth a
 command of its own. The rows are the session's: untruncated tool output, raw
 Markdown, whether a reply is streamed or arrives whole, whether the `@` picker
-offers ignored paths, the telemetry record below, and the mode, model, provider and token cap a turn is sent with. Space
+offers ignored paths, the telemetry record below, and the mode, tools, model,
+provider and token cap a turn is sent with. Space
 acts on the selected row, flipping a checkbox or opening what changes a value,
 and Enter or Escape close. The screen is its own answer: a box that stayed
 empty is a setting that refused to change.
@@ -239,6 +242,25 @@ empty is a setting that refused to change.
 Nothing is persisted here. A setting that outlives the session is remembered
 by whoever owns it, which is the config file for a provider and the state file
 for the model and the telemetry answer.
+
+### Turning tools off
+
+"Tools" opens a screen of its own, one checkbox per tool, and what is turned
+off there is withheld from the schemas the next turn is sent with and refused
+if the model asks for it anyway, since a schema offered earlier in the
+conversation is still in its context. It is the same promise plan mode makes,
+made one tool at a time: a model being tested against a real working tree
+cannot run `bash` it was not given. The two plan-mode tools are not rows,
+because the agent loop answers those and a mode that cannot end is not a
+setting.
+
+A session that should start that way says so before it starts, with
+`disable_tools` in the config file, `YOKE_DISABLE_TOOLS`, or
+`--disable-tools`; each replaces the one below it rather than adding to it.
+Applied before the system prompt is built, so a disabled tool is absent from
+the listing the model reads as well as from what it is offered. A name no tool
+answers to ends the run rather than being ignored: a typo in a list whose
+point is that `bash` cannot run is worth hearing about.
 
 ### Telemetry
 

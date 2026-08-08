@@ -16,8 +16,8 @@
 |    [ ] Ignored files        Offer what .gitignore and .ignore exclude
 |    [ ] Telemetry            An anonymized debug log, for a bug report
 |        Mode                 Build: edits files and runs commands
+|        Tools                Every tool is available
 |        Model                mock-model
-|        Provider             none yet
 |
 |  › Message yoke...
 |

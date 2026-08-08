@@ -186,6 +186,13 @@ an AoS layout.
   registry rather than a request made in the prompt: `tools_write_schemas`
   withholds what the mode does not have and `tools_run` refuses it, because a
   schema offered earlier in a conversation is still in the model's context.
+  A tool the user turned off in `/settings` or named in `disable_tools`,
+  `YOKE_DISABLE_TOOLS` or `--disable-tools` is withheld and refused the same
+  way, since the reason to keep a model away from the shell is the reason Plan
+  mode exists; the list is applied before the prompt is built, so the listing
+  the model reads matches what it is offered, and an unknown name ends the run
+  rather than being ignored. A `TOOL_FIXED` entry is not disableable, which is
+  what keeps plan mode's two questions answerable.
   `shell_capture` is the shared command runner behind `bash` and the composer's
   `!` mode: it forks `/bin/sh` instead of using `popen` because stderr left
   inherited would paint over the frame and an inherited stdin would race the
@@ -344,6 +351,8 @@ an AoS layout.
   raw, streaming, ignored paths and telemetry live here rather than in the
   completion popup,
   next to the mode, model, provider and token cap a turn is sent with. The
+  Tools row opens the same screen over the registry, one checkbox per tool a
+  turn may call. The
   rows are rebuilt from the state they describe on every pass of the loop, so
   the screen is its own answer and nothing in it writes a notice: a checkbox
   that did not move is a setting that refused to change. Nothing is persisted

@@ -1,0 +1,26 @@
+--- screen 80x24 ---
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|    Space changes the selected row · Enter or Esc closes
+|  › [x] read   Read a page of a file: 2000 lines or 50KB, from offset.
+|    [x] grep   Search file contents for a literal string, recursively.
+|    [x] find   List files whose name matches a glob, recursively.
+|    [x] bash   Run a shell command; returns its stdout and stderr.
+|    [x] patch  Change files with a unified diff: hunks are located by their co
+|    [x] write  Write a file whole, creating or overwriting it.
+|
+|  › Message yoke...
+|
+|
+|  ● tools · mock-model · build · local · ~/work · -
+--- cursor row=21 col=5 visible=yes ---
