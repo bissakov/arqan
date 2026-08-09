@@ -416,6 +416,16 @@ b8     endpoints_remember_active(Str name, Arena *scratch);
  */
 typedef enum { MODE_BUILD = 0, MODE_PLAN } AgentMode;
 
+/* The effective prompt remains one system message. These copies explain where
+ * it came from when the session chooses to show instructions; they never go
+ * through Conv or a provider request. */
+typedef struct {
+    Str primary, primary_label, primary_path;
+    Str agents[YOKE_MAX_AGENTS_FILES];
+    Str agent_paths[YOKE_MAX_AGENTS_FILES];
+    size_t n_agents;
+} PromptSources;
+
 /* ---- config ------------------------------------------------------------- */
 typedef struct {
     Str base_url;     /* e.g. https://api.openai.com/v1                    */
@@ -431,6 +441,7 @@ typedef struct {
     b8  base_url_set;
     Str system_prompt; /* Only --system and YOKE_SYSTEM_PROMPT set this. */
     Str plan_prompt;   /* Plan mode's; built at startup, never configured. */
+    PromptSources system_sources, plan_sources;
     AgentMode mode;
     i32  max_tokens;
     /* Configurable so the full-history path is reachable in a test without
@@ -582,12 +593,14 @@ void        shell_set_idle(void (*fn)(void *ud), void *ud);
  * whichever prompt won, outermost first and verbatim: it is a document about
  * the project rather than a template. */
 Str   prompt_build(const ToolRegistry *tools, Str configured, Arena *persist,
-                   Arena *scratch, char *err, size_t err_cap);
+                   Arena *scratch, PromptSources *sources, char *err,
+                   size_t err_cap);
 /* The plan-mode prompt, resolved the same way from .yoke/PLAN.md, the global
  * PLAN.md or the built-in template, with {tools} listing only what plan mode
  * offers. Nothing configures it: --system describes Build mode. */
 Str   prompt_build_plan(const ToolRegistry *tools, Arena *persist,
-                        Arena *scratch, char *err, size_t err_cap);
+                        Arena *scratch, PromptSources *sources, char *err,
+                        size_t err_cap);
 
 /* ---- conversation (SoA) ------------------------------------------------- */
 typedef enum { M_SYSTEM = 0, M_USER, M_ASSISTANT, M_TOOL } MRole;

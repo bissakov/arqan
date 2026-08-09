@@ -17,7 +17,7 @@ def test_settings_lists_the_toggles_and_the_values(ctx):
     assert "Space or Left/Right changes the selected row" in text, text
     ctx.check_screen(s)
     # More rows than the popup holds: the last is reached by moving down.
-    s.key(*(["down"] * 13)).sync()
+    s.key(*(["down"] * 14)).sync()
     text = s.text()
     assert "Max tokens" in text and "[x] bash" in text, text
 
@@ -34,7 +34,7 @@ def test_the_description_column_holds_while_scrolling(ctx):
         raise AssertionError(f"no row holding {label!r}\n{s.text()}")
 
     top = column("Every line a tool printed")
-    s.key(*(["down"] * 13)).sync()
+    s.key(*(["down"] * 14)).sync()
     assert column("Write a file whole") == top, s.text()
 
 
@@ -118,6 +118,49 @@ def test_the_mode_row_switches_mode(ctx):
     s.settings_act("Mode")
     s.wait_for(lambda t: s.status_field(2) == "plan", "plan mode")
     assert "Plan: read-only" in s.text(), s.text()
+
+
+def test_show_instructions_replays_sources_without_changing_the_request(ctx):
+    """Instruction blocks are presentation-only copies of each source."""
+    ctx.write_file(".yoke/SYSTEM.md", "BUILD {cwd}\n{tools}")
+    ctx.write_file(".yoke/PLAN.md", "PLAN {cwd}\n{tools}")
+    ctx.write_file("AGENTS.md", "ROOT AGENT\n")
+    ctx.write_file("src/AGENTS.md", "SRC AGENT\n")
+    s = ctx.spawn(cwd=str(ctx.work / "src"), YOKE_SYSTEM_PROMPT=None)
+
+    s.open_settings().settings_select("Show instructions")
+    assert "[ ] Show instructions" in s.popup_selected(), s.text()
+    s.key("space").sync()
+    s.wait_text("[x] Show instructions")
+    s.key("esc")
+    s.wait_gone("Verbose tool output")
+    bottom = s.text()
+    assert "ROOT AGENT" in bottom and "SRC AGENT" in bottom, bottom
+    assert "AGENTS.md" in bottom, bottom
+    s.key(*(["pageup"] * 10)).sync()
+    text = s.text()
+    assert "Instructions · Build" in text, text
+    assert "Project prompt" in text and ".yoke/SYSTEM.md" in text, text
+    assert "BUILD " in text, text
+
+    s.settings_act("Mode").key("esc")
+    s.key(*(["pageup"] * 10)).sync()
+    s.wait_for(lambda t: t.contains("Instructions · Plan"), "plan instructions")
+    text = s.text()
+    assert "PLAN " in text, text
+    assert "BUILD " not in text, text
+
+    ctx.scenario("text=done")
+    s.submit("continue")
+    s.wait_turn_done()
+    req = ctx.mock.requests[-1]
+    assert [m["role"] for m in req["messages"]] == ["system", "user"], req
+    system = req["messages"][0]["content"]
+    assert system.startswith("PLAN "), system
+    assert "Instructions ·" not in system, system
+
+    s.settings_toggle("Show instructions")
+    assert "Instructions · Plan" not in s.text(), s.text()
 
 
 def test_max_tokens_steps_in_place_and_is_sent(ctx):

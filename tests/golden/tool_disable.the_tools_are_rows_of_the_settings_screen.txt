@@ -10,7 +10,7 @@
 |
 |
 |    Space or Left/Right changes the selected row · Enter or Esc closes
-|        Mode                 Build: edits files and runs commands
+|    [ ] Show instructions    Reveal the active system and project instructions
 |        Max tokens           32768
 |    [x] read                 Read a page of a file
 |    [x] grep                 Search file contents

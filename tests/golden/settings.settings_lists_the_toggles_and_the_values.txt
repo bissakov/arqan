@@ -17,7 +17,7 @@
 |    [ ] Telemetry            An anonymized debug log, for a bug report
 |        Text wrap            Word: lines end where a word does
 |        Mode                 Build: edits files and runs commands
-|        Max tokens           32768
+|    [ ] Show instructions    Reveal the active system and project instructions
 |
 |  › Message yoke...
 |

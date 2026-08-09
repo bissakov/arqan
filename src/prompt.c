@@ -97,7 +97,8 @@ static Str prompt_read(Str path, Arena *a, char *err, size_t err_cap) {
  * its own leading separator ("/.yoke/SYSTEM.md"). As git does it, the project
  * root is wherever the marker is rather than where yoke started. */
 static Str prompt_project(Str dir, const char *suffix, size_t suffix_size,
-                          Arena *scratch, char *err, size_t err_cap) {
+                          Arena *scratch, Str *path_out, char *err,
+                          size_t err_cap) {
     char path[YOKE_MAX_PATH];
     size_t n = dir.n;
     if (!n || dir.p[0] != '/' || n + suffix_size > sizeof path)
@@ -110,7 +111,12 @@ static Str prompt_project(Str dir, const char *suffix, size_t suffix_size,
         memcpy(path + off, suffix, suffix_size);
         Str body = prompt_read((Str){ path, off + suffix_size - 1 }, scratch,
                                err, err_cap);
-        if (body.n || *err) return body;
+        if (body.n || *err) {
+            if (body.n && path_out)
+                *path_out = str_dup(scratch,
+                                    (Str){ path, off + suffix_size - 1 });
+            return body;
+        }
         if (n == 1) return (Str){0};
         while (n > 1 && path[n - 1] != '/') n--;
         while (n > 1 && path[n - 1] == '/') n--;
@@ -118,13 +124,17 @@ static Str prompt_project(Str dir, const char *suffix, size_t suffix_size,
 }
 
 /* The highest precedence `name` in the config dirs. */
-static Str prompt_global(Str name, Arena *scratch, char *err, size_t err_cap) {
+static Str prompt_global(Str name, Arena *scratch, Str *path_out, char *err,
+                         size_t err_cap) {
     Str cand[YOKE_MAX_CONFIG_FILES];
     size_t n = paths_config_files(name, scratch, cand,
                                   YOKE_MAX_CONFIG_FILES);
     for (size_t i = n; i > 0; i--) {
         Str body = prompt_read(cand[i - 1], scratch, err, err_cap);
-        if (body.n || *err) return body;
+        if (body.n || *err) {
+            if (body.n && path_out) *path_out = cand[i - 1];
+            return body;
+        }
     }
     return (Str){0};
 }
@@ -190,18 +200,27 @@ static void prompt_expand(Buf *b, Str tmpl, const ToolRegistry *tools,
 static Str prompt_for(const ToolRegistry *tools, AgentMode mode, Str configured,
                       const char *project, size_t project_size, Str global,
                       const char *builtin, Arena *persist, Arena *scratch,
-                      char *err, size_t err_cap) {
+                      PromptSources *sources, char *err, size_t err_cap) {
     char cwd_buf[YOKE_MAX_PATH];
     Str cwd = getcwd(cwd_buf, sizeof cwd_buf) ? str_c(cwd_buf) : (Str){0};
 
     if (err_cap) err[0] = '\0';
-    Str tmpl = configured;
-    if (!tmpl.p)
-        tmpl = prompt_project(cwd, project, project_size, scratch, err,
-                              err_cap);
-    if (!tmpl.n && !*err) tmpl = prompt_global(global, scratch, err, err_cap);
+    Str tmpl = configured, primary_path = {0};
+    Str primary_label = configured.p ? STR("Configured prompt") : (Str){0};
+    if (!tmpl.p) {
+        tmpl = prompt_project(cwd, project, project_size, scratch,
+                              &primary_path, err, err_cap);
+        if (tmpl.n) primary_label = STR("Project prompt");
+    }
+    if (!tmpl.n && !*err) {
+        tmpl = prompt_global(global, scratch, &primary_path, err, err_cap);
+        if (tmpl.n) primary_label = STR("Global prompt");
+    }
     if (*err) return (Str){0};
-    if (!tmpl.n) tmpl = str_c(builtin);
+    if (!tmpl.n) {
+        tmpl = str_c(builtin);
+        primary_label = STR("Built-in prompt");
+    }
 
     Str agents[YOKE_MAX_AGENTS_FILES], agent_paths[YOKE_MAX_AGENTS_FILES];
     size_t n_agents = prompt_agents(cwd, scratch, agents, agent_paths,
@@ -212,9 +231,30 @@ static Str prompt_for(const ToolRegistry *tools, AgentMode mode, Str configured,
     for (size_t i = 0; i < n_agents; i++)
         extra += agents[i].n + agent_paths[i].n + 64;
 
+    if (sources) memset(sources, 0, sizeof *sources);
+    Buf primary;
+    buf_init(&primary, persist, tmpl.n + extra);
+    prompt_expand(&primary, tmpl, tools, mode, cwd);
+    if (!buf_ok(&primary)) return (Str){0};
+    Str expanded = buf_finish(&primary);
+
+    if (sources) {
+        sources->primary = expanded;
+        sources->primary_label = primary_label;
+        sources->primary_path = primary_path.n ? str_dup(persist, primary_path)
+                                               : (Str){0};
+        for (size_t i = 0; i < n_agents; i++) {
+            sources->agents[i] = str_dup(persist, agents[i]);
+            sources->agent_paths[i] = str_dup(persist, agent_paths[i]);
+            if (!sources->agents[i].p || !sources->agent_paths[i].p)
+                return (Str){0};
+        }
+        sources->n_agents = n_agents;
+    }
+
     Buf b;
-    buf_init(&b, persist, tmpl.n + extra);
-    prompt_expand(&b, tmpl, tools, mode, cwd);
+    buf_init(&b, persist, expanded.n + extra);
+    buf_puts(&b, expanded);
     if (n_agents) {
         buf_puts(&b, STR("\n\nProject-specific instructions and "
                          "guidelines:\n"));
@@ -224,22 +264,24 @@ static Str prompt_for(const ToolRegistry *tools, AgentMode mode, Str configured,
                      (int)agent_paths[i - 1].n, agent_paths[i - 1].p,
                      (int)agents[i - 1].n, agents[i - 1].p);
     }
-    if (!buf_ok(&b)) return tmpl;
+    if (!buf_ok(&b)) return (Str){0};
     return buf_finish(&b);
 }
 
 Str prompt_build(const ToolRegistry *tools, Str configured, Arena *persist,
-                 Arena *scratch, char *err, size_t err_cap) {
+                 Arena *scratch, PromptSources *sources, char *err,
+                 size_t err_cap) {
     static const char project[] = "/.yoke/SYSTEM.md";
     return prompt_for(tools, MODE_BUILD, configured, project, sizeof project,
-                      STR("SYSTEM.md"), PROMPT_BUILTIN, persist, scratch, err,
-                      err_cap);
+                      STR("SYSTEM.md"), PROMPT_BUILTIN, persist, scratch,
+                      sources, err, err_cap);
 }
 
 Str prompt_build_plan(const ToolRegistry *tools, Arena *persist,
-                      Arena *scratch, char *err, size_t err_cap) {
+                      Arena *scratch, PromptSources *sources, char *err,
+                      size_t err_cap) {
     static const char project[] = "/.yoke/PLAN.md";
     return prompt_for(tools, MODE_PLAN, (Str){0}, project, sizeof project,
                       STR("PLAN.md"), PROMPT_PLAN_BUILTIN, persist, scratch,
-                      err, err_cap);
+                      sources, err, err_cap);
 }

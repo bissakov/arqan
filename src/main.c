@@ -165,6 +165,7 @@ typedef struct {
      * which is what lets the conversation it came from be dropped whole. */
     Str           handoff;
     b8            echo;   /* write the prompt into the transcript */
+    b8            show_instructions;
 } Agent;
 
 static Str mode_name(AgentMode m) {
@@ -205,6 +206,9 @@ static void telemetry_header(void *ud) {
 /* What the tool calls of one round asked the turn to do next. */
 typedef enum { TURN_CONTINUE, TURN_DONE, TURN_HANDOFF, TURN_FULL } TurnAction;
 
+static void rerender_conv(const Conv *c, const Config *cfg,
+                          b8 show_instructions, Arena *scratch, u32 zone);
+
 /* Prompt and registry move together, so the model never sees one without the
  * other. */
 static void agent_set_mode(Agent *ag, AgentMode mode) {
@@ -219,6 +223,8 @@ static void agent_set_mode(Agent *ag, AgentMode mode) {
         ag->conv->text[0] = mode == MODE_PLAN ? ag->cfg->plan_prompt
                                               : ag->cfg->system_prompt;
     tui_set_mode(mode);
+    if (ag->show_instructions)
+        rerender_conv(ag->conv, ag->cfg, true, ag->scratch, 0);
 }
 
 /* A failed run answers where its output would have been, since the result
@@ -420,10 +426,39 @@ static Str call_name(const Conv *c, size_t result) {
 
 /* The transcript is a rendering of the messages, so replaying them takes the
  * same path a live turn does. */
-static void render_conv(const Conv *c, Arena *scratch) {
+static void render_instruction_source(Str label, Str path, Str text) {
+    tui_block();
+    tui_write_tool(STR("\u25c6  "));
+    tui_write_tool(label);
+    if (path.n) {
+        tui_write_tool(STR(" · "));
+        tui_write_tool(path);
+    }
+    tui_write_tool(STR("\n"));
+    tui_write(text);
+    tui_write(STR("\n"));
+}
+
+static void render_instructions(const Config *cfg) {
+    const PromptSources *sources = cfg->mode == MODE_PLAN
+                                 ? &cfg->plan_sources : &cfg->system_sources;
+    tui_block();
+    tui_write_tool(cfg->mode == MODE_PLAN ? STR("Instructions · Plan\n")
+                                          : STR("Instructions · Build\n"));
+    render_instruction_source(sources->primary_label, sources->primary_path,
+                              sources->primary);
+    for (size_t i = sources->n_agents; i-- > 0;)
+        render_instruction_source(STR("AGENTS.md"), sources->agent_paths[i],
+                                  sources->agents[i]);
+}
+
+static void render_conv(const Conv *c, const Config *cfg,
+                        b8 show_instructions, Arena *scratch) {
     for (size_t i = 0; i < c->n; i++) {
         switch (c->role[i]) {
-            case M_SYSTEM: break;
+            case M_SYSTEM:
+                if (show_instructions) render_instructions(cfg);
+                break;
             case M_USER:
                 if (conv_is_shell(c, i)) {
                     render_shell_call(c->text[i], (u32)(i + 1), c->expanded[i]);
@@ -453,11 +488,12 @@ static void render_conv(const Conv *c, Arena *scratch) {
 
 /* `zone` is the block the reader acted on, which keeps its place on screen
  * while everything above it is rebuilt; 0 when no one block was involved. */
-static void rerender_conv(const Conv *conv, Arena *scratch, u32 zone) {
+static void rerender_conv(const Conv *conv, const Config *cfg,
+                          b8 show_instructions, Arena *scratch, u32 zone) {
     arena_reset(scratch);
     tui_anchor_zone(zone);
     tui_clear_transcript();
-    render_conv(conv, scratch);
+    render_conv(conv, cfg, show_instructions, scratch);
     tui_restore_anchor();
     arena_reset(scratch);
 }
@@ -468,8 +504,12 @@ static void rerender_conv(const Conv *conv, Arena *scratch, u32 zone) {
  *
  * The scratch arena is rewound on the way in rather than at each way out,
  * since every one of its consumers starts by rewinding it. */
-static void resume_session(Session *sess, Conv *conv, Arena *persist,
-                           Arena *scratch, size_t session_mark) {
+static void resume_session(Agent *ag) {
+    Session *sess = ag->sess;
+    Conv *conv = ag->conv;
+    Arena *persist = ag->persist;
+    Arena *scratch = ag->scratch;
+    size_t session_mark = ag->mark;
     arena_reset(scratch);
     SessionList list;
     size_t n = session_list(sess, scratch, &list, YOKE_MAX_SESSIONS);
@@ -502,7 +542,7 @@ static void resume_session(Session *sess, Conv *conv, Arena *persist,
     b8 whole = session_apply(sess, src, list.path[pick], list.name[pick], conv,
                              persist, scratch);
     tui_clear();
-    render_conv(conv, scratch);
+    render_conv(conv, ag->cfg, ag->show_instructions, scratch);
     if (!whole) tui_notice(STR("session truncated: the conversation is full"));
 }
 
@@ -526,7 +566,10 @@ static Str preview_line(Arena *a, Str s) {
 /* The chosen message returns to the composer and everything from it onward
  * leaves the conversation. The persistent arena is not rewound: the composer
  * is loaded from the text that is about to be dropped. */
-static void rewind_conversation(Conv *conv, Session *sess, Arena *scratch) {
+static void rewind_conversation(Agent *ag) {
+    Conv *conv = ag->conv;
+    Session *sess = ag->sess;
+    Arena *scratch = ag->scratch;
     arena_reset(scratch);
     size_t count = 0;
     for (size_t i = 0; i < conv->n; i++)
@@ -566,7 +609,7 @@ static void rewind_conversation(Conv *conv, Session *sess, Arena *scratch) {
     tui_set_input(conv->text[slot]);
     conv->n = slot;
     tui_clear();
-    render_conv(conv, scratch);
+    render_conv(conv, ag->cfg, ag->show_instructions, scratch);
     /* A session file is append-only and this one no longer describes the
      * conversation, so what is left of it continues in a new file. */
     session_fork(sess, conv);
@@ -1064,7 +1107,7 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
  */
 enum {
     SET_VERBOSE, SET_RAW, SET_STREAM, SET_IGNORED, SET_TELEMETRY,
-    SET_WRAP, SET_MODE, SET_MAX_TOKENS,
+    SET_WRAP, SET_MODE, SET_SHOW_INSTRUCTIONS, SET_MAX_TOKENS,
     SET_FIXED_N, SET_EFFORT = SET_FIXED_N, SET_BUDGET
 };
 
@@ -1171,6 +1214,10 @@ static void choose_settings(Agent *ag) {
             setting_value(scratch, STR("Mode")),
             cfg->mode == MODE_PLAN ? STR("Plan: read-only, ends with a plan")
                                    : STR("Build: edits files and runs commands") };
+        rows[SET_SHOW_INSTRUCTIONS] = (TuiCmd){
+            setting_check(scratch, ag->show_instructions,
+                          STR("Show instructions")),
+            STR("Reveal the active system and project instructions in the transcript") };
         rows[SET_MAX_TOKENS] = (TuiCmd){
             setting_value(scratch, STR("Max tokens")), str_c(tokens) };
 
@@ -1215,11 +1262,11 @@ static void choose_settings(Agent *ag) {
         switch (sel) {
             case SET_VERBOSE:
                 render_set_verbose(!render_verbose());
-                rerender_conv(ag->conv, scratch, 0);
+                rerender_conv(ag->conv, cfg, ag->show_instructions, scratch, 0);
                 break;
             case SET_RAW:
                 md_set_raw(!md_raw());
-                rerender_conv(ag->conv, scratch, 0);
+                rerender_conv(ag->conv, cfg, ag->show_instructions, scratch, 0);
                 break;
             case SET_STREAM:
                 cfg->stream = !cfg->stream;
@@ -1236,6 +1283,10 @@ static void choose_settings(Agent *ag) {
             case SET_MODE:
                 agent_set_mode(ag, cfg->mode == MODE_PLAN ? MODE_BUILD
                                                           : MODE_PLAN);
+                break;
+            case SET_SHOW_INSTRUCTIONS:
+                ag->show_instructions = !ag->show_instructions;
+                rerender_conv(ag->conv, cfg, ag->show_instructions, scratch, 0);
                 break;
             case SET_MAX_TOKENS:
                 cfg->max_tokens = max_tokens_step(cfg->max_tokens, delta);
@@ -1470,7 +1521,7 @@ i32 main(i32 argc, char **argv) {
     }
     char prompt_err[YOKE_MAX_PATH + 128] = {0};
     cfg.system_prompt = prompt_build(&tools, cfg.system_prompt, &persist,
-                                     &scratch, prompt_err,
+                                     &scratch, &cfg.system_sources, prompt_err,
                                      sizeof prompt_err);
     if (!cfg.system_prompt.n) {
         fprintf(stderr, "yoke: %s\n", prompt_err);
@@ -1479,7 +1530,8 @@ i32 main(i32 argc, char **argv) {
     arena_reset(&scratch);
     /* Built up front, so switching mode later is an assignment rather than a
      * file read mid-turn. */
-    cfg.plan_prompt = prompt_build_plan(&tools, &persist, &scratch, prompt_err,
+    cfg.plan_prompt = prompt_build_plan(&tools, &persist, &scratch,
+                                        &cfg.plan_sources, prompt_err,
                                         sizeof prompt_err);
     if (!cfg.plan_prompt.n) {
         fprintf(stderr, "yoke: %s\n", prompt_err);
@@ -1611,7 +1663,7 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
         if (!strcmp(line, "/rewind")) {
-            rewind_conversation(&conv, &sess, &scratch);
+            rewind_conversation(&agent);
             continue;
         }
         if (!strcmp(line, "/copy")) {
@@ -1628,7 +1680,8 @@ i32 main(i32 argc, char **argv) {
             unsigned long id = strtoul(line + 8, NULL, 10);
             if (id && id <= conv.n) {
                 conv.expanded[id - 1] = !conv.expanded[id - 1];
-                rerender_conv(&conv, &scratch, (u32)id);
+                rerender_conv(&conv, &cfg, agent.show_instructions, &scratch,
+                              (u32)id);
             }
             continue;
         }
@@ -1641,7 +1694,7 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
         if (!strcmp(line, "/resume")) {
-            resume_session(&sess, &conv, &persist, &scratch, session_mark);
+            resume_session(&agent);
             continue;
         }
         /* A turn with no endpoint is an HTTP 401 the user cannot act on. */
