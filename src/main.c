@@ -91,6 +91,7 @@ static void on_reason(Str delta, void *ud) {
     if (!g_reasoning) {
         g_reasoning = true;
         tui_set_status("reasoning");
+        tui_activity(STR("reasoning"));
         tui_block();
     }
     tui_write_reason(delta);
@@ -101,6 +102,7 @@ static void on_text(Str delta, void *ud) {
         g_replying = true;
         g_reasoning = false;
         tui_set_status("thinking");
+        tui_activity(STR("responding"));
         tui_block();
     }
     md_write(delta);
@@ -108,6 +110,7 @@ static void on_text(Str delta, void *ud) {
 static void on_tool_call(i32 idx, Str id, Str name, Str args_delta, void *ud) {
     (void)ud; (void)idx; (void)id; (void)name; (void)args_delta;
     tui_set_status("preparing tool call");
+    tui_activity(STR("preparing tool call"));
 }
 /* The context the turn is being charged for, heard from the response while
  * it streams: an interrupt cannot take it back, since nothing behind it is
@@ -122,6 +125,7 @@ static void on_retry(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
                      void *ud) {
     (void)ud;
     tui_set_status("retrying");
+    tui_activity(STR("retrying"));
     tui_block();
     char wait[32];
     if (delay_ms < 1000) snprintf(wait, sizeof wait, "%dms", delay_ms);
@@ -213,7 +217,7 @@ static void agent_set_mode(Agent *ag, AgentMode mode) {
 }
 
 /* False when the conversation had no room left, which ends the turn. */
-static b8 add_result(Agent *ag, size_t call, Str name, Str result) {
+static b8 add_result(Agent *ag, size_t call, Str name, Str result, u32 ms) {
     Conv *conv = ag->conv;
     size_t slot = conv_add_tool(conv, conv->tool_call_id[call], result);
     if (slot == CONV_NONE) {
@@ -221,8 +225,19 @@ static b8 add_result(Agent *ag, size_t call, Str name, Str result) {
         tui_write(STR("[conversation is full: /clear to start a new one]\n"));
         return false;
     }
-    render_tool_result(name, result, (u32)(slot + 1), conv->expanded[slot]);
+    conv->ms[slot] = ms;
+    render_tool_result(name, result, (u32)(slot + 1), conv->expanded[slot], ms);
     return true;
+}
+
+/* Milliseconds since `started`, saturating: a run long enough to overflow one
+ * is a number nobody reads anyway. Never 0, which is reserved for a slot
+ * whose work was never timed, so a run too fast to measure still reads as one
+ * that was. */
+static u32 elapsed_ms(f64 started) {
+    f64 ms = (yoke_now_seconds() - started) * 1000.0;
+    if (ms < 1.0) return 1;
+    return ms > (f64)UINT32_MAX ? UINT32_MAX : (u32)ms;
 }
 
 static Str json_field(const JVal *j, Str key) {
@@ -316,21 +331,25 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         if (!conv_is_call(conv, i)) continue;
         Str name = conv->tool_name[i];
         Str args = conv->text[i];
+        /* Both plan tools are questions put to the user: nothing is running
+         * while one is on screen. */
         if (str_eq(name, STR("submit_plan"))) {
+            tui_activity_end();
             Str result = {0};
             TurnAction act = submit_plan_answer(ag, args, &result);
-            if (!add_result(ag, i, STR("plan"), result)) return TURN_FULL;
+            if (!add_result(ag, i, STR("plan"), result, 0)) return TURN_FULL;
             if (act != TURN_CONTINUE) pending = act;
             continue;
         }
         if (str_eq(name, STR("ask_user"))) {
+            tui_activity_end();
             Str answer = ask_user_answer(ag, args);
             b8 dismissed = !answer.n;
             if (dismissed)
                 answer = STR("The user dismissed the question without "
                              "answering. Stop and wait for their next "
                              "message.");
-            if (!add_result(ag, i, STR("ask"), answer)) return TURN_FULL;
+            if (!add_result(ag, i, STR("ask"), answer, 0)) return TURN_FULL;
             if (dismissed) pending = TURN_DONE;
             continue;
         }
@@ -343,6 +362,7 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         char status[32];
         snprintf(status, sizeof status, "running %.*s", (i32)name.n, name.p);
         tui_set_status(status);
+        tui_activity(str_c(status));
         b8 ok = tools_run(ag->tools, tool, args, ag->scratch, &out, err,
                           sizeof err);
         if (!ok && !err[0]) snprintf(err, sizeof err, "tool failed");
@@ -356,13 +376,14 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         tel_bool(&e, "known", tool != TOOL_NONE);
         tel_int(&e, "args_bytes", (i64)args.n);
         tel_arg_keys(&e, "args", args, ag->scratch);
-        tel_int(&e, "ms", (i64)((yoke_now_seconds() - started) * 1000.0));
+        u32 ms = elapsed_ms(started);
+        tel_int(&e, "ms", (i64)ms);
         tel_bool(&e, "ok", ok);
         tel_shape(&e, "result", result);
         tel_send(&e);
         Str res_dup = str_dup(ag->persist, result);
         if (result.n && !res_dup.p) res_dup = STR("ERROR: out of memory");
-        if (!add_result(ag, i, name, res_dup)) return TURN_FULL;
+        if (!add_result(ag, i, name, res_dup, ms)) return TURN_FULL;
     }
     return pending;
 }
@@ -387,14 +408,14 @@ static void render_conv(const Conv *c, Arena *scratch) {
                 if (conv_is_shell(c, i)) {
                     render_shell_call(c->text[i], (u32)(i + 1), c->expanded[i]);
                     render_tool_result(STR("shell"), c->shell_out[i],
-                                       (u32)(i + 1), c->expanded[i]);
+                                       (u32)(i + 1), c->expanded[i], c->ms[i]);
                 } else {
                     tui_write_user(c->text[i]);
                 }
                 break;
             case M_TOOL:
                 render_tool_result(call_name(c, i), c->text[i],
-                                   (u32)(i + 1), c->expanded[i]);
+                                   (u32)(i + 1), c->expanded[i], c->ms[i]);
                 break;
             case M_ASSISTANT:
                 if (conv_is_call(c, i)) {
@@ -1001,6 +1022,7 @@ static void run_shell(Agent *ag, Str cmd) {
     render_shell_call(stored, (u32)(slot + 1), false);
 
     tui_set_status("running shell");
+    tui_activity(STR("running shell"));
     f64 started = yoke_now_seconds();
     Buf out; buf_init(&out, ag->scratch, 4096);
     char err[256] = {0};
@@ -1009,18 +1031,21 @@ static void run_shell(Agent *ag, Str cmd) {
         out.n = 0;
         buf_putf(&out, "ERROR: %s", err);
     }
+    u32 ms = elapsed_ms(started);
     tui_set_status("ready");
+    tui_activity_end();
     Str result = str_dup(ag->persist, buf_finish(&out));
     if (!result.p) result = STR("ERROR: out of memory");
     /* The command is the user's own text, so only its size is recorded. */
     TelEvent e;
     tel_open(&e, "shell");
     tel_shape(&e, "command", cmd);
-    tel_int(&e, "ms", (i64)((yoke_now_seconds() - started) * 1000.0));
+    tel_int(&e, "ms", (i64)ms);
     tel_shape(&e, "output", result);
     tel_send(&e);
     conv->shell_out[slot] = result;
-    render_tool_result(STR("shell"), result, (u32)(slot + 1), false);
+    conv->ms[slot] = ms;
+    render_tool_result(STR("shell"), result, (u32)(slot + 1), false, ms);
     session_save(ag->sess, conv);
     arena_reset(ag->scratch);
 }
@@ -1087,6 +1112,7 @@ static b8 agent_turn(Agent *ag, Str text) {
             break;
         }
         tui_set_status("thinking");
+        tui_activity(STR("thinking"));
         g_reasoning = false;
         g_replying = false;
         Provider p = {
@@ -1153,6 +1179,7 @@ static b8 agent_turn(Agent *ag, Str text) {
         }
     }
     tui_set_busy(false);
+    tui_activity_end();
     session_save(ag->sess, conv);
     tel_open(&te, "turn_end");
     tel_bool(&te, "ok", ok);
@@ -1264,6 +1291,9 @@ i32 main(i32 argc, char **argv) {
     tui_set_aliases(k_aliases, ALIAS_N);
     tui_set_history(&hist);
     tui_set_interrupt_flag(&g_got_sigint);
+    /* A command runs where a request would, so it keeps the frame alive the
+     * same way. */
+    shell_set_idle(on_idle, NULL);
     atexit(tui_stop);
 
     /* After tui_start, since the record names the shape of the terminal. */

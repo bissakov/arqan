@@ -186,6 +186,16 @@ scroll the transcript, and Ctrl-L repaints. Dragging selects any text on
 screen and copies it over OSC 52 on release, so it works over ssh; Shift falls
 back to the terminal's own selection.
 
+Anything that takes a while says so under the transcript: one spinner row
+naming what is running, whether that is the model thinking, the reply arriving,
+a tool call or a `!` command, next to the seconds it has been running and the
+key that ends it. The row is painted rather than written, so it leaves when the
+work does and the transcript keeps none of it, and while it is up the status
+line says the state in the colour of its bullet alone rather than repeating the
+word a row below. A tool call is timed twice over: its own seconds next to the
+turn's while it runs, and the time it took at the end of its result line once
+it is done, which the saved session keeps so `/resume` reads the same.
+
 A line starting with `!` is a shell command rather than a message: the `!`
 becomes the prompt marker itself, red in place of the blue one, so the composer
 holds the command alone. Submitting it runs it here rather than asking the

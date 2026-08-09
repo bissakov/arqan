@@ -497,6 +497,9 @@ void        tools_write_schemas(Buf *b, const ToolRegistry *r);
  * YOKE_MAX_COMMAND or the shell could not be started; a command is never
  * clamped to fit, since a truncated one is a different program. */
 b8          shell_capture(Str cmd, Buf *out, char *err, size_t err_cap);
+/* Pumped while a command runs, so a slow one keeps the UI live the way an
+ * in-flight request does; unset by default, since a tool is not the TUI's. */
+void        shell_set_idle(void (*fn)(void *ud), void *ud);
 
 /* ---- prompt ------------------------------------------------------------- */
 /* The system prompt, placeholders expanded. `configured` is what --system or
@@ -530,6 +533,10 @@ typedef struct {
     Str   *shell_out;     /* [cap] what a '!' run printed                */
     b8  *has_tool_call; /* [cap]                                       */
     b8  *expanded;      /* [cap] this block's transcript caps are lifted */
+    /* [cap] milliseconds the work behind a slot took, 0 when it took none
+     * that was measured. A tool result and a '!' run carry one, which is
+     * what lets a replay render the time a live turn showed. */
+    u32   *ms;
     size_t n, cap;
 } Conv;
 
@@ -766,6 +773,14 @@ void tui_set_input(Str s);
 /* While a turn is in flight keystrokes are accepted and Enter is not.
  * Callers pump tui_poll_input from wherever they wait. */
 void tui_set_busy(b8 busy);
+/* One transient row under the transcript naming the operation in flight, with
+ * a spinner and the seconds since it began. It is painted rather than
+ * written, so it leaves the transcript untouched and a replay never repeats
+ * it. Each label is timed from its own start, and once a wait holds more than
+ * the operation on screen the row carries both, since how long this tool has
+ * run and how long the turn has are different questions. */
+void tui_activity(Str label);
+void tui_activity_end(void);
 void tui_poll_input(void);
 i32  tui_input_fd(void);      /* readable-input fd, or -1 when not interactive */
 
@@ -794,7 +809,9 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded);
 /* The header of a '!' shell run, the same shape a tool call gets. Its output
  * follows through render_tool_result under the name "shell". */
 void render_shell_call(Str cmd, u32 id, b8 expanded);
-void render_tool_result(Str name, Str result, u32 id, b8 expanded);
+/* `ms` is how long the run took; 0 leaves it off, which is what a result
+ * replayed from a session written before it was measured carries. */
+void render_tool_result(Str name, Str result, u32 id, b8 expanded, u32 ms);
 /* A plan mode handover and the question that led to it. The answer to either
  * arrives as a tool result and reads like one. */
 void render_plan(Str plan);

@@ -245,12 +245,14 @@ def test_parallel_tool_calls(ctx):
 
 
 def test_status_names_the_running_tool(ctx):
-    """While a tool runs the status line says which one."""
+    """While a tool runs the spinner row says which one, and the status line
+    keeps its colour rather than repeating the word."""
     args = json.dumps({"command": "sleep 0.6; echo slept"})
     ctx.scenario(f"tool=bash:{args},final_text=finished")
     s = ctx.spawn()
     s.submit("run something slow")
-    s.wait_for(lambda t: s.status_kind() == "running bash", "the running-tool status")
+    s.wait_activity("running bash")
+    assert s.status_colour() == "working", s.status_line()
     s.wait_text("finished")
     s.wait_turn_done()
     assert s.status_kind() == "ready"

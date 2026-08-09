@@ -272,7 +272,20 @@ an AoS layout.
   since a line break in pasted text is content rather than an Enter: between
   the markers every byte edits and nothing submits, completes or recalls, a
   CRLF costs one break and a tab four spaces because the composer paints its
-  own cells. Also: viewport, scrollback, raw-mode
+  own cells. `tui_activity` is the one row a long operation reports on, a
+  spinner, what is running and the seconds since it began: it sits against the
+  transcript rather than among the overlays, since it reads as the next line
+  of the conversation, and it takes its rows from the transcript alone, so
+  opening it moves nothing below it. It is painted rather than written, so it
+  costs the transcript nothing and a replay never repeats it. Each operation
+  is timed from its own start while the wait it belongs to keeps the clock it
+  opened with, so a tool three rounds into a turn says how long it has run and
+  how long the turn has. While it is up the
+  status line drops the state word and keeps only the bullet's colour, since
+  one state said twice on two adjacent rows is the same state read twice.
+  Nothing drives the animation but the idle poll every waiting caller already
+  runs, which is why `shell_capture` takes an idle hook: a command that blocks
+  for a minute is a wait like any other. Also: viewport, scrollback, raw-mode
   composer with Up/Down recall of the persisted prompt history, mouse wheel
   scrolling, drag-to-select with OSC 52 copy, and SIGWINCH-aware repaint.
   Every visible glyph is painted through `put_text`, which mirrors it into the
@@ -314,7 +327,10 @@ an AoS layout.
   two reads of one file are otherwise the same header twice, a preview of the
   input it carries (a `patch` coloured by its own markers, and headed by the
   file it names, since a diff carries its target in its body), and a result
-  summarised by the tool's own shape. The JSON arguments
+  summarised by the tool's own shape and closed by how long the run took. That
+  time is a `Conv` field rather than a rendering detail, and a session line
+  keeps it, since a replayed transcript that dropped it would claim the work
+  was never timed. The JSON arguments
   never reach the screen except for a tool this module knows nothing about.
   The tail a truncated block ends on is its click target: it carries a TUI zone
   keyed by the `Conv` slot it was rendered from, and `Conv.expanded` is what a

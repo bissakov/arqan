@@ -15,6 +15,7 @@ from __future__ import annotations
 import errno
 import fcntl
 import os
+import re
 import pty
 import select
 import shutil
@@ -189,6 +190,31 @@ class Session:
     def wait_gone(self, needle: str, timeout: float = 10.0):
         return self.wait_for(
             lambda t: not t.contains(needle), f"{needle!r} to disappear", timeout
+        )
+
+    # The spinner row under the transcript: "<frame> <label> · <elapsed>".
+    ACTIVITY_ROW = re.compile(
+        "[\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f]"
+        " (.+?) \u00b7 (\\d+m\\d\\ds|\\d+s)"
+    )
+
+    def activity(self) -> tuple[str, str] | None:
+        """The spinner row's label and elapsed time, None when nothing runs."""
+        for i in range(self.term.rows):
+            m = self.ACTIVITY_ROW.search(self.row(i))
+            if m:
+                return m.group(1), m.group(2)
+        return None
+
+    def activity_label(self) -> str:
+        found = self.activity()
+        return found[0] if found else ""
+
+    def wait_activity(self, label: str, timeout: float = 10.0):
+        return self.wait_for(
+            lambda t: self.activity_label() == label,
+            f"spinner {label!r} (now {self.activity_label()!r})",
+            timeout,
         )
 
     def wait_status(self, status: str, timeout: float = 10.0):

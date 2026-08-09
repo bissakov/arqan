@@ -2,13 +2,14 @@
 
 
 def test_status_text_tracks_the_turn(ctx):
-    """The state is spelled out, not only implied by the bullet's colour."""
+    """The state is spelled out, not only implied by the bullet's colour: on
+    the status line when nothing runs, on the spinner row while one does."""
     ctx.scenario("words=30,chunk=1,delay=0.05,first_delay=0.15")
     s = ctx.spawn()
     assert s.status_kind() == "ready", s.status_line()
     s.submit("think about it")
-    s.wait_status("thinking")
-    assert "thinking" in s.status_line(), s.status_line()
+    s.wait_activity("thinking")
+    assert "thinking" not in s.status_line(), s.status_line()
     s.wait_turn_done()
     assert "ready" in s.status_line(), s.status_line()
 
@@ -19,7 +20,7 @@ def test_status_is_readable_without_colour(ctx):
     s = ctx.spawn(NO_COLOR="1")
     assert s.status_kind() == "ready", s.status_line()
     s.submit("think about it")
-    s.wait_status("thinking")
+    s.wait_activity("thinking")
     s.wait_turn_done()
     assert s.status_kind() == "ready"
 
@@ -49,7 +50,7 @@ def test_status_colour_encodes_the_state(ctx):
     s = ctx.spawn()
     assert s.status_colour() == "ready"
     s.submit("think")
-    s.wait_status("thinking")
+    s.wait_activity("thinking")
     assert s.status_colour() == "thinking"
     s.wait_turn_done()
     assert s.status_colour() == "ready"

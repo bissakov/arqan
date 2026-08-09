@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import difflib
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -210,7 +211,13 @@ class Ctx:
         session.settle()
         return self.check_text(session.snapshot(label), name)
 
+    # A tool result and the spinner row both carry a clock, which is the one
+    # thing on screen a rerun cannot reproduce. Layout is what a golden is
+    # about, so the number is normalised and its shape is left to assert on.
+    ELAPSED = re.compile(r"\u00b7 (\d+ms|\d+\.\d+s|\d+m\d\ds|\d+s)")
+
     def check_text(self, actual: str, name: str | None = None):
+        actual = self.ELAPSED.sub("\u00b7 <t>", actual)
         path = self.golden_path(name)
         self._checked.append(path.name)
         if self.update or not path.exists():

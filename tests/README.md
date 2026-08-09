@@ -93,7 +93,10 @@ grid is what lets tests assert the transcript's role colours.
 
 `ctx.check_screen(s)` writes `golden/<case>.txt` the first time and compares
 afterwards, printing a unified diff on mismatch. Use `make test-update` to
-accept an intended change, and read the diff before you do.
+accept an intended change, and read the diff before you do. The one thing a
+rerun cannot reproduce is a clock, so an elapsed time (`· 12ms`, `· 1.4s`) is
+normalised to `· <t>` before the comparison; assert on its shape in the case
+instead, with `s.activity()` for the spinner row.
 
 ## The dummy provider
 

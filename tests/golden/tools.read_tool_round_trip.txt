@@ -5,7 +5,7 @@
 |
 |
 |  ◆  read notes.txt
-|  └─ 1 line
+|  └─ 1 line · <t>
 |     hello from disk
 |
 |  I read the file.

@@ -96,6 +96,12 @@ typedef struct {
     size_t context_tokens;
     b8 context_known;
     char status[32];
+    /* The operation a spinner row is reporting on, and when it began. Empty
+     * when nothing is in flight. */
+    char activity[48];
+    size_t activity_n;
+    f64 activity_started;      /* when the operation on screen began       */
+    f64 activity_turn;         /* when the wait it belongs to began        */
     char transcript[TUI_TRANSCRIPT_CAP];
     size_t transcript_n;
     /* Newlines written but not committed. The transcript never ends with one,
@@ -1136,6 +1142,85 @@ static void update_notice_row(size_t screen_row, Str text, size_t screen_col,
     style(S_RESET);
 }
 
+/* One frame per 100ms of the elapsed time, so the row moves at the rate the
+ * poll that repaints it runs at. */
+static const char *const k_spinner[] = {
+    "\u280b", "\u2819", "\u2839", "\u2838", "\u283c",
+    "\u2834", "\u2826", "\u2827", "\u2807", "\u280f"
+};
+
+static Str format_elapsed(char *buf, size_t cap, f64 secs) {
+    u32 whole = secs > 0 ? (u32)secs : 0;
+    i32 written = whole < 60
+        ? snprintf(buf, cap, "%us", whole)
+        : snprintf(buf, cap, "%um%02us", whole / 60u, whole % 60u);
+    size_t len = written > 0 ? (size_t)written : 0;
+    if (len >= cap) len = cap ? cap - 1 : 0;
+    return (Str){buf, len};
+}
+
+/* The row a long operation reports on: what is running, how long it has been
+ * running, and the key that ends it. */
+static void update_activity_row(size_t screen_row, size_t screen_col,
+                                size_t screen_cols, size_t body_cols,
+                                b8 force) {
+    f64 now = yoke_now_seconds();
+    f64 elapsed = now - g_tui.activity_started;
+    char secs_buf[24];
+    Str secs = format_elapsed(secs_buf, sizeof secs_buf, elapsed);
+    /* The wait as a whole, once it holds more than the operation on screen:
+     * a tool three rounds into a turn says how long it has run and how long
+     * the turn has. */
+    char total_buf[24];
+    Str total = {0};
+    if (g_tui.activity_started - g_tui.activity_turn >= 1.0)
+        total = format_elapsed(total_buf, sizeof total_buf,
+                               now - g_tui.activity_turn);
+    size_t frames = sizeof k_spinner / sizeof k_spinner[0];
+    size_t frame = (size_t)(elapsed * 10.0) % frames;
+    Str label = { g_tui.activity, g_tui.activity_n };
+    b8 stoppable = g_tui.busy && g_tui.interrupt != NULL;
+
+    u64 hash = row_hash(secs, label, ROW_TOOL);
+    hash = hash_add(hash, total.p, total.n);
+    hash = hash_add(hash, &frame, sizeof frame);
+    hash = hash_add(hash, &stoppable, sizeof stoppable);
+    size_t sel_c0, sel_c1;
+    sel_row_range(screen_row, &sel_c0, &sel_c1);
+    hash = hash_add(hash, &sel_c0, sizeof sel_c0);
+    hash = hash_add(hash, &sel_c1, sizeof sel_c1);
+    if (!row_changed(screen_row, hash, force)) return;
+    g_tui.bar_valid = false;
+
+    cup(screen_row, 1);
+    put_str(S_RESET "\033[2K");
+    cup(screen_row, screen_col);
+    size_t used = 0;
+    style(S_CYAN);
+    put_safe_clipped(str_c(k_spinner[frame]), body_cols, &used);
+    if (used < body_cols) put_safe_clipped(STR(" "), body_cols - used, &used);
+    style(S_TEXT);
+    if (used < body_cols) put_safe_clipped(label, body_cols - used, &used);
+    style(S_MUTED);
+    if (used + 3 <= body_cols)
+        put_safe_clipped(STR(" \u00b7 "), body_cols - used, &used);
+    if (used < body_cols) put_safe_clipped(secs, body_cols - used, &used);
+    if (total.n && used + 3 <= body_cols) {
+        put_safe_clipped(STR(" \u00b7 "), body_cols - used, &used);
+        if (used < body_cols)
+            put_safe_clipped(total, body_cols - used, &used);
+        if (used < body_cols)
+            put_safe_clipped(STR(" total"), body_cols - used, &used);
+    }
+    if (stoppable && used + 3 <= body_cols) {
+        put_safe_clipped(STR(" \u00b7 "), body_cols - used, &used);
+        if (used < body_cols)
+            put_safe_clipped(STR("esc to interrupt"), body_cols - used, &used);
+    }
+    paint_sel_tail(screen_row, screen_cols);
+    style(S_RESET);
+}
+
 static void paint_completions(size_t top_row, size_t rows, size_t screen_col,
                               size_t screen_cols, size_t body_cols, b8 force) {
     if (!rows) return;
@@ -1344,12 +1429,20 @@ static void repaint(void) {
     size_t popup_rows = g_tui.comp_n < TUI_POPUP_ROWS
                       ? g_tui.comp_n : TUI_POPUP_ROWS;
     size_t notice_rows = g_tui.notice_n ? 1 : 0;
+    /* The spinner row reads as the next line of the conversation, so it sits
+     * against the transcript with a block's row of air above it rather than
+     * among the overlays below. */
+    size_t activity_rows = g_tui.activity_n ? 2 : 0;
     size_t overlay_cap = body_rows > 1 ? body_rows - 1 : 0;
     if (popup_rows > overlay_cap) popup_rows = overlay_cap;
     if (notice_rows + popup_rows > overlay_cap)
         notice_rows = overlay_cap - popup_rows;
+    if (activity_rows + notice_rows + popup_rows > overlay_cap)
+        activity_rows = overlay_cap - notice_rows - popup_rows;
+    /* The spinner is not one of them: it is stacked above the notice row and
+     * below the transcript, so only these two move the composer. */
     size_t overlay_rows = notice_rows + popup_rows;
-    size_t transcript_rows = body_rows - overlay_rows;
+    size_t transcript_rows = body_rows - overlay_rows - activity_rows;
 
     /* Pinned to the bottom unless PageUp moved the viewport. The window is
      * the whole body region, overlays included. */
@@ -1370,12 +1463,18 @@ static void repaint(void) {
                          transcript_rows, 1, body_col, cols, ROW_PLAIN, force);
     }
     paint_scrollbar(first, all_rows, transcript_rows, cols, force);
-    if (body_gap)
+    if (activity_rows > 1)
         update_text_row(transcript_rows + 1, (Str){0}, (Str){0}, body_col,
                         cols, ROW_PLAIN, SIZE_MAX, force);
+    if (activity_rows)
+        update_activity_row(transcript_rows + activity_rows, body_col, cols,
+                            body_cols, force);
+    if (body_gap)
+        update_text_row(transcript_rows + activity_rows + 1, (Str){0},
+                        (Str){0}, body_col, cols, ROW_PLAIN, SIZE_MAX, force);
 
     /* The overlays, in that order. */
-    size_t overlay_top = transcript_rows + body_gap + 1;
+    size_t overlay_top = transcript_rows + activity_rows + body_gap + 1;
     if (notice_rows)
         update_notice_row(overlay_top,
                           (Str){ g_tui.notice, g_tui.notice_n }, body_col, cols,
@@ -1415,6 +1514,8 @@ static void repaint(void) {
     status_hash = hash_add(status_hash, &status_sel_c1, sizeof status_sel_c1);
     status_hash = hash_add(status_hash, g_tui.cwd.p, g_tui.cwd.n);
     status_hash = hash_add(status_hash, status, strlen(status));
+    status_hash = hash_add(status_hash, &g_tui.activity_n,
+                           sizeof g_tui.activity_n);
     status_hash = hash_add(status_hash, &g_tui.context_tokens,
                            sizeof g_tui.context_tokens);
     status_hash = hash_add(status_hash, &g_tui.context_known,
@@ -1445,12 +1546,16 @@ static void repaint(void) {
         put_safe_clipped(STR("● "), body_cols, &used);
         /* Spelled out rather than only coloured, since the bullet says
          * nothing on a NO_COLOR terminal, and first so a narrow screen clips
-         * it last. */
-        if (used < body_cols)
+         * it last. While the spinner row is up it says the same word beside
+         * the seconds it has been true for, so here the bullet carries the
+         * state alone rather than repeating it a row below. */
+        if (!g_tui.activity_n && used < body_cols)
             put_safe_clipped(str_c(status), body_cols - used, &used);
         if (body_cols - used >= separator_cells) {
-            style(S_MUTED);
-            put_safe_clipped(separator, body_cols - used, &used);
+            if (!g_tui.activity_n) {
+                style(S_MUTED);
+                put_safe_clipped(separator, body_cols - used, &used);
+            }
             style(S_TEXT);
             put_safe_clipped(g_tui.model, body_cols - used, &used);
         }
@@ -1604,6 +1709,29 @@ void tui_stop(void) {
 void tui_set_busy(b8 busy) {
     if (g_tui.busy == busy) return;
     g_tui.busy = busy;
+    repaint();
+}
+
+void tui_activity_end(void) {
+    if (!g_tui.activity_n) return;
+    g_tui.activity_n = 0;
+    g_tui.activity_started = 0;
+    g_tui.activity_turn = 0;
+    repaint();
+}
+
+void tui_activity(Str label) {
+    if (!g_tui.fullscreen) return;
+    if (!label.n) { tui_activity_end(); return; }
+    size_t n = label.n < sizeof g_tui.activity ? label.n
+                                               : sizeof g_tui.activity;
+    if (g_tui.activity_n == n && !memcmp(g_tui.activity, label.p, n)) return;
+    /* Each operation is timed from its own start; the wait it belongs to
+     * keeps the clock it opened with. */
+    if (!g_tui.activity_n) g_tui.activity_turn = yoke_now_seconds();
+    g_tui.activity_started = yoke_now_seconds();
+    memcpy(g_tui.activity, label.p, n);
+    g_tui.activity_n = n;
     repaint();
 }
 
@@ -2987,6 +3115,11 @@ static void composer_clear(void) {
 void tui_poll_input(void) {
     if (!g_tui.fullscreen) return;
     b8 dirty = g_winch != 0;
+    /* The spinner and its elapsed time move on their own, so an idle poll is
+     * what advances them. */
+    if (g_tui.activity_n
+        && yoke_now_seconds() - g_tui.last_paint >= 1.0 / 10.0)
+        dirty = true;
     while (!g_tui.input_eof && input_ready(0)) {
         i32 c = rbyte();
         if (c == -3) { dirty = true; continue; }

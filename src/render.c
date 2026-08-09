@@ -67,9 +67,26 @@ typedef void (*Sink)(Str);
 
 static void write_count(size_t n, const char *what, Sink sink) {
     char buf[64];
-    i32 len = snprintf(buf, sizeof buf, "%zu %s%s\n", n, what,
+    i32 len = snprintf(buf, sizeof buf, "%zu %s%s", n, what,
                        n == 1 ? "" : "s");
     if (len > 0) sink((Str){ buf, (size_t)len });
+}
+
+/* How long the run took, closing a result's summary line: a call that took a
+ * minute and one that took none read alike otherwise. A sub-second time keeps
+ * its milliseconds, since that is the whole of what it has to say. */
+static void write_elapsed(u32 ms) {
+    if (!ms) return;
+    char buf[32];
+    i32 len;
+    if (ms < 1000)
+        len = snprintf(buf, sizeof buf, " \u00b7 %ums", ms);
+    else if (ms < 60000)
+        len = snprintf(buf, sizeof buf, " \u00b7 %.1fs", (f64)ms / 1000.0);
+    else
+        len = snprintf(buf, sizeof buf, " \u00b7 %um%02us",
+                       ms / 60000u, ms / 1000u % 60u);
+    if (len > 0) tui_write_muted((Str){ buf, (size_t)len });
 }
 
 /* Which sink one line is written through, for a block whose lines do not read
@@ -261,7 +278,7 @@ static b8 split_status(Str result, Str *body, Str *status) {
     return true;
 }
 
-void render_tool_result(Str name, Str result, u32 id, b8 expanded) {
+void render_tool_result(Str name, Str result, u32 id, b8 expanded, u32 ms) {
     g_zone = id;
     g_expanded = expanded;
     if (str_starts(result, STR("ERROR: "))) {
@@ -271,6 +288,7 @@ void render_tool_result(Str name, Str result, u32 id, b8 expanded) {
         str_line(msg, &off, &first);
         tui_write_error(STR("\u2514\u2500 error: "));
         tui_write_error(clip(first, R_LINE_BYTES));
+        write_elapsed(ms);
         tui_write_error(STR("\n"));
         g_expanded = false;
         g_zone = 0;
@@ -283,7 +301,6 @@ void render_tool_result(Str name, Str result, u32 id, b8 expanded) {
     tui_write_result(STR("\u2514\u2500 "));
     if (have_status) {
         tui_write_result(status);
-        tui_write_result(STR("\n"));
     } else if (str_eq(name, STR("read"))) {
         write_count(str_lines(result), "line", tui_write_result);
     } else {
@@ -291,9 +308,10 @@ void render_tool_result(Str name, Str result, u32 id, b8 expanded) {
         Str first = body;
         str_line(body, &off, &first);
         tui_write_result(clip(first, R_LINE_BYTES));
-        tui_write_result(STR("\n"));
         body = str_drop(body, off);
     }
+    write_elapsed(ms);
+    tui_write_result(STR("\n"));
     write_lines(body, STR("   "), R_RESULT_LINES, tui_write_muted);
     g_expanded = false;
     g_zone = 0;

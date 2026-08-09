@@ -10,6 +10,7 @@
 #include <stdarg.h>
 #include <errno.h>
 #include <fnmatch.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -199,6 +200,18 @@ static void ring_put(char *ring, size_t cap, size_t *head, size_t *len,
     }
 }
 
+static void (*g_shell_idle)(void *ud);
+static void *g_shell_idle_ud;
+
+void shell_set_idle(void (*fn)(void *ud), void *ud) {
+    g_shell_idle = fn;
+    g_shell_idle_ud = ud;
+}
+
+/* Long enough that a chatty command is drained in whole blocks, short enough
+ * that the caller's idle hook keeps a frame moving. */
+#define SHELL_POLL_MS 50
+
 b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
     /* A truncated shell line is a different program, so anything over the
      * limit is refused rather than clamped. */
@@ -230,7 +243,14 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
     static char ring[YOKE_SHELL_OUT_BYTES];
     size_t head = 0, len = 0, total = 0;
     char block[4096];
+    struct pollfd pfd = { fds[0], POLLIN, 0 };
     for (;;) {
+        if (g_shell_idle) {
+            i32 ready = poll(&pfd, 1, SHELL_POLL_MS);
+            g_shell_idle(g_shell_idle_ud);
+            if (ready == 0) continue;
+            if (ready < 0) { if (errno == EINTR) continue; break; }
+        }
         ssize_t n = read(fds[0], block, sizeof block);
         if (n < 0) { if (errno == EINTR) continue; break; }
         if (n == 0) break;

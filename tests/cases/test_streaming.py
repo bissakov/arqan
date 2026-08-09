@@ -52,20 +52,26 @@ def test_context_survives_an_interrupt_once_usage_was_heard(ctx):
     ctx.scenario("words=400,chunk=1,delay=0.02,usage_first=1,usage=5000/200")
     s = ctx.spawn()
     s.submit("go on")
-    s.wait_for(lambda t: s.status_field(5) == "5200", "context counter")
+    # The counter is the last field either way: while the turn runs the
+    # status line carries no state word.
+    s.wait_for(lambda t: s.status_field(-1) == "5200", "context counter")
     s.key("ctrl-c")
     s.wait_text("[interrupted]")
     s.wait_turn_done()
-    assert s.status_field(5) == "5200", s.status_line()
+    assert s.status_field(-1) == "5200", s.status_line()
 
 
-def test_status_is_thinking_while_streaming(ctx):
-    """The status line reads 'thinking' until the stream finishes."""
+def test_spinner_says_thinking_while_streaming(ctx):
+    """The spinner row reads 'thinking' until the stream finishes, and the
+    status line leaves the word to it."""
     ctx.scenario("words=30,chunk=1,delay=0.05,first_delay=0.2")
     s = ctx.spawn()
     s.submit("slow down")
-    s.wait_status("thinking")
+    s.wait_activity("thinking")
+    assert "thinking" not in s.status_line(), s.status_line()
     s.wait_turn_done()
+    assert s.activity() is None
+    assert s.status_kind() == "ready", s.status_line()
 
 
 def reply_text(s, after="stream it"):
@@ -210,7 +216,7 @@ def test_typing_while_busy_is_kept(ctx):
     ctx.scenario("words=30,chunk=1,delay=0.06,first_delay=0.15")
     s = ctx.spawn()
     s.submit("take your time")
-    s.wait_status("thinking")
+    s.wait_activity("thinking")
     # 'thinking' is painted before curl connects, so wait for the request to
     # actually land before counting them.
     s.wait_for(lambda t: len(ctx.mock.requests) == 1, "the request to be sent")
@@ -221,7 +227,7 @@ def test_typing_while_busy_is_kept(ctx):
         lambda t: "typed while busy" in "".join(t.lines()[t.rows - 5 :]),
         "composer keeps the text",
     )
-    assert s.status_kind() == "thinking", "the turn should still be running"
+    assert s.activity_label() != "", "the turn should still be running"
     assert len(ctx.mock.requests) == 1, "Enter must not start a second turn"
 
     s.wait_turn_done()
@@ -241,7 +247,7 @@ def test_interrupt_stops_the_turn(ctx):
     ctx.scenario("words=200,chunk=1,delay=0.05")
     s = ctx.spawn()
     s.submit("go on forever")
-    s.wait_status("thinking")
+    s.wait_activity("thinking")
     s.wait_for(lambda t: len(reply_text(s, "go on forever")) > 20,
                "streaming started")
     s.key("ctrl-c")
@@ -257,7 +263,7 @@ def test_escape_stops_the_turn(ctx):
     ctx.scenario("words=200,chunk=1,delay=0.05")
     s = ctx.spawn()
     s.submit("go on forever")
-    s.wait_status("thinking")
+    s.wait_activity("thinking")
     s.wait_for(lambda t: len(reply_text(s, "go on forever")) > 20,
                "streaming started")
     s.type("draft kept")

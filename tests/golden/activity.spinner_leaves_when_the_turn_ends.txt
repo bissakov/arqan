@@ -1,0 +1,26 @@
+--- screen 80x24 ---
+|
+|
+|  hi
+|
+|
+|  done
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|  › Message yoke...
+|
+|
+|  ● ready · mock-model · build · local · ~/work · 24
+--- cursor row=21 col=5 visible=yes ---

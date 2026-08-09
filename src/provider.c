@@ -25,10 +25,11 @@ b8 conv_init(Conv *c, Arena *persist, size_t cap) {
     c->shell_out      = arena_new(persist, Str,   cap);
     c->has_tool_call  = arena_new(persist, b8,  cap);
     c->expanded       = arena_new(persist, b8,  cap);
+    c->ms             = arena_new(persist, u32, cap);
     c->n = 0;
     c->cap = cap;
     if (!c->role || !c->text || !c->tool_name || !c->tool_call_id
-        || !c->shell_out || !c->has_tool_call || !c->expanded) {
+        || !c->shell_out || !c->has_tool_call || !c->expanded || !c->ms) {
         c->cap = 0;
         return false;
     }
@@ -49,6 +50,7 @@ static size_t conv_push(Conv *c, MRole role, Str text, Str id, Str name,
     c->shell_out[i] = (Str){0};
     c->has_tool_call[i] = has_call;
     c->expanded[i] = false;
+    c->ms[i] = 0;
     return i;
 }
 

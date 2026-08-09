@@ -203,6 +203,9 @@ void session_save(Session *s, const Conv *c) {
             fputs(",\"output\":", f);
             sess_put_json(f, c->shell_out[i]);
         }
+        /* How long the run behind the slot took, so a replayed transcript
+         * says what the live one did. */
+        if (c->ms[i]) fprintf(f, ",\"ms\":%u", c->ms[i]);
         fputs(",\"content\":", f);
         sess_put_json(f, c->text[i]);
         fputs("}\n", f);
@@ -363,6 +366,7 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
         const JVal *nm = json_get(v, STR("name"));
         const JVal *calls = json_get(v, STR("calls"));
         const JVal *shell = json_get(v, STR("output"));
+        const JVal *ms = json_get(v, STR("ms"));
         Str text = content && content->type == J_STR
                  ? str_dup(persist, content->u.s) : (Str){0};
         Str call_id = id && id->type == J_STR ? str_dup(persist, id->u.s) : (Str){0};
@@ -382,6 +386,9 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
         } else {
             slot = conv_add(c, M_ASSISTANT, text);
         }
+        if (slot != CONV_NONE && ms && ms->type == J_NUM && ms->u.n > 0)
+            c->ms[slot] = ms->u.n > (f64)UINT32_MAX ? UINT32_MAX
+                                                    : (u32)ms->u.n;
         scratch->off = line_mark;
         if (slot == CONV_NONE) { ok = false; break; }
     }

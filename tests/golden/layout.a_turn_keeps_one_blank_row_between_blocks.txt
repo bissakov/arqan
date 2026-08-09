@@ -7,11 +7,11 @@
 |  let me look
 |
 |  ◆  read notes.txt
-|  └─ 1 line
+|  └─ 1 line · <t>
 |     written down
 |
 |  ◆  find notes
-|  └─ no files
+|  └─ no files · <t>
 |
 |  that is all
 |
