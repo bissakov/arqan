@@ -248,8 +248,11 @@ an AoS layout.
   where the reader last saw it, and the keys that move the viewport work the
   same under a popup, a picker or a question. `tui_pick` drives
   that same popup as a modal list, `tui_settings` drives it as one that is read
-  rather than chosen from (Space acts on the selected row and hands it back to
-  the caller, Enter and Escape close, and the selection survives the reopen a
+  rather than chosen from, its name column sized by the whole list rather than
+  the rows on screen so scrolling moves the selection and nothing else (Space
+  and Right act on the selected row forwards
+  and Left backwards, handing the row and the direction back to the caller,
+  Enter and Escape close, and the selection survives the reopen a
   change costs), and `tui_ask` borrows the composer for one
   question, its answer echoed as dots when it is a secret and kept out of the
   history and the transcript either way, and past ten entries it takes the keyboard:
@@ -392,10 +395,16 @@ an AoS layout.
   `main.c` over `tui_settings`. A toggle that was worth a command of its own
   when it was the only one is not worth one when there are five, so verbose,
   raw, streaming, ignored paths, text wrap and telemetry live here rather
-  than in the completion popup,
-  next to the mode, model, provider and token cap a turn is sent with. The
-  Tools row opens the same screen over the registry, one checkbox per tool a
-  turn may call. The
+  than in the completion popup, next to the mode and the token cap a turn is
+  sent with and one checkbox per tool a turn may call, each carrying the
+  registry's `brief` rather than the description written for a model. Every
+  row is changed
+  where it is read, so no row opens a screen behind it and none opens a
+  question: the token cap steps between the values on either side of it rather
+  than being typed, and the tools are rows of the same list rather than a
+  screen of their own. The model and the provider are not rows at all, naming
+  the endpoint rather than the session, and `/model` and `/provider` choose
+  them. The
   rows are rebuilt from the state they describe on every pass of the loop, so
   the screen is its own answer and nothing in it writes a notice: a checkbox
   that did not move is a setting that refused to change. Nothing is persisted

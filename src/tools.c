@@ -862,20 +862,22 @@ b8 tools_disable_list(ToolRegistry *r, Str names, char *err, size_t err_cap) {
 void tools_init(ToolRegistry *r, Arena *persist) {
     r->name   = arena_new(persist, Str, YOKE_MAX_TOOLS);
     r->desc   = arena_new(persist, Str, YOKE_MAX_TOOLS);
+    r->brief  = arena_new(persist, Str, YOKE_MAX_TOOLS);
     r->schema = arena_new(persist, Str, YOKE_MAX_TOOLS);
     r->run    = arena_new(persist, ToolRun, YOKE_MAX_TOOLS);
     r->modes  = arena_new(persist, u8, YOKE_MAX_TOOLS);
     r->off    = arena_new(persist, b8, YOKE_MAX_TOOLS);
     r->n = 0;
-    if (!r->name || !r->desc || !r->schema || !r->run || !r->modes ||
-        !r->off) {
+    if (!r->name || !r->desc || !r->brief || !r->schema || !r->run ||
+        !r->modes || !r->off) {
         r->name = NULL;
         return;
     }
-#define ADD(nm, dsc, md, sch, fn) do { \
+#define ADD(nm, dsc, brf, md, sch, fn) do { \
     if (r->n >= YOKE_MAX_TOOLS) break; \
     r->name[r->n] = STR(nm); \
     r->desc[r->n] = STR(dsc); \
+    r->brief[r->n] = STR(brf); \
     r->schema[r->n] = STR(sch); \
     r->run[r->n] = fn; \
     r->modes[r->n] = (md); \
@@ -883,46 +885,50 @@ void tools_init(ToolRegistry *r, Arena *persist) {
     r->n++; } while (0)
 #define BOTH (TOOL_IN_BUILD | TOOL_IN_PLAN)
 
-    ADD("read", "Read a page of a file: 2000 lines or 50KB, from offset.", BOTH,
+    ADD("read", "Read a page of a file: 2000 lines or 50KB, from offset.",
+        "Read a page of a file", BOTH,
         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},"
         "\"offset\":{\"type\":\"integer\",\"description\":\"first line, 1-based\"},"
         "\"limit\":{\"type\":\"integer\"}},\"required\":[\"path\"]}",
         tool_read);
-    ADD("grep", "Search file contents for a literal string, recursively.", BOTH,
+    ADD("grep", "Search file contents for a literal string, recursively.",
+        "Search file contents", BOTH,
         "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},"
         "\"path\":{\"type\":\"string\",\"description\":\"file or dir, default .\"},"
         "\"glob\":{\"type\":\"string\",\"description\":\"e.g. *.c\"},"
         "\"ignore_case\":{\"type\":\"boolean\"},"
         "\"max_results\":{\"type\":\"integer\"}},\"required\":[\"pattern\"]}",
         tool_grep);
-    ADD("find", "List files whose name matches a glob, recursively.", BOTH,
+    ADD("find", "List files whose name matches a glob, recursively.",
+        "List files by name", BOTH,
         "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\","
         "\"description\":\"glob; matched on the path when it has a /\"},"
         "\"path\":{\"type\":\"string\",\"description\":\"file or dir, default .\"},"
         "\"max_results\":{\"type\":\"integer\"}},\"required\":[\"name\"]}",
         tool_find);
-    ADD("bash", "Run a shell command; returns its stdout and stderr.", BOTH,
+    ADD("bash", "Run a shell command; returns its stdout and stderr.",
+        "Run a shell command", BOTH,
         "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}",
         tool_bash);
     ADD("patch", "Change files with a unified diff: hunks are located by "
         "their context lines, not by @@ numbers, and every file applies or "
         "none does. --- /dev/null creates a file, +++ /dev/null deletes one.",
-        TOOL_IN_BUILD,
+        "Change files with a diff", TOOL_IN_BUILD,
         "{\"type\":\"object\",\"properties\":{\"patch\":{\"type\":\"string\","
         "\"description\":\"unified diff over one or more files\"}},"
         "\"required\":[\"patch\"]}",
         tool_patch);
     ADD("write", "Write a file whole, creating or overwriting it.",
-        TOOL_IN_BUILD,
+        "Write a file whole", TOOL_IN_BUILD,
         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}",
         tool_write);
     ADD("ask_user", "Ask the user to choose between options. Mark the one you "
         "recommend; they may also answer in their own words.",
-        TOOL_IN_PLAN | TOOL_FIXED,
+        "Ask the user to choose", TOOL_IN_PLAN | TOOL_FIXED,
         "{\"type\":\"object\",\"properties\":{\"question\":{\"type\":\"string\"},\"options\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"label\":{\"type\":\"string\"},\"detail\":{\"type\":\"string\"},\"recommended\":{\"type\":\"boolean\"}},\"required\":[\"label\"]}}},\"required\":[\"question\",\"options\"]}",
         tool_agent_only);
     ADD("submit_plan", "Hand the finished plan to the user to approve.",
-        TOOL_IN_PLAN | TOOL_FIXED,
+        "Hand the plan over", TOOL_IN_PLAN | TOOL_FIXED,
         "{\"type\":\"object\",\"properties\":{\"plan\":{\"type\":\"string\"}},\"required\":[\"plan\"]}",
         tool_agent_only);
 #undef BOTH

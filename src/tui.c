@@ -1234,14 +1234,21 @@ static size_t text_cells(Str s) {
     return cells;
 }
 
-/* Cells taken by the widest visible name, so descriptions line up. */
-static size_t popup_name_cells(size_t first, size_t rows) {
+/* Cells taken by the widest name in the whole list rather than in the rows
+ * on screen, so scrolling a list moves the selection and nothing else: a
+ * description column that shifted under the reader would be the list
+ * redrawing itself around a key that was meant to move one row. Half the
+ * width is the cap, since a list of long names is still a list of
+ * descriptions. */
+static size_t popup_name_cells(size_t body_cols) {
     size_t widest = 0;
-    for (size_t i = first; i < first + rows && i < g_tui.comp_n; i++) {
+    for (size_t i = 0; i < g_tui.comp_n; i++) {
         size_t cells = text_cells(popup_items()[g_tui.comp_idx[i]].name);
         if (cells > widest) widest = cells;
     }
-    return widest + 4;   /* "\u203a " marker plus a two-cell gap */
+    widest += 4;   /* "\u203a " marker plus a two-cell gap */
+    size_t cap = body_cols / 2;
+    return widest < cap ? widest : cap;
 }
 
 /* The popup slot answering a command that opened no popup. */
@@ -1353,7 +1360,7 @@ static void paint_completions(size_t top_row, size_t rows, size_t screen_col,
     if (!rows) return;
     /* Keep the selection on screen when there are more matches than room. */
     size_t first = g_tui.comp_sel >= rows ? g_tui.comp_sel - rows + 1 : 0;
-    size_t name_cells = popup_name_cells(first, rows);
+    size_t name_cells = popup_name_cells(body_cols);
     for (size_t i = 0; i < rows; i++) {
         const TuiCmd *cmd = &popup_items()[g_tui.comp_idx[first + i]];
         update_popup_row(top_row + i, cmd->name, cmd->desc,
@@ -2835,8 +2842,8 @@ static void pick_search_row(Str query) {
 }
 
 /* A picker is answered by choosing a row, so Enter takes it and Escape
- * declines; a settings screen is acted on, so Space acts on the selected row
- * and both Enter and Escape close it. */
+ * declines; a settings screen is acted on, so Space and the arrows act on the
+ * selected row and both Enter and Escape close it. */
 typedef enum { PICK_CHOOSE, PICK_SETTINGS } PickKind;
 
 /* A modal list over the same popup the composer completes with; only the
@@ -2847,7 +2854,7 @@ typedef enum { PICK_CHOOSE, PICK_SETTINGS } PickKind;
  * hundreds of entries is not a way to choose one. */
 static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
                     TuiPickAnchor anchor, size_t start, PickKind kind,
-                    size_t *out) {
+                    size_t *out, i32 *delta) {
     if (!g_tui.fullscreen || !items || !n || !out) return false;
     if (n > YOKE_MAX_POPUP) n = YOKE_MAX_POPUP;
 
@@ -2877,8 +2884,8 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
     /* Unless something already answered there: a screen reopened after acting
      * on a row would paint its hint over what the action had to say. */
     if (kind == PICK_SETTINGS && !g_tui.notice_n)
-        tui_notice(STR("Space changes the selected row · Enter or Esc "
-                       "closes"));
+        tui_notice(STR("Space or Left/Right changes the selected row · "
+                       "Enter or Esc closes"));
     char status[sizeof g_tui.status];
     snprintf(status, sizeof status, "%.*s", (i32)title.n, title.p);
     tui_set_status(status);   /* repaints */
@@ -2903,6 +2910,7 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
         }
         if (c == ' ' && kind == PICK_SETTINGS && !g_tui.pasting) {
             if (!g_tui.comp_n) continue;
+            if (delta) *delta = 1;
             chosen = true;
             break;
         }
@@ -2912,6 +2920,12 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
             i32 key = read_escape();
             if (key == KEY_DOWN) completion_move(1);
             else if (key == KEY_UP) completion_move(-1);
+            else if (kind == PICK_SETTINGS && g_tui.comp_n
+                     && (key == KEY_LEFT || key == KEY_RIGHT)) {
+                if (delta) *delta = key == KEY_LEFT ? -1 : 1;
+                chosen = true;
+                break;
+            }
             else if (scroll_key(key)) { /* the transcript moves, not the list */ }
             else if (key == KEY_NONE) break;          /* bare Esc cancels */
         } else if (search) {
@@ -2952,14 +2966,16 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
 
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t start, size_t *out) {
-    return pick_impl(title, items, n, anchor, start, PICK_CHOOSE, out);
+    return pick_impl(title, items, n, anchor, start, PICK_CHOOSE, out, NULL);
 }
 
-b8 tui_settings(Str title, const TuiCmd *rows, size_t n, size_t *sel) {
+b8 tui_settings(Str title, const TuiCmd *rows, size_t n, size_t *sel,
+                i32 *delta) {
     if (!sel) return false;
     size_t start = *sel;
+    if (delta) *delta = 1;
     return pick_impl(title, rows, n, TUI_PICK_FIRST, start, PICK_SETTINGS,
-                     sel);
+                     sel, delta);
 }
 
 /* A question the composer is borrowed for. The editor is deliberately not the

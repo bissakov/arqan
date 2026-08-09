@@ -504,7 +504,10 @@ typedef b8 (*ToolRun)(Str args_json, Arena *scratch, Buf *out,
 
 typedef struct {
     Str     *name;        /* [YOKE_MAX_TOOLS]                               */
-    Str     *desc;        /* [YOKE_MAX_TOOLS]                               */
+    Str     *desc;        /* [YOKE_MAX_TOOLS] what the model is told         */
+    /* What a row of the settings screen says: one line that fits beside the
+     * name, since the model's description is written for a model. */
+    Str     *brief;       /* [YOKE_MAX_TOOLS]                               */
     Str     *schema;      /* [YOKE_MAX_TOOLS] JSON schema fragment (object) */
     ToolRun *run;         /* [YOKE_MAX_TOOLS]                               */
     u8      *modes;       /* [YOKE_MAX_TOOLS] TOOL_IN_* bits                */
@@ -732,10 +735,12 @@ typedef enum { TUI_PICK_FIRST = 0, TUI_PICK_LAST } TuiPickAnchor;
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t start, size_t *out);
 /* The settings screen: the same list, read rather than chosen from. Space
- * acts on the selected row (true, with *sel naming it), Enter and Escape
- * close. `sel` is in and out, so a caller that rebuilds the rows and reopens
- * after a change opens where the reader left it. */
-b8 tui_settings(Str title, const TuiCmd *rows, size_t n, size_t *sel);
+ * and Right act on the selected row forwards, Left backwards (true, with
+ * *sel naming the row and *delta the direction), Enter and Escape close.
+ * `sel` is in and out, so a caller that rebuilds the rows and reopens after a
+ * change opens where the reader left it. */
+b8 tui_settings(Str title, const TuiCmd *rows, size_t n, size_t *sel,
+                i32 *delta);
 /* Modal one-line question, answered in the composer with `question` in the
  * notice row. `secret` echoes the answer as dots and keeps it out of the
  * prompt history and the transcript. False when it was cancelled, the answer

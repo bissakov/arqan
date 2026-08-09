@@ -877,12 +877,17 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
  * The screen is its own answer, so nothing here writes a notice: a toggle
  * that refused to change is a box that stayed empty. Nothing is persisted
  * here either, since a setting that outlives the session is already
- * remembered by whoever owns it.
+ * remembered by whoever owns it. Every row is changed where it is read,
+ * which is why the tools are rows of this list rather than a screen behind
+ * one, and why nothing here opens a question: a setting a reader has to walk
+ * to is a setting they have to find twice. The model and the provider are
+ * not settings of a session but the endpoint it talks to, and `/model` and
+ * `/provider` are where they are chosen.
  */
 enum {
     SET_VERBOSE, SET_RAW, SET_STREAM, SET_IGNORED, SET_TELEMETRY,
-    SET_WRAP, SET_MODE, SET_TOOLS, SET_MODEL, SET_PROVIDER, SET_MAX_TOKENS,
-    SET_N
+    SET_WRAP, SET_MODE, SET_MAX_TOKENS,
+    SET_FIXED_N
 };
 
 /* "[x] label" for a toggle and the same column for a value row, so the two
@@ -901,87 +906,36 @@ static Str setting_value(Arena *a, Str label) {
     return setting_label(a, label, "    ");
 }
 
-/* An answer that is not a number leaves the setting alone, since the
- * alternative is guessing at what was meant. */
-static void ask_max_tokens(Config *cfg) {
-    char typed[32];
-    if (!tui_ask(STR("max tokens for one reply"), false, typed, sizeof typed))
-        return;
-    b8 ok = false;
-    i64 v = str_int(str_trim(str_c(typed)), &ok);
-    if (!ok || v < 1) return;
-    cfg->max_tokens = v > (1 << 20) ? (1 << 20) : (i32)v;
-}
+/* The values Max tokens steps between, since a number typed into a question
+ * is a screen away from the row it belongs to. A setting that arrived from a
+ * config file or a flag sits wherever it sits: a step moves to the nearest
+ * rung past it in the direction asked for, and the ends hold. */
+static const i32 g_token_steps[] = {
+    1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144
+};
 
-/* The Provider row names the API only when it is not the default one, since
- * a row says what the reader could not have assumed. */
-static Str provider_summary(const Config *cfg, Arena *a) {
-    Str name = cfg->provider.n ? cfg->provider : STR("none yet");
-    if (cfg->api != API_ANTHROPIC) return name;
-    Buf b; buf_init(&b, a, name.n + 16);
-    buf_puts(&b, name);
-    buf_puts(&b, STR(" · anthropic"));
-    return buf_ok(&b) ? buf_finish(&b) : name;
-}
-
-/* What the Tools row answers with, since a screen behind a row has to say
- * what it holds. */
-static Str tools_summary(const Agent *ag, Arena *a) {
-    const ToolRegistry *reg = ag->tools;
-    size_t on = 0, total = 0;
-    for (size_t i = 0; i < reg->n; i++) {
-        if (!tools_can_disable(reg, i)) continue;
-        total++;
-        if (!tools_disabled(reg, i)) on++;
+static i32 max_tokens_step(i32 cur, i32 dir) {
+    size_t n = sizeof g_token_steps / sizeof g_token_steps[0];
+    if (dir > 0) {
+        for (size_t i = 0; i < n; i++)
+            if (g_token_steps[i] > cur) return g_token_steps[i];
+        return g_token_steps[n - 1];
     }
-    if (on == total) return STR("Every tool is available");
-    Buf b; buf_init(&b, a, 128);
-    buf_putf(&b, "%zu of %zu; off:", on, total);
-    for (size_t i = 0; i < reg->n; i++) {
-        if (!tools_disabled(reg, i)) continue;
-        buf_putc(&b, ' ');
-        buf_puts(&b, reg->name[i]);
-    }
-    return buf_ok(&b) ? buf_finish(&b) : STR("some tools are off");
-}
-
-/* The tools a turn may call, one checkbox each. A tool the mode does not
- * offer is still listed, since the mode is a row above and turning bash off
- * is a statement about the session rather than about plan mode. The two
- * plan-mode tools are absent: the agent loop answers them, so "disabled"
- * would mean a mode that cannot end. */
-static void choose_tools(Agent *ag) {
-    ToolRegistry *reg = ag->tools;
-    Arena *scratch = ag->scratch;
-    size_t sel = 0;
-    for (;;) {
-        arena_reset(scratch);
-        TuiCmd rows[YOKE_MAX_TOOLS];
-        size_t id[YOKE_MAX_TOOLS];
-        size_t n = 0;
-        for (size_t i = 0; i < reg->n; i++) {
-            if (!tools_can_disable(reg, i)) continue;
-            id[n] = i;
-            rows[n++] = (TuiCmd){
-                setting_check(scratch, !tools_disabled(reg, i), reg->name[i]),
-                reg->desc[i] };
-        }
-        if (!n) return;
-        if (!tui_settings(STR("tools"), rows, n, &sel)) break;
-        if (sel < n)
-            tools_set_disabled(reg, id[sel], !tools_disabled(reg, id[sel]));
-    }
+    for (size_t i = n; i-- > 0;)
+        if (g_token_steps[i] < cur) return g_token_steps[i];
+    return g_token_steps[0];
 }
 
 static void choose_settings(Agent *ag) {
     Config *cfg = ag->cfg;
+    ToolRegistry *reg = ag->tools;
     Arena *scratch = ag->scratch;
     size_t sel = 0;
     for (;;) {
         arena_reset(scratch);
         char tokens[16];
         snprintf(tokens, sizeof tokens, "%d", cfg->max_tokens);
-        TuiCmd rows[SET_N];
+        TuiCmd rows[SET_FIXED_N + YOKE_MAX_TOOLS];
         rows[SET_VERBOSE] = (TuiCmd){
             setting_check(scratch, render_verbose(), STR("Verbose tool output")),
             STR("Every line a tool printed, untruncated") };
@@ -1005,17 +959,32 @@ static void choose_settings(Agent *ag) {
             setting_value(scratch, STR("Mode")),
             cfg->mode == MODE_PLAN ? STR("Plan: read-only, ends with a plan")
                                    : STR("Build: edits files and runs commands") };
-        rows[SET_TOOLS] = (TuiCmd){
-            setting_value(scratch, STR("Tools")), tools_summary(ag, scratch) };
-        rows[SET_MODEL] = (TuiCmd){
-            setting_value(scratch, STR("Model")), cfg->model };
-        rows[SET_PROVIDER] = (TuiCmd){
-            setting_value(scratch, STR("Provider")),
-            provider_summary(cfg, scratch) };
         rows[SET_MAX_TOKENS] = (TuiCmd){
             setting_value(scratch, STR("Max tokens")), str_c(tokens) };
 
-        if (!tui_settings(STR("settings"), rows, SET_N, &sel)) break;
+        /* One checkbox per tool a turn may call. A tool the mode does not
+         * offer is still listed, since turning bash off is a statement about
+         * the session rather than about plan mode. The two plan-mode tools
+         * are absent: the agent loop answers them, so "disabled" would mean a
+         * mode that cannot end. */
+        size_t n = SET_FIXED_N;
+        size_t id[YOKE_MAX_TOOLS];
+        for (size_t i = 0; i < reg->n && n < SET_FIXED_N + YOKE_MAX_TOOLS; i++) {
+            if (!tools_can_disable(reg, i)) continue;
+            id[n - SET_FIXED_N] = i;
+            rows[n++] = (TuiCmd){
+                setting_check(scratch, !tools_disabled(reg, i), reg->name[i]),
+                reg->brief[i] };
+        }
+
+        i32 delta = 1;
+        if (!tui_settings(STR("settings"), rows, n, &sel, &delta)) break;
+        if (sel >= SET_FIXED_N) {
+            if (sel >= n) continue;
+            size_t t = id[sel - SET_FIXED_N];
+            tools_set_disabled(reg, t, !tools_disabled(reg, t));
+            continue;
+        }
         switch (sel) {
             case SET_VERBOSE:
                 render_set_verbose(!render_verbose());
@@ -1041,10 +1010,9 @@ static void choose_settings(Agent *ag) {
                 agent_set_mode(ag, cfg->mode == MODE_PLAN ? MODE_BUILD
                                                           : MODE_PLAN);
                 break;
-            case SET_TOOLS:   choose_tools(ag); break;
-            case SET_MODEL:   choose_model(cfg, ag->persist, scratch); break;
-            case SET_PROVIDER:choose_provider(cfg, ag->persist, scratch); break;
-            case SET_MAX_TOKENS: ask_max_tokens(cfg); break;
+            case SET_MAX_TOKENS:
+                cfg->max_tokens = max_tokens_step(cfg->max_tokens, delta);
+                break;
             default: break;
         }
     }

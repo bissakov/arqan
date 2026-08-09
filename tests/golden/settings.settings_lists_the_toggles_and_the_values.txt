@@ -9,7 +9,7 @@
 |
 |
 |
-|    Space changes the selected row · Enter or Esc closes
+|    Space or Left/Right changes the selected row · Enter or Esc closes
 |  › [ ] Verbose tool output  Every line a tool printed, untruncated
 |    [ ] Raw Markdown         Replies as the model wrote them, unformatted
 |    [x] Stream replies       Paint a reply as it arrives, not once it is whole
@@ -17,7 +17,7 @@
 |    [ ] Telemetry            An anonymized debug log, for a bug report
 |        Text wrap            Word: lines end where a word does
 |        Mode                 Build: edits files and runs commands
-|        Tools                Every tool is available
+|        Max tokens           32768
 |
 |  › Message yoke...
 |

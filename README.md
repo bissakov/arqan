@@ -258,11 +258,17 @@ hand always reaches anything.
 `/settings` is where the rest of them live, since a toggle is not worth a
 command of its own. The rows are the session's: untruncated tool output, raw
 Markdown, whether a reply is streamed or arrives whole, whether the `@` picker
-offers ignored paths, the telemetry record below, and the mode, tools, model,
-provider and token cap a turn is sent with. Space
-acts on the selected row, flipping a checkbox or opening what changes a value,
-and Enter or Escape close. The screen is its own answer: a box that stayed
-empty is a setting that refused to change.
+offers ignored paths, the telemetry record below, the text wrap, the mode, the
+token cap a turn is sent with, and one row per tool. Every row is changed
+where it is read: Space or Right acts on the selected one, Left acts on it
+backwards, and Enter or Escape close. Nothing here opens a screen of its own
+or a question, since a setting a reader has to walk to is a setting they have
+to find twice; the token cap steps between the values on either side of it
+rather than being typed. The screen is its own answer: a box that stayed empty
+is a setting that refused to change.
+
+The model and the provider are not rows: they name the endpoint a session
+talks to rather than how it behaves, and `/model` and `/provider` choose them.
 
 Nothing is persisted here. A setting that outlives the session is remembered
 by whoever owns it, which is the config file for a provider and the state file
@@ -270,7 +276,9 @@ for the model and the telemetry answer.
 
 ### Turning tools off
 
-"Tools" opens a screen of its own, one checkbox per tool, and what is turned
+The last rows of `/settings` are one checkbox per tool, each saying in one
+line what the tool does rather than repeating the description the model is
+sent, and what is turned
 off there is withheld from the schemas the next turn is sent with and refused
 if the model asks for it anyway, since a schema offered earlier in the
 conversation is still in its context. It is the same promise plan mode makes,

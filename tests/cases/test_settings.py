@@ -10,14 +10,48 @@ def test_settings_lists_the_toggles_and_the_values(ctx):
     text = s.text()
     for row in ("[ ] Verbose tool output", "[ ] Raw Markdown",
                 "[x] Stream replies", "[ ] Ignored files", "[ ] Telemetry",
-                "Text wrap", "Mode", "Tools"):
+                "Text wrap", "Mode"):
         assert row in text, text
-    assert "Space changes the selected row" in text, text
+    assert "Space or Left/Right changes the selected row" in text, text
     ctx.check_screen(s)
     # More rows than the popup holds: the last is reached by moving down.
-    s.key(*(["down"] * 10)).sync()
+    s.key(*(["down"] * 13)).sync()
     text = s.text()
-    assert "Provider" in text and "Max tokens" in text, text
+    assert "Max tokens" in text and "[x] bash" in text, text
+
+
+def test_the_description_column_holds_while_scrolling(ctx):
+    """Moving one row down moves the selection and nothing else."""
+    s = ctx.spawn()
+    s.open_settings()
+
+    def column(label):
+        for line in s.term.lines():
+            if label in line:
+                return line.index(label)
+        raise AssertionError(f"no row holding {label!r}\n{s.text()}")
+
+    top = column("Every line a tool printed")
+    s.key(*(["down"] * 13)).sync()
+    assert column("Write a file whole") == top, s.text()
+
+
+def test_a_tool_row_says_what_the_tool_is_in_one_line(ctx):
+    """The model's description is written for a model; a row is not."""
+    s = ctx.spawn()
+    s.open_settings().settings_select("patch")
+    text = s.text()
+    assert "Change files with a diff" in text, text
+    assert "@@ numbers" not in text, text
+
+
+def test_the_endpoint_is_not_a_setting(ctx):
+    """The model and the provider are chosen by their own commands."""
+    s = ctx.spawn()
+    s.open_settings()
+    s.key(*(["down"] * 13)).sync()
+    text = s.text()
+    assert "Model" not in text and "Provider" not in text, text
 
 
 def test_space_toggles_the_selected_row_only(ctx):
@@ -71,34 +105,35 @@ def test_the_mode_row_switches_mode(ctx):
     assert "Plan: read-only" in s.text(), s.text()
 
 
-def test_max_tokens_is_asked_for_and_sent(ctx):
-    """A value row opens the composer for it, and the next turn carries it."""
+def test_max_tokens_steps_in_place_and_is_sent(ctx):
+    """The arrows walk the value where it is read, and a turn carries it."""
     ctx.scenario("text=short+answer")
     s = ctx.spawn()
-    s.settings_act("Max tokens")
-    s.wait_text("max tokens for one reply")
-    s.type("128")
-    s.key("enter")
+    s.open_settings().settings_select("Max tokens")
+    s.key("left").sync()
     # The row and its value, so a frame caught mid-repaint is not an answer.
-    s.wait_for(lambda t: re.search(r"Max tokens\s+128", t.text()),
-               "the max tokens row reading 128")
+    s.wait_for(lambda t: re.search(r"Max tokens\s+16384", t.text()),
+               "the max tokens row reading 16384")
+    s.key("right").key("right").sync()
+    s.wait_for(lambda t: re.search(r"Max tokens\s+65536", t.text()),
+               "the max tokens row reading 65536")
     s.key("esc")
     s.wait_gone("Max tokens")
 
     s.submit("say something")
     s.wait_turn_done()
-    assert ctx.mock.requests[-1]["max_tokens"] == 128, ctx.mock.requests[-1]
+    assert ctx.mock.requests[-1]["max_tokens"] == 65536, ctx.mock.requests[-1]
 
 
-def test_an_unreadable_max_tokens_leaves_it_alone(ctx):
-    """A guess at what 'lots' means is worse than keeping the setting."""
+def test_max_tokens_holds_at_the_ends(ctx):
+    """A step past the last rung is not a wrap to the other end."""
     s = ctx.spawn()
-    s.settings_act("Max tokens")
-    s.wait_text("max tokens for one reply")
-    s.type("lots")
-    s.key("enter")
-    s.wait_for(lambda t: re.search(r"Max tokens\s+32768", t.text()),
-               "the max tokens row unchanged")
+    s.open_settings().settings_select("Max tokens")
+    s.key(*(["left"] * 8)).sync()
+    s.wait_for(lambda t: re.search(r"Max tokens\s+1024", t.text()),
+               "the max tokens row at its floor")
+    s.key("left").sync()
+    assert re.search(r"Max tokens\s+1024", s.text()), s.text()
 
 
 def test_streaming_off_sends_one_document(ctx):

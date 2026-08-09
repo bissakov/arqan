@@ -13,15 +13,15 @@ def tool_names(request: dict) -> list[str]:
 
 
 def open_tools(s):
-    """Open /settings and step into the Tools screen."""
-    s.open_settings().settings_select("Tools").key("space").sync()
-    return s.wait_text("[x] bash")
+    """Open /settings, where the tools are rows like every other setting."""
+    s.open_settings()
+    return s.settings_select("bash")
 
 
-def test_the_tools_screen_lists_what_can_be_turned_off(ctx):
+def test_the_tools_are_rows_of_the_settings_screen(ctx):
     """Every runnable tool has a checkbox; the plan tools are not rows."""
     s = ctx.spawn()
-    open_tools(s)
+    s.open_settings().settings_select("write")   # the last row: all six show
     text = s.text()
     for name in ("read", "grep", "find", "bash", "patch", "write"):
         assert f"[x] {name}" in text, text
@@ -29,18 +29,15 @@ def test_the_tools_screen_lists_what_can_be_turned_off(ctx):
     ctx.check_screen(s)
 
 
-def test_the_settings_row_says_which_tools_are_off(ctx):
-    """The screen behind the row is summarised by it."""
+def test_a_tool_is_turned_off_where_it_is_read(ctx):
+    """No screen behind a row: the checkbox flips in the list it sits in."""
     s = ctx.spawn()
-    s.open_settings()
-    assert "Every tool is available" in s.text(), s.text()
-    s.settings_select("Tools").key("space").sync()
-    s.wait_text("[x] bash")
-    s.settings_select("bash").key("space").sync()
+    open_tools(s)
+    s.key("right").sync()
     s.wait_text("[ ] bash")
-    s.key("esc")
-    s.wait_for(lambda t: t.contains("off: bash"), "the summary to name bash")
-    assert "5 of 6" in s.text(), s.text()
+    assert "[x] read" in s.text(), s.text()
+    s.key("left").sync()
+    s.wait_text("[x] bash")
 
 
 def test_a_disabled_tool_is_not_sent(ctx):
@@ -48,9 +45,9 @@ def test_a_disabled_tool_is_not_sent(ctx):
     ctx.scenario("text=fine")
     s = ctx.spawn()
     open_tools(s)
-    s.settings_select("bash").key("space").sync()
+    s.key("space").sync()
     s.wait_text("[ ] bash")
-    s.key("esc").key("esc")
+    s.key("esc")
     s.wait_gone("Verbose tool output")
 
     s.submit("say something")
@@ -66,9 +63,9 @@ def test_a_disabled_tool_is_refused_when_called_anyway(ctx):
     ctx.scenario(f"tool=bash:{args},final_text=understood")
     s = ctx.spawn()
     open_tools(s)
-    s.settings_select("bash").key("space").sync()
+    s.key("space").sync()
     s.wait_text("[ ] bash")
-    s.key("esc").key("esc")
+    s.key("esc")
     s.wait_gone("Verbose tool output")
 
     s.submit("run it")
@@ -84,11 +81,11 @@ def test_a_tool_turned_back_on_is_sent_again(ctx):
     ctx.scenario("text=fine")
     s = ctx.spawn()
     open_tools(s)
-    s.settings_select("bash").key("space").sync()
+    s.key("space").sync()
     s.wait_text("[ ] bash")
     s.key("space").sync()
     s.wait_text("[x] bash")
-    s.key("esc").key("esc")
+    s.key("esc")
     s.wait_gone("Verbose tool output")
 
     s.submit("say something")
