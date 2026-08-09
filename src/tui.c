@@ -2906,7 +2906,7 @@ static void pick_search_row(Str query) {
 /* A picker is answered by choosing a row, so Enter takes it and Escape
  * declines; a settings screen is acted on, so Space and the arrows act on the
  * selected row and both Enter and Escape close it. */
-typedef enum { PICK_CHOOSE, PICK_SETTINGS } PickKind;
+typedef enum { PICK_CHOOSE, PICK_SETTINGS, PICK_INFO } PickKind;
 
 /* A modal list over the same popup the composer completes with; only the
  * source of the entries differs, so it is swapped in and the composer's own
@@ -2948,6 +2948,8 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
     if (kind == PICK_SETTINGS && !g_tui.notice_n)
         tui_notice(STR("Space or Left/Right changes the selected row · "
                        "Enter or Esc closes"));
+    if (kind == PICK_INFO && !g_tui.notice_n)
+        tui_notice(STR("Up/Down reads the page - Enter or Esc closes"));
     char status[sizeof g_tui.status];
     snprintf(status, sizeof status, "%.*s", (i32)title.n, title.p);
     tui_set_status(status);   /* repaints */
@@ -2964,7 +2966,7 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
         if ((c == 0x03 || c == 0x04) && !g_tui.pasting) break;
         if (g_tui.pasting && (c == '\r' || c == '\n')) continue;
         if ((c == '\r' || c == '\n') && !g_tui.pasting) {
-            if (kind == PICK_SETTINGS) break;
+            if (kind != PICK_CHOOSE) break;
             if (!g_tui.comp_n) continue;
             *out = g_tui.comp_idx[g_tui.comp_sel];
             chosen = true;
@@ -3045,6 +3047,20 @@ b8 tui_settings(Str title, const TuiCmd *rows, size_t n, size_t *sel,
     if (delta) *delta = 1;
     return pick_impl(title, rows, n, n, TUI_PICK_FIRST, start, PICK_SETTINGS,
                      sel, delta);
+}
+
+void tui_info(Str title, const TuiCmd *rows, size_t n) {
+    if (!rows || !n) return;
+    if (!g_tui.fullscreen) {
+        tui_printf("%.*s\n", (i32)title.n, title.p);
+        for (size_t i = 0; i < n; i++)
+            tui_printf("%.*s  %.*s\n", (i32)rows[i].name.n, rows[i].name.p,
+                       (i32)rows[i].desc.n, rows[i].desc.p);
+        return;
+    }
+    size_t row = 0;
+    (void)pick_impl(title, rows, n, n, TUI_PICK_FIRST, 0, PICK_INFO, &row,
+                    NULL);
 }
 
 /* A question the composer is borrowed for. The editor is deliberately not the

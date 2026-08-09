@@ -272,7 +272,12 @@ forked from where `/resume` can still find it, `/model` switches model,
 `/mode` switches between Build and Plan, as Shift+Tab does,
 `/rewind` goes back to an earlier message, as the double Esc does,
 `/copy` puts the last reply on the clipboard as the Markdown the model wrote,
-`/settings` opens the screen below and `/exit` quits. A few of them answer to a
+`/settings` opens the screen below, `/about` shows project information and
+credits, `/help` starts a fresh session with a generated first user message
+that inventories the live configuration, providers, tools, prompt sources,
+settings and resolved paths, and `/exit` quits. API key presence is reported,
+but key values are never included. `/help` waits for the user's next message
+before contacting the provider. A few commands answer to a
 second name: `/config` finds `/settings`, `/new` finds `/clear` and `/quit`
 finds `/exit`, and the popup lists the command rather than the alias.
 An unescaped leading `/` is reserved for these commands. An unknown command is

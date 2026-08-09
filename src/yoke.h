@@ -818,6 +818,9 @@ b8 tui_pick_search_count(Str title, const TuiCmd *items, size_t n,
  * change opens where the reader left it. */
 b8 tui_settings(Str title, const TuiCmd *rows, size_t n, size_t *sel,
                 i32 *delta);
+/* Read-only modal rows. Enter, Escape, Ctrl-C or Ctrl-D closes the page; the
+ * caller keeps ownership of every string for the duration of the call. */
+void tui_info(Str title, const TuiCmd *rows, size_t n);
 /* Modal one-line question, answered in the composer with `question` in the
  * notice row. `secret` echoes the answer as dots and keeps it out of the
  * prompt history and the transcript. False when it was cancelled, the answer

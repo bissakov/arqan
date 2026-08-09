@@ -24,10 +24,12 @@
 #include "markdown.c"
 
 #include <stdarg.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static volatile sig_atomic_t g_got_sigint = 0;
@@ -55,6 +57,8 @@ static size_t commands_init(void) {
     g_commands[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
     g_commands[n++] = (TuiCmd){ STR("/settings"), STR("Change how yoke behaves") };
     g_commands[n++] = (TuiCmd){ STR("/statusline"), STR("Choose what the status line shows") };
+    g_commands[n++] = (TuiCmd){ STR("/about"), STR("About yoke and its contributors") };
+    g_commands[n++] = (TuiCmd){ STR("/help"), STR("Start a conversation about using yoke") };
     g_commands[n++] = (TuiCmd){ STR("/exit"), STR("Quit yoke") };
     g_command_n = n;
     return n;
@@ -68,6 +72,17 @@ static const TuiAlias k_aliases[] = {
     ALIAS("/quit", "/exit"),
 };
 #define ALIAS_N (sizeof k_aliases / sizeof k_aliases[0])
+
+#define INFO_ROW(name, desc) \
+    { { (name), sizeof(name) - 1 }, { (desc), sizeof(desc) - 1 } }
+static const TuiCmd k_about[] = {
+    INFO_ROW("yoke " YOKE_VERSION, "A tiny C17 terminal coding agent"),
+    INFO_ROW("Created by", "Alikhan Bissakov"),
+    INFO_ROW("Source", "github.com/bissakov/yoke"),
+    INFO_ROW("Built with", "C17, libc and libcurl"),
+    INFO_ROW("Inspired by", "Claude Code, Codex, OpenCode and Pi"),
+};
+#define ABOUT_N (sizeof k_about / sizeof k_about[0])
 
 /* A submitted alias is the command it stands for by the time anything reads
  * the line, so the dispatch and the telemetry know one name per command. */
@@ -539,6 +554,254 @@ static void rerender_conv(const Conv *conv, const Config *cfg,
     render_conv(conv, cfg, show_instructions, scratch);
     tui_restore_anchor();
     arena_reset(scratch);
+}
+
+static const char *help_toggle(b8 on) { return on ? "on" : "off"; }
+
+/* Paths can contain whitespace and control bytes, so JSON quoting keeps each
+ * diagnostic on one line. No file content is read here. */
+static void help_path(Buf *b, const char *label, Str path) {
+    buf_putf(b, "- %s: ", label);
+    if (!path.n || path.n >= YOKE_MAX_PATH) {
+        buf_puts(b, STR("unresolved\n"));
+        return;
+    }
+    buf_json_str(b, path);
+
+    char z[YOKE_MAX_PATH];
+    memcpy(z, path.p, path.n);
+    z[path.n] = '\0';
+    struct stat st;
+    if (stat(z, &st) != 0) {
+        if (errno == ENOENT) buf_puts(b, STR(" - missing\n"));
+        else buf_putf(b, " - inaccessible: %s\n", strerror(errno));
+        return;
+    }
+    const char *kind = S_ISDIR(st.st_mode) ? "directory"
+                     : S_ISREG(st.st_mode) ? "regular file"
+                     : "other";
+    buf_putf(b, " - %s, mode %04o, %s", kind,
+             (unsigned)(st.st_mode & 07777u),
+             access(z, W_OK) == 0 ? "writable" : "not writable");
+    if (S_ISREG(st.st_mode)) buf_putf(b, ", %lld bytes", (long long)st.st_size);
+    buf_putc(b, '\n');
+}
+
+static void help_path_candidates(Buf *b, Arena *a, Str name,
+                                 const char *label) {
+    Str paths[YOKE_MAX_CONFIG_FILES];
+    size_t n = paths_config_files(name, a, paths, YOKE_MAX_CONFIG_FILES);
+    for (size_t i = 0; i < n; i++) help_path(b, label, paths[i]);
+}
+
+/* Existing project files prompt discovery and the path picker can read while
+ * walking from the working directory to the root. Missing candidates are
+ * summarized by the effective prompt source instead of flooding the report. */
+static void help_project_paths(Buf *b, Str cwd) {
+    static const char *const suffixes[] = {
+        "/.yoke/SYSTEM.md", "/.yoke/PLAN.md", "/AGENTS.md",
+        "/.gitignore", "/.ignore",
+    };
+    if (!cwd.n || cwd.n >= YOKE_MAX_PATH || cwd.p[0] != '/') return;
+    char dir[YOKE_MAX_PATH], full[YOKE_MAX_PATH];
+    memcpy(dir, cwd.p, cwd.n);
+    size_t n = cwd.n;
+    while (n > 1 && dir[n - 1] == '/') n--;
+    for (;;) {
+        size_t base = n == 1 ? 0 : n;
+        for (size_t i = 0; i < sizeof suffixes / sizeof suffixes[0]; i++) {
+            size_t sn = strlen(suffixes[i]);
+            if (base + sn >= sizeof full) continue;
+            memcpy(full, dir, base);
+            memcpy(full + base, suffixes[i], sn);
+            full[base + sn] = '\0';
+            struct stat st;
+            if (stat(full, &st) == 0)
+                help_path(b, "project discovery", (Str){ full, base + sn });
+        }
+        if (n == 1) break;
+        while (n > 1 && dir[n - 1] != '/') n--;
+        while (n > 1 && dir[n - 1] == '/') n--;
+    }
+}
+
+static void help_prompt_sources(Buf *b, const char *mode,
+                                const PromptSources *s) {
+    buf_putf(b, "### %s mode\n", mode);
+    if (s->primary_path.n) help_path(b, "primary prompt", s->primary_path);
+    else
+        buf_putf(b, "- primary prompt: %.*s (no file)\n",
+                 (i32)s->primary_label.n, s->primary_label.p);
+    for (size_t i = 0; i < s->n_agents; i++)
+        help_path(b, "project instructions", s->agent_paths[i]);
+}
+
+static Str help_build(Agent *ag) {
+    Config *cfg = ag->cfg;
+    ToolRegistry *tools = ag->tools;
+    Arena *a = ag->scratch;
+    Buf b;
+    buf_init(&b, a, 16384);
+    buf_puts(&b, STR(
+        "# yoke help context\n\n"
+        "I am using yoke " YOKE_VERSION ", a C17 terminal coding agent. "
+        "This is a live snapshot generated by /help. Help me understand, "
+        "configure, or troubleshoot yoke using this context. Never reveal "
+        "or request API key values.\n\n"
+        "## Effective configuration\n"));
+    buf_putf(&b, "- mode: %s\n", cfg->mode == MODE_PLAN ? "plan" : "build");
+    buf_putf(&b, "- API: %.*s\n", (i32)api_name(cfg->api).n,
+             api_name(cfg->api).p);
+    buf_putf(&b, "- active provider: %.*s\n",
+             (i32)(cfg->provider.n ? cfg->provider.n : STR("unnamed override").n),
+             cfg->provider.n ? cfg->provider.p : STR("unnamed override").p);
+    buf_putf(&b, "- model: %.*s\n", (i32)cfg->model.n, cfg->model.p);
+    buf_puts(&b, STR("- base URL: ")); buf_json_str(&b, cfg->base_url); buf_putc(&b, '\n');
+    buf_putf(&b, "- active API key: %s\n", cfg->api_key.n ? "present" : "missing");
+    buf_putf(&b, "- streaming: %s\n", help_toggle(cfg->stream));
+    buf_putf(&b, "- verbose tool output: %s\n", help_toggle(render_verbose()));
+    buf_putf(&b, "- raw Markdown: %s\n", help_toggle(md_raw()));
+    buf_putf(&b, "- ignored files in picker: %s\n", help_toggle(tui_show_ignored()));
+    buf_putf(&b, "- show instructions: %s\n", help_toggle(ag->show_instructions));
+    buf_putf(&b, "- telemetry: %s\n", help_toggle(telemetry_on()));
+    buf_putf(&b, "- text wrap: %s\n", tui_justify() ? "justified" : "word");
+    buf_putf(&b, "- max reply tokens: %d\n", cfg->max_tokens);
+    buf_putf(&b, "- max conversation messages: %zu\n", cfg->max_messages);
+    buf_putf(&b, "- retries after an empty response: %d\n", cfg->retries);
+    buf_putf(&b, "- initial retry delay: %d ms\n", cfg->retry_delay_ms);
+    buf_putf(&b, "- reasoning effort: %.*s\n",
+             (i32)(cfg->reasoning_effort.n ? cfg->reasoning_effort.n : 3u),
+             cfg->reasoning_effort.n ? cfg->reasoning_effort.p : "off");
+    buf_putf(&b, "- thinking budget: %.*s\n",
+             (i32)(cfg->thinking_budget.n ? cfg->thinking_budget.n : 3u),
+             cfg->thinking_budget.n ? cfg->thinking_budget.p : "off");
+
+    static const char *const status_names[TUI_STATUS_N] = {
+        "state", "model", "reasoning effort", "thinking budget", "mode",
+        "provider", "working directory", "context tokens", "copy confirmation",
+    };
+    buf_puts(&b, STR("\n### Status fields\n"));
+    for (size_t i = 0; i < TUI_STATUS_N; i++)
+        buf_putf(&b, "- %s: %s\n", status_names[i],
+                 help_toggle(tui_status_visible((TuiStatusItem)i)));
+
+    buf_puts(&b, STR("\n### Tools\n"));
+    for (size_t i = 0; i < tools->n; i++) {
+        const char *state = tools_disabled(tools, i) ? "disabled"
+                          : tools_available(tools, i, cfg->mode) ? "enabled"
+                          : "unavailable in this mode";
+        buf_putf(&b, "- %.*s: %s\n", (i32)tools->name[i].n,
+                 tools->name[i].p, state);
+    }
+
+    buf_puts(&b, STR("\n### Slash commands\n"));
+    for (size_t i = 0; i < g_command_n; i++)
+        buf_putf(&b, "- %.*s: %.*s\n", (i32)g_commands[i].name.n,
+                 g_commands[i].name.p, (i32)g_commands[i].desc.n,
+                 g_commands[i].desc.p);
+    buf_puts(&b, STR("\n### Command aliases\n"));
+    for (size_t i = 0; i < ALIAS_N; i++)
+        buf_putf(&b, "- %.*s -> %.*s\n", (i32)k_aliases[i].alias.n,
+                 k_aliases[i].alias.p, (i32)k_aliases[i].name.n,
+                 k_aliases[i].name.p);
+
+    buf_puts(&b, STR("\n## Configured providers\n"));
+    Endpoints endpoints;
+    endpoints_load(&endpoints, a);
+    if (!endpoints.n) buf_puts(&b, STR("- none\n"));
+    for (size_t i = 0; i < endpoints.n; i++) {
+        size_t mark = a->off;
+        char key_err[YOKE_MAX_PATH + 96] = {0};
+        Str key = endpoints_key(endpoints.name[i], a, a, key_err,
+                                sizeof key_err);
+        b8 has_key = key.n != 0;
+        a->off = mark;
+        buf_putf(&b, "### %.*s%s\n", (i32)endpoints.name[i].n,
+                 endpoints.name[i].p,
+                 str_eq(endpoints.name[i], cfg->provider) ? " (active)" : "");
+        buf_putf(&b, "- API: %.*s\n", (i32)api_name(endpoints.api[i]).n,
+                 api_name(endpoints.api[i]).p);
+        buf_puts(&b, STR("- base URL: "));
+        buf_json_str(&b, endpoints.base_url[i]); buf_putc(&b, '\n');
+        buf_putf(&b, "- model: %.*s\n", (i32)endpoints.model[i].n,
+                 endpoints.model[i].p);
+        buf_putf(&b, "- API key: %s\n",
+                 key_err[0] ? key_err : has_key ? "present" : "missing");
+        buf_putf(&b, "- reasoning efforts: %.*s\n",
+                 (i32)endpoints.reasoning_efforts[i].n,
+                 endpoints.reasoning_efforts[i].p);
+        buf_putf(&b, "- selected reasoning effort: %.*s\n",
+                 (i32)(endpoints.reasoning_effort[i].n
+                       ? endpoints.reasoning_effort[i].n : 3u),
+                 endpoints.reasoning_effort[i].n
+                       ? endpoints.reasoning_effort[i].p : "off");
+        buf_putf(&b, "- thinking budgets: %.*s\n",
+                 (i32)endpoints.thinking_budgets[i].n,
+                 endpoints.thinking_budgets[i].p);
+        buf_putf(&b, "- selected thinking budget: %.*s\n",
+                 (i32)(endpoints.thinking_budget[i].n
+                       ? endpoints.thinking_budget[i].n : 3u),
+                 endpoints.thinking_budget[i].n
+                       ? endpoints.thinking_budget[i].p : "off");
+        buf_putf(&b, "- reasoning template: %s\n",
+                 endpoints.reasoning_template[i].n ? "configured" : "off");
+    }
+
+    buf_puts(&b, STR("\n## Effective prompt sources\n"));
+    help_prompt_sources(&b, "Build", &cfg->system_sources);
+    help_prompt_sources(&b, "Plan", &cfg->plan_sources);
+
+    buf_puts(&b, STR("\n## Resolved paths\n"));
+    char cwd_buf[YOKE_MAX_PATH];
+    Str cwd = getcwd(cwd_buf, sizeof cwd_buf) ? str_c(cwd_buf) : (Str){0};
+    help_path(&b, "working directory", cwd);
+    help_path(&b, "user config directory", paths_dir(YOKE_DIR_CONFIG, a));
+    help_path_candidates(&b, a, STR("config"), "config candidate");
+    help_path_candidates(&b, a, STR("SYSTEM.md"), "global Build prompt candidate");
+    help_path_candidates(&b, a, STR("PLAN.md"), "global Plan prompt candidate");
+    help_path(&b, "state directory", paths_dir(YOKE_DIR_STATE, a));
+    help_path(&b, "state file", paths_file(YOKE_DIR_STATE, STR("state"), a));
+    help_path(&b, "credentials file", paths_file(YOKE_DIR_STATE, STR("credentials"), a));
+    help_path(&b, "prompt history", paths_file(YOKE_DIR_STATE, STR("history"), a));
+    help_path(&b, "telemetry root", paths_file(YOKE_DIR_STATE, STR("telemetry"), a));
+    help_path(&b, "data directory", paths_dir(YOKE_DIR_DATA, a));
+    help_path(&b, "session directory", ag->sess->dir);
+    if (ag->sess->path.n) {
+        buf_puts(&b, STR("- current session file: "));
+        buf_json_str(&b, ag->sess->path);
+        buf_puts(&b, STR(" - reserved; created when this message is saved\n"));
+    }
+    help_project_paths(&b, cwd);
+
+    buf_puts(&b, STR(
+        "\nThis snapshot intentionally contains no API key values. Wait for "
+        "my next message before taking action.\n"));
+    return buf_ok(&b) ? buf_finish(&b) : (Str){0};
+}
+
+/* Help is a real first user message, but not a turn: the next message the
+ * user writes is when the provider first sees the new conversation. */
+static void start_help_session(Agent *ag) {
+    Conv *conv = ag->conv;
+    conv->n = 1;
+    ag->persist->off = ag->mark;
+    arena_reset(ag->scratch);
+    session_begin(ag->sess);
+    tui_clear();
+
+    Str built = help_build(ag);
+    Str prompt = built.n ? str_dup(ag->persist, built) : (Str){0};
+    arena_reset(ag->scratch);
+    if (!prompt.p) {
+        tui_notice(STR("out of memory building help context"));
+        return;
+    }
+    if (conv_add(conv, M_USER, prompt) == CONV_NONE) {
+        tui_notice(STR("conversation is full"));
+        return;
+    }
+    tui_write_user(prompt);
+    session_save(ag->sess, conv);
 }
 
 /* Nothing to open leaves the view exactly as it was and answers in the
@@ -1883,6 +2146,14 @@ i32 main(i32 argc, char **argv) {
         }
         if (!strcmp(line, "/statusline")) {
             choose_statusline(&scratch);
+            continue;
+        }
+        if (!strcmp(line, "/about")) {
+            tui_info(STR("about yoke"), k_about, ABOUT_N);
+            continue;
+        }
+        if (!strcmp(line, "/help")) {
+            start_help_session(&agent);
             continue;
         }
         if (!strncmp(line, "/expand ", 8)) {
