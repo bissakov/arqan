@@ -1,4 +1,4 @@
-"""Replies are Markdown, and the transcript renders them (unless raw)."""
+"""Transcript messages are Markdown, and the composer remains literal."""
 
 TEXT = 253      # S_TEXT
 MUTED = 245     # S_MUTED
@@ -6,6 +6,7 @@ CYAN = 81       # S_CYAN, headings
 BLUE = 75       # S_BLUE, bullets and other markers
 MONO = 180      # S_MONO, inline code
 CODE_BG = 235   # S_CODE_BG, fenced blocks
+USER_BG = 238   # S_USER_BG, submitted user messages
 
 
 def cell(s, needle: str, offset: int = 0):
@@ -116,6 +117,113 @@ def test_link_keeps_its_target(ctx):
     text = s.text()
     assert "see the docs (https://example.com/x) now" in text, text
     assert cell(s, "the docs").fg == BLUE
+
+
+def test_submitted_user_messages_are_markdown_but_the_composer_is_not(ctx):
+    """Formatting starts after submission and stays inside the user panel."""
+    ctx.scenario("text=done")
+    s = ctx.spawn()
+    s.type("## My **request** uses `code`").sync()
+    assert "## My **request** uses `code`" in s.composer_text(), s.composer_lines()
+    assert cell(s, "request").fg == TEXT, "composer text stays literal"
+    assert cell(s, "code").fg == TEXT, "composer text is not inline code"
+
+    s.submit()
+    s.wait_text("done")
+    s.wait_turn_done()
+    text = s.text()
+    assert "## My" not in text and "**request**" not in text, text
+    assert "My request uses code" in text, text
+    assert cell(s, "My request").fg == CYAN
+    assert cell(s, "request").bold
+    assert cell(s, "request").bg == USER_BG
+    assert cell(s, "code").fg == MONO
+    assert cell(s, "code").bg == USER_BG
+
+
+def test_tables_are_drawn_as_aligned_terminal_tables(ctx):
+    """A GFM table gets borders, a header and column alignment, not pipes."""
+    ctx.scenario(
+        "text=Name+|+Score+|+State\\n"
+        ":---+|+---:+|+:---:\\n"
+        "Ada+|+7+|+ready\\n"
+        "Linus+|+42+|+busy"
+    )
+    s = ctx.spawn()
+    s.submit("show a table")
+    s.wait_text("busy")
+    s.wait_turn_done()
+    text = s.text()
+    assert "Name | Score" not in text and ":---" not in text, text
+    assert "┌" in text and "┬" in text and "┐" in text, text
+    assert "├" in text and "┼" in text and "┤" in text, text
+    assert "└" in text and "┴" in text and "┘" in text, text
+    assert "│ Name  │ Score │ State │" in text, text
+    assert "│ Ada   │     7 │ ready │" in text, text
+    assert "│ Linus │    42 │ busy  │" in text, text
+    assert cell(s, "Name").bold, "table headers are bold"
+    assert cell(s, "┌").fg == BLUE
+
+
+def test_table_alignment_uses_terminal_cells_for_emoji(ctx):
+    """Wide glyphs occupy terminal cells, not one column per UTF-8 byte."""
+    ctx.scenario(
+        "text=ID+|+Name+|+Status+|+Priority+|+Description\\n"
+        "---:+|+:---+|+:---:+|+:---:+|+:---\\n"
+        "001+|+Alpha+|+✅+Open+|+High+|+First+item\\n"
+        "002+|+Beta+|+⏳+Pending+|+Medium+|+Waiting+for+review\\n"
+        "003+|+Gamma+|+❌+Closed+|+Low+|+Completed+item"
+    )
+    s = ctx.spawn()
+    s.submit("show a wide table")
+    s.wait_text("Completed item")
+    s.wait_turn_done()
+
+    def columns(needle, borders):
+        row = next(r for r in range(s.screen.rows)
+                   if needle in s.screen.row_text(r))
+        return [i for i, ch in enumerate(s.screen.buf.chars[row])
+                if ch in borders]
+
+    expected = columns("┌", "┌┬┐")
+    assert columns("├", "├┼┤") == expected
+    assert columns("└", "└┴┘") == expected
+    for value in ("ID", "001", "002", "003"):
+        assert columns(value, "│") == expected, s.text()
+    assert "✅ Open" in s.text() and "⏳ Pending" in s.text(), s.text()
+
+
+def test_table_syntax_inside_a_fence_stays_code(ctx):
+    """Pipes and delimiter rows are data while a fenced block owns the line."""
+    ctx.scenario("text=```text\\nA+|+B\\n---+|+---\\n1+|+2\\n```")
+    s = ctx.spawn()
+    s.submit("show literal table syntax")
+    s.wait_text("1 | 2")
+    s.wait_turn_done()
+    text = s.text()
+    assert "A | B" in text and "--- | ---" in text, text
+    assert "┌" not in text and "└" not in text, text
+    assert cell(s, "A | B").bg == CODE_BG
+
+
+def test_common_gfm_extensions_are_formatted(ctx):
+    """Task boxes, strikeout, tilde fences and autolinks have terminal shapes."""
+    ctx.scenario(
+        "text=-+[x]+shipped\\n-+[+]+queued\\n"
+        "~~obsolete~~+and+<https://example.com>\\n"
+        "~~~sh\\necho+ok\\n~~~"
+    )
+    s = ctx.spawn()
+    s.submit("show extensions")
+    s.wait_text("echo ok")
+    s.wait_turn_done()
+    text = s.text()
+    assert "☑ shipped" in text and "☐ queued" in text, text
+    assert "~~" not in text and "obsolete and https://example.com" in text, text
+    assert "<https://example.com>" not in text, text
+    assert "~~~" not in text, text
+    assert cell(s, "echo ok").bg == CODE_BG
+    assert cell(s, "https://example.com").fg == BLUE
 
 
 def test_raw_toggles_formatting_off_and_back_on(ctx):

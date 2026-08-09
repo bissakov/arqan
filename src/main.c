@@ -130,9 +130,10 @@ static void on_reason(Str delta, void *ud) {
     if (!g_reasoning) {
         g_reasoning = true;
         say_busy("reasoning");
+        md_set_muted(true);
         tui_block();
     }
-    tui_write_muted(delta);
+    md_write(delta);
 }
 static void on_text(Str delta, void *ud) {
     (void)ud;
@@ -140,6 +141,7 @@ static void on_text(Str delta, void *ud) {
     if (!g_replying) {
         g_replying = true;
         g_reasoning = false;
+        md_set_muted(false);
         tui_set_status("thinking");
         tui_activity(STR("responding"));
         tui_block();
@@ -510,6 +512,13 @@ static void render_instructions(const Config *cfg) {
                                   sources->agents[i]);
 }
 
+static void render_user_message(Str text) {
+    tui_user_begin();
+    md_write(text);
+    md_end();
+    tui_user_end();
+}
+
 static void render_conv(const Conv *c, const Config *cfg,
                         b8 show_instructions, Arena *scratch) {
     for (size_t i = 0; i < c->n; i++) {
@@ -523,7 +532,7 @@ static void render_conv(const Conv *c, const Config *cfg,
                     render_tool_result(STR("shell"), c->shell_out[i],
                                        (u32)(i + 1), c->expanded[i], c->ms[i]);
                 } else {
-                    tui_write_user(c->text[i]);
+                    render_user_message(c->text[i]);
                 }
                 break;
             case M_TOOL:
@@ -800,7 +809,7 @@ static void start_help_session(Agent *ag) {
         tui_notice(STR("conversation is full"));
         return;
     }
-    tui_write_user(prompt);
+    render_user_message(prompt);
     session_save(ag->sess, conv);
 }
 
@@ -1591,7 +1600,7 @@ static void choose_settings(Agent *ag) {
             STR("Every line a tool printed, untruncated") };
         rows[SET_RAW] = (TuiCmd){
             setting_check(scratch, md_raw(), STR("Raw Markdown")),
-            STR("Replies as the model wrote them, unformatted") };
+            STR("Messages as written, unformatted") };
         rows[SET_STREAM] = (TuiCmd){
             setting_check(scratch, cfg->stream, STR("Stream replies")),
             STR("Paint a reply as it arrives, not once it is whole") };
@@ -1800,7 +1809,7 @@ static b8 agent_turn(Agent *ag, Str text) {
         say_conv_full();
         return false;
     }
-    if (ag->echo) tui_write_user(text);
+    if (ag->echo) render_user_message(text);
     session_save(ag->sess, conv);
 
     TelEvent te;
@@ -1861,6 +1870,7 @@ static b8 agent_turn(Agent *ag, Str text) {
          * current by on_usage as the reply streamed, so an interrupt does not
          * lose the context the response metadata reported. */
         md_end();
+        md_set_muted(false);
         if (g_got_sigint) {
             if (g_one_shot)
                 one_shot_diag("error", (Str){0}, STR("interrupted"));

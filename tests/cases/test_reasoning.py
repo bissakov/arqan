@@ -2,6 +2,9 @@
 
 MUTED = 245  # S_MUTED
 TEXT = 253   # S_TEXT
+CYAN = 81    # S_CYAN
+BLUE = 75    # S_BLUE
+MONO = 180   # S_MONO
 
 
 def row_of(s, needle: str) -> int:
@@ -16,6 +19,12 @@ def fg_of(s, needle: str) -> int:
     r = row_of(s, needle)
     col = s.screen.row_text(r).index(needle[0])
     return s.screen.attr_at(r, col).fg
+
+
+def attr_of(s, needle: str):
+    r = row_of(s, needle)
+    col = s.screen.row_text(r).index(needle)
+    return s.screen.attr_at(r, col)
 
 
 def test_reasoning_is_visible(ctx):
@@ -39,6 +48,27 @@ def test_reasoning_is_muted_and_reply_is_not(ctx):
     s.wait_turn_done()
     assert fg_of(s, "thinking hard") == MUTED
     assert fg_of(s, "the answer") == TEXT
+
+
+def test_reasoning_markdown_is_formatted_with_a_muted_base(ctx):
+    """Thinking gets Markdown shapes while ordinary prose remains grey."""
+    ctx.scenario(
+        "reasoning=##+Approach\\n-+check+**facts**+with+`code`,"
+        "text=**final**"
+    )
+    s = ctx.spawn()
+    s.submit("go")
+    s.wait_text("final")
+    s.wait_turn_done()
+    text = s.text()
+    assert "## Approach" not in text and "**facts**" not in text, text
+    assert "Approach" in text and "• check facts with code" in text, text
+    assert attr_of(s, "Approach").fg == CYAN
+    assert attr_of(s, "•").fg == BLUE
+    assert attr_of(s, "check").fg == MUTED
+    assert attr_of(s, "facts").bold
+    assert attr_of(s, "code").fg == MONO
+    assert attr_of(s, "final").bold, "reply Markdown starts a fresh stream"
 
 
 def test_openrouter_reasoning_field(ctx):

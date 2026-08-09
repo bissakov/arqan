@@ -774,7 +774,7 @@ size_t  provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
  * its first row); an inline one applies to the bytes it covers. */
 typedef enum {
     TUI_PLAIN = 0, TUI_HEADING, TUI_CODE, TUI_QUOTE,   /* block */
-    TUI_BOLD, TUI_EMPH, TUI_MONO, TUI_MARKER           /* inline */
+    TUI_BOLD, TUI_EMPH, TUI_MONO, TUI_MARKER, TUI_STRIKE /* inline */
 } TuiStyle;
 /* A slash command the completion popup offers. The table is owned by the
  * caller and only read here. */
@@ -900,12 +900,18 @@ void tui_write_tool(Str s);
 void tui_write_result(Str s);
 void tui_write_error(Str s);
 /* A padded block with its own background, which is what marks a user turn
- * apart from the agent's output. */
+ * apart from the agent's output. The split form lets Markdown write styled
+ * spans inside the panel; `tui_write_user` is the plain convenience form. */
+void tui_user_begin(void);
+void tui_user_end(void);
 void tui_write_user(Str s);
 /* TUI_PLAIN records no style at all. This is how markdown.c paints. */
 void tui_write_styled(Str s, TuiStyle style);
 /* Cells a transcript row holds, 0 without a fullscreen UI. */
 size_t tui_body_cols(void);
+/* Terminal cells occupied by UTF-8 text. Invalid bytes take one cell; control
+ * and combining code points take none, matching transcript wrapping. */
+size_t tui_text_cells(Str s);
 /* False on a pipe or in a one-shot run, where output is text, not a view. */
 b8 tui_is_fullscreen(void);
 /* Flag Esc raises to cancel an in-flight turn (same path as SIGINT). */
@@ -933,16 +939,19 @@ void tui_poll_input(void);
 i32  tui_input_fd(void);      /* readable-input fd, or -1 when not interactive */
 
 /* ---- markdown ------------------------------------------------------------
- * Renders a reply into the transcript: headings, lists, rules, block quotes
- * and fenced code become shapes, emphasis becomes a style, and the markers
- * are dropped. Rendering is streaming, so a delta is painted as soon as its
- * shape is known and only an unclosed marker waits; `md_end` closes whatever
- * the turn left unterminated.
+ * Renders a message into the transcript: headings, lists, tables, rules,
+ * block quotes and fenced code become shapes, inline markup becomes styles,
+ * and its markers are dropped. Rendering is incremental except for bounded
+ * lines waiting to prove they start a table; `md_end` closes whatever the
+ * message left unterminated.
  *
  * `md_set_raw` sends the text through untouched, and so does the absence of
- * a fullscreen UI, where the output is a reply rather than a view. */
+ * a fullscreen UI, where the output is a message rather than a view. */
 void md_write(Str delta);
 void md_end(void);
+/* Make unstyled Markdown prose muted for a thinking trace. Changing it closes
+ * the current Markdown stream, so markers never span reasoning and a reply. */
+void md_set_muted(b8 on);
 void md_set_raw(b8 on);
 b8   md_raw(void);
 

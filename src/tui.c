@@ -48,6 +48,7 @@ _Static_assert(TUI_STATUS_N == YOKE_STATUS_FIELDS,
 #define TUI_MAX_SPANS 4096
 #define TUI_CKPTS 4096           /* wrapped-row checkpoints into the transcript */
 #define TUI_MAX_ZONES 512        /* clickable transcript ranges kept          */
+#define TUI_MAX_USERS 512        /* submitted-message panels kept             */
 
 /* Styling is optional: NO_COLOR and dumb terminals get the same layout
  * undecorated. */
@@ -64,6 +65,7 @@ _Static_assert(TUI_STATUS_N == YOKE_STATUS_FIELDS,
 #define S_BOLD        "\033[1m"
 #define S_ITALIC      "\033[3m"
 #define S_MONO        "\033[38;5;180m"
+#define S_STRIKE      "\033[9;38;5;245m"
 #define S_USER_BG     "\033[48;5;238m"
 #define S_CODE_BG     "\033[48;5;235m"
 #define S_POPUP_BG    "\033[48;5;237m"
@@ -134,6 +136,14 @@ typedef struct {
     size_t span_b[TUI_MAX_SPANS];
     u8     span_k[TUI_MAX_SPANS];
     size_t span_n;
+    /* User panels are a background layer, not a Markdown style: their ranges
+     * may contain heading, code and inline spans without overlapping the
+     * ordered span table above. */
+    size_t user_a[TUI_MAX_USERS];
+    size_t user_b[TUI_MAX_USERS];
+    size_t user_n;
+    size_t user_open_a;
+    b8     user_open;
     /* Byte ranges a click acts on, each carrying the caller's id, kept beside
      * the transcript like spans. */
     size_t zone_a[TUI_MAX_ZONES];
@@ -695,7 +705,8 @@ enum {
     ROW_POPUP, ROW_WELCOME_ART, ROW_WELCOME_TEXT,
     ROW_HEADING, ROW_CODE, ROW_QUOTE,      /* block: the row is theirs   */
     ROW_ZONE, ROW_ZONE_HOVER,              /* block: a clickable row      */
-    ROW_BOLD, ROW_EMPH, ROW_MONO, ROW_MARKER  /* inline: bytes are theirs */
+    ROW_BOLD, ROW_EMPH, ROW_MONO, ROW_MARKER, ROW_STRIKE
+                                                /* inline: bytes are theirs */
 };
 
 /* A block style owns every row it touches; an inline style owns its bytes. */
@@ -722,6 +733,7 @@ static const char *kind_style(u8 kind) {
         case ROW_EMPH:         return S_ITALIC S_MUTED;
         case ROW_MONO:         return S_MONO;
         case ROW_MARKER:       return S_BLUE;
+        case ROW_STRIKE:       return S_STRIKE;
         case ROW_PLAIN:        return S_TEXT;
         default:               return NULL;
     }
@@ -810,6 +822,41 @@ static void spans_shift(size_t delta) {
         w++;
     }
     g_tui.span_n = w;
+}
+
+static void user_add(size_t a, size_t b) {
+    if (a >= b) return;
+    if (g_tui.user_n == TUI_MAX_USERS) {
+        memmove(g_tui.user_a, g_tui.user_a + 1,
+                sizeof g_tui.user_a - sizeof g_tui.user_a[0]);
+        memmove(g_tui.user_b, g_tui.user_b + 1,
+                sizeof g_tui.user_b - sizeof g_tui.user_b[0]);
+        g_tui.user_n--;
+    }
+    g_tui.user_a[g_tui.user_n] = a;
+    g_tui.user_b[g_tui.user_n] = b;
+    g_tui.user_n++;
+}
+
+static void users_shift(size_t delta) {
+    size_t w = 0;
+    for (size_t i = 0; i < g_tui.user_n; i++) {
+        if (g_tui.user_b[i] <= delta) continue;
+        g_tui.user_a[w] = g_tui.user_a[i] > delta
+                        ? g_tui.user_a[i] - delta : 0;
+        g_tui.user_b[w] = g_tui.user_b[i] - delta;
+        w++;
+    }
+    g_tui.user_n = w;
+}
+
+static b8 user_at_off(size_t off) {
+    size_t lo = 0, hi = g_tui.user_n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (g_tui.user_b[mid] <= off) lo = mid + 1; else hi = mid;
+    }
+    return lo < g_tui.user_n && off >= g_tui.user_a[lo];
 }
 
 /* An overflow drops the oldest: a click target scrolled out of the session is
@@ -958,13 +1005,14 @@ static void put_just(const char *p, size_t n, Just *j) {
 }
 
 /* A row whose bytes carry inline styles, one style per run. */
-static void paint_runs(Str text, size_t off, Just *j) {
+static void paint_runs(Str text, size_t off, Just *j, u8 base, b8 user) {
     for (size_t i = 0; i < text.n;) {
         size_t end = 0;
         u8 kind = span_run(off + i, off + text.n, &end);
         size_t take = end - (off + i);
         style(S_RESET);
-        style(kind_style(kind ? kind : ROW_PLAIN));
+        if (user && base != ROW_CODE) style(S_USER_BG);
+        style(kind_style(kind ? kind : base));
         put_just(text.p + i, take, j);
         i += take;
     }
@@ -984,9 +1032,10 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
                             size_t screen_col, size_t screen_cols,
                             u8 kind, size_t text_off, size_t pad, b8 force) {
     kind = display_kind(kind, text);
-    if (kind != ROW_PLAIN) text_off = SIZE_MAX;
+    b8 user = text_off != SIZE_MAX && user_at_off(text_off);
     Just just = { pad ? row_gaps(text) : 0, pad, 0, false, false };
     u64 hash = row_hash(prefix, text, kind);
+    hash = hash_add(hash, &user, sizeof user);
     hash = hash_add(hash, &just.gaps, sizeof just.gaps);
     hash = hash_add(hash, &just.extra, sizeof just.extra);
     if (text_off != SIZE_MAX) hash = hash_spans(hash, text_off, text.n);
@@ -1001,10 +1050,10 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
     cup(screen_row, 1);
     put_str(S_RESET "\033[2K");
 
-    if (kind == ROW_COMPOSER || kind == ROW_USER || kind == ROW_CODE) {
+    if (kind == ROW_COMPOSER || user || kind == ROW_CODE) {
         /* The whole row carries the panel colour, so a user turn or a fenced
          * code block reads as a block of screen rather than a prefixed line. */
-        style(kind == ROW_USER ? S_USER_BG
+        style(user && kind != ROW_CODE ? S_USER_BG
             : kind == ROW_CODE ? S_CODE_BG : S_PANEL_BG);
         pad_row(0, screen_cols);
         cup(screen_row, screen_col);
@@ -1047,7 +1096,7 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
         put_text(text.p + lead, text.n - lead);
         style(S_RESET);
     } else if (text_off != SIZE_MAX) {
-        paint_runs(text, text_off, &just);
+        paint_runs(text, text_off, &just, kind, user);
     } else {
         const char *s = kind_style(kind);
         if (s) style(s);
@@ -1164,7 +1213,8 @@ static void update_text_rows(Str s, size_t base_off, size_t cols,
             if (kind == ROW_PLAIN) {
                 u8 sk = span_kind(base_off + start);
                 if (kind_is_block(sk)) row_kind = sk;
-                else text_off = base_off + start;
+                else if (user_at_off(base_off + start)) row_kind = ROW_USER;
+                text_off = base_off + start;
                 size_t sr = screen_row + row - first_row - 1;
                 if (sr < TUI_SEL_ROWS) g_tui.row_src[sr] = base_off + start;
                 /* A clickable row says so, louder under the pointer. */
@@ -1243,7 +1293,7 @@ static void update_popup_row(size_t screen_row, Str name, Str desc,
 }
 
 /* Display cells a string occupies, control bytes aside. */
-static size_t text_cells(Str s) {
+size_t tui_text_cells(Str s) {
     size_t cells = 0;
     for (size_t b = 0; b < s.n;) {
         i32 width = 0;
@@ -1262,7 +1312,7 @@ static size_t text_cells(Str s) {
 static size_t popup_name_cells(size_t body_cols) {
     size_t widest = 0;
     for (size_t i = 0; i < g_tui.comp_n; i++) {
-        size_t cells = text_cells(popup_items()[g_tui.comp_idx[i]].name);
+        size_t cells = tui_text_cells(popup_items()[g_tui.comp_idx[i]].name);
         if (cells > widest) widest = cells;
     }
     widest += 4;   /* "\u203a " marker plus a two-cell gap */
@@ -1423,7 +1473,7 @@ static size_t welcome_widest(b8 art_only) {
     size_t widest = 0;
     for (size_t i = 0; i < WELCOME_LINES; i++) {
         if (art_only && !k_welcome[i].art) continue;
-        size_t cells = text_cells(welcome_text(i));
+        size_t cells = tui_text_cells(welcome_text(i));
         if (cells > widest) widest = cells;
     }
     return widest;
@@ -1456,7 +1506,7 @@ static void paint_welcome(size_t body_rows, size_t transcript_rows,
         const WelcomeLine *line = &k_welcome[row - top - 1];
         Str text = welcome_text(row - top - 1);
         size_t pad = line->art ? art_pad
-                   : (body_cols - text_cells(text)) / 2;
+                   : (body_cols - tui_text_cells(text)) / 2;
         if (pad > sizeof blanks) pad = sizeof blanks;
         update_text_row(row, (Str){blanks, text.n ? pad : 0}, text,
                         body_col, screen_cols,
@@ -2011,6 +2061,8 @@ void tui_clear_transcript(void) {
     g_tui.pend_nl = 0;
     g_tui.trail_nl = 0;
     g_tui.span_n = 0;
+    g_tui.user_n = 0;
+    g_tui.user_open = false;
     g_tui.zone_n = 0;
     g_tui.zone_open = 0;
     g_tui.hover_id = 0;
@@ -2092,6 +2144,7 @@ static void transcript_put(Str s) {
         s.n = TUI_TRANSCRIPT_CAP - 1;
         g_tui.transcript_n = 0;
         g_tui.span_n = 0;
+        g_tui.user_n = 0;
         g_tui.zone_n = 0;
         wrap_invalidate();   /* the bytes the index described are gone */
     } else if (g_tui.transcript_n + s.n >= TUI_TRANSCRIPT_CAP) {
@@ -2102,6 +2155,7 @@ static void transcript_put(Str s) {
         memmove(g_tui.transcript,
                 g_tui.transcript + g_tui.transcript_n - keep, keep);
         spans_shift(g_tui.transcript_n - keep);
+        users_shift(g_tui.transcript_n - keep);
         zones_shift(g_tui.transcript_n - keep);
         g_tui.transcript_n = keep;
         wrap_invalidate();   /* every offset in the index just moved */
@@ -2213,6 +2267,7 @@ void tui_write_styled(Str s, TuiStyle st) {
         [TUI_CODE] = ROW_CODE,   [TUI_QUOTE] = ROW_QUOTE,
         [TUI_BOLD] = ROW_BOLD,   [TUI_EMPH] = ROW_EMPH,
         [TUI_MONO] = ROW_MONO,   [TUI_MARKER] = ROW_MARKER,
+        [TUI_STRIKE] = ROW_STRIKE,
     };
     if (st == TUI_PLAIN || (size_t)st >= sizeof kinds) tui_write(s);
     else write_span(s, kinds[st]);
@@ -2226,24 +2281,34 @@ void tui_write_error(Str s)  { write_span(s, ROW_ERROR); }
 /* A user turn is a block of screen rather than a labelled line: a padding row
  * above and below, and the whole range recorded so every row it wraps onto
  * carries the panel background. */
-void tui_write_user(Str s) {
+void tui_user_begin(void) {
     tui_block();
     if (!g_tui.fullscreen) {
         tui_write(STR("> "));
-        tui_write(s);
         return;
     }
     nl_commit();                          /* the air above is not the box */
-    size_t a = g_tui.transcript_n;
+    g_tui.user_open_a = g_tui.transcript_n;
+    g_tui.user_open = true;
     tui_write(STR("\n"));                 /* the box's top padding row */
-    tui_write(s);
+}
+
+void tui_user_end(void) {
+    if (!g_tui.fullscreen || !g_tui.user_open) return;
     /* The padding row below belongs to the box, so it is committed here to
      * fall inside the recorded range rather than left to the next block. */
     tui_write(STR("\n\n"));
     nl_commit();
     size_t b = g_tui.transcript_n;
-    if (b > a) span_add(a, b, ROW_USER);
+    user_add(g_tui.user_open_a, b);
+    g_tui.user_open = false;
     g_tui.pend_nl = 1;
+}
+
+void tui_write_user(Str s) {
+    tui_user_begin();
+    tui_write(s);
+    tui_user_end();
 }
 
 void tui_set_interrupt_flag(volatile sig_atomic_t *flag) {
