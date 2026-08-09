@@ -18,7 +18,7 @@ python3 tests/run.py --repeat 5 # flush out flakiness
 python3 tests/run.py -j 1       # one case at a time, for debugging
 ```
 
-Cases run in parallel (`-j`, default twice the CPU count, capped at 32): each
+Cases run in parallel (`-j`, default three times the CPU count, capped at 48): each
 owns its temp `HOME`, its provider port and its pty, so the only thing they
 share is the read-only golden directory. A case spends ~99% of its time
 waiting, so the suite is bounded by its slowest case, not by their sum.

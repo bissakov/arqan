@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test runner for the yoke TUI suite.
 
-    python3 tests/run.py                 # run everything
+    python3 tests/run.py                 # failures and one final summary
     python3 tests/run.py -k composer     # run matching cases
     python3 tests/run.py --list          # show what exists
     python3 tests/run.py --update        # rewrite golden screens
@@ -72,7 +72,7 @@ def auto_jobs(count: int) -> int:
     """
     if count <= 1:
         return 1
-    return max(2, min(count, (os.cpu_count() or 4) * 2, 32))
+    return max(2, min(count, (os.cpu_count() or 4) * 3, 48))
 
 
 def load_cases():
@@ -160,15 +160,21 @@ def main(argv=None):
             dt = time.monotonic() - t0
             ctx.cleanup(failed=failed)
         with lock:
-            tag = c.red("FAIL") if failed else c.green("PASS")
-            print(
-                f"{tag} {name:<44} {c.dim(f'{dt * 1000:6.0f}ms')} {c.dim(summary)}",
-                flush=True,
-            )
             if failed:
+                print(
+                    f"{c.red('FAIL')} {name:<44} "
+                    f"{c.dim(f'{dt * 1000:6.0f}ms')} {c.dim(summary)}",
+                    flush=True,
+                )
                 failures.append((name, error, tb))
             else:
                 passed += 1
+                if args.verbose:
+                    print(
+                        f"{c.green('PASS')} {name:<44} "
+                        f"{c.dim(f'{dt * 1000:6.0f}ms')} {c.dim(summary)}",
+                        flush=True,
+                    )
         if failed and args.exitfirst:
             stop.set()
 
