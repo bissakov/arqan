@@ -32,15 +32,6 @@ static b8 sess_unreserved(char c) {
         || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
 }
 
-static u64 sess_hash(Str s) {
-    u64 h = UINT64_C(1469598103934665603);
-    for (size_t i = 0; i < s.n; i++) {
-        h ^= (u8)s.p[i];
-        h *= UINT64_C(1099511628211);
-    }
-    return h;
-}
-
 /* One path component naming `path`. Percent-encoding keeps it reversible by
  * eye; a path too long to encode whole is cut at an escape boundary and
  * disambiguated by a hash of the original, so two long neighbours can never
@@ -64,7 +55,7 @@ static size_t sess_slug(char *out, size_t cap, Str path) {
         }
     }
     if (truncated) {
-        u64 h = sess_hash(path);
+        u64 h = str_hash64(path);
         if (n + 17 >= cap) n = cap > 18 ? cap - 18 : 0;
         out[n++] = '-';
         for (i32 shift = 60; shift >= 0; shift -= 4)
@@ -223,29 +214,13 @@ b8 session_fork(Session *s, const Conv *c) {
     return s->written >= c->n;
 }
 
-/* Read at most `max` bytes of a file into `a`. The size is measured before
- * anything is allocated, so a file that grew past what we will read can
- * never turn into an allocation we cannot satisfy. */
-static Str sess_read(Arena *a, const char *path, size_t max) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return (Str){0};
-    fseek(f, 0, SEEK_END);
-    i64 sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (sz <= 0 || sz > (i64)YOKE_MAX_SESSION_BYTES) { fclose(f); return (Str){0}; }
-    size_t want = (size_t)sz < max ? (size_t)sz : max;
-    char *buf = arena_new(a, char, want + 1);
-    if (!buf) { fclose(f); return (Str){0}; }
-    size_t rd = fread(buf, 1, want, f);
-    fclose(f);
-    buf[rd] = '\0';
-    return (Str){ buf, rd };
-}
-
-/* Single-line preview of a session: its first user prompt, flattened. */
+/* Single-line preview of a session: its first user prompt, flattened. Only
+ * the head of the file is read, since the prompt it wants is its first. */
 static Str sess_preview(Arena *a, const char *path) {
     size_t mark = a->off;
-    Str src = sess_read(a, path, SESSION_PREVIEW_READ);
+    Str src = {0};
+    file_read(a, path, YOKE_MAX_SESSION_BYTES, SESSION_PREVIEW_READ, &src,
+              NULL);
     Str out = {0};
     size_t start = 0;
     for (size_t i = 0; i <= src.n && !out.n; i++) {
@@ -254,12 +229,8 @@ static Str sess_preview(Arena *a, const char *path) {
         start = i + 1;
         if (line.n < 2) continue;
         JVal *v = json_parse(a, line);
-        if (!v) continue;
-        const JVal *role = json_get(v, STR("role"));
-        if (!role || role->type != J_STR || !str_eq(role->u.s, STR("user"))) continue;
-        const JVal *content = json_get(v, STR("content"));
-        if (!content || content->type != J_STR) continue;
-        out = content->u.s;
+        if (!str_eq(json_str(v, STR("role")), STR("user"))) continue;
+        out = json_str(v, STR("content"));
     }
     if (!out.n) { a->off = mark; return (Str){0}; }
 
@@ -334,8 +305,17 @@ size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max) {
  * overwrites its storage: whether the file can be read at all has to be known
  * before anything is thrown away. */
 Str session_read(Str path, Arena *scratch) {
-    if (!path.n) return (Str){0};
-    return sess_read(scratch, path.p, YOKE_MAX_SESSION_BYTES);
+    Str src = {0};
+    if (path.n) file_read(scratch, path.p, YOKE_MAX_SESSION_BYTES, 0, &src,
+                          NULL);
+    return src;
+}
+
+/* One string field of a saved line, copied into the conversation's arena.
+ * Absent and empty are the same answer, so neither costs an allocation. */
+static Str sess_field(Arena *persist, const JVal *v, Str key) {
+    Str s = json_str(v, key);
+    return s.n ? str_dup(persist, s) : (Str){0};
 }
 
 /* Replay contents into `c`, which the caller has already rewound to the
@@ -359,29 +339,22 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
         if (line.n < 2) continue;
         size_t line_mark = scratch->off;
         JVal *v = json_parse(scratch, line);
-        const JVal *role = v ? json_get(v, STR("role")) : NULL;
-        if (!role || role->type != J_STR) { scratch->off = line_mark; continue; }
-        const JVal *content = json_get(v, STR("content"));
-        const JVal *id = json_get(v, STR("id"));
-        const JVal *nm = json_get(v, STR("name"));
-        const JVal *calls = json_get(v, STR("calls"));
-        const JVal *shell = json_get(v, STR("output"));
+        Str role = json_str(v, STR("role"));
+        if (!role.n) { scratch->off = line_mark; continue; }
         const JVal *ms = json_get(v, STR("ms"));
-        Str text = content && content->type == J_STR
-                 ? str_dup(persist, content->u.s) : (Str){0};
-        Str call_id = id && id->type == J_STR ? str_dup(persist, id->u.s) : (Str){0};
-        Str tool = nm && nm->type == J_STR ? str_dup(persist, nm->u.s) : (Str){0};
+        Str text = sess_field(persist, v, STR("content"));
+        Str call_id = sess_field(persist, v, STR("id"));
+        Str tool = sess_field(persist, v, STR("name"));
         size_t slot;
-        if (str_eq(role->u.s, STR("user"))) {
-            Str out = shell && shell->type == J_STR
-                    ? str_dup(persist, shell->u.s) : (Str){0};
+        if (str_eq(role, STR("user"))) {
+            Str out = sess_field(persist, v, STR("output"));
             slot = str_eq(tool, STR("shell")) ? conv_add_shell(c, text, out)
                                               : conv_add(c, M_USER, text);
-        } else if (str_eq(role->u.s, STR("tool"))) {
+        } else if (str_eq(role, STR("tool"))) {
             slot = conv_add_tool(c, call_id, text);
         } else if (tool.n) {
             slot = conv_add_call(c, call_id, tool, text);
-        } else if (calls && calls->type == J_BOOL && calls->u.b) {
+        } else if (json_bool(v, STR("calls"))) {
             slot = conv_add_assistant_calls(c, text);
         } else {
             slot = conv_add(c, M_ASSISTANT, text);

@@ -282,3 +282,13 @@ const JVal *json_at(const JVal *arr, size_t i) {
     if (!arr || arr->type != J_ARR || i >= arr->u.arr.n) return NULL;
     return &arr->u.arr.items[i];
 }
+
+Str json_str(const JVal *obj, Str key) {
+    const JVal *v = json_get(obj, key);
+    return v && v->type == J_STR ? v->u.s : (Str){0};
+}
+
+b8 json_bool(const JVal *obj, Str key) {
+    const JVal *v = json_get(obj, key);
+    return v && v->type == J_BOOL && v->u.b;
+}

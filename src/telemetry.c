@@ -61,15 +61,6 @@ static struct {
     void *header_ud;
 } g_tel;
 
-static u64 tel_hash(Str s) {
-    u64 h = UINT64_C(1469598103934665603);
-    for (size_t i = 0; i < s.n; i++) {
-        h ^= (u8)s.p[i];
-        h *= UINT64_C(1099511628211);
-    }
-    return h;
-}
-
 /* Copy a resolved path into the struct: the arena it was built in belongs to
  * the caller and is rewound as soon as startup is over. */
 static b8 tel_keep(char *dst, size_t cap, Str path) {
@@ -79,12 +70,16 @@ static b8 tel_keep(char *dst, size_t cap, Str path) {
     return true;
 }
 
-static void tel_append(const char *data, size_t n) {
+/* The one write: whole lines, appended to the file the record is bound to.
+ * A directory that cannot be made or a file that cannot be opened costs the
+ * session nothing. */
+static void tel_append(const char *data, size_t n, b8 newline) {
     if (!n || !g_tel.path_buf[0]) return;
     paths_ensure_dir(g_tel.dir);
     FILE *f = fopen(g_tel.path_buf, "ab");
     if (!f) return;
     fwrite(data, 1, n, f);
+    if (newline) fputc('\n', f);
     fclose(f);
 }
 
@@ -100,7 +95,7 @@ static void tel_attach(const char *dir, size_t dn, const char *path, size_t pn) 
     g_tel.attached = true;
     g_tel.header_due = g_tel.pend_n == 0;
     if (g_tel.pend_n) {
-        tel_append(g_tel.pend, g_tel.pend_n);
+        tel_append(g_tel.pend, g_tel.pend_n, false);
         g_tel.pend_n = 0;
     }
 }
@@ -176,12 +171,7 @@ static void tel_flush(const char *line, size_t n) {
         tel_attach_run();
         if (!g_tel.attached) return;
     }
-    paths_ensure_dir(g_tel.dir);
-    FILE *f = fopen(g_tel.path_buf, "ab");
-    if (!f) return;
-    fwrite(line, 1, n, f);
-    fputc('\n', f);
-    fclose(f);
+    tel_append(line, n, true);
 }
 
 b8 telemetry_on(void) { return g_tel.on && g_tel.ready; }
@@ -204,7 +194,7 @@ void telemetry_init(Arena *scratch) {
     char seed[64];
     i32 n = snprintf(seed, sizeof seed, "%ld:%ld:%f", (long)getpid(),
                      (long)now, g_tel.t0);
-    g_tel.run = tel_hash((Str){ seed, n > 0 ? (size_t)n : 0 });
+    g_tel.run = str_hash64((Str){ seed, n > 0 ? (size_t)n : 0 });
 
     struct tm tm;
     char stamp[24] = "00000000-000000";
@@ -378,6 +368,6 @@ void tel_hash_field(TelEvent *e, const char *key, Str v) {
     if (!e->live || !v.n) return;
     char hex[20];
     i32 n = snprintf(hex, sizeof hex, "%016llx",
-                     (unsigned long long)tel_hash(v));
+                     (unsigned long long)str_hash64(v));
     if (n > 0) tel_str(e, key, (Str){ hex, (size_t)n });
 }

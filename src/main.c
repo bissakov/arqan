@@ -86,15 +86,22 @@ static size_t resolve_alias(char *line, size_t ln, size_t cap) {
  * each is one, so the deltas after the first do not open a second. */
 static b8 g_reasoning;
 static b8 g_replying;
+
+/* The status line and the activity row say the same word about the same wait,
+ * and a turn that only changed one of them would read as two states. */
+static void say_busy(const char *what) {
+    tui_set_status(what);
+    tui_activity(str_c(what));
+}
+
 static void on_reason(Str delta, void *ud) {
     (void)ud;
     if (!g_reasoning) {
         g_reasoning = true;
-        tui_set_status("reasoning");
-        tui_activity(STR("reasoning"));
+        say_busy("reasoning");
         tui_block();
     }
-    tui_write_reason(delta);
+    tui_write_muted(delta);
 }
 static void on_text(Str delta, void *ud) {
     (void)ud;
@@ -109,8 +116,7 @@ static void on_text(Str delta, void *ud) {
 }
 static void on_tool_call(i32 idx, Str id, Str name, Str args_delta, void *ud) {
     (void)ud; (void)idx; (void)id; (void)name; (void)args_delta;
-    tui_set_status("preparing tool call");
-    tui_activity(STR("preparing tool call"));
+    say_busy("preparing tool call");
 }
 /* The context the turn is being charged for, heard from the response while
  * it streams: an interrupt cannot take it back, since nothing behind it is
@@ -124,8 +130,7 @@ static void on_usage(size_t total, void *ud) {
 static void on_retry(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
                      void *ud) {
     (void)ud;
-    tui_set_status("retrying");
-    tui_activity(STR("retrying"));
+    say_busy("retrying");
     tui_block();
     char wait[32];
     if (delay_ms < 1000) snprintf(wait, sizeof wait, "%dms", delay_ms);
@@ -216,13 +221,34 @@ static void agent_set_mode(Agent *ag, AgentMode mode) {
     tui_set_mode(mode);
 }
 
+/* A failed run answers where its output would have been, since the result
+ * reaches the model either way. `dflt` covers a failure that said nothing. */
+static void buf_error(Buf *out, const char *err, const char *dflt) {
+    out->n = 0;
+    buf_putf(out, "ERROR: %s", err[0] ? err : dflt);
+}
+
+/* The result as the conversation keeps it. An arena that could not take it
+ * still answers the call, since a call left unanswered is a conversation the
+ * provider refuses. */
+static Str keep_result(Arena *persist, Str result) {
+    Str kept = str_dup(persist, result);
+    return kept.p ? kept : STR("ERROR: out of memory");
+}
+
+/* The one thing a conversation with no room left has to say, in the
+ * transcript because it answers the message that did not fit. */
+static void say_conv_full(void) {
+    tui_block();
+    tui_write(STR("[conversation is full: /clear to start a new one]\n"));
+}
+
 /* False when the conversation had no room left, which ends the turn. */
 static b8 add_result(Agent *ag, size_t call, Str name, Str result, u32 ms) {
     Conv *conv = ag->conv;
     size_t slot = conv_add_tool(conv, conv->tool_call_id[call], result);
     if (slot == CONV_NONE) {
-        tui_block();
-        tui_write(STR("[conversation is full: /clear to start a new one]\n"));
+        say_conv_full();
         return false;
     }
     conv->ms[slot] = ms;
@@ -240,17 +266,12 @@ static u32 elapsed_ms(f64 started) {
     return ms > (f64)UINT32_MAX ? UINT32_MAX : (u32)ms;
 }
 
-static Str json_field(const JVal *j, Str key) {
-    const JVal *v = j ? json_get(j, key) : NULL;
-    return v && v->type == J_STR ? v->u.s : (Str){0};
-}
-
 /* The rows are the options the model offered, the list opens on the one it
  * recommends, and a last row hands the composer over for an answer it did
  * not think of. Empty when the question was dismissed. */
 static Str ask_user_answer(Agent *ag, Str args) {
     JVal *j = json_parse(ag->scratch, args);
-    Str question = json_field(j, STR("question"));
+    Str question = json_str(j, STR("question"));
     const JVal *opts = j ? json_get(j, STR("options")) : NULL;
     size_t n = opts && opts->type == J_ARR ? opts->u.arr.n : 0;
     if (n > YOKE_MAX_POPUP - 1) n = YOKE_MAX_POPUP - 1;
@@ -262,10 +283,9 @@ static Str ask_user_answer(Agent *ag, Str args) {
     size_t start = 0;
     for (size_t i = 0; i < n; i++) {
         const JVal *o = json_at(opts, i);
-        Str label = json_field(o, STR("label"));
-        Str detail = json_field(o, STR("detail"));
-        const JVal *rec = o ? json_get(o, STR("recommended")) : NULL;
-        if (rec && rec->type == J_BOOL && rec->u.b) {
+        Str label = json_str(o, STR("label"));
+        Str detail = json_str(o, STR("detail"));
+        if (json_bool(o, STR("recommended"))) {
             start = i;
             Buf b; buf_init(&b, ag->scratch, detail.n + 24);
             buf_puts(&b, STR("recommended"));
@@ -278,7 +298,8 @@ static Str ask_user_answer(Agent *ag, Str args) {
                          STR("Answer in your own words") };
 
     size_t pick = 0;
-    if (!tui_pick_from(STR("pick an answer"), items, n + 1, start, &pick))
+    if (!tui_pick(STR("pick an answer"), items, n + 1, TUI_PICK_FIRST, start,
+                  &pick))
         return (Str){0};
     if (pick < n) return str_dup(ag->persist, items[pick].name);
 
@@ -290,7 +311,7 @@ static Str ask_user_answer(Agent *ag, Str args) {
 
 /* The three answers to a submitted plan are the three ways a turn goes on. */
 static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
-    Str plan = json_field(json_parse(ag->scratch, args), STR("plan"));
+    Str plan = json_str(json_parse(ag->scratch, args), STR("plan"));
     render_plan(plan);
 
     const TuiCmd items[] = {
@@ -301,7 +322,9 @@ static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
     };
     size_t pick = 2;
     /* A dismissed question is not an approval, so cancelling is "No". */
-    if (!tui_pick(STR("continue?"), items, 3, TUI_PICK_FIRST, &pick)) pick = 2;
+    if (!tui_pick(STR("continue?"), items, 3, TUI_PICK_FIRST, TUI_PICK_NONE,
+                  &pick))
+        pick = 2;
     if (pick == 2) {
         *result = STR("The user rejected the plan. Stop and wait for what "
                       "they want changed.");
@@ -361,12 +384,10 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
                          conv->expanded[i]);
         char status[32];
         snprintf(status, sizeof status, "running %.*s", (i32)name.n, name.p);
-        tui_set_status(status);
-        tui_activity(str_c(status));
+        say_busy(status);
         b8 ok = tools_run(ag->tools, tool, args, ag->scratch, &out, err,
                           sizeof err);
-        if (!ok && !err[0]) snprintf(err, sizeof err, "tool failed");
-        if (!ok) { out.n = 0; buf_putf(&out, "ERROR: %s", err); }
+        if (!ok) buf_error(&out, err, "tool failed");
         Str result = buf_finish(&out);
         /* Which tool, which argument keys, how long, how much. What the
          * arguments said and what it answered stay out. */
@@ -381,9 +402,8 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         tel_bool(&e, "ok", ok);
         tel_shape(&e, "result", result);
         tel_send(&e);
-        Str res_dup = str_dup(ag->persist, result);
-        if (result.n && !res_dup.p) res_dup = STR("ERROR: out of memory");
-        if (!add_result(ag, i, name, res_dup, ms)) return TURN_FULL;
+        if (!add_result(ag, i, name, keep_result(ag->persist, result), ms))
+            return TURN_FULL;
     }
     return pending;
 }
@@ -444,7 +464,10 @@ static void rerender_conv(const Conv *conv, Arena *scratch, u32 zone) {
 
 /* Nothing to open leaves the view exactly as it was and answers in the
  * popup's own slot: a session that did not open is not part of the
- * conversation, so it has no business in the transcript. */
+ * conversation, so it has no business in the transcript.
+ *
+ * The scratch arena is rewound on the way in rather than at each way out,
+ * since every one of its consumers starts by rewinding it. */
 static void resume_session(Session *sess, Conv *conv, Arena *persist,
                            Arena *scratch, size_t session_mark) {
     arena_reset(scratch);
@@ -452,30 +475,26 @@ static void resume_session(Session *sess, Conv *conv, Arena *persist,
     size_t n = session_list(sess, scratch, &list, YOKE_MAX_SESSIONS);
     if (!n) {
         tui_notice(STR("no saved sessions in this directory"));
-        arena_reset(scratch);
         return;
     }
     TuiCmd *items = arena_new(scratch, TuiCmd, n);
     if (!items) {
         tui_notice(STR("out of memory listing sessions"));
-        arena_reset(scratch);
         return;
     }
     for (size_t i = 0; i < n; i++)
         items[i] = (TuiCmd){ list.name[i], list.preview[i] };
 
     size_t pick = 0;
-    if (!tui_pick(STR("pick a session"), items, n, TUI_PICK_FIRST, &pick)) {
-        arena_reset(scratch);
+    if (!tui_pick(STR("pick a session"), items, n, TUI_PICK_FIRST,
+                  TUI_PICK_NONE, &pick))
         return;
-    }
 
     /* Read first: replaying overwrites the live conversation's storage, so a
      * session that cannot be read must not cost the one that is running. */
     Str src = session_read(list.path[pick], scratch);
     if (!src.n) {
         tui_notice(STR("could not read that session"));
-        arena_reset(scratch);
         return;
     }
     conv->n = 1;
@@ -485,7 +504,6 @@ static void resume_session(Session *sess, Conv *conv, Arena *persist,
     tui_clear();
     render_conv(conv, scratch);
     if (!whole) tui_notice(STR("session truncated: the conversation is full"));
-    arena_reset(scratch);
 }
 
 /* One popup row of a message: control bytes become spaces and the cut lands
@@ -526,7 +544,6 @@ static void rewind_conversation(Conv *conv, Session *sess, Arena *scratch) {
     TuiCmd *items = arena_new(scratch, TuiCmd, cap);
     if (!at || !items) {
         tui_notice(STR("out of memory listing messages"));
-        arena_reset(scratch);
         return;
     }
     size_t n = 0;
@@ -542,10 +559,9 @@ static void rewind_conversation(Conv *conv, Session *sess, Arena *scratch) {
      * newest turn sits nearest the composer and going back further is Up, as
      * it is in the composer's own history. */
     size_t pick = 0;
-    if (!tui_pick(STR("rewind to a message"), items, n, TUI_PICK_LAST, &pick)) {
-        arena_reset(scratch);
+    if (!tui_pick(STR("rewind to a message"), items, n, TUI_PICK_LAST,
+                  TUI_PICK_NONE, &pick))
         return;
-    }
     size_t slot = at[pick];
     tui_set_input(conv->text[slot]);
     conv->n = slot;
@@ -554,7 +570,6 @@ static void rewind_conversation(Conv *conv, Session *sess, Arena *scratch) {
     /* A session file is append-only and this one no longer describes the
      * conversation, so what is left of it continues in a new file. */
     session_fork(sess, conv);
-    arena_reset(scratch);
 }
 
 /* Continue in a copy: only the file underneath changes, so the session this
@@ -647,7 +662,8 @@ static b8 pick_model(const Config *cfg, Arena *scratch, Str *out) {
                              str_eq(names[i], cfg->model) ? STR("current")
                                                           : (Str){0} };
     size_t pick = 0;
-    if (!tui_pick(STR("pick a model"), items, n, TUI_PICK_FIRST, &pick))
+    if (!tui_pick(STR("pick a model"), items, n, TUI_PICK_FIRST,
+                  TUI_PICK_NONE, &pick))
         return false;
     *out = names[pick];
     return true;
@@ -658,14 +674,10 @@ static b8 pick_model(const Config *cfg, Arena *scratch, Str *out) {
 static void choose_model(Config *cfg, Arena *persist, Arena *scratch) {
     arena_reset(scratch);
     Str picked = {0};
-    if (!pick_model(cfg, scratch, &picked)) {
-        arena_reset(scratch);
-        return;
-    }
+    if (!pick_model(cfg, scratch, &picked)) return;
     Str chosen = str_dup(persist, picked);
     if (!chosen.p) {
         tui_notice(STR("out of memory storing the model"));
-        arena_reset(scratch);
         return;
     }
     cfg->model = chosen;
@@ -680,7 +692,6 @@ static void choose_model(Config *cfg, Arena *persist, Arena *scratch) {
              : config_remember_model(chosen, scratch);
     notice_fmt("model: %.*s%s", (i32)chosen.n, chosen.p,
                saved ? "" : " (not remembered: no state directory)");
-    arena_reset(scratch);
 }
 
 /* No key and no endpoint from a flag, the environment, a config file or the
@@ -711,6 +722,13 @@ static b8 use_endpoint(Config *cfg, Str name, Str base_url, Str model,
     tel_bool(&e, "has_key", key.p != NULL);
     tel_send(&e);
     return true;
+}
+
+/* Remembered for the next run and said in a notice: the two things every path
+ * that switches provider ends with. */
+static void provider_chosen(const Config *cfg, Arena *scratch) {
+    endpoints_remember_active(cfg->provider, scratch);
+    notice_fmt("provider: %.*s", (i32)cfg->provider.n, cfg->provider.p);
 }
 
 /* Ask for a provider and store it: a name, an OpenAI-compatible base URL and
@@ -776,9 +794,7 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
         tui_notice(STR("out of memory storing the provider"));
         return false;
     }
-    endpoints_remember_active(cfg->provider, scratch);
-    notice_fmt("provider: %.*s", (i32)cfg->provider.n, cfg->provider.p);
-    arena_reset(scratch);
+    provider_chosen(cfg, scratch);
     return true;
 }
 
@@ -790,13 +806,11 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
     size_t n = endpoints_load(&eps, scratch);
     if (!n) {
         add_endpoint(cfg, persist, scratch);
-        arena_reset(scratch);
         return;
     }
     TuiCmd *items = arena_new(scratch, TuiCmd, n + 1);
     if (!items) {
         tui_notice(STR("out of memory listing providers"));
-        arena_reset(scratch);
         return;
     }
     for (size_t i = 0; i < n; i++) {
@@ -814,31 +828,24 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
 
     size_t pick = 0;
     if (!tui_pick(STR("pick a provider"), items, n + 1, TUI_PICK_FIRST,
-                  &pick)) {
-        arena_reset(scratch);
+                  TUI_PICK_NONE, &pick))
         return;
-    }
     if (pick == n) {
         add_endpoint(cfg, persist, scratch);
-        arena_reset(scratch);
         return;
     }
     char err[YOKE_MAX_PATH + 64] = {0};
     Str key = endpoints_key(eps.name[pick], persist, scratch, err, sizeof err);
     if (err[0]) {
         tui_notice(str_c(err));
-        arena_reset(scratch);
         return;
     }
     if (!use_endpoint(cfg, eps.name[pick], eps.base_url[pick], eps.model[pick],
                       key, persist)) {
         tui_notice(STR("out of memory switching provider"));
-        arena_reset(scratch);
         return;
     }
-    endpoints_remember_active(cfg->provider, scratch);
-    notice_fmt("provider: %.*s", (i32)cfg->provider.n, cfg->provider.p);
-    arena_reset(scratch);
+    provider_chosen(cfg, scratch);
 }
 
 /* ---- /settings -----------------------------------------------------------
@@ -928,7 +935,6 @@ static void choose_tools(Agent *ag) {
         if (sel < n)
             tools_set_disabled(reg, id[sel], !tools_disabled(reg, id[sel]));
     }
-    arena_reset(scratch);
 }
 
 static void choose_settings(Agent *ag) {
@@ -1006,7 +1012,6 @@ static void choose_settings(Agent *ag) {
             default: break;
         }
     }
-    arena_reset(scratch);
 }
 
 /* A '!' line runs here rather than reaching the model, and takes a
@@ -1023,27 +1028,19 @@ static void run_shell(Agent *ag, Str cmd) {
     Str stored = str_dup(ag->persist, cmd);
     size_t slot = stored.p ? conv_add_shell(conv, stored, (Str){0}) : CONV_NONE;
     if (slot == CONV_NONE) {
-        tui_block();
-        tui_write(STR("[conversation is full: /clear to start a new one]\n"));
+        say_conv_full();
         return;
     }
     render_shell_call(stored, (u32)(slot + 1), false);
 
-    tui_set_status("running shell");
-    tui_activity(STR("running shell"));
+    say_busy("running shell");
     f64 started = yoke_now_seconds();
     Buf out; buf_init(&out, ag->scratch, 4096);
     char err[256] = {0};
-    if (!shell_capture(cmd, &out, err, sizeof err)) {
-        if (!err[0]) snprintf(err, sizeof err, "shell failed");
-        out.n = 0;
-        buf_putf(&out, "ERROR: %s", err);
-    }
+    if (!shell_capture(cmd, &out, err, sizeof err))
+        buf_error(&out, err, "shell failed");
     u32 ms = elapsed_ms(started);
-    tui_set_status("ready");
-    tui_activity_end();
-    Str result = str_dup(ag->persist, buf_finish(&out));
-    if (!result.p) result = STR("ERROR: out of memory");
+    Str result = keep_result(ag->persist, buf_finish(&out));
     /* The command is the user's own text, so only its size is recorded. */
     TelEvent e;
     tel_open(&e, "shell");
@@ -1055,7 +1052,11 @@ static void run_shell(Agent *ag, Str cmd) {
     conv->ms[slot] = ms;
     render_tool_result(STR("shell"), result, (u32)(slot + 1), false, ms);
     session_save(ag->sess, conv);
-    arena_reset(ag->scratch);
+    /* Last, so the spinner is never taken down before what it was spinning
+     * for is on screen: a frame saying idle with no result is a run that
+     * looks lost. */
+    tui_set_status("ready");
+    tui_activity_end();
 }
 
 /* Appends `text` as a user message and streams completions until the model

@@ -1878,8 +1878,6 @@ i32 tui_input_fd(void) {
 }
 
 /* Wrappers for callers outside main.c. */
-void tui_enter_raw(void) { tui_start((Str){0}, (Str){0}, false, 0, false); }
-void tui_exit_raw(void) { tui_stop(); }
 
 void tui_set_status(const char *status) {
     /* Copied, not aliased, so a caller can build it on the stack. */
@@ -2127,7 +2125,6 @@ void tui_printf(const char *fmt, ...) {
     tui_write((Str){buf, len});
 }
 
-void tui_putstr(Str s) { tui_write(s); }
 
 /* Styled output is transcript text like any other; only the byte range
  * recorded around it tells the painter how to paint those rows. */
@@ -2152,7 +2149,6 @@ void tui_write_styled(Str s, TuiStyle st) {
     else write_span(s, kinds[st]);
 }
 
-void tui_write_reason(Str s) { write_span(s, ROW_REASON); }
 void tui_write_muted(Str s)  { write_span(s, ROW_REASON); }
 void tui_write_tool(Str s)   { write_span(s, ROW_TOOL); }
 void tui_write_result(Str s) { write_span(s, ROW_RESULT); }
@@ -2955,13 +2951,8 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
 }
 
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
-            size_t *out) {
-    return pick_impl(title, items, n, anchor, SIZE_MAX, PICK_CHOOSE, out);
-}
-
-b8 tui_pick_from(Str title, const TuiCmd *items, size_t n, size_t start,
-                 size_t *out) {
-    return pick_impl(title, items, n, TUI_PICK_FIRST, start, PICK_CHOOSE, out);
+            size_t start, size_t *out) {
+    return pick_impl(title, items, n, anchor, start, PICK_CHOOSE, out);
 }
 
 b8 tui_settings(Str title, const TuiCmd *rows, size_t n, size_t *sel) {

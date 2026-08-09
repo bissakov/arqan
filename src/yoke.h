@@ -123,6 +123,9 @@ size_t  str_lines(Str s);
 /* At most `max` bytes of `s`, never cutting a UTF-8 sequence in half. */
 Str     str_clip_utf8(Str s, size_t max);
 i64    str_int(Str s, b8 *ok);
+/* FNV-1a: enough to tell two strings apart across runs, not enough to name
+ * either, which is what a session slug and a telemetry field need. */
+u64     str_hash64(Str s);
 
 /* Growable char buffer doubling into an arena. `oom` latches when a growth
  * failed: every later write is dropped, and callers check buf_ok() before
@@ -138,6 +141,23 @@ void    buf_json_str(Buf *b, Str s);           /* JSON-escaped string      */
 /* Its body without the quotes, so several pieces can share one string. */
 void    buf_json_chars(Buf *b, Str s);
 Str     buf_finish(Buf *b);                    /* nul-terminates            */
+
+/* ---- files ---------------------------------------------------------------
+ * The one reader every file yoke owns goes through, so a size that comes from
+ * the filesystem is checked in one place rather than at each caller.
+ */
+typedef enum {
+    FILE_OK, FILE_MISSING, FILE_NOT_REGULAR, FILE_TOO_LARGE,
+    FILE_NO_MEMORY, FILE_UNREADABLE
+} FileStatus;
+
+/* Reads `path` into `a`, nul-terminated past `out->n`. A file over `max` is
+ * FILE_TOO_LARGE and reads nothing; a nonzero `head` caps how much of one
+ * within the limit is read, which is what a preview asks for. `size_out` is
+ * optional and carries the file's own size, for a message about it. `out` is
+ * empty for every status but FILE_OK. */
+FileStatus file_read(Arena *a, const char *path, size_t max, size_t head,
+                     Str *out, u64 *size_out);
 
 /* ---- logging ------------------------------------------------------------ */
 enum { YOKE_LOG_DEBUG, YOKE_LOG_INFO, YOKE_LOG_WARN, YOKE_LOG_ERROR };
@@ -230,6 +250,11 @@ JVal   *json_parse(Arena *a, Str s);            /* NULL on error             */
 void    json_write(Buf *b, const JVal *v);
 const JVal *json_get(const JVal *obj, Str key);
 const JVal *json_at(const JVal *arr, size_t i);
+/* Empty when the member is absent or is not a string, which is the same
+ * answer to the caller: the field it asked for is not there. */
+Str    json_str(const JVal *obj, Str key);
+/* False unless the member is present and true. */
+b8     json_bool(const JVal *obj, Str key);
 
 /* ---- XDG base directories ------------------------------------------------
  * Every file yoke owns is resolved here; none sits directly in $HOME. A
@@ -665,16 +690,17 @@ void tui_set_aliases(const TuiAlias *aliases, size_t n);
  * search: a list ordered like the transcript ends at the entry nearest the
  * composer. */
 typedef enum { TUI_PICK_FIRST = 0, TUI_PICK_LAST } TuiPickAnchor;
+/* `start` for a list that recommends none of its entries, which opens on the
+ * end `anchor` names. */
+#define TUI_PICK_NONE ((size_t)-1)
 /* Modal picker: the completion popup over a caller-owned list. `title` names
  * it in the status line, Enter chooses (index in *out), Esc/Ctrl-C cancels.
- * Past ten entries typing filters the list by literal substring, leaving the
- * composer's own text untouched. */
+ * `start` opens the selection on one entry, which is how a list carrying a
+ * recommendation offers it without reordering itself. Past ten entries typing
+ * filters the list by literal substring, leaving the composer's own text
+ * untouched. */
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
-            size_t *out);
-/* The same picker opened on `start`, which is how a list carrying a
- * recommendation offers it without reordering its entries. */
-b8 tui_pick_from(Str title, const TuiCmd *items, size_t n, size_t start,
-                 size_t *out);
+            size_t start, size_t *out);
 /* The settings screen: the same list, read rather than chosen from. Space
  * acts on the selected row (true, with *sel naming it), Enter and Escape
  * close. `sel` is in and out, so a caller that rebuilds the rows and reopens
@@ -742,12 +768,10 @@ void tui_notice(Str msg);
  * stacked. */
 void tui_block(void);
 void tui_write(Str s);
-/* Muted, so a thinking trace reads apart from the reply. */
-void tui_write_reason(Str s);
-/* The styles a tool block is built from: muted for quoted input and output,
- * yellow for a call's header, green for a result, red for a failure. Style
- * is a recorded byte range, so a write that overflowed the scrollback loses
- * it. */
+/* The styles a tool block and a thinking trace are built from: muted for
+ * quoted input, output and reasoning, yellow for a call's header, green for a
+ * result, red for a failure. Style is a recorded byte range, so a write that
+ * overflowed the scrollback loses it. */
 void tui_write_muted(Str s);
 void tui_write_tool(Str s);
 void tui_write_result(Str s);
@@ -764,9 +788,6 @@ b8 tui_is_fullscreen(void);
 /* Flag Esc raises to cancel an in-flight turn (same path as SIGINT). */
 void tui_set_interrupt_flag(volatile sig_atomic_t *flag);
 void tui_printf(const char *fmt, ...) __attribute__((format(printf,1,2)));
-void tui_enter_raw(void);
-void tui_exit_raw(void);
-void tui_putstr(Str s);
 /* Read one submitted line. Escape at an idle composer with nothing to dismiss
  * arms a rewind and the next Escape submits "/rewind", leaving the composed
  * text where it is; Shift+Tab submits "/mode" the same way. */

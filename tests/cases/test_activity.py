@@ -113,6 +113,17 @@ def test_a_shell_run_is_timed_in_seconds(ctx):
     assert m and float(m.group(1)) >= 1.2, row
 
 
+def test_the_spinner_outlives_the_run_it_reports_on(ctx):
+    """It goes only once the result is on screen: a frame saying idle with
+    nothing to show is a run that looks lost."""
+    ctx.scenario("text=unused")
+    s = ctx.spawn()
+    s.submit("!sleep 0.5; echo done here")
+    s.wait_activity("running shell")
+    s.wait_for(lambda t: s.activity() is None, "the spinner to go")
+    assert "exit 0" in s.text(), s.text()
+
+
 def test_the_time_survives_a_resume(ctx):
     """A replayed transcript says what the live one did: the run is timed in
     the session file, not only on screen."""

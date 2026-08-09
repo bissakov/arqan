@@ -244,6 +244,49 @@ static Str skip_leading_breaks(Str s, b8 started) {
     return str_drop(s, skip);
 }
 
+/* "reasoning_content" is what DeepSeek-style endpoints send, "reasoning" what
+ * OpenRouter does; both carry plain text. */
+static Str reasoning_of(const JVal *v) {
+    Str r = json_str(v, STR("reasoning_content"));
+    return r.n ? r : json_str(v, STR("reasoning"));
+}
+
+/* The three things a reply carries, taken the same way whether they arrived a
+ * delta at a time or whole: a thinking trace the conversation never keeps,
+ * the reply itself, and one tool call per slot. */
+static void take_reason(Provider *p, StreamState *s, Str raw) {
+    Str rt = skip_leading_breaks(raw, s->reason_started);
+    if (!rt.n) return;
+    s->reason_started = true;
+    s->reason_bytes += rt.n;
+    if (p->on_reason) p->on_reason(rt, p->ud);
+}
+
+static void take_text(Provider *p, StreamState *s, Str raw) {
+    Str text = skip_leading_breaks(raw, s->text_started);
+    if (!text.n) return;
+    s->text_started = true;
+    buf_puts(&s->text, text);
+    if (p->on_text) p->on_text(text, p->ud);
+}
+
+/* Fields are copied out of the event they came in, since a delta's arena is
+ * reset before the next one arrives. */
+static void take_call(Provider *p, StreamState *s, const JVal *tc, i32 idx) {
+    i32 sl = slot(s, idx);
+    if (sl < 0) return;
+    const JVal *fn = json_get(tc, STR("function"));
+    Str id = json_str(tc, STR("id"));
+    Str name = json_str(fn, STR("name"));
+    Str args = json_str(fn, STR("arguments"));
+    if (id.n) s->id[sl] = str_dup(s->scratch, id);
+    if (name.n) s->name[sl] = str_dup(s->scratch, name);
+    if (args.n) buf_puts(&s->args[sl], args);
+    if (p->on_tool_call && s->name[sl].p)
+        p->on_tool_call(sl, s->id[sl], s->name[sl],
+                        (Str){ s->args[sl].p, s->args[sl].n }, p->ud);
+}
+
 static b8 on_line(Str line, void *ud) {
     Provider *p = (Provider *)ud;
     StreamState *s = p->ud;
@@ -263,57 +306,20 @@ static b8 on_line(Str line, void *ud) {
         const JVal *ch0 = json_at(choices, 0);
         if (!ch0) return true;
         const JVal *delta = json_get(ch0, STR("delta"));
-        if (delta) {
-            /* "reasoning_content" is what DeepSeek-style endpoints send,
-             * "reasoning" what OpenRouter does; both carry plain text. */
-            const JVal *reason = json_get(delta, STR("reasoning_content"));
-            if (!reason) reason = json_get(delta, STR("reasoning"));
-            if (reason && reason->type == J_STR && reason->u.s.n) {
-                Str rt = skip_leading_breaks(reason->u.s, s->reason_started);
-                if (rt.n) {
-                    s->reason_started = true;
-                    s->reason_bytes += rt.n;
-                    if (p->on_reason) p->on_reason(rt, p->ud);
-                }
-            }
-            const JVal *content = json_get(delta, STR("content"));
-            if (content && content->type == J_STR && content->u.s.n) {
-                Str text = skip_leading_breaks(content->u.s, s->text_started);
-                if (text.n) {
-                    s->text_started = true;
-                    buf_puts(&s->text, text);
-                    if (p->on_text) p->on_text(text, p->ud);
-                }
-            }
-            const JVal *tcs = json_get(delta, STR("tool_calls"));
-            if (tcs && tcs->type == J_ARR) {
-                for (size_t i = 0; i < tcs->u.arr.n; i++) {
-                    const JVal *tc = &tcs->u.arr.items[i];
-                    const JVal *idxv = json_get(tc, STR("index"));
-                    /* A non-numeric "index" would read the union as a double,
-                     * so anything but a number is the first call. */
-                    i32 idx = idxv && idxv->type == J_NUM
-                            && idxv->u.n >= 0 && idxv->u.n < (f64)YOKE_MAX_TOOL_CALLS
-                            ? (i32)idxv->u.n : 0;
-                    i32 sl = slot(s, idx);
-                    if (sl < 0) continue;
-                    const JVal *idv = json_get(tc, STR("id"));
-                    const JVal *fn  = json_get(tc, STR("function"));
-                    if (idv && idv->type == J_STR && idv->u.s.n)
-                        s->id[sl] = str_dup(s->scratch, idv->u.s);
-                    if (fn) {
-                        const JVal *nm = json_get(fn, STR("name"));
-                        const JVal *ag = json_get(fn, STR("arguments"));
-                        if (nm && nm->type == J_STR && nm->u.s.n)
-                            s->name[sl] = str_dup(s->scratch, nm->u.s);
-                        if (ag && ag->type == J_STR && ag->u.s.n)
-                            buf_puts(&s->args[sl], ag->u.s);
-                    }
-                    if (p->on_tool_call && s->name[sl].p) {
-                        Str ad = { s->args[sl].p, s->args[sl].n };
-                        p->on_tool_call(sl, s->id[sl], s->name[sl], ad, p->ud);
-                    }
-                }
+        if (!delta) return true;
+        take_reason(p, s, reasoning_of(delta));
+        take_text(p, s, json_str(delta, STR("content")));
+        const JVal *tcs = json_get(delta, STR("tool_calls"));
+        if (tcs && tcs->type == J_ARR) {
+            for (size_t i = 0; i < tcs->u.arr.n; i++) {
+                const JVal *tc = &tcs->u.arr.items[i];
+                const JVal *idxv = json_get(tc, STR("index"));
+                /* A non-numeric "index" would read the union as a double, so
+                 * anything but a number is the first call. */
+                i32 idx = idxv && idxv->type == J_NUM && idxv->u.n >= 0
+                       && idxv->u.n < (f64)YOKE_MAX_TOOL_CALLS
+                        ? (i32)idxv->u.n : 0;
+                take_call(p, s, tc, idx);
             }
         }
     }
@@ -339,40 +345,12 @@ static b8 read_completion(Provider *p, StreamState *s, Str raw, Arena *scratch,
         return false;
     }
 
-    const JVal *reason = json_get(msg, STR("reasoning_content"));
-    if (!reason) reason = json_get(msg, STR("reasoning"));
-    if (reason && reason->type == J_STR) {
-        Str rt = skip_leading_breaks(reason->u.s, false);
-        if (rt.n) {
-            s->reason_bytes = rt.n;
-            if (p->on_reason) p->on_reason(rt, p->ud);
-        }
-    }
-    const JVal *content = json_get(msg, STR("content"));
-    if (content && content->type == J_STR) {
-        Str text = skip_leading_breaks(content->u.s, false);
-        if (text.n) {
-            buf_puts(&s->text, text);
-            if (p->on_text) p->on_text(text, p->ud);
-        }
-    }
+    take_reason(p, s, reasoning_of(msg));
+    take_text(p, s, json_str(msg, STR("content")));
     const JVal *tcs = json_get(msg, STR("tool_calls"));
     if (!tcs || tcs->type != J_ARR) return true;
-    for (size_t i = 0; i < tcs->u.arr.n; i++) {
-        const JVal *tc = &tcs->u.arr.items[i];
-        i32 sl = slot(s, (i32)i);
-        if (sl < 0) continue;
-        const JVal *idv = json_get(tc, STR("id"));
-        const JVal *fn = json_get(tc, STR("function"));
-        const JVal *nm = fn ? json_get(fn, STR("name")) : NULL;
-        const JVal *ag = fn ? json_get(fn, STR("arguments")) : NULL;
-        if (idv && idv->type == J_STR) s->id[sl] = idv->u.s;
-        if (nm && nm->type == J_STR && nm->u.s.n) s->name[sl] = nm->u.s;
-        if (ag && ag->type == J_STR) buf_puts(&s->args[sl], ag->u.s);
-        if (p->on_tool_call && s->name[sl].p)
-            p->on_tool_call(sl, s->id[sl], s->name[sl],
-                            (Str){ s->args[sl].p, s->args[sl].n }, p->ud);
-    }
+    for (size_t i = 0; i < tcs->u.arr.n; i++)
+        take_call(p, s, &tcs->u.arr.items[i], (i32)i);
     return true;
 }
 
@@ -399,10 +377,9 @@ size_t provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
     }
     size_t n = 0;
     for (size_t i = 0; i < data->u.arr.n && n < max; i++) {
-        const JVal *id = json_get(&data->u.arr.items[i], STR("id"));
-        if (!id || id->type != J_STR || !id->u.s.n) continue;
-        out[n] = id->u.s;   /* the DOM lives in `scratch` beside the array */
-        n++;
+        /* The DOM lives in `scratch` beside the array. */
+        Str id = json_str(&data->u.arr.items[i], STR("id"));
+        if (id.n) out[n++] = id;
     }
     if (!n) snprintf(err, err_cap, "the provider listed no models");
     return n;

@@ -36,9 +36,24 @@ static Str clip(Str s, size_t max) {
     return uncapped() ? s : str_clip_utf8(s, max);
 }
 
-static Str str_arg(const JVal *args, Str key) {
-    const JVal *v = args ? json_get(args, key) : NULL;
-    return v && v->type == J_STR ? v->u.s : (Str){0};
+typedef void (*Sink)(Str);
+
+/* `s` up to `max`, with the ellipsis a cut earns and nothing when it does
+ * not: what was left out is said in one place. */
+static void write_clipped(Str s, size_t max, Sink sink) {
+    Str head = clip(s, max);
+    sink(head);
+    if (head.n < s.n) sink(STR(" ..."));
+}
+
+/* The block being written, for the length of one render_* call. */
+static void block_begin(u32 id, b8 expanded) {
+    g_zone = id;
+    g_expanded = expanded;
+}
+static void block_end(void) {
+    g_zone = 0;
+    g_expanded = false;
 }
 
 /* A count argument as the tool reads it; absent or malformed is 0. */
@@ -62,8 +77,6 @@ static void write_read_range(const JVal *args) {
         : snprintf(buf, sizeof buf, " from line %zu", offset);
     if (len > 0) tui_write_tool((Str){ buf, (size_t)len });
 }
-
-typedef void (*Sink)(Str);
 
 static void write_count(size_t n, const char *what, Sink sink) {
     char buf[64];
@@ -104,9 +117,7 @@ static void write_styled(Str body, Str gutter, size_t max, Sink sink,
     while (shown < cap && str_line(body, &off, &line)) {
         Sink put = style ? style(line) : sink;
         put(gutter);
-        Str head = clip(line, R_LINE_BYTES);
-        put(head);
-        if (head.n < line.n) put(STR(" ..."));
+        write_clipped(line, R_LINE_BYTES, put);
         put(STR("\n"));
         shown++;
     }
@@ -166,19 +177,18 @@ static Str patch_target(Str patch, char *buf, size_t cap) {
 }
 
 void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
-    g_zone = id;
-    g_expanded = expanded;
+    block_begin(id, expanded);
     size_t mark = scratch->off;
     JVal *j = json_parse(scratch, args);
 
-    Str path = str_arg(j, STR("path"));
-    Str cmd  = str_arg(j, STR("command"));
-    Str patch = str_arg(j, STR("patch"));
+    Str path = json_str(j, STR("path"));
+    Str cmd  = json_str(j, STR("command"));
+    Str patch = json_str(j, STR("patch"));
     char patch_buf[R_TARGET_BYTES + 32];
     if (patch.n) path = patch_target(patch, patch_buf, sizeof patch_buf);
     /* What a search is about is what it looks for, not where it starts. */
-    Str query = str_eq(name, STR("grep")) ? str_arg(j, STR("pattern"))
-              : str_eq(name, STR("find")) ? str_arg(j, STR("name"))
+    Str query = str_eq(name, STR("grep")) ? json_str(j, STR("pattern"))
+              : str_eq(name, STR("find")) ? json_str(j, STR("name"))
               : (Str){0};
     Str target = query.n ? query : path.n ? path : cmd;
     size_t cmd_off = 0;
@@ -189,15 +199,13 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
     tui_write_tool(name);
     if (target.n) {
         tui_write_tool(STR(" "));
-        Str head = clip(target, R_TARGET_BYTES);
-        tui_write_tool(head);
-        if (head.n < target.n) tui_write_tool(STR(" ..."));
+        write_clipped(target, R_TARGET_BYTES, tui_write_tool);
     }
     if (str_eq(name, STR("read"))) write_read_range(j);
     tui_write_tool(STR("\n"));
 
     if (str_eq(name, STR("write"))) {
-        Str content = str_arg(j, STR("content"));
+        Str content = json_str(j, STR("content"));
         write_lines(content, STR("\u2502 "), R_ARG_LINES,
                     tui_write_muted);
     } else if (patch.n) {
@@ -215,30 +223,25 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
     }
 
     scratch->off = mark;
-    g_expanded = false;
-    g_zone = 0;
+    block_end();
 }
 
 /* A '!' run has no JSON to unpack: the command is the header and its trailing
  * lines the input preview. */
 void render_shell_call(Str cmd, u32 id, b8 expanded) {
-    g_zone = id;
-    g_expanded = expanded;
+    block_begin(id, expanded);
     size_t off = 0;
     Str first = cmd;
     str_line(cmd, &off, &first);
 
     tui_block();
     tui_write_tool(STR("\u25c6  shell "));
-    Str head = clip(first, R_TARGET_BYTES);
-    tui_write_tool(head);
-    if (head.n < first.n) tui_write_tool(STR(" ..."));
+    write_clipped(first, R_TARGET_BYTES, tui_write_tool);
     tui_write_tool(STR("\n"));
     write_lines(str_drop(cmd, off), STR("\u2502 "), R_ARG_LINES,
                 tui_write_muted);
 
-    g_expanded = false;
-    g_zone = 0;
+    block_end();
 }
 
 /* A plan is prose the model wrote, so it reads as the Markdown it is rather
@@ -279,8 +282,7 @@ static b8 split_status(Str result, Str *body, Str *status) {
 }
 
 void render_tool_result(Str name, Str result, u32 id, b8 expanded, u32 ms) {
-    g_zone = id;
-    g_expanded = expanded;
+    block_begin(id, expanded);
     if (str_starts(result, STR("ERROR: "))) {
         Str msg = str_drop(result, 7);
         size_t off = 0;
@@ -290,8 +292,7 @@ void render_tool_result(Str name, Str result, u32 id, b8 expanded, u32 ms) {
         tui_write_error(clip(first, R_LINE_BYTES));
         write_elapsed(ms);
         tui_write_error(STR("\n"));
-        g_expanded = false;
-        g_zone = 0;
+        block_end();
         return;
     }
 
@@ -313,6 +314,5 @@ void render_tool_result(Str name, Str result, u32 id, b8 expanded, u32 ms) {
     write_elapsed(ms);
     tui_write_result(STR("\n"));
     write_lines(body, STR("   "), R_RESULT_LINES, tui_write_muted);
-    g_expanded = false;
-    g_zone = 0;
+    block_end();
 }

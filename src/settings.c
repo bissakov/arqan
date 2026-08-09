@@ -43,20 +43,12 @@ static Str setting_section(Str line) {
     return str_trim(str_drop(str_take(line, line.n - 1), 1));
 }
 
-static Str settings_read_file(Str path, Arena *a, size_t max) {
-    if (!path.n) return (Str){0};
-    FILE *f = fopen(path.p, "rb");
-    if (!f) return (Str){0};
-    fseek(f, 0, SEEK_END);
-    i64 sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (sz <= 0 || (u64)sz > max) { fclose(f); return (Str){0}; }
-    char *buf = arena_new(a, char, (size_t)sz + 1);
-    if (!buf) { fclose(f); return (Str){0}; }
-    size_t rd = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-    buf[rd] = '\0';
-    return (Str){ buf, rd };
+/* Empty for a file that is missing, unreadable or past `max`: a settings file
+ * yoke cannot read is one it has no keys from, whichever it was. */
+static Str settings_src(Str path, Arena *a, size_t max) {
+    Str src = {0};
+    if (path.n) file_read(a, path.p, max, 0, &src, NULL);
+    return src;
 }
 
 static b8 settings_write_file(Str path, Str data, u32 mode) {
@@ -98,7 +90,7 @@ static size_t settings_parse(Settings *s, Str src) {
 
 b8 settings_load(Settings *s, Str path, Arena *a) {
     s->n = 0;
-    Str src = settings_read_file(path, a, YOKE_MAX_SETTINGS_BYTES);
+    Str src = settings_src(path, a, YOKE_MAX_SETTINGS_BYTES);
     if (!src.n) return false;
     settings_parse(s, src);
     return true;
@@ -137,7 +129,7 @@ b8 settings_set(Str path, Str section, const Str *keys, const Str *vals,
                 size_t n, u32 mode, Arena *scratch) {
     if (!path.n || n == 0 || n > YOKE_MAX_SET_KEYS) return false;
     size_t mark = scratch->off;
-    Str src = settings_read_file(path, scratch, YOKE_MAX_SETTINGS_BYTES);
+    Str src = settings_src(path, scratch, YOKE_MAX_SETTINGS_BYTES);
     b8 done[YOKE_MAX_SET_KEYS] = {0};
 
     /* An existing file keeps the mode its owner gave it; `mode` is what a new
@@ -266,7 +258,7 @@ void state_sweep(Arena *scratch) {
         Str path = paths_file(YOKE_DIR_STATE, key, scratch);
         struct stat st;
         if (path.n && stat(path.p, &st) == 0 && S_ISREG(st.st_mode)) {
-            Str src = settings_read_file(path, scratch, 4096), val = {0};
+            Str src = settings_src(path, scratch, 4096), val = {0};
             size_t off = 0;
             if (str_line(src, &off, &val)) val = str_trim(val);
             Str have = state_get(key, scratch, scratch);

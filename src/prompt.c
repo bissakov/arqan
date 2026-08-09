@@ -79,24 +79,15 @@ static const char PROMPT_PLAN_BUILTIN[] =
  * through to a prompt the user did not ask for. */
 static Str prompt_read(Str path, Arena *a, char *err, size_t err_cap) {
     if (!path.n || path.n >= YOKE_MAX_PATH) return (Str){0};
-    FILE *f = fopen(path.p, "rb");
-    if (!f) return (Str){0};
-    fseek(f, 0, SEEK_END);
-    i64 sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (sz <= 0) { fclose(f); return (Str){0}; }
-    if ((u64)sz > YOKE_MAX_PROMPT_FILE) {
-        fclose(f);
+    Str body = {0};
+    u64 size = 0;
+    if (file_read(a, path.p, YOKE_MAX_PROMPT_FILE, 0, &body, &size)
+        == FILE_TOO_LARGE)
         snprintf(err, err_cap,
-                 "%.*s is %lld bytes, over the %d byte system prompt limit",
-                 (int)path.n, path.p, (long long)sz, (int)YOKE_MAX_PROMPT_FILE);
-        return (Str){0};
-    }
-    char *buf = arena_new(a, char, (size_t)sz);
-    if (!buf) { fclose(f); return (Str){0}; }
-    size_t n = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-    return str_trim((Str){ buf, n });
+                 "%.*s is %llu bytes, over the %d byte system prompt limit",
+                 (int)path.n, path.p, (unsigned long long)size,
+                 (int)YOKE_MAX_PROMPT_FILE);
+    return str_trim(body);
 }
 
 /* The prompt of the nearest ancestor of `dir` that has one, `suffix` carrying

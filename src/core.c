@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <sys/stat.h>
 #include <time.h>
 
 /* ---- arena -------------------------------------------------------------- */
@@ -112,6 +113,44 @@ i64 str_int(Str s, b8 *ok) {
     }
     if (ok) *ok = true;
     return neg ? -d : d;
+}
+
+u64 str_hash64(Str s) {
+    u64 h = UINT64_C(1469598103934665603);
+    for (size_t i = 0; i < s.n; i++) {
+        h ^= (u8)s.p[i];
+        h *= UINT64_C(1099511628211);
+    }
+    return h;
+}
+
+/* ---- files -------------------------------------------------------------- */
+FileStatus file_read(Arena *a, const char *path, size_t max, size_t head,
+                     Str *out, u64 *size_out) {
+    *out = (Str){0};
+    if (size_out) *size_out = 0;
+    if (!path || !*path) return FILE_MISSING;
+    FILE *f = fopen(path, "rb");
+    if (!f) return FILE_MISSING;
+    /* The size is taken from the open file rather than from the path, so what
+     * is measured is what is read. */
+    struct stat st;
+    if (fstat(fileno(f), &st) != 0) { fclose(f); return FILE_UNREADABLE; }
+    if (!S_ISREG(st.st_mode)) { fclose(f); return FILE_NOT_REGULAR; }
+    u64 size = (u64)st.st_size;
+    if (size_out) *size_out = size;
+    if (size > max) { fclose(f); return FILE_TOO_LARGE; }
+    size_t want = (size_t)size;
+    if (head && want > head) want = head;
+    char *buf = arena_new(a, char, want + 1);
+    if (!buf) { fclose(f); return FILE_NO_MEMORY; }
+    size_t rd = fread(buf, 1, want, f);
+    b8 failed = ferror(f) != 0;
+    fclose(f);
+    if (failed) return FILE_UNREADABLE;
+    buf[rd] = '\0';
+    *out = (Str){ buf, rd };
+    return FILE_OK;
 }
 
 /* ---- buffer ------------------------------------------------------------- */

@@ -20,10 +20,11 @@
 #include <fcntl.h>
 
 /* ---- argument helpers ---------------------------------------------------- */
-static Str json_get_str(const JVal *args, Str key) {
-    const JVal *v = json_get(args, key);
-    if (!v || v->type != J_STR) return (Str){0};
-    return v->u.s;
+/* Every tool starts here: the arguments as an object, or NULL with `err` set. */
+static JVal *tool_args(Str args, Arena *scratch, char *err, size_t err_cap) {
+    JVal *j = json_parse(scratch, args);
+    if (!j) snprintf(err, err_cap, "bad args json");
+    return j;
 }
 
 /* Clamping instead would run a different command, or touch a different file,
@@ -44,39 +45,31 @@ static b8 arg_cstr(Str s, char *z, size_t cap, const char *what,
     return true;
 }
 
-/* Every size here comes from the filesystem, so each is validated before it
- * reaches an allocation. */
+/* file_read validates the size; this is where a tool says what went wrong. */
 static b8 slurp(const char *z, Arena *scratch, Str *out,
                 char *err, size_t err_cap) {
-    FILE *f = fopen(z, "rb");
-    if (!f) { snprintf(err, err_cap, "open %s failed", z); return false; }
-    struct stat st;
-    if (fstat(fileno(f), &st) != 0) {
-        fclose(f); snprintf(err, err_cap, "stat %s failed", z); return false;
+    u64 size = 0;
+    switch (file_read(scratch, z, YOKE_MAX_FILE_BYTES, 0, out, &size)) {
+        case FILE_OK: return true;
+        case FILE_TOO_LARGE:
+            snprintf(err, err_cap, "%s is too large: %llu bytes, limit %u",
+                     z, (unsigned long long)size,
+                     (unsigned)YOKE_MAX_FILE_BYTES);
+            break;
+        case FILE_NOT_REGULAR:
+            snprintf(err, err_cap, "%s is not a regular file", z);
+            break;
+        case FILE_NO_MEMORY:
+            snprintf(err, err_cap, "out of memory reading %s", z);
+            break;
+        case FILE_MISSING:
+            snprintf(err, err_cap, "open %s failed", z);
+            break;
+        case FILE_UNREADABLE:
+            snprintf(err, err_cap, "read %s failed", z);
+            break;
     }
-    if (!S_ISREG(st.st_mode)) {
-        fclose(f); snprintf(err, err_cap, "%s is not a regular file", z);
-        return false;
-    }
-    if ((u64)st.st_size > YOKE_MAX_FILE_BYTES) {
-        fclose(f);
-        snprintf(err, err_cap, "%s is too large: %llu bytes, limit %u",
-                 z, (unsigned long long)st.st_size, (unsigned)YOKE_MAX_FILE_BYTES);
-        return false;
-    }
-    size_t sz = (size_t)st.st_size;
-    char *buf = arena_new(scratch, char, sz + 1);
-    if (!buf) {
-        fclose(f); snprintf(err, err_cap, "out of memory reading %s", z);
-        return false;
-    }
-    size_t rd = fread(buf, 1, sz, f);
-    b8 failed = ferror(f) != 0;
-    fclose(f);
-    if (failed) { snprintf(err, err_cap, "read %s failed", z); return false; }
-    buf[rd] = '\0';
-    *out = (Str){ buf, rd };
-    return true;
+    return false;
 }
 
 /* `dflt` when absent. A fractional or negative count is named rather than
@@ -100,10 +93,10 @@ static b8 arg_count(const JVal *j, Str key, size_t dflt, size_t max,
  * every later turn: the default stops at YOKE_READ_LINES or YOKE_READ_BYTES
  * and says which call continues from there. */
 static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
-    JVal *j = json_parse(scratch, args);
-    if (!j) { snprintf(err, err_cap, "bad args json"); return false; }
+    JVal *j = tool_args(args, scratch, err, err_cap);
+    if (!j) return false;
     char z[YOKE_MAX_PATH];
-    if (!arg_cstr(json_get_str(j, STR("path")), z, sizeof z, "path", err, err_cap))
+    if (!arg_cstr(json_str(j, STR("path")), z, sizeof z, "path", err, err_cap))
         return false;
     size_t first, limit;
     if (!arg_count(j, STR("offset"), 1, YOKE_MAX_FILE_BYTES, &first, err, err_cap))
@@ -161,11 +154,11 @@ static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
 
 /* ---- write ---- */
 static b8 tool_write(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
-    JVal *j = json_parse(scratch, args);
-    if (!j) { snprintf(err, err_cap, "bad args json"); return false; }
-    Str content = json_get_str(j, STR("content"));
+    JVal *j = tool_args(args, scratch, err, err_cap);
+    if (!j) return false;
+    Str content = json_str(j, STR("content"));
     char z[YOKE_MAX_PATH];
-    if (!arg_cstr(json_get_str(j, STR("path")), z, sizeof z, "path", err, err_cap))
+    if (!arg_cstr(json_str(j, STR("path")), z, sizeof z, "path", err, err_cap))
         return false;
     if (!content.p) { snprintf(err, err_cap, "missing content"); return false; }
     FILE *f = fopen(z, "wb");
@@ -276,9 +269,9 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
 }
 
 static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
-    JVal *j = json_parse(scratch, args);
-    if (!j) { snprintf(err, err_cap, "bad args json"); return false; }
-    return shell_capture(json_get_str(j, STR("command")), out, err, err_cap);
+    JVal *j = tool_args(args, scratch, err, err_cap);
+    if (!j) return false;
+    return shell_capture(json_str(j, STR("command")), out, err, err_cap);
 }
 
 /* ---- patch ----
@@ -541,9 +534,9 @@ static b8 patch_write(Patch *p, const PatchFile *f) {
 }
 
 static b8 tool_patch(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
-    JVal *j = json_parse(scratch, args);
-    if (!j) { snprintf(err, err_cap, "bad args json"); return false; }
-    Str text = json_get_str(j, STR("patch"));
+    JVal *j = tool_args(args, scratch, err, err_cap);
+    if (!j) return false;
+    Str text = json_str(j, STR("patch"));
     if (!text.n) { snprintf(err, err_cap, "missing patch"); return false; }
 
     Patch p = { NULL, 0, 0, scratch, err, err_cap };
@@ -619,33 +612,32 @@ static b8 name_matches(const Walk *w, const char *base) {
 }
 
 /* The file arena is the walk's own, since `out` grows in the scratch arena
- * while this runs and rewinding that would free the results. */
+ * while this runs and rewinding that would free the results. A file that is
+ * not one to search (too large, not regular, unreadable) is skipped without a
+ * word: a walk answers with what it found. */
 static void walk_grep_file(Walk *w) {
-    struct stat st;
-    if (stat(w->path, &st) != 0 || !S_ISREG(st.st_mode)) return;
-    if ((u64)st.st_size > YOKE_MAX_GREP_FILE) return;
-
     arena_reset(w->file);
     Str body;
-    char ignored[128];
-    if (slurp(w->path, w->file, &body, ignored, sizeof ignored)) {
-        /* A nul byte says the file is not text, and a binary "match" is a
-         * line of noise nobody can read. */
-        Str head = str_take(body, 4096);
-        if (!head.n || !memchr(head.p, '\0', head.n)) {
-            size_t off = 0, ln = 0;
-            Str line;
-            while (str_line(body, &off, &line)) {
-                ln++;
-                if (!line_matches(line, w->pattern, w->ignore_case)) continue;
-                if (w->found++ >= w->max) { w->skipped++; continue; }
-                buf_putf(w->out, "%s:%zu: ", walk_shown(w), ln);
-                Str shown = str_clip_utf8(str_trim(line), YOKE_GREP_LINE);
-                buf_puts(w->out, shown);
-                if (shown.n < str_trim(line).n) buf_puts(w->out, STR(" ..."));
-                buf_putc(w->out, '\n');
-            }
-        }
+    if (file_read(w->file, w->path, YOKE_MAX_GREP_FILE, 0, &body, NULL)
+        != FILE_OK)
+        return;
+    /* A nul byte says the file is not text, and a binary "match" is a line of
+     * noise nobody can read. */
+    Str head = str_take(body, 4096);
+    if (head.n && memchr(head.p, '\0', head.n)) return;
+
+    size_t off = 0, ln = 0;
+    Str line;
+    while (str_line(body, &off, &line)) {
+        ln++;
+        if (!line_matches(line, w->pattern, w->ignore_case)) continue;
+        if (w->found++ >= w->max) { w->skipped++; continue; }
+        Str trimmed = str_trim(line);
+        Str shown = str_clip_utf8(trimmed, YOKE_GREP_LINE);
+        buf_putf(w->out, "%s:%zu: ", walk_shown(w), ln);
+        buf_puts(w->out, shown);
+        if (shown.n < trimmed.n) buf_puts(w->out, STR(" ..."));
+        buf_putc(w->out, '\n');
     }
 }
 
@@ -742,22 +734,21 @@ static b8 walk_start(Walk *w, Str root, char *err, size_t err_cap) {
 
 static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep,
                    char *err, size_t err_cap) {
-    JVal *j = json_parse(scratch, args);
-    if (!j) { snprintf(err, err_cap, "bad args json"); return false; }
+    JVal *j = tool_args(args, scratch, err, err_cap);
+    if (!j) return false;
 
     static Walk w;
     w = (Walk){0};
     w.out = out;
-    w.pattern = grep ? json_get_str(j, STR("pattern")) : (Str){0};
+    w.pattern = grep ? json_str(j, STR("pattern")) : (Str){0};
     if (grep && !w.pattern.n) {
         snprintf(err, err_cap, "missing pattern");
         return false;
     }
-    const JVal *ic = json_get(j, STR("ignore_case"));
-    w.ignore_case = ic && ic->type == J_BOOL && ic->u.b;
+    w.ignore_case = json_bool(j, STR("ignore_case"));
 
     char glob[YOKE_MAX_PATH];
-    Str g = json_get_str(j, grep ? STR("glob") : STR("name"));
+    Str g = json_str(j, grep ? STR("glob") : STR("name"));
     if (g.n) {
         if (!arg_cstr(g, glob, sizeof glob, "glob", err, err_cap)) return false;
         w.glob = glob;
@@ -770,7 +761,7 @@ static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep,
                    grep ? YOKE_GREP_RESULTS : YOKE_FIND_RESULTS,
                    1u << 20, &w.max, err, err_cap))
         return false;
-    if (!walk_start(&w, json_get_str(j, STR("path")), err, err_cap)) return false;
+    if (!walk_start(&w, json_str(j, STR("path")), err, err_cap)) return false;
 
     /* Carved once and never rewound past, since `out` keeps growing in
      * `scratch` above them for as long as the walk finds something. */

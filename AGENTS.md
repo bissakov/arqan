@@ -73,7 +73,9 @@ registry (`ToolRegistry`), and other hot collections are structure-of-arrays
 an AoS layout.
 
 **Module responsibilities:**
-- `core.c`: arena allocator, `Str`/`Buf` string types, logging, monotonic time
+- `core.c`: arena allocator, `Str`/`Buf` string types, logging, monotonic time,
+  and `file_read`, the one reader every file yoke owns goes through, so a size
+  that comes from the filesystem is checked once rather than at each caller
 - `json.c`: arena-backed JSON DOM: parser + serializer, no separate token stream
 - `http.c`: libcurl POST (`http_post`) plus a blocking `http_get` for short
   documents such as `/models`, used only by `provider.c`. A reply is delivered
