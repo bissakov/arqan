@@ -112,11 +112,9 @@ def test_sigint_outside_a_turn_clears_the_composer(ctx):
     assert "[interrupted]" not in s.text()
 
 
-def test_unknown_slash_command_is_sent_as_text(ctx):
-    """Anything that is not a known command is just a message."""
-    ctx.scenario("text=not+a+command")
+def test_unknown_slash_command_is_rejected_locally(ctx):
+    """A reserved slash typo is answered without a provider request."""
     s = ctx.spawn()
     s.submit("/unknown thing")
-    s.wait_text("not a command")
-    s.wait_turn_done()
-    assert ctx.mock.requests[-1]["messages"][-1]["content"] == "/unknown thing"
+    s.wait_text("unknown command: /unknown thing")
+    assert ctx.mock.requests == [], ctx.mock.requests

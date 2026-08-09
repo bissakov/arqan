@@ -180,6 +180,9 @@ def test_deleting_the_active_provider_leaves_no_stale_selection(ctx):
     assert store(ctx) == [], store(ctx)
     assert creds(ctx) == {}, creds(ctx)
     assert active(ctx) is None, ctx.state()
+    assert s.status_kind() == "setup", s.status_line()
+    assert "mock-model" not in s.status_line(), s.status_line()
+    assert "local" not in s.status_line(), s.status_line()
     s.submit("hello")
     s.wait_text("no provider yet")
     assert ctx.mock.requests == [], ctx.mock.requests
@@ -235,16 +238,19 @@ def test_a_url_without_a_scheme_is_refused(ctx):
     assert store(ctx) == [], store(ctx)
 
 
-def test_an_endpoint_that_lists_nothing_is_not_stored(ctx):
-    """Listing the models is the check that the URL and key work."""
+def test_provider_creation_allows_an_unverified_manual_model(ctx):
+    """A provider without /models support can still be configured explicitly."""
     ctx.scenario("models_status=401")
     s = ctx.spawn()
     s.submit("/provider")
     add_provider(s, ctx, "work")
     s.key("enter")
-    s.wait_text("models: HTTP 401")
-    assert store(ctx) == [], store(ctx)
-    assert not credentials_file(ctx).exists()
+    s.wait_text("models: HTTP 401; enter a model manually")
+    s.type("manual-model").sync()
+    s.key("enter")
+    s.wait_text("model entered manually; not verified")
+    assert store(ctx)[0]["model"] == "manual-model", store(ctx)
+    assert creds(ctx) == {"work": "sk-secret"}, creds(ctx)
 
 
 def test_a_stored_provider_configures_the_next_run(ctx):
@@ -515,6 +521,9 @@ def test_the_first_run_without_a_key_says_how_to_add_one(ctx):
     """Nothing to talk to: the welcome screen names the command, and waits."""
     s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
     s.wait_text("+ add a provider")
+    assert s.status_kind() == "setup", s.status_line()
+    assert "gpt-4o-mini" not in s.status_line(), s.status_line()
+    assert "api.openai.com" not in s.status_line(), s.status_line()
     assert "a name for this provider" not in s.text(), s.text()
     ctx.check_screen(s)
 

@@ -32,7 +32,8 @@ static const char g_usage[] =
     "  -v, --version       print version\n"
     "\n"
     "environment: YOKE_BASE_URL, YOKE_MODEL, YOKE_API_KEY, YOKE_API,\n"
-    "YOKE_SYSTEM_PROMPT, YOKE_MAX_MESSAGES, YOKE_DISABLE_TOOLS.\n"
+    "YOKE_SYSTEM_PROMPT, YOKE_MAX_TOKENS, YOKE_MAX_MESSAGES, YOKE_STREAM,\n"
+    "YOKE_MODE, YOKE_DISABLE_TOOLS, and YOKE_* presentation settings.\n"
     "Config file: $XDG_CONFIG_HOME/yoke/config.\n"
     "Without any of them, yoke asks for a provider; /provider adds and "
     "switches later.\n";

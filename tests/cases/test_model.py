@@ -14,6 +14,7 @@ def test_picker_lists_the_provider_models(ctx):
     text = s.text()
     assert "alpha" in text and "beta" in text and "gamma" in text, text
     assert "current" in text, "the live model is labelled"
+    assert "+ enter a model manually" in text, text
     assert "search:" not in text, "a short list needs no search box"
     ctx.check_screen(s)
 
@@ -143,10 +144,45 @@ def test_the_environment_still_wins_over_the_remembered_model(ctx):
 
 
 def test_an_unreachable_models_endpoint_answers_in_the_popup_slot(ctx):
-    """A refused list is a notice, not a hole in the transcript."""
+    """A refused list reports the error and falls back to manual entry."""
     ctx.scenario("models_status=500")
     s = ctx.spawn()
     s.submit("/model")
-    s.wait_text("models: HTTP 500")
-    assert s.status_kind() == "ready", s.status_line()
-    assert "| |_| | (_) |" in s.text(), "the welcome screen stays put"
+    s.wait_text("models: HTTP 500; enter a model manually")
+    s.type("manual-model").sync()
+    s.key("enter")
+    s.wait_text("entered manually; not verified")
+    assert "manual-model" in s.status_line(), s.status_line()
+
+
+def test_manual_entry_is_offered_after_a_successful_list(ctx):
+    ctx.scenario("models=alpha|beta")
+    s = ctx.spawn(YOKE_MODEL="alpha")
+    open_picker(ctx, s)
+    s.key("down", "down", "enter")
+    s.wait_text("model id (not verified)")
+    s.type("private-model").sync()
+    s.key("enter")
+    s.wait_text("entered manually; not verified")
+    assert "private-model" in s.status_line(), s.status_line()
+
+
+def test_cancelling_manual_fallback_keeps_the_model(ctx):
+    ctx.scenario("models_status=500")
+    s = ctx.spawn(YOKE_MODEL="alpha")
+    s.submit("/model")
+    s.wait_text("enter a model manually")
+    s.key("esc")
+    s.wait_status("ready")
+    assert "alpha" in s.status_line(), s.status_line()
+
+
+def test_an_empty_models_list_opens_manual_entry(ctx):
+    ctx.scenario("models_empty=1")
+    s = ctx.spawn(YOKE_MODEL="alpha")
+    s.submit("/model")
+    s.wait_text("the provider listed no models; enter a model manually")
+    s.type("manual-after-empty").sync()
+    s.key("enter")
+    s.wait_text("entered manually; not verified")
+    assert "manual-after-empty" in s.status_line(), s.status_line()

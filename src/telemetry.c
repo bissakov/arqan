@@ -218,11 +218,9 @@ void telemetry_init(Arena *scratch) {
 
 b8 telemetry_set(b8 on, Arena *scratch) {
     if (!g_tel.ready) return false;
-    if (!state_set(STR("telemetry"), on ? STR("on") : STR("off"), scratch))
-        return false;
     g_tel.on = on;
     if (on) g_tel.header_due = true;
-    return true;
+    return state_set(STR("telemetry"), on ? STR("on") : STR("off"), scratch);
 }
 
 /* ---- one event ---------------------------------------------------------- */

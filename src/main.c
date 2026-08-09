@@ -87,6 +87,20 @@ static size_t resolve_alias(char *line, size_t ln, size_t cap) {
  * each is one, so the deltas after the first do not open a second. */
 static b8 g_reasoning;
 static b8 g_replying;
+static b8 g_one_shot;
+
+/* One-shot diagnostics stay useful in pipelines without letting an
+ * unbounded provider or tool payload take over stderr. */
+static void one_shot_diag(const char *kind, Str name, Str text) {
+    if (!g_one_shot) return;
+    Str head = str_clip_utf8(text, 2048);
+    fprintf(stderr, "yoke: %s", kind);
+    if (name.n) fprintf(stderr, " %.*s", (i32)name.n, name.p);
+    if (head.n) fprintf(stderr, ": %.*s", (i32)head.n, head.p);
+    if (head.n < text.n)
+        fprintf(stderr, " ... [%zu bytes omitted]", text.n - head.n);
+    fputc('\n', stderr);
+}
 
 /* The status line and the activity row say the same word about the same wait,
  * and a turn that only changed one of them would read as two states. */
@@ -97,6 +111,7 @@ static void say_busy(const char *what) {
 
 static void on_reason(Str delta, void *ud) {
     (void)ud;
+    if (g_one_shot) return;
     if (!g_reasoning) {
         g_reasoning = true;
         say_busy("reasoning");
@@ -106,6 +121,7 @@ static void on_reason(Str delta, void *ud) {
 }
 static void on_text(Str delta, void *ud) {
     (void)ud;
+    if (g_one_shot) return;
     if (!g_replying) {
         g_replying = true;
         g_reasoning = false;
@@ -131,6 +147,18 @@ static void on_usage(size_t total, void *ud) {
 static void on_retry(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
                      void *ud) {
     (void)ud;
+    if (g_one_shot) {
+        char row[256];
+        i32 n = snprintf(row, sizeof row,
+                         "%.*s; retrying (attempt %d of %d, %dms)",
+                         (i32)reason.n, reason.p, attempt + 1, attempts,
+                         delay_ms);
+        if (n > 0)
+            one_shot_diag("retry", (Str){0},
+                          (Str){row, (size_t)n < sizeof row
+                                      ? (size_t)n : sizeof row - 1});
+        return;
+    }
     say_busy("retrying");
     tui_block();
     char wait[32];
@@ -219,6 +247,13 @@ static void agent_set_mode(Agent *ag, AgentMode mode) {
     tel_str(&e, "to", mode_name(mode));
     tel_send(&e);
     ag->cfg->mode = mode;
+    if (!ui_pref_set(STR("ui_mode"), mode_name(mode), ag->scratch)) {
+        if (g_one_shot)
+            one_shot_diag("warning", (Str){0},
+                          STR("mode changed but was not remembered"));
+        else
+            tui_notice(STR("setting changed but was not remembered: could not write state"));
+    }
     tools_set_mode(mode);
     if (ag->conv->n && ag->conv->role[0] == M_SYSTEM)
         ag->conv->text[0] = mode == MODE_PLAN ? ag->cfg->plan_prompt
@@ -246,6 +281,10 @@ static Str keep_result(Arena *persist, Str result) {
 /* The one thing a conversation with no room left has to say, in the
  * transcript because it answers the message that did not fit. */
 static void say_conv_full(void) {
+    if (g_one_shot) {
+        one_shot_diag("error", (Str){0}, STR("conversation is full"));
+        return;
+    }
     tui_block();
     tui_write(STR("[conversation is full: /clear to start a new one]\n"));
 }
@@ -259,7 +298,9 @@ static b8 add_result(Agent *ag, size_t call, Str name, Str result, u32 ms) {
         return false;
     }
     conv->ms[slot] = ms;
-    render_tool_result(name, result, (u32)(slot + 1), conv->expanded[slot], ms);
+    if (g_one_shot) one_shot_diag("tool result", name, result);
+    else render_tool_result(name, result, (u32)(slot + 1),
+                            conv->expanded[slot], ms);
     return true;
 }
 
@@ -283,7 +324,7 @@ static Str ask_user_answer(Agent *ag, Str args) {
     size_t n = opts && opts->type == J_ARR ? opts->u.arr.n : 0;
     if (n > YOKE_MAX_POPUP - 1) n = YOKE_MAX_POPUP - 1;
 
-    render_question(question);
+    if (!g_one_shot) render_question(question);
 
     TuiCmd *items = arena_new(ag->scratch, TuiCmd, n + 1);
     if (!items) return (Str){0};
@@ -319,7 +360,7 @@ static Str ask_user_answer(Agent *ag, Str args) {
 /* The three answers to a submitted plan are the three ways a turn goes on. */
 static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
     Str plan = json_str(json_parse(ag->scratch, args), STR("plan"));
-    render_plan(plan);
+    if (!g_one_shot) render_plan(plan);
 
     const TuiCmd items[] = {
         { STR("Yes"), STR("Switch to Build mode and carry the plan out") },
@@ -387,8 +428,9 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         Buf out; buf_init(&out, ag->scratch, 4096);
         char err[256] = {0};
         f64 started = yoke_now_seconds();
-        render_tool_call(name, args, ag->scratch, (u32)(i + 1),
-                         conv->expanded[i]);
+        if (g_one_shot) one_shot_diag("tool call", name, args);
+        else render_tool_call(name, args, ag->scratch, (u32)(i + 1),
+                              conv->expanded[i]);
         char status[32];
         snprintf(status, sizeof status, "running %.*s", (i32)name.n, name.p);
         say_busy(status);
@@ -680,7 +722,26 @@ static void telemetry_command(Str line) {
 
 /* The pick points into `scratch`, so a caller that keeps it copies it out
  * before resetting. False when nothing was listed or chosen, having said so. */
-static b8 pick_model(const Config *cfg, Arena *scratch, Str *out) {
+static b8 manual_model(Arena *scratch, const char *why, Str *out) {
+    char question[256];
+    if (why && *why)
+        snprintf(question, sizeof question, "%s; enter a model manually", why);
+    else
+        snprintf(question, sizeof question, "model id (not verified)");
+    char model[YOKE_MAX_MODEL_NAME + 1];
+    if (!tui_ask(str_c(question), false, model, sizeof model)) return false;
+    Str saved = str_dup(scratch, str_c(model));
+    if (!saved.p) {
+        tui_notice(STR("out of memory storing the model"));
+        return false;
+    }
+    *out = saved;
+    return true;
+}
+
+static b8 pick_model(const Config *cfg, Arena *scratch, Str *out,
+                     b8 *verified) {
+    *verified = false;
     tui_set_status("loading models");
     Str *names = arena_new(scratch, Str, YOKE_MAX_MODELS);
     if (!names) {
@@ -693,10 +754,11 @@ static b8 pick_model(const Config *cfg, Arena *scratch, Str *out) {
                               err, sizeof err);
     tui_set_status("ready");
     if (!n) {
-        tui_notice(str_c(err[0] ? err : "no models to pick from"));
-        return false;
+        const char *why = err[0] ? err : "no models returned";
+        tui_notice(str_c(why));
+        return manual_model(scratch, why, out);
     }
-    TuiCmd *items = arena_new(scratch, TuiCmd, n);
+    TuiCmd *items = arena_new(scratch, TuiCmd, n + 1);
     if (!items) {
         tui_notice(STR("out of memory listing models"));
         return false;
@@ -705,11 +767,15 @@ static b8 pick_model(const Config *cfg, Arena *scratch, Str *out) {
         items[i] = (TuiCmd){ names[i],
                              str_eq(names[i], cfg->model) ? STR("current")
                                                           : (Str){0} };
+    items[n] = (TuiCmd){ STR("+ enter a model manually"),
+                         STR("Use an id not verified by /models") };
     size_t pick = 0;
-    if (!tui_pick(STR("pick a model"), items, n, TUI_PICK_FIRST,
-                  TUI_PICK_NONE, &pick))
+    if (!tui_pick_search_count(STR("pick a model"), items, n + 1, n,
+                               TUI_PICK_FIRST, TUI_PICK_NONE, &pick))
         return false;
+    if (pick == n) return manual_model(scratch, NULL, out);
     *out = names[pick];
+    *verified = true;
     return true;
 }
 
@@ -718,7 +784,8 @@ static b8 pick_model(const Config *cfg, Arena *scratch, Str *out) {
 static void choose_model(Config *cfg, Arena *scratch) {
     arena_reset(scratch);
     Str picked = {0};
-    if (!pick_model(cfg, scratch, &picked)) return;
+    b8 verified = false;
+    if (!pick_model(cfg, scratch, &picked, &verified)) return;
     if (!config_set_model(cfg, picked)) {
         tui_notice(STR("out of memory storing the model"));
         return;
@@ -733,8 +800,9 @@ static void choose_model(Config *cfg, Arena *scratch) {
     b8 saved = cfg->provider.n
              ? endpoints_remember_model(cfg->provider, chosen, scratch)
              : config_remember_model(chosen, scratch);
-    notice_fmt("model: %.*s%s", (i32)chosen.n, chosen.p,
-               saved ? "" : " (not remembered: no state directory)");
+    notice_fmt("model: %.*s%s%s", (i32)chosen.n, chosen.p,
+               verified ? "" : " (entered manually; not verified)",
+               saved ? "" : " (not remembered: could not write state)");
 }
 
 /* No key and no endpoint from a flag, the environment, a config file or the
@@ -753,6 +821,7 @@ static b8 use_endpoint(Config *cfg, Str name, Str base_url, Str model,
     tui_set_model(cfg->model);
     tui_set_reasoning(cfg->reasoning_effort, cfg->thinking_budget);
     tui_needs_provider(false);
+    tui_set_setup(false);
     TelEvent e;
     tel_open(&e, "provider");
     tel_str(&e, "name", cfg->provider);
@@ -843,7 +912,8 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
     probe.api_key = key[0] ? str_c(key) : (Str){0};
     probe.model = (Str){0};
     Str model = {0};
-    if (!pick_model(&probe, scratch, &model)) return false;
+    b8 verified = false;
+    if (!pick_model(&probe, scratch, &model, &verified)) return false;
 
     char err[YOKE_MAX_PATH + 64] = {0};
     if (!endpoints_put(&eps, str_c(name), str_c(url), model, api,
@@ -871,7 +941,9 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
         tui_notice(STR("out of memory storing the provider"));
         return false;
     }
-    provider_chosen(cfg, scratch);
+    if (verified) provider_chosen(cfg, scratch);
+    else notice_fmt("provider: %.*s (model entered manually; not verified)",
+                    (i32)cfg->provider.n, cfg->provider.p);
     return true;
 }
 
@@ -932,14 +1004,20 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
     }
     b8 changed_connection = !str_eq(str_c(url), eps->base_url[i]) || api != eps->api[i]
                          || !str_eq(str_c(model), eps->model[i]);
+    b8 verified = true;
     if (changed_connection) {
         Config probe = *cfg; probe.base_url = str_c(url); probe.api = api;
         probe.api_key = saved_key;
-        Str ignored[YOKE_MAX_MODELS]; char model_err[160];
-        if (!provider_models(&probe, scratch, ignored, YOKE_MAX_MODELS,
-                             model_err, sizeof model_err)) {
-            tui_notice(str_c(model_err)); return false;
-        }
+        Str listed[YOKE_MAX_MODELS]; char model_err[160] = {0};
+        size_t listed_n = provider_models(&probe, scratch, listed,
+                                          YOKE_MAX_MODELS, model_err,
+                                          sizeof model_err);
+        verified = false;
+        for (size_t j = 0; j < listed_n; j++)
+            if (str_eq(listed[j], str_c(model))) { verified = true; break; }
+        if (!verified)
+            tui_notice(str_c(model_err[0] ? model_err
+                                         : "model was not listed by /models"));
     }
     if (!endpoints_put(eps, eps->name[i], str_c(url), str_c(model), api,
                        str_c(efforts), str_c(budgets), str_c(effort), str_c(budget), str_c(templ), scratch)
@@ -955,7 +1033,9 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
     if (!use_endpoint(cfg, eps->name[i], str_c(url), str_c(model), api, saved_key,
                       str_c(efforts), str_c(budgets), str_c(effort),
                       str_c(budget), str_c(templ))) return false;
-    provider_chosen(cfg, scratch);
+    if (verified) provider_chosen(cfg, scratch);
+    else notice_fmt("provider: %.*s (model entered manually; not verified)",
+                    (i32)cfg->provider.n, cfg->provider.p);
     return true;
 }
 
@@ -993,8 +1073,8 @@ static b8 delete_endpoint(Config *cfg, const Endpoints *eps, size_t i,
         cfg->reasoning_effort = (Str){0};
         cfg->thinking_budget = (Str){0};
         cfg->reasoning_template = (Str){0};
-        tui_set_provider((Str){0});
         tui_set_reasoning((Str){0}, (Str){0});
+        tui_set_setup(true);
         tui_needs_provider(true);
     }
     notice_fmt("deleted provider: %.*s", (i32)name.n, name.p);
@@ -1078,9 +1158,9 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
 
 /* ---- /settings -----------------------------------------------------------
  * The screen is its own answer, so nothing here writes a notice: a toggle
- * that refused to change is a box that stayed empty. Nothing is persisted
- * here either, since a setting that outlives the session is already
- * remembered by whoever owns it. Every row is changed where it is read,
+ * that refused to change is a box that stayed empty. Every UI-owned choice
+ * is remembered in state; telemetry and reasoning keep their own paths.
+ * Every row is changed where it is read,
  * which is why the tools are rows of this list rather than a screen behind
  * one, and why nothing here opens a question: a setting a reader has to walk
  * to is a setting they have to find twice. The model and the provider are
@@ -1107,6 +1187,27 @@ static Str setting_check(Arena *a, b8 on, Str label) {
 }
 static Str setting_value(Arena *a, Str label) {
     return setting_label(a, label, "    ");
+}
+
+static void remember_ui(Arena *scratch, Str key, Str value) {
+    if (!ui_pref_set(key, value, scratch))
+        tui_notice(STR("setting changed but was not remembered: could not write state"));
+}
+
+static void remember_tools(const ToolRegistry *reg, Arena *scratch) {
+    Buf list;
+    buf_init(&list, scratch, 128);
+    for (size_t i = 0; i < reg->n; i++) {
+        if (!tools_can_disable(reg, i) || !tools_disabled(reg, i)) continue;
+        if (list.n) buf_putc(&list, ',');
+        buf_puts(&list, reg->name[i]);
+    }
+    if (!buf_ok(&list)) {
+        tui_notice(STR("setting changed but was not remembered: out of memory"));
+        return;
+    }
+    Str value = list.n ? buf_finish(&list) : STR("none");
+    remember_ui(scratch, STR("ui_disable_tools"), value);
 }
 
 static void choose_statusline(Arena *scratch) {
@@ -1146,6 +1247,14 @@ static void choose_statusline(Arena *scratch) {
         if (sel < TUI_STATUS_N) {
             TuiStatusItem item = (TuiStatusItem)sel;
             tui_set_status_visible(item, !tui_status_visible(item));
+            u64 mask = 0;
+            for (size_t i = 0; i < TUI_STATUS_N; i++)
+                if (tui_status_visible((TuiStatusItem)i))
+                    mask |= (u64)1 << i;
+            char value[32];
+            snprintf(value, sizeof value, "%llu",
+                     (unsigned long long)mask);
+            remember_ui(scratch, STR("ui_status_fields"), str_c(value));
         }
     }
 }
@@ -1191,15 +1300,17 @@ static b8 remember_reasoning(Config *cfg, Arena *scratch,
     if (!cfg->provider.n) return false;
     Endpoints e; size_t mark = scratch->off; endpoints_load(&e, scratch);
     size_t i = endpoints_find(&e, cfg->provider);
-    b8 ok = i != ENDPOINT_NONE && endpoints_save_one(cfg->provider,
+    if (i == ENDPOINT_NONE || !config_set_reasoning(cfg, effort, value)) {
+        scratch->off = mark;
+        return false;
+    }
+    tui_set_reasoning(cfg->reasoning_effort, cfg->thinking_budget);
+    b8 ok = endpoints_save_one(cfg->provider,
         e.base_url[i], e.model[i], e.api[i], e.reasoning_efforts[i],
         e.thinking_budgets[i], effort ? value : e.reasoning_effort[i],
         effort ? e.thinking_budget[i] : value, e.reasoning_template[i], scratch);
     scratch->off = mark;
-    if (!ok) return false;
-    if (!config_set_reasoning(cfg, effort, value)) return false;
-    tui_set_reasoning(cfg->reasoning_effort, cfg->thinking_budget);
-    return true;
+    return ok;
 }
 
 static void choose_settings(Agent *ag) {
@@ -1271,35 +1382,48 @@ static void choose_settings(Agent *ag) {
             b8 is_effort = reasoning_row[sel - SET_FIXED_N];
             Str next = list_step(is_effort ? cfg->reasoning_efforts : cfg->thinking_budgets,
                                  is_effort ? cfg->reasoning_effort : cfg->thinking_budget, delta);
-            remember_reasoning(cfg, scratch, is_effort, next);
+            if (!remember_reasoning(cfg, scratch, is_effort, next))
+                tui_notice(STR("setting changed but was not remembered: could not write provider settings"));
             continue;
         }
         if (sel >= reasoning_n) {
             if (sel >= n || sel - reasoning_n >= tool_n) continue;
             size_t t = id[sel - reasoning_n];
             tools_set_disabled(reg, t, !tools_disabled(reg, t));
+            remember_tools(reg, scratch);
             continue;
         }
         switch (sel) {
             case SET_VERBOSE:
                 render_set_verbose(!render_verbose());
+                remember_ui(scratch, STR("ui_verbose_tools"),
+                            render_verbose() ? STR("true") : STR("false"));
                 rerender_conv(ag->conv, cfg, ag->show_instructions, scratch, 0);
                 break;
             case SET_RAW:
                 md_set_raw(!md_raw());
+                remember_ui(scratch, STR("ui_raw_markdown"),
+                            md_raw() ? STR("true") : STR("false"));
                 rerender_conv(ag->conv, cfg, ag->show_instructions, scratch, 0);
                 break;
             case SET_STREAM:
                 cfg->stream = !cfg->stream;
+                remember_ui(scratch, STR("ui_stream"),
+                            cfg->stream ? STR("true") : STR("false"));
                 break;
             case SET_IGNORED:
                 tui_set_show_ignored(!tui_show_ignored());
+                remember_ui(scratch, STR("ui_show_ignored"),
+                            tui_show_ignored() ? STR("true") : STR("false"));
                 break;
             case SET_TELEMETRY:
-                telemetry_set(!telemetry_on(), scratch);
+                if (!telemetry_set(!telemetry_on(), scratch))
+                    tui_notice(STR("setting changed but was not remembered: could not write state"));
                 break;
             case SET_WRAP:
                 tui_set_justify(!tui_justify());
+                remember_ui(scratch, STR("ui_wrap"),
+                            tui_justify() ? STR("justified") : STR("word"));
                 break;
             case SET_MODE:
                 agent_set_mode(ag, cfg->mode == MODE_PLAN ? MODE_BUILD
@@ -1307,10 +1431,17 @@ static void choose_settings(Agent *ag) {
                 break;
             case SET_SHOW_INSTRUCTIONS:
                 ag->show_instructions = !ag->show_instructions;
+                remember_ui(scratch, STR("ui_show_instructions"),
+                            ag->show_instructions ? STR("true") : STR("false"));
                 rerender_conv(ag->conv, cfg, ag->show_instructions, scratch, 0);
                 break;
             case SET_MAX_TOKENS:
                 cfg->max_tokens = max_tokens_step(cfg->max_tokens, delta);
+                {
+                    char value[16];
+                    snprintf(value, sizeof value, "%d", cfg->max_tokens);
+                    remember_ui(scratch, STR("ui_max_tokens"), str_c(value));
+                }
                 break;
             default: break;
         }
@@ -1375,6 +1506,14 @@ static b8 agent_handoff(Agent *ag) {
     ag->handoff = (Str){0};
     ag->conv->n = 1;
     ag->persist->off = ag->mark;
+    plan = str_dup(ag->persist, plan);
+    if (!plan.p) {
+        if (g_one_shot)
+            one_shot_diag("error", (Str){0}, STR("out of memory keeping plan"));
+        else
+            tui_notice(STR("out of memory keeping the approved plan"));
+        return false;
+    }
     agent_set_mode(ag, MODE_BUILD);
     session_begin(ag->sess);
     tui_clear();
@@ -1386,13 +1525,16 @@ static b8 agent_turn(Agent *ag, Str text) {
 
     Str user_text = str_dup(ag->persist, text);
     if (text.n && !user_text.p) {
-        tui_block();
-        tui_write(STR("[out of memory: /clear to start a new session]\n"));
+        if (g_one_shot)
+            one_shot_diag("error", (Str){0}, STR("out of memory"));
+        else {
+            tui_block();
+            tui_write(STR("[out of memory: /clear to start a new session]\n"));
+        }
         return false;
     }
     if (conv_add(conv, M_USER, user_text) == CONV_NONE) {
-        tui_block();
-        tui_write(STR("[conversation is full: /clear to start a new one]\n"));
+        say_conv_full();
         return false;
     }
     if (ag->echo) tui_write_user(text);
@@ -1417,8 +1559,12 @@ static b8 agent_turn(Agent *ag, Str text) {
     for (;;) {
         rounds++;
         if (g_got_sigint) {
-            tui_block();
-            tui_write(STR("[interrupted]\n"));
+            if (g_one_shot)
+                one_shot_diag("error", (Str){0}, STR("interrupted"));
+            else {
+                tui_block();
+                tui_write(STR("[interrupted]\n"));
+            }
             tui_set_status("ready");
             g_got_sigint = 0;
             break;
@@ -1453,8 +1599,12 @@ static b8 agent_turn(Agent *ag, Str text) {
          * lose the context the response metadata reported. */
         md_end();
         if (g_got_sigint) {
-            tui_block();
-            tui_write(STR("[interrupted]\n"));
+            if (g_one_shot)
+                one_shot_diag("error", (Str){0}, STR("interrupted"));
+            else {
+                tui_block();
+                tui_write(STR("[interrupted]\n"));
+            }
             tui_set_status("ready");
             g_got_sigint = 0;
             break;
@@ -1467,8 +1617,12 @@ static b8 agent_turn(Agent *ag, Str text) {
             tel_str(&ee, "where", STR("provider"));
             tel_str(&ee, "detail", str_c(err));
             tel_send(&ee);
-            tui_block();
-            tui_printf("[provider error: %s]\n", err);
+            if (g_one_shot)
+                one_shot_diag("provider error", (Str){0}, str_c(err));
+            else {
+                tui_block();
+                tui_printf("[provider error: %s]\n", err);
+            }
             tui_set_status("ready");
             break;
         }
@@ -1507,6 +1661,20 @@ static b8 agent_turn(Agent *ag, Str text) {
     return ok;
 }
 
+static void write_final_reply(const Conv *conv) {
+    for (size_t i = conv->n; i-- > 0;) {
+        if (conv->role[i] != M_ASSISTANT || conv_is_call(conv, i))
+            continue;
+        Str reply = conv->text[i];
+        while (reply.n && (reply.p[reply.n - 1] == '\n'
+                           || reply.p[reply.n - 1] == '\r'))
+            reply.n--;
+        if (reply.n) fwrite(reply.p, 1, reply.n, stdout);
+        fputc('\n', stdout);
+        return;
+    }
+}
+
 i32 main(i32 argc, char **argv) {
     CliOpts opts;
     switch (cli_parse(argc, argv, &opts)) {
@@ -1527,6 +1695,8 @@ i32 main(i32 argc, char **argv) {
     state_sweep(&scratch);
     config_load(&cfg, &persist, &scratch);
     cli_apply(&opts, &cfg);
+    UiPrefs prefs;
+    ui_prefs_load(&prefs, &scratch);
     arena_reset(&scratch);
 
     ToolRegistry tools;
@@ -1582,7 +1752,8 @@ i32 main(i32 argc, char **argv) {
         return 1;
     }
 
-    conv_add(&conv, M_SYSTEM, cfg.system_prompt);
+    conv_add(&conv, M_SYSTEM, cfg.mode == MODE_PLAN ? cfg.plan_prompt
+                                                    : cfg.system_prompt);
     size_t session_mark = persist.off;
 
     /* Without a resolvable data dir the conversation is not persisted. */
@@ -1597,10 +1768,17 @@ i32 main(i32 argc, char **argv) {
     sigaction(SIGINT, &sa, NULL);
 
     setvbuf(stdout, NULL, _IONBF, 0);
-    tui_start(cfg.model, cfg.base_url, !cfg.api_key.p, tools.n,
-              opts.have_prompt);
+    g_one_shot = opts.have_prompt;
+    render_set_verbose(prefs.verbose_tools);
+    md_set_raw(prefs.raw_markdown);
+    b8 setup = no_provider(&cfg);
+    tui_start(cfg.model, cfg.base_url, !cfg.api_key.p, setup, tools.n,
+              prefs.show_ignored, prefs.justify, prefs.status_fields,
+              cfg.mode, opts.have_prompt);
     if (cfg.provider.n) tui_set_provider(cfg.provider);
     tui_set_reasoning(cfg.reasoning_effort, cfg.thinking_budget);
+    if (prefs.show_instructions && !opts.have_prompt)
+        render_instructions(&cfg);
     tui_set_commands(g_commands, commands_init());
     tui_set_aliases(k_aliases, ALIAS_N);
     tui_set_history(&hist);
@@ -1623,6 +1801,7 @@ i32 main(i32 argc, char **argv) {
         .persist = &persist, .scratch = &scratch, .sess = &sess,
         .mark = session_mark,
         .echo = !opts.have_prompt,
+        .show_instructions = prefs.show_instructions,
     };
 
     /* One-shot: the reply is the output and the exit status reports whether
@@ -1635,6 +1814,7 @@ i32 main(i32 argc, char **argv) {
             return 1;
         }
         b8 ok = agent_turn(&agent, opts.prompt);
+        if (ok) write_final_reply(&conv);
         tui_stop();
         return ok ? 0 : 1;
     }
@@ -1651,11 +1831,17 @@ i32 main(i32 argc, char **argv) {
         size_t ln = 0;
         if (!tui_readline("> ", line, sizeof line, &ln)) break;
         if (ln == 0) { g_got_sigint = 0; continue; }
-        if (line[0] == '!') {
+        b8 escaped = ln >= 2 && line[0] == '\\'
+                  && (line[1] == '/' || line[1] == '!');
+        if (escaped) {
+            memmove(line, line + 1, ln);
+            ln--;
+            goto send_message;
+        } else if (line[0] == '!') {
             run_shell(&agent, (Str){ line + 1, ln - 1 });
             continue;
         }
-        if (line[0] == '/') {
+        if (!escaped && line[0] == '/') {
             ln = resolve_alias(line, ln, sizeof line);
             telemetry_command((Str){ line, ln });
         }
@@ -1722,6 +1908,12 @@ i32 main(i32 argc, char **argv) {
             resume_session(&agent);
             continue;
         }
+        if (!escaped && line[0] == '/') {
+            notice_fmt("unknown command: %.*s; type / to see commands",
+                       (i32)ln, line);
+            continue;
+        }
+send_message:
         /* A turn with no endpoint is an HTTP 401 the user cannot act on. */
         if (no_provider(&cfg)) {
             tui_notice(NO_PROVIDER_HINT);

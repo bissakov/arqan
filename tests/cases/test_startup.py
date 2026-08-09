@@ -124,6 +124,14 @@ def test_piped_banner(ctx):
     assert "\x1b[?1049h" not in out.stdout, "must not touch the alternate screen"
 
 
+def test_unconfigured_piped_banner_says_setup_without_fake_endpoint(ctx):
+    out = ctx.run_piped(
+        "/exit\n", YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None
+    )
+    assert "setup" in out.stdout, out.stdout
+    assert "model=" not in out.stdout and "base=" not in out.stdout, out.stdout
+
+
 def test_config_file_is_read(ctx):
     """Values in $XDG_CONFIG_HOME/yoke/config are picked up when env is unset."""
     ctx.write_config(f"model=from-config\nbase_url={ctx.mock.base_url}\n")

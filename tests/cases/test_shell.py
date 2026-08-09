@@ -61,6 +61,15 @@ def test_empty_command_answers_in_the_notice_row(ctx):
     assert "\u25c6  shell" not in s.text(), s.text()
 
 
+def test_escaped_shell_prefix_reaches_the_model(ctx):
+    ctx.scenario("text=literal")
+    s = ctx.spawn()
+    s.submit(r"\!important")
+    s.wait_turn_done()
+    assert ctx.mock.requests[-1]["messages"][-1]["content"] == "!important"
+    assert "\u25c6  shell" not in s.text(), s.text()
+
+
 def test_a_run_survives_a_rerender(ctx):
     """A replay of the transcript is a replay of the run: a setting keeps it."""
     s = ctx.spawn()

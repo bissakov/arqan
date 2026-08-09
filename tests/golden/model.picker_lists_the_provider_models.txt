@@ -2,7 +2,6 @@
 |
 |
 |
-|
 |                                          _
 |                              _   _  ___ | | _____
 |                             | | | |/ _ \| |/ / _ \
@@ -16,8 +15,9 @@
 |
 |
 |  › alpha
-|    beta   current
+|    beta                      current
 |    gamma
+|    + enter a model manually  Use an id not verified by /models
 |
 |  › Message yoke...
 |

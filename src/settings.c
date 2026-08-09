@@ -20,6 +20,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -302,4 +303,95 @@ void state_sweep(Arena *scratch) {
         }
         scratch->off = mark;
     }
+}
+
+/* ---- remembered UI preferences ---------------------------------------- */
+
+static b8 pref_bool(Str v, b8 dflt) {
+    if (str_eq(v, STR("true")) || str_eq(v, STR("on"))) return true;
+    if (str_eq(v, STR("false")) || str_eq(v, STR("off"))) return false;
+    return dflt;
+}
+
+static void prefs_apply(UiPrefs *p, const Settings *s) {
+    Str v = settings_get(s, (Str){0}, STR("verbose_tools"));
+    if (v.n) p->verbose_tools = pref_bool(v, p->verbose_tools);
+    v = settings_get(s, (Str){0}, STR("raw_markdown"));
+    if (v.n) p->raw_markdown = pref_bool(v, p->raw_markdown);
+    v = settings_get(s, (Str){0}, STR("show_ignored"));
+    if (v.n) p->show_ignored = pref_bool(v, p->show_ignored);
+    v = settings_get(s, (Str){0}, STR("show_instructions"));
+    if (v.n) p->show_instructions = pref_bool(v, p->show_instructions);
+    v = settings_get(s, (Str){0}, STR("wrap"));
+    if (str_eq(v, STR("word"))) p->justify = false;
+    else if (str_eq(v, STR("justified"))) p->justify = true;
+    v = settings_get(s, (Str){0}, STR("status_fields"));
+    if (v.n) {
+        b8 ok = false;
+        i64 mask = str_int(v, &ok);
+        if (ok && mask >= 0) p->status_fields = (u64)mask;
+    }
+}
+
+static void prefs_apply_state(UiPrefs *p, const Settings *s) {
+    Str v = settings_get(s, (Str){0}, STR("ui_verbose_tools"));
+    if (v.n) p->verbose_tools = pref_bool(v, p->verbose_tools);
+    v = settings_get(s, (Str){0}, STR("ui_raw_markdown"));
+    if (v.n) p->raw_markdown = pref_bool(v, p->raw_markdown);
+    v = settings_get(s, (Str){0}, STR("ui_show_ignored"));
+    if (v.n) p->show_ignored = pref_bool(v, p->show_ignored);
+    v = settings_get(s, (Str){0}, STR("ui_show_instructions"));
+    if (v.n) p->show_instructions = pref_bool(v, p->show_instructions);
+    v = settings_get(s, (Str){0}, STR("ui_wrap"));
+    if (str_eq(v, STR("word"))) p->justify = false;
+    else if (str_eq(v, STR("justified"))) p->justify = true;
+    v = settings_get(s, (Str){0}, STR("ui_status_fields"));
+    if (v.n) {
+        b8 ok = false;
+        i64 mask = str_int(v, &ok);
+        if (ok && mask >= 0) p->status_fields = (u64)mask;
+    }
+}
+
+static void prefs_env_bool(const char *name, b8 *out) {
+    const char *v = getenv(name);
+    if (v && *v) *out = pref_bool(str_c(v), *out);
+}
+
+void ui_prefs_load(UiPrefs *p, Arena *scratch) {
+    memset(p, 0, sizeof *p);
+    p->status_fields = ((u64)1 << YOKE_STATUS_FIELDS) - 1u;
+
+    size_t mark = scratch->off;
+    Str files[YOKE_MAX_CONFIG_FILES];
+    size_t n = paths_config_files(STR("config"), scratch, files,
+                                  YOKE_MAX_CONFIG_FILES);
+    for (size_t i = 0; i < n; i++) {
+        Settings s;
+        if (settings_load(&s, files[i], scratch)) prefs_apply(p, &s);
+    }
+    scratch->off = mark;
+
+    Str state = paths_file(YOKE_DIR_STATE, STR("state"), scratch);
+    Settings s;
+    if (state.n && settings_load(&s, state, scratch)) prefs_apply_state(p, &s);
+    scratch->off = mark;
+
+    prefs_env_bool("YOKE_VERBOSE_TOOLS", &p->verbose_tools);
+    prefs_env_bool("YOKE_RAW_MARKDOWN", &p->raw_markdown);
+    prefs_env_bool("YOKE_SHOW_IGNORED", &p->show_ignored);
+    prefs_env_bool("YOKE_SHOW_INSTRUCTIONS", &p->show_instructions);
+    const char *wrap = getenv("YOKE_WRAP");
+    if (wrap && !strcmp(wrap, "word")) p->justify = false;
+    else if (wrap && !strcmp(wrap, "justified")) p->justify = true;
+    const char *fields = getenv("YOKE_STATUS_FIELDS");
+    if (fields && *fields) {
+        b8 ok = false;
+        i64 mask = str_int(str_c(fields), &ok);
+        if (ok && mask >= 0) p->status_fields = (u64)mask;
+    }
+}
+
+b8 ui_pref_set(Str key, Str val, Arena *scratch) {
+    return state_set(key, val, scratch);
 }

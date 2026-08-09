@@ -238,3 +238,80 @@ def test_streaming_back_on_keeps_working(ctx):
     s.wait_text("second one")
     s.wait_turn_done()
     assert ctx.mock.requests[-1]["stream"] is True, ctx.mock.requests[-1]
+
+
+def test_settings_choices_survive_a_restart(ctx):
+    """Presentation, request, mode, token, and tool choices share UI state."""
+    s = ctx.spawn()
+    for label in (
+        "Verbose tool output", "Raw Markdown", "Stream replies",
+        "Ignored files", "Text wrap", "Mode", "Show instructions",
+        "Max tokens", "bash",
+    ):
+        s.open_settings().settings_select(label)
+        s.key("space").sync()
+        s.wait_status("settings")
+        s.key("esc").sync()
+        s.wait_status("ready")
+    s.submit("/exit")
+    s.wait_exit()
+
+    again = ctx.spawn()
+    again.open_settings()
+    text = again.text()
+    for label in ("Verbose tool output", "Raw Markdown", "Ignored files",
+                  "Show instructions"):
+        assert f"[x] {label}" in text, text
+    assert "[ ] Stream replies" in text, text
+    again.settings_select("Text wrap")
+    assert "Justified" in again.popup_selected(), again.text()
+    again.settings_select("Mode")
+    assert "Plan:" in again.popup_selected(), again.text()
+    again.settings_select("Max tokens")
+    assert "65536" in again.popup_selected(), again.text()
+    again.settings_select("bash")
+    assert "[ ] bash" in again.popup_selected(), again.text()
+    again.key("esc")
+
+    ctx.scenario("text=restored")
+    again.submit("verify")
+    again.wait_turn_done()
+    req = ctx.mock.requests[-1]
+    assert req["stream"] is False, req
+    assert req["max_tokens"] == 65536, req
+    names = [t["function"]["name"] for t in req["tools"]]
+    assert "bash" not in names, names
+
+
+def test_state_precedence_is_below_environment_and_cli(ctx):
+    state = ctx.state_file()
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(
+        "ui_stream = false\nui_mode = plan\nui_max_tokens = 2048\n"
+        "ui_disable_tools = read\n"
+    )
+    ctx.write_config(
+        "stream = false\nmode = plan\nmax_tokens = 1024\n"
+        "disable_tools = write\n"
+    )
+    ctx.scenario("text=precedence")
+    s = ctx.spawn(
+        args=["--max-tokens", "8192", "--disable-tools", "bash"],
+        YOKE_STREAM="true", YOKE_MODE="build", YOKE_MAX_TOKENS="4096",
+    )
+    s.submit("verify")
+    s.wait_turn_done()
+    req = ctx.mock.requests[-1]
+    assert req["stream"] is True, req
+    assert req["max_tokens"] == 8192, req
+    names = [t["function"]["name"] for t in req["tools"]]
+    assert "bash" not in names and "read" in names and "write" in names, names
+    assert s.status_field(2) == "build", s.status_line()
+
+
+def test_persistence_failure_is_reported_but_the_change_applies(ctx):
+    s = ctx.spawn(HOME="/proc/yoke-unwritable", XDG_STATE_HOME=None)
+    s.open_settings().settings_select("Stream replies")
+    s.key("space").sync()
+    s.wait_text("setting changed but was not remembered")
+    assert "[ ] Stream replies" in s.text(), s.text()

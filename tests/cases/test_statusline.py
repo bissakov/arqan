@@ -60,3 +60,18 @@ def test_statusline_can_hide_the_leading_state(ctx):
                "state field to disappear")
     assert s.status_line().startswith("mock-model · "), s.status_line()
 
+
+def test_statusline_visibility_survives_a_restart(ctx):
+    s = ctx.spawn()
+    open_statusline(s)
+    select(s, "Model").key("space").sync()
+    s.key("esc").sync()
+    s.wait_status("ready")
+    s.submit("/exit")
+    s.wait_exit()
+
+    again = ctx.spawn()
+    assert "mock-model" not in again.status_line(), again.status_line()
+    open_statusline(again)
+    select(again, "Model")
+    assert "[ ] Model" in again.popup_selected(), again.text()

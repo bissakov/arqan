@@ -85,7 +85,7 @@ def test_prompt_flag_runs_one_turn(ctx):
     ctx.scenario("text=one+shot+reply")
     out = ctx.run_cli("-p", "say it")
     assert out.returncode == 0, out
-    assert "one shot reply" in out.stdout, out.stdout
+    assert out.stdout == "one shot reply\n", out.stdout
     assert "yoke 0.1.0" not in out.stdout, "the banner is UI, not output"
     assert "say it" not in out.stdout, "the prompt is the input, not the output"
     assert "hi" not in out.stdout
@@ -130,7 +130,8 @@ def test_prompt_failure_sets_exit_status(ctx):
     ctx.scenario("status=500")
     out = ctx.run_cli("-p", "will fail")
     assert out.returncode == 1, out
-    assert "provider error" in out.stdout, out.stdout
+    assert out.stdout == "", out.stdout
+    assert "provider error" in out.stderr, out.stderr
 
 
 def test_prompt_stays_plain_on_a_tty(ctx):
@@ -149,8 +150,31 @@ def test_prompt_runs_tools(ctx):
     ctx.scenario('tool=read:{"path":"notes.txt"},final_text=I+read+it')
     out = ctx.run_cli("-p", "read the notes")
     assert out.returncode == 0, out
-    assert "written down" in out.stdout, out.stdout
-    assert "I read it" in out.stdout, out.stdout
+    assert out.stdout == "I read it\n", out.stdout
+    assert "tool call read" in out.stderr, out.stderr
+    assert "written down" in out.stderr, out.stderr
+
+
+def test_prompt_hides_reasoning_and_intermediate_prose(ctx):
+    """Only the last successful non-tool assistant message reaches stdout."""
+    ctx.write_file("notes.txt", "result bytes\n")
+    ctx.scenario(
+        'reasoning=private+trace,prefix=intermediate+,tool=read:{"path":"notes.txt"},final_text=final+only'
+    )
+    out = ctx.run_cli("-p", "work through it")
+    assert out.returncode == 0, out
+    assert out.stdout == "final only\n", out.stdout
+    assert "private trace" not in out.stdout, out.stdout
+    assert "intermediate" not in out.stdout, out.stdout
+
+
+def test_partial_failed_stream_leaves_stdout_empty(ctx):
+    """Bytes received before a stream failure are diagnostics, not an answer."""
+    ctx.scenario("text=partial+must+not+leak,chunk=1,abort_after=1")
+    out = ctx.run_cli("-p", "fail part way")
+    assert out.returncode == 1, out
+    assert out.stdout == "", out.stdout
+    assert "provider error" in out.stderr, out.stderr
 
 
 def test_api_flag_picks_the_wire_format(ctx):

@@ -61,6 +61,8 @@ speaks, a base URL and a key. The same command switches between the providers
 already stored. Until one exists a message is answered with that line rather
 than sent, since the only reply an unconfigured endpoint has is an HTTP 401.
 Nothing is built in, since only you know which endpoints you have.
+Its status is `setup`; no default model or endpoint is presented as if it were
+configured. The line-oriented banner uses the same setup state.
 
 There are two APIs to pick from: `openai`, the chat-completions protocol
 nearly every service speaks, and `anthropic`, the messages one. They differ in
@@ -140,10 +142,18 @@ model = gpt-4o-mini
 api_key = sk-...
 api = openai             # the wire format base_url speaks: openai or anthropic
 max_tokens = 32768       # cap on one reply; a turn that reaches it stops mid-sentence
+stream = true            # paint replies as they arrive
+mode = build             # build or plan
 max_messages = 4096      # conversation capacity; a full one is reported, not overrun
 retries = 3              # further attempts for a request that reached nothing
 retry_delay_ms = 500     # the wait before the first, doubling up to 8s
 disable_tools = bash     # tools no turn may call, comma separated
+verbose_tools = false    # show complete tool blocks
+raw_markdown = false     # do not render Markdown
+show_ignored = false     # include ignored files in the @ picker
+show_instructions = false
+wrap = word              # word or justified
+status_fields = 511      # bit mask for /statusline fields
 ```
 
 Every file yoke owns is written this way: `key = value` lines, `#` comments,
@@ -157,10 +167,13 @@ stream that died halfway is not: those bytes are already on screen, so the
 turn ends on the error instead of repeating itself. Neither is a refusal that
 answers the request rather than the network: an HTTP 401 or 404 fails at once.
 
-Environment variables win over every file, the provider chosen with
-`/provider` wins over the files but not over the environment, and a model
-picked with `/model` is remembered on that provider (or, with none selected,
-as `model` in `$XDG_STATE_HOME/yoke/state`).
+Remembered UI choices win over config files, environment variables win over
+remembered choices, and command-line options win over all of them. The
+matching UI environment variables are `YOKE_STREAM`, `YOKE_MODE`,
+`YOKE_MAX_TOKENS`, `YOKE_DISABLE_TOOLS`, `YOKE_VERBOSE_TOOLS`,
+`YOKE_RAW_MARKDOWN`, `YOKE_SHOW_IGNORED`, `YOKE_SHOW_INSTRUCTIONS`,
+`YOKE_WRAP`, and `YOKE_STATUS_FIELDS`. A model picked with `/model` is
+remembered on its provider, or as `model` in state when none is selected.
 
 Command line options outrank all of it, being the most local statement about
 one invocation:
@@ -174,8 +187,10 @@ yoke "summarise src/tui.c"       # the same: a bare argument is the prompt
 yoke --disable-tools bash,write,patch   # a read-only run for a model you distrust
 ```
 
-A one-shot run prints the reply and nothing else, exiting nonzero when the
-turn did not complete, so it composes with pipes and scripts.
+A successful one-shot run writes only its final assistant response to stdout,
+verbatim with one trailing newline. Reasoning and intermediate assistant prose
+are suppressed; bounded tool calls, tool results, retries, and errors go to
+stderr. A failed turn exits nonzero and leaves stdout empty.
 
 ### The system prompt
 
@@ -260,6 +275,11 @@ forked from where `/resume` can still find it, `/model` switches model,
 `/settings` opens the screen below and `/exit` quits. A few of them answer to a
 second name: `/config` finds `/settings`, `/new` finds `/clear` and `/quit`
 finds `/exit`, and the popup lists the command rather than the alias.
+An unescaped leading `/` is reserved for these commands. An unknown command is
+rejected locally with a hint and never reaches the provider. Prefix command or
+shell-looking model text with a backslash: `\/clear` sends `/clear`, and
+`\!important` sends `!important`. History keeps the escaped spelling for
+recall. An unescaped leading `!` continues to run a local shell command.
 
 A word starting with `@` is a path being picked rather than typed: the same
 popup lists what the directory holds, folders first and marked with a slash
@@ -300,9 +320,12 @@ is a setting that refused to change.
 The model and the provider are not rows: they name the endpoint a session
 talks to rather than how it behaves, and `/model` and `/provider` choose them.
 
-Nothing is persisted here. A setting that outlives the session is remembered
-by whoever owns it, which is the config file for a provider and the state file
-for the model and the telemetry answer.
+Every choice is applied immediately and remembered in the atomic state file,
+including the status-line mask from `/statusline`. A write failure does not
+undo the runtime change and is reported as "not remembered". Telemetry and
+provider reasoning retain their existing storage paths. UI keys are
+namespaced, including `ui_stream`, `ui_mode`, `ui_disable_tools`, and
+`ui_status_fields`.
 
 ### Turning tools off
 
@@ -412,12 +435,13 @@ that block alone, `show less` folds it back, and the block keeps its place on
 screen while the transcript is replayed around it.
 
 `/model` lists what the provider's `/models` endpoint serves and remembers the
-choice for the next run. `/provider` lists the endpoints you have stored,
-plus the entry that adds one; creating it ends on that same model picker,
-which is also the check that the URL and the key work, so a typo is answered
-in the form and nothing is written until the endpoint has answered. Past ten entries the popup takes the keyboard and
-typing filters it by literal substring, so nothing typed while it is open
-reaches the composer.
+choice for the next run. Every picker also offers manual model entry. If
+`/models` fails or returns no usable IDs, the error is shown and manual entry
+opens directly; Escape cancels without changing state. Provider add and edit
+allow an unverified manual model and label it clearly. `/provider` lists the
+endpoints you have stored, plus the entry that adds one. Past ten model IDs the
+popup takes the keyboard and typing filters it by literal substring, so
+nothing typed while it is open reaches the composer.
 
 ## Files
 
@@ -433,7 +457,7 @@ and ignored as if unset, and directories yoke creates are mode 0700.
 | plan prompt | `.yoke/PLAN.md`, `$XDG_CONFIG_HOME/yoke/PLAN.md` | what Plan mode is told instead, resolved the same way |
 | project context | `AGENTS.md` | every one at or above the working directory, appended to the prompt |
 | prompt history | `$XDG_STATE_HOME/yoke/history` | last 500 prompts, recalled in the composer with Up/Down |
-| remembered choices | `$XDG_STATE_HOME/yoke/state` | `model`, `provider` and `telemetry`: what the UI last picked |
+| remembered choices | `$XDG_STATE_HOME/yoke/state` | model, provider, telemetry, and namespaced durable UI choices |
 | provider keys | `$XDG_STATE_HOME/yoke/credentials` | one `key` per `[provider ...]` section, mode 0600, refused when anyone else can read it |
 | telemetry record | `$XDG_STATE_HOME/yoke/telemetry/<cwd>/<timestamp>.jsonl` | the anonymized record of one conversation, named after its session file |
 | sessions | `$XDG_DATA_HOME/yoke/sessions/<cwd>/<timestamp>.jsonl` | one file per conversation, keyed by the directory it ran in |

@@ -140,6 +140,16 @@ def test_backslash_round_trips(ctx):
     assert s2.composer_text() == r"a\nb\\c", s2.composer_lines()
 
 
+def test_escaped_command_prefix_is_recalled_verbatim(ctx):
+    ctx.scenario("text=ok")
+    s = ctx.spawn()
+    s.submit(r"\/clear")
+    s.wait_turn_done()
+    assert ctx.mock.requests[-1]["messages"][-1]["content"] == "/clear"
+    s.key("up").sync()
+    assert s.composer_text() == r"\/clear", s.composer_lines()
+
+
 def test_up_still_drives_the_command_popup(ctx):
     """With the completion popup open, Up moves the selection, not history."""
     s = ctx.spawn()

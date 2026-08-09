@@ -92,6 +92,7 @@ typedef bool     b8;
 #define YOKE_MAX_REASONING_LIST 1024
 #define YOKE_MAX_REASONING_TEMPLATE (16u << 10)
 #define YOKE_MAX_MODEL_BYTES  (1u << 20)  /* largest /models reply we will read */
+#define YOKE_STATUS_FIELDS    9
 
 /* ---- arenas ------------------------------------------------------------- */
 typedef struct {
@@ -315,6 +316,21 @@ b8     state_set(Str key, Str val, Arena *scratch);
 /* Folds an older yoke's one-file-per-key state into that file and removes
  * the files. Call before anything reads the state. */
 void   state_sweep(Arena *scratch);
+
+/* Presentation choices remembered by /settings and /statusline. Values are
+ * loaded with config files below remembered UI state and environment above
+ * it. The structure owns no strings. */
+typedef struct {
+    b8 verbose_tools;
+    b8 raw_markdown;
+    b8 show_ignored;
+    b8 show_instructions;
+    b8 justify;
+    u64 status_fields;
+} UiPrefs;
+
+void   ui_prefs_load(UiPrefs *p, Arena *scratch);
+b8     ui_pref_set(Str key, Str val, Arena *scratch);
 
 /* ---- prompt history ------------------------------------------------------
  * A ring of past prompts, mirrored to $XDG_STATE_HOME/yoke/history as they
@@ -790,6 +806,11 @@ typedef enum {
  * untouched. */
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t start, size_t *out);
+/* As tui_pick, with `search_n` excluding fixed action rows from the length
+ * that decides whether keyboard search opens. */
+b8 tui_pick_search_count(Str title, const TuiCmd *items, size_t n,
+                         size_t search_n, TuiPickAnchor anchor, size_t start,
+                         size_t *out);
 /* The settings screen: the same list, read rather than chosen from. Space
  * and Right act on the selected row forwards, Left backwards (true, with
  * *sel naming the row and *delta the direction), Enter and Escape close.
@@ -818,15 +839,17 @@ b8   tui_justify(void);
 void tui_set_history(History *h);
 /* `plain` forces the line-oriented path and drops the banner even on a tty,
  * which is what a one-shot -p run wants. */
-void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count,
-               b8 plain);
-/* The strings the status line names; they must outlive the call. An empty
- * provider restores the host derived from the base URL. */
+void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
+               size_t tool_count, b8 show_ignored, b8 justify,
+               u64 status_fields, AgentMode mode, b8 plain);
+/* The strings the status line names; they must outlive the call. */
 void tui_set_model(Str model);
 void tui_set_mode(AgentMode mode);
 void tui_set_provider(Str name);
 void tui_set_reasoning(Str effort, Str thinking_budget);
-/* Visibility is session-local; every item starts visible. */
+/* Switch to truthful first-run chrome, clearing endpoint fields. */
+void tui_set_setup(b8 on);
+/* Visibility is remembered by /statusline. */
 b8   tui_status_visible(TuiStatusItem item);
 void tui_set_status_visible(TuiStatusItem item, b8 visible);
 /* What a run with no endpoint says, on the welcome screen and again if a

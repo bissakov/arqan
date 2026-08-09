@@ -189,11 +189,13 @@ def test_commands_and_mode_switches_are_recorded(ctx):
 
 
 def test_an_unknown_command_is_not_named(ctx):
-    """A line yoke does not offer is the user's text, so it is not recorded."""
+    """A rejected command records only the anonymous unknown marker."""
     ctx.scenario("text=ok")
     s = ctx.spawn()
     s.settings_toggle("Telemetry")
     s.submit("/my-private-note")
+    s.wait_text("unknown command")
+    s.submit("bind the telemetry file")
     s.wait_turn_done()
 
     text = body(ctx)

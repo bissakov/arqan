@@ -35,6 +35,9 @@
 #define TUI_PATH_ENTS 256        /* paths the '@' popup keeps for one word    */
 #define TUI_PATH_SLOT 512        /* longest path one of them holds            */
 #define TUI_PATH_DEPTH 12        /* directories a fuzzy match descends through */
+
+_Static_assert(TUI_STATUS_N == YOKE_STATUS_FIELDS,
+               "status preference mask must cover every field");
 #define TUI_PATH_SCAN 20000      /* entries one keystroke's walk may look at  */
 #define TUI_IGNORE_PATS 512      /* ignore patterns in force for one listing  */
 #define TUI_IGNORE_BUF (1u << 14)
@@ -1776,16 +1779,21 @@ static void tui_log_sink(i32 level, Str msg, void *ud) {
     tui_printf("\n[%s: %.*s]\n", tags[level], (i32)msg.n, msg.p);
 }
 
-void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count,
-               b8 plain) {
+void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
+               size_t tool_count, b8 show_ignored, b8 justify,
+               u64 status_fields, AgentMode mode, b8 plain) {
     if (g_tui.raw) return;
     memset(&g_tui, 0, sizeof g_tui);
-    for (size_t i = 0; i < TUI_STATUS_N; i++) g_tui.status_visible[i] = true;
+    for (size_t i = 0; i < TUI_STATUS_N; i++)
+        g_tui.status_visible[i] = (status_fields & ((u64)1 << i)) != 0;
     g_tui.tty = !plain && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
-    g_tui.model = model;
+    g_tui.model = setup ? (Str){0} : model;
     g_tui.base_url = base_url;
-    g_tui.provider = provider_from_url(base_url);
-    tui_set_status("ready");
+    g_tui.provider = setup ? (Str){0} : provider_from_url(base_url);
+    g_tui.show_ignored = show_ignored;
+    g_tui.justify = justify;
+    g_tui.mode = mode;
+    tui_set_status(setup ? "setup" : "ready");
     capture_cwd();
     const char *term = getenv("TERM");
     g_tui.color = getenv("NO_COLOR") == NULL
@@ -1796,13 +1804,17 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count,
         g_tui.raw = true;
         if (plain) return;
         char banner[512];
-        i32 n = snprintf(banner, sizeof banner,
+        i32 n = setup
+              ? snprintf(banner, sizeof banner,
+                         "yoke %s · setup tools=%zu\n",
+                         YOKE_VERSION, tool_count)
+              : snprintf(banner, sizeof banner,
                          "yoke %s · model=%.*s base=%.*s tools=%zu\n",
                          YOKE_VERSION, (i32)model.n, model.p,
                          (i32)base_url.n, base_url.p, tool_count);
         if (n > 0) put_raw(banner, (size_t)n < sizeof banner
                                    ? (size_t)n : sizeof banner - 1);
-        if (missing_key) put_str("warn: no API key set\n");
+        if (missing_key && !setup) put_str("warn: no API key set\n");
         flush_out();
         return;
     }
@@ -1933,6 +1945,16 @@ void tui_set_reasoning(Str effort, Str thinking_budget) {
     g_tui.reasoning_effort = effort;
     g_tui.thinking_budget = thinking_budget;
     repaint();
+}
+
+void tui_set_setup(b8 on) {
+    if (on) {
+        g_tui.model = (Str){0};
+        g_tui.provider = (Str){0};
+        tui_set_status("setup");
+        return;
+    }
+    tui_set_status("ready");
 }
 
 b8 tui_status_visible(TuiStatusItem item) {
@@ -2893,8 +2915,8 @@ typedef enum { PICK_CHOOSE, PICK_SETTINGS } PickKind;
  * A long list also takes the keyboard: scrolling six visible rows through
  * hundreds of entries is not a way to choose one. */
 static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
-                    TuiPickAnchor anchor, size_t start, PickKind kind,
-                    size_t *out, i32 *delta) {
+                    size_t search_n, TuiPickAnchor anchor, size_t start,
+                    PickKind kind, size_t *out, i32 *delta) {
     if (!g_tui.fullscreen || !items || !n || !out) return false;
     if (n > YOKE_MAX_POPUP) n = YOKE_MAX_POPUP;
 
@@ -2907,7 +2929,7 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
     memcpy(saved_status, g_tui.status, sizeof saved_status);
     memcpy(saved_notice, g_tui.notice, sizeof saved_notice);
 
-    b8 search = kind == PICK_CHOOSE && n > TUI_PICK_SEARCH_MIN;
+    b8 search = kind == PICK_CHOOSE && search_n > TUI_PICK_SEARCH_MIN;
     char query[TUI_PICK_QUERY];
     size_t query_n = 0;
 
@@ -3006,7 +3028,14 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
 
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t start, size_t *out) {
-    return pick_impl(title, items, n, anchor, start, PICK_CHOOSE, out, NULL);
+    return pick_impl(title, items, n, n, anchor, start, PICK_CHOOSE, out, NULL);
+}
+
+b8 tui_pick_search_count(Str title, const TuiCmd *items, size_t n,
+                         size_t search_n, TuiPickAnchor anchor, size_t start,
+                         size_t *out) {
+    return pick_impl(title, items, n, search_n, anchor, start, PICK_CHOOSE,
+                     out, NULL);
 }
 
 b8 tui_settings(Str title, const TuiCmd *rows, size_t n, size_t *sel,
@@ -3014,7 +3043,7 @@ b8 tui_settings(Str title, const TuiCmd *rows, size_t n, size_t *sel,
     if (!sel) return false;
     size_t start = *sel;
     if (delta) *delta = 1;
-    return pick_impl(title, rows, n, TUI_PICK_FIRST, start, PICK_SETTINGS,
+    return pick_impl(title, rows, n, n, TUI_PICK_FIRST, start, PICK_SETTINGS,
                      sel, delta);
 }
 
@@ -3349,7 +3378,7 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
 
     /* The composer already holds anything typed during the previous turn. */
     g_tui.editing = true;
-    tui_set_status("ready");   /* repaints */
+    tui_set_status(g_tui.needs_provider ? "setup" : "ready"); /* repaints */
 
     for (;;) {
         i32 c = rbyte();

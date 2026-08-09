@@ -89,9 +89,12 @@ class Scenario:
         # GET /v1/models: an explicit list, or `model_count` generated ids.
         self.models: list[str] = kw.get("models", [])
         self.model_count: int = int(kw.get("model_count", 0))
+        self.models_empty: bool = _truthy(kw.get("models_empty", "0"))
         self.models_status: int = int(kw.get("models_status", 200))
 
     def model_ids(self) -> list[str]:
+        if self.models_empty:
+            return []
         if self.models:
             return self.models
         if self.model_count:

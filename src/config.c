@@ -1,12 +1,13 @@
 /* config.c: load Config from the environment and the settings files.
  *
  * Keys, all at the head of the config file: base_url, model, api_key, api,
- * max_tokens, max_messages, stream, retries, retry_delay_ms, disable_tools. A "[provider
+ * max_tokens, max_messages, stream, mode, retries, retry_delay_ms,
+ * disable_tools. A "[provider
  * <name>]" section of the same file is an endpoint (see endpoints.c).
  * The system prompt is not a key here: it is a document, so it lives in
  * SYSTEM.md (see prompt.c).
- * Precedence: env var YOKE_<KEY> > the active provider > the state file's
- * `model` > $XDG_CONFIG_HOME/yoke/config > the same file in each
+ * Precedence: CLI > env var YOKE_<KEY> > remembered UI state > the active
+ * provider > $XDG_CONFIG_HOME/yoke/config > the same file in each
  * $XDG_CONFIG_DIRS entry. See paths.c for the directories.
  */
 #include "yoke.h"
@@ -100,6 +101,9 @@ static void config_apply_file(Config *c, Str path, EnvSet env,
         c->retry_delay_ms = (i32)n;
     Str stream = top_key(&s, STR("stream"));
     if (stream.n) c->stream = !str_eq(stream, STR("false"));
+    Str mode = top_key(&s, STR("mode"));
+    if (str_eq(mode, STR("plan"))) c->mode = MODE_PLAN;
+    else if (str_eq(mode, STR("build"))) c->mode = MODE_BUILD;
 
     scratch->off = mark;
 }
@@ -218,7 +222,26 @@ b8 config_load(Config *c, Arena *persist, Arena *scratch) {
     for (size_t ci = 0; ci < cand_n; ci++)
         config_apply_file(c, candidates[ci], env, persist, scratch);
 
+    /* Remembered UI choices are newer than config files but remain below
+     * per-invocation environment variables and command-line options. */
+    Str remembered = state_get(STR("ui_stream"), persist, scratch);
+    if (remembered.n) c->stream = !str_eq(remembered, STR("false"));
+    remembered = state_get(STR("ui_mode"), persist, scratch);
+    if (str_eq(remembered, STR("plan"))) c->mode = MODE_PLAN;
+    else if (str_eq(remembered, STR("build"))) c->mode = MODE_BUILD;
+    remembered = state_get(STR("ui_max_tokens"), persist, scratch);
+    if (remembered.n) {
+        b8 ok = false;
+        i64 value = str_int(remembered, &ok);
+        if (ok) c->max_tokens = (i32)clamp_size(value, 1, 1u << 20);
+    }
+    remembered = state_get(STR("ui_disable_tools"), persist, scratch);
+    if (str_eq(remembered, STR("none"))) c->disable_tools = (Str){0};
+    else if (remembered.n) c->disable_tools = remembered;
+
     size_t n;
+    if (env_num("YOKE_MAX_TOKENS", 1, 1u << 20, &n))
+        c->max_tokens = (i32)n;
     if (env_num("YOKE_MAX_MESSAGES", 8, 1u << 20, &n)) c->max_messages = n;
     if (env_num("YOKE_RETRIES", 0, 16, &n)) c->retries = (i32)n;
     if (env_num("YOKE_RETRY_DELAY_MS", 0, YOKE_MAX_RETRY_DELAY_MS, &n))
@@ -226,7 +249,7 @@ b8 config_load(Config *c, Arena *persist, Arena *scratch) {
     /* An in-app choice outranks the config files: it was made later and more
      * explicitly. The environment still wins, being per invocation. */
     if (!env_model.p) {
-        Str remembered = state_get(STR("model"), persist, scratch);
+        remembered = state_get(STR("model"), persist, scratch);
         if (remembered.n) c->model = remembered;
     }
     /* The provider chosen with /provider: the endpoint the user last selected
@@ -267,6 +290,13 @@ b8 config_load(Config *c, Arena *persist, Arena *scratch) {
     if (env_sys.p)   c->system_prompt = env_sys;
     if (env_tools.p) c->disable_tools = env_tools;
     if (env_api.p)   c->api = api_from_str(env_api);
+    const char *env_stream = getenv("YOKE_STREAM");
+    if (env_stream && *env_stream)
+        c->stream = strcmp(env_stream, "false") != 0
+                 && strcmp(env_stream, "off") != 0;
+    const char *env_mode = getenv("YOKE_MODE");
+    if (env_mode && !strcmp(env_mode, "plan")) c->mode = MODE_PLAN;
+    else if (env_mode && !strcmp(env_mode, "build")) c->mode = MODE_BUILD;
 
     /* A placeholder rather than a destination: a run that named no endpoint
      * asks for one. It follows the API so the pair is at least coherent. */
