@@ -724,6 +724,10 @@ static Str help_build(Agent *ag) {
         buf_putf(&b, "- %.*s: %.*s\n", (i32)g_commands[i].name.n,
                  g_commands[i].name.p, (i32)g_commands[i].desc.n,
                  g_commands[i].desc.p);
+    buf_puts(&b, STR("\nWhile a turn is running, /settings, /statusline, "
+                     "/about and /copy are submitted where they stand; any "
+                     "other command and any message wait in the composer "
+                     "until the turn ends.\n"));
     buf_puts(&b, STR("\n### Command aliases\n"));
     for (size_t i = 0; i < ALIAS_N; i++)
         buf_putf(&b, "- %.*s -> %.*s\n", (i32)k_aliases[i].alias.n,
@@ -993,15 +997,19 @@ static void notice_fmt(const char *fmt, ...) {
     tui_notice((Str){ msg, n });
 }
 
+static b8 command_offered(Str name) {
+    for (size_t i = 0; i < g_command_n; i++)
+        if (str_eq(g_commands[i].name, name)) return true;
+    return false;
+}
+
 /* Only the commands yoke offers are named: a line it does not know is the
  * user's text, not ours. */
 static void telemetry_command(Str line) {
     Str word = line;
     for (size_t i = 0; i < line.n; i++)
         if (line.p[i] == ' ') { word = str_take(line, i); break; }
-    b8 offered = false;
-    for (size_t i = 0; i < g_command_n && !offered; i++)
-        offered = str_eq(g_commands[i].name, word);
+    b8 offered = command_offered(word);
     TelEvent e;
     tel_open(&e, "command");
     tel_str(&e, "name", offered ? word : STR("(unknown)"));
@@ -1565,6 +1573,9 @@ static void statusline_act(void *ud, size_t row, i32 delta) {
     StatusView *v = ud;
     (void)delta;
     if (row >= TUI_STATUS_N) return;
+    /* Mid-turn the scratch arena belongs to the request in flight, so what
+     * remembering a choice writes through it is given back. */
+    size_t mark = v->scratch->off;
     TuiStatusItem item = (TuiStatusItem)row;
     tui_set_status_visible(item, !tui_status_visible(item));
     u64 mask = 0;
@@ -1573,17 +1584,25 @@ static void statusline_act(void *ud, size_t row, i32 delta) {
     char value[32];
     snprintf(value, sizeof value, "%llu", (unsigned long long)mask);
     remember_ui(v->scratch, STR("ui_status_fields"), str_c(value));
+    v->scratch->off = mark;
 }
 
-static void choose_statusline(Arena *scratch) {
+/* The screen's own state, static because a screen opened during a turn
+ * outlives the frame that opened it. */
+static const TuiSettings *statusline_screen(Arena *scratch) {
     static StatusView view;
+    static TuiSettings set;
     view.scratch = scratch;
     arena_init(&view.rows_arena, g_screen, sizeof g_screen);
-    TuiSettings set = {
+    set = (TuiSettings){
         .rows = view.rows, .marks = NULL, .max = TUI_STATUS_N,
         .build = statusline_build, .act = statusline_act, .ud = &view,
     };
-    tui_settings(STR("status line"), &set);
+    return &set;
+}
+
+static void choose_statusline(Arena *scratch) {
+    tui_settings(STR("status line"), statusline_screen(scratch));
 }
 
 /* The values Max tokens steps between, since a number typed into a question
@@ -1774,12 +1793,31 @@ static size_t settings_build(void *ud) {
     return n;
 }
 
-static void settings_act(void *ud, size_t row, i32 delta) {
-    SettingsView *v = ud;
+/* A transcript rebuilt while a reply is streaming would drop the half of it
+ * that has not reached Conv yet, so a look that changed mid-turn is applied
+ * to the screen once the turn has stopped writing to it. */
+static b8 g_rerender_pending;
+
+static void rerender_or_defer(Agent *ag) {
+    if (tui_busy()) { g_rerender_pending = true; return; }
+    rerender_conv(ag->conv, ag->cfg, ag->show_instructions, ag->scratch, 0);
+}
+
+/* What the running turn reads when it builds its next request. Changing one
+ * of these mid-turn would move the agent's ground under it, so the screen
+ * refuses them while a turn is in flight and takes them at the prompt. */
+static b8 setting_shapes_request(u8 kind) {
+    switch (kind) {
+        case SET_TOOL: case SET_MODE: case SET_STREAM:
+        case SET_MAX_TOKENS: case SET_EFFORT: case SET_BUDGET: return true;
+        default: return false;
+    }
+}
+
+static void settings_apply(SettingsView *v, size_t row, i32 delta) {
     Agent *ag = v->ag;
     Config *cfg = ag->cfg;
     Arena *scratch = ag->scratch;
-    if (row >= v->n) return;
     switch (v->kind[row]) {
         case SET_TOOL: {
             size_t t = v->tool[row];
@@ -1802,13 +1840,13 @@ static void settings_act(void *ud, size_t row, i32 delta) {
             render_set_verbose(!render_verbose());
             remember_ui(scratch, STR("ui_verbose_tools"),
                         render_verbose() ? STR("true") : STR("false"));
-            rerender_conv(ag->conv, cfg, ag->show_instructions, scratch, 0);
+            rerender_or_defer(ag);
             break;
         case SET_RAW:
             md_set_raw(!md_raw());
             remember_ui(scratch, STR("ui_raw_markdown"),
                         md_raw() ? STR("true") : STR("false"));
-            rerender_conv(ag->conv, cfg, ag->show_instructions, scratch, 0);
+            rerender_or_defer(ag);
             break;
         case SET_STREAM:
             cfg->stream = !cfg->stream;
@@ -1837,7 +1875,7 @@ static void settings_act(void *ud, size_t row, i32 delta) {
             ag->show_instructions = !ag->show_instructions;
             remember_ui(scratch, STR("ui_show_instructions"),
                         ag->show_instructions ? STR("true") : STR("false"));
-            rerender_conv(ag->conv, cfg, ag->show_instructions, scratch, 0);
+            rerender_or_defer(ag);
             break;
         case SET_MAX_TOKENS:
             cfg->max_tokens = max_tokens_step(cfg->max_tokens, delta);
@@ -1851,17 +1889,77 @@ static void settings_act(void *ud, size_t row, i32 delta) {
     }
 }
 
-static void choose_settings(Agent *ag) {
-    /* Static: the rows and their bookkeeping are larger than a frame of the
-     * command loop should carry. */
+static void settings_act(void *ud, size_t row, i32 delta) {
+    SettingsView *v = ud;
+    if (row >= v->n) return;
+    if (!tui_busy()) { settings_apply(v, row, delta); return; }
+    if (setting_shapes_request(v->kind[row])) {
+        tui_notice(STR("that one shapes the request; it changes once the "
+                       "turn ends"));
+        return;
+    }
+    /* Mid-turn the scratch arena belongs to the request in flight: what
+     * remembering a choice writes through it is borrowed from above the
+     * request's own allocations and given back. */
+    Arena *scratch = v->ag->scratch;
+    size_t mark = scratch->off;
+    settings_apply(v, row, delta);
+    scratch->off = mark;
+}
+
+/* Static: the rows and their bookkeeping are larger than a frame of the
+ * command loop should carry, and a screen opened during a turn outlives the
+ * frame that opened it. */
+static const TuiSettings *settings_screen(Agent *ag) {
     static SettingsView view;
+    static TuiSettings set;
     view.ag = ag;
     arena_init(&view.rows_arena, g_screen, sizeof g_screen);
-    TuiSettings set = {
+    set = (TuiSettings){
         .rows = view.rows, .marks = view.marks, .max = SET_MAX_ROWS,
         .build = settings_build, .act = settings_act, .ud = &view,
     };
-    tui_settings(STR("settings"), &set);
+    return &set;
+}
+
+static void choose_settings(Agent *ag) {
+    tui_settings(STR("settings"), settings_screen(ag));
+}
+
+/* Enter while the assistant is working. Only the commands that leave the
+ * conversation, the request in flight and the streaming transcript alone run
+ * where they stand; the screens they open are driven by the same poll that
+ * keeps the turn alive. Anything else is refused and handed back to the
+ * composer, since the turn it would change is the one still running. */
+static b8 on_busy_command(Str line, void *ud) {
+    Agent *ag = ud;
+    char cmd[64];
+    if (!line.n || line.n >= sizeof cmd) return false;
+    memcpy(cmd, line.p, line.n);
+    cmd[line.n] = '\0';
+    Str name = { cmd, resolve_alias(cmd, line.n, sizeof cmd) };
+
+    b8 ran;
+    if (str_eq(name, STR("/settings")))
+        ran = tui_settings_open(STR("settings"), settings_screen(ag));
+    else if (str_eq(name, STR("/statusline")))
+        ran = tui_settings_open(STR("status line"),
+                                statusline_screen(ag->scratch));
+    else if (str_eq(name, STR("/about")))
+        ran = tui_info_open(STR("about yoke"), k_about, ABOUT_N);
+    else if (str_eq(name, STR("/copy"))) {
+        copy_last_reply(ag->conv);
+        ran = true;
+    } else if (command_offered(name)) {
+        notice_fmt("%.*s waits until the turn ends; Esc stops the turn",
+                   (i32)name.n, name.p);
+        return false;
+    } else {
+        notice_fmt("unknown command: %.*s", (i32)name.n, name.p);
+        return false;
+    }
+    if (ran) telemetry_command(name);
+    return ran;
 }
 
 /* A '!' line runs here rather than reaching the model, and takes a
@@ -2075,6 +2173,12 @@ static b8 agent_turn(Agent *ag, Str text) {
     tel_int(&te, "scratch_used", (i64)arena_used(ag->scratch));
     tel_send(&te);
     if (ag->handoff.n) return agent_handoff(ag);
+    /* The plan a handoff carries lives in the scratch arena this resets, so
+     * it runs only on the path that keeps the conversation. */
+    if (g_rerender_pending) {
+        g_rerender_pending = false;
+        rerender_conv(conv, ag->cfg, ag->show_instructions, ag->scratch, 0);
+    }
     return ok;
 }
 
@@ -2222,6 +2326,7 @@ i32 main(i32 argc, char **argv) {
         .echo = !opts.have_prompt,
         .show_instructions = prefs.show_instructions,
     };
+    tui_set_busy_command(on_busy_command, &agent);
 
     /* One-shot: the reply is the output and the exit status reports whether
      * the turn completed. */

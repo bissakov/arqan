@@ -856,9 +856,20 @@ typedef struct {
     void    *ud;
 } TuiSettings;
 void tui_settings(Str title, const TuiSettings *set);
+/* The same screen without taking the keyboard, for a turn that is streaming:
+ * it is driven by tui_poll_input and closes when the user closes it, or on
+ * the next prompt, which reads for it. False when it could not open, which
+ * includes a screen already being up. The rows, `marks` and `ud` must stay
+ * alive until it closes, so they outlive the caller's frame; `set` itself is
+ * copied. */
+b8 tui_settings_open(Str title, const TuiSettings *set);
 /* Read-only modal rows. Enter, Escape, Ctrl-C or Ctrl-D closes the page; the
  * caller keeps ownership of every string for the duration of the call. */
 void tui_info(Str title, const TuiCmd *rows, size_t n);
+/* The read-only page opened the way tui_settings_open opens a screen. */
+b8 tui_info_open(Str title, const TuiCmd *rows, size_t n);
+/* Whether a screen is up, modal or not. */
+b8 tui_screen_open(void);
 /* Modal one-line question, answered in the composer with `question` in the
  * notice row. `secret` echoes the answer as dots and keeps it out of the
  * prompt history and the transcript. False when it was cancelled, the answer
@@ -976,9 +987,15 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n);
 /* Replace the composer's text, cursor at its end; ignored without a
  * fullscreen UI. This is how a rewind hands an earlier message back. */
 void tui_set_input(Str s);
-/* While a turn is in flight keystrokes are accepted and Enter is not.
- * Callers pump tui_poll_input from wherever they wait. */
+/* While a turn is in flight keystrokes are accepted and a message waits in
+ * the composer. Callers pump tui_poll_input from wherever they wait. */
 void tui_set_busy(b8 busy);
+b8   tui_busy(void);
+/* Enter mid-turn submits a slash command to `fn`, which returns whether it
+ * took it: a refused command is handed back to the composer untouched. The
+ * hook runs inside tui_poll_input, so it must not block the wait it is
+ * pumping; a screen it opens is driven by later polls. */
+void tui_set_busy_command(b8 (*fn)(Str line, void *ud), void *ud);
 /* One transient row under the transcript naming the operation in flight, with
  * a spinner and the seconds since it began. It is painted rather than
  * written, so it leaves the transcript untouched and a replay never repeats

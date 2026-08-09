@@ -2067,6 +2067,8 @@ void tui_stop(void) {
     g_tui.raw = false;
 }
 
+b8 tui_busy(void) { return g_tui.busy; }
+
 void tui_set_busy(b8 busy) {
     if (g_tui.busy == busy) return;
     g_tui.busy = busy;
@@ -3244,30 +3246,64 @@ static void pick_settings_act(const TuiSettings *set, Str query, i32 delta) {
     pick_reselect(query, true, row < n ? row : n - 1);
 }
 
-static b8 pick_impl(Str title, const TuiCmd *items, const TuiMark *marks,
-                    size_t n, size_t search_n, TuiPickAnchor anchor,
-                    size_t start, PickKind kind, size_t *out,
-                    const TuiSettings *set) {
-    if (!g_tui.fullscreen || !items || !n || !out) return false;
-    if (n > YOKE_MAX_POPUP) n = YOKE_MAX_POPUP;
-
-    const TuiCmd *saved_cmds = g_tui.cmds;
-    const TuiMark *saved_marks = g_tui.marks;
-    size_t saved_cmd_n = g_tui.cmd_n;
-    b8 saved_dismissed = g_tui.comp_dismissed;
+/* A picker's whole state, so the same screen can be driven modally at the
+ * prompt and byte by byte from the poll while a turn streams. `set` is a copy
+ * because a screen left open through a turn outlives its caller's frame; the
+ * rows and `ud` it points at belong to the caller and must outlive it too. */
+typedef struct {
+    b8 active;
+    b8 modal;              /* the keyboard is being read for it right now  */
+    b8 search;
+    b8 has_set;
+    b8 chosen;
+    PickKind kind;
+    TuiSettings set;
+    size_t out;            /* the chosen row; read after the screen closes */
+    char query[TUI_PICK_QUERY];
+    size_t query_n;
+    const TuiCmd *saved_cmds;
+    const TuiMark *saved_marks;
+    size_t saved_cmd_n;
+    b8 saved_dismissed;
     char saved_status[sizeof g_tui.status];
     char saved_notice[sizeof g_tui.notice];
-    size_t saved_notice_n = g_tui.notice_n;
-    memcpy(saved_status, g_tui.status, sizeof saved_status);
-    memcpy(saved_notice, g_tui.notice, sizeof saved_notice);
+    size_t saved_notice_n;
+} Pick;
+
+static Pick g_pick;
+
+static void pick_close(void);
+
+static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
+                    size_t n, size_t search_n, TuiPickAnchor anchor,
+                    size_t start, PickKind kind, const TuiSettings *set,
+                    b8 modal) {
+    if (!g_tui.fullscreen || !items || !n) return false;
+    /* A screen left open during a turn yields to a modal caller, whose answer
+     * the agent loop is waiting for. Two screens have no keyboard to share,
+     * so anything else is refused. */
+    if (g_pick.active && modal && !g_pick.modal) pick_close();
+    if (g_pick.active) return false;
+    if (n > YOKE_MAX_POPUP) n = YOKE_MAX_POPUP;
+
+    memset(&g_pick, 0, sizeof g_pick);
+    g_pick.active = true;
+    g_pick.modal = modal;
+    g_pick.kind = kind;
+    if (set) { g_pick.set = *set; g_pick.has_set = true; }
+    g_pick.saved_cmds = g_tui.cmds;
+    g_pick.saved_marks = g_tui.marks;
+    g_pick.saved_cmd_n = g_tui.cmd_n;
+    g_pick.saved_dismissed = g_tui.comp_dismissed;
+    g_pick.saved_notice_n = g_tui.notice_n;
+    memcpy(g_pick.saved_status, g_tui.status, sizeof g_pick.saved_status);
+    memcpy(g_pick.saved_notice, g_tui.notice, sizeof g_pick.saved_notice);
 
     b8 settings = kind == PICK_SETTINGS;
     /* Every settings row is searchable, however few there are: a list acted
      * on repeatedly is a list worth narrowing once. */
-    b8 search = settings
-             || (kind == PICK_CHOOSE && search_n > TUI_PICK_SEARCH_MIN);
-    char query[TUI_PICK_QUERY];
-    size_t query_n = 0;
+    g_pick.search = settings
+                 || (kind == PICK_CHOOSE && search_n > TUI_PICK_SEARCH_MIN);
 
     g_tui.cmds = items;
     g_tui.marks = marks;
@@ -3279,88 +3315,124 @@ static b8 pick_impl(Str title, const TuiCmd *items, const TuiMark *marks,
     for (size_t i = 0; i < n; i++) g_tui.comp_idx[i] = (u16)i;
     /* The status is set last, so the frame announcing the picker already
      * carries the list and the search box. */
-    if (search) pick_search_row((Str){query, query_n}, settings);
+    if (g_pick.search)
+        pick_search_row((Str){g_pick.query, g_pick.query_n}, settings);
     if (kind == PICK_INFO && !g_tui.notice_n)
         tui_notice(STR("Up/Down reads the page - Enter or Esc closes"));
     char status[sizeof g_tui.status];
     snprintf(status, sizeof status, "%.*s", (i32)title.n, title.p);
     tui_set_status(status);   /* repaints */
+    return true;
+}
 
-    b8 chosen = false;
-    for (;;) {
-        i32 c = rbyte();
-        if (c == -3) { repaint(); continue; }
-        /* -2 is a signal that is not a resize, so SIGINT cancels here just as
-         * it abandons a draft at the prompt. */
-        /* Pasted text is a query rather than keys, so nothing in it picks,
-         * acts on a row or cancels. */
-        if (c < 0) break;
-        if ((c == 0x03 || c == 0x04) && !g_tui.pasting) break;
-        if (g_tui.pasting && (c == '\r' || c == '\n')) continue;
-        i32 act = 0;   /* the direction a settings row was asked to move */
-        if ((c == '\r' || c == '\n') && !g_tui.pasting) {
-            if (kind == PICK_INFO) break;
-            if (!g_tui.comp_n) continue;
-            /* Enter is the key a reader reaches for, so on a settings row it
-             * does what Space does rather than closing the screen. */
-            if (!settings) {
-                *out = g_tui.comp_idx[g_tui.comp_sel];
-                chosen = true;
-                break;
-            }
-            act = 1;
-        } else if (c == ' ' && settings && !g_tui.pasting) {
-            if (!g_tui.comp_n) continue;
-            act = 1;
+/* One input byte applied to the open screen. False once it has closed, and
+ * the caller answers with pick_close. Painting happens here, so a caller
+ * that is only forwarding bytes never has to know which key changed what. */
+static b8 pick_feed(i32 c) {
+    if (!g_pick.active) return false;
+    b8 settings = g_pick.kind == PICK_SETTINGS;
+    const TuiSettings *set = g_pick.has_set ? &g_pick.set : NULL;
+    Str query = { g_pick.query, g_pick.query_n };
+
+    if (c == -3) { repaint(); return true; }
+    /* -2 is a signal that is not a resize, so SIGINT cancels here just as
+     * it abandons a draft at the prompt. */
+    /* Pasted text is a query rather than keys, so nothing in it picks,
+     * acts on a row or cancels. */
+    if (c < 0) return false;
+    if ((c == 0x03 || c == 0x04) && !g_tui.pasting) return false;
+    if (g_tui.pasting && (c == '\r' || c == '\n')) return true;
+    i32 act = 0;   /* the direction a settings row was asked to move */
+    if ((c == '\r' || c == '\n') && !g_tui.pasting) {
+        if (g_pick.kind == PICK_INFO) return false;
+        if (!g_tui.comp_n) return true;
+        /* Enter is the key a reader reaches for, so on a settings row it
+         * does what Space does rather than closing the screen. */
+        if (!settings) {
+            g_pick.out = g_tui.comp_idx[g_tui.comp_sel];
+            g_pick.chosen = true;
+            return false;
         }
-        if (act) {
-            pick_settings_act(set, (Str){query, query_n}, act);
-            repaint();
-            continue;
-        }
-        if (c == 0x0e) completion_move(1);
-        else if (c == 0x10) completion_move(-1);
-        else if (c == 0x1b) {
-            i32 key = read_escape();
-            if (key == KEY_DOWN) completion_move(1);
-            else if (key == KEY_UP) completion_move(-1);
-            else if (settings && g_tui.comp_n
-                     && (key == KEY_LEFT || key == KEY_RIGHT)) {
-                pick_settings_act(set, (Str){query, query_n},
-                                  key == KEY_LEFT ? -1 : 1);
-            }
-            else if (scroll_key(key)) { /* the transcript moves, not the list */ }
-            else if (key == KEY_NONE) break;          /* bare Esc cancels */
-        } else if (search) {
-            if (c == 0x7f || c == 0x08) {
-                if (query_n) query_n = prev_glyph(query, query_n);
-            } else if (c == 0x15) {
-                query_n = 0;
-            } else if (((c >= 0x20 && c < 0x7f) || c >= 0x80)
-                       && query_n + 1 < sizeof query) {
-                query[query_n++] = (char)c;
-            } else {
-                continue;
-            }
-            pick_filter((Str){query, query_n}, settings);
-            pick_search_row((Str){query, query_n}, settings);
-            continue;
-        }
-        repaint();
+        act = 1;
+    } else if (c == ' ' && settings && !g_tui.pasting) {
+        if (!g_tui.comp_n) return true;
+        act = 1;
     }
+    if (act) {
+        pick_settings_act(set, query, act);
+        repaint();
+        return true;
+    }
+    if (c == 0x0e) completion_move(1);
+    else if (c == 0x10) completion_move(-1);
+    else if (c == 0x1b) {
+        i32 key = read_escape();
+        if (key == KEY_DOWN) completion_move(1);
+        else if (key == KEY_UP) completion_move(-1);
+        else if (settings && g_tui.comp_n
+                 && (key == KEY_LEFT || key == KEY_RIGHT)) {
+            pick_settings_act(set, query, key == KEY_LEFT ? -1 : 1);
+        }
+        else if (scroll_key(key)) { /* the transcript moves, not the list */ }
+        else if (key == KEY_NONE) return false;       /* bare Esc cancels */
+    } else if (g_pick.search) {
+        if (c == 0x7f || c == 0x08) {
+            if (g_pick.query_n)
+                g_pick.query_n = prev_glyph(g_pick.query, g_pick.query_n);
+        } else if (c == 0x15) {
+            g_pick.query_n = 0;
+        } else if (((c >= 0x20 && c < 0x7f) || c >= 0x80)
+                   && g_pick.query_n + 1 < sizeof g_pick.query) {
+            g_pick.query[g_pick.query_n++] = (char)c;
+        } else {
+            return true;
+        }
+        query = (Str){ g_pick.query, g_pick.query_n };
+        pick_filter(query, settings);
+        pick_search_row(query, settings);
+        return true;
+    }
+    repaint();
+    return true;
+}
 
-    g_tui.cmds = saved_cmds;
-    g_tui.marks = saved_marks;
-    g_tui.cmd_n = saved_cmd_n;
+/* Hands the popup back to the composer. `chosen` and `out` survive it, so a
+ * caller reads its answer after the screen is gone. */
+static void pick_close(void) {
+    if (!g_pick.active) return;
+    g_tui.cmds = g_pick.saved_cmds;
+    g_tui.marks = g_pick.saved_marks;
+    g_tui.cmd_n = g_pick.saved_cmd_n;
     g_tui.pick_end = false;
-    g_tui.comp_dismissed = saved_dismissed;
-    memcpy(g_tui.notice, saved_notice, sizeof saved_notice);
-    g_tui.notice_n = saved_notice_n;
+    g_tui.comp_dismissed = g_pick.saved_dismissed;
+    memcpy(g_tui.notice, g_pick.saved_notice, sizeof g_tui.notice);
+    g_tui.notice_n = g_pick.saved_notice_n;
+    g_pick.active = false;
+    g_pick.modal = false;
     /* The match list described the picker's entries; rebuild it. */
     completion_refresh();
-    memcpy(g_tui.status, saved_status, sizeof saved_status);
+    memcpy(g_tui.status, g_pick.saved_status, sizeof g_tui.status);
     repaint();
-    return chosen;
+}
+
+/* Reads the keyboard for the open screen until it closes. */
+static void pick_run(void) {
+    g_pick.modal = true;
+    while (g_pick.active && pick_feed(rbyte())) { }
+    pick_close();
+}
+
+static b8 pick_impl(Str title, const TuiCmd *items, const TuiMark *marks,
+                    size_t n, size_t search_n, TuiPickAnchor anchor,
+                    size_t start, PickKind kind, size_t *out,
+                    const TuiSettings *set) {
+    if (!out) return false;
+    if (!pick_open(title, items, marks, n, search_n, anchor, start, kind, set,
+                   true))
+        return false;
+    pick_run();
+    if (g_pick.chosen) *out = g_pick.out;
+    return g_pick.chosen;
 }
 
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
@@ -3385,6 +3457,14 @@ void tui_settings(Str title, const TuiSettings *set) {
                     PICK_SETTINGS, &out, set);
 }
 
+b8 tui_settings_open(Str title, const TuiSettings *set) {
+    if (!set || !set->rows || !set->build || !set->act) return false;
+    size_t n = set->build(set->ud);
+    if (!n) return false;
+    return pick_open(title, set->rows, set->marks, n, n, TUI_PICK_FIRST, 0,
+                     PICK_SETTINGS, set, false);
+}
+
 void tui_info(Str title, const TuiCmd *rows, size_t n) {
     if (!rows || !n) return;
     if (!g_tui.fullscreen) {
@@ -3399,6 +3479,14 @@ void tui_info(Str title, const TuiCmd *rows, size_t n) {
                     NULL);
 }
 
+b8 tui_info_open(Str title, const TuiCmd *rows, size_t n) {
+    if (!rows || !n) return false;
+    return pick_open(title, rows, NULL, n, n, TUI_PICK_FIRST, 0, PICK_INFO,
+                     NULL, false);
+}
+
+b8 tui_screen_open(void) { return g_pick.active; }
+
 /* A question the composer is borrowed for. The editor is deliberately not the
  * composer's own, since a question wants none of its history recall,
  * completion or shell mode, and a secret answer must not survive in a buffer
@@ -3407,6 +3495,9 @@ void tui_info(Str title, const TuiCmd *rows, size_t n) {
 static b8 ask_impl(Str question, b8 secret, char *out, size_t cap,
                    b8 edit, b8 allow_empty) {
     if (!g_tui.fullscreen || !out || cap < 2) return false;
+    /* The question owns the composer, which a screen opened during the turn
+     * is drawn over. */
+    if (g_pick.active && !g_pick.modal) pick_close();
     size_t limit = cap - 1 < TUI_ASK_MAX ? cap - 1 : TUI_ASK_MAX;
     size_t initial_n = 0;
     if (edit) {
@@ -3691,10 +3782,53 @@ static void composer_clear(void) {
     if (g_tui.hist) history_reset_cursor(g_tui.hist);
 }
 
-/* Drain what the terminal already has, without ever blocking. Enter is
- * swallowed, so the composed text stays put until the prompt reopens. */
+static b8 (*g_busy_cmd)(Str line, void *ud);
+static void *g_busy_cmd_ud;
+
+void tui_set_busy_command(b8 (*fn)(Str line, void *ud), void *ud) {
+    g_busy_cmd = fn;
+    g_busy_cmd_ud = ud;
+}
+
+/* Enter while a turn is in flight. A message belongs to the next turn and
+ * stays in the composer; a slash command is offered to the hook, which takes
+ * only the ones that leave the running turn alone. The composer is cleared
+ * before the hook runs, since a screen it opens owns the popup afterwards,
+ * and the text is handed back when the command was refused. */
+static void busy_submit(void) {
+    if (!g_busy_cmd || !g_tui.input_n || g_tui.input[0] != '/') return;
+    /* A line longer than any command is prose that happens to start with a
+     * slash, and it waits in the composer like every other message. */
+    char cmd[256];
+    size_t n = g_tui.input_n;
+    if (n >= sizeof cmd) return;
+    memcpy(cmd, g_tui.input, n);
+    cmd[n] = '\0';
+    composer_clear();
+    if (g_busy_cmd((Str){cmd, n}, g_busy_cmd_ud)) {
+        if (g_tui.hist) history_add(g_tui.hist, (Str){cmd, n});
+        return;
+    }
+    tui_set_input((Str){cmd, n});
+}
+
+/* Drain what the terminal already has, without ever blocking. Enter submits
+ * only the commands a running turn can afford; anything else stays in the
+ * composer until the prompt reopens. */
 void tui_poll_input(void) {
     if (!g_tui.fullscreen) return;
+    /* A screen opened mid-turn owns the keyboard, and reading it here is what
+     * keeps it live: nothing below it may take a byte from under it. */
+    if (g_pick.active && !g_pick.modal) {
+        while (g_pick.active && !g_tui.input_eof && input_ready(0)) {
+            i32 c = rbyte();
+            if (c == -2) continue;
+            if (c < 0 && c != -3) { g_tui.input_eof = true; pick_close(); return; }
+            if (!pick_feed(c)) pick_close();
+        }
+        if (g_winch != 0) repaint();
+        return;
+    }
     b8 dirty = g_winch != 0;
     /* The spinner and its elapsed time move on their own, so an idle poll is
      * what advances them. */
@@ -3706,13 +3840,15 @@ void tui_poll_input(void) {
         if (c == -3) { dirty = true; continue; }
         if (c == -2) continue;
         if (c < 0) { g_tui.input_eof = true; break; }
-        /* Enter, Ctrl-C and Ctrl-D belong to the prompt rather than to a live
-         * turn, except that an open popup lets Enter complete an entry, which
-         * is harmless mid-turn since the submit is dropped. */
-        if ((c == '\r' || c == '\n') && !g_tui.comp_n && !g_tui.pasting)
-            continue;
+        /* Ctrl-C and Ctrl-D belong to the prompt rather than to a live turn.
+         * Enter reaches the editor so an open popup can complete an entry and
+         * so a command the turn can afford is submitted where it stands. */
         if ((c == 0x03 || c == 0x04) && !g_tui.pasting) continue;
-        editor_key(c);
+        if (editor_key(c) == ED_SUBMIT) {
+            busy_submit();
+            /* The hook may have opened a screen, which owns what follows. */
+            if (g_pick.active && !g_pick.modal) { repaint(); return; }
+        }
         dirty = true;
     }
     if (dirty) repaint();
@@ -3727,6 +3863,10 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
         while (n && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) n--;
         buf[n] = '\0'; *out_n = n; return true;
     }
+
+    /* A screen the user opened mid-turn stays up when the turn ends; the
+     * prompt waits behind it rather than reading keys meant for it. */
+    if (g_pick.active && !g_pick.modal) pick_run();
 
     /* The composer already holds anything typed during the previous turn. */
     g_tui.editing = true;

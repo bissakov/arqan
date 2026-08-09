@@ -55,6 +55,9 @@ environment, saved choices, and config. Run `yoke --help` for all options.
   `/mode`, `/settings`, `/help`, and `/exit`.
 - Shift+Tab toggles Build and Plan modes. Plan mode can inspect but cannot
   write or patch.
+- While a turn runs, `/settings`, `/statusline`, `/about` and `/copy` still
+  work; a message waits in the composer, and a setting the running request
+  reads changes at the next prompt.
 
 The built-in tools are `read`, `write`, `bash`, `patch`, `grep`, and `find`.
 Disable tools with `/settings`, `YOKE_DISABLE_TOOLS`, or `--disable-tools`.
