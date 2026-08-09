@@ -19,6 +19,7 @@
 #define MD_TABLE_ROWS 64
 #define MD_TABLE_COLS 32
 #define MD_TABLE_BYTES (32u << 10)
+#define MD_HL_LINES (YHL_SOURCE_MAX / 2u + 2u)
 
 enum {
     MD_BLOCK_PLAIN, MD_BLOCK_HEAD, MD_BLOCK_QUOTE, MD_BLOCK_CODE,
@@ -52,6 +53,17 @@ static struct {
     size_t table_bytes;
     size_t table_cols;
     u8     table_align[MD_TABLE_COLS];
+    char   hl_alias[YHL_ALIAS_MAX];
+    size_t hl_alias_n;
+    char   hl_source[YHL_SOURCE_MAX];
+    u32    hl_src_start[MD_HL_LINES];
+    u32    hl_src_end[MD_HL_LINES];
+    size_t hl_dst_start[MD_HL_LINES];
+    size_t hl_source_n;
+    size_t hl_line_n;
+    u64    hl_epoch;
+    b8     hl_active;
+    b8     hl_line_open;
 } g_md;
 
 static b8 md_space(char c) { return c == ' ' || c == '\t'; }
@@ -82,6 +94,104 @@ static TuiStyle md_base(void) {
 }
 
 static void md_drain(b8 flush);
+
+static void md_hl_abandon(void) {
+    g_md.hl_active = false;
+    g_md.hl_line_open = false;
+    g_md.hl_source_n = 0;
+    g_md.hl_line_n = 0;
+}
+
+static void md_hl_begin(Str alias) {
+    md_hl_abandon();
+    g_md.hl_alias_n = 0;
+    if (!tui_highlight_enabled() || !alias.n || alias.n > YHL_ALIAS_MAX) return;
+    for (size_t i = 0; i < alias.n; i++) {
+        unsigned char c = (unsigned char)alias.p[i];
+        if (c >= 'A' && c <= 'Z') c = (unsigned char)(c + 32);
+        g_md.hl_alias[i] = (char)c;
+    }
+    g_md.hl_alias_n = alias.n;
+    g_md.hl_epoch = tui_transcript_epoch();
+    g_md.hl_active = true;
+}
+
+static void md_hl_line_begin(void) {
+    if (!g_md.hl_active) return;
+    if (g_md.hl_epoch != tui_transcript_epoch() || g_md.hl_line_n == MD_HL_LINES) {
+        md_hl_abandon();
+        return;
+    }
+    size_t line = g_md.hl_line_n++;
+    g_md.hl_src_start[line] = (u32)g_md.hl_source_n;
+    g_md.hl_src_end[line] = (u32)g_md.hl_source_n;
+    g_md.hl_dst_start[line] = tui_transcript_pos();
+    g_md.hl_line_open = true;
+}
+
+static void md_hl_put(Str s) {
+    if (!g_md.hl_active || !g_md.hl_line_open || !s.n) return;
+    if (s.n > YHL_SOURCE_MAX - g_md.hl_source_n) {
+        md_hl_abandon();
+        return;
+    }
+    memcpy(g_md.hl_source + g_md.hl_source_n, s.p, s.n);
+    g_md.hl_source_n += s.n;
+}
+
+static void md_hl_line_end(b8 newline) {
+    if (!g_md.hl_active || !g_md.hl_line_open) return;
+    g_md.hl_src_end[g_md.hl_line_n - 1] = (u32)g_md.hl_source_n;
+    g_md.hl_line_open = false;
+    if (!newline) return;
+    if (g_md.hl_source_n == YHL_SOURCE_MAX) {
+        md_hl_abandon();
+        return;
+    }
+    g_md.hl_source[g_md.hl_source_n++] = '\n';
+}
+
+static size_t md_hl_rendered(size_t a, size_t b) {
+    size_t n = 0;
+    for (size_t i = a; i < b; i++) {
+        unsigned char c = (unsigned char)g_md.hl_source[i];
+        if (c == '\t') n += 4;
+        else if (c == '\n' || c == '\r' || c < 0x20) continue;
+        else n++;
+    }
+    return n;
+}
+
+static void md_hl_finish(void) {
+    if (!g_md.hl_active) return;
+    md_hl_line_end(false);
+    if (g_md.hl_epoch != tui_transcript_epoch()) { md_hl_abandon(); return; }
+    static YhlResult result;
+    Str hint = { g_md.hl_alias, g_md.hl_alias_n };
+    Str source = { g_md.hl_source, g_md.hl_source_n };
+    if (highlight_request(YHL_HINT_MARKDOWN_ALIAS, hint, source, &result)) {
+        size_t line = 0;
+        for (size_t r = 0; r < result.n; r++) {
+            size_t start = result.run[r].start;
+            size_t end = result.run[r].end;
+            while (line < g_md.hl_line_n
+                   && g_md.hl_src_end[line] <= start) line++;
+            for (size_t i = line; i < g_md.hl_line_n
+                 && g_md.hl_src_start[i] < end; i++) {
+                size_t a = start > g_md.hl_src_start[i]
+                         ? start : g_md.hl_src_start[i];
+                size_t b = end < g_md.hl_src_end[i] ? end : g_md.hl_src_end[i];
+                if (a >= b) continue;
+                size_t dst_a = g_md.hl_dst_start[i]
+                             + md_hl_rendered(g_md.hl_src_start[i], a);
+                size_t dst_b = dst_a + md_hl_rendered(a, b);
+                tui_syntax_add(dst_a, dst_b, result.run[r].semantic);
+            }
+        }
+        tui_syntax_commit();
+    }
+    md_hl_abandon();
+}
 
 static void md_push(char c) {
     if (g_md.pend_n == MD_PEND_MAX) md_drain(true);
@@ -224,6 +334,7 @@ static i32 md_run(size_t i, size_t *used) {
  * line, so whatever is still open was never markup and reads literally. */
 static void md_drain(b8 flush) {
     if (g_md.block == MD_BLOCK_CODE) {
+        md_hl_put((Str){ g_md.pend, g_md.pend_n });
         md_emit((Str){ g_md.pend, g_md.pend_n }, TUI_CODE);
         if (g_md.pend_n) g_md.last = g_md.pend[g_md.pend_n - 1];
         g_md.pend_n = 0;
@@ -311,6 +422,8 @@ static void md_resolve(char next) {
     if (g_md.fence) {
         g_md.block = MD_BLOCK_CODE;
         md_emit(STR("  "), TUI_CODE);
+        md_hl_line_begin();
+        md_hl_put(p);
         md_emit(p, TUI_CODE);
         if (next) md_push(next);
         return;
@@ -389,6 +502,7 @@ static void md_line_reset(void) {
 static void md_line_end(void) {
     if (!g_md.in_body) md_resolve(0);
     md_drain(true);
+    md_hl_line_end(g_md.fence);
     tui_write(STR("\n"));
     md_line_reset();
 }
@@ -592,8 +706,29 @@ static void md_held_flush(void) {
 
 static void md_complete_line(Str line, b8 eol) {
     if (g_md.fence) {
+        size_t i = 0;
+        while (i < line.n && line.p[i] == ' ') i++;
+        b8 closes = i <= 8 && line.n - i >= 3
+                 && line.p[i] == g_md.fence_mark
+                 && line.p[i + 1] == g_md.fence_mark
+                 && line.p[i + 2] == g_md.fence_mark
+                 && (line.n == i + 3 || line.p[i + 3] != g_md.fence_mark);
         md_regular(line, eol);
+        if (closes) md_hl_finish();
         return;
+    }
+    size_t fence_i = 0;
+    while (fence_i < line.n && line.p[fence_i] == ' ') fence_i++;
+    if (fence_i <= 8 && line.n - fence_i >= 3
+        && (line.p[fence_i] == '`' || line.p[fence_i] == '~')
+        && line.p[fence_i + 1] == line.p[fence_i]
+        && line.p[fence_i + 2] == line.p[fence_i]
+        && (line.n == fence_i + 3 || line.p[fence_i + 3] != line.p[fence_i])) {
+        size_t info = fence_i + 3;
+        while (info < line.n && md_space(line.p[info])) info++;
+        size_t end = info;
+        while (end < line.n && !md_space(line.p[end])) end++;
+        md_hl_begin((Str){ line.p + info, end - info });
     }
     if (g_md.table_n) {
         if (md_table_row(line) && md_table_add(line)) return;
@@ -671,6 +806,7 @@ void md_end(void) {
     g_md.line_n = 0;
     md_table_flush();
     md_held_flush();
+    if (g_md.fence) md_hl_finish();
     md_low_end();
 }
 

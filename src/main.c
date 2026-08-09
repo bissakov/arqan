@@ -20,6 +20,7 @@
 #include "provider.c"
 #include "session.c"
 #include "tui.c"
+#include "highlight.c"
 #include "render.c"
 #include "markdown.c"
 
@@ -316,8 +317,8 @@ static b8 add_result(Agent *ag, size_t call, Str name, Str result, u32 ms) {
     }
     conv->ms[slot] = ms;
     if (g_one_shot) one_shot_diag("tool result", name, result);
-    else render_tool_result(name, result, (u32)(slot + 1),
-                            conv->expanded[slot], ms);
+    else render_tool_result(name, conv->text[call], result, ag->scratch,
+                            (u32)(slot + 1), conv->expanded[slot], ms);
     return true;
 }
 
@@ -444,13 +445,14 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         size_t tool = tools_find(ag->tools, name);
         Buf out; buf_init(&out, ag->scratch, 4096);
         char err[256] = {0};
-        f64 started = yoke_now_seconds();
         if (g_one_shot) one_shot_diag("tool call", name, args);
-        else render_tool_call(name, args, ag->scratch, (u32)(i + 1),
-                              conv->expanded[i]);
         char status[32];
         snprintf(status, sizeof status, "running %.*s", (i32)name.n, name.p);
         say_busy(status);
+        if (!g_one_shot)
+            render_tool_call(name, args, ag->scratch, (u32)(i + 1),
+                             conv->expanded[i]);
+        f64 started = yoke_now_seconds();
         b8 ok = tools_run(ag->tools, tool, args, ag->scratch, &out, err,
                           sizeof err);
         if (!ok) buf_error(&out, err, "tool failed");
@@ -476,12 +478,12 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
 
 /* A result slot carries only the id of the call it belongs to, and how it
  * reads depends on which tool produced it. */
-static Str call_name(const Conv *c, size_t result) {
+static size_t call_slot(const Conv *c, size_t result) {
     for (size_t i = result; i-- > 0;)
         if (conv_is_call(c, i) && str_eq(c->tool_call_id[i],
                                          c->tool_call_id[result]))
-            return c->tool_name[i];
-    return (Str){0};
+            return i;
+    return CONV_NONE;
 }
 
 /* The transcript is a rendering of the messages, so replaying them takes the
@@ -529,15 +531,21 @@ static void render_conv(const Conv *c, const Config *cfg,
             case M_USER:
                 if (conv_is_shell(c, i)) {
                     render_shell_call(c->text[i], (u32)(i + 1), c->expanded[i]);
-                    render_tool_result(STR("shell"), c->shell_out[i],
-                                       (u32)(i + 1), c->expanded[i], c->ms[i]);
+                    render_tool_result(STR("shell"), (Str){0}, c->shell_out[i],
+                                       scratch, (u32)(i + 1), c->expanded[i],
+                                       c->ms[i]);
                 } else {
                     render_user_message(c->text[i]);
                 }
                 break;
             case M_TOOL:
-                render_tool_result(call_name(c, i), c->text[i],
-                                   (u32)(i + 1), c->expanded[i], c->ms[i]);
+                {
+                    size_t call = call_slot(c, i);
+                    Str name = call == CONV_NONE ? (Str){0} : c->tool_name[call];
+                    Str args = call == CONV_NONE ? (Str){0} : c->text[call];
+                    render_tool_result(name, args, c->text[i], scratch,
+                                       (u32)(i + 1), c->expanded[i], c->ms[i]);
+                }
                 break;
             case M_ASSISTANT:
                 if (conv_is_call(c, i)) {
@@ -1599,8 +1607,9 @@ static void choose_settings(Agent *ag) {
             setting_check(scratch, render_verbose(), STR("Verbose tool output")),
             STR("Every line a tool printed, untruncated") };
         rows[SET_RAW] = (TuiCmd){
-            setting_check(scratch, md_raw(), STR("Raw Markdown")),
-            STR("Messages as written, unformatted") };
+            setting_check(scratch, md_raw(), STR("Display raw")),
+            md_raw() ? STR("No Markdown or syntax highlighting")
+                     : STR("Markdown and syntax highlighting") };
         rows[SET_STREAM] = (TuiCmd){
             setting_check(scratch, cfg->stream, STR("Stream replies")),
             STR("Paint a reply as it arrives, not once it is whole") };
@@ -1737,9 +1746,8 @@ static void run_shell(Agent *ag, Str cmd) {
         say_conv_full();
         return;
     }
-    render_shell_call(stored, (u32)(slot + 1), false);
-
     say_busy("running shell");
+    render_shell_call(stored, (u32)(slot + 1), false);
     f64 started = yoke_now_seconds();
     Buf out; buf_init(&out, ag->scratch, 4096);
     char err[256] = {0};
@@ -1756,7 +1764,8 @@ static void run_shell(Agent *ag, Str cmd) {
     tel_send(&e);
     conv->shell_out[slot] = result;
     conv->ms[slot] = ms;
-    render_tool_result(STR("shell"), result, (u32)(slot + 1), false, ms);
+    render_tool_result(STR("shell"), (Str){0}, result, ag->scratch,
+                       (u32)(slot + 1), false, ms);
     session_save(ag->sess, conv);
     /* Last, so the spinner is never taken down before what it was spinning
      * for is on screen: a frame saying idle with no result is a run that
@@ -2060,6 +2069,8 @@ i32 main(i32 argc, char **argv) {
      * same way. */
     shell_set_idle(on_idle, NULL);
     atexit(tui_stop);
+    highlight_init(argv[0]);
+    atexit(highlight_close);
 
     /* After tui_start, since the record names the shape of the terminal. */
     telemetry_init(&scratch);

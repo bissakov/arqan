@@ -46,6 +46,7 @@ _Static_assert(TUI_STATUS_N == YOKE_STATUS_FIELDS,
 /* Markdown claims one span per emphasis run, so this counts words of a reply
  * rather than messages. */
 #define TUI_MAX_SPANS 4096
+#define TUI_MAX_SYNTAX 16384
 #define TUI_CKPTS 4096           /* wrapped-row checkpoints into the transcript */
 #define TUI_MAX_ZONES 512        /* clickable transcript ranges kept          */
 #define TUI_MAX_USERS 512        /* submitted-message panels kept             */
@@ -136,6 +137,13 @@ typedef struct {
     size_t span_b[TUI_MAX_SPANS];
     u8     span_k[TUI_MAX_SPANS];
     size_t span_n;
+    /* Presentation-only syntax foregrounds overlay the ordinary Markdown and
+     * tool styles without changing their byte ranges or backgrounds. */
+    size_t syntax_a[TUI_MAX_SYNTAX];
+    size_t syntax_b[TUI_MAX_SYNTAX];
+    u8     syntax_k[TUI_MAX_SYNTAX];
+    size_t syntax_n;
+    u64    transcript_epoch;
     /* User panels are a background layer, not a Markdown style: their ranges
      * may contain heading, code and inline spans without overlapping the
      * ordered span table above. */
@@ -824,6 +832,19 @@ static void spans_shift(size_t delta) {
     g_tui.span_n = w;
 }
 
+static void syntax_shift(size_t delta) {
+    size_t w = 0;
+    for (size_t i = 0; i < g_tui.syntax_n; i++) {
+        if (g_tui.syntax_b[i] <= delta) continue;
+        g_tui.syntax_a[w] = g_tui.syntax_a[i] > delta
+                          ? g_tui.syntax_a[i] - delta : 0;
+        g_tui.syntax_b[w] = g_tui.syntax_b[i] - delta;
+        g_tui.syntax_k[w] = g_tui.syntax_k[i];
+        w++;
+    }
+    g_tui.syntax_n = w;
+}
+
 static void user_add(size_t a, size_t b) {
     if (a >= b) return;
     if (g_tui.user_n == TUI_MAX_USERS) {
@@ -947,6 +968,41 @@ static u64 hash_spans(u64 h, size_t off, size_t n) {
     return h;
 }
 
+static size_t syntax_first(size_t off) {
+    size_t lo = 0, hi = g_tui.syntax_n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (g_tui.syntax_b[mid] <= off) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+}
+
+static u8 syntax_run(size_t off, size_t limit, size_t *end) {
+    size_t i = syntax_first(off);
+    u8 kind = 0;
+    size_t stop = limit;
+    if (i < g_tui.syntax_n) {
+        if (off >= g_tui.syntax_a[i]) {
+            kind = g_tui.syntax_k[i];
+            if (g_tui.syntax_b[i] < stop) stop = g_tui.syntax_b[i];
+        } else if (g_tui.syntax_a[i] < stop) {
+            stop = g_tui.syntax_a[i];
+        }
+    }
+    *end = stop;
+    return kind;
+}
+
+static u64 hash_syntax(u64 h, size_t off, size_t n) {
+    for (size_t i = syntax_first(off);
+         i < g_tui.syntax_n && g_tui.syntax_a[i] < off + n; i++) {
+        h = hash_add(h, &g_tui.syntax_a[i], sizeof g_tui.syntax_a[i]);
+        h = hash_add(h, &g_tui.syntax_b[i], sizeof g_tui.syntax_b[i]);
+        h = hash_add(h, &g_tui.syntax_k[i], sizeof g_tui.syntax_k[i]);
+    }
+    return h;
+}
+
 /* ---- justification -------------------------------------------------------
  * A wrapped row reaches the right edge by widening the gaps between its
  * words, which is a property of the painting alone: the break positions are
@@ -1005,14 +1061,30 @@ static void put_just(const char *p, size_t n, Just *j) {
 }
 
 /* A row whose bytes carry inline styles, one style per run. */
+static const char *syntax_style(u8 kind) {
+    switch (kind) {
+        case YHL_SEM_COMMENT:  return S_MUTED S_ITALIC;
+        case YHL_SEM_STRING:   return "\033[38;5;114m";
+        case YHL_SEM_NUMBER:   return "\033[38;5;221m";
+        case YHL_SEM_KEYWORD:  return "\033[38;5;177m";
+        case YHL_SEM_TYPE:     return "\033[38;5;81m";
+        case YHL_SEM_FUNCTION: return "\033[38;5;75m";
+        case YHL_SEM_BUILTIN:  return S_MONO;
+        default:               return NULL;
+    }
+}
+
 static void paint_runs(Str text, size_t off, Just *j, u8 base, b8 user) {
     for (size_t i = 0; i < text.n;) {
-        size_t end = 0;
+        size_t end = 0, syntax_end = 0;
         u8 kind = span_run(off + i, off + text.n, &end);
+        u8 syntax = syntax_run(off + i, off + text.n, &syntax_end);
+        if (syntax_end < end) end = syntax_end;
         size_t take = end - (off + i);
         style(S_RESET);
         if (user && base != ROW_CODE) style(S_USER_BG);
         style(kind_style(kind ? kind : base));
+        if (syntax) style(syntax_style(syntax));
         put_just(text.p + i, take, j);
         i += take;
     }
@@ -1038,7 +1110,10 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
     hash = hash_add(hash, &user, sizeof user);
     hash = hash_add(hash, &just.gaps, sizeof just.gaps);
     hash = hash_add(hash, &just.extra, sizeof just.extra);
-    if (text_off != SIZE_MAX) hash = hash_spans(hash, text_off, text.n);
+    if (text_off != SIZE_MAX) {
+        hash = hash_spans(hash, text_off, text.n);
+        hash = hash_syntax(hash, text_off, text.n);
+    }
     /* Highlighting is part of a row's appearance, so it is in the diff. */
     size_t sel_c0, sel_c1;
     sel_row_range(screen_row, &sel_c0, &sel_c1);
@@ -2061,6 +2136,8 @@ void tui_clear_transcript(void) {
     g_tui.pend_nl = 0;
     g_tui.trail_nl = 0;
     g_tui.span_n = 0;
+    g_tui.syntax_n = 0;
+    g_tui.transcript_epoch++;
     g_tui.user_n = 0;
     g_tui.user_open = false;
     g_tui.zone_n = 0;
@@ -2144,6 +2221,8 @@ static void transcript_put(Str s) {
         s.n = TUI_TRANSCRIPT_CAP - 1;
         g_tui.transcript_n = 0;
         g_tui.span_n = 0;
+        g_tui.syntax_n = 0;
+        g_tui.transcript_epoch++;
         g_tui.user_n = 0;
         g_tui.zone_n = 0;
         wrap_invalidate();   /* the bytes the index described are gone */
@@ -2155,6 +2234,8 @@ static void transcript_put(Str s) {
         memmove(g_tui.transcript,
                 g_tui.transcript + g_tui.transcript_n - keep, keep);
         spans_shift(g_tui.transcript_n - keep);
+        syntax_shift(g_tui.transcript_n - keep);
+        g_tui.transcript_epoch++;
         users_shift(g_tui.transcript_n - keep);
         zones_shift(g_tui.transcript_n - keep);
         g_tui.transcript_n = keep;
@@ -2274,9 +2355,43 @@ void tui_write_styled(Str s, TuiStyle st) {
 }
 
 void tui_write_muted(Str s)  { write_span(s, ROW_REASON); }
+void tui_write_text(Str s)   { write_span(s, ROW_PLAIN); }
 void tui_write_tool(Str s)   { write_span(s, ROW_TOOL); }
 void tui_write_result(Str s) { write_span(s, ROW_RESULT); }
 void tui_write_error(Str s)  { write_span(s, ROW_ERROR); }
+
+b8 tui_highlight_enabled(void) {
+    return g_tui.fullscreen && g_tui.color;
+}
+
+size_t tui_transcript_pos(void) { return g_tui.transcript_n; }
+u64 tui_transcript_epoch(void) { return g_tui.transcript_epoch; }
+
+void tui_syntax_add(size_t a, size_t b, u8 kind) {
+    if (!tui_highlight_enabled() || a >= b || b > g_tui.transcript_n
+        || kind < YHL_SEM_COMMENT || kind > YHL_SEM_BUILTIN)
+        return;
+    if (g_tui.syntax_n && g_tui.syntax_k[g_tui.syntax_n - 1] == kind
+        && g_tui.syntax_b[g_tui.syntax_n - 1] == a) {
+        g_tui.syntax_b[g_tui.syntax_n - 1] = b;
+        return;
+    }
+    if (g_tui.syntax_n == TUI_MAX_SYNTAX) {
+        memmove(g_tui.syntax_a, g_tui.syntax_a + 1,
+                sizeof g_tui.syntax_a - sizeof g_tui.syntax_a[0]);
+        memmove(g_tui.syntax_b, g_tui.syntax_b + 1,
+                sizeof g_tui.syntax_b - sizeof g_tui.syntax_b[0]);
+        memmove(g_tui.syntax_k, g_tui.syntax_k + 1,
+                sizeof g_tui.syntax_k - sizeof g_tui.syntax_k[0]);
+        g_tui.syntax_n--;
+    }
+    g_tui.syntax_a[g_tui.syntax_n] = a;
+    g_tui.syntax_b[g_tui.syntax_n] = b;
+    g_tui.syntax_k[g_tui.syntax_n] = kind;
+    g_tui.syntax_n++;
+}
+
+void tui_syntax_commit(void) { repaint(); }
 
 /* A user turn is a block of screen rather than a labelled line: a padding row
  * above and below, and the whole range recorded so every row it wraps onto

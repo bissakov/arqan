@@ -1,0 +1,14 @@
+# role	owner	repository	ref	sha256
+runtime	tree-sitter	tree-sitter	v0.26.11	1bab01ed21464f3272665b9c60e39ee79f68da1333e80b23f2c9356569d06971
+c	tree-sitter	tree-sitter-c	v0.24.2	2eeb4db31f8fa0865e45488503d13403923bcb485a1bdb637abff8c42dd97364
+cpp	tree-sitter	tree-sitter-cpp	8b5b49eb196bec7040441bee33b2c9a4838d6967	a12b464b8c89d7c1843849bfebb0b5807980555351d60598b92939233abff842
+rust	tree-sitter	tree-sitter-rust	v0.24.2	061e90a539a55a6aa65dceb0ad6425c50ab1a6e3e6d4ba430e2795ed4550f10e
+go	tree-sitter	tree-sitter-go	v0.25.0	2dc241b97872c53195e01b86542b411a3c1a6201d9c946c78d5c60c063bba1ef
+python	tree-sitter	tree-sitter-python	v0.25.0	4609a3665a620e117acf795ff01b9e965880f81745f287a16336f4ca86cf270c
+javascript	tree-sitter	tree-sitter-javascript	v0.25.0	9712fc283d3dc01d996d20b6392143445d05867a7aad76fdd723824468428b86
+typescript	tree-sitter	tree-sitter-typescript	v0.23.2	2c4ce711ae8d1218a3b2f899189298159d672870b5b34dff5d937bed2f3e8983
+typescript-base	tree-sitter	tree-sitter-javascript	v0.23.1	fc5b8f5a491a6db33ca4854b044b89363ff7615f4291977467f52c1b92a0c032
+bash	tree-sitter	tree-sitter-bash	v0.25.1	2e785a761225b6c433410ef9c7b63cfb0a4e83a35a19e0f2aec140b42c06b52d
+json	tree-sitter	tree-sitter-json	v0.24.8	acf6e8362457e819ed8b613f2ad9a0e1b621a77556c296f3abea58f7880a9213
+toml	tree-sitter-grammars	tree-sitter-toml	v0.7.0	7d52a7d4884f307aabc872867c69084d94456d8afcdc63b0a73031a8b29036dc
+yaml	tree-sitter-grammars	tree-sitter-yaml	v0.7.2	aeaff5731bb8b66c7054c8aed33cd5edea5f4cd2ac71654f3f6c2ba2073d8fac

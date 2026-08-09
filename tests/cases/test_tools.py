@@ -90,8 +90,14 @@ def test_patch_shows_the_diff_it_applies(ctx):
     assert "\u25c6  patch diff.txt" in text, text
     assert "\u2502 -old one" in text, text
     assert "\u2502 +new one" in text, text
-    assert s.screen.attr_at(s.screen.find_row("\u2502 -old one"), 2).fg == 203
-    assert s.screen.attr_at(s.screen.find_row("\u2502 +new one"), 2).fg == 114
+    old_row = s.screen.find_row("\u2502 -old one")
+    old_col = s.screen.row_text(old_row).index("-old one")
+    new_row = s.screen.find_row("\u2502 +new one")
+    new_col = s.screen.row_text(new_row).index("+new one")
+    assert s.screen.attr_at(old_row, old_col).fg == 203
+    assert s.screen.attr_at(new_row, new_col).fg == 114
+    assert s.screen.attr_at(old_row, old_col + 1).fg == 253
+    assert s.screen.attr_at(new_row, new_col + 1).fg == 253
 
 
 def test_bash_result_is_summarised_by_its_exit_status(ctx):

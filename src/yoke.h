@@ -8,6 +8,8 @@
 #include <stdalign.h>
 #include <signal.h>
 
+#include "highlight_protocol.h"
+
 /* ---- fixed-width aliases ----------------------------------------------- */
 typedef int8_t   i8;
 typedef int16_t  i16;
@@ -776,6 +778,21 @@ typedef enum {
     TUI_PLAIN = 0, TUI_HEADING, TUI_CODE, TUI_QUOTE,   /* block */
     TUI_BOLD, TUI_EMPH, TUI_MONO, TUI_MARKER, TUI_STRIKE /* inline */
 } TuiStyle;
+
+typedef enum {
+    YHL_HINT_MARKDOWN_ALIAS = YHL_HINT_ALIAS,
+    YHL_HINT_PATH = YHL_HINT_FILENAME,
+} YhlHintKind;
+
+typedef struct { u32 start, end; u8 semantic; } YhlRun;
+typedef struct { YhlRun run[YHL_RUN_MAX]; size_t n; } YhlResult;
+
+/* Resolves the optional companion without starting it. Requests lazily start
+ * one persistent process and return false for every plain-text fallback. */
+void highlight_init(const char *argv0);
+b8   highlight_request(YhlHintKind kind, Str hint, Str source,
+                       YhlResult *result);
+void highlight_close(void);
 /* A slash command the completion popup offers. The table is owned by the
  * caller and only read here. */
 typedef struct { Str name; Str desc; } TuiCmd;
@@ -891,6 +908,8 @@ void tui_notice(Str msg);
  * stacked. */
 void tui_block(void);
 void tui_write(Str s);
+/* Explicit normal foreground inside a row owned by a surrounding style. */
+void tui_write_text(Str s);
 /* The styles a tool block and a thinking trace are built from: muted for
  * quoted input, output and reasoning, yellow for a call's header, green for a
  * result, red for a failure. Style is a recorded byte range, so a write that
@@ -914,6 +933,13 @@ size_t tui_body_cols(void);
 size_t tui_text_cells(Str s);
 /* False on a pipe or in a one-shot run, where output is text, not a view. */
 b8 tui_is_fullscreen(void);
+/* Syntax overlays exist only in the fullscreen colour presentation. The
+ * epoch changes whenever transcript offsets move or are cleared. */
+b8     tui_highlight_enabled(void);
+size_t tui_transcript_pos(void);
+u64    tui_transcript_epoch(void);
+void   tui_syntax_add(size_t start, size_t end, u8 semantic);
+void   tui_syntax_commit(void);
 /* Flag Esc raises to cancel an in-flight turn (same path as SIGINT). */
 void tui_set_interrupt_flag(volatile sig_atomic_t *flag);
 void tui_printf(const char *fmt, ...) __attribute__((format(printf,1,2)));
@@ -968,7 +994,8 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded);
 void render_shell_call(Str cmd, u32 id, b8 expanded);
 /* `ms` is how long the run took; 0 leaves it off, which is what a result
  * replayed from a session written before it was measured carries. */
-void render_tool_result(Str name, Str result, u32 id, b8 expanded, u32 ms);
+void render_tool_result(Str name, Str args, Str result, Arena *scratch,
+                        u32 id, b8 expanded, u32 ms);
 /* A plan mode handover and the question that led to it. The answer to either
  * arrives as a tool result and reads like one. */
 void render_plan(Str plan);

@@ -82,7 +82,7 @@ def test_a_run_survives_a_rerender(ctx):
     assert "still-here" in text, text
     assert "| |_| | (_) |" not in text, "the welcome screen is not the answer"
 
-    s.settings_toggle("Raw Markdown")
+    s.settings_toggle("Display raw")
     assert "\u25c6  shell echo still-here" in s.text(), s.text()
 
 

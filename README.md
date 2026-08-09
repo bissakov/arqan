@@ -16,8 +16,9 @@ write, bash, patch, grep and find.
 - **Every bound is checked.** Sizes derived from a provider stream, a config
   file or the filesystem are validated before they reach an allocation, and a
   full arena or a full conversation is reported rather than written past.
-- **Minimal deps**: libc and libcurl. JSON, SSE, TUI and the tool runner are
-  hand-written.
+- **Minimal main-process deps**: libc and libcurl. JSON, SSE, TUI and the tool
+  runner are hand-written. Optional syntax parsing is isolated in a companion
+  process and never linked into `yoke`.
 
 ## Layout
 
@@ -38,8 +39,12 @@ src/
   provider.c      chat completions and Anthropic messages: streaming, tools
   tools.c         SoA tool registry + read/write/bash/patch/grep/find tools
   tui.c           alternate-screen TUI, viewport, composer + raw input
+  highlight.c     bounded protocol client for the optional companion
   markdown.c      streaming Markdown rendering of a reply
   main.c          unity includes + main + agent loop
+highlight/
+  yoke-highlight.c  companion process and Tree-sitter query runner
+vendor/tree-sitter/ pinned runtime, generated grammars, queries and licenses
 tests/
   run.py          test runner (Python 3, no third-party packages)
   harness/        terminal emulator + pty driver
@@ -54,6 +59,50 @@ tests/
 make
 ./bin/yoke
 ```
+
+The default build creates sibling executables `bin/yoke` and
+`bin/yoke-highlight`. `make minimal` builds only `bin/yoke`; that binary is a
+fully functional agent and keeps the existing plain code styling. Source and
+official binary bundles should install both executables in the same directory.
+Packagers may split the companion into an optional package.
+
+### Syntax highlighting
+
+Highlighting is automatic in the fullscreen colour TUI. A fenced Markdown
+block streams immediately with its code background, then receives syntax
+colours when its closing fence arrives. An unterminated final fence is handled
+when the message ends. Read results, write previews and patch hunks use the
+call's filename; patch markers keep their diff colours while the source after
+them uses the normal foreground and syntax palette.
+grep results are highlighted only for a filename with a known extension or a
+single-extension glob such as `*.c`. Shell command inputs use the shell grammar,
+but shell output and untyped recursive searches are never guessed from their
+contents.
+
+The bundled language families are C, C++, Rust, Go, Python, JavaScript/JSX,
+TypeScript/TSX, shell, JSON, TOML and YAML. Detection accepts only their
+documented fence aliases and filename extensions. Unknown languages, blocks
+over 64 KiB, excessive capture counts, `NO_COLOR`, a missing companion, and a
+failed or slow companion silently retain the normal readable base style.
+Highlighting does not change transcript text, copying, sessions, provider
+payloads or one-shot output.
+
+The companion is found first through a nonempty `YOKE_HIGHLIGHTER` override,
+then beside the resolved `yoke` executable, then through `PATH`. The override
+exists for packaging and protocol tests. There is no separate highlighting
+preference: enabling `Display raw` disables Markdown and syntax highlighting
+together.
+
+Tree-sitter 0.26.11, generated ABI-15 parsers, highlight queries and upstream
+licenses are pinned under `vendor/tree-sitter/`. Normal builds do not download
+anything and require no system Tree-sitter library, Tree-sitter CLI, Node,
+Rust or network access. Maintainers refresh the bundle with
+`scripts/update-tree-sitter.sh`; edit `scripts/tree-sitter-sources.tsv` first,
+including exact refs and archive checksums. The script downloads and verifies
+the pinned sources and generator, regenerates parsers, resolves query
+inheritance into `highlight/queries.c`, validates ABI versions, refreshes the
+lock record, and copies every runtime and grammar license. Review all upstream
+license changes before distributing an updated bundle.
 
 The first run with nothing configured says so on the welcome screen and waits:
 `/provider`, then "+ add a provider", asks for a name, which API the endpoint
@@ -149,7 +198,7 @@ retries = 3              # further attempts for a request that reached nothing
 retry_delay_ms = 500     # the wait before the first, doubling up to 8s
 disable_tools = bash     # tools no turn may call, comma separated
 verbose_tools = false    # show complete tool blocks
-raw_markdown = false     # do not render Markdown
+raw_markdown = false     # display raw text without Markdown or syntax colours
 show_ignored = false     # include ignored files in the @ picker
 show_instructions = false
 wrap = word              # word or justified

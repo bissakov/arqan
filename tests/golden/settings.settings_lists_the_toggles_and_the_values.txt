@@ -11,7 +11,7 @@
 |
 |    Space or Left/Right changes the selected row · Enter or Esc closes
 |  › [ ] Verbose tool output  Every line a tool printed, untruncated
-|    [ ] Raw Markdown         Messages as written, unformatted
+|    [ ] Display raw          Markdown and syntax highlighting
 |    [x] Stream replies       Paint a reply as it arrives, not once it is whole
 |    [ ] Ignored files        Offer what .gitignore and .ignore exclude
 |    [ ] Telemetry            An anonymized debug log, for a bug report

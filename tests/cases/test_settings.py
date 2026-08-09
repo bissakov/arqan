@@ -10,10 +10,11 @@ def test_settings_lists_the_toggles_and_the_values(ctx):
     s = ctx.spawn()
     s.open_settings()
     text = s.text()
-    for row in ("[ ] Verbose tool output", "[ ] Raw Markdown",
+    for row in ("[ ] Verbose tool output", "[ ] Display raw",
                 "[x] Stream replies", "[ ] Ignored files", "[ ] Telemetry",
                 "Text wrap", "Mode"):
         assert row in text, text
+    assert "Markdown and syntax highlighting" in text, text
     assert "Space or Left/Right changes the selected row" in text, text
     ctx.check_screen(s)
     # More rows than the popup holds: the last is reached by moving down.
@@ -59,10 +60,11 @@ def test_the_endpoint_is_not_a_setting(ctx):
 def test_space_toggles_the_selected_row_only(ctx):
     """The checkbox is the answer: it flips, and its neighbours do not."""
     s = ctx.spawn()
-    s.open_settings().settings_select("Raw Markdown")
+    s.open_settings().settings_select("Display raw")
     s.key("space").sync()
     text = s.text()
-    assert "[x] Raw Markdown" in text, text
+    assert "[x] Display raw" in text, text
+    assert "No Markdown or syntax highlighting" in text, text
     assert "[ ] Verbose tool output" in text, text
 
 
@@ -244,7 +246,7 @@ def test_settings_choices_survive_a_restart(ctx):
     """Presentation, request, mode, token, and tool choices share UI state."""
     s = ctx.spawn()
     for label in (
-        "Verbose tool output", "Raw Markdown", "Stream replies",
+        "Verbose tool output", "Display raw", "Stream replies",
         "Ignored files", "Text wrap", "Mode", "Show instructions",
         "Max tokens", "bash",
     ):
@@ -259,7 +261,7 @@ def test_settings_choices_survive_a_restart(ctx):
     again = ctx.spawn()
     again.open_settings()
     text = again.text()
-    for label in ("Verbose tool output", "Raw Markdown", "Ignored files",
+    for label in ("Verbose tool output", "Display raw", "Ignored files",
                   "Show instructions"):
         assert f"[x] {label}" in text, text
     assert "[ ] Stream replies" in text, text

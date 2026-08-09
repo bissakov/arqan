@@ -1,0 +1,25 @@
+Tree-sitter vendor lock
+=======================
+
+Runtime and generator: v0.26.11; generated parser ABI: 15.
+Generator sha256: 8dac3c89bb632eece700ea7a261ad963b251f2228c4aef3b58458ebea8dbe4eb
+
+Source archives are pinned in scripts/tree-sitter-sources.tsv. The C++ parser
+uses exact commit 8b5b49eb196bec7040441bee33b2c9a4838d6967; all other shipped grammars use
+the tags recorded there. TypeScript generation additionally uses its declared
+tree-sitter-javascript v0.23.1 grammar dependency. Every shipped parser is ABI
+15 and every upstream license is copied under licenses/.
+
+Resolved embedded-query sha256:
+c	3378d854dda695b2b282b9468247524ed4271ef74af691033d2e36883379409c
+cpp	da7f4979c8aebcf8432dc454da8c3506c56a8a90ddbc0e5d2c775bbf15ccb5cc
+rust	0f0343107f14a7690157f51090a979eb8f8bfe4eada7c61763ddb4c54b1311d1
+go	81182c986547eba7fa6316e82dfd621fb13b8fc89efac85432aee51a48ed0896
+python	a6708f209381618e2b398972c8f1ccd892f0c064eab35a2a3f911c3e22e79a7e
+javascript	d3630ae6dc9b2b27b230b5f8bb92b05cd491fb12bff353dae62a0a6d780461ee
+typescript	ddc738f6882e2d5b05587fbedf7323dbc9ddec691aa27b88d53cf9598b2052af
+tsx	ddc738f6882e2d5b05587fbedf7323dbc9ddec691aa27b88d53cf9598b2052af
+bash	b74220d954f485b7626d2b2b61f37b522e12eb1830803e388e57dd797dc99f11
+json	0511524465b56aed122580792254e68b6abbbfde7119f1d02b135acbe278233f
+toml	2fb5c61d33a70389312254c9c392e2c5dd6313d958d6e5f8f74cadd5e0811707
+yaml	2fbfbbd5ca0928d0a7e09e59f8f2964b14a328a7ee0ce799270d9013dcce49a0

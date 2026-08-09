@@ -230,14 +230,14 @@ def test_raw_toggles_formatting_off_and_back_on(ctx):
     """Raw shows the Markdown as written; toggling it back formats again."""
     ctx.scenario("text=#+Title\\n-+one")
     s = ctx.spawn()
-    s.settings_toggle("Raw Markdown")
+    s.settings_toggle("Display raw")
 
     s.submit("first")
     s.wait_text("- one")
     s.wait_turn_done()
     assert "# Title" in s.text(), s.text()
 
-    s.settings_toggle("Raw Markdown")
+    s.settings_toggle("Display raw")
     s.submit("second")
     s.wait_turn_done()
     assert "\u2022 one" in s.text(), s.text()
@@ -252,12 +252,12 @@ def test_raw_repaints_the_reply_already_on_screen(ctx):
     s.wait_turn_done()
     assert "Title" in s.text() and "# Title" not in s.text(), s.text()
 
-    s.settings_toggle("Raw Markdown")
+    s.settings_toggle("Display raw")
     text = s.text()
     assert "# Title" in text and "- one" in text, text
     assert "\u2022 one" not in text, text
 
-    s.settings_toggle("Raw Markdown")
+    s.settings_toggle("Display raw")
     text = s.text()
     assert "\u2022 one" in text and "# Title" not in text, text
 

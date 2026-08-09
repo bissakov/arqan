@@ -38,6 +38,15 @@ static Str clip(Str s, size_t max) {
 
 typedef void (*Sink)(Str);
 
+static void add_line_syntax(const YhlResult *hl, Str source,
+                            size_t source_off, Str shown,
+                            size_t transcript_off);
+static void write_syntax_lines(Str body, Str source, b8 grep,
+                               const YhlResult *hl, Str gutter, size_t max);
+static size_t patch_batch(Str patch, char *out, size_t cap);
+static void write_patch_lines(Str patch, Str source, const YhlResult *hl,
+                              Str gutter, size_t max);
+
 /* `s` up to `max`, with the ellipsis a cut earns and nothing when it does
  * not: what was left out is said in one place. */
 static void write_clipped(Str s, size_t max, Sink sink) {
@@ -143,21 +152,9 @@ static void write_lines(Str body, Str gutter, size_t max, Sink sink) {
     write_styled(body, gutter, max, sink, NULL);
 }
 
-/* A diff reads by its markers, so each line keeps the one it came with and is
- * coloured by it; a file header carries the only path in a patch and is the
- * one line of it worth the tool colour. */
-static Sink diff_style(Str line) {
-    if (str_starts(line, STR("+++ ")) || str_starts(line, STR("--- ")))
-        return tui_write_tool;
-    if (!line.n) return tui_write_muted;
-    if (line.p[0] == '+') return tui_write_result;
-    if (line.p[0] == '-') return tui_write_error;
-    return tui_write_muted;
-}
-
 /* The file a patch is about, taken from its first header, plus how many more
  * it names: a diff carries its target in its body rather than in an argument. */
-static Str patch_target(Str patch, char *buf, size_t cap) {
+static Str patch_target(Str patch, char *buf, size_t cap, Str *hint) {
     size_t off = 0, files = 0;
     Str line, first = {0};
     while (str_line(patch, &off, &line)) {
@@ -169,6 +166,7 @@ static Str patch_target(Str patch, char *buf, size_t cap) {
             if (str_starts(first, STR("b/"))) first = str_drop(first, 2);
         }
     }
+    *hint = first;
     if (files < 2) return first;
     i32 len = snprintf(buf, cap, "%.*s +%zu more", (i32)first.n, first.p,
                        files - 1);
@@ -183,9 +181,12 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
 
     Str path = json_str(j, STR("path"));
     Str cmd  = json_str(j, STR("command"));
+    Str content = json_str(j, STR("content"));
     Str patch = json_str(j, STR("patch"));
     char patch_buf[R_TARGET_BYTES + 32];
-    if (patch.n) path = patch_target(patch, patch_buf, sizeof patch_buf);
+    Str patch_hint = {0};
+    if (patch.n)
+        path = patch_target(patch, patch_buf, sizeof patch_buf, &patch_hint);
     /* What a search is about is what it looks for, not where it starts. */
     Str query = str_eq(name, STR("grep")) ? json_str(j, STR("pattern"))
               : str_eq(name, STR("find")) ? json_str(j, STR("name"))
@@ -193,29 +194,65 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
     Str target = query.n ? query : path.n ? path : cmd;
     size_t cmd_off = 0;
     if (!path.n && cmd.n) str_line(cmd, &cmd_off, &target);
+    static YhlResult syntax;
+    static char patch_source[YHL_SOURCE_MAX];
+    syntax.n = 0;
+    b8 source_code = false;
+    Str syntax_source = content;
+    if (str_eq(name, STR("write")) && path.n && content.n) {
+        source_code = true;
+        highlight_request(YHL_HINT_PATH, path, content, &syntax);
+    } else if (str_eq(name, STR("bash")) && cmd.n) {
+        source_code = true;
+        syntax_source = cmd;
+        highlight_request(YHL_HINT_MARKDOWN_ALIAS, STR("bash"), cmd, &syntax);
+    } else if (patch.n) {
+        source_code = true;
+        size_t n = patch_batch(patch, patch_source, sizeof patch_source);
+        syntax_source = (Str){ patch_source, n };
+        if (n && patch_hint.n)
+            highlight_request(YHL_HINT_PATH, patch_hint, syntax_source,
+                              &syntax);
+    }
 
     tui_block();
     tui_write_tool(STR("\u25c6  "));
     tui_write_tool(name);
     if (target.n) {
         tui_write_tool(STR(" "));
-        write_clipped(target, R_TARGET_BYTES, tui_write_tool);
+        Str shown = clip(target, R_TARGET_BYTES);
+        size_t at = tui_transcript_pos();
+        if (source_code && cmd.n) {
+            tui_write_text(shown);
+            add_line_syntax(&syntax, syntax_source, 0, shown, at);
+        } else {
+            tui_write_tool(shown);
+        }
+        if (shown.n < target.n) tui_write_tool(STR(" ..."));
     }
     if (str_eq(name, STR("read"))) write_read_range(j);
     tui_write_tool(STR("\n"));
 
     if (str_eq(name, STR("write"))) {
-        Str content = json_str(j, STR("content"));
-        write_lines(content, STR("\u2502 "), R_ARG_LINES,
-                    tui_write_muted);
+        if (source_code)
+            write_syntax_lines(content, syntax_source, false, &syntax,
+                               STR("\u2502 "), R_ARG_LINES);
+        else
+            write_lines(content, STR("\u2502 "), R_ARG_LINES,
+                        tui_write_muted);
     } else if (patch.n) {
         /* Twice a call's usual allowance: a hunk spends most of its lines on
          * the context that locates it. */
-        write_styled(patch, STR("\u2502 "), R_ARG_LINES * 2, tui_write_muted,
-                     diff_style);
+        write_patch_lines(patch, syntax_source, &syntax, STR("\u2502 "),
+                          R_ARG_LINES * 2);
     } else if (cmd.n) {
-        write_lines(str_drop(cmd, cmd_off), STR("\u2502 "),
-                    R_ARG_LINES, tui_write_muted);
+        if (source_code)
+            write_syntax_lines(str_drop(cmd, cmd_off), syntax_source, false,
+                               &syntax,
+                               STR("\u2502 "), R_ARG_LINES);
+        else
+            write_lines(str_drop(cmd, cmd_off), STR("\u2502 "),
+                        R_ARG_LINES, tui_write_muted);
     } else if (!path.n && !query.n) {
         /* No shape this renderer knows, so the arguments as they came. */
         write_lines(args, STR("\u2502 "), R_ARG_LINES,
@@ -223,6 +260,7 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
     }
 
     scratch->off = mark;
+    if (source_code) tui_syntax_commit();
     block_end();
 }
 
@@ -233,14 +271,30 @@ void render_shell_call(Str cmd, u32 id, b8 expanded) {
     size_t off = 0;
     Str first = cmd;
     str_line(cmd, &off, &first);
+    static YhlResult syntax;
+    syntax.n = 0;
+    highlight_request(YHL_HINT_MARKDOWN_ALIAS, STR("bash"), cmd, &syntax);
 
     tui_block();
     tui_write_tool(STR("\u25c6  shell "));
-    write_clipped(first, R_TARGET_BYTES, tui_write_tool);
+    Str shown = clip(first, R_TARGET_BYTES);
+    size_t at = tui_transcript_pos();
+    if (cmd.n) {
+        tui_write_text(shown);
+        add_line_syntax(&syntax, cmd, 0, shown, at);
+    } else {
+        tui_write_tool(shown);
+    }
+    if (shown.n < first.n) tui_write_tool(STR(" ..."));
     tui_write_tool(STR("\n"));
-    write_lines(str_drop(cmd, off), STR("\u2502 "), R_ARG_LINES,
-                tui_write_muted);
+    if (cmd.n)
+        write_syntax_lines(str_drop(cmd, off), cmd, false, &syntax,
+                           STR("\u2502 "), R_ARG_LINES);
+    else
+        write_lines(str_drop(cmd, off), STR("\u2502 "), R_ARG_LINES,
+                    tui_write_muted);
 
+    if (cmd.n) tui_syntax_commit();
     block_end();
 }
 
@@ -281,7 +335,226 @@ static b8 split_status(Str result, Str *body, Str *status) {
     return true;
 }
 
-void render_tool_result(Str name, Str result, u32 id, b8 expanded, u32 ms) {
+static size_t rendered_bytes(Str s) {
+    size_t n = 0;
+    for (size_t i = 0; i < s.n; i++) {
+        unsigned char c = (unsigned char)s.p[i];
+        if (c == '\t') n += 4;
+        else if (c == '\r' || c < 0x20) continue;
+        else n++;
+    }
+    return n;
+}
+
+static void add_line_syntax(const YhlResult *hl, Str source,
+                            size_t source_off, Str shown, size_t transcript_off) {
+    size_t shown_end = source_off + shown.n;
+    for (size_t i = 0; i < hl->n; i++) {
+        size_t a = hl->run[i].start;
+        size_t b = hl->run[i].end;
+        if (b <= source_off) continue;
+        if (a >= shown_end) break;
+        if (a < source_off) a = source_off;
+        if (b > shown_end) b = shown_end;
+        if (a >= b) continue;
+        size_t dst_a = transcript_off
+                     + rendered_bytes((Str){ source.p + source_off,
+                                              a - source_off });
+        size_t dst_b = dst_a + rendered_bytes((Str){ source.p + a, b - a });
+        tui_syntax_add(dst_a, dst_b, hl->run[i].semantic);
+    }
+}
+
+/* Headers and hunk coordinates are diff syntax. The byte after a line marker
+ * is source syntax, including context lines whose marker is a space. */
+static b8 patch_fragment(Str line, Str *fragment) {
+    if (!line.n || str_starts(line, STR("+++ "))
+        || str_starts(line, STR("--- "))
+        || str_starts(line, STR("@@")))
+        return false;
+    if (line.p[0] != '+' && line.p[0] != '-' && line.p[0] != ' ')
+        return false;
+    *fragment = str_drop(line, 1);
+    return true;
+}
+
+static size_t patch_batch(Str patch, char *out, size_t cap) {
+    size_t off = 0, n = 0;
+    Str line;
+    while (str_line(patch, &off, &line)) {
+        Str fragment;
+        if (!patch_fragment(line, &fragment)) continue;
+        if (fragment.n + 1 > cap - n) return 0;
+        memcpy(out + n, fragment.p, fragment.n);
+        n += fragment.n;
+        out[n++] = '\n';
+    }
+    return n;
+}
+
+static void write_patch_lines(Str patch, Str source, const YhlResult *hl,
+                              Str gutter, size_t max) {
+    size_t cap = line_cap(max);
+    size_t off = 0, shown = 0, source_off = 0;
+    Str line;
+    while (shown < cap && str_line(patch, &off, &line)) {
+        tui_write_muted(gutter);
+        Str head = clip(line, R_LINE_BYTES);
+        Str full_fragment;
+        if (patch_fragment(line, &full_fragment)) {
+            Sink marker = line.p[0] == '+' ? tui_write_result
+                        : line.p[0] == '-' ? tui_write_error
+                                          : tui_write_muted;
+            if (head.n) marker((Str){ head.p, 1 });
+            Str fragment = str_drop(head, 1);
+            if (fragment.n) {
+                size_t at = tui_transcript_pos();
+                tui_write_text(fragment);
+                add_line_syntax(hl, source, source_off, fragment, at);
+            }
+            source_off += full_fragment.n + 1;
+        } else if (str_starts(line, STR("+++ "))
+                   || str_starts(line, STR("--- "))) {
+            tui_write_tool(head);
+        } else {
+            tui_write_muted(head);
+        }
+        if (head.n < line.n) tui_write_text(STR(" ..."));
+        tui_write(STR("\n"));
+        shown++;
+    }
+    size_t rest = str_lines(str_drop(patch, off));
+    char tail[64];
+    i32 len;
+    if (rest) {
+        len = snprintf(tail, sizeof tail, "\u25be %zu more line%s\n",
+                       rest, rest == 1 ? "" : "s");
+    } else if (g_expanded && !g_verbose && shown > max) {
+        len = snprintf(tail, sizeof tail, "\u25b4 show less\n");
+    } else {
+        tui_syntax_commit();
+        return;
+    }
+    tui_zone_begin(g_zone);
+    tui_write_muted(gutter);
+    if (len > 0) tui_write_muted((Str){ tail, (size_t)len });
+    tui_zone_end();
+    tui_syntax_commit();
+}
+
+static b8 grep_fragment(Str line, Str *prefix, Str *fragment) {
+    size_t found = SIZE_MAX;
+    for (size_t i = 0; i + 3 < line.n; i++) {
+        if (line.p[i] != ':') continue;
+        size_t k = i + 1;
+        while (k < line.n && line.p[k] >= '0' && line.p[k] <= '9') k++;
+        if (k == i + 1 || k + 1 >= line.n || line.p[k] != ':'
+            || line.p[k + 1] != ' ')
+            continue;
+        found = k + 2;
+    }
+    if (found == SIZE_MAX) return false;
+    *prefix = (Str){ line.p, found };
+    *fragment = str_drop(line, found);
+    return true;
+}
+
+static size_t grep_batch(Str result, char *out, size_t cap) {
+    size_t off = 0, n = 0;
+    Str line;
+    while (str_line(result, &off, &line)) {
+        Str prefix, fragment;
+        if (!grep_fragment(line, &prefix, &fragment)) continue;
+        if (fragment.n + 1 > cap - n) return 0;
+        memcpy(out + n, fragment.p, fragment.n);
+        n += fragment.n;
+        out[n++] = '\n';
+    }
+    return n;
+}
+
+static b8 source_filename(Str path) {
+    static const char *const suffix[] = {
+        ".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx",
+        ".rs", ".go", ".py", ".pyw", ".js", ".jsx", ".mjs", ".cjs",
+        ".ts", ".mts", ".cts", ".tsx", ".sh", ".bash", ".bashrc",
+        ".json", ".toml", ".yaml", ".yml",
+    };
+    if (path.n >= STR("Cargo.lock").n
+        && !memcmp(path.p + path.n - STR("Cargo.lock").n,
+                   STR("Cargo.lock").p, STR("Cargo.lock").n))
+        return true;
+    for (size_t i = 0; i < sizeof suffix / sizeof suffix[0]; i++) {
+        size_t n = strlen(suffix[i]);
+        if (path.n >= n && !memcmp(path.p + path.n - n, suffix[i], n))
+            return true;
+    }
+    return false;
+}
+
+static size_t grep_matches(Str result) {
+    size_t off = 0, n = 0;
+    Str line;
+    while (str_line(result, &off, &line)) {
+        Str prefix, fragment;
+        if (grep_fragment(line, &prefix, &fragment)) n++;
+    }
+    return n;
+}
+
+static void write_syntax_lines(Str body, Str source, b8 grep,
+                               const YhlResult *hl, Str gutter, size_t max) {
+    size_t cap = line_cap(max);
+    size_t off = 0, shown = 0, source_off = 0;
+    Str line;
+    while (shown < cap && str_line(body, &off, &line)) {
+        tui_write_muted(gutter);
+        Str head = clip(line, R_LINE_BYTES);
+        if (grep) {
+            Str full_prefix, full_fragment;
+            if (grep_fragment(line, &full_prefix, &full_fragment)) {
+                size_t prefix_n = full_prefix.n < head.n ? full_prefix.n : head.n;
+                tui_write_muted((Str){ head.p, prefix_n });
+                Str fragment = str_drop(head, prefix_n);
+                if (fragment.n && prefix_n == full_prefix.n) {
+                    size_t at = tui_transcript_pos();
+                    tui_write_text(fragment);
+                    add_line_syntax(hl, source, source_off, fragment, at);
+                }
+                source_off += full_fragment.n + 1;
+            } else {
+                tui_write_muted(head);
+            }
+        } else {
+            size_t at = tui_transcript_pos();
+            tui_write_text(head);
+            add_line_syntax(hl, source, (size_t)(line.p - source.p), head, at);
+        }
+        if (head.n < line.n) tui_write(STR(" ..."));
+        tui_write(STR("\n"));
+        shown++;
+    }
+    size_t rest = str_lines(str_drop(body, off));
+    char tail[64];
+    i32 len;
+    if (rest) {
+        len = snprintf(tail, sizeof tail, "\u25be %zu more line%s\n",
+                       rest, rest == 1 ? "" : "s");
+    } else if (g_expanded && !g_verbose && shown > max) {
+        len = snprintf(tail, sizeof tail, "\u25b4 show less\n");
+    } else {
+        tui_syntax_commit();
+        return;
+    }
+    tui_zone_begin(g_zone);
+    tui_write_muted(gutter);
+    if (len > 0) tui_write_muted((Str){ tail, (size_t)len });
+    tui_zone_end();
+    tui_syntax_commit();
+}
+
+void render_tool_result(Str name, Str args, Str result, Arena *scratch,
+                        u32 id, b8 expanded, u32 ms) {
     block_begin(id, expanded);
     if (str_starts(result, STR("ERROR: "))) {
         Str msg = str_drop(result, 7);
@@ -299,11 +572,42 @@ void render_tool_result(Str name, Str result, u32 id, b8 expanded, u32 ms) {
     Str body = result, status = {0};
     b8 shell = str_eq(name, STR("bash")) || str_eq(name, STR("shell"));
     b8 have_status = shell && split_status(result, &body, &status);
+    size_t mark = scratch ? scratch->off : 0;
+    JVal *j = scratch && args.n ? json_parse(scratch, args) : NULL;
+    Str path = json_str(j, STR("path"));
+    Str glob = json_str(j, STR("glob"));
+    static YhlResult hl;
+    hl.n = 0;
+    b8 source_code = false;
+    b8 grep = str_eq(name, STR("grep"));
+    char grep_source[YOKE_TOOL_RESULT_BYTES];
+    Str syntax_source = result;
+    if (str_eq(name, STR("read")) && path.n) {
+        source_code = true;
+        highlight_request(YHL_HINT_PATH, path, result, &hl);
+    } else if (grep) {
+        Str hint = path;
+        if (glob.n >= 3 && glob.p[0] == '*' && glob.p[1] == '.'
+            && memchr(glob.p + 1, '/', glob.n - 1) == NULL
+            && memchr(glob.p + 1, '*', glob.n - 1) == NULL
+            && memchr(glob.p + 1, '?', glob.n - 1) == NULL)
+            hint = str_drop(glob, 1);
+        if (hint.n) {
+            size_t n = grep_batch(result, grep_source, sizeof grep_source);
+            syntax_source = (Str){ grep_source, n };
+            source_code = n && source_filename(hint);
+            if (source_code)
+                highlight_request(YHL_HINT_PATH, hint, syntax_source, &hl);
+        }
+    }
+    if (scratch) scratch->off = mark;
     tui_write_result(STR("\u2514\u2500 "));
     if (have_status) {
         tui_write_result(status);
     } else if (str_eq(name, STR("read"))) {
         write_count(str_lines(result), "line", tui_write_result);
+    } else if (grep) {
+        write_count(grep_matches(result), "match", tui_write_result);
     } else {
         size_t off = 0;
         Str first = body;
@@ -313,6 +617,11 @@ void render_tool_result(Str name, Str result, u32 id, b8 expanded, u32 ms) {
     }
     write_elapsed(ms);
     tui_write_result(STR("\n"));
-    write_lines(body, STR("   "), R_RESULT_LINES, tui_write_muted);
+    if (source_code) {
+        write_syntax_lines(body, syntax_source, grep, &hl, STR("   "),
+                           R_RESULT_LINES);
+    } else {
+        write_lines(body, STR("   "), R_RESULT_LINES, tui_write_muted);
+    }
     block_end();
 }
