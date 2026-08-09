@@ -116,9 +116,8 @@ typedef struct {
      * by walking the scrollback costs the size of the session. The scan is
      * incremental and checkpoints start the painter near the visible rows. */
     size_t wrap_cols;        /* width the index was built for; 0 = invalid  */
-    size_t wrap_scanned;     /* transcript bytes already accounted for      */
-    size_t wrap_rows;        /* row index reached at wrap_scanned           */
-    size_t wrap_col;         /* display column reached at wrap_scanned      */
+    size_t wrap_scanned;     /* where the last, still-growing row starts    */
+    size_t wrap_rows;        /* row index of that row                       */
     size_t ckpt_off[TUI_CKPTS];
     size_t ckpt_n;
     size_t ckpt_step;        /* rows between checkpoints; doubles on overflow */
@@ -178,6 +177,10 @@ typedef struct {
     size_t path_n;
     size_t path_at;                  /* offset of the '@' being completed   */
     b8 show_ignored;                 /* offer what an ignore file excludes  */
+    /* Word wrap reaches the right edge only where a word does; justification
+     * widens the gaps of a wrapped row until it does. Breaking is the same
+     * either way, so this is read by the painter alone. */
+    b8 justify;
     /* The patterns in force for the directory being listed, gathered from
      * every .gitignore and .ignore above it. NUL-terminated for fnmatch, each
      * with the length of the path prefix it is relative to. */
@@ -555,27 +558,96 @@ static void sel_finish(void) {
     g_tui.sel_drag = false;
 }
 
+/* ---- line breaking -------------------------------------------------------
+ * One breaker feeds the row index, the row painter and the composer's cursor
+ * arithmetic, so the three can never disagree about where a row ends.
+ *
+ * A break happens between words: `end` is the last byte painted and `next` is
+ * where the following row starts, and the spaces between them belong to
+ * neither, since a row that begins on the space its predecessor broke at is
+ * indented by an accident of the width. A word wider than the line still
+ * breaks inside itself, since the alternative is a row that cannot be shown.
+ */
+typedef struct {
+    size_t end;    /* one past the row's last painted byte      */
+    size_t next;   /* first byte of the row that follows        */
+    size_t width;  /* cells the painted part occupies           */
+    b8 hard;       /* ended at a newline or at the end of text  */
+} Row;
+
+static size_t skip_spaces(Str s, size_t i) {
+    while (i < s.n && s.p[i] == ' ') i++;
+    return i;
+}
+
+/* The row starting at `from` on a line already `col0` cells wide. */
+static Row row_break(Str s, size_t from, size_t cols, size_t col0) {
+    size_t col = col0;
+    size_t sp = SIZE_MAX;      /* start of the space run being scanned */
+    size_t sp_col = 0;
+    b8 word = false;           /* a non-space was seen on this row     */
+    Row brk = {0};
+    b8 have_brk = false;
+    for (size_t i = from; i < s.n;) {
+        if (s.p[i] == '\n') return (Row){ i, i + 1, col - col0, true };
+        i32 gw = 0;
+        size_t used = glyph(s.p + i, s.n - i, &gw);
+        size_t w = gw > 0 ? (size_t)gw : 0;
+        /* A row always paints at least one glyph, so a width narrower than
+         * the prompt marker still makes progress. */
+        if (w && col > 0 && col + w > cols && i > from) {
+            if (s.p[i] == ' ') {
+                size_t at = sp == SIZE_MAX ? i : sp;
+                size_t at_col = sp == SIZE_MAX ? col : sp_col;
+                return (Row){ at, skip_spaces(s, at), at_col - col0, false };
+            }
+            if (have_brk) return brk;
+            return (Row){ i, i, col - col0, false };
+        }
+        if (s.p[i] == ' ') {
+            if (sp == SIZE_MAX) { sp = i; sp_col = col; }
+        } else {
+            if (sp != SIZE_MAX && word) {
+                brk = (Row){ sp, i, sp_col - col0, false };
+                have_brk = true;
+            }
+            sp = SIZE_MAX;
+            word = true;
+        }
+        i += used;
+        col += w;
+    }
+    return (Row){ s.n, s.n, col - col0, true };
+}
+
 /* Count visual rows and, optionally, locate a byte cursor. Newlines and soft
- * wrapping both start a new visual row. */
+ * wrapping both start a new visual row. A cursor inside the spaces a break
+ * consumed sits at the end of the row they closed, which is where the glyph
+ * before it was painted. */
 static size_t text_rows(Str s, size_t cols, size_t prompt_cells,
                         size_t cursor, size_t *cursor_row, size_t *cursor_col) {
-    size_t row = 0, col = prompt_cells;
-    if (cursor_row && cursor == 0) { *cursor_row = row; *cursor_col = col; }
-    for (size_t i = 0; i < s.n;) {
-        if (s.p[i] == '\n') {
-            i++;
-            row++; col = 0;
-        } else {
-            i32 width = 0;
-            size_t used = glyph(s.p + i, s.n - i, &width);
-            size_t w = width > 0 ? (size_t)width : 0;
-            if (w && col > 0 && col + w > cols) { row++; col = 0; }
-            i += used;
-            col += w;
+    size_t row = 0, col0 = prompt_cells;
+    for (size_t i = 0;;) {
+        Row r = row_break(s, i, cols, col0);
+        if (cursor_row && cursor >= i && cursor <= r.end) {
+            *cursor_row = row;
+            size_t at = col0;
+            for (size_t j = i; j < cursor;) {
+                i32 w = 0;
+                size_t used = glyph(s.p + j, s.n - j, &w);
+                j += used;
+                at += w > 0 ? (size_t)w : 0;
+            }
+            *cursor_col = at;
+        } else if (cursor_row && cursor > r.end && cursor < r.next) {
+            *cursor_row = row;
+            *cursor_col = col0 + r.width;
         }
-        if (cursor_row && i == cursor) { *cursor_row = row; *cursor_col = col; }
+        if (r.hard && r.end >= s.n) break;
+        i = r.next;
+        row++;
+        col0 = 0;
     }
-    if (cursor_row && cursor == s.n) { *cursor_row = row; *cursor_col = col; }
     return row + 1;
 }
 
@@ -809,15 +881,72 @@ static u64 hash_spans(u64 h, size_t off, size_t n) {
     return h;
 }
 
+/* ---- justification -------------------------------------------------------
+ * A wrapped row reaches the right edge by widening the gaps between its
+ * words, which is a property of the painting alone: the break positions are
+ * the same either way, so the row index and the composer's arithmetic know
+ * nothing about it.
+ */
+typedef struct {
+    size_t gaps;    /* word gaps in the row; 0 leaves it ragged        */
+    size_t extra;   /* cells spread across them                       */
+    size_t seen;    /* gaps already widened                           */
+    b8 word;        /* a word has been painted, so a gap can open      */
+    b8 pending;     /* a space run ended the fragment just painted     */
+} Just;
+
+/* Space runs with a word on each side; the indent a row opens with is not
+ * one, since widening it would move the block's left edge. */
+static size_t row_gaps(Str text) {
+    size_t gaps = 0;
+    b8 word = false, in_sp = false;
+    for (size_t i = 0; i < text.n; i++) {
+        if (text.p[i] == ' ') { if (word) in_sp = true; }
+        else { if (in_sp) gaps++; in_sp = false; word = true; }
+    }
+    return gaps;
+}
+
+/* The cells are spread across the row rather than handed to the first gaps
+ * that ask, so a row two cells short widens two gaps a word apart instead of
+ * opening a hole after its first word. */
+static void just_gap(Just *j) {
+    size_t take = (j->seen + 1) * j->extra / j->gaps
+                - j->seen * j->extra / j->gaps;
+    j->seen++;
+    while (take--) put_text(" ", 1);
+}
+
+/* `j` carries the row's state across fragments, since a style run may end
+ * inside the space run a gap is opened at. */
+static void put_just(const char *p, size_t n, Just *j) {
+    if (!j || !j->gaps) { put_text(p, n); return; }
+    for (size_t i = 0; i < n;) {
+        size_t k = i;
+        if (p[i] == ' ') {
+            while (k < n && p[k] == ' ') k++;
+            put_text(p + i, k - i);
+            j->pending = j->word;
+        } else {
+            while (k < n && p[k] != ' ') k++;
+            if (j->pending && j->seen < j->gaps) just_gap(j);
+            j->pending = false;
+            put_text(p + i, k - i);
+            j->word = true;
+        }
+        i = k;
+    }
+}
+
 /* A row whose bytes carry inline styles, one style per run. */
-static void paint_runs(Str text, size_t off) {
+static void paint_runs(Str text, size_t off, Just *j) {
     for (size_t i = 0; i < text.n;) {
         size_t end = 0;
         u8 kind = span_run(off + i, off + text.n, &end);
         size_t take = end - (off + i);
         style(S_RESET);
         style(kind_style(kind ? kind : ROW_PLAIN));
-        put_text(text.p + i, take);
+        put_just(text.p + i, take, j);
         i += take;
     }
 }
@@ -830,13 +959,17 @@ static u8 display_kind(u8 kind, Str text) {
 }
 
 /* `text_off` is where the row's bytes sit in the transcript, or SIZE_MAX when
- * they carry no inline styles. */
+ * they carry no inline styles. `pad` is the cells a justified row spreads
+ * over its word gaps, 0 for every row painted as it was written. */
 static void update_text_row(size_t screen_row, Str prefix, Str text,
                             size_t screen_col, size_t screen_cols,
-                            u8 kind, size_t text_off, b8 force) {
+                            u8 kind, size_t text_off, size_t pad, b8 force) {
     kind = display_kind(kind, text);
     if (kind != ROW_PLAIN) text_off = SIZE_MAX;
+    Just just = { pad ? row_gaps(text) : 0, pad, 0, false, false };
     u64 hash = row_hash(prefix, text, kind);
+    hash = hash_add(hash, &just.gaps, sizeof just.gaps);
+    hash = hash_add(hash, &just.extra, sizeof just.extra);
     if (text_off != SIZE_MAX) hash = hash_spans(hash, text_off, text.n);
     /* Highlighting is part of a row's appearance, so it is in the diff. */
     size_t sel_c0, sel_c1;
@@ -895,11 +1028,11 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
         put_text(text.p + lead, text.n - lead);
         style(S_RESET);
     } else if (text_off != SIZE_MAX) {
-        paint_runs(text, text_off);
+        paint_runs(text, text_off, &just);
     } else {
         const char *s = kind_style(kind);
         if (s) style(s);
-        put_text(text.p, text.n);
+        put_just(text.p, text.n, &just);
     }
     paint_sel_tail(screen_row, screen_cols);
     style(S_RESET);
@@ -914,7 +1047,6 @@ static void wrap_invalidate(void) {
     g_tui.wrap_cols = 0;
     g_tui.wrap_scanned = 0;
     g_tui.wrap_rows = 0;
-    g_tui.wrap_col = 0;
     g_tui.ckpt_n = 0;
     g_tui.ckpt_step = 64;
 }
@@ -942,29 +1074,20 @@ static size_t wrap_scan(size_t cols) {
         g_tui.wrap_cols = cols;
         ckpt_record(0, 0);
     }
-    const char *s = g_tui.transcript;
-    size_t n = g_tui.transcript_n;
-    size_t i = g_tui.wrap_scanned, row = g_tui.wrap_rows, col = g_tui.wrap_col;
-    while (i < n) {
-        if (s[i] == '\n') {
-            i++;
-            row++; col = 0;
-            ckpt_record(row, i);
-            continue;
-        }
-        i32 width = 0;
-        size_t used = glyph(s + i, n - i, &width);
-        size_t w = width > 0 ? (size_t)width : 0;
-        if (w && col > 0 && col + w > cols) {
-            row++; col = 0;
-            ckpt_record(row, i);
-        }
-        i += used;
-        col += w;
+    Str s = { g_tui.transcript, g_tui.transcript_n };
+    size_t i = g_tui.wrap_scanned, row = g_tui.wrap_rows;
+    for (;;) {
+        Row r = row_break(s, i, cols, 0);
+        /* The last row is where the next append lands, and a word arriving
+         * into it can move the break behind bytes already scanned, so the
+         * scan resumes at its start rather than at its end. */
+        if (r.hard && r.end >= s.n) break;
+        i = r.next;
+        row++;
+        ckpt_record(row, i);
     }
     g_tui.wrap_scanned = i;
     g_tui.wrap_rows = row;
-    g_tui.wrap_col = col;
     return row + 1;
 }
 
@@ -975,6 +1098,25 @@ static size_t wrap_seek(size_t row, size_t *at_row) {
     if (k >= g_tui.ckpt_n) k = g_tui.ckpt_n - 1;
     *at_row = k * g_tui.ckpt_step;
     return g_tui.ckpt_off[k];
+}
+
+/* The cells a row is short of the right edge, or 0 when it keeps them.
+ *
+ * Only a row the wrapper broke is justified: a row that ended where its
+ * author ended it is as long as it was meant to be. Prose is the only shape
+ * it applies to, since widening the gaps of a tool's output, a code block or
+ * a diff would move columns their reader is lining up. A row left far short
+ * by a word too wide to join it keeps its gaps rather than opening a river
+ * through them. */
+static size_t justify_pad(Str text, u8 kind, Row r, size_t cols,
+                          size_t col0) {
+    if (!g_tui.justify || r.hard) return 0;
+    if (kind != ROW_PLAIN && kind != ROW_USER && kind != ROW_QUOTE) return 0;
+    size_t used = col0 + r.width;
+    if (used >= cols) return 0;
+    size_t pad = cols - used;
+    if (pad * 4 > cols) return 0;
+    return row_gaps(text) ? pad : 0;
 }
 
 /* A composed line starting with '!' runs in the shell instead of reaching
@@ -990,62 +1132,47 @@ static void update_text_rows(Str s, size_t base_off, size_t cols,
                              size_t first_row, size_t visible_rows,
                              size_t screen_row, size_t screen_col,
                              size_t screen_cols, u8 kind, b8 force) {
-    size_t row = 0, col = prompt_cells, start = 0;
-    size_t painted = 0;
-    for (size_t i = 0;;) {
-        b8 end = i == s.n;
-        b8 newline = !end && s.p[i] == '\n';
-        b8 wrap = false;
-        size_t used = 0, width = 0;
-        if (!end && !newline) {
-            i32 glyph_width = 0;
-            used = glyph(s.p + i, s.n - i, &glyph_width);
-            width = glyph_width > 0 ? (size_t)glyph_width : 0;
-            wrap = width && col > 0 && col + width > cols;
-        }
-
-        if (end || newline || wrap) {
-            if (row >= first_row && row < first_row + visible_rows) {
-                Str prefix = (Str){0};
-                if (row == 0 && prompt_cells)
-                    prefix = composer_shell() ? STR("! ") : STR("› ");
-                /* Only the transcript carries spans. */
-                u8 row_kind = kind;
-                size_t text_off = SIZE_MAX;
-                if (kind == ROW_PLAIN) {
-                    u8 sk = span_kind(base_off + start);
-                    if (kind_is_block(sk)) row_kind = sk;
-                    else text_off = base_off + start;
-                    size_t sr = screen_row + row - first_row - 1;
-                    if (sr < TUI_SEL_ROWS) g_tui.row_src[sr] = base_off + start;
-                    /* A clickable row says so, louder under the pointer. */
-                    u32 zone = zone_at_off(base_off + start);
-                    if (zone) {
-                        row_kind = zone == g_tui.hover_id ? ROW_ZONE_HOVER
-                                                          : ROW_ZONE;
-                        text_off = SIZE_MAX;
-                    }
+    size_t row = 0, col0 = prompt_cells, painted = 0;
+    for (size_t start = 0;;) {
+        Row r = row_break(s, start, cols, col0);
+        if (row >= first_row && row < first_row + visible_rows) {
+            Str prefix = (Str){0};
+            if (row == 0 && prompt_cells)
+                prefix = composer_shell() ? STR("! ") : STR("› ");
+            /* Only the transcript carries spans. */
+            u8 row_kind = kind;
+            size_t text_off = SIZE_MAX;
+            if (kind == ROW_PLAIN) {
+                u8 sk = span_kind(base_off + start);
+                if (kind_is_block(sk)) row_kind = sk;
+                else text_off = base_off + start;
+                size_t sr = screen_row + row - first_row - 1;
+                if (sr < TUI_SEL_ROWS) g_tui.row_src[sr] = base_off + start;
+                /* A clickable row says so, louder under the pointer. */
+                u32 zone = zone_at_off(base_off + start);
+                if (zone) {
+                    row_kind = zone == g_tui.hover_id ? ROW_ZONE_HOVER
+                                                      : ROW_ZONE;
+                    text_off = SIZE_MAX;
                 }
-                update_text_row(screen_row + row - first_row, prefix,
-                                (Str){s.p + start, i - start}, screen_col,
-                                screen_cols, row_kind, text_off, force);
-                painted++;
             }
-            if (end) break;
-            row++;
-            col = 0;
-            if (newline) { i++; start = i; }
-            else start = i;   /* the wrapped glyph belongs to the new row */
-            continue;
+            Str text = { s.p + start, r.end - start };
+            size_t pad = justify_pad(text, row_kind, r, cols, col0);
+            update_text_row(screen_row + row - first_row, prefix, text,
+                            screen_col, screen_cols, row_kind, text_off, pad,
+                            force);
+            painted++;
         }
-        i += used;
-        col += width;
+        if (r.hard && r.end >= s.n) break;
+        start = r.next;
+        row++;
+        col0 = 0;
     }
 
     /* Rows below short content are the frame's too. */
     while (painted < visible_rows) {
         update_text_row(screen_row + painted, (Str){0}, (Str){0}, screen_col,
-                        screen_cols, kind, SIZE_MAX, force);
+                        screen_cols, kind, SIZE_MAX, 0, force);
         painted++;
     }
 }
@@ -1297,7 +1424,7 @@ static void paint_welcome(size_t body_rows, size_t transcript_rows,
     for (size_t row = 1; row <= transcript_rows; row++) {
         if (row <= top || row > top + WELCOME_LINES) {
             update_text_row(row, (Str){0}, (Str){0}, body_col, screen_cols,
-                            ROW_PLAIN, SIZE_MAX, force);
+                            ROW_PLAIN, SIZE_MAX, 0, force);
             continue;
         }
         const WelcomeLine *line = &k_welcome[row - top - 1];
@@ -1308,7 +1435,7 @@ static void paint_welcome(size_t body_rows, size_t transcript_rows,
         update_text_row(row, (Str){blanks, text.n ? pad : 0}, text,
                         body_col, screen_cols,
                         line->art ? ROW_WELCOME_ART : ROW_WELCOME_TEXT,
-                        SIZE_MAX, force);
+                        SIZE_MAX, 0, force);
     }
 }
 
@@ -1465,13 +1592,14 @@ static void repaint(void) {
     paint_scrollbar(first, all_rows, transcript_rows, cols, force);
     if (activity_rows > 1)
         update_text_row(transcript_rows + 1, (Str){0}, (Str){0}, body_col,
-                        cols, ROW_PLAIN, SIZE_MAX, force);
+                        cols, ROW_PLAIN, SIZE_MAX, 0, force);
     if (activity_rows)
         update_activity_row(transcript_rows + activity_rows, body_col, cols,
                             body_cols, force);
     if (body_gap)
         update_text_row(transcript_rows + activity_rows + 1, (Str){0},
-                        (Str){0}, body_col, cols, ROW_PLAIN, SIZE_MAX, force);
+                        (Str){0}, body_col, cols, ROW_PLAIN, SIZE_MAX, 0,
+                        force);
 
     /* The overlays, in that order. */
     size_t overlay_top = transcript_rows + activity_rows + body_gap + 1;
@@ -1489,12 +1617,12 @@ static void repaint(void) {
     size_t composer_screen_row = composer_top_row + composer_padding;
     if (composer_padding)
         update_text_row(composer_top_row, (Str){0}, (Str){0}, body_col,
-                        cols, ROW_COMPOSER, SIZE_MAX, force);
+                        cols, ROW_COMPOSER, SIZE_MAX, 0, force);
     update_text_rows(input, 0, body_cols, 2, input_first, composer_rows,
                      composer_screen_row, body_col, cols, ROW_COMPOSER, force);
     if (composer_padding)
         update_text_row(composer_screen_row + composer_rows, (Str){0}, (Str){0},
-                        body_col, cols, ROW_COMPOSER, SIZE_MAX, force);
+                        body_col, cols, ROW_COMPOSER, SIZE_MAX, 0, force);
 
     /* The status line: the bottom row, separated from the composer panel by a
      * blank row and carrying no panel background. */
@@ -1502,7 +1630,7 @@ static void repaint(void) {
                       + status_gap;
     if (status_gap)
         update_text_row(status_row - status_gap, (Str){0}, (Str){0}, body_col,
-                        cols, ROW_PLAIN, SIZE_MAX, force);
+                        cols, ROW_PLAIN, SIZE_MAX, 0, force);
     const char *status = g_tui.status[0] ? g_tui.status : "ready";
     b8 copied = g_tui.copy_notice > g_tui.last_paint;
     size_t status_sel_c0, status_sel_c1;
@@ -2607,6 +2735,16 @@ static void completion_accept(void) {
 b8 tui_show_ignored(void) { return g_tui.show_ignored; }
 
 void tui_set_show_ignored(b8 on) { g_tui.show_ignored = on; }
+
+b8 tui_justify(void) { return g_tui.justify; }
+
+/* Only the painting changes, so the frame is redrawn and the row index,
+ * which the two share, is left alone. */
+void tui_set_justify(b8 on) {
+    if (g_tui.justify == on) return;
+    g_tui.justify = on;
+    g_tui.frame_valid = false;
+}
 
 void tui_set_history(History *h) {
     g_tui.hist = h;

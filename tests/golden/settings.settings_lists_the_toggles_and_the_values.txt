@@ -15,9 +15,9 @@
 |    [x] Stream replies       Paint a reply as it arrives, not once it is whole
 |    [ ] Ignored files        Offer what .gitignore and .ignore exclude
 |    [ ] Telemetry            An anonymized debug log, for a bug report
+|        Text wrap            Word: lines end where a word does
 |        Mode                 Build: edits files and runs commands
 |        Tools                Every tool is available
-|        Model                mock-model
 |
 |  › Message yoke...
 |

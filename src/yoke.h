@@ -691,6 +691,10 @@ b8 tui_ask(Str question, b8 secret, char *out, size_t cap);
  * typed by hand is unaffected either way. */
 void tui_set_show_ignored(b8 on);
 b8   tui_show_ignored(void);
+/* Rows wrap between words either way; this also widens the gaps of a wrapped
+ * prose row until it reaches the right edge. Off by default. */
+void tui_set_justify(b8 on);
+b8   tui_justify(void);
 /* Composer history for Up/Down recall; NULL disables it. */
 void tui_set_history(History *h);
 /* `plain` forces the line-oriented path and drops the banner even on a tty,

@@ -1,0 +1,26 @@
+--- screen 80x24 ---
+|
+|
+|  say it
+|
+|
+|  w00 w01x w02xx w03xxx w04xxxx w05  w06x w07xx w08xxx w09xxxx w10 w11x  w12xx
+|  w13xxx w14xxxx w15 w16x w17xx w18xxx  w19xxxx w20 w21x w22xx w23xxx  w24xxxx
+|  w25 w26x w27xx w28xxx w29xxxx w30  w31x w32xx w33xxx w34xxxx w35 w36x  w37xx
+|  w38xxx w39xxxx
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|  › Message yoke...
+|
+|
+|  ● ready · mock-model · build · local · ~/work · 83
+--- cursor row=21 col=5 visible=yes ---

@@ -1,5 +1,7 @@
 """/settings: the toggles and values of a session, in one screen."""
 
+import re
+
 
 def test_settings_lists_the_toggles_and_the_values(ctx):
     """Every row says what it is and what it currently says."""
@@ -8,12 +10,12 @@ def test_settings_lists_the_toggles_and_the_values(ctx):
     text = s.text()
     for row in ("[ ] Verbose tool output", "[ ] Raw Markdown",
                 "[x] Stream replies", "[ ] Ignored files", "[ ] Telemetry",
-                "Mode", "Tools", "Model"):
+                "Text wrap", "Mode", "Tools"):
         assert row in text, text
     assert "Space changes the selected row" in text, text
     ctx.check_screen(s)
     # More rows than the popup holds: the last is reached by moving down.
-    s.key(*(["down"] * 9)).sync()
+    s.key(*(["down"] * 10)).sync()
     text = s.text()
     assert "Provider" in text and "Max tokens" in text, text
 
@@ -77,8 +79,9 @@ def test_max_tokens_is_asked_for_and_sent(ctx):
     s.wait_text("max tokens for one reply")
     s.type("128")
     s.key("enter")
-    s.wait_text("    Max tokens")
-    assert "128" in s.text(), s.text()
+    # The row and its value, so a frame caught mid-repaint is not an answer.
+    s.wait_for(lambda t: re.search(r"Max tokens\s+128", t.text()),
+               "the max tokens row reading 128")
     s.key("esc")
     s.wait_gone("Max tokens")
 
@@ -94,8 +97,8 @@ def test_an_unreadable_max_tokens_leaves_it_alone(ctx):
     s.wait_text("max tokens for one reply")
     s.type("lots")
     s.key("enter")
-    s.wait_text("    Max tokens")
-    assert "32768" in s.text(), s.text()
+    s.wait_for(lambda t: re.search(r"Max tokens\s+32768", t.text()),
+               "the max tokens row unchanged")
 
 
 def test_streaming_off_sends_one_document(ctx):

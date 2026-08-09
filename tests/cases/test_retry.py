@@ -49,7 +49,10 @@ def test_dropped_connection_is_retried(ctx):
     s.submit("say hi")
     s.wait_text("second time lucky")
     s.wait_turn_done()
-    assert "retrying in 10ms (attempt 2" in s.text(), s.text()
+    # The notice wraps, and where it breaks is the wrapper's business.
+    text = s.text()
+    assert "retrying in 10ms (attempt" in text, text
+    assert "2 of 4)" in text, text
     assert len(ctx.mock.requests) == 2, ctx.mock.requests
 
 

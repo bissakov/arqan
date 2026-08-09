@@ -293,10 +293,20 @@ an AoS layout.
   built in `TuiState.out` and hit the terminal as one `write`; the composer lives in
   `TuiState` for the whole session, so `tui_readline` (blocking, submits) and
   `tui_poll_input` (non-blocking, refuses Enter while `busy`) drive the same
-  editor. The transcript carries a wrapped-row index (row count plus periodic
-  byte-offset checkpoints, extended incrementally as output arrives and
-  dropped whenever existing bytes move) so a frame costs the visible rows, not
-  the whole scrollback. A byte range of the transcript can also be a zone: a
+  editor. A row too long for the width breaks between words, and the space it
+  broke at belongs to neither row: one breaker feeds the row index, the
+  painter and the composer's cursor arithmetic, so the three cannot disagree
+  about where a row ends. A word wider than the line still breaks inside
+  itself. The justified setting is a property of the painting alone, the same
+  breaks with a wrapped prose row's gaps widened until it reaches the right
+  edge: not a row its author ended, not a shape whose columns a reader lines
+  up (a tool result, a code block, a diff), and not a row a long word left so
+  short that filling it would open a river. The transcript carries a
+  wrapped-row index (row count plus periodic byte-offset checkpoints, extended
+  incrementally as output arrives and dropped whenever existing bytes move) so
+  a frame costs the visible rows, not the whole scrollback. The scan resumes
+  at the last row's start rather than its end, since a word arriving into that
+  row can move the break behind bytes already scanned. A byte range of the transcript can also be a zone: a
   click inside one submits `/expand <id>` the way Escape submits `/rewind`,
   a zone's rows are painted as a link and brighten while the pointer is on
   them (which is why mouse mode 1003 rather than 1002 is claimed), and
@@ -364,8 +374,8 @@ an AoS layout.
 - `/settings`: the toggles and values of a session in one screen, built in
   `main.c` over `tui_settings`. A toggle that was worth a command of its own
   when it was the only one is not worth one when there are five, so verbose,
-  raw, streaming, ignored paths and telemetry live here rather than in the
-  completion popup,
+  raw, streaming, ignored paths, text wrap and telemetry live here rather
+  than in the completion popup,
   next to the mode, model, provider and token cap a turn is sent with. The
   Tools row opens the same screen over the registry, one checkbox per tool a
   turn may call. The
