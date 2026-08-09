@@ -26,7 +26,7 @@ import termios
 import time
 
 from . import keys as K
-from .vt import Terminal
+from .vt import CONT, Terminal
 
 # A quiet window has to outlast the largest gap the frames it waits on can
 # have; below that floor we are only bridging one repaint, which `yoke` emits as
@@ -299,11 +299,31 @@ class Session:
 
     def settings_select(self, label: str) -> "Session":
         """Move the selection onto the row holding `label`."""
-        for _ in range(16):
+        for _ in range(32):
             if label in self.popup_selected():
                 return self
             self.key("down").sync()
         raise AssertionError(f"no settings row for {label!r}\n{self.text()}")
+
+    # The colour a settings row paints its chosen option in; the options
+    # beside it stay muted, so this is what says which one is live.
+    OPTION_FG = 114
+
+    def settings_option(self, label: str) -> str:
+        """The chosen option of the settings row holding `label`.
+
+        Empty while no such row is on screen, so it is safe to poll through a
+        repaint that has not painted the row yet.
+        """
+        row = self.term.find_row(label)
+        if row < 0:
+            return ""
+        picked = [
+            self.term.buf.chars[row][c]
+            for c in range(self.term.cols)
+            if self.term.attr_at(row, c).fg == self.OPTION_FG
+        ]
+        return "".join(c for c in picked if c != CONT).strip()
 
     def settings_act(self, label: str) -> "Session":
         """Open the settings, act on `label` with Space, and leave it open."""

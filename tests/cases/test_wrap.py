@@ -58,7 +58,8 @@ def test_justification_fills_the_row(ctx):
     s.wait_text(WORDS[-1])
     s.wait_turn_done()
     s.settings_act("Text wrap")
-    s.wait_text("Justified")
+    s.wait_for(lambda t: s.settings_option("Text wrap") == "Justified",
+               "justified wrapping")
     s.key("esc")
     s.wait_gone("Text wrap")
     rows = transcript_rows(s)
@@ -79,9 +80,11 @@ def test_justification_is_a_setting_that_flips_back(ctx):
     s.wait_text(WORDS[-1])
     s.wait_turn_done()
     s.settings_act("Text wrap")
-    s.wait_text("Justified")
+    s.wait_for(lambda t: s.settings_option("Text wrap") == "Justified",
+               "justified wrapping")
     s.key("space")
-    s.wait_text("Word: lines end where a word does")
+    s.wait_for(lambda t: s.settings_option("Text wrap") == "Word",
+               "word wrapping")
     s.key("esc")
     s.wait_gone("Text wrap")
     rows = transcript_rows(s)
@@ -111,7 +114,8 @@ def test_a_tool_result_is_not_justified(ctx):
     before = [r for r in s.text().splitlines() if "w2" in r]
     assert len(before) > 1, s.text()
     s.settings_act("Text wrap")
-    s.wait_text("Justified")
+    s.wait_for(lambda t: s.settings_option("Text wrap") == "Justified",
+               "justified wrapping")
     s.key("esc")
     s.wait_gone("Text wrap")
     after = [r for r in s.text().splitlines() if "w2" in r]
@@ -126,7 +130,8 @@ def test_a_short_last_row_is_left_alone(ctx):
     s.wait_text("and another")
     s.wait_turn_done()
     s.settings_act("Text wrap")
-    s.wait_text("Justified")
+    s.wait_for(lambda t: s.settings_option("Text wrap") == "Justified",
+               "justified wrapping")
     s.key("esc")
     s.wait_gone("Text wrap")
     text = s.text()

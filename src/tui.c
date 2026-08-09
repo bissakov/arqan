@@ -49,6 +49,7 @@ _Static_assert(TUI_STATUS_N == YOKE_STATUS_FIELDS,
 #define TUI_MAX_SYNTAX 16384
 #define TUI_CKPTS 4096           /* wrapped-row checkpoints into the transcript */
 #define TUI_MAX_ZONES 512        /* clickable transcript ranges kept          */
+#define TUI_MAX_PINS  512        /* re-render landmarks kept                  */
 #define TUI_MAX_USERS 512        /* submitted-message panels kept             */
 
 /* Styling is optional: NO_COLOR and dumb terminals get the same layout
@@ -163,9 +164,15 @@ typedef struct {
     u32    click_down;       /* zone the press landed in                    */
     u32    click_id;         /* zone the completed click landed in           */
     u32    hover_id;         /* zone under the pointer, 0 when elsewhere    */
-    /* A re-render rebuilds the transcript, so a zone's place on screen is
+    /* Landmarks a re-render can steer by, one per replayed message, kept in
+     * offset order so the one nearest the viewport bisects. */
+    size_t pin_off[TUI_MAX_PINS];
+    u32    pin_id[TUI_MAX_PINS];
+    size_t pin_n;
+    /* A re-render rebuilds the transcript, so the anchor's place on screen is
      * remembered as the rows below it and restored after the replay. */
     u32    anchor_id;
+    b8     anchor_is_pin;    /* the id names a pin, not a zone              */
     size_t anchor_below;
     size_t anchor_scroll;
     /* Raised by Esc mid-turn, so a request is cancelled the way SIGINT does
@@ -185,6 +192,7 @@ typedef struct {
     size_t input_cur;
     /* The registered command table plus the filtered view of it on screen. */
     const TuiCmd *cmds;
+    const TuiMark *marks;   /* parallel to cmds, or NULL for none          */
     size_t cmd_n;
     const TuiAlias *aliases;
     size_t alias_n;
@@ -795,6 +803,16 @@ static b8 str_contains_ci(Str s, Str needle) {
     return false;
 }
 
+/* Every byte of `needle` in order, gaps allowed: "shins" finds "Show
+ * instructions". A row is found by what it is called rather than by how it
+ * is spelled, which is what a settings screen is searched for. */
+static b8 str_fuzzy_ci(Str s, Str needle) {
+    size_t at = 0;
+    for (size_t i = 0; i < s.n && at < needle.n; i++)
+        if (lower_ascii(s.p[i]) == lower_ascii(needle.p[at])) at++;
+    return at == needle.n;
+}
+
 /* ---- styled transcript spans --------------------------------------------- */
 /* Reasoning arrives as many tiny deltas, so an append that continues the
  * previous span extends it rather than claiming a slot. */
@@ -897,6 +915,32 @@ static void zone_add(size_t a, size_t b, u32 id) {
     g_tui.zone_b[g_tui.zone_n] = b;
     g_tui.zone_id[g_tui.zone_n] = id;
     g_tui.zone_n++;
+}
+
+/* An overflow drops the oldest, as zones do: a landmark scrolled out of the
+ * session cannot hold a viewport. */
+static void pin_add(size_t off, u32 id) {
+    if (g_tui.pin_n == TUI_MAX_PINS) {
+        memmove(g_tui.pin_off, g_tui.pin_off + 1,
+                sizeof g_tui.pin_off - sizeof g_tui.pin_off[0]);
+        memmove(g_tui.pin_id, g_tui.pin_id + 1,
+                sizeof g_tui.pin_id - sizeof g_tui.pin_id[0]);
+        g_tui.pin_n--;
+    }
+    g_tui.pin_off[g_tui.pin_n] = off;
+    g_tui.pin_id[g_tui.pin_n] = id;
+    g_tui.pin_n++;
+}
+
+static void pins_shift(size_t delta) {
+    size_t w = 0;
+    for (size_t i = 0; i < g_tui.pin_n; i++) {
+        if (g_tui.pin_off[i] < delta) continue;
+        g_tui.pin_off[w] = g_tui.pin_off[i] - delta;
+        g_tui.pin_id[w] = g_tui.pin_id[i];
+        w++;
+    }
+    g_tui.pin_n = w;
 }
 
 static void zones_shift(size_t delta) {
@@ -1333,10 +1377,11 @@ static const TuiCmd *popup_items(void) {
 }
 
 static void update_popup_row(size_t screen_row, Str name, Str desc,
-                             b8 selected, size_t name_cells,
+                             TuiMark mark, b8 selected, size_t name_cells,
                              size_t screen_col, size_t screen_cols,
                              size_t body_cols, b8 force) {
     u64 hash = row_hash(name, desc, ROW_POPUP);
+    hash = hash_add(hash, &mark, sizeof mark);
     hash = hash_add(hash, &selected, sizeof selected);
     hash = hash_add(hash, &name_cells, sizeof name_cells);
     size_t sel_c0, sel_c1;
@@ -1362,7 +1407,24 @@ static void update_popup_row(size_t screen_row, Str name, Str desc,
     while (used < name_cells && used < body_cols) { put_text(" ", 1); used++; }
     style(bg);
     style(S_MUTED);
-    if (used < body_cols) put_safe_clipped(desc, body_cols - used, &used);
+    /* The chosen option is the one part of the row that is not a description,
+     * so it is painted as text while the options beside it stay muted. */
+    size_t m0 = mark.n && mark.off < desc.n ? mark.off : desc.n;
+    size_t m1 = m0 + mark.n <= desc.n ? m0 + mark.n : desc.n;
+    if (used < body_cols)
+        put_safe_clipped((Str){ desc.p, m0 }, body_cols - used, &used);
+    if (m1 > m0) {
+        style(bg);
+        style(S_GREEN);
+        if (used < body_cols)
+            put_safe_clipped((Str){ desc.p + m0, m1 - m0 },
+                             body_cols - used, &used);
+        style(bg);
+        style(S_MUTED);
+    }
+    if (m1 < desc.n && used < body_cols)
+        put_safe_clipped((Str){ desc.p + m1, desc.n - m1 },
+                         body_cols - used, &used);
     paint_sel_tail(screen_row, screen_cols);
     style(S_RESET);
 }
@@ -1506,8 +1568,11 @@ static void paint_completions(size_t top_row, size_t rows, size_t screen_col,
     size_t first = g_tui.comp_sel >= rows ? g_tui.comp_sel - rows + 1 : 0;
     size_t name_cells = popup_name_cells(body_cols);
     for (size_t i = 0; i < rows; i++) {
-        const TuiCmd *cmd = &popup_items()[g_tui.comp_idx[first + i]];
-        update_popup_row(top_row + i, cmd->name, cmd->desc,
+        size_t at = g_tui.comp_idx[first + i];
+        const TuiCmd *cmd = &popup_items()[at];
+        TuiMark mark = g_tui.marks && !g_tui.path_mode ? g_tui.marks[at]
+                                                       : (TuiMark){0};
+        update_popup_row(top_row + i, cmd->name, cmd->desc, mark,
                          first + i == g_tui.comp_sel, name_cells, screen_col,
                          screen_cols, body_cols, force);
     }
@@ -2142,6 +2207,7 @@ void tui_clear_transcript(void) {
     g_tui.user_open = false;
     g_tui.zone_n = 0;
     g_tui.zone_open = 0;
+    g_tui.pin_n = 0;
     g_tui.hover_id = 0;
     wrap_invalidate();
     g_tui.scroll_rows = 0;
@@ -2177,20 +2243,68 @@ static size_t zone_start(u32 id) {
     return SIZE_MAX;
 }
 
+static size_t pin_start(u32 id) {
+    for (size_t i = g_tui.pin_n; i-- > 0;)
+        if (g_tui.pin_id[i] == id) return g_tui.pin_off[i];
+    return SIZE_MAX;
+}
+
+static size_t anchor_start(u32 id) {
+    return g_tui.anchor_is_pin ? pin_start(id) : zone_start(id);
+}
+
+void tui_pin(u32 id) {
+    if (!g_tui.fullscreen || !id) return;
+    pin_add(g_tui.transcript_n, id);
+}
+
 void tui_anchor_zone(u32 id) {
+    g_tui.anchor_is_pin = false;
     size_t off = zone_start(id);
     g_tui.anchor_id = off == SIZE_MAX ? 0 : id;
     g_tui.anchor_below = g_tui.anchor_id ? rows_below(off) : 0;
     g_tui.anchor_scroll = g_tui.scroll_rows;
 }
 
+void tui_anchor_view(void) {
+    g_tui.anchor_id = 0;
+    g_tui.anchor_is_pin = true;
+    g_tui.anchor_scroll = g_tui.scroll_rows;
+    g_tui.anchor_below = 0;
+    /* With no landmark to steer by the distance from the bottom is the whole
+     * answer, which is exact whenever the replay only changed rows above the
+     * viewport. */
+    if (!g_tui.scroll_rows || !g_tui.pin_n) return;
+    /* The rows below the top visible row: the last paint's transcript height
+     * is what the reader is looking through. */
+    size_t need = g_tui.scroll_rows + g_tui.bar_visible;
+    /* Landmarks are appended in offset order and rows_below only falls as the
+     * offset grows, so the first one above the viewport top bisects. */
+    size_t lo = 0, hi = g_tui.pin_n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (rows_below(g_tui.pin_off[mid]) >= need) lo = mid + 1; else hi = mid;
+    }
+    size_t i = lo ? lo - 1 : 0;
+    g_tui.anchor_id = g_tui.pin_id[i];
+    g_tui.anchor_below = rows_below(g_tui.pin_off[i]);
+}
+
 void tui_restore_anchor(void) {
     u32 id = g_tui.anchor_id;
     g_tui.anchor_id = 0;
     /* A viewport pinned to the bottom stays there. */
-    if (!id || !g_tui.anchor_scroll) return;
-    size_t off = zone_start(id);
-    if (off == SIZE_MAX) return;
+    if (!g_tui.anchor_scroll) return;
+    size_t off = id ? anchor_start(id) : SIZE_MAX;
+    if (off == SIZE_MAX) {
+        /* The landmark did not survive the replay: hold the distance from
+         * the bottom, which the paint clamps to what there is. */
+        if (g_tui.anchor_is_pin) {
+            g_tui.scroll_rows = g_tui.anchor_scroll;
+            repaint();
+        }
+        return;
+    }
     size_t below = rows_below(off);
     g_tui.scroll_rows = below > g_tui.anchor_below
                       ? g_tui.anchor_scroll + (below - g_tui.anchor_below)
@@ -2225,6 +2339,7 @@ static void transcript_put(Str s) {
         g_tui.transcript_epoch++;
         g_tui.user_n = 0;
         g_tui.zone_n = 0;
+        g_tui.pin_n = 0;
         wrap_invalidate();   /* the bytes the index described are gone */
     } else if (g_tui.transcript_n + s.n >= TUI_TRANSCRIPT_CAP) {
         size_t room_for_old = TUI_TRANSCRIPT_CAP - 1 - s.n;
@@ -2238,6 +2353,7 @@ static void transcript_put(Str s) {
         g_tui.transcript_epoch++;
         users_shift(g_tui.transcript_n - keep);
         zones_shift(g_tui.transcript_n - keep);
+        pins_shift(g_tui.transcript_n - keep);
         g_tui.transcript_n = keep;
         wrap_invalidate();   /* every offset in the index just moved */
     }
@@ -3044,12 +3160,15 @@ void tui_set_aliases(const TuiAlias *aliases, size_t n) {
     g_tui.alias_n = n;
 }
 
-/* The search is literal and case-insensitive: a name either holds what was
- * typed or it does not, with no fuzzy ordering to explain. */
-static void pick_filter(Str query) {
+/* A picker searches literally and case-insensitively: a name either holds
+ * what was typed or it does not, with no fuzzy ordering to explain. The
+ * settings screen matches loosely instead, since its rows are sentences the
+ * reader is recalling rather than names they know. */
+static void pick_filter(Str query, b8 fuzzy) {
     g_tui.comp_n = 0;
     for (size_t i = 0; i < g_tui.cmd_n && g_tui.comp_n < YOKE_MAX_POPUP; i++)
-        if (str_contains_ci(g_tui.cmds[i].name, query))
+        if (fuzzy ? str_fuzzy_ci(g_tui.cmds[i].name, query)
+                  : str_contains_ci(g_tui.cmds[i].name, query))
             g_tui.comp_idx[g_tui.comp_n++] = (u16)i;
     /* The narrowed list keeps the anchor it opened on, so a search never
      * moves the default choice to the other end. */
@@ -3073,19 +3192,25 @@ static b8 scroll_key(i32 key) {
     return true;
 }
 
-/* The search box is the notice row, which already sits above the popup. */
-static void pick_search_row(Str query) {
+/* The search box is the notice row, which already sits above the popup. A
+ * settings screen is acted on rather than chosen from, so an empty box also
+ * carries the keys that act. */
+static void pick_search_row(Str query, b8 settings) {
     char row[sizeof g_tui.notice];
-    i32 n = snprintf(row, sizeof row, "search: %.*s%s", (i32)query.n, query.p,
-                     g_tui.comp_n ? "" : "  (no match)");
+    i32 n = snprintf(row, sizeof row, "search: %.*s%s%s", (i32)query.n,
+                     query.p, g_tui.comp_n ? "" : "  (no match)",
+                     settings && !query.n
+                         ? " · Space or Left/Right changes the selected "
+                           "row · Esc closes"
+                         : "");
     if (n < 0) return;
     size_t len = (size_t)n < sizeof row ? (size_t)n : sizeof row - 1;
     tui_notice((Str){row, len});   /* repaints */
 }
 
 /* A picker is answered by choosing a row, so Enter takes it and Escape
- * declines; a settings screen is acted on, so Space and the arrows act on the
- * selected row and both Enter and Escape close it. */
+ * declines; a settings screen is acted on, so Space, Enter and the arrows act
+ * on the selected row and Escape closes it. */
 typedef enum { PICK_CHOOSE, PICK_SETTINGS, PICK_INFO } PickKind;
 
 /* A modal list over the same popup the composer completes with; only the
@@ -3094,13 +3219,40 @@ typedef enum { PICK_CHOOSE, PICK_SETTINGS, PICK_INFO } PickKind;
  *
  * A long list also takes the keyboard: scrolling six visible rows through
  * hundreds of entries is not a way to choose one. */
-static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
-                    size_t search_n, TuiPickAnchor anchor, size_t start,
-                    PickKind kind, size_t *out, i32 *delta) {
+/* The filtered view rebuilt around one row of the full list, which is what a
+ * settings row that changed under the reader has to stay: the selection
+ * names the setting, not the position it happened to sit at. */
+static void pick_reselect(Str query, b8 fuzzy, size_t keep) {
+    pick_filter(query, fuzzy);
+    for (size_t i = 0; i < g_tui.comp_n; i++)
+        if (g_tui.comp_idx[i] == keep) { g_tui.comp_sel = i; return; }
+}
+
+/* Changes the selected setting and rebuilds the rows where they stand. The
+ * screen never closes for a change, so the popup keeps its height and the
+ * frame around it is never relaid out: only the rows that say something new
+ * are repainted. */
+static void pick_settings_act(const TuiSettings *set, Str query, i32 delta) {
+    if (!set || !g_tui.comp_n) return;
+    size_t row = g_tui.comp_idx[g_tui.comp_sel];
+    set->act(set->ud, row, delta);
+    size_t n = set->build(set->ud);
+    if (n > set->max) n = set->max;
+    if (n > YOKE_MAX_POPUP) n = YOKE_MAX_POPUP;
+    if (!n) return;   /* nothing left to select; the rows on screen stand */
+    g_tui.cmd_n = n;
+    pick_reselect(query, true, row < n ? row : n - 1);
+}
+
+static b8 pick_impl(Str title, const TuiCmd *items, const TuiMark *marks,
+                    size_t n, size_t search_n, TuiPickAnchor anchor,
+                    size_t start, PickKind kind, size_t *out,
+                    const TuiSettings *set) {
     if (!g_tui.fullscreen || !items || !n || !out) return false;
     if (n > YOKE_MAX_POPUP) n = YOKE_MAX_POPUP;
 
     const TuiCmd *saved_cmds = g_tui.cmds;
+    const TuiMark *saved_marks = g_tui.marks;
     size_t saved_cmd_n = g_tui.cmd_n;
     b8 saved_dismissed = g_tui.comp_dismissed;
     char saved_status[sizeof g_tui.status];
@@ -3109,11 +3261,16 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
     memcpy(saved_status, g_tui.status, sizeof saved_status);
     memcpy(saved_notice, g_tui.notice, sizeof saved_notice);
 
-    b8 search = kind == PICK_CHOOSE && search_n > TUI_PICK_SEARCH_MIN;
+    b8 settings = kind == PICK_SETTINGS;
+    /* Every settings row is searchable, however few there are: a list acted
+     * on repeatedly is a list worth narrowing once. */
+    b8 search = settings
+             || (kind == PICK_CHOOSE && search_n > TUI_PICK_SEARCH_MIN);
     char query[TUI_PICK_QUERY];
     size_t query_n = 0;
 
     g_tui.cmds = items;
+    g_tui.marks = marks;
     g_tui.cmd_n = n;
     g_tui.path_mode = false;   /* the popup is the picker's now */
     g_tui.comp_n = n;
@@ -3122,12 +3279,7 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
     for (size_t i = 0; i < n; i++) g_tui.comp_idx[i] = (u16)i;
     /* The status is set last, so the frame announcing the picker already
      * carries the list and the search box. */
-    if (search) pick_search_row((Str){query, query_n});
-    /* Unless something already answered there: a screen reopened after acting
-     * on a row would paint its hint over what the action had to say. */
-    if (kind == PICK_SETTINGS && !g_tui.notice_n)
-        tui_notice(STR("Space or Left/Right changes the selected row · "
-                       "Enter or Esc closes"));
+    if (search) pick_search_row((Str){query, query_n}, settings);
     if (kind == PICK_INFO && !g_tui.notice_n)
         tui_notice(STR("Up/Down reads the page - Enter or Esc closes"));
     char status[sizeof g_tui.status];
@@ -3145,18 +3297,26 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
         if (c < 0) break;
         if ((c == 0x03 || c == 0x04) && !g_tui.pasting) break;
         if (g_tui.pasting && (c == '\r' || c == '\n')) continue;
+        i32 act = 0;   /* the direction a settings row was asked to move */
         if ((c == '\r' || c == '\n') && !g_tui.pasting) {
-            if (kind != PICK_CHOOSE) break;
+            if (kind == PICK_INFO) break;
             if (!g_tui.comp_n) continue;
-            *out = g_tui.comp_idx[g_tui.comp_sel];
-            chosen = true;
-            break;
+            /* Enter is the key a reader reaches for, so on a settings row it
+             * does what Space does rather than closing the screen. */
+            if (!settings) {
+                *out = g_tui.comp_idx[g_tui.comp_sel];
+                chosen = true;
+                break;
+            }
+            act = 1;
+        } else if (c == ' ' && settings && !g_tui.pasting) {
+            if (!g_tui.comp_n) continue;
+            act = 1;
         }
-        if (c == ' ' && kind == PICK_SETTINGS && !g_tui.pasting) {
-            if (!g_tui.comp_n) continue;
-            if (delta) *delta = 1;
-            chosen = true;
-            break;
+        if (act) {
+            pick_settings_act(set, (Str){query, query_n}, act);
+            repaint();
+            continue;
         }
         if (c == 0x0e) completion_move(1);
         else if (c == 0x10) completion_move(-1);
@@ -3164,11 +3324,10 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
             i32 key = read_escape();
             if (key == KEY_DOWN) completion_move(1);
             else if (key == KEY_UP) completion_move(-1);
-            else if (kind == PICK_SETTINGS && g_tui.comp_n
+            else if (settings && g_tui.comp_n
                      && (key == KEY_LEFT || key == KEY_RIGHT)) {
-                if (delta) *delta = key == KEY_LEFT ? -1 : 1;
-                chosen = true;
-                break;
+                pick_settings_act(set, (Str){query, query_n},
+                                  key == KEY_LEFT ? -1 : 1);
             }
             else if (scroll_key(key)) { /* the transcript moves, not the list */ }
             else if (key == KEY_NONE) break;          /* bare Esc cancels */
@@ -3183,19 +3342,15 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
             } else {
                 continue;
             }
-            pick_filter((Str){query, query_n});
-            pick_search_row((Str){query, query_n});
+            pick_filter((Str){query, query_n}, settings);
+            pick_search_row((Str){query, query_n}, settings);
             continue;
         }
         repaint();
     }
 
-    /* The row the selection was left on, so a settings screen reopened after
-     * a change opens where it was rather than back at the top. */
-    if (kind == PICK_SETTINGS && g_tui.comp_n)
-        *out = g_tui.comp_idx[g_tui.comp_sel];
-
     g_tui.cmds = saved_cmds;
+    g_tui.marks = saved_marks;
     g_tui.cmd_n = saved_cmd_n;
     g_tui.pick_end = false;
     g_tui.comp_dismissed = saved_dismissed;
@@ -3210,23 +3365,24 @@ static b8 pick_impl(Str title, const TuiCmd *items, size_t n,
 
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t start, size_t *out) {
-    return pick_impl(title, items, n, n, anchor, start, PICK_CHOOSE, out, NULL);
+    return pick_impl(title, items, NULL, n, n, anchor, start, PICK_CHOOSE, out,
+                     NULL);
 }
 
 b8 tui_pick_search_count(Str title, const TuiCmd *items, size_t n,
                          size_t search_n, TuiPickAnchor anchor, size_t start,
                          size_t *out) {
-    return pick_impl(title, items, n, search_n, anchor, start, PICK_CHOOSE,
-                     out, NULL);
+    return pick_impl(title, items, NULL, n, search_n, anchor, start,
+                     PICK_CHOOSE, out, NULL);
 }
 
-b8 tui_settings(Str title, const TuiCmd *rows, size_t n, size_t *sel,
-                i32 *delta) {
-    if (!sel) return false;
-    size_t start = *sel;
-    if (delta) *delta = 1;
-    return pick_impl(title, rows, n, n, TUI_PICK_FIRST, start, PICK_SETTINGS,
-                     sel, delta);
+void tui_settings(Str title, const TuiSettings *set) {
+    if (!set || !set->rows || !set->build || !set->act) return;
+    size_t n = set->build(set->ud);
+    if (!n) return;
+    size_t out = 0;
+    (void)pick_impl(title, set->rows, set->marks, n, n, TUI_PICK_FIRST, 0,
+                    PICK_SETTINGS, &out, set);
 }
 
 void tui_info(Str title, const TuiCmd *rows, size_t n) {
@@ -3239,7 +3395,7 @@ void tui_info(Str title, const TuiCmd *rows, size_t n) {
         return;
     }
     size_t row = 0;
-    (void)pick_impl(title, rows, n, n, TUI_PICK_FIRST, 0, PICK_INFO, &row,
+    (void)pick_impl(title, rows, NULL, n, n, TUI_PICK_FIRST, 0, PICK_INFO, &row,
                     NULL);
 }
 

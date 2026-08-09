@@ -11,16 +11,97 @@ def test_settings_lists_the_toggles_and_the_values(ctx):
     s.open_settings()
     text = s.text()
     for row in ("[ ] Verbose tool output", "[ ] Display raw",
-                "[x] Stream replies", "[ ] Ignored files", "[ ] Telemetry",
-                "Text wrap", "Mode"):
+                "[x] Stream replies", "[ ] Ignored files", "[ ] Telemetry"):
         assert row in text, text
     assert "Markdown and syntax highlighting" in text, text
     assert "Space or Left/Right changes the selected row" in text, text
     ctx.check_screen(s)
     # More rows than the popup holds: the last is reached by moving down.
-    s.key(*(["down"] * 14)).sync()
+    s.settings_select("Max tokens")
     text = s.text()
-    assert "Max tokens" in text and "[x] bash" in text, text
+    assert "Max tokens" in text and "Text wrap" in text, text
+
+
+def test_the_checkboxes_come_before_the_option_rows(ctx):
+    """One kind of answer at a time: every box, then every set of options."""
+    s = ctx.spawn()
+    s.open_settings()
+    order = []
+    for _ in range(24):
+        row = s.popup_selected()
+        if order and row == order[0]:
+            break            # the selection wrapped: the list is one pass
+        if row and (not order or row != order[-1]):
+            order.append(row)
+        s.key("down").sync()
+    boxes = [i for i, row in enumerate(order) if "[" in row]
+    values = [i for i, row in enumerate(order) if "[" not in row]
+    assert boxes and values, order
+    assert max(boxes) < min(values), order
+
+
+def test_an_option_row_lists_its_options_and_marks_the_live_one(ctx):
+    """No description to read: the row is the choice it offers."""
+    s = ctx.spawn()
+    s.open_settings().settings_select("Text wrap")
+    row = s.popup_selected()
+    assert "Word" in row and "Justified" in row, row
+    assert "lines end where a word does" not in row, row
+    assert s.settings_option("Text wrap") == "Word", s.text()
+
+
+def test_the_arrows_cycle_an_option_row(ctx):
+    """Right steps forward, left steps back, and both wrap."""
+    s = ctx.spawn()
+    s.open_settings().settings_select("Text wrap")
+    s.key("right").sync()
+    s.wait_for(lambda t: s.settings_option("Text wrap") == "Justified",
+               "justified wrapping")
+    s.key("left").sync()
+    s.wait_for(lambda t: s.settings_option("Text wrap") == "Word",
+               "word wrapping")
+
+
+def test_enter_acts_on_the_selected_row(ctx):
+    """The key a reader reaches for does what Space does."""
+    s = ctx.spawn()
+    s.open_settings().settings_select("Display raw")
+    s.key("enter").sync()
+    s.wait_text("[x] Display raw")
+    assert "Verbose tool output" in s.text(), "the screen stays open"
+    s.settings_select("Text wrap").key("enter").sync()
+    s.wait_for(lambda t: s.settings_option("Text wrap") == "Justified",
+               "justified wrapping")
+
+
+def test_typing_narrows_the_rows(ctx):
+    """A setting is recalled loosely, so the search matches loosely."""
+    s = ctx.spawn()
+    s.open_settings()
+    s.type("shins").sync()
+    s.wait_text("search: shins")
+    text = s.text()
+    assert "Show instructions" in text, text
+    assert "Verbose tool output" not in text, text
+    # The query survives acting on what it found, so the row stays reachable.
+    s.key("space").sync()
+    s.wait_text("[x] Show instructions")
+    assert "Verbose tool output" not in s.text(), s.text()
+    s.key("esc")
+    s.wait_gone("Show instructions")
+    # A closed screen is a search that is over.
+    s.open_settings()
+    assert "Verbose tool output" in s.text(), s.text()
+
+
+def test_a_search_with_no_match_says_so(ctx):
+    s = ctx.spawn()
+    s.open_settings()
+    s.type("zzz").sync()
+    s.wait_text("(no match)")
+    s.key("space")
+    s.settle()
+    assert "(no match)" in s.text(), "nothing to act on, and nothing acted on"
 
 
 def test_the_description_column_holds_while_scrolling(ctx):
@@ -35,8 +116,8 @@ def test_the_description_column_holds_while_scrolling(ctx):
         raise AssertionError(f"no row holding {label!r}\n{s.text()}")
 
     top = column("Every line a tool printed")
-    s.key(*(["down"] * 14)).sync()
-    assert column("Write a file whole") == top, s.text()
+    s.settings_select("Text wrap")
+    assert column("Word") == top, s.text()
 
 
 def test_a_tool_row_says_what_the_tool_is_in_one_line(ctx):
@@ -52,7 +133,7 @@ def test_the_endpoint_is_not_a_setting(ctx):
     """The model and the provider are chosen by their own commands."""
     s = ctx.spawn()
     s.open_settings()
-    s.key(*(["down"] * 13)).sync()
+    s.key(*(["down"] * 20)).sync()
     text = s.text()
     assert "Model" not in text and "Provider" not in text, text
 
@@ -81,6 +162,22 @@ def test_reasoning_rows_do_not_shift_tool_toggle_ids(ctx):
     assert "[x] read" in s.text(), s.text()
 
 
+def test_a_reasoning_row_lists_off_and_every_configured_effort(ctx):
+    """The provider's own list is the row's options, Off among them."""
+    write_provider(ctx, "work", ctx.mock.base_url, key="sk", api="openai")
+    with ctx.config_file().open("a") as f:
+        f.write("reasoning_efforts = low,high\nreasoning_effort = high\n")
+    select_provider(ctx, "work")
+    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s.open_settings().settings_select("Reasoning effort")
+    row = s.popup_selected()
+    assert "Off" in row and "low" in row and "high" in row, row
+    assert s.settings_option("Reasoning effort") == "high", s.text()
+    s.key("left").sync()
+    s.wait_for(lambda t: s.settings_option("Reasoning effort") == "low",
+               "the low effort")
+
+
 def test_the_screen_stays_open_across_a_toggle(ctx):
     """Changing one setting is not a reason to ask for the screen again."""
     s = ctx.spawn()
@@ -90,16 +187,14 @@ def test_the_screen_stays_open_across_a_toggle(ctx):
     assert "[ ] Verbose tool output" in s.text(), s.text()
 
 
-def test_enter_and_escape_close_it(ctx):
-    """Both keys close; neither submits the composed line."""
-    for key in ("enter", "esc"):
-        s = ctx.spawn()
-        s.open_settings()
-        s.key(key)
-        s.wait_gone("Verbose tool output")
-        assert s.composer_text() == "", s.composer_lines()
-        assert s.proc.poll() is None, f"{key} must not end the session"
-        s.close()
+def test_escape_closes_it(ctx):
+    """It closes, it does not submit the composed line, and it stays alive."""
+    s = ctx.spawn()
+    s.open_settings()
+    s.key("esc")
+    s.wait_gone("Verbose tool output")
+    assert s.composer_text() == "", s.composer_lines()
+    assert s.proc.poll() is None, "esc must not end the session"
 
 
 def test_the_toggles_are_not_commands_of_their_own(ctx):
@@ -119,7 +214,7 @@ def test_the_mode_row_switches_mode(ctx):
     assert s.status_field(2) == "build", s.status_line()
     s.settings_act("Mode")
     s.wait_for(lambda t: s.status_field(2) == "plan", "plan mode")
-    assert "Plan: read-only" in s.text(), s.text()
+    assert s.settings_option("Mode") == "Plan", s.text()
 
 
 def test_show_instructions_replays_sources_without_changing_the_request(ctx):
@@ -266,9 +361,9 @@ def test_settings_choices_survive_a_restart(ctx):
         assert f"[x] {label}" in text, text
     assert "[ ] Stream replies" in text, text
     again.settings_select("Text wrap")
-    assert "Justified" in again.popup_selected(), again.text()
+    assert again.settings_option("Text wrap") == "Justified", again.text()
     again.settings_select("Mode")
-    assert "Plan:" in again.popup_selected(), again.text()
+    assert again.settings_option("Mode") == "Plan", again.text()
     again.settings_select("Max tokens")
     assert "65536" in again.popup_selected(), again.text()
     again.settings_select("bash")
@@ -317,3 +412,48 @@ def test_persistence_failure_is_reported_but_the_change_applies(ctx):
     s.key("space").sync()
     s.wait_text("setting changed but was not remembered")
     assert "[ ] Stream replies" in s.text(), s.text()
+
+
+def test_a_change_repaints_the_row_and_not_the_screen(ctx):
+    """The screen stays open across a change, so nothing around it moves.
+
+    A screen that closed and reopened for every toggle relaid the frame out
+    twice, which is a whole-terminal blink between two frames.
+    """
+    ctx.scenario("text=wombat+reply")
+    s = ctx.spawn()
+    s.submit("say it")
+    s.wait_text("wombat reply")
+    s.wait_turn_done()
+    s.open_settings().settings_select("Stream replies")
+
+    s.raw.clear()
+    s.key("space").sync()
+    s.wait_text("[ ] Stream replies")
+    painted = bytes(s.raw)
+    assert b"\x1b[2J" not in painted, "no full clear for one toggle"
+    assert b"wombat" not in painted, "the transcript was repainted"
+    assert b"Verbose tool output" not in painted, "the popup was repainted"
+
+
+def test_a_change_that_rerenders_the_transcript_keeps_the_rows_readable(ctx):
+    """Display raw redraws the transcript under an open screen.
+
+    The rows are built in their own arena for exactly this: the redraw resets
+    the scratch arena, and rows built there would be read back as rubble.
+    """
+    ctx.scenario("text=**bold**+reply")
+    s = ctx.spawn()
+    s.submit("say it")
+    s.wait_text("bold reply")
+    s.wait_turn_done()
+    s.open_settings().settings_select("Display raw")
+    s.key("space").sync()
+    s.wait_text("[x] Display raw")
+    text = s.text()
+    for row in ("[ ] Verbose tool output", "[x] Stream replies",
+                "No Markdown or syntax highlighting"):
+        assert row in text, text
+    assert "**bold** reply" in text, text
+    s.settings_select("Text wrap")
+    assert s.settings_option("Text wrap") == "Word", s.text()

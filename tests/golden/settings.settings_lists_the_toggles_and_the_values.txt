@@ -9,15 +9,15 @@
 |
 |
 |
-|    Space or Left/Right changes the selected row · Enter or Esc closes
+|    search:  · Space or Left/Right changes the selected row · Esc closes
 |  › [ ] Verbose tool output  Every line a tool printed, untruncated
 |    [ ] Display raw          Markdown and syntax highlighting
 |    [x] Stream replies       Paint a reply as it arrives, not once it is whole
 |    [ ] Ignored files        Offer what .gitignore and .ignore exclude
 |    [ ] Telemetry            An anonymized debug log, for a bug report
-|        Text wrap            Word: lines end where a word does
-|        Mode                 Build: edits files and runs commands
 |    [ ] Show instructions    Reveal the active system and project instructions
+|    [x] read                 Read a page of a file
+|    [x] grep                 Search file contents
 |
 |  › Message yoke...
 |

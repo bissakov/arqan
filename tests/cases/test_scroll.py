@@ -199,3 +199,65 @@ def test_the_viewport_scrolls_with_a_picker_open(ctx):
     assert s.status_line().count("rewind to a message"), s.status_line()
     s.key("pagedown").sync()
     assert s.text() == pinned, s.text()
+
+
+def test_a_setting_that_replays_keeps_the_scrolled_view(ctx):
+    """Toggling raw or verbose re-renders without dropping the reader back.
+
+    The replay rebuilds the whole transcript, so the viewport has to be put
+    back on the message it was looking at instead of snapping to the newest
+    row.
+    """
+    s = ctx.spawn()
+    for i in range(4):
+        ctx.scenario(f"words=120,paragraphs=2,chunk=16,seed={i}")
+        s.submit(f"question number {i}")
+        s.wait_turn_done()
+
+    for _ in range(12):
+        s.key("pageup")
+    s.sync()
+    before = s.text()
+    assert "question number 0" in before, before
+
+    s.settings_toggle("Verbose tool output")
+    s.wait_gone("Verbose tool output")
+    assert s.text() == before, f"the viewport moved\n{before}\n---\n{s.text()}"
+
+    s.settings_toggle("Display raw")
+    s.wait_gone("Display raw")
+    assert "question number 0" in s.text(), s.text()
+
+
+def test_show_instructions_keeps_the_scrolled_view(ctx):
+    """Rows appearing above the viewport move with it, not under it."""
+    ctx.write_file(".yoke/SYSTEM.md", "BUILD PROMPT\nline two\nline three\n")
+    s = ctx.spawn(YOKE_SYSTEM_PROMPT=None)
+    for i in range(4):
+        ctx.scenario(f"words=120,paragraphs=2,chunk=16,seed={i}")
+        s.submit(f"question number {i}")
+        s.wait_turn_done()
+
+    for _ in range(12):
+        s.key("pageup")
+    s.sync()
+    before = s.text()
+    row = s.term.find_row("question number 0")
+    assert row >= 0, before
+
+    s.settings_toggle("Show instructions")
+    s.wait_gone("Show instructions")
+    text = s.text()
+    assert "question number 0" in text, text
+    assert abs(s.term.find_row("question number 0") - row) <= 1, (
+        f"expected row {row}\n{before}\n---\n{text}")
+
+
+def test_a_setting_applied_at_the_bottom_stays_at_the_bottom(ctx):
+    """A viewport nobody scrolled keeps following the newest output."""
+    s = ctx.spawn()
+    fill_transcript(ctx, s)
+    bottom = s.text()
+    s.settings_toggle("Verbose tool output")
+    s.wait_gone("Verbose tool output")
+    assert s.text() == bottom, f"{bottom}\n---\n{s.text()}"

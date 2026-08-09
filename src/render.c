@@ -57,6 +57,9 @@ static void write_clipped(Str s, size_t max, Sink sink) {
 
 /* The block being written, for the length of one render_* call. */
 static void block_begin(u32 id, b8 expanded) {
+    /* A block is where a re-render can put the viewport back, so it is a
+     * landmark whether it was written live or replayed. */
+    tui_pin(id);
     g_zone = id;
     g_expanded = expanded;
 }

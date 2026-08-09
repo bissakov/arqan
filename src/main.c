@@ -39,6 +39,10 @@ static void on_sigint(i32 sig) { (void)sig; g_got_sigint = 1; }
 /* Static backing storage: no malloc anywhere in our code. */
 static alignas(64) u8 g_persist[YOKE_PERSIST_BYTES];
 static alignas(64) u8 g_scratch[YOKE_ARENA_BYTES];
+/* The rows of whichever modal screen is open. Only one is ever open, and its
+ * rows have to survive an action that resets the scratch arena to rerender
+ * the transcript under them. */
+static alignas(64) u8 g_screen[YOKE_SCREEN_BYTES];
 
 /* Handled below in the prompt loop; the TUI reads this to drive the
  * composer's completion popup. */
@@ -514,7 +518,8 @@ static void render_instructions(const Config *cfg) {
                                   sources->agents[i]);
 }
 
-static void render_user_message(Str text) {
+static void render_user_message(Str text, u32 id) {
+    tui_pin(id);
     tui_user_begin();
     md_write(text);
     md_end();
@@ -524,6 +529,9 @@ static void render_user_message(Str text) {
 static void render_conv(const Conv *c, const Config *cfg,
                         b8 show_instructions, Arena *scratch) {
     for (size_t i = 0; i < c->n; i++) {
+        /* One landmark per message, so a re-render can put the viewport back
+         * where the reader left it. */
+        tui_pin((u32)(i + 1));
         switch (c->role[i]) {
             case M_SYSTEM:
                 if (show_instructions) render_instructions(cfg);
@@ -535,7 +543,7 @@ static void render_conv(const Conv *c, const Config *cfg,
                                        scratch, (u32)(i + 1), c->expanded[i],
                                        c->ms[i]);
                 } else {
-                    render_user_message(c->text[i]);
+                    render_user_message(c->text[i], (u32)(i + 1));
                 }
                 break;
             case M_TOOL:
@@ -566,7 +574,7 @@ static void render_conv(const Conv *c, const Config *cfg,
 static void rerender_conv(const Conv *conv, const Config *cfg,
                           b8 show_instructions, Arena *scratch, u32 zone) {
     arena_reset(scratch);
-    tui_anchor_zone(zone);
+    if (zone) tui_anchor_zone(zone); else tui_anchor_view();
     tui_clear_transcript();
     render_conv(conv, cfg, show_instructions, scratch);
     tui_restore_anchor();
@@ -817,7 +825,7 @@ static void start_help_session(Agent *ag) {
         tui_notice(STR("conversation is full"));
         return;
     }
-    render_user_message(prompt);
+    render_user_message(prompt, (u32)conv->n);
     session_save(ag->sess, conv);
 }
 
@@ -1445,13 +1453,20 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
  * one, and why nothing here opens a question: a setting a reader has to walk
  * to is a setting they have to find twice. The model and the provider are
  * not settings of a session but the endpoint it talks to, and `/model` and
- * `/provider` are where they are chosen.
+ * `/provider` are where they are chosen. A row with more than two answers
+ * lists them all rather than describing the live one, since the reader is
+ * choosing between them, not reading about one.
  */
+/* What a row changes, since the rows a session offers vary: the tools it
+ * runs and the reasoning controls its provider takes are both conditional.
+ * Checkboxes come first, then the tools, then the rows that step between
+ * options: a list a reader scans is a list whose answers look alike. */
 enum {
     SET_VERBOSE, SET_RAW, SET_STREAM, SET_IGNORED, SET_TELEMETRY,
-    SET_WRAP, SET_MODE, SET_SHOW_INSTRUCTIONS, SET_MAX_TOKENS,
-    SET_FIXED_N, SET_EFFORT = SET_FIXED_N, SET_BUDGET
+    SET_SHOW_INSTRUCTIONS, SET_TOOL, SET_WRAP, SET_MODE, SET_MAX_TOKENS,
+    SET_EFFORT, SET_BUDGET
 };
+#define SET_MAX_ROWS (16 + YOKE_MAX_TOOLS)
 
 /* "[x] label" for a toggle and the same column for a value row, so the two
  * kinds read as one list. A row that lost its checkbox to a full arena is
@@ -1467,6 +1482,22 @@ static Str setting_check(Arena *a, b8 on, Str label) {
 }
 static Str setting_value(Arena *a, Str label) {
     return setting_label(a, label, "    ");
+}
+
+/* Every option the row steps between, on one line, with the current one
+ * marked for the renderer. A row that says what it will reach is a row a
+ * reader steps through once rather than twice. */
+static Str setting_options(Arena *a, const Str *opts, size_t n, size_t cur,
+                           TuiMark *mark) {
+    *mark = (TuiMark){ 0, 0 };
+    Buf b; buf_init(&b, a, 64);
+    for (size_t i = 0; i < n; i++) {
+        if (i) buf_puts(&b, STR("  "));
+        if (i == cur) *mark = (TuiMark){ b.n, opts[i].n };
+        buf_puts(&b, opts[i]);
+    }
+    if (!buf_ok(&b)) { *mark = (TuiMark){ 0, 0 }; return (Str){0}; }
+    return buf_finish(&b);
 }
 
 static void remember_ui(Arena *scratch, Str key, Str value) {
@@ -1490,7 +1521,17 @@ static void remember_tools(const ToolRegistry *reg, Arena *scratch) {
     remember_ui(scratch, STR("ui_disable_tools"), value);
 }
 
-static void choose_statusline(Arena *scratch) {
+/* The rows the screen is showing, rebuilt in place after every change: the
+ * strings live in the scratch arena, which each rebuild resets, so nothing
+ * outside a build call may hold one. */
+typedef struct {
+    Arena  *scratch;       /* what remembering a choice writes through */
+    Arena   rows_arena;    /* what the rows themselves are built in    */
+    TuiCmd  rows[TUI_STATUS_N];
+} StatusView;
+
+static size_t statusline_build(void *ud) {
+    /* -Wpedantic rejects STR()'s compound literal as a static initializer. */
     const Str labels[TUI_STATUS_N] = {
         STR("State"), STR("Model"), STR("Reasoning effort"),
         STR("Thinking budget"), STR("Mode"), STR("Provider"),
@@ -1508,35 +1549,41 @@ static void choose_statusline(Arena *scratch) {
         STR("Tokens reported by the provider"),
         STR("Brief acknowledgement after /copy"),
     };
-    size_t sel = 0;
-    for (;;) {
-        arena_reset(scratch);
-        TuiCmd rows[TUI_STATUS_N];
-        for (size_t i = 0; i < TUI_STATUS_N; i++) {
-            TuiStatusItem item = (TuiStatusItem)i;
-            rows[i] = (TuiCmd){
-                setting_check(scratch, tui_status_visible(item), labels[i]),
-                descriptions[i],
-            };
-        }
-        i32 delta = 1;
-        if (!tui_settings(STR("status line"), rows, TUI_STATUS_N, &sel,
-                          &delta))
-            break;
-        (void)delta;
-        if (sel < TUI_STATUS_N) {
-            TuiStatusItem item = (TuiStatusItem)sel;
-            tui_set_status_visible(item, !tui_status_visible(item));
-            u64 mask = 0;
-            for (size_t i = 0; i < TUI_STATUS_N; i++)
-                if (tui_status_visible((TuiStatusItem)i))
-                    mask |= (u64)1 << i;
-            char value[32];
-            snprintf(value, sizeof value, "%llu",
-                     (unsigned long long)mask);
-            remember_ui(scratch, STR("ui_status_fields"), str_c(value));
-        }
+    StatusView *v = ud;
+    arena_reset(&v->rows_arena);
+    for (size_t i = 0; i < TUI_STATUS_N; i++) {
+        TuiStatusItem item = (TuiStatusItem)i;
+        v->rows[i] = (TuiCmd){
+            setting_check(&v->rows_arena, tui_status_visible(item), labels[i]),
+            descriptions[i],
+        };
     }
+    return TUI_STATUS_N;
+}
+
+static void statusline_act(void *ud, size_t row, i32 delta) {
+    StatusView *v = ud;
+    (void)delta;
+    if (row >= TUI_STATUS_N) return;
+    TuiStatusItem item = (TuiStatusItem)row;
+    tui_set_status_visible(item, !tui_status_visible(item));
+    u64 mask = 0;
+    for (size_t i = 0; i < TUI_STATUS_N; i++)
+        if (tui_status_visible((TuiStatusItem)i)) mask |= (u64)1 << i;
+    char value[32];
+    snprintf(value, sizeof value, "%llu", (unsigned long long)mask);
+    remember_ui(v->scratch, STR("ui_status_fields"), str_c(value));
+}
+
+static void choose_statusline(Arena *scratch) {
+    static StatusView view;
+    view.scratch = scratch;
+    arena_init(&view.rows_arena, g_screen, sizeof g_screen);
+    TuiSettings set = {
+        .rows = view.rows, .marks = NULL, .max = TUI_STATUS_N,
+        .build = statusline_build, .act = statusline_act, .ud = &view,
+    };
+    tui_settings(STR("status line"), &set);
 }
 
 /* The values Max tokens steps between, since a number typed into a question
@@ -1559,20 +1606,34 @@ static i32 max_tokens_step(i32 cur, i32 dir) {
     return g_token_steps[0];
 }
 
-static Str list_step(Str list, Str current, i32 dir) {
-    Str item[64]; size_t n = 0, off = 0, at = 0;
-    while (off < list.n && n < 64) {
+/* A configured comma list as the options a row offers: "Off" first, since a
+ * provider control the user has not set is a control that is not sent. */
+#define SET_MAX_OPTIONS 64
+static size_t list_options(Str list, Str *out, size_t max) {
+    size_t n = 0, off = 0;
+    out[n++] = STR("Off");
+    while (off < list.n && n < max) {
         size_t end = off; while (end < list.n && list.p[end] != ',') end++;
-        item[n] = str_trim((Str){ list.p + off, end - off });
-        if (str_eq(item[n], current)) at = n + 1;
-        n++; off = end + 1;
+        Str item = str_trim((Str){ list.p + off, end - off });
+        if (item.n) out[n++] = item;
+        off = end + 1;
     }
-    if (!n) return (Str){0};
+    return n;
+}
+
+static size_t list_at(const Str *opts, size_t n, Str current) {
+    for (size_t i = 1; i < n; i++) if (str_eq(opts[i], current)) return i;
+    return 0;
+}
+
+static Str list_step(Str list, Str current, i32 dir) {
+    Str opt[SET_MAX_OPTIONS];
+    size_t n = list_options(list, opt, SET_MAX_OPTIONS);
     /* Off is position zero; selection wraps so both directions reach it. */
-    i32 pos = (i32)at + (dir > 0 ? 1 : -1);
-    if (pos > (i32)n) pos = 0;
-    if (pos < 0) pos = (i32)n;
-    return pos ? item[(size_t)pos - 1] : (Str){0};
+    i32 pos = (i32)list_at(opt, n, current) + (dir > 0 ? 1 : -1);
+    if (pos >= (i32)n) pos = 0;
+    if (pos < 0) pos = (i32)n - 1;
+    return pos ? opt[(size_t)pos] : (Str){0};
 }
 
 static b8 remember_reasoning(Config *cfg, Arena *scratch,
@@ -1593,140 +1654,214 @@ static b8 remember_reasoning(Config *cfg, Arena *scratch,
     return ok;
 }
 
-static void choose_settings(Agent *ag) {
+/* The rows the screen is showing, with what each one changes beside it. Like
+ * the status line view, every string points into the scratch arena that the
+ * next build resets. */
+typedef struct {
+    Agent  *ag;
+    Arena   rows_arena;
+    TuiCmd  rows[SET_MAX_ROWS];
+    TuiMark marks[SET_MAX_ROWS];
+    u8      kind[SET_MAX_ROWS];
+    size_t  tool[SET_MAX_ROWS];
+    size_t  n;
+} SettingsView;
+
+static size_t settings_build(void *ud) {
+    SettingsView *v = ud;
+    Agent *ag = v->ag;
     Config *cfg = ag->cfg;
     ToolRegistry *reg = ag->tools;
+    Arena *rows_arena = &v->rows_arena;
+    arena_reset(rows_arena);
+    TuiCmd *rows = v->rows;
+    TuiMark *marks = v->marks;
+    u8 *kind = v->kind;
+    size_t n = 0;
+    memset(marks, 0, sizeof v->marks);
+
+    kind[n] = SET_VERBOSE;
+    rows[n++] = (TuiCmd){
+        setting_check(rows_arena, render_verbose(), STR("Verbose tool output")),
+        STR("Every line a tool printed, untruncated") };
+    kind[n] = SET_RAW;
+    rows[n++] = (TuiCmd){
+        setting_check(rows_arena, md_raw(), STR("Display raw")),
+        md_raw() ? STR("No Markdown or syntax highlighting")
+                 : STR("Markdown and syntax highlighting") };
+    kind[n] = SET_STREAM;
+    rows[n++] = (TuiCmd){
+        setting_check(rows_arena, cfg->stream, STR("Stream replies")),
+        STR("Paint a reply as it arrives, not once it is whole") };
+    kind[n] = SET_IGNORED;
+    rows[n++] = (TuiCmd){
+        setting_check(rows_arena, tui_show_ignored(), STR("Ignored files")),
+        STR("Offer what .gitignore and .ignore exclude") };
+    kind[n] = SET_TELEMETRY;
+    rows[n++] = (TuiCmd){
+        setting_check(rows_arena, telemetry_on(), STR("Telemetry")),
+        STR("An anonymized debug log, for a bug report") };
+    kind[n] = SET_SHOW_INSTRUCTIONS;
+    rows[n++] = (TuiCmd){
+        setting_check(rows_arena, ag->show_instructions,
+                      STR("Show instructions")),
+        STR("Reveal the active system and project instructions in the transcript") };
+
+    /* One checkbox per tool a turn may call. A tool the mode does not offer
+     * is still listed, since turning bash off is a statement about the
+     * session rather than about plan mode. The two plan-mode tools are
+     * absent: the agent loop answers them, so "disabled" would mean a mode
+     * that cannot end.
+     *
+     * Five rows are held back for the option rows below: a registry that
+     * outgrew the array is a screen missing its settings, not its tools. */
+    for (size_t i = 0; i < reg->n && n + 5 < SET_MAX_ROWS; i++) {
+        if (!tools_can_disable(reg, i)) continue;
+        kind[n] = SET_TOOL;
+        v->tool[n] = i;
+        rows[n++] = (TuiCmd){
+            setting_check(rows_arena, !tools_disabled(reg, i), reg->name[i]),
+            reg->brief[i] };
+    }
+
+    const Str wrap_opts[2] = { STR("Word"), STR("Justified") };
+    kind[n] = SET_WRAP;
+    rows[n] = (TuiCmd){ setting_value(rows_arena, STR("Text wrap")),
+        setting_options(rows_arena, wrap_opts, 2, tui_justify() ? 1 : 0,
+                        &marks[n]) };
+    n++;
+    const Str mode_opts[2] = { STR("Build"), STR("Plan") };
+    kind[n] = SET_MODE;
+    rows[n] = (TuiCmd){ setting_value(rows_arena, STR("Mode")),
+        setting_options(rows_arena, mode_opts, 2, cfg->mode == MODE_PLAN ? 1 : 0,
+                        &marks[n]) };
+    n++;
+    /* The rungs are too many to list beside the row, so this one says where
+     * it stands and the arrows walk it. The rows outlive this call, so the
+     * number is kept in the arena rather than in the frame it was formatted
+     * in. */
+    char tokens[16];
+    snprintf(tokens, sizeof tokens, "%d", cfg->max_tokens);
+    kind[n] = SET_MAX_TOKENS;
+    rows[n++] = (TuiCmd){
+        setting_value(rows_arena, STR("Max tokens")),
+        str_dup(rows_arena, str_c(tokens)) };
+
+    Str opt[SET_MAX_OPTIONS];
+    if (cfg->reasoning_efforts.n && n < SET_MAX_ROWS) {
+        size_t opts = list_options(cfg->reasoning_efforts, opt,
+                                   SET_MAX_OPTIONS);
+        kind[n] = SET_EFFORT;
+        rows[n] = (TuiCmd){
+            setting_value(rows_arena, STR("Reasoning effort")),
+            setting_options(rows_arena, opt, opts,
+                            list_at(opt, opts, cfg->reasoning_effort),
+                            &marks[n]) };
+        n++;
+    }
+    if (cfg->thinking_budgets.n && n < SET_MAX_ROWS) {
+        size_t opts = list_options(cfg->thinking_budgets, opt,
+                                   SET_MAX_OPTIONS);
+        kind[n] = SET_BUDGET;
+        rows[n] = (TuiCmd){
+            setting_value(rows_arena, STR("Thinking budget")),
+            setting_options(rows_arena, opt, opts,
+                            list_at(opt, opts, cfg->thinking_budget),
+                            &marks[n]) };
+        n++;
+    }
+    v->n = n;
+    return n;
+}
+
+static void settings_act(void *ud, size_t row, i32 delta) {
+    SettingsView *v = ud;
+    Agent *ag = v->ag;
+    Config *cfg = ag->cfg;
     Arena *scratch = ag->scratch;
-    size_t sel = 0;
-    for (;;) {
-        arena_reset(scratch);
-        char tokens[16];
-        snprintf(tokens, sizeof tokens, "%d", cfg->max_tokens);
-        TuiCmd rows[SET_FIXED_N + 2 + YOKE_MAX_TOOLS];
-        rows[SET_VERBOSE] = (TuiCmd){
-            setting_check(scratch, render_verbose(), STR("Verbose tool output")),
-            STR("Every line a tool printed, untruncated") };
-        rows[SET_RAW] = (TuiCmd){
-            setting_check(scratch, md_raw(), STR("Display raw")),
-            md_raw() ? STR("No Markdown or syntax highlighting")
-                     : STR("Markdown and syntax highlighting") };
-        rows[SET_STREAM] = (TuiCmd){
-            setting_check(scratch, cfg->stream, STR("Stream replies")),
-            STR("Paint a reply as it arrives, not once it is whole") };
-        rows[SET_IGNORED] = (TuiCmd){
-            setting_check(scratch, tui_show_ignored(), STR("Ignored files")),
-            STR("Offer what .gitignore and .ignore exclude") };
-        rows[SET_TELEMETRY] = (TuiCmd){
-            setting_check(scratch, telemetry_on(), STR("Telemetry")),
-            STR("An anonymized debug log, for a bug report") };
-        rows[SET_WRAP] = (TuiCmd){
-            setting_value(scratch, STR("Text wrap")),
-            tui_justify() ? STR("Justified: gaps widened to the right edge")
-                          : STR("Word: lines end where a word does") };
-        rows[SET_MODE] = (TuiCmd){
-            setting_value(scratch, STR("Mode")),
-            cfg->mode == MODE_PLAN ? STR("Plan: read-only, ends with a plan")
-                                   : STR("Build: edits files and runs commands") };
-        rows[SET_SHOW_INSTRUCTIONS] = (TuiCmd){
-            setting_check(scratch, ag->show_instructions,
-                          STR("Show instructions")),
-            STR("Reveal the active system and project instructions in the transcript") };
-        rows[SET_MAX_TOKENS] = (TuiCmd){
-            setting_value(scratch, STR("Max tokens")), str_c(tokens) };
-
-        /* One checkbox per tool a turn may call. A tool the mode does not
-         * offer is still listed, since turning bash off is a statement about
-         * the session rather than about plan mode. The two plan-mode tools
-         * are absent: the agent loop answers them, so "disabled" would mean a
-         * mode that cannot end. */
-        size_t n = SET_FIXED_N;
-        b8 reasoning_row[2]; size_t reasoning_count = 0;
-        if (cfg->reasoning_efforts.n) { reasoning_row[reasoning_count++] = true; rows[n++] = (TuiCmd){
-            setting_value(scratch, STR("Reasoning effort")),
-            cfg->reasoning_effort.n ? cfg->reasoning_effort : STR("Off") }; }
-        if (cfg->thinking_budgets.n) { reasoning_row[reasoning_count++] = false; rows[n++] = (TuiCmd){
-            setting_value(scratch, STR("Thinking budget")),
-            cfg->thinking_budget.n ? cfg->thinking_budget : STR("Off") }; }
-        size_t reasoning_n = n;
-        size_t id[YOKE_MAX_TOOLS], tool_n = 0;
-        for (size_t i = 0; i < reg->n && n < SET_FIXED_N + YOKE_MAX_TOOLS; i++) {
-            if (!tools_can_disable(reg, i)) continue;
-            id[tool_n++] = i;
-            rows[n++] = (TuiCmd){
-                setting_check(scratch, !tools_disabled(reg, i), reg->name[i]),
-                reg->brief[i] };
+    if (row >= v->n) return;
+    switch (v->kind[row]) {
+        case SET_TOOL: {
+            size_t t = v->tool[row];
+            tools_set_disabled(ag->tools, t, !tools_disabled(ag->tools, t));
+            remember_tools(ag->tools, scratch);
+            break;
         }
-
-        i32 delta = 1;
-        if (!tui_settings(STR("settings"), rows, n, &sel, &delta)) break;
-        if (sel >= SET_FIXED_N && sel < reasoning_n) {
-            b8 is_effort = reasoning_row[sel - SET_FIXED_N];
-            Str next = list_step(is_effort ? cfg->reasoning_efforts : cfg->thinking_budgets,
-                                 is_effort ? cfg->reasoning_effort : cfg->thinking_budget, delta);
+        case SET_EFFORT:
+        case SET_BUDGET: {
+            b8 is_effort = v->kind[row] == SET_EFFORT;
+            Str next = list_step(is_effort ? cfg->reasoning_efforts
+                                           : cfg->thinking_budgets,
+                                 is_effort ? cfg->reasoning_effort
+                                           : cfg->thinking_budget, delta);
             if (!remember_reasoning(cfg, scratch, is_effort, next))
                 tui_notice(STR("setting changed but was not remembered: could not write provider settings"));
-            continue;
+            break;
         }
-        if (sel >= reasoning_n) {
-            if (sel >= n || sel - reasoning_n >= tool_n) continue;
-            size_t t = id[sel - reasoning_n];
-            tools_set_disabled(reg, t, !tools_disabled(reg, t));
-            remember_tools(reg, scratch);
-            continue;
-        }
-        switch (sel) {
-            case SET_VERBOSE:
-                render_set_verbose(!render_verbose());
-                remember_ui(scratch, STR("ui_verbose_tools"),
-                            render_verbose() ? STR("true") : STR("false"));
-                rerender_conv(ag->conv, cfg, ag->show_instructions, scratch, 0);
-                break;
-            case SET_RAW:
-                md_set_raw(!md_raw());
-                remember_ui(scratch, STR("ui_raw_markdown"),
-                            md_raw() ? STR("true") : STR("false"));
-                rerender_conv(ag->conv, cfg, ag->show_instructions, scratch, 0);
-                break;
-            case SET_STREAM:
-                cfg->stream = !cfg->stream;
-                remember_ui(scratch, STR("ui_stream"),
-                            cfg->stream ? STR("true") : STR("false"));
-                break;
-            case SET_IGNORED:
-                tui_set_show_ignored(!tui_show_ignored());
-                remember_ui(scratch, STR("ui_show_ignored"),
-                            tui_show_ignored() ? STR("true") : STR("false"));
-                break;
-            case SET_TELEMETRY:
-                if (!telemetry_set(!telemetry_on(), scratch))
-                    tui_notice(STR("setting changed but was not remembered: could not write state"));
-                break;
-            case SET_WRAP:
-                tui_set_justify(!tui_justify());
-                remember_ui(scratch, STR("ui_wrap"),
-                            tui_justify() ? STR("justified") : STR("word"));
-                break;
-            case SET_MODE:
-                agent_set_mode(ag, cfg->mode == MODE_PLAN ? MODE_BUILD
-                                                          : MODE_PLAN);
-                break;
-            case SET_SHOW_INSTRUCTIONS:
-                ag->show_instructions = !ag->show_instructions;
-                remember_ui(scratch, STR("ui_show_instructions"),
-                            ag->show_instructions ? STR("true") : STR("false"));
-                rerender_conv(ag->conv, cfg, ag->show_instructions, scratch, 0);
-                break;
-            case SET_MAX_TOKENS:
-                cfg->max_tokens = max_tokens_step(cfg->max_tokens, delta);
-                {
-                    char value[16];
-                    snprintf(value, sizeof value, "%d", cfg->max_tokens);
-                    remember_ui(scratch, STR("ui_max_tokens"), str_c(value));
-                }
-                break;
-            default: break;
-        }
+        case SET_VERBOSE:
+            render_set_verbose(!render_verbose());
+            remember_ui(scratch, STR("ui_verbose_tools"),
+                        render_verbose() ? STR("true") : STR("false"));
+            rerender_conv(ag->conv, cfg, ag->show_instructions, scratch, 0);
+            break;
+        case SET_RAW:
+            md_set_raw(!md_raw());
+            remember_ui(scratch, STR("ui_raw_markdown"),
+                        md_raw() ? STR("true") : STR("false"));
+            rerender_conv(ag->conv, cfg, ag->show_instructions, scratch, 0);
+            break;
+        case SET_STREAM:
+            cfg->stream = !cfg->stream;
+            remember_ui(scratch, STR("ui_stream"),
+                        cfg->stream ? STR("true") : STR("false"));
+            break;
+        case SET_IGNORED:
+            tui_set_show_ignored(!tui_show_ignored());
+            remember_ui(scratch, STR("ui_show_ignored"),
+                        tui_show_ignored() ? STR("true") : STR("false"));
+            break;
+        case SET_TELEMETRY:
+            if (!telemetry_set(!telemetry_on(), scratch))
+                tui_notice(STR("setting changed but was not remembered: could not write state"));
+            break;
+        case SET_WRAP:
+            tui_set_justify(!tui_justify());
+            remember_ui(scratch, STR("ui_wrap"),
+                        tui_justify() ? STR("justified") : STR("word"));
+            break;
+        case SET_MODE:
+            agent_set_mode(ag, cfg->mode == MODE_PLAN ? MODE_BUILD
+                                                      : MODE_PLAN);
+            break;
+        case SET_SHOW_INSTRUCTIONS:
+            ag->show_instructions = !ag->show_instructions;
+            remember_ui(scratch, STR("ui_show_instructions"),
+                        ag->show_instructions ? STR("true") : STR("false"));
+            rerender_conv(ag->conv, cfg, ag->show_instructions, scratch, 0);
+            break;
+        case SET_MAX_TOKENS:
+            cfg->max_tokens = max_tokens_step(cfg->max_tokens, delta);
+            {
+                char value[16];
+                snprintf(value, sizeof value, "%d", cfg->max_tokens);
+                remember_ui(scratch, STR("ui_max_tokens"), str_c(value));
+            }
+            break;
+        default: break;
     }
+}
+
+static void choose_settings(Agent *ag) {
+    /* Static: the rows and their bookkeeping are larger than a frame of the
+     * command loop should carry. */
+    static SettingsView view;
+    view.ag = ag;
+    arena_init(&view.rows_arena, g_screen, sizeof g_screen);
+    TuiSettings set = {
+        .rows = view.rows, .marks = view.marks, .max = SET_MAX_ROWS,
+        .build = settings_build, .act = settings_act, .ud = &view,
+    };
+    tui_settings(STR("settings"), &set);
 }
 
 /* A '!' line runs here rather than reaching the model, and takes a
@@ -1818,7 +1953,7 @@ static b8 agent_turn(Agent *ag, Str text) {
         say_conv_full();
         return false;
     }
-    if (ag->echo) render_user_message(text);
+    if (ag->echo) render_user_message(text, (u32)conv->n);
     session_save(ag->sess, conv);
 
     TelEvent te;

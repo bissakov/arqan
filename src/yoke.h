@@ -30,6 +30,9 @@ typedef bool     b8;
  * startup cost, sized an order of magnitude above the per-turn peak. */
 #define YOKE_ARENA_BYTES      (1u << 27)  /* 128 MiB scratch arena            */
 #define YOKE_PERSIST_BYTES    (1u << 26)  /* 64  MiB persistent arena         */
+/* The rows of a modal screen, which outlive an action that rerenders the
+ * transcript from the scratch arena; see choose_settings. */
+#define YOKE_SCREEN_BYTES     (1u << 15)  /* 32  KiB modal screen arena       */
 #define YOKE_MAX_MESSAGES     4096        /* default; see Config.max_messages   */
 /* A reply that reaches this stops mid-sentence, so the default is above what
  * a long answer or a large patch needs rather than at a provider's minimum. */
@@ -796,6 +799,10 @@ void highlight_close(void);
 /* A slash command the completion popup offers. The table is owned by the
  * caller and only read here. */
 typedef struct { Str name; Str desc; } TuiCmd;
+/* A byte range of the matching row's `desc`, painted as the chosen one of the
+ * options that row lists. A zero `n` is a description rather than options.
+ * Rows and marks are parallel arrays; the caller owns both. */
+typedef struct { size_t off, n; } TuiMark;
 void tui_set_commands(const TuiCmd *cmds, size_t n);
 /* A second name a command answers to. It is a way to find the command rather
  * than a command of its own: the popup lists the entry it stands for, and
@@ -828,13 +835,27 @@ b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
 b8 tui_pick_search_count(Str title, const TuiCmd *items, size_t n,
                          size_t search_n, TuiPickAnchor anchor, size_t start,
                          size_t *out);
-/* The settings screen: the same list, read rather than chosen from. Space
- * and Right act on the selected row forwards, Left backwards (true, with
- * *sel naming the row and *delta the direction), Enter and Escape close.
- * `sel` is in and out, so a caller that rebuilds the rows and reopens after a
- * change opens where the reader left it. */
-b8 tui_settings(Str title, const TuiCmd *rows, size_t n, size_t *sel,
-                i32 *delta);
+/* The settings screen: the same list, read rather than chosen from. Space,
+ * Enter and Right act on the selected row forwards, Left backwards, Escape
+ * closes, and typing narrows the rows by fuzzy match.
+ *
+ * A change is applied without leaving the screen, which is why the caller
+ * hands over the way to rebuild its rows rather than reopening: a popup that
+ * collapsed between two frames is a screen that blinks. `build` fills `rows`
+ * and `marks` and returns how many rows it wrote, at most `max`; `act`
+ * changes the setting row `row` names, forward for a positive `delta` and
+ * back for a negative one. The caller owns the arrays and keeps them alive
+ * for the call; both hooks are passed `ud`. `build` must not write the rows
+ * into an arena `act` resets, since the rows outlive every call. */
+typedef struct {
+    TuiCmd  *rows;
+    TuiMark *marks;                          /* optional, NULL for none    */
+    size_t   max;
+    size_t (*build)(void *ud);
+    void   (*act)(void *ud, size_t row, i32 delta);
+    void    *ud;
+} TuiSettings;
+void tui_settings(Str title, const TuiSettings *set);
 /* Read-only modal rows. Enter, Escape, Ctrl-C or Ctrl-D closes the page; the
  * caller keeps ownership of every string for the duration of the call. */
 void tui_info(Str title, const TuiCmd *rows, size_t n);
@@ -894,10 +915,15 @@ void tui_clear_transcript(void);
  * with the transcript; a replay reuses the ids so a target survives it. */
 void tui_zone_begin(u32 id);
 void tui_zone_end(void);
-/* Keep zone `id` where it is on screen across a re-render: anchor before the
- * clear, restore after the replay. A viewport pinned to the bottom is left
- * there. */
+/* Mark the current end of the transcript as landmark `id`, which a re-render
+ * can steer the viewport by. Landmarks are dropped with the transcript; a
+ * replay reuses the ids so one survives it. */
+void tui_pin(u32 id);
+/* Keep zone `id`, or the landmark nearest the top of the viewport, where it
+ * is on screen across a re-render: anchor before the clear, restore after the
+ * replay. A viewport pinned to the bottom is left there. */
 void tui_anchor_zone(u32 id);
+void tui_anchor_view(void);
 void tui_restore_anchor(void);
 /* One line where the completion popup would be: the answer to a command that
  * opened no popup, retired by the next keystroke. Empty clears it. */
