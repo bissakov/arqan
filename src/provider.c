@@ -475,7 +475,9 @@ static b8 on_line(Str line, void *ud) {
     StreamState *s = p->ud;
     if (line.n >= 6 && !memcmp(line.p, "data:", 5)) {
         Str payload = str_trim(str_drop(line, 5));
-        if (str_eq(payload, STR("[DONE]"))) return true;
+        /* The OpenAI sentinel ends the application stream even when a broken
+         * HTTP server leaves its response connection open afterwards. */
+        if (str_eq(payload, STR("[DONE]"))) return false;
         s->events++;
         arena_reset(&s->ev);
         JVal *ev = json_parse(&s->ev, payload);
@@ -628,7 +630,47 @@ static b8 retry_wait(const Provider *p, i32 delay_ms) {
 
 /* The system prompt is a message to one API and a parameter to the other, so
  * this is where the two requests part. */
-static void build_request(Buf *b, const Provider *p) {
+static b8 template_owned(Str key, const Provider *p) {
+    if (str_eq(key, STR("model")) || str_eq(key, STR("messages"))
+        || str_eq(key, STR("system")) || str_eq(key, STR("tools"))
+        || str_eq(key, STR("max_tokens")) || str_eq(key, STR("stream"))
+        || str_eq(key, STR("stream_options"))) return true;
+    if (str_eq(key, STR("reasoning_effort")) && p->cfg->api == API_OPENAI
+        && p->cfg->reasoning_effort.n) return true;
+    return str_eq(key, STR("thinking")) && p->cfg->api == API_ANTHROPIC
+        && p->cfg->thinking_budget.n;
+}
+
+static b8 write_template_value(Buf *b, const JVal *v, const Config *c,
+                               char *err, size_t err_cap) {
+    if (v->type == J_STR && str_eq(v->u.s, STR("$reasoning_effort"))) {
+        if (!c->reasoning_effort.n) { snprintf(err, err_cap, "reasoning template references an effort that is Off"); return false; }
+        buf_json_str(b, c->reasoning_effort); return true;
+    }
+    if (v->type == J_STR && str_eq(v->u.s, STR("$thinking_budget"))) {
+        b8 ok = false; i64 n = str_int(c->thinking_budget, &ok);
+        if (!c->thinking_budget.n || !ok || n <= 0) { snprintf(err, err_cap, "reasoning template references a budget that is Off"); return false; }
+        buf_putf(b, "%lld", (long long)n); return true;
+    }
+    if (v->type == J_ARR) {
+        buf_putc(b, '[');
+        for (size_t i = 0; i < v->u.arr.n; i++) { if (i) buf_putc(b, ','); if (!write_template_value(b, &v->u.arr.items[i], c, err, err_cap)) return false; }
+        buf_putc(b, ']'); return true;
+    }
+    if (v->type == J_OBJ) {
+        buf_putc(b, '{'); size_t n = 0;
+        for (const JVal *m = v->u.obj.head; m; m = m->next) {
+            if (n++) buf_putc(b, ',');
+            buf_json_str(b, m->key);
+            buf_putc(b, ':');
+            if (!write_template_value(b, m, c, err, err_cap)) return false;
+        }
+        buf_putc(b, '}'); return true;
+    }
+    json_write(b, v); return true;
+}
+
+static b8 build_request(Buf *b, const Provider *p, char *err, size_t err_cap) {
     b8 anth = p->cfg->api == API_ANTHROPIC;
     buf_puts(b, STR("{\"model\":"));
     buf_json_str(b, p->cfg->model);
@@ -651,6 +693,24 @@ static void build_request(Buf *b, const Provider *p) {
         tools_write_schemas(b, p->tools, p->cfg->api);
     }
     buf_putf(b, ",\"max_tokens\":%d", p->cfg->max_tokens);
+    if (!anth && p->cfg->reasoning_effort.n) {
+        buf_puts(b, STR(",\"reasoning_effort\":"));
+        buf_json_str(b, p->cfg->reasoning_effort);
+    }
+    if (anth && p->cfg->thinking_budget.n)
+        buf_putf(b, ",\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":%.*s}",
+                 (i32)p->cfg->thinking_budget.n, p->cfg->thinking_budget.p);
+    if (p->cfg->reasoning_template.n) {
+        JVal *root = json_parse(p->scratch, p->cfg->reasoning_template);
+        if (!root || root->type != J_OBJ) { snprintf(err, err_cap, "reasoning template must be a JSON object"); return false; }
+        for (const JVal *m = root->u.obj.head; m; m = m->next) {
+            if (template_owned(m->key, p)) { snprintf(err, err_cap, "reasoning template conflicts with request field %.*s", (i32)m->key.n, m->key.p); return false; }
+            for (const JVal *other = root->u.obj.head; other != m; other = other->next)
+                if (str_eq(m->key, other->key)) { snprintf(err, err_cap, "reasoning template has duplicate field %.*s", (i32)m->key.n, m->key.p); return false; }
+            buf_putc(b, ','); buf_json_str(b, m->key); buf_putc(b, ':');
+            if (!write_template_value(b, m, p->cfg, err, err_cap)) return false;
+        }
+    }
     if (anth)
         buf_puts(b, p->cfg->stream ? STR(",\"stream\":true}")
                                    : STR(",\"stream\":false}"));
@@ -658,6 +718,7 @@ static void build_request(Buf *b, const Provider *p) {
         buf_puts(b, p->cfg->stream
                  ? STR(",\"stream\":true,\"stream_options\":{\"include_usage\":true}}")
                  : STR(",\"stream\":false}"));
+    return true;
 }
 
 i32 provider_run(Provider *p, char *err, size_t err_cap) {
@@ -684,7 +745,10 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     p->ud = s;
 
     Buf body; buf_init(&body, scratch, 4096);
-    build_request(&body, p);
+    if (!build_request(&body, p, err, err_cap)) {
+        p->ud = saved_ud;
+        return -1;
+    }
     Str bstr = buf_finish(&body);
     if (!buf_ok(&body)) {
         snprintf(err, err_cap, "request too large for the scratch arena");

@@ -55,9 +55,11 @@ static size_t write_cb(char *p, size_t sz, size_t n, void *ud) {
     if (c->last_write > 0 && now - c->last_write > c->stall)
         c->stall = now - c->last_write;
     c->last_write = now;
-    /* Anything but `total` fails the transfer, which is what an aborting sink
-     * wants. */
-    return dispatch_line(c, p, total) ? total : 0;
+    b8 consumed = dispatch_line(c, p, total);
+    /* A terminal protocol event is a clean early end. Tell curl the bytes
+     * were consumed, then let the multi loop remove the still-open handle. */
+    if (c->aborted) return total;
+    return consumed ? total : 0;
 }
 
 static size_t body_cb(char *p, size_t sz, size_t n, void *ud) {
@@ -284,6 +286,7 @@ i32 http_post(const HttpReq *r) {
     i32 running = 1;
     while (running) {
         CURLMcode mc = curl_multi_perform(multi, &running);
+        if (ctx.aborted) break;
         if (mc == CURLM_OK && running) {
             struct curl_waitfd extra = {r->idle_fd, CURL_WAIT_POLLIN, 0};
             b8 watch = r->idle_fd >= 0;
@@ -301,7 +304,7 @@ i32 http_post(const HttpReq *r) {
         if (r->interrupt_flag && *r->interrupt_flag) { interrupted = true; break; }
     }
 
-    if (!interrupted && rc == CURLE_OK) {
+    if (!interrupted && !ctx.aborted && rc == CURLE_OK) {
         CURLMsg *msg;
         i32 left = 0;
         while ((msg = curl_multi_info_read(multi, &left)))
@@ -310,7 +313,7 @@ i32 http_post(const HttpReq *r) {
 
     /* A body not ending in a newline still has a last line, and for a single
      * JSON document that line is the whole reply. */
-    if (stream && !interrupted && rc == CURLE_OK && ctx.line.n)
+    if (stream && !interrupted && !ctx.aborted && rc == CURLE_OK && ctx.line.n)
         dispatch_line(&ctx, "\n", 1);
 
     /* curl writes a `long` through this pointer, whatever its width. */

@@ -17,6 +17,7 @@
  */
 #include "yoke.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
@@ -216,6 +217,39 @@ b8 settings_set(Str path, Str section, const Str *keys, const Str *vals,
 b8 settings_set_one(Str path, Str section, Str key, Str val, u32 mode,
                     Arena *scratch) {
     return settings_set(path, section, &key, &val, 1, mode, scratch);
+}
+
+b8 settings_remove_section(Str path, Str section, Arena *scratch) {
+    if (!path.n || !section.n) return false;
+    size_t mark = scratch->off;
+    struct stat st;
+    if (stat(path.p, &st) != 0) {
+        scratch->off = mark;
+        return errno == ENOENT;
+    }
+    Str src = settings_src(path, scratch, YOKE_MAX_SETTINGS_BYTES);
+    if (!src.p) { scratch->off = mark; return false; }
+
+    Buf out;
+    buf_init(&out, scratch, src.n + 1);
+    b8 dropping = false, found = false;
+    size_t off = 0;
+    Str line;
+    while (str_line(src, &off, &line)) {
+        Str sec = setting_section(line);
+        if (sec.n) {
+            dropping = str_eq(sec, section);
+            if (dropping) { found = true; continue; }
+        }
+        if (dropping) continue;
+        buf_puts(&out, line);
+        buf_putc(&out, '\n');
+    }
+    if (!buf_ok(&out)) { scratch->off = mark; return false; }
+    b8 ok = !found || settings_write_file(
+        path, buf_finish(&out), (u32)(st.st_mode & 0777));
+    scratch->off = mark;
+    return ok;
 }
 
 /* ---- the state file ------------------------------------------------------

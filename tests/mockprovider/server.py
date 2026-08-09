@@ -82,6 +82,9 @@ class Scenario:
         # when set, yoke hears it before any reasoning or content, which is
         # what an interrupt after that cannot take back.
         self.usage_first: bool = _truthy(kw.get("usage_first", "0"))
+        # A broken but common SSE server sends [DONE] and keeps an unframed
+        # HTTP/1.1 response open. Clients should still honor the sentinel.
+        self.keep_open: bool = _truthy(kw.get("keep_open", "0"))
         self.prefix: str = kw.get("prefix", "")
         # GET /v1/models: an explicit list, or `model_count` generated ids.
         self.models: list[str] = kw.get("models", [])
@@ -555,9 +558,10 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "close")
+        self.send_header("Connection", "keep-alive" if scenario.keep_open
+                         else "close")
         self.end_headers()
-        self.close_connection = True
+        self.close_connection = not scenario.keep_open
 
         created = 1700000000
         base = {

@@ -143,6 +143,30 @@ def test_context_counter_formats_tokens(ctx):
     assert s.status_line().endswith("1000"), s.status_line()
 
 
+def test_status_names_active_reasoning_controls(ctx):
+    """Configured reasoning sits between the model and the agent mode."""
+    config = ctx.write_config(
+        f"[provider Local ChatGPT]\n"
+        f"base_url = {ctx.mock.base_url}\n"
+        "model = gpt-5.6-terra\n"
+        "reasoning_efforts = low,xhigh\n"
+        "reasoning_effort = xhigh\n"
+        "thinking_budgets = 1024,2048\n"
+        "thinking_budget = 1024\n"
+    )
+    assert config.exists()
+    state = ctx.state_file()
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text("provider = Local ChatGPT\n")
+    s = ctx.spawn(cols=160, YOKE_BASE_URL=None, YOKE_API_KEY=None,
+                  YOKE_MODEL=None)
+    fields = [s.status_field(i) for i in range(8)]
+    assert fields[:6] == [
+        "ready", "gpt-5.6-terra", "xhigh", "thinking 1024", "build",
+        "Local ChatGPT",
+    ], s.status_line()
+
+
 def test_narrow_status_line_drops_fields_from_the_right(ctx):
     """On a narrow screen the state survives and the tail is clipped."""
     s = ctx.spawn(cols=30, rows=12)

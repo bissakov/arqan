@@ -52,7 +52,10 @@ def select_provider(ctx, name):
     p.write_text(f"provider = {name}\n")
 
 
-def add_provider(s, ctx, name, url=None, key="sk-secret", api="openai"):
+def add_provider(s, ctx, name, url=None, key="sk-secret", api="openai",
+                 reasoning_efforts="", thinking_budgets="",
+                 reasoning_effort="", thinking_budget="",
+                 reasoning_template=""):
     """Drive the creation form to the model picker."""
     s.wait_text("a name for this provider")
     s.type(name).sync()
@@ -66,6 +69,17 @@ def add_provider(s, ctx, name, url=None, key="sk-secret", api="openai"):
     s.key("enter")
     if key is None:      # the URL was meant to be refused
         return s
+    for question, value in (
+        ("reasoning efforts", reasoning_efforts),
+        ("thinking budgets", thinking_budgets),
+        ("active reasoning effort", reasoning_effort),
+        ("active thinking budget", thinking_budget),
+        ("reasoning JSON template", reasoning_template),
+    ):
+        s.wait_text(question)
+        if value:
+            s.type(value).sync()
+        s.key("enter")
     s.wait_text("its API key")
     s.type(key).sync()
     return s
@@ -99,6 +113,76 @@ def test_creating_a_provider_stores_it_and_switches_to_it(ctx):
     ], store(ctx)
     assert creds(ctx) == {"work": "sk-secret"}, creds(ctx)
     assert active(ctx) == "work", ctx.state()
+
+
+def test_creating_a_provider_includes_reasoning_options(ctx):
+    """Add exposes and stores every optional control that edit exposes."""
+    ctx.scenario("models=alpha")
+    s = ctx.spawn(cols=160)
+    s.submit("/provider")
+    add_provider(
+        s, ctx, "work", reasoning_efforts="low,xhigh",
+        thinking_budgets="1024,2048", reasoning_effort="xhigh",
+        thinking_budget="1024",
+        reasoning_template='{"vendor":"$reasoning_effort"}',
+    )
+    s.key("enter")
+    s.wait_status("pick a model")
+    s.key("enter")
+    s.wait_text("provider: work")
+
+    assert store(ctx) == [{
+        "name": "work", "base_url": ctx.mock.base_url, "model": "alpha",
+        "api": "openai", "reasoning_efforts": "low,xhigh",
+        "thinking_budgets": "1024,2048", "reasoning_effort": "xhigh",
+        "thinking_budget": "1024",
+        "reasoning_template": '{"vendor":"$reasoning_effort"}',
+    }], store(ctx)
+    assert s.status_field(2) == "xhigh", s.status_line()
+    assert s.status_field(3) == "thinking 1024", s.status_line()
+    assert s.status_field(4) == "build", s.status_line()
+
+
+def test_a_provider_can_be_deleted_from_the_tui(ctx):
+    """Deletion removes its public settings and its stored credential."""
+    write_provider(ctx, "work", ctx.mock.base_url, key="sk-work")
+    write_provider(ctx, "home", ctx.mock.base_url, key="sk-home")
+    select_provider(ctx, "work")
+    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s.submit("/provider")
+    s.wait_status("pick a provider")
+    s.key(*(["down"] * 4), "enter")
+    s.wait_status("delete a provider")
+    s.key("down", "enter")
+    s.wait_status("delete provider home?")
+    s.key("down", "enter")
+    s.wait_text("deleted provider: home")
+
+    assert [p["name"] for p in store(ctx)] == ["work"], store(ctx)
+    assert creds(ctx) == {"work": "sk-work"}, creds(ctx)
+    assert active(ctx) == "work", ctx.state()
+
+
+def test_deleting_the_active_provider_leaves_no_stale_selection(ctx):
+    """The removed current provider is forgotten and cannot receive a turn."""
+    write_provider(ctx, "work", ctx.mock.base_url, key="sk-work")
+    select_provider(ctx, "work")
+    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s.submit("/provider")
+    s.wait_status("pick a provider")
+    s.key("down", "down", "down", "enter")
+    s.wait_status("delete a provider")
+    s.key("enter")
+    s.wait_status("delete provider work?")
+    s.key("down", "enter")
+    s.wait_text("deleted provider: work")
+
+    assert store(ctx) == [], store(ctx)
+    assert creds(ctx) == {}, creds(ctx)
+    assert active(ctx) is None, ctx.state()
+    s.submit("hello")
+    s.wait_text("no provider yet")
+    assert ctx.mock.requests == [], ctx.mock.requests
 
 
 def test_the_key_never_lands_in_the_config_directory(ctx):
@@ -252,6 +336,144 @@ def test_an_anthropic_provider_configures_the_next_run(ctx):
     body = ctx.mock.requests[-1]
     assert "system" in body, body
     assert [m["role"] for m in body["messages"]] == ["user"], body["messages"]
+
+
+def test_provider_reasoning_controls_shape_requests(ctx):
+    """Selections follow their provider and use each native API's field."""
+    write_provider(ctx, "open", ctx.mock.base_url, key="sk", api="openai")
+    with ctx.config_file().open("a") as f:
+        f.write("reasoning_efforts = tiny,careful\nreasoning_effort = careful\n")
+    select_provider(ctx, "open")
+    ctx.scenario("text=ok")
+    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s.submit("hello")
+    s.wait_turn_done()
+    assert ctx.mock.requests[-1]["reasoning_effort"] == "careful"
+
+
+def test_provider_reasoning_controls_are_editable_in_the_tui(ctx):
+    """Editing keeps defaults and the key while optional controls may stay Off."""
+    write_provider(ctx, "work", ctx.mock.base_url, key="sk-kept", api="openai")
+    select_provider(ctx, "work")
+    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s.submit("/provider")
+    s.wait_status("pick a provider")
+    s.key("down", "down", "enter")
+    s.wait_status("edit a provider")
+    s.key("enter")
+
+    s.wait_text("base URL  (Esc cancels)")
+    assert s.composer_text() == ctx.mock.base_url, s.composer_text()
+    s.key("enter").sync()
+    assert s.composer_text() == "mock-model", s.composer_text()
+    s.key("enter").sync()
+    s.type("low,high").key("enter").sync()
+    s.key("enter").sync()          # thinking budgets stay Off
+    s.type("high").key("enter").sync()
+    s.key("enter").sync()          # thinking budget stays Off
+    s.key("enter").sync()          # template stays Off
+    s.wait_status("which API does it speak")
+    s.key("enter")
+    s.wait_status("API key")
+    s.key("enter")                  # keep the credential already stored
+    s.wait_text("provider: work")
+
+    assert store(ctx) == [{
+        "name": "work", "base_url": ctx.mock.base_url,
+        "model": "mock-model", "api": "openai",
+        "reasoning_efforts": "low,high", "reasoning_effort": "high",
+    }], store(ctx)
+    assert creds(ctx) == {"work": "sk-kept"}, creds(ctx)
+
+
+def test_provider_editor_clears_values_and_keeps_a_long_template(ctx):
+    """Empty is distinct from cancel, and templates are not clipped to 1 KiB."""
+    template = '{"padding":"' + "x" * 1200 + '"}'
+    write_provider(ctx, "work", ctx.mock.base_url, key="sk", api="openai")
+    with ctx.config_file().open("a") as f:
+        f.write("reasoning_efforts = low,high\nreasoning_effort = high\n"
+                f"reasoning_template = {template}\n")
+    select_provider(ctx, "work")
+    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s.submit("/provider")
+    s.wait_status("pick a provider")
+    s.key("down", "down", "enter")
+    s.wait_status("edit a provider")
+    s.key("enter")
+    s.wait_text("base URL  (Esc cancels)")
+
+    s.key("enter", "enter", "enter", "enter", "ctrl-u", "enter",
+          "enter", "enter")
+    s.wait_status("which API does it speak")
+    s.key("enter")
+    s.wait_status("API key")
+    s.key("enter")
+    s.wait_text("provider: work")
+
+    saved = store(ctx)[0]
+    assert "reasoning_effort" not in saved, saved
+    assert saved["reasoning_template"] == template, len(saved["reasoning_template"])
+
+
+def test_provider_editor_can_clear_the_stored_key(ctx):
+    """Clearing a credential is explicit and does not overload an empty answer."""
+    write_provider(ctx, "work", ctx.mock.base_url, key="sk-remove", api="openai")
+    select_provider(ctx, "work")
+    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s.submit("/provider")
+    s.wait_status("pick a provider")
+    s.key("down", "down", "enter")
+    s.wait_status("edit a provider")
+    s.key("enter")
+    s.wait_text("base URL  (Esc cancels)")
+    s.key(*(["enter"] * 7))
+    s.wait_status("which API does it speak")
+    s.key("enter")
+    s.wait_status("API key")
+    s.key("down", "down", "enter")
+    s.wait_text("provider: work")
+
+    section = ctx.settings(credentials_file(ctx)).get("provider work", {})
+    assert "key" not in section, section
+
+
+def test_provider_reasoning_template_substitutes_a_number(ctx):
+    """Templates are structured JSON, so a budget placeholder is a number."""
+    write_provider(ctx, "custom", ctx.mock.base_url, key="sk", api="openai")
+    with ctx.config_file().open("a") as f:
+        f.write("thinking_budgets = 17\nthinking_budget = 17\n"
+                "reasoning_template = {\"vendor_budget\":\"$thinking_budget\",\"static\":true}\n")
+    select_provider(ctx, "custom")
+    ctx.scenario("text=ok")
+    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s.submit("hello")
+    s.wait_turn_done()
+    body = ctx.mock.requests[-1]
+    assert body["vendor_budget"] == 17 and body["static"] is True, body
+
+
+def test_invalid_reasoning_template_never_reaches_the_provider(ctx):
+    """Bad config is answered locally before an ambiguous request is sent."""
+    write_provider(ctx, "bad", ctx.mock.base_url, key="sk")
+    with ctx.config_file().open("a") as f:
+        f.write("reasoning_template = [not an object]\n")
+    select_provider(ctx, "bad")
+    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s.submit("hello")
+    s.wait_text("reasoning template must be a JSON object")
+    assert ctx.mock.requests == [], ctx.mock.requests
+
+
+def test_reasoning_template_rejects_trailing_garbage(ctx):
+    """A valid JSON prefix does not make the whole template valid JSON."""
+    write_provider(ctx, "bad", ctx.mock.base_url, key="sk")
+    with ctx.config_file().open("a") as f:
+        f.write('reasoning_template = {"vendor":1} trailing\n')
+    select_provider(ctx, "bad")
+    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s.submit("hello")
+    s.wait_text("reasoning template must be a JSON object")
+    assert ctx.mock.requests == [], ctx.mock.requests
 
 
 def test_credentials_readable_by_others_are_refused(ctx):

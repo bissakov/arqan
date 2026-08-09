@@ -2,6 +2,8 @@
 
 import re
 
+from .test_provider import select_provider, write_provider
+
 
 def test_settings_lists_the_toggles_and_the_values(ctx):
     """Every row says what it is and what it currently says."""
@@ -62,6 +64,19 @@ def test_space_toggles_the_selected_row_only(ctx):
     text = s.text()
     assert "[x] Raw Markdown" in text, text
     assert "[ ] Verbose tool output" in text, text
+
+
+def test_reasoning_rows_do_not_shift_tool_toggle_ids(ctx):
+    """A tool row still changes that tool when provider controls precede it."""
+    write_provider(ctx, "work", ctx.mock.base_url, key="sk", api="openai")
+    with ctx.config_file().open("a") as f:
+        f.write("reasoning_efforts = low,high\nreasoning_effort = high\n")
+    select_provider(ctx, "work")
+    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s.open_settings().settings_select("bash")
+    s.key("space").sync()
+    assert "[ ] bash" in s.text(), s.text()
+    assert "[x] read" in s.text(), s.text()
 
 
 def test_the_screen_stays_open_across_a_toggle(ctx):

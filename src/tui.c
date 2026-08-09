@@ -39,7 +39,7 @@
 #define TUI_IGNORE_PATS 512      /* ignore patterns in force for one listing  */
 #define TUI_IGNORE_BUF (1u << 14)
 #define TUI_PICK_QUERY 64        /* longest search a picker accepts          */
-#define TUI_ASK_MAX 1024         /* longest answer tui_ask accepts           */
+#define TUI_ASK_MAX YOKE_MAX_REASONING_TEMPLATE
 /* Markdown claims one span per emphasis run, so this counts words of a reply
  * rather than messages. */
 #define TUI_MAX_SPANS 4096
@@ -85,6 +85,8 @@ typedef struct {
     b8 paste_cr;      /* a CR just seen, so a CRLF pair costs one break     */
     Str model;
     Str provider;
+    Str reasoning_effort;
+    Str thinking_budget;
     AgentMode mode;   /* named on the status line; Shift+Tab switches it */
     Str base_url;     /* what provider is derived from when no name is set */
     /* A modal question owns the composer. Its answer is not a message, so it
@@ -1643,6 +1645,10 @@ static void repaint(void) {
     size_t status_sel_c0, status_sel_c1;
     sel_row_range(status_row, &status_sel_c0, &status_sel_c1);
     u64 status_hash = row_hash(g_tui.model, g_tui.provider, ROW_STATUS);
+    status_hash = hash_add(status_hash, g_tui.reasoning_effort.p,
+                           g_tui.reasoning_effort.n);
+    status_hash = hash_add(status_hash, g_tui.thinking_budget.p,
+                           g_tui.thinking_budget.n);
     status_hash = hash_add(status_hash, &copied, sizeof copied);
     status_hash = hash_add(status_hash, &g_tui.mode, sizeof g_tui.mode);
     status_hash = hash_add(status_hash, &status_sel_c0, sizeof status_sel_c0);
@@ -1693,6 +1699,30 @@ static void repaint(void) {
             }
             style(S_TEXT);
             put_safe_clipped(g_tui.model, body_cols - used, &used);
+        }
+        if (body_cols - used >= separator_cells) {
+            Str effort = g_tui.reasoning_effort;
+            b8 off = str_eq(effort, STR("off")) || str_eq(effort, STR("Off"))
+                  || str_eq(effort, STR("OFF"));
+            if (effort.n && !off) {
+                style(S_MUTED);
+                put_safe_clipped(separator, body_cols - used, &used);
+                style(S_TEXT);
+                put_safe_clipped(effort, body_cols - used, &used);
+            }
+        }
+        if (body_cols - used >= separator_cells) {
+            Str budget = g_tui.thinking_budget;
+            b8 off = str_eq(budget, STR("off")) || str_eq(budget, STR("Off"))
+                  || str_eq(budget, STR("OFF"));
+            if (budget.n && !off) {
+                style(S_MUTED);
+                put_safe_clipped(separator, body_cols - used, &used);
+                style(S_TEXT);
+                put_safe_clipped(STR("thinking "), body_cols - used, &used);
+                if (used < body_cols)
+                    put_safe_clipped(budget, body_cols - used, &used);
+            }
         }
         if (body_cols - used >= separator_cells) {
             style(S_MUTED);
@@ -1902,6 +1932,12 @@ void tui_set_model(Str model) {
 
 void tui_set_provider(Str name) {
     g_tui.provider = name.n ? name : provider_from_url(g_tui.base_url);
+    repaint();
+}
+
+void tui_set_reasoning(Str effort, Str thinking_budget) {
+    g_tui.reasoning_effort = effort;
+    g_tui.thinking_budget = thinking_budget;
     repaint();
 }
 
@@ -2983,9 +3019,15 @@ b8 tui_settings(Str title, const TuiCmd *rows, size_t n, size_t *sel,
  * completion or shell mode, and a secret answer must not survive in a buffer
  * the next frame paints. The question itself sits in the notice row, where
  * every other answer to a command appears. */
-b8 tui_ask(Str question, b8 secret, char *out, size_t cap) {
+static b8 ask_impl(Str question, b8 secret, char *out, size_t cap,
+                   b8 edit, b8 allow_empty) {
     if (!g_tui.fullscreen || !out || cap < 2) return false;
     size_t limit = cap - 1 < TUI_ASK_MAX ? cap - 1 : TUI_ASK_MAX;
+    size_t initial_n = 0;
+    if (edit) {
+        while (initial_n < cap && out[initial_n]) initial_n++;
+        if (initial_n == cap || initial_n > limit) return false;
+    }
 
     char saved_input[YOKE_LINE_BUF];
     size_t saved_n = g_tui.input_n, saved_cur = g_tui.input_cur;
@@ -2999,8 +3041,9 @@ b8 tui_ask(Str question, b8 secret, char *out, size_t cap) {
     g_tui.ask = true;
     g_tui.ask_secret = secret;
     g_tui.editing = true;
-    g_tui.input_n = 0;
-    g_tui.input_cur = 0;
+    if (initial_n) memcpy(g_tui.input, out, initial_n);
+    g_tui.input_n = initial_n;
+    g_tui.input_cur = initial_n;
     g_tui.comp_n = 0;
     char row[sizeof g_tui.notice];
     i32 rn = snprintf(row, sizeof row, "%.*s  (Esc cancels)",
@@ -3016,7 +3059,7 @@ b8 tui_ask(Str question, b8 secret, char *out, size_t cap) {
         if (c < 0) break;
         if ((c == 0x03 || c == 0x04) && !g_tui.pasting) break;
         if ((c == '\r' || c == '\n') && !g_tui.pasting) {
-            answered = g_tui.input_n > 0;
+            answered = allow_empty || g_tui.input_n > 0;
             break;
         }
         if (g_tui.pasting && (c == '\r' || c == '\n')) continue;
@@ -3054,6 +3097,14 @@ b8 tui_ask(Str question, b8 secret, char *out, size_t cap) {
     g_tui.notice_n = saved_notice_n;
     repaint();
     return answered;
+}
+
+b8 tui_ask(Str question, b8 secret, char *out, size_t cap) {
+    return ask_impl(question, secret, out, cap, false, false);
+}
+
+b8 tui_ask_edit(Str question, b8 allow_empty, char *inout, size_t cap) {
+    return ask_impl(question, false, inout, cap, true, allow_empty);
 }
 
 /* What a keystroke asked the caller to do; edits are already applied. */

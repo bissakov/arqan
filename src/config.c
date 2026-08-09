@@ -170,6 +170,16 @@ b8 config_load(Config *c, Arena *persist, Arena *scratch) {
                 c->api = eps.api[i];
             }
             config_str(persist, eps.model[i], false, &c->model);
+            c->reasoning_efforts = eps.reasoning_efforts[i].n
+                ? str_dup(persist, eps.reasoning_efforts[i]) : (Str){0};
+            c->thinking_budgets = eps.thinking_budgets[i].n
+                ? str_dup(persist, eps.thinking_budgets[i]) : (Str){0};
+            c->reasoning_effort = eps.reasoning_effort[i].n
+                ? str_dup(persist, eps.reasoning_effort[i]) : (Str){0};
+            c->thinking_budget = eps.thinking_budget[i].n
+                ? str_dup(persist, eps.thinking_budget[i]) : (Str){0};
+            c->reasoning_template = eps.reasoning_template[i].n
+                ? str_dup(persist, eps.reasoning_template[i]) : (Str){0};
             Str key = endpoints_key(active, persist, scratch, NULL, 0);
             if (key.n) c->api_key = key;
         }

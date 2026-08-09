@@ -99,6 +99,16 @@ def test_streaming_is_incremental(ctx):
     assert len(reply_text(s)) > len(mid), "more text should have arrived"
 
 
+def test_done_ends_a_stream_even_when_http_stays_open(ctx):
+    """The OpenAI sentinel ends a turn without waiting for a broken server."""
+    ctx.scenario("text=finished,keep_open=1")
+    s = ctx.spawn()
+    s.submit("do not wait for EOF")
+    s.wait_text("finished")
+    s.wait_turn_done(timeout=2)
+    assert "[provider error" not in s.text(), s.text()
+
+
 def test_multiline_prompt_is_sent_verbatim(ctx):
     """A composed multi-line message reaches the provider with its newline."""
     ctx.scenario("text=got+it")

@@ -703,19 +703,31 @@ static b8 no_provider(const Config *cfg) {
 /* Copies into `persist` because the endpoint store they came from lives in
  * the scratch arena, which the next turn rewinds. */
 static b8 use_endpoint(Config *cfg, Str name, Str base_url, Str model,
-                       ApiKind api, Str key, Arena *persist) {
+                       ApiKind api, Str key, Str efforts, Str budgets,
+                       Str effort, Str budget, Str templ, Arena *persist) {
     Str n = str_dup(persist, name);
     Str u = str_dup(persist, base_url);
     Str m = model.n ? str_dup(persist, model) : (Str){0};
-    if (!n.p || !u.p || (model.n && !m.p)) return false;
+    Str ef = efforts.n ? str_dup(persist, efforts) : (Str){0};
+    Str bu = budgets.n ? str_dup(persist, budgets) : (Str){0};
+    Str es = effort.n ? str_dup(persist, effort) : (Str){0};
+    Str bs = budget.n ? str_dup(persist, budget) : (Str){0};
+    Str te = templ.n ? str_dup(persist, templ) : (Str){0};
+    if (!n.p || !u.p || (model.n && !m.p) || (efforts.n && !ef.p)
+        || (budgets.n && !bu.p) || (effort.n && !es.p) || (budget.n && !bs.p)
+        || (templ.n && !te.p)) return false;
     cfg->provider = n;
     cfg->base_url = u;
     cfg->base_url_set = true;
     cfg->api      = api;
     cfg->api_key  = key;
     if (m.n) cfg->model = m;
+    cfg->reasoning_efforts = ef; cfg->thinking_budgets = bu;
+    cfg->reasoning_effort = es; cfg->thinking_budget = bs;
+    cfg->reasoning_template = te;
     tui_set_provider(n);
     tui_set_model(cfg->model);
+    tui_set_reasoning(es, bs);
     tui_needs_provider(false);
     TelEvent e;
     tel_open(&e, "provider");
@@ -740,9 +752,9 @@ static b8 pick_api(ApiKind *out) {
         { STR("openai"),    STR("OpenAI-compatible chat completions") },
         { STR("anthropic"), STR("Anthropic-compatible messages API") },
     };
-    size_t pick = 0;
+    size_t pick = *out == API_ANTHROPIC ? 1 : 0;
     if (!tui_pick(STR("which API does it speak"), apis, 2, TUI_PICK_FIRST,
-                  TUI_PICK_NONE, &pick))
+                  pick, &pick))
         return false;
     *out = pick == 1 ? API_ANTHROPIC : API_OPENAI;
     return true;
@@ -758,6 +770,11 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
     char name[YOKE_MAX_ENDPOINT_NAME + 1];
     char url[YOKE_MAX_URL + 1];
     char key[YOKE_MAX_API_KEY + 1];
+    char efforts[YOKE_MAX_REASONING_LIST + 1] = {0};
+    char budgets[YOKE_MAX_REASONING_LIST + 1] = {0};
+    char effort[YOKE_MAX_REASONING_LIST + 1] = {0};
+    char budget[YOKE_MAX_REASONING_LIST + 1] = {0};
+    char templ[YOKE_MAX_REASONING_TEMPLATE + 1] = {0};
     if (!tui_ask(STR("a name for this provider"), false, name, sizeof name))
         return false;
 
@@ -780,6 +797,17 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
         tui_notice(STR("a base URL starts with http:// or https://"));
         return false;
     }
+    if (!tui_ask_edit(STR("reasoning efforts (comma separated; empty is Off)"),
+                      true, efforts, sizeof efforts)
+        || !tui_ask_edit(STR("thinking budgets (comma separated; empty is Off)"),
+                         true, budgets, sizeof budgets)
+        || !tui_ask_edit(STR("active reasoning effort (empty is Off)"),
+                         true, effort, sizeof effort)
+        || !tui_ask_edit(STR("active thinking budget (empty is Off)"),
+                         true, budget, sizeof budget)
+        || !tui_ask_edit(STR("reasoning JSON template (one object; empty is Off)"),
+                         true, templ, sizeof templ))
+        return false;
     /* A local server needs no key, so an empty answer is a valid one. */
     if (!tui_ask(STR("its API key (empty if it needs none)"), true, key,
                  sizeof key))
@@ -794,8 +822,12 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
     if (!pick_model(&probe, scratch, &model)) return false;
 
     char err[YOKE_MAX_PATH + 64] = {0};
-    if (!endpoints_put(&eps, str_c(name), str_c(url), model, api, scratch)
-        || !endpoints_save_one(str_c(name), str_c(url), model, api, scratch)) {
+    if (!endpoints_put(&eps, str_c(name), str_c(url), model, api,
+                       str_c(efforts), str_c(budgets), str_c(effort),
+                       str_c(budget), str_c(templ), scratch)
+        || !endpoints_save_one(str_c(name), str_c(url), model, api,
+                               str_c(efforts), str_c(budgets), str_c(effort),
+                               str_c(budget), str_c(templ), scratch)) {
         tui_notice(STR("could not write the provider store"));
         return false;
     }
@@ -810,11 +842,137 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
         return false;
     }
     if (!use_endpoint(cfg, str_c(name), str_c(url), model, api, stored_key,
-                      persist)) {
+                      str_c(efforts), str_c(budgets), str_c(effort),
+                      str_c(budget), str_c(templ), persist)) {
         tui_notice(STR("out of memory storing the provider"));
         return false;
     }
     provider_chosen(cfg, scratch);
+    return true;
+}
+
+/* Existing provider names are identities: editing changes its fields, never
+ * the section name.  The compact JSON template is kept in config, not the
+ * credentials store, so it must never contain a secret. */
+static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
+                        Arena *persist, Arena *scratch) {
+    char url[YOKE_MAX_URL + 1], model[YOKE_MAX_MODEL_NAME + 1];
+    char efforts[YOKE_MAX_REASONING_LIST + 1], budgets[YOKE_MAX_REASONING_LIST + 1];
+    char effort[YOKE_MAX_REASONING_LIST + 1], budget[YOKE_MAX_REASONING_LIST + 1];
+    char templ[YOKE_MAX_REASONING_TEMPLATE + 1], key[YOKE_MAX_API_KEY + 1];
+    snprintf(url, sizeof url, "%.*s", (i32)eps->base_url[i].n, eps->base_url[i].p);
+    snprintf(model, sizeof model, "%.*s", (i32)eps->model[i].n, eps->model[i].p);
+    snprintf(efforts, sizeof efforts, "%.*s", (i32)eps->reasoning_efforts[i].n, eps->reasoning_efforts[i].p);
+    snprintf(budgets, sizeof budgets, "%.*s", (i32)eps->thinking_budgets[i].n, eps->thinking_budgets[i].p);
+    snprintf(effort, sizeof effort, "%.*s", (i32)eps->reasoning_effort[i].n, eps->reasoning_effort[i].p);
+    snprintf(budget, sizeof budget, "%.*s", (i32)eps->thinking_budget[i].n, eps->thinking_budget[i].p);
+    snprintf(templ, sizeof templ, "%.*s", (i32)eps->reasoning_template[i].n, eps->reasoning_template[i].p);
+    if (!tui_ask_edit(STR("base URL"), false, url, sizeof url)
+        || !tui_ask_edit(STR("model"), false, model, sizeof model)
+        || !tui_ask_edit(STR("reasoning efforts (comma separated; empty is Off)"), true, efforts, sizeof efforts)
+        || !tui_ask_edit(STR("thinking budgets (comma separated; empty is Off)"), true, budgets, sizeof budgets)
+        || !tui_ask_edit(STR("active reasoning effort (empty is Off)"), true, effort, sizeof effort)
+        || !tui_ask_edit(STR("active thinking budget (empty is Off)"), true, budget, sizeof budget)
+        || !tui_ask_edit(STR("reasoning JSON template (one object; empty is Off)"), true, templ, sizeof templ)) return false;
+    if (!str_starts(str_c(url), STR("http://"))
+        && !str_starts(str_c(url), STR("https://"))) {
+        tui_notice(STR("a base URL starts with http:// or https://"));
+        return false;
+    }
+    ApiKind api = eps->api[i];
+    if (!pick_api(&api)) return false;
+    const TuiCmd key_actions[] = {
+        { STR("Keep current"), STR("Leave the stored credential unchanged") },
+        { STR("Replace"), STR("Enter and store a different credential") },
+        { STR("Clear"), STR("Remove the stored credential") },
+    };
+    enum { KEY_KEEP, KEY_REPLACE, KEY_CLEAR };
+    size_t key_action = KEY_KEEP;
+    if (!tui_pick(STR("API key"), key_actions, 3, TUI_PICK_FIRST,
+                  KEY_KEEP, &key_action)) return false;
+    if (key_action == KEY_REPLACE
+        && !tui_ask(STR("replacement API key"), true, key, sizeof key))
+        return false;
+    char err[YOKE_MAX_PATH + 64] = {0};
+    Str saved_key = {0};
+    if (key_action == KEY_KEEP) {
+        saved_key = endpoints_key(eps->name[i], persist, scratch,
+                                  err, sizeof err);
+        if (err[0]) { tui_notice(str_c(err)); return false; }
+    } else if (key_action == KEY_REPLACE) {
+        saved_key = str_dup(persist, str_c(key));
+        if (!saved_key.p) {
+            tui_notice(STR("out of memory storing the provider"));
+            return false;
+        }
+    }
+    b8 changed_connection = !str_eq(str_c(url), eps->base_url[i]) || api != eps->api[i]
+                         || !str_eq(str_c(model), eps->model[i]);
+    if (changed_connection) {
+        Config probe = *cfg; probe.base_url = str_c(url); probe.api = api;
+        probe.api_key = saved_key;
+        Str ignored[YOKE_MAX_MODELS]; char model_err[160];
+        if (!provider_models(&probe, scratch, ignored, YOKE_MAX_MODELS,
+                             model_err, sizeof model_err)) {
+            tui_notice(str_c(model_err)); return false;
+        }
+    }
+    if (!endpoints_put(eps, eps->name[i], str_c(url), str_c(model), api,
+                       str_c(efforts), str_c(budgets), str_c(effort), str_c(budget), str_c(templ), scratch)
+        || !endpoints_save_one(eps->name[i], str_c(url), str_c(model), api,
+                               str_c(efforts), str_c(budgets), str_c(effort), str_c(budget), str_c(templ), scratch)) {
+        tui_notice(STR("invalid provider reasoning settings")); return false;
+    }
+    if (key_action != KEY_KEEP
+        && !endpoints_set_key(eps->name[i], key_action == KEY_CLEAR
+            ? (Str){0} : str_c(key), scratch, err, sizeof err)) {
+        tui_notice(str_c(err[0] ? err : "could not store the API key")); return false;
+    }
+    if (!use_endpoint(cfg, eps->name[i], str_c(url), str_c(model), api, saved_key,
+                      str_c(efforts), str_c(budgets), str_c(effort), str_c(budget), str_c(templ), persist)) return false;
+    provider_chosen(cfg, scratch);
+    return true;
+}
+
+static b8 delete_endpoint(Config *cfg, const Endpoints *eps, size_t i,
+                          Arena *scratch) {
+    const TuiCmd actions[] = {
+        { STR("Keep provider"), STR("Cancel without changing either store") },
+        { STR("Delete provider"), STR("Remove its settings and credential") },
+    };
+    Buf title;
+    buf_init(&title, scratch, eps->name[i].n + 20);
+    buf_puts(&title, STR("delete provider "));
+    buf_puts(&title, eps->name[i]);
+    buf_putc(&title, '?');
+    if (!buf_ok(&title)) return false;
+    size_t action = 0;
+    if (!tui_pick(buf_finish(&title), actions, 2, TUI_PICK_FIRST, 0, &action)
+        || action == 0)
+        return false;
+
+    Str name = eps->name[i];
+    b8 active = str_eq(name, cfg->provider);
+    char err[YOKE_MAX_PATH + 64] = {0};
+    if (!endpoints_delete(name, scratch, err, sizeof err)) {
+        tui_notice(str_c(err[0] ? err : "could not delete the provider"));
+        return false;
+    }
+    if (active) {
+        endpoints_remember_active((Str){0}, scratch);
+        cfg->provider = (Str){0};
+        cfg->api_key = (Str){0};
+        cfg->base_url_set = false;
+        cfg->reasoning_efforts = (Str){0};
+        cfg->thinking_budgets = (Str){0};
+        cfg->reasoning_effort = (Str){0};
+        cfg->thinking_budget = (Str){0};
+        cfg->reasoning_template = (Str){0};
+        tui_set_provider((Str){0});
+        tui_set_reasoning((Str){0}, (Str){0});
+        tui_needs_provider(true);
+    }
+    notice_fmt("deleted provider: %.*s", (i32)name.n, name.p);
     return true;
 }
 
@@ -828,7 +986,7 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
         add_endpoint(cfg, persist, scratch);
         return;
     }
-    TuiCmd *items = arena_new(scratch, TuiCmd, n + 1);
+    TuiCmd *items = arena_new(scratch, TuiCmd, n + 3);
     if (!items) {
         tui_notice(STR("out of memory listing providers"));
         return;
@@ -850,13 +1008,31 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
     }
     items[n] = (TuiCmd){ STR("+ add a provider"),
                          STR("An OpenAI- or Anthropic-compatible endpoint") };
+    items[n + 1] = (TuiCmd){ STR("+ edit a provider"),
+                             STR("Connection, key status, and reasoning settings") };
+    items[n + 2] = (TuiCmd){ STR("+ delete a provider"),
+                             STR("Remove its settings and stored credential") };
 
     size_t pick = 0;
-    if (!tui_pick(STR("pick a provider"), items, n + 1, TUI_PICK_FIRST,
+    if (!tui_pick(STR("pick a provider"), items, n + 3, TUI_PICK_FIRST,
                   TUI_PICK_NONE, &pick))
         return;
     if (pick == n) {
         add_endpoint(cfg, persist, scratch);
+        return;
+    }
+    if (pick == n + 1) {
+        size_t edit = 0;
+        if (tui_pick(STR("edit a provider"), items, n, TUI_PICK_FIRST,
+                     TUI_PICK_NONE, &edit))
+            edit_endpoint(cfg, &eps, edit, persist, scratch);
+        return;
+    }
+    if (pick == n + 2) {
+        size_t del = 0;
+        if (tui_pick(STR("delete a provider"), items, n, TUI_PICK_FIRST,
+                     TUI_PICK_NONE, &del))
+            delete_endpoint(cfg, &eps, del, scratch);
         return;
     }
     char err[YOKE_MAX_PATH + 64] = {0};
@@ -866,7 +1042,9 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
         return;
     }
     if (!use_endpoint(cfg, eps.name[pick], eps.base_url[pick], eps.model[pick],
-                      eps.api[pick], key, persist)) {
+                      eps.api[pick], key, eps.reasoning_efforts[pick],
+                      eps.thinking_budgets[pick], eps.reasoning_effort[pick],
+                      eps.thinking_budget[pick], eps.reasoning_template[pick], persist)) {
         tui_notice(STR("out of memory switching provider"));
         return;
     }
@@ -887,7 +1065,7 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
 enum {
     SET_VERBOSE, SET_RAW, SET_STREAM, SET_IGNORED, SET_TELEMETRY,
     SET_WRAP, SET_MODE, SET_MAX_TOKENS,
-    SET_FIXED_N
+    SET_FIXED_N, SET_EFFORT = SET_FIXED_N, SET_BUDGET
 };
 
 /* "[x] label" for a toggle and the same column for a value row, so the two
@@ -926,6 +1104,40 @@ static i32 max_tokens_step(i32 cur, i32 dir) {
     return g_token_steps[0];
 }
 
+static Str list_step(Str list, Str current, i32 dir) {
+    Str item[64]; size_t n = 0, off = 0, at = 0;
+    while (off < list.n && n < 64) {
+        size_t end = off; while (end < list.n && list.p[end] != ',') end++;
+        item[n] = str_trim((Str){ list.p + off, end - off });
+        if (str_eq(item[n], current)) at = n + 1;
+        n++; off = end + 1;
+    }
+    if (!n) return (Str){0};
+    /* Off is position zero; selection wraps so both directions reach it. */
+    i32 pos = (i32)at + (dir > 0 ? 1 : -1);
+    if (pos > (i32)n) pos = 0;
+    if (pos < 0) pos = (i32)n;
+    return pos ? item[(size_t)pos - 1] : (Str){0};
+}
+
+static b8 remember_reasoning(Config *cfg, Arena *persist, Arena *scratch,
+                             b8 effort, Str value) {
+    if (!cfg->provider.n) return false;
+    Endpoints e; size_t mark = scratch->off; endpoints_load(&e, scratch);
+    size_t i = endpoints_find(&e, cfg->provider);
+    b8 ok = i != ENDPOINT_NONE && endpoints_save_one(cfg->provider,
+        e.base_url[i], e.model[i], e.api[i], e.reasoning_efforts[i],
+        e.thinking_budgets[i], effort ? value : e.reasoning_effort[i],
+        effort ? e.thinking_budget[i] : value, e.reasoning_template[i], scratch);
+    scratch->off = mark;
+    if (!ok) return false;
+    Str saved = value.n ? str_dup(persist, value) : (Str){0};
+    if (value.n && !saved.p) return false;
+    if (effort) cfg->reasoning_effort = saved; else cfg->thinking_budget = saved;
+    tui_set_reasoning(cfg->reasoning_effort, cfg->thinking_budget);
+    return true;
+}
+
 static void choose_settings(Agent *ag) {
     Config *cfg = ag->cfg;
     ToolRegistry *reg = ag->tools;
@@ -935,7 +1147,7 @@ static void choose_settings(Agent *ag) {
         arena_reset(scratch);
         char tokens[16];
         snprintf(tokens, sizeof tokens, "%d", cfg->max_tokens);
-        TuiCmd rows[SET_FIXED_N + YOKE_MAX_TOOLS];
+        TuiCmd rows[SET_FIXED_N + 2 + YOKE_MAX_TOOLS];
         rows[SET_VERBOSE] = (TuiCmd){
             setting_check(scratch, render_verbose(), STR("Verbose tool output")),
             STR("Every line a tool printed, untruncated") };
@@ -968,10 +1180,18 @@ static void choose_settings(Agent *ag) {
          * are absent: the agent loop answers them, so "disabled" would mean a
          * mode that cannot end. */
         size_t n = SET_FIXED_N;
-        size_t id[YOKE_MAX_TOOLS];
+        b8 reasoning_row[2]; size_t reasoning_count = 0;
+        if (cfg->reasoning_efforts.n) { reasoning_row[reasoning_count++] = true; rows[n++] = (TuiCmd){
+            setting_value(scratch, STR("Reasoning effort")),
+            cfg->reasoning_effort.n ? cfg->reasoning_effort : STR("Off") }; }
+        if (cfg->thinking_budgets.n) { reasoning_row[reasoning_count++] = false; rows[n++] = (TuiCmd){
+            setting_value(scratch, STR("Thinking budget")),
+            cfg->thinking_budget.n ? cfg->thinking_budget : STR("Off") }; }
+        size_t reasoning_n = n;
+        size_t id[YOKE_MAX_TOOLS], tool_n = 0;
         for (size_t i = 0; i < reg->n && n < SET_FIXED_N + YOKE_MAX_TOOLS; i++) {
             if (!tools_can_disable(reg, i)) continue;
-            id[n - SET_FIXED_N] = i;
+            id[tool_n++] = i;
             rows[n++] = (TuiCmd){
                 setting_check(scratch, !tools_disabled(reg, i), reg->name[i]),
                 reg->brief[i] };
@@ -979,9 +1199,16 @@ static void choose_settings(Agent *ag) {
 
         i32 delta = 1;
         if (!tui_settings(STR("settings"), rows, n, &sel, &delta)) break;
-        if (sel >= SET_FIXED_N) {
-            if (sel >= n) continue;
-            size_t t = id[sel - SET_FIXED_N];
+        if (sel >= SET_FIXED_N && sel < reasoning_n) {
+            b8 is_effort = reasoning_row[sel - SET_FIXED_N];
+            Str next = list_step(is_effort ? cfg->reasoning_efforts : cfg->thinking_budgets,
+                                 is_effort ? cfg->reasoning_effort : cfg->thinking_budget, delta);
+            remember_reasoning(cfg, ag->persist, scratch, is_effort, next);
+            continue;
+        }
+        if (sel >= reasoning_n) {
+            if (sel >= n || sel - reasoning_n >= tool_n) continue;
+            size_t t = id[sel - reasoning_n];
             tools_set_disabled(reg, t, !tools_disabled(reg, t));
             continue;
         }
@@ -1300,6 +1527,7 @@ i32 main(i32 argc, char **argv) {
     tui_start(cfg.model, cfg.base_url, !cfg.api_key.p, tools.n,
               opts.have_prompt);
     if (cfg.provider.n) tui_set_provider(cfg.provider);
+    tui_set_reasoning(cfg.reasoning_effort, cfg.thinking_budget);
     tui_set_commands(g_commands, commands_init());
     tui_set_aliases(k_aliases, ALIAS_N);
     tui_set_history(&hist);

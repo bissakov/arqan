@@ -83,6 +83,36 @@ model = claude-sonnet-4-5
 api = anthropic
 ```
 
+### Provider reasoning options
+
+Reasoning controls are provider-scoped. `/provider` → `Edit` can set them,
+and `/settings` cycles each configured list (including `Off`) for the active
+provider. They may also be edited in the provider section:
+
+```
+reasoning_efforts = low,medium,high
+thinking_budgets = 1024,4096,8192
+reasoning_effort = medium
+thinking_budget = 4096
+reasoning_template = {"vendor_effort":"$reasoning_effort","budget":"$thinking_budget","cache_control":{"type":"ephemeral"}}
+```
+
+Lists keep their order. Effort labels must be nonempty and unique; budgets
+must be unique positive integers. The selected value is optional and must be
+one from its corresponding list. With an OpenAI-compatible provider an active
+effort automatically sends `reasoning_effort`; with an Anthropic-compatible
+provider an active budget automatically sends
+`thinking: {"type":"enabled","budget_tokens":N}`.
+
+`reasoning_template` is an optional, single-line JSON object merged into each
+request. It can add nonstandard fields (including reversed API conventions).
+The exact JSON strings `"$reasoning_effort"` and `"$thinking_budget"` are
+replaced with the active string and integer respectively. A template is
+refused locally if it is malformed, duplicates or conflicts with request
+fields yoke owns, or references a control that is Off. Templates live in the
+configuration file, not credentials: never put API keys or other secrets in
+them.
+
 The key is not there. It lives under the same section name in
 `$XDG_STATE_HOME/yoke/credentials` at mode 0600, so the file worth keeping in
 a dotfile repository carries no secret. A credentials file anyone else can

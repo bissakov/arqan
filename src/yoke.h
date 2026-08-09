@@ -89,6 +89,8 @@ typedef bool     b8;
 #define YOKE_MAX_URL          512
 #define YOKE_MAX_MODEL_NAME   128
 #define YOKE_MAX_API_KEY      512
+#define YOKE_MAX_REASONING_LIST 1024
+#define YOKE_MAX_REASONING_TEMPLATE (16u << 10)
 #define YOKE_MAX_MODEL_BYTES  (1u << 20)  /* largest /models reply we will read */
 
 /* ---- arenas ------------------------------------------------------------- */
@@ -303,6 +305,9 @@ b8     settings_set(Str path, Str section, const Str *keys, const Str *vals,
                    size_t n, u32 mode, Arena *scratch);
 b8     settings_set_one(Str path, Str section, Str key, Str val, u32 mode,
                        Arena *scratch);
+/* Removes one named section whole, preserving every byte outside it. Missing
+ * files and sections are already absent and therefore succeed. */
+b8     settings_remove_section(Str path, Str section, Arena *scratch);
 
 /* $XDG_STATE_HOME/yoke/state: the choices the UI remembers between runs. */
 Str    state_get(Str key, Arena *out, Arena *scratch);
@@ -366,6 +371,11 @@ typedef struct {
     Str     name[YOKE_MAX_ENDPOINTS];
     Str     base_url[YOKE_MAX_ENDPOINTS];
     Str     model[YOKE_MAX_ENDPOINTS];   /* empty when none was chosen yet  */
+    Str     reasoning_efforts[YOKE_MAX_ENDPOINTS];
+    Str     thinking_budgets[YOKE_MAX_ENDPOINTS];
+    Str     reasoning_effort[YOKE_MAX_ENDPOINTS];
+    Str     thinking_budget[YOKE_MAX_ENDPOINTS];
+    Str     reasoning_template[YOKE_MAX_ENDPOINTS];
     ApiKind api[YOKE_MAX_ENDPOINTS];
     size_t  n;
 } Endpoints;
@@ -377,10 +387,12 @@ size_t endpoints_load(Endpoints *e, Arena *a);
 size_t endpoints_find(const Endpoints *e, Str name);
 /* False when the store is full or a field is past its cap. */
 b8     endpoints_put(Endpoints *e, Str name, Str base_url, Str model,
-                     ApiKind api, Arena *a);
+                     ApiKind api, Str efforts, Str budgets, Str effort,
+                     Str budget, Str templ, Arena *a);
 /* Writes one endpoint's section, leaving the rest of the config file alone. */
 b8     endpoints_save_one(Str name, Str base_url, Str model, ApiKind api,
-                          Arena *scratch);
+                          Str efforts, Str budgets, Str effort, Str budget,
+                          Str templ, Arena *scratch);
 /* Where /model writes while a provider is active. */
 b8     endpoints_remember_model(Str name, Str model, Arena *scratch);
 /* The key stored for `name`, allocated in `out`. Empty when there is none,
@@ -390,7 +402,10 @@ Str    endpoints_key(Str name, Arena *out, Arena *scratch,
                      char *err, size_t err_cap);
 b8     endpoints_set_key(Str name, Str key, Arena *scratch,
                          char *err, size_t err_cap);
+/* Removes the provider's config and credential sections. */
+b8     endpoints_delete(Str name, Arena *scratch, char *err, size_t err_cap);
 Str    endpoints_active(Arena *a);
+/* An empty name forgets the active provider. */
 b8     endpoints_remember_active(Str name, Arena *scratch);
 
 /* ---- agent modes ---------------------------------------------------------
@@ -408,6 +423,9 @@ typedef struct {
     Str api_key;
     ApiKind api;      /* the wire format base_url speaks                   */
     Str provider;     /* active endpoint name; empty when none is selected */
+    Str reasoning_efforts, thinking_budgets;
+    Str reasoning_effort, thinking_budget;
+    Str reasoning_template;
     /* A run with neither this nor a key has nothing to talk to, and asks for
      * a provider instead of starting a conversation. */
     b8  base_url_set;
@@ -749,6 +767,8 @@ b8 tui_settings(Str title, const TuiCmd *rows, size_t n, size_t *sel,
  * was empty, or there is no fullscreen UI; the composer's own text is
  * restored on the way out. */
 b8 tui_ask(Str question, b8 secret, char *out, size_t cap);
+/* Edits the existing value in `inout`; Enter may accept an empty result. */
+b8 tui_ask_edit(Str question, b8 allow_empty, char *inout, size_t cap);
 /* The '@' picker hides what the project's .gitignore and .ignore exclude,
  * and always hides .git; this offers them anyway. Off by default. A path
  * typed by hand is unaffected either way. */
@@ -769,6 +789,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count,
 void tui_set_model(Str model);
 void tui_set_mode(AgentMode mode);
 void tui_set_provider(Str name);
+void tui_set_reasoning(Str effort, Str thinking_budget);
 /* What a run with no endpoint says, on the welcome screen and again if a
  * message is submitted anyway. */
 #define NO_PROVIDER_HINT \

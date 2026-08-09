@@ -240,7 +240,8 @@ JVal *json_parse(Arena *a, Str s) {
     JParser p = { a, s.p, 0, s.n, 0, false };
     if (!s.p || s.n == 0) return NULL;
     JVal *v = parse_value(&p);
-    if (p.oom) return NULL;
+    skipws(&p);
+    if (p.oom || p.pos != p.len) return NULL;
     return v;
 }
 
