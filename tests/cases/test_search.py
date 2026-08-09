@@ -68,9 +68,9 @@ def test_grep_matches_case_sensitively_unless_told_otherwise(ctx):
 def test_grep_caps_its_results_and_says_so(ctx):
     """A wide pattern costs a page, not the repository."""
     ctx.write_file("many.txt", "".join(f"hit {i}\n" for i in range(50)))
-    result = run_tool(ctx, "grep", {"pattern": "hit", "max_results": 5})
+    result = run_tool(ctx, "grep", {"pattern": "hit", "limit": 5})
     assert len([l for l in result.splitlines() if l.startswith("many.txt")]) == 5, result
-    assert "[5 of 50 shown" in result, result
+    assert "[5 of 50 matches shown; continue with offset=6]" in result, result
 
 
 def test_grep_leaves_binary_files_alone(ctx):
@@ -159,3 +159,74 @@ def test_find_matches_a_path_naming_one_file(ctx):
     assert run_tool(ctx, "find", {"name": "*.rs", "path": "src/one.c"}).startswith(
         "no files"
     )
+
+
+def test_grep_offset_pages_through_results(ctx):
+    """offset skips matches so a wide search is read in pages, not whole."""
+    ctx.write_file("many.txt", "".join(f"hit {i}\n" for i in range(30)))
+    page1 = run_tool(ctx, "grep", {"pattern": "hit", "limit": 10})
+    assert "hit 0" in page1 and "hit 9" in page1, page1
+    assert "hit 10" not in page1, page1
+    assert "[10 of 30 matches shown; continue with offset=11]" in page1, page1
+
+    page2 = run_tool(ctx, "grep", {"pattern": "hit", "limit": 10, "offset": 11})
+    assert "hit 10" in page2 and "hit 19" in page2, page2
+    assert "[10 of 30 matches shown; continue with offset=21]" in page2, page2
+
+    page3 = run_tool(ctx, "grep", {"pattern": "hit", "limit": 10, "offset": 21})
+    assert "hit 20" in page3 and "hit 29" in page3, page3
+    # last page: no "continue" since there is nothing more
+    assert "continue with offset" not in page3, page3
+    assert "[10 of 30 matches shown]" in page3, page3
+
+
+def test_grep_offset_past_the_end_says_so(ctx):
+    """An offset beyond the last match is answered, not left empty."""
+    ctx.write_file("few.txt", "hit 0\nhit 1\nhit 2\n")
+    result = run_tool(ctx, "grep", {"pattern": "hit", "offset": 10})
+    assert "offset 10 is past the last" in result, result
+    assert "3 matches" in result, result
+
+
+def test_grep_limit_above_the_cap_is_refused(ctx):
+    """limit is a hard cap: the default is the ceiling, not a floor."""
+    ctx.write_file("many.txt", "".join(f"hit {i}\n" for i in range(200)))
+    result = run_tool(ctx, "grep", {"pattern": "hit", "limit": 200},
+                      reply="too wide")
+    assert result.startswith("ERROR:"), result
+    assert "limit must be a whole number in 1..100" in result, result
+
+
+def test_find_caps_its_results_and_says_so(ctx):
+    """A wide glob costs a page, not the whole tree."""
+    for i in range(50):
+        ctx.write_file(f"f{i:02d}.txt", "")
+    result = run_tool(ctx, "find", {"name": "*.txt", "limit": 5})
+    lines = [l for l in result.splitlines() if l.startswith("f")]
+    assert len(lines) == 5, result
+    assert "[5 of 50 files shown; continue with offset=6]" in result, result
+
+
+def test_find_offset_pages_through_results(ctx):
+    """offset skips paths so a wide list is read in pages, not whole."""
+    for i in range(30):
+        ctx.write_file(f"f{i:02d}.txt", "")
+    page1 = run_tool(ctx, "find", {"name": "*.txt", "limit": 10})
+    assert "[10 of 30 files shown; continue with offset=11]" in page1, page1
+
+    page2 = run_tool(ctx, "find", {"name": "*.txt", "limit": 10, "offset": 11})
+    assert "[10 of 30 files shown; continue with offset=21]" in page2, page2
+
+    page3 = run_tool(ctx, "find", {"name": "*.txt", "limit": 10, "offset": 21})
+    assert "continue with offset" not in page3, page3
+    assert "[10 of 30 files shown]" in page3, page3
+
+
+def test_find_limit_above_the_cap_is_refused(ctx):
+    """limit is a hard cap for find too."""
+    for i in range(10):
+        ctx.write_file(f"f{i:02d}.txt", "")
+    result = run_tool(ctx, "find", {"name": "*.txt", "limit": 300},
+                      reply="too wide")
+    assert result.startswith("ERROR:"), result
+    assert "limit must be a whole number in 1..200" in result, result

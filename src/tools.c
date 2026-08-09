@@ -88,6 +88,22 @@ static b8 arg_count(const JVal *j, Str key, size_t dflt, size_t max,
     return true;
 }
 
+/* `max_results` was the original spelling for a search page size. Keep it
+ * working for saved conversations, but make the common pagination pair
+ * `offset` + `limit` the public API. */
+static b8 arg_page_limit(const JVal *j, size_t dflt, size_t max, size_t *out,
+                         char *err, size_t err_cap) {
+    const JVal *limit = json_get(j, STR("limit"));
+    const JVal *old = json_get(j, STR("max_results"));
+    if (limit && limit->type != J_NULL && old && old->type != J_NULL) {
+        snprintf(err, err_cap, "use limit instead of max_results, not both");
+        return false;
+    }
+    return arg_count(j, limit && limit->type != J_NULL ? STR("limit")
+                                                        : STR("max_results"),
+                     dflt, max, out, err, err_cap);
+}
+
 /* ---- read ----
  * A page of a file rather than the file, since a whole one is charged to
  * every later turn: the default stops at YOKE_READ_LINES or YOKE_READ_BYTES
@@ -101,7 +117,7 @@ static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
     size_t first, limit;
     if (!arg_count(j, STR("offset"), 1, YOKE_MAX_FILE_BYTES, &first, err, err_cap))
         return false;
-    if (!arg_count(j, STR("limit"), YOKE_READ_LINES, YOKE_MAX_FILE_BYTES,
+    if (!arg_count(j, STR("limit"), YOKE_READ_LINES, YOKE_READ_LINES,
                    &limit, err, err_cap))
         return false;
 
@@ -268,10 +284,79 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
     return true;
 }
 
+static b8 shell_capture_page(Str cmd, size_t offset, size_t limit, Buf *out,
+                             char *err, size_t err_cap) {
+    static char z[YOKE_MAX_COMMAND];
+    if (!arg_cstr(cmd, z, sizeof z, "command", err, err_cap)) return false;
+
+    i32 fds[2];
+    if (pipe(fds) != 0) { snprintf(err, err_cap, "pipe failed"); return false; }
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(fds[0]); close(fds[1]);
+        snprintf(err, err_cap, "fork failed");
+        return false;
+    }
+    if (pid == 0) {
+        i32 null_fd = open("/dev/null", O_RDONLY);
+        if (null_fd >= 0) { dup2(null_fd, 0); close(null_fd); }
+        dup2(fds[1], 1); dup2(fds[1], 2);
+        close(fds[0]); close(fds[1]);
+        execl("/bin/sh", "sh", "-c", z, (char *)NULL);
+        _exit(127);
+    }
+    close(fds[1]);
+
+    size_t total = 0, shown = 0, first = offset - 1;
+    char block[4096];
+    struct pollfd pfd = { fds[0], POLLIN, 0 };
+    for (;;) {
+        if (g_shell_idle) {
+            i32 ready = poll(&pfd, 1, SHELL_POLL_MS);
+            g_shell_idle(g_shell_idle_ud);
+            if (ready == 0) continue;
+            if (ready < 0) { if (errno == EINTR) continue; break; }
+        }
+        ssize_t n = read(fds[0], block, sizeof block);
+        if (n < 0) { if (errno == EINTR) continue; break; }
+        if (n == 0) break;
+        size_t bytes = (size_t)n;
+        if (total + bytes > first && shown < limit) {
+            size_t at = total < first ? first - total : 0;
+            size_t take = bytes - at;
+            if (take > limit - shown) take = limit - shown;
+            buf_put(out, block + at, take);
+            shown += take;
+        }
+        total += bytes;
+    }
+    close(fds[0]);
+
+    if (offset > total) {
+        buf_putf(out, "[output has %zu bytes; offset %zu is past its end]\n",
+                 total, offset);
+    } else if (total > first + shown) {
+        buf_putf(out, "[read %zu of %zu output bytes; continue with offset=%zu]\n",
+                 shown, total, offset + shown);
+    }
+    i32 status = 0;
+    pid_t done;
+    while ((done = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {}
+    if (done < 0) buf_puts(out, STR("\n[exit unknown]"));
+    else if (WIFSIGNALED(status)) buf_putf(out, "\n[killed by signal %d]", WTERMSIG(status));
+    else buf_putf(out, "\n[exit %d]", WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+    return buf_ok(out) && out->n <= YOKE_TOOL_RESULT_BYTES;
+}
+
 static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
     JVal *j = tool_args(args, scratch, err, err_cap);
     if (!j) return false;
-    return shell_capture(json_str(j, STR("command")), out, err, err_cap);
+    size_t offset, limit;
+    if (!arg_count(j, STR("offset"), 1, 1u << 30, &offset, err, err_cap) ||
+        !arg_count(j, STR("limit"), YOKE_SHELL_OUT_BYTES,
+                   YOKE_SHELL_OUT_BYTES, &limit, err, err_cap)) return false;
+    return shell_capture_page(json_str(j, STR("command")), offset, limit,
+                              out, err, err_cap);
 }
 
 /* ---- patch ----
@@ -572,13 +657,25 @@ typedef struct {
     Str    pattern;       /* empty for find                                    */
     const char *glob;     /* NULL for no name filter                           */
     size_t max;
-    size_t found;
-    size_t skipped;       /* results past `max`                                */
+    size_t offset;        /* 1-based first result to show                      */
+    size_t found;         /* total matches encountered                         */
+    size_t shown;         /* results actually written                          */
+    size_t skipped;       /* results past the page                             */
+    b8     out_limited;   /* page hit the byte budget before its record limit  */
     b8     ignore_case;
     b8     single;         /* the root is one file rather than a tree      */
     char   path[YOKE_MAX_PATH];
     size_t path_n;
 } Walk;
+
+/* Keep the continuation line inside the same hard result budget. Once a page
+ * cannot take a record, later matches belong to the next page too: otherwise
+ * the next offset would skip records the model never saw. */
+static b8 walk_has_room(const Walk *w, size_t n) {
+    const size_t reserve = 128;
+    if (w->out->n > YOKE_TOOL_RESULT_BYTES - reserve) return false;
+    return n <= YOKE_TOOL_RESULT_BYTES - reserve - w->out->n;
+}
 
 static b8 mem_eq_ci(const char *a, const char *b, size_t n) {
     for (size_t i = 0; i < n; i++)
@@ -631,12 +728,20 @@ static void walk_grep_file(Walk *w) {
     while (str_line(body, &off, &line)) {
         ln++;
         if (!line_matches(line, w->pattern, w->ignore_case)) continue;
-        if (w->found++ >= w->max) { w->skipped++; continue; }
+        w->found++;
+        if (w->found < w->offset) continue;
+        if (w->out_limited) { w->skipped++; continue; }
+        if (w->shown >= w->max) { w->skipped++; continue; }
         Str trimmed = str_trim(line);
-        Str shown = str_clip_utf8(trimmed, YOKE_GREP_LINE);
+        Str clipped = str_clip_utf8(trimmed, YOKE_GREP_LINE);
+        size_t need = strlen(walk_shown(w)) + 24 + clipped.n + 5;
+        if (!walk_has_room(w, need)) {
+            w->skipped++; w->out_limited = true; continue;
+        }
+        w->shown++;
         buf_putf(w->out, "%s:%zu: ", walk_shown(w), ln);
-        buf_puts(w->out, shown);
-        if (shown.n < trimmed.n) buf_puts(w->out, STR(" ..."));
+        buf_puts(w->out, clipped);
+        if (clipped.n < trimmed.n) buf_puts(w->out, STR(" ..."));
         buf_putc(w->out, '\n');
     }
 }
@@ -645,8 +750,15 @@ static void walk_grep_file(Walk *w) {
 static void walk_file(Walk *w, const char *base) {
     if (!name_matches(w, base)) return;
     if (w->pattern.n) { walk_grep_file(w); return; }
-    if (w->found++ >= w->max) w->skipped++;
-    else buf_putf(w->out, "%s\n", walk_shown(w));
+    w->found++;
+    if (w->found < w->offset) return;
+    if (w->out_limited) { w->skipped++; return; }
+    if (w->shown >= w->max) { w->skipped++; return; }
+    if (!walk_has_room(w, strlen(walk_shown(w)) + 1)) {
+        w->skipped++; w->out_limited = true; return;
+    }
+    w->shown++;
+    buf_putf(w->out, "%s\n", walk_shown(w));
 }
 
 /* Appends "/name" to the walked path and restores it afterwards. */
@@ -757,9 +869,12 @@ static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep,
         return false;
     }
 
-    if (!arg_count(j, STR("max_results"),
+    if (!arg_page_limit(j,
                    grep ? YOKE_GREP_RESULTS : YOKE_FIND_RESULTS,
-                   1u << 20, &w.max, err, err_cap))
+                   grep ? YOKE_GREP_RESULTS : YOKE_FIND_RESULTS,
+                   &w.max, err, err_cap))
+        return false;
+    if (!arg_count(j, STR("offset"), 1, 1u << 30, &w.offset, err, err_cap))
         return false;
     if (!walk_start(&w, json_str(j, STR("path")), err, err_cap)) return false;
 
@@ -782,13 +897,24 @@ static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep,
     }
     if (!w.found) {
         buf_putf(out, "no %s\n", grep ? "matches" : "files");
-    } else if (w.skipped) {
-        /* The walk finishes either way: the count the cap is judged against
-         * is worth the scan, and only the results were expensive. */
-        buf_putf(out, "[%zu of %zu%s shown; narrow the search or raise "
-                 "max_results]\n", w.max, w.found, room ? "" : "+");
+    } else if (!w.shown) {
+        buf_putf(out, "[%zu%s %s; offset %zu is past the last, use a "
+                 "smaller one]\n", w.found, room ? "" : "+",
+                 grep ? "matches" : "files", w.offset);
+    } else if (w.skipped || !room || w.out_limited) {
+        buf_putf(out, "[%zu of %zu%s %s shown; continue with offset=%zu]\n",
+                 w.shown, w.found, room ? "" : "+",
+                 grep ? "matches" : "files", w.offset + w.shown);
+    } else if (w.offset > 1) {
+        buf_putf(out, "[%zu of %zu %s shown]\n",
+                 w.shown, w.found,
+                 grep ? "matches" : "files");
     }
-    if (!buf_ok(out)) { snprintf(err, err_cap, "result does not fit in memory"); return false; }
+    if (!buf_ok(out) || out->n > YOKE_TOOL_RESULT_BYTES) {
+        snprintf(err, err_cap, "result does not fit in the %u byte limit",
+                 (unsigned)YOKE_TOOL_RESULT_BYTES);
+        return false;
+    }
     return true;
 }
 
@@ -885,30 +1011,43 @@ void tools_init(ToolRegistry *r, Arena *persist) {
     r->n++; } while (0)
 #define BOTH (TOOL_IN_BUILD | TOOL_IN_PLAN)
 
-    ADD("read", "Read a page of a file: 2000 lines or 50KB, from offset.",
+    ADD("read", "Read a page of a file: up to 2000 lines or 8KB, "
+        "whichever is less. Use offset and limit to page through a long "
+        "file one range at a time rather than reading it whole.",
         "Read a page of a file", BOTH,
         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},"
         "\"offset\":{\"type\":\"integer\",\"description\":\"first line, 1-based\"},"
-        "\"limit\":{\"type\":\"integer\"}},\"required\":[\"path\"]}",
+        "\"limit\":{\"type\":\"integer\",\"description\":\"at most 2000 lines\"}},"
+        "\"required\":[\"path\"]}",
         tool_read);
-    ADD("grep", "Search file contents for a literal string, recursively.",
+    ADD("grep", "Search file contents for a literal string, recursively. "
+        "Returns up to 100 matches; narrow with a path or glob, and use "
+        "offset to page through the rest.",
         "Search file contents", BOTH,
         "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},"
         "\"path\":{\"type\":\"string\",\"description\":\"file or dir, default .\"},"
         "\"glob\":{\"type\":\"string\",\"description\":\"e.g. *.c\"},"
         "\"ignore_case\":{\"type\":\"boolean\"},"
-        "\"max_results\":{\"type\":\"integer\"}},\"required\":[\"pattern\"]}",
+        "\"offset\":{\"type\":\"integer\",\"description\":\"first match to show, 1-based\"},"
+        "\"limit\":{\"type\":\"integer\",\"description\":\"at most 100 matches\"}},"
+        "\"required\":[\"pattern\"]}",
         tool_grep);
-    ADD("find", "List files whose name matches a glob, recursively.",
+    ADD("find", "List files whose name matches a glob, recursively. "
+        "Returns up to 200 paths; narrow with a path, and use offset to "
+        "page through the rest.",
         "List files by name", BOTH,
         "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\","
         "\"description\":\"glob; matched on the path when it has a /\"},"
         "\"path\":{\"type\":\"string\",\"description\":\"file or dir, default .\"},"
-        "\"max_results\":{\"type\":\"integer\"}},\"required\":[\"name\"]}",
+        "\"offset\":{\"type\":\"integer\",\"description\":\"first result to show, 1-based\"},"
+        "\"limit\":{\"type\":\"integer\",\"description\":\"at most 200 paths\"}},"
+        "\"required\":[\"name\"]}",
         tool_find);
-    ADD("bash", "Run a shell command; returns its stdout and stderr.",
+    ADD("bash", "Run a shell command; returns one page of up to 8KB of its "
+        "stdout and stderr. Use offset and limit to page output, and prefer "
+        "head, tail, sed -n or grep to target the lines you need.",
         "Run a shell command", BOTH,
-        "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}",
+        "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\",\"description\":\"first output byte, 1-based\"},\"limit\":{\"type\":\"integer\",\"description\":\"at most 8KB\"}},\"required\":[\"command\"]}",
         tool_bash);
     ADD("patch", "Change files with a unified diff: hunks are located by "
         "their context lines, not by @@ numbers, and every file applies or "
@@ -962,7 +1101,13 @@ b8 tools_run(const ToolRegistry *r, size_t id, Str args, Arena *scratch,
                  (int)r->name[id].n, r->name[id].p);
         return false;
     }
-    return r->run[id](args, scratch, out, err, err_cap);
+    b8 ok = r->run[id](args, scratch, out, err, err_cap);
+    if (ok && out->n > YOKE_TOOL_RESULT_BYTES) {
+        snprintf(err, err_cap, "result exceeds the %u byte limit",
+                 (unsigned)YOKE_TOOL_RESULT_BYTES);
+        return false;
+    }
+    return ok;
 }
 
 void tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api) {

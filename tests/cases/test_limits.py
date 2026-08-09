@@ -122,3 +122,17 @@ def test_turn_runs_without_an_api_key(ctx):
     s.wait_text("no key needed")
     s.wait_turn_done()
     assert s.status_kind() == "ready"
+
+
+def test_read_limit_above_the_cap_is_refused(ctx):
+    """limit is a hard cap: 2000 lines is the ceiling, not a floor."""
+    ctx.write_file("big.txt", "".join(f"line {i}\n" for i in range(10)))
+    args = json.dumps({"path": "big.txt", "limit": 5000})
+    ctx.scenario(f"tool=read:{args},final_text=refused")
+    s = ctx.spawn()
+    s.submit("read with a huge limit")
+    s.wait_text("refused")
+    s.wait_turn_done()
+    result = ctx.mock.tool_results()[0]
+    assert result.startswith("ERROR:"), result
+    assert "limit must be a whole number in 1..2000" in result, result

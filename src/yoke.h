@@ -41,9 +41,11 @@ typedef bool     b8;
 #define YOKE_MAX_FILE_BYTES   (16u << 20) /* largest file a tool will read     */
 /* A tool result is replayed on every later turn, so each cap below makes one
  * call a page rather than a file; the call says where to continue. */
+#define YOKE_TOOL_RESULT_BYTES (8u << 10) /* hard cap, including paging notes   */
 #define YOKE_READ_LINES       2000        /* lines one read returns by default  */
-#define YOKE_READ_BYTES       (50u << 10) /* and the byte cap that beats it     */
-#define YOKE_SHELL_OUT_BYTES  (50u << 10) /* command output kept, from the tail */
+/* Leave enough room under the result cap for a continuation/status line. */
+#define YOKE_READ_BYTES       (YOKE_TOOL_RESULT_BYTES - 256u)
+#define YOKE_SHELL_OUT_BYTES  (YOKE_TOOL_RESULT_BYTES - 256u)
 #define YOKE_GREP_RESULTS     100         /* matches one grep returns by default*/
 #define YOKE_FIND_RESULTS     200         /* paths one find returns by default  */
 #define YOKE_GREP_LINE        200         /* of a matched line, what is shown   */

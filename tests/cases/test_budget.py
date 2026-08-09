@@ -26,9 +26,9 @@ def test_read_stops_at_the_line_cap_and_says_where_to_continue(ctx):
     ctx.write_file("long.txt", numbered(2500))
     result = run_tool(ctx, "read", {"path": "long.txt"})
     assert "line 0000" in result, result[:200]
-    assert "line 1999" in result, result[-200:]
-    assert "line 2000" not in result, result[-200:]
-    assert "[read 2000 of 2500 lines; continue with offset=2001]" in result, result[-200:]
+    assert "line 0792" in result, result[-200:]
+    assert "line 0793" not in result, result[-200:]
+    assert "[read 793 of 2500 lines; continue with offset=794]" in result, result[-200:]
 
 
 def test_read_takes_an_offset_and_a_limit(ctx):
@@ -49,8 +49,8 @@ def test_read_stops_at_the_byte_cap_before_the_line_cap(ctx):
     """Few long lines cost as much as many short ones, and are capped too."""
     ctx.write_file("wide.txt", numbered(200, width=1000))
     result = run_tool(ctx, "read", {"path": "wide.txt"})
-    assert len(result) < 60000, len(result)
-    assert "continue with offset=52]" in result, result[-120:]
+    assert len(result) < 8192, len(result)
+    assert "continue with offset=8]" in result, result[-120:]
 
 
 def test_read_past_the_end_says_how_long_the_file_is(ctx):
@@ -68,14 +68,17 @@ def test_read_refuses_a_nonsense_offset(ctx):
     assert "offset must be a whole number" in result, result
 
 
-def test_bash_keeps_the_tail_of_a_flood(ctx):
-    """A command says why it failed on its last lines, not its first."""
-    result = run_tool(ctx, "bash", {"command": "seq 1 200000"})
-    assert result.startswith("[output truncated: last 51200 of "), result[:80]
+def test_bash_pages_a_flood_by_output_byte_range(ctx):
+    """A shell flood is a bounded page that names the next byte range."""
+    result = run_tool(ctx, "bash", {"command": "seq 1 200000", "limit": 100})
+    assert result.startswith("1\n2\n3\n"), result[:80]
+    assert "[read 100 of " in result, result[-160:]
+    assert "continue with offset=101]" in result, result[-160:]
     assert result.rstrip().endswith("[exit 0]"), result[-80:]
-    assert "\n200000\n" in result, result[-80:]
-    assert "\n1\n2\n3\n" not in result, result[:200]
-    assert len(result) < 52000, len(result)
+
+    page = run_tool(ctx, "bash", {"command": "printf abcdef", "offset": 4, "limit": 2})
+    assert page.startswith("de[read 2 of 6 output bytes; continue with offset=6]"), page
+    assert page.rstrip().endswith("[exit 0]"), page
 
 
 def test_short_command_output_is_untouched(ctx):
