@@ -1,4 +1,4 @@
-"""The /provider command: user-defined OpenAI-compatible endpoints."""
+"""The /provider command: user-defined endpoints, in either API."""
 
 import stat
 
@@ -29,12 +29,15 @@ def active(ctx):
     return ctx.state().get("provider")
 
 
-def write_provider(ctx, name, base_url, model="mock-model", key="stored-key"):
+def write_provider(ctx, name, base_url, model="mock-model", key="stored-key",
+                   api=None):
     """Seed a stored provider, the way an earlier session would have left it."""
     p = ctx.config_file()
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a") as f:
         f.write(f"[provider {name}]\nbase_url = {base_url}\nmodel = {model}\n")
+        if api:
+            f.write(f"api = {api}\n")
     if key is not None:
         c = credentials_file(ctx)
         c.parent.mkdir(parents=True, exist_ok=True)
@@ -49,10 +52,14 @@ def select_provider(ctx, name):
     p.write_text(f"provider = {name}\n")
 
 
-def add_provider(s, ctx, name, url=None, key="sk-secret"):
+def add_provider(s, ctx, name, url=None, key="sk-secret", api="openai"):
     """Drive the creation form to the model picker."""
     s.wait_text("a name for this provider")
     s.type(name).sync()
+    s.key("enter")
+    s.wait_status("which API does it speak")
+    if api == "anthropic":
+        s.key("down").sync()
     s.key("enter")
     s.wait_text("its base URL")
     s.type(url or ctx.mock.base_url).sync()
@@ -87,7 +94,8 @@ def test_creating_a_provider_stores_it_and_switches_to_it(ctx):
     assert s.status_field(3) == "work", s.status_line()
 
     assert store(ctx) == [
-        {"name": "work", "base_url": ctx.mock.base_url, "model": "alpha"}
+        {"name": "work", "base_url": ctx.mock.base_url, "model": "alpha",
+         "api": "openai"}
     ], store(ctx)
     assert creds(ctx) == {"work": "sk-secret"}, creds(ctx)
     assert active(ctx) == "work", ctx.state()
@@ -202,6 +210,48 @@ def test_the_model_picker_writes_to_the_active_provider(ctx):
     s.wait_text("model: beta")
     assert store(ctx)[0]["model"] == "beta", store(ctx)
     assert "model" not in ctx.state(), ctx.state()
+
+
+def test_creating_an_anthropic_provider_records_the_api(ctx):
+    """The form asks which API a URL speaks, and the answer is stored with it."""
+    ctx.scenario("models=claude-a|claude-b,text=hello+from+anthropic")
+    s = ctx.spawn()
+    s.submit("/provider")
+    add_provider(s, ctx, "anth", key="sk-ant", api="anthropic")
+    s.key("enter")
+    s.wait_status("pick a model")
+    s.key("enter")
+    s.wait_text("provider: anth")
+
+    assert store(ctx) == [
+        {"name": "anth", "base_url": ctx.mock.base_url, "model": "claude-a",
+         "api": "anthropic"}
+    ], store(ctx)
+
+    s.submit("hello")
+    s.wait_text("hello from anthropic")
+    s.wait_turn_done()
+    # The key rides in Anthropic's own header, and the request names a version.
+    assert ctx.mock.keys[-1] == "sk-ant", ctx.mock.keys
+    assert ctx.mock.auth[-1] is None, ctx.mock.auth
+    assert ctx.mock.versions[-1] == "2023-06-01", ctx.mock.versions
+
+
+def test_an_anthropic_provider_configures_the_next_run(ctx):
+    """A stored `api` key is what the next session speaks, without asking."""
+    write_provider(ctx, "anth", ctx.mock.base_url, model="claude-a",
+                   key="sk-ant", api="anthropic")
+    select_provider(ctx, "anth")
+    ctx.scenario("text=answered")
+    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s.submit("hello")
+    s.wait_text("answered")
+    s.wait_turn_done()
+    assert ctx.mock.keys[-1] == "sk-ant", ctx.mock.keys
+    # The system prompt is a parameter there rather than the first message.
+    body = ctx.mock.requests[-1]
+    assert "system" in body, body
+    assert [m["role"] for m in body["messages"]] == ["user"], body["messages"]
 
 
 def test_credentials_readable_by_others_are_refused(ctx):

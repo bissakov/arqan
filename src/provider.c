@@ -1,10 +1,15 @@
-/* provider.c: OpenAI-compatible chat-completions with tool calls.
+/* provider.c: chat completions with tool calls, in either wire format.
  *
  * Builds the request JSON from the conversation, POSTs it, and dispatches
  * text and tool-call deltas to the caller's sinks. With Config.stream off the
  * reply is one document instead of a sequence of events and reaches the same
  * sinks in one piece. Either way the assistant message and its tool calls are
  * appended to the conversation at the end.
+ *
+ * Config.api picks between OpenAI chat completions and the Anthropic messages
+ * API. They differ in the shape of a request, of an event and of a reply, and
+ * nowhere else: both are read into the same slots and pushed through the same
+ * callbacks, so nothing above this file knows which one answered.
  */
 #include "yoke.h"
 
@@ -101,13 +106,25 @@ static Str conv_call_name(const Conv *c, size_t result) {
     return STR("tool");
 }
 
-/* Assistant tool calls are emitted as one message with a "tool_calls" array,
- * the carrier slots consumed here and skipped in the main loop.
- *
- * A tool result is charged again on every later turn, so one older than
+/* A tool result is charged again on every later turn, so one older than
  * YOKE_ELIDE_TURNS user turns goes out as a line naming what it was: a file
  * read four turns ago is either reflected in the work or worth reading again.
  * The transcript keeps the text either way. */
+static void write_tool_result(Buf *b, const Conv *c, size_t i, size_t recent) {
+    if (i < recent && c->text[i].n > YOKE_ELIDE_BYTES) {
+        Str name = conv_call_name(c, i);
+        buf_puts(b, STR("\"["));
+        buf_json_chars(b, name);
+        buf_putf(b, " result elided after %u turns: %zu bytes. "
+                 "Call it again if you still need it.]\"",
+                 (unsigned)YOKE_ELIDE_TURNS, c->text[i].n);
+    } else {
+        buf_json_str(b, c->text[i]);
+    }
+}
+
+/* Assistant tool calls are emitted as one message with a "tool_calls" array,
+ * the carrier slots consumed here and skipped in the main loop. */
 void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
     (void)reg;
     size_t recent = conv_recent_start(c, YOKE_ELIDE_TURNS);
@@ -137,16 +154,7 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
             buf_putf(b, ",\"tool_call_id\":");
             buf_json_str(b, c->tool_call_id[i]);
             buf_putf(b, ",\"content\":");
-            if (i < recent && c->text[i].n > YOKE_ELIDE_BYTES) {
-                Str name = conv_call_name(c, i);
-                buf_puts(b, STR("\"["));
-                buf_json_chars(b, name);
-                buf_putf(b, " result elided after %u turns: %zu bytes. "
-                         "Call it again if you still need it.]\"",
-                         (unsigned)YOKE_ELIDE_TURNS, c->text[i].n);
-            } else {
-                buf_json_str(b, c->text[i]);
-            }
+            write_tool_result(b, c, i, recent);
             buf_putc(b, '}');
             continue;
         }
@@ -182,6 +190,82 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
     buf_putc(b, ']');
 }
 
+/* ---- the same conversation as Anthropic messages -------------------------
+ * Content blocks rather than flat text, a tool result carried by the user
+ * turn that answers the call, and consecutive slots of one role merged into a
+ * single message, which is the only shape that API accepts.
+ */
+
+/* A slot with nothing to say contributes no block, and a message with no
+ * blocks is refused rather than read as an empty turn. */
+static b8 anth_has_block(const Conv *c, size_t i) {
+    if (c->role[i] == M_SYSTEM) return false;
+    if (c->role[i] == M_TOOL || conv_is_call(c, i) || conv_is_shell(c, i))
+        return true;
+    return c->text[i].n > 0;
+}
+
+static void anth_write_block(Buf *b, const Conv *c, size_t i, size_t recent) {
+    if (conv_is_shell(c, i)) {
+        buf_puts(b, STR("{\"type\":\"text\",\"text\":\"!"));
+        buf_json_chars(b, c->text[i]);
+        buf_json_chars(b, STR("\n"));
+        buf_json_chars(b, c->shell_out[i]);
+        buf_puts(b, STR("\"}"));
+        return;
+    }
+    if (c->role[i] == M_TOOL) {
+        buf_puts(b, STR("{\"type\":\"tool_result\",\"tool_use_id\":"));
+        buf_json_str(b, c->tool_call_id[i]);
+        buf_puts(b, STR(",\"content\":"));
+        write_tool_result(b, c, i, recent);
+        buf_putc(b, '}');
+        return;
+    }
+    if (conv_is_call(c, i)) {
+        buf_puts(b, STR("{\"type\":\"tool_use\",\"id\":"));
+        buf_json_str(b, c->tool_call_id[i]);
+        buf_puts(b, STR(",\"name\":"));
+        buf_json_str(b, c->tool_name[i]);
+        buf_puts(b, STR(",\"input\":"));
+        /* The arguments as the model wrote them. A call that carried none is
+         * still an object here, since the field is not optional. */
+        Str args = str_trim(c->text[i]);
+        if (args.n && args.p[0] == '{') buf_put(b, args.p, args.n);
+        else buf_puts(b, STR("{}"));
+        buf_putc(b, '}');
+        return;
+    }
+    buf_puts(b, STR("{\"type\":\"text\",\"text\":"));
+    buf_json_str(b, c->text[i]);
+    buf_putc(b, '}');
+}
+
+void conv_write_json_anthropic(Buf *b, const Conv *c) {
+    size_t recent = conv_recent_start(c, YOKE_ELIDE_TURNS);
+    buf_putc(b, '[');
+    b8 first_msg = true;
+    size_t i = 0;
+    while (i < c->n) {
+        if (!anth_has_block(c, i)) { i++; continue; }
+        b8 assistant = c->role[i] == M_ASSISTANT;
+        if (!first_msg) buf_putc(b, ',');
+        first_msg = false;
+        buf_putf(b, "{\"role\":\"%s\",\"content\":[",
+                 assistant ? "assistant" : "user");
+        b8 first_block = true;
+        for (; i < c->n && c->role[i] != M_SYSTEM
+               && (c->role[i] == M_ASSISTANT) == assistant; i++) {
+            if (!anth_has_block(c, i)) continue;
+            if (!first_block) buf_putc(b, ',');
+            first_block = false;
+            anth_write_block(b, c, i, recent);
+        }
+        buf_puts(b, STR("]}"));
+    }
+    buf_putc(b, ']');
+}
+
 /* ---- streaming state (in scratch arena) --------------------------------- */
 typedef struct {
     Arena *scratch;
@@ -198,6 +282,10 @@ typedef struct {
     Buf  text;
     b8   text_started;
     b8   reason_started;
+    /* Anthropic streams one content block at a time, so the open block is
+     * enough to route a delta: the tool slot it fills, or -1 for prose. */
+    i32  open_slot;
+    i32  blocks;        /* tool_use blocks seen, which is the next slot   */
     size_t events;       /* SSE data lines parsed, for telemetry           */
     size_t bad_events;   /* data lines that were not JSON yoke could read   */
     size_t reason_bytes; /* thinking trace streamed, which Conv never keeps */
@@ -287,6 +375,101 @@ static void take_call(Provider *p, StreamState *s, const JVal *tc, i32 idx) {
                         (Str){ s->args[sl].p, s->args[sl].n }, p->ud);
 }
 
+static void openai_event(Provider *p, StreamState *s, const JVal *ev) {
+    read_usage(p, ev);
+
+    const JVal *choices = json_get(ev, STR("choices"));
+    const JVal *ch0 = json_at(choices, 0);
+    if (!ch0) return;
+    const JVal *delta = json_get(ch0, STR("delta"));
+    if (!delta) return;
+    take_reason(p, s, reasoning_of(delta));
+    take_text(p, s, json_str(delta, STR("content")));
+    const JVal *tcs = json_get(delta, STR("tool_calls"));
+    if (tcs && tcs->type == J_ARR) {
+        for (size_t i = 0; i < tcs->u.arr.n; i++) {
+            const JVal *tc = &tcs->u.arr.items[i];
+            const JVal *idxv = json_get(tc, STR("index"));
+            /* A non-numeric "index" would read the union as a double, so
+             * anything but a number is the first call. */
+            i32 idx = idxv && idxv->type == J_NUM && idxv->u.n >= 0
+                   && idxv->u.n < (f64)YOKE_MAX_TOOL_CALLS
+                    ? (i32)idxv->u.n : 0;
+            take_call(p, s, tc, idx);
+        }
+    }
+}
+
+/* Anthropic reports the prompt on message_start and the completion on
+ * message_delta, so each is kept where it was heard rather than replacing the
+ * pair. */
+static void read_usage_anth(Provider *p, const JVal *owner) {
+    const JVal *usage = json_get(owner, STR("usage"));
+    if (!usage || usage->type != J_OBJ) return;
+    const JVal *in = json_get(usage, STR("input_tokens"));
+    const JVal *out = json_get(usage, STR("output_tokens"));
+    if (in && in->type == J_NUM) p->prompt_tokens = (size_t)in->u.n;
+    if (out && out->type == J_NUM) p->completion_tokens = (size_t)out->u.n;
+    if (!p->prompt_tokens && !p->completion_tokens) return;
+    p->total_tokens = p->prompt_tokens + p->completion_tokens;
+    p->usage_valid = true;
+    if (p->on_usage) p->on_usage(p->total_tokens, p->ud);
+}
+
+/* The name and id arrive whole on content_block_start; the arguments follow
+ * as partial JSON, the way an OpenAI call's do. */
+static void anth_open_tool(Provider *p, StreamState *s, const JVal *blk) {
+    i32 sl = slot(s, s->blocks++);
+    s->open_slot = sl;
+    if (sl < 0) return;
+    Str id = json_str(blk, STR("id"));
+    Str name = json_str(blk, STR("name"));
+    if (id.n) s->id[sl] = str_dup(s->scratch, id);
+    if (name.n) s->name[sl] = str_dup(s->scratch, name);
+    if (p->on_tool_call && s->name[sl].p)
+        p->on_tool_call(sl, s->id[sl], s->name[sl],
+                        (Str){ s->args[sl].p, s->args[sl].n }, p->ud);
+}
+
+static void anth_event(Provider *p, StreamState *s, const JVal *ev) {
+    Str type = json_str(ev, STR("type"));
+    if (str_eq(type, STR("message_start"))) {
+        read_usage_anth(p, json_get(ev, STR("message")));
+        return;
+    }
+    if (str_eq(type, STR("message_delta"))) {
+        read_usage_anth(p, ev);
+        return;
+    }
+    if (str_eq(type, STR("content_block_start"))) {
+        const JVal *blk = json_get(ev, STR("content_block"));
+        Str kind = json_str(blk, STR("type"));
+        s->open_slot = -1;
+        if (str_eq(kind, STR("tool_use"))) anth_open_tool(p, s, blk);
+        else if (str_eq(kind, STR("thinking")))
+            take_reason(p, s, json_str(blk, STR("thinking")));
+        else take_text(p, s, json_str(blk, STR("text")));
+        return;
+    }
+    if (str_eq(type, STR("content_block_delta"))) {
+        const JVal *d = json_get(ev, STR("delta"));
+        Str kind = json_str(d, STR("type"));
+        if (str_eq(kind, STR("text_delta"))) {
+            take_text(p, s, json_str(d, STR("text")));
+        } else if (str_eq(kind, STR("thinking_delta"))) {
+            take_reason(p, s, json_str(d, STR("thinking")));
+        } else if (str_eq(kind, STR("input_json_delta")) && s->open_slot >= 0) {
+            i32 sl = s->open_slot;
+            buf_puts(&s->args[sl], json_str(d, STR("partial_json")));
+            if (p->on_tool_call && s->name[sl].p)
+                p->on_tool_call(sl, s->id[sl], s->name[sl],
+                                (Str){ s->args[sl].p, s->args[sl].n }, p->ud);
+        }
+        return;
+    }
+    if (str_eq(type, STR("content_block_stop"))) s->open_slot = -1;
+}
+
 static b8 on_line(Str line, void *ud) {
     Provider *p = (Provider *)ud;
     StreamState *s = p->ud;
@@ -300,28 +483,8 @@ static b8 on_line(Str line, void *ud) {
          * parses into the turn's scratch rather than being dropped. */
         if (!ev) ev = json_parse(s->scratch, payload);
         if (!ev) { s->bad_events++; return true; }
-        read_usage(p, ev);
-
-        const JVal *choices = json_get(ev, STR("choices"));
-        const JVal *ch0 = json_at(choices, 0);
-        if (!ch0) return true;
-        const JVal *delta = json_get(ch0, STR("delta"));
-        if (!delta) return true;
-        take_reason(p, s, reasoning_of(delta));
-        take_text(p, s, json_str(delta, STR("content")));
-        const JVal *tcs = json_get(delta, STR("tool_calls"));
-        if (tcs && tcs->type == J_ARR) {
-            for (size_t i = 0; i < tcs->u.arr.n; i++) {
-                const JVal *tc = &tcs->u.arr.items[i];
-                const JVal *idxv = json_get(tc, STR("index"));
-                /* A non-numeric "index" would read the union as a double, so
-                 * anything but a number is the first call. */
-                i32 idx = idxv && idxv->type == J_NUM && idxv->u.n >= 0
-                       && idxv->u.n < (f64)YOKE_MAX_TOOL_CALLS
-                        ? (i32)idxv->u.n : 0;
-                take_call(p, s, tc, idx);
-            }
-        }
+        if (p->cfg->api == API_ANTHROPIC) anth_event(p, s, ev);
+        else openai_event(p, s, ev);
     }
     return true;
 }
@@ -354,11 +517,48 @@ static b8 read_completion(Provider *p, StreamState *s, Str raw, Arena *scratch,
     return true;
 }
 
+/* One Anthropic message document: the content array holding whole what the
+ * blocks would have streamed. */
+static b8 read_message_anth(Provider *p, StreamState *s, Str raw,
+                            Arena *scratch, char *err, size_t err_cap) {
+    JVal *doc = json_parse(scratch, raw);
+    if (!doc) {
+        snprintf(err, err_cap, "the reply is not JSON");
+        return false;
+    }
+    read_usage_anth(p, doc);
+    const JVal *content = json_get(doc, STR("content"));
+    if (!content || content->type != J_ARR) {
+        snprintf(err, err_cap, "the reply carries no content");
+        return false;
+    }
+    for (size_t i = 0; i < content->u.arr.n; i++) {
+        const JVal *blk = &content->u.arr.items[i];
+        Str kind = json_str(blk, STR("type"));
+        if (str_eq(kind, STR("text"))) {
+            take_text(p, s, json_str(blk, STR("text")));
+        } else if (str_eq(kind, STR("thinking"))) {
+            take_reason(p, s, json_str(blk, STR("thinking")));
+        } else if (str_eq(kind, STR("tool_use"))) {
+            anth_open_tool(p, s, blk);
+            i32 sl = s->open_slot;
+            const JVal *input = json_get(blk, STR("input"));
+            /* The arguments are an object here rather than the text a stream
+             * accumulates, so they are written back out to reach Conv in the
+             * one form a tool is run from. */
+            if (sl >= 0 && input) json_write(&s->args[sl], input);
+        }
+    }
+    s->open_slot = -1;
+    return true;
+}
+
 size_t provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
                        char *err, size_t err_cap) {
     if (!out || !max) return 0;
     Buf body; buf_init(&body, scratch, YOKE_MAX_MODEL_BYTES);
-    i32 rc = http_get(cfg->base_url.p, "/models", cfg->api_key.p, &body);
+    i32 rc = http_get(cfg->base_url.p, "/models", cfg->api_key.p, cfg->api,
+                      &body);
     if (rc != 0) {
         if (rc < 0) snprintf(err, err_cap, "models: HTTP %d", -rc);
         else snprintf(err, err_cap, "models: request failed (%d)", rc);
@@ -426,6 +626,40 @@ static b8 retry_wait(const Provider *p, i32 delay_ms) {
     return !(p->interrupt_flag && *p->interrupt_flag);
 }
 
+/* The system prompt is a message to one API and a parameter to the other, so
+ * this is where the two requests part. */
+static void build_request(Buf *b, const Provider *p) {
+    b8 anth = p->cfg->api == API_ANTHROPIC;
+    buf_puts(b, STR("{\"model\":"));
+    buf_json_str(b, p->cfg->model);
+    if (anth) {
+        const Conv *c = p->conv;
+        for (size_t i = 0; i < c->n; i++) {
+            if (c->role[i] != M_SYSTEM) continue;
+            if (c->text[i].n) {
+                buf_puts(b, STR(",\"system\":"));
+                buf_json_str(b, c->text[i]);
+            }
+            break;
+        }
+    }
+    buf_puts(b, STR(",\"messages\":"));
+    if (anth) conv_write_json_anthropic(b, p->conv);
+    else conv_write_json(b, p->conv, p->tools);
+    if (p->tools && p->tools->n) {
+        buf_puts(b, STR(",\"tools\":"));
+        tools_write_schemas(b, p->tools, p->cfg->api);
+    }
+    buf_putf(b, ",\"max_tokens\":%d", p->cfg->max_tokens);
+    if (anth)
+        buf_puts(b, p->cfg->stream ? STR(",\"stream\":true}")
+                                   : STR(",\"stream\":false}"));
+    else
+        buf_puts(b, p->cfg->stream
+                 ? STR(",\"stream\":true,\"stream_options\":{\"include_usage\":true}}")
+                 : STR(",\"stream\":false}"));
+}
+
 i32 provider_run(Provider *p, char *err, size_t err_cap) {
     Arena *scratch = p->scratch;
     arena_reset(scratch);
@@ -438,6 +672,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     if (!s) { snprintf(err, err_cap, "out of memory starting a turn"); return -1; }
     memset(s, 0, sizeof *s);
     s->scratch = scratch;
+    s->open_slot = -1;
     /* One event is at most an SSE line, so this is generous. */
     enum { EVENT_ARENA_BYTES = 4u << 20 };
     void *ev_mem = arena_alloc(scratch, EVENT_ARENA_BYTES, 16);
@@ -449,18 +684,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     p->ud = s;
 
     Buf body; buf_init(&body, scratch, 4096);
-    buf_puts(&body, STR("{\"model\":"));
-    buf_json_str(&body, p->cfg->model);
-    buf_puts(&body, STR(",\"messages\":"));
-    conv_write_json(&body, p->conv, p->tools);
-    if (p->tools && p->tools->n) {
-        buf_puts(&body, STR(",\"tools\":"));
-        tools_write_schemas(&body, p->tools);
-    }
-    buf_putf(&body, ",\"max_tokens\":%d", p->cfg->max_tokens);
-    buf_puts(&body, p->cfg->stream
-             ? STR(",\"stream\":true,\"stream_options\":{\"include_usage\":true}}")
-             : STR(",\"stream\":false}"));
+    build_request(&body, p);
     Str bstr = buf_finish(&body);
     if (!buf_ok(&body)) {
         snprintf(err, err_cap, "request too large for the scratch arena");
@@ -475,6 +699,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     HttpReq r = {
         .base_url = p->cfg->base_url.p,
         .api_key  = p->cfg->api_key.p,
+        .api      = p->cfg->api,
         .on_line  = on_line,
         .ud       = p,
         .line_arena = scratch,
@@ -525,6 +750,8 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         s->text.oom = false;
         s->text_started = false;
         s->reason_started = false;
+        s->open_slot = -1;
+        s->blocks = 0;
         if (!p->cfg->stream) { whole.n = 0; whole.oom = false; }
         attempt++;
     }
@@ -535,6 +762,9 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         p->ud = s;
         if (!buf_ok(&whole))
             snprintf(parse_err, sizeof parse_err, "the reply is too large");
+        else if (p->cfg->api == API_ANTHROPIC)
+            read_message_anth(p, s, buf_finish(&whole), scratch, parse_err,
+                              sizeof parse_err);
         else
             read_completion(p, s, buf_finish(&whole), scratch, parse_err,
                             sizeof parse_err);
@@ -551,6 +781,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     tel_int(&tev, "ms", (i64)((yoke_now_seconds() - started) * 1000.0));
     tel_int(&tev, "rc", rc);
     tel_int(&tev, "attempts", attempt);
+    tel_str(&tev, "api", api_name(p->cfg->api));
     tel_bool(&tev, "stream", p->cfg->stream);
     tel_int(&tev, "sse_events", (i64)s->events);
     tel_int(&tev, "bad_events", (i64)s->bad_events);

@@ -1,10 +1,13 @@
-"""A dummy OpenAI-compatible chat-completions provider.
+"""A dummy provider, OpenAI-compatible and Anthropic-compatible.
 
-Speaks just enough of the API for `yoke`: `POST /v1/chat/completions` with
+Speaks just enough of both APIs for `yoke`: `POST /v1/chat/completions` with
 `stream: true`, SSE deltas, tool calls, `stream_options.include_usage` and
-`[DONE]`. The body is lorem ipsum whose length, chunking and pacing come from
-a scenario, so a test can ask for "40 words in 5-word chunks, 20 ms apart,
-after a tool call to read()" and get exactly that every run.
+`[DONE]`, and `POST /v1/messages` with the content-block events the Anthropic
+API streams. One scenario drives either, so a case says what comes back and
+not which wire format it arrives in. The body is lorem ipsum whose length,
+chunking and pacing come from a scenario, so a test can ask for "40 words in
+5-word chunks, 20 ms apart, after a tool call to read()" and get exactly that
+every run.
 
 Two ways to pick a scenario:
 
@@ -224,7 +227,174 @@ def chunks(text: str, words_per_chunk: int) -> list[str]:
 # ---- HTTP -----------------------------------------------------------------
 
 
-class _Handler(BaseHTTPRequestHandler):
+class _AnthropicHandlerMixin:
+    """`POST /v1/messages`: the same scenario in Anthropic's shapes.
+
+    A reply is a sequence of content blocks rather than a flat delta stream,
+    the prompt cost is reported on message_start and the completion cost on
+    message_delta, and the arguments of a tool call arrive as partial JSON.
+    """
+
+    def _anth_sse(self, kind: str, obj) -> bool:
+        """An event carries its type twice: in the event line and in the data,
+        which is the one yoke reads."""
+        try:
+            payload = json.dumps(dict(obj, type=kind)).encode()
+            self.wfile.write(b"event: " + kind.encode() + b"\n")
+            self.wfile.write(b"data: " + payload + b"\n\n")
+            self.wfile.flush()
+            return True
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return False
+
+    def _anthropic(self):
+        srv = self.server
+        body = self._read_body()
+        self._record(body)
+
+        model = str(body.get("model", ""))
+        scenario = self._scenario_for(body)
+        if self._refused(scenario):
+            return
+
+        messages = body.get("messages") or []
+        tool_replies = _anth_tool_replies(messages)
+        emit_tools = bool(scenario.tools) and tool_replies < scenario.tool_rounds * len(
+            scenario.tools
+        )
+
+        if not body.get("stream", True):
+            self._anth_message(scenario, messages, tool_replies, emit_tools, model)
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+        prompt, completion = self._anth_usage(scenario, messages, 0)
+        start = {
+            "message": {
+                "id": "msg_mock",
+                "type": "message",
+                "role": "assistant",
+                "model": model or "mock",
+                "content": [],
+                "usage": {"input_tokens": prompt, "output_tokens": 0},
+            }
+        }
+        if not self._anth_sse("message_start", start):
+            return
+
+        if scenario.first_delay:
+            time.sleep(scenario.first_delay)
+
+        index = 0
+        completion_chars = 0
+        if scenario.reasoning and tool_replies == 0:
+            if not self._anth_block(
+                index, {"type": "thinking", "thinking": ""},
+                [{"type": "thinking_delta", "thinking": piece}
+                 for piece in chunks(scenario.reasoning, scenario.chunk)],
+                scenario,
+            ):
+                return
+            index += 1
+
+        if emit_tools:
+            for order, (name, args) in enumerate(scenario.tools):
+                head = {"type": "tool_use", "id": f"call_{order}",
+                        "name": name, "input": {}}
+                deltas = [{"type": "input_json_delta", "partial_json": piece}
+                          for piece in _split(args, 12)]
+                if not self._anth_block(index, head, deltas, scenario):
+                    return
+                index += 1
+                completion_chars += len(args)
+            stop = "tool_use"
+        else:
+            text = scenario.body_text() if tool_replies == 0 else scenario.follow_up_text()
+            completion_chars = len(text)
+            deltas = [{"type": "text_delta", "text": piece}
+                      for piece in chunks(text, scenario.chunk)]
+            if not self._anth_block(
+                index, {"type": "text", "text": ""}, deltas, scenario, abort=True
+            ):
+                return
+            stop = "end_turn"
+
+        _, completion = self._anth_usage(scenario, messages, completion_chars)
+        if not self._anth_sse(
+            "message_delta",
+            {"delta": {"stop_reason": stop}, "usage": {"output_tokens": completion}},
+        ):
+            return
+        self._anth_sse("message_stop", {})
+
+    def _anth_block(self, index, head, deltas, scenario, abort=False) -> bool:
+        """One content block, start to stop. False once the client has gone."""
+        if not self._anth_sse(
+            "content_block_start", {"index": index, "content_block": head}
+        ):
+            return False
+        sent = 0
+        for delta in deltas:
+            if not self._anth_sse(
+                "content_block_delta", {"index": index, "delta": delta}
+            ):
+                return False
+            sent += 1
+            if abort and scenario.abort_after and sent >= scenario.abort_after:
+                self._reset()
+                return False
+            if scenario.delay:
+                time.sleep(scenario.delay)
+        return self._anth_sse("content_block_stop", {"index": index})
+
+    def _anth_usage(self, scenario, messages, completion_chars):
+        usage = scenario._usage(messages, completion_chars)
+        return usage["prompt_tokens"], usage["completion_tokens"]
+
+    def _anth_message(self, scenario, messages, tool_replies, emit_tools, model):
+        """`stream: false`: the same reply as one message document."""
+        content = []
+        completion_chars = 0
+        if scenario.reasoning and tool_replies == 0:
+            content.append({"type": "thinking", "thinking": scenario.reasoning})
+        if emit_tools:
+            for order, (name, args) in enumerate(scenario.tools):
+                try:
+                    parsed = json.loads(args)
+                except json.JSONDecodeError:
+                    parsed = {}
+                content.append({"type": "tool_use", "id": f"call_{order}",
+                                "name": name, "input": parsed})
+                completion_chars += len(args)
+            stop = "tool_use"
+        else:
+            text = scenario.body_text() if tool_replies == 0 else scenario.follow_up_text()
+            content.append({"type": "text", "text": text})
+            completion_chars = len(text)
+            stop = "end_turn"
+
+        prompt, completion = self._anth_usage(scenario, messages, completion_chars)
+        payload = {
+            "id": "msg_mock",
+            "type": "message",
+            "role": "assistant",
+            "model": model or "mock",
+            "content": content,
+            "stop_reason": stop,
+            "usage": {"input_tokens": prompt, "output_tokens": completion},
+        }
+        if scenario.first_delay:
+            time.sleep(scenario.first_delay)
+        self._json(200, payload)
+
+
+class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "mock-openai/1.0"
 
@@ -306,6 +476,8 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/__reset"):
             srv.requests.clear()
             srv.auth.clear()
+            srv.keys.clear()
+            srv.versions.clear()
             self._json(200, {"ok": True})
             return
         if self.path.startswith("/__scenario"):
@@ -313,42 +485,61 @@ class _Handler(BaseHTTPRequestHandler):
             srv.scenario = Scenario.parse(body.get("scenario", ""))
             self._json(200, {"ok": True})
             return
-        if not self.path.endswith("/chat/completions"):
+        if self.path.endswith("/chat/completions"):
+            self._completions()
+        elif self.path.endswith("/messages"):
+            self._anthropic()
+        else:
             self._json(404, {"error": {"message": "not found"}})
-            return
-        self._completions()
 
-    # -- the interesting one -----------------------------------------------
-    def _completions(self):
+    def _record(self, body):
+        """The request and the headers a key could have ridden in."""
         srv = self.server
-        body = self._read_body()
         srv.requests.append(body)
         srv.auth.append(self.headers.get("Authorization"))
+        srv.keys.append(self.headers.get("x-api-key"))
+        srv.versions.append(self.headers.get("anthropic-version"))
 
+    def _scenario_for(self, body):
+        """The server's, unless the model name carries one of its own."""
         model = str(body.get("model", ""))
-        scenario = srv.scenario
+        scenario = self.server.scenario
         if ":" in model:
             head, _, spec = model.partition(":")
             if head in ("lorem", "mock", "scenario"):
                 scenario = Scenario.parse(spec)
+        return scenario
 
+    def _refused(self, scenario) -> bool:
+        """True once the request has been answered with a failure."""
         if scenario.status != 200:
             self._json(
                 scenario.status,
                 {"error": {"message": scenario.error, "type": "mock_error"}},
             )
-            return
-
-        if len(srv.requests) <= scenario.fail_times:
+            return True
+        if len(self.server.requests) <= scenario.fail_times:
             if scenario.fail_mode == "close":
                 # No response at all: curl reports an empty reply, which is the
                 # transport failure a retry is for.
                 self.close_connection = True
-                return
+                return True
             self._json(
                 scenario.fail_status,
                 {"error": {"message": scenario.error, "type": "mock_error"}},
             )
+            return True
+        return False
+
+    # -- the interesting one -----------------------------------------------
+    def _completions(self):
+        srv = self.server
+        body = self._read_body()
+        self._record(body)
+
+        model = str(body.get("model", ""))
+        scenario = self._scenario_for(body)
+        if self._refused(scenario):
             return
 
         messages = body.get("messages") or []
@@ -512,6 +703,16 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(200, payload)
 
 
+def _anth_tool_replies(messages) -> int:
+    """tool_result blocks so far, which is what a round of calls comes back as."""
+    n = 0
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, list):
+            n += sum(1 for b in content if b.get("type") == "tool_result")
+    return n
+
+
 def _split(s: str, n: int) -> list[str]:
     return [s[i : i + n] for i in range(0, len(s), n)] or [""]
 
@@ -528,6 +729,8 @@ class MockProvider:
         self.httpd = _Server((host, port), _Handler)
         self.httpd.requests = []           # type: ignore[attr-defined]
         self.httpd.auth = []               # type: ignore[attr-defined]
+        self.httpd.keys = []               # type: ignore[attr-defined]
+        self.httpd.versions = []           # type: ignore[attr-defined]
         self.httpd.verbose = False         # type: ignore[attr-defined]
         self.scenario = scenario
         # socketserver's shutdown() only returns on the next poll tick, so the
@@ -570,9 +773,22 @@ class MockProvider:
         """The Authorization header of each completion request, None when absent."""
         return self.httpd.auth  # type: ignore[attr-defined]
 
+    @property
+    def keys(self) -> list:
+        """The x-api-key header of each request, which is where the Anthropic
+        API carries the key."""
+        return self.httpd.keys  # type: ignore[attr-defined]
+
+    @property
+    def versions(self) -> list:
+        """The anthropic-version header of each request, None when absent."""
+        return self.httpd.versions  # type: ignore[attr-defined]
+
     def reset(self):
         self.requests.clear()
         self.auth.clear()
+        self.keys.clear()
+        self.versions.clear()
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> "MockProvider":
@@ -594,11 +810,19 @@ class MockProvider:
         return self.requests[-1].get("messages", []) if self.requests else []
 
     def tool_results(self) -> list[str]:
+        """What was fed back to each call, in either API's shape."""
         out = []
         for req in self.requests:
             for m in req.get("messages", []):
                 if m.get("role") == "tool":
                     out.append(m.get("content", ""))
+                    continue
+                content = m.get("content")
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if block.get("type") == "tool_result":
+                        out.append(block.get("content", ""))
         return out
 
 

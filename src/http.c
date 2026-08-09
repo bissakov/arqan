@@ -87,15 +87,28 @@ static b8 build_url(char *url, size_t cap, const char *base_url,
     return true;
 }
 
-/* Only when there is a key: "Bearer (null)" is not a request worth sending. */
+/* The Anthropic API pins the shape of its request and its events to a dated
+ * version, so every request names the one this client was written against. */
+#define ANTHROPIC_VERSION "anthropic-version: 2023-06-01"
+
+/* Only when there is a key: "Bearer (null)" is not a request worth sending.
+ * Anthropic carries it in a header of its own rather than in Authorization. */
 static struct curl_slist *auth_header(struct curl_slist *hdrs,
-                                      const char *api_key) {
+                                      const char *api_key, ApiKind api) {
+    if (api == API_ANTHROPIC) hdrs = curl_slist_append(hdrs, ANTHROPIC_VERSION);
     if (!api_key || !*api_key) return hdrs;
     char auth[1024];
-    i32 an = snprintf(auth, sizeof auth, "Authorization: Bearer %s", api_key);
+    const char *fmt = api == API_ANTHROPIC ? "x-api-key: %s"
+                                           : "Authorization: Bearer %s";
+    i32 an = snprintf(auth, sizeof auth, fmt, api_key);
     if (an > 0 && (size_t)an < sizeof auth) return curl_slist_append(hdrs, auth);
-    yoke_log(YOKE_LOG_WARN, "api key too long; sending no Authorization header");
+    yoke_log(YOKE_LOG_WARN, "api key too long; sending no key header");
     return hdrs;
+}
+
+/* Where a completion is asked for, which is all the two APIs share of a URL. */
+static const char *api_post_path(ApiKind api) {
+    return api == API_ANTHROPIC ? "/messages" : "/chat/completions";
 }
 
 /* The host of a URL, without the scheme, the port or anything after it. */
@@ -173,7 +186,7 @@ static void http_record(const char *method, const char *path, const char *url,
 }
 
 i32 http_get(const char *base_url, const char *path, const char *api_key,
-             Buf *out) {
+             ApiKind api, Buf *out) {
     char url[2048];
     if (!build_url(url, sizeof url, base_url, path)) {
         yoke_log(YOKE_LOG_ERROR, "base_url is empty or too long");
@@ -183,7 +196,7 @@ i32 http_get(const char *base_url, const char *path, const char *api_key,
     if (!curl) { yoke_log(YOKE_LOG_ERROR, "curl init failed"); return 1; }
 
     struct curl_slist *hdrs = curl_slist_append(NULL, "Accept: application/json");
-    hdrs = auth_header(hdrs, api_key);
+    hdrs = auth_header(hdrs, api_key, api);
 
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
@@ -222,8 +235,9 @@ i32 http_post(const HttpReq *r) {
     CURL *curl = curl_easy_init();
     if (!curl) { yoke_log(YOKE_LOG_ERROR, "curl init failed"); return 1; }
 
+    const char *path = api_post_path(r->api);
     char url[2048];
-    if (!build_url(url, sizeof url, r->base_url, "/chat/completions")) {
+    if (!build_url(url, sizeof url, r->base_url, path)) {
         curl_easy_cleanup(curl);
         yoke_log(YOKE_LOG_ERROR, "base_url is empty or too long");
         return 1;
@@ -234,7 +248,7 @@ i32 http_post(const HttpReq *r) {
     hdrs = curl_slist_append(hdrs, "Content-Type: application/json");
     hdrs = curl_slist_append(hdrs, stream ? "Accept: text/event-stream"
                                           : "Accept: application/json");
-    hdrs = auth_header(hdrs, r->api_key);
+    hdrs = auth_header(hdrs, r->api_key, r->api);
 
     Ctx ctx = {0};
     ctx.r = r;
@@ -303,7 +317,7 @@ i32 http_post(const HttpReq *r) {
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     i64 http = (i64)http_code;
-    http_record("POST", "/chat/completions", url, curl, rc, http,
+    http_record("POST", path, url, curl, rc, http,
                 stream ? &ctx : NULL, interrupted);
 
     curl_multi_remove_handle(multi, curl);

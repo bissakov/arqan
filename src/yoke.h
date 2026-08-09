@@ -337,9 +337,23 @@ b8   history_next(History *h, Str *out);
 void history_reset_cursor(History *h);
 b8   history_browsing(const History *h);
 
+/* ---- provider API shapes -------------------------------------------------
+ * The two wire formats an endpoint may speak. They differ in the request
+ * path, the header the key rides in and the shape of a message, and in
+ * nothing above provider.c: a turn, a tool call and a transcript are the
+ * same either way.
+ */
+typedef enum { API_OPENAI = 0, API_ANTHROPIC } ApiKind;
+
+/* The name the config file writes and reads back. An unknown name is
+ * API_OPENAI, since that is what an endpoint whose `api` key was mistyped
+ * most likely speaks. */
+ApiKind api_from_str(Str s);
+Str     api_name(ApiKind k);
+
 /* ---- endpoints -----------------------------------------------------------
- * The providers /provider creates and switches between: a name, an
- * OpenAI-compatible base URL and the model last used against it. Each is a
+ * The providers /provider creates and switches between: a name, a base URL,
+ * the API that URL speaks and the model last used against it. Each is a
  * "[provider <name>]" section of the config file, and its key alone lives
  * under the same section of $XDG_STATE_HOME/yoke/credentials, so a shared
  * configuration cannot carry a secret; the state file's `provider` key names
@@ -347,10 +361,11 @@ b8   history_browsing(const History *h);
  * truncated, since a cut URL names a different service.
  */
 typedef struct {
-    Str    name[YOKE_MAX_ENDPOINTS];
-    Str    base_url[YOKE_MAX_ENDPOINTS];
-    Str    model[YOKE_MAX_ENDPOINTS];    /* empty when none was chosen yet  */
-    size_t n;
+    Str     name[YOKE_MAX_ENDPOINTS];
+    Str     base_url[YOKE_MAX_ENDPOINTS];
+    Str     model[YOKE_MAX_ENDPOINTS];   /* empty when none was chosen yet  */
+    ApiKind api[YOKE_MAX_ENDPOINTS];
+    size_t  n;
 } Endpoints;
 
 #define ENDPOINT_NONE ((size_t)-1)
@@ -360,9 +375,10 @@ size_t endpoints_load(Endpoints *e, Arena *a);
 size_t endpoints_find(const Endpoints *e, Str name);
 /* False when the store is full or a field is past its cap. */
 b8     endpoints_put(Endpoints *e, Str name, Str base_url, Str model,
-                     Arena *a);
+                     ApiKind api, Arena *a);
 /* Writes one endpoint's section, leaving the rest of the config file alone. */
-b8     endpoints_save_one(Str name, Str base_url, Str model, Arena *scratch);
+b8     endpoints_save_one(Str name, Str base_url, Str model, ApiKind api,
+                          Arena *scratch);
 /* Where /model writes while a provider is active. */
 b8     endpoints_remember_model(Str name, Str model, Arena *scratch);
 /* The key stored for `name`, allocated in `out`. Empty when there is none,
@@ -388,6 +404,7 @@ typedef struct {
     Str base_url;     /* e.g. https://api.openai.com/v1                    */
     Str model;
     Str api_key;
+    ApiKind api;      /* the wire format base_url speaks                   */
     Str provider;     /* active endpoint name; empty when none is selected */
     /* A run with neither this nor a key has nothing to talk to, and asks for
      * a provider instead of starting a conversation. */
@@ -419,6 +436,7 @@ b8    config_remember_model(Str model, Arena *scratch);
 /* Every Str points into argv, so nothing is copied and nothing is freed. */
 typedef struct {
     Str base_url, model, api_key, system_prompt;
+    Str api;           /* "openai" or "anthropic"; empty leaves the config */
     Str disable_tools; /* comma separated names; replaces the configured set */
     Str prompt;        /* the one turn to run; see have_prompt              */
     b8  have_prompt;   /* true even for an empty prompt, which is an error  */
@@ -438,6 +456,8 @@ void      cli_apply(const CliOpts *o, Config *c);
 typedef struct {
     const char *base_url;
     const char *api_key;
+    /* Which path the request goes to and which header carries the key. */
+    ApiKind api;
     /* Each accumulated SSE line. Return false to abort the stream. */
     b8 (*on_line)(Str line, void *ud);
     void *ud;
@@ -461,15 +481,15 @@ typedef struct {
     size_t fail_cap;
 } HttpReq;
 
-/* POST the body to <base_url>/chat/completions, delivering the reply through
- * on_line or body_out. 0 on success, a negative HTTP status for a refused
- * request, 3 for an interrupt, other positive values for a transport
- * failure. */
+/* POST the body to the API's completion path (/chat/completions, or
+ * /messages for API_ANTHROPIC), delivering the reply through on_line or
+ * body_out. 0 on success, a negative HTTP status for a refused request, 3
+ * for an interrupt, other positive values for a transport failure. */
 i32     http_post(const HttpReq *r);
 /* GET base_url + path, appending the whole body to `out`, with the statuses
  * above. Blocking: callers fetch a short document between turns. */
 i32     http_get(const char *base_url, const char *path, const char *api_key,
-                Buf *out);
+                ApiKind api, Buf *out);
 
 /* ---- tools (SoA registry) ----------------------------------------------- */
 typedef b8 (*ToolRun)(Str args_json, Arena *scratch, Buf *out,
@@ -514,7 +534,9 @@ b8          tools_disable_list(ToolRegistry *r, Str names,
                                char *err, size_t err_cap);
 b8          tools_run(const ToolRegistry *r, size_t id, Str args,
                       Arena *scratch, Buf *out, char *err, size_t err_cap);
-void        tools_write_schemas(Buf *b, const ToolRegistry *r);
+/* The registry as the API declares tools: an array of OpenAI "function"
+ * wrappers, or of Anthropic entries carrying an "input_schema". */
+void        tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api);
 /* Run `cmd` through the shell, appending its output to `out` followed by a
  * bracketed status line ("[exit 0]") that render.c reads back. Only the last
  * YOKE_SHELL_OUT_BYTES are kept, behind a line saying how much was dropped.
@@ -579,7 +601,15 @@ size_t  conv_add_shell(Conv *c, Str cmd, Str out);
 b8      conv_is_shell(const Conv *c, size_t i);
 b8      conv_is_call(const Conv *c, size_t i);
 size_t  conv_room(const Conv *c);
+/* The messages array of an OpenAI request. The system prompt is slot 0's
+ * message like any other. */
 void    conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg);
+/* The same conversation as Anthropic messages: content blocks rather than
+ * flat text, tool results carried by the user, and consecutive slots of one
+ * role merged into a single message, which is what that API accepts. The
+ * system prompt is not a message there, so it is written by the caller and
+ * skipped here. */
+void    conv_write_json_anthropic(Buf *b, const Conv *c);
 
 /* ---- sessions ------------------------------------------------------------
  * The conversation as it happened, one JSON object per line under

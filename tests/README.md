@@ -1,9 +1,10 @@
 # Tests
 
 End-to-end tests for the terminal UI. `bin/yoke` runs unmodified inside a
-pseudo-terminal, talking to a dummy OpenAI-compatible provider, and every byte
-it writes is replayed into a small terminal emulator. Assertions are therefore
-made against *what a user would see*, never against escape sequences.
+pseudo-terminal, talking to a dummy provider that speaks either API, and every
+byte it writes is replayed into a small terminal emulator. Assertions are
+therefore made against *what a user would see*, never against escape
+sequences.
 
 Python 3 only, no third-party packages.
 
@@ -102,7 +103,10 @@ instead, with `s.activity()` for the spinner row.
 
 `mockprovider/server.py` serves `POST /v1/chat/completions` with SSE deltas,
 tool calls, `stream_options.include_usage` and `[DONE]`, or, when the request
-asks for `stream: false`, the same reply as one `chat.completion` document. What it streams comes
+asks for `stream: false`, the same reply as one `chat.completion` document. It
+also serves `POST /v1/messages` with the content-block events the Anthropic
+API streams, from the same scenario, so a case picks the wire format with
+`YOKE_API=anthropic` and says nothing else about it. What it streams comes
 from a scenario string:
 
 ```python
@@ -134,8 +138,10 @@ ctx.scenario("status=500")
 
 Requests are recorded: `ctx.mock.requests` is the parsed request bodies,
 `ctx.mock.auth` the `Authorization` header each of them carried (`None` when
-there was none) and `ctx.mock.tool_results()` the tool outputs that were fed
-back.
+there was none), `ctx.mock.keys` and `ctx.mock.versions` the `x-api-key` and
+`anthropic-version` headers the other API sends instead, and
+`ctx.mock.tool_results()` the tool outputs that were fed back, in either
+shape.
 
 ### Driving the UI by hand
 

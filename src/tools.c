@@ -959,7 +959,7 @@ b8 tools_run(const ToolRegistry *r, size_t id, Str args, Arena *scratch,
     return r->run[id](args, scratch, out, err, err_cap);
 }
 
-void tools_write_schemas(Buf *b, const ToolRegistry *r) {
+void tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api) {
     buf_putc(b, '[');
     if (r->name) {
         b8 first = true;
@@ -967,6 +967,14 @@ void tools_write_schemas(Buf *b, const ToolRegistry *r) {
             if (!tools_available(r, i, g_mode)) continue;
             if (!first) buf_putc(b, ',');
             first = false;
+            if (api == API_ANTHROPIC) {
+                buf_putf(b, "{\"name\":");
+                buf_json_str(b, r->name[i]);
+                buf_putf(b, ",\"description\":");
+                buf_json_str(b, r->desc[i]);
+                buf_putf(b, ",\"input_schema\":%s}", r->schema[i].p);
+                continue;
+            }
             buf_putf(b, "{\"type\":\"function\",\"function\":{\"name\":");
             buf_json_str(b, r->name[i]);
             buf_putf(b, ",\"description\":");

@@ -20,7 +20,8 @@ static const char g_usage[] =
     "options:\n"
     "  -p, --prompt TEXT   run one turn non-interactively and exit\n"
     "  -m, --model NAME    model to use\n"
-    "  -u, --base-url URL  OpenAI-compatible endpoint\n"
+    "  -u, --base-url URL  endpoint to talk to\n"
+    "  -a, --api KIND      wire format it speaks: openai or anthropic\n"
     "  -k, --api-key KEY   API key\n"
     "  -s, --system TEXT   system prompt\n"
     "  -t, --max-tokens N  cap the tokens a single reply may use\n"
@@ -30,9 +31,8 @@ static const char g_usage[] =
     "  -h, --help          print help\n"
     "  -v, --version       print version\n"
     "\n"
-    "environment: YOKE_BASE_URL, YOKE_MODEL, YOKE_API_KEY, "
-    "YOKE_SYSTEM_PROMPT,\n"
-    "YOKE_MAX_MESSAGES, YOKE_DISABLE_TOOLS.\n"
+    "environment: YOKE_BASE_URL, YOKE_MODEL, YOKE_API_KEY, YOKE_API,\n"
+    "YOKE_SYSTEM_PROMPT, YOKE_MAX_MESSAGES, YOKE_DISABLE_TOOLS.\n"
     "Config file: $XDG_CONFIG_HOME/yoke/config.\n"
     "Without any of them, yoke asks for a provider; /provider adds and "
     "switches later.\n";
@@ -77,6 +77,18 @@ static b8 cli_option(CliArg *a, char c, const char *lng, b8 *done) {
     if (OPT('p', "prompt")) { o->have_prompt = true; return cli_value(a, &o->prompt); }
     if (OPT('m', "model")) return cli_value(a, &o->model);
     if (OPT('u', "base-url")) return cli_value(a, &o->base_url);
+    if (OPT('a', "api")) {
+        Str v;
+        if (!cli_value(a, &v)) return false;
+        /* A name nothing speaks is a typo worth reporting: taking the default
+         * would send the wrong shape to the endpoint it was meant to fix. */
+        if (!str_eq(v, STR("openai")) && !str_eq(v, STR("anthropic"))) {
+            cli_bad("option '%s' wants openai or anthropic", a->name);
+            return false;
+        }
+        o->api = v;
+        return true;
+    }
     if (OPT('k', "api-key")) return cli_value(a, &o->api_key);
     if (OPT('s', "system")) return cli_value(a, &o->system_prompt);
     if (OPT('d', "disable-tools")) return cli_value(a, &o->disable_tools);
@@ -141,6 +153,7 @@ CliStatus cli_parse(i32 argc, char **argv, CliOpts *out) {
 void cli_apply(const CliOpts *o, Config *c) {
     if (o->model.p)         c->model = o->model;
     if (o->base_url.p)      { c->base_url = o->base_url; c->base_url_set = true; }
+    if (o->api.p)           c->api = api_from_str(o->api);
     if (o->api_key.p)       c->api_key = o->api_key;
     if (o->system_prompt.p) c->system_prompt = o->system_prompt;
     if (o->disable_tools.p) c->disable_tools = o->disable_tools;

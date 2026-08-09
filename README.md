@@ -2,8 +2,9 @@
 
 A terminal AI coding agent written in plain C17, designed as a counterpoint to
 Claude Code, Codex, OpenCode and Pi. It talks to any OpenAI-compatible
-chat-completions endpoint, streams the reply into a fullscreen TUI, and gives
-the model six tools: read, write, bash, patch, grep and find.
+chat-completions endpoint or any Anthropic-compatible messages endpoint,
+streams the reply into a fullscreen TUI, and gives the model six tools: read,
+write, bash, patch, grep and find.
 
 ## Design principles
 
@@ -28,13 +29,13 @@ src/
   http.c          libcurl POST (SSE or whole reply) + plain GET
   paths.c         XDG base directory resolution
   settings.c      the "key = value" file format, and the state file
-  endpoints.c     user-defined providers (/provider) and their stored keys
+  endpoints.c     user-defined providers (/provider), their API and their keys
   history.c       prompt history, mirrored to the XDG state dir
   session.c       per-directory saved conversations (/resume, /fork)
   config.c        env + XDG config file loader
   prompt.c        system prompts: SYSTEM.md / PLAN.md + AGENTS.md, expansion
   cli.c           command line parsing, above the config in precedence
-  provider.c      chat-completions streaming + reasoning and tool deltas
+  provider.c      chat completions and Anthropic messages: streaming, tools
   tools.c         SoA tool registry + read/write/bash/patch/grep/find tools
   tui.c           alternate-screen TUI, viewport, composer + raw input
   markdown.c      streaming Markdown rendering of a reply
@@ -42,7 +43,7 @@ src/
 tests/
   run.py          test runner (Python 3, no third-party packages)
   harness/        terminal emulator + pty driver
-  mockprovider/   dummy OpenAI-compatible provider (lorem ipsum, tool calls)
+  mockprovider/   dummy provider, both APIs (lorem ipsum, tool calls)
   cases/          the tests
   golden/         expected screen dumps
 ```
@@ -55,12 +56,17 @@ make
 ```
 
 The first run with nothing configured says so on the welcome screen and waits:
-`/provider`, then "+ add a provider", asks for a name, an OpenAI-compatible
-base URL and a key. The same command switches between the providers already
-stored. Until one exists a message is answered with that line rather than sent,
-since the only reply an unconfigured endpoint has is an HTTP 401. Nothing is
-built in, since every one of them speaks the same protocol and only you know
-which ones you have.
+`/provider`, then "+ add a provider", asks for a name, which API the endpoint
+speaks, a base URL and a key. The same command switches between the providers
+already stored. Until one exists a message is answered with that line rather
+than sent, since the only reply an unconfigured endpoint has is an HTTP 401.
+Nothing is built in, since only you know which endpoints you have.
+
+There are two APIs to pick from: `openai`, the chat-completions protocol
+nearly every service speaks, and `anthropic`, the messages one. They differ in
+the path a request goes to, the header the key rides in and the shape of a
+message, and in nothing you can see: the transcript, the tools and the
+settings are the same either way.
 
 A provider is a section of the config file, so what you edit by hand and what
 `/provider` writes are one document:
@@ -69,6 +75,12 @@ A provider is a section of the config file, so what you edit by hand and what
 [provider openai]
 base_url = https://api.openai.com/v1
 model = gpt-4o-mini
+api = openai
+
+[provider anthropic]
+base_url = https://api.anthropic.com/v1
+model = claude-sonnet-4-5
+api = anthropic
 ```
 
 The key is not there. It lives under the same section name in
@@ -86,6 +98,7 @@ throwaway local server wants:
 export YOKE_BASE_URL=https://api.openai.com/v1
 export YOKE_MODEL=gpt-4o-mini
 export YOKE_API_KEY=sk-...
+export YOKE_API=openai          # or anthropic
 ```
 
 or put them in `$XDG_CONFIG_HOME/yoke/config`, by default
@@ -95,6 +108,7 @@ or put them in `$XDG_CONFIG_HOME/yoke/config`, by default
 base_url = https://api.openai.com/v1
 model = gpt-4o-mini
 api_key = sk-...
+api = openai             # the wire format base_url speaks: openai or anthropic
 max_tokens = 32768       # cap on one reply; a turn that reaches it stops mid-sentence
 max_messages = 4096      # conversation capacity; a full one is reported, not overrun
 retries = 3              # further attempts for a request that reached nothing
@@ -124,6 +138,7 @@ one invocation:
 ```
 yoke --help
 yoke -m gpt-4o --base-url https://api.openai.com/v1
+yoke --api anthropic -u https://api.anthropic.com/v1 -m claude-sonnet-4-5
 yoke -p "summarise src/tui.c"    # one turn, reply on stdout, then exit
 yoke "summarise src/tui.c"       # the same: a bare argument is the prompt
 yoke --disable-tools bash,write,patch   # a read-only run for a model you distrust
@@ -394,8 +409,8 @@ make test-update             # accept intended golden-screen changes
 make test-asan               # the same suite against an ASan+UBSan binary
 ```
 
-`bin/yoke` runs unmodified inside a pseudo-terminal against a dummy
-OpenAI-compatible provider, and its output is replayed into a small terminal
+`bin/yoke` runs unmodified inside a pseudo-terminal against a dummy provider
+that speaks both APIs, and its output is replayed into a small terminal
 emulator, so the tests assert on the rendered screen rather than on escape
 sequences. The provider streams customisable lorem ipsum, tool calls, token
 usage and HTTP errors, and doubles as a standalone server for driving the UI by

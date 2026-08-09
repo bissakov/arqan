@@ -151,3 +151,29 @@ def test_prompt_runs_tools(ctx):
     assert out.returncode == 0, out
     assert "written down" in out.stdout, out.stdout
     assert "I read it" in out.stdout, out.stdout
+
+
+def test_api_flag_picks_the_wire_format(ctx):
+    """--api anthropic sends the messages request, key header and all."""
+    ctx.scenario("text=from+the+flag")
+    out = ctx.run_cli("--api", "anthropic", "-p", "hello")
+    assert out.returncode == 0, out
+    assert "from the flag" in out.stdout, out.stdout
+    assert ctx.mock.keys[-1] == "test-key", ctx.mock.keys
+    assert "system" in ctx.mock.requests[-1], ctx.mock.requests[-1]
+
+
+def test_api_flag_outranks_the_environment(ctx):
+    """A flag is the most local statement, here about which API answers."""
+    ctx.scenario("text=openai+after+all")
+    out = ctx.run_cli("--api", "openai", "-p", "hello", YOKE_API="anthropic")
+    assert out.returncode == 0, out
+    assert "openai after all" in out.stdout, out.stdout
+    assert ctx.mock.auth[-1] == "Bearer test-key", ctx.mock.auth
+
+
+def test_bad_api_is_refused(ctx):
+    """A wire format nothing speaks is a typo, not a reason to guess."""
+    out = ctx.run_cli("--api", "claude")
+    assert out.returncode == 2, out
+    assert "openai or anthropic" in out.stderr, out.stderr

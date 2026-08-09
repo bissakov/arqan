@@ -1,8 +1,8 @@
 /* endpoints.c: the providers the /provider command creates and switches to.
  *
- * An endpoint is a user-defined OpenAI-compatible service: a name, a base URL
- * and the model last used against it. Nothing is built in, because every
- * endpoint speaks the same protocol and only the user knows which ones exist.
+ * An endpoint is a user-defined service: a name, a base URL, the API that URL
+ * speaks and the model last used against it. Nothing is built in, because
+ * only the user knows which endpoints exist.
  * (`Provider` in provider.c is the streaming run context; this is the entry a
  * run is configured from.)
  *
@@ -12,6 +12,7 @@
  *   [provider openai]
  *   base_url = https://api.openai.com/v1
  *   model = gpt-4o-mini
+ *   api = openai
  *
  * The key is not there. It lives under the same section name in
  * $XDG_STATE_HOME/yoke/credentials at mode 0600, so the file a dotfile
@@ -26,6 +27,14 @@
 #include <sys/stat.h>
 
 #define ENDPOINT_SECTION STR("provider ")
+
+ApiKind api_from_str(Str s) {
+    return str_eq(str_trim(s), STR("anthropic")) ? API_ANTHROPIC : API_OPENAI;
+}
+
+Str api_name(ApiKind k) {
+    return k == API_ANTHROPIC ? STR("anthropic") : STR("openai");
+}
 
 /* "provider <name>", the section both files key an endpoint by. */
 static Str endpoint_section(Str name, Arena *a) {
@@ -53,7 +62,8 @@ static void endpoints_collect(Endpoints *e, const Settings *s, Arena *a) {
         if (!url.n) continue;
         Str model = endpoint_field(s, sections[i], STR("model"),
                                    YOKE_MAX_MODEL_NAME);
-        endpoints_put(e, name, url, model, a);
+        ApiKind api = api_from_str(settings_get(s, sections[i], STR("api")));
+        endpoints_put(e, name, url, model, api, a);
     }
 }
 
@@ -76,7 +86,8 @@ size_t endpoints_find(const Endpoints *e, Str name) {
     return ENDPOINT_NONE;
 }
 
-b8 endpoints_put(Endpoints *e, Str name, Str base_url, Str model, Arena *a) {
+b8 endpoints_put(Endpoints *e, Str name, Str base_url, Str model, ApiKind api,
+                 Arena *a) {
     if (!name.n || name.n > YOKE_MAX_ENDPOINT_NAME) return false;
     if (!base_url.n || base_url.n > YOKE_MAX_URL) return false;
     if (model.n > YOKE_MAX_MODEL_NAME) return false;
@@ -94,12 +105,14 @@ b8 endpoints_put(Endpoints *e, Str name, Str base_url, Str model, Arena *a) {
     if (!url.p || (model.n && !mdl.p)) return false;
     e->base_url[i] = url;
     e->model[i] = mdl;
+    e->api[i] = api;
     return true;
 }
 
 /* One endpoint at a time, since the rest of the config file is the user's and
  * a rewrite would cost them their comments and their order. */
-b8 endpoints_save_one(Str name, Str base_url, Str model, Arena *scratch) {
+b8 endpoints_save_one(Str name, Str base_url, Str model, ApiKind api,
+                      Arena *scratch) {
     size_t mark = scratch->off;
     Str dir  = paths_dir(YOKE_DIR_CONFIG, scratch);
     Str path = paths_file(YOKE_DIR_CONFIG, STR("config"), scratch);
@@ -108,9 +121,9 @@ b8 endpoints_save_one(Str name, Str base_url, Str model, Arena *scratch) {
         scratch->off = mark;
         return false;
     }
-    Str keys[2] = { STR("base_url"), STR("model") };
-    Str vals[2] = { base_url, model };
-    b8 ok = settings_set(path, section, keys, vals, 2, 0600, scratch);
+    Str keys[3] = { STR("base_url"), STR("model"), STR("api") };
+    Str vals[3] = { base_url, model, api_name(api) };
+    b8 ok = settings_set(path, section, keys, vals, 3, 0600, scratch);
     scratch->off = mark;
     return ok;
 }
@@ -121,7 +134,7 @@ b8 endpoints_remember_model(Str name, Str model, Arena *scratch) {
     endpoints_load(&e, scratch);
     size_t i = endpoints_find(&e, name);
     b8 ok = i != ENDPOINT_NONE
-         && endpoints_save_one(name, e.base_url[i], model, scratch);
+         && endpoints_save_one(name, e.base_url[i], model, e.api[i], scratch);
     scratch->off = mark;
     return ok;
 }

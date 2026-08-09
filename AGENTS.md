@@ -2,9 +2,9 @@
 
 `yoke` is a terminal AI coding agent written in plain C17, a minimal counterpoint
 to Claude Code / Codex / OpenCode. It talks to any OpenAI-compatible
-chat-completions endpoint, streams responses via SSE, and exposes a small
-built-in tool registry (read/write/bash/patch/grep/find) that the model can
-call.
+chat-completions endpoint or any Anthropic-compatible messages endpoint,
+streams responses via SSE, and exposes a small built-in tool registry
+(read/write/bash/patch/grep/find) that the model can call.
 
 ## Build & run
 
@@ -78,7 +78,11 @@ an AoS layout.
   that comes from the filesystem is checked once rather than at each caller
 - `json.c`: arena-backed JSON DOM: parser + serializer, no separate token stream
 - `http.c`: libcurl POST (`http_post`) plus a blocking `http_get` for short
-  documents such as `/models`, used only by `provider.c`. A reply is delivered
+  documents such as `/models`, used only by `provider.c`. `HttpReq.api` picks
+  the path a completion is asked for (`/chat/completions` or `/messages`) and
+  the header the key rides in (`Authorization: Bearer` or `x-api-key` beside
+  the dated `anthropic-version` that API pins its shapes to), which is all the
+  two have to say to this layer. A reply is delivered
   a line at a time to `on_line` or whole into `HttpReq.body_out`, which is the
   difference between a stream and the one document a turn with streaming off
   comes back as. A line grows in `HttpReq.line_arena` rather than into a fixed
@@ -131,9 +135,11 @@ an AoS layout.
   append-only, so `/fork` and `/rewind` both continue in a new one holding the
   conversation as it stands, which leaves the one they came from as it was
 - `endpoints.c`: the providers `/provider` creates and switches to, since
-  nothing is built in: they all speak the same protocol and only the user
-  knows which ones exist. Each is a `[provider <name>]` section of the config
-  file, so the settings a user edits are one document, and its key alone sits
+  nothing is built in: only the user knows which ones exist. Each is a
+  `[provider <name>]` section of the config file naming a base URL, a model
+  and the `api` that URL speaks (`openai` or `anthropic`, the `ApiKind` every
+  layer below carries; an unknown name reads as the default rather than
+  failing a run over a typo), so the settings a user edits are one document, and its key alone sits
   under the same section name in `$XDG_STATE_HOME/yoke/credentials` at mode
   0600, so a configuration that is shared carries no secret and one anyone
   else can read is refused rather than loaded. Only the section being changed
@@ -199,11 +205,20 @@ an AoS layout.
   `!` mode: it forks `/bin/sh` instead of using `popen` because stderr left
   inherited would paint over the frame and an inherited stdin would race the
   composer for keystrokes
-- `provider.c`: OpenAI-compatible chat-completions client; parses SSE deltas
-  into text/reasoning/tool-call callbacks and appends to `Conv`. With
+- `provider.c`: the chat-completions client, and the Anthropic messages client
+  beside it; parses SSE deltas into text/reasoning/tool-call callbacks and
+  appends to `Conv`. With
   `Config.stream` off the reply is one `chat.completion` document instead, read
   into the same slots and pushed through the same callbacks, so nothing
   downstream of `read_completion` can tell the two apart.
+  `Config.api` picks the wire format, and it is the only thing that knows
+  which one answered: an Anthropic request carries the system prompt as a
+  parameter rather than a message, its conversation as content blocks
+  (`conv_write_json_anthropic`, which merges consecutive slots of one role
+  since that API takes one message per run of them and carries a tool result
+  on the user turn), and its reply as `content_block_*` events whose open
+  block routes a delta. Everything above this file is written once: a turn, a
+  tool call, a transcript and a session line are the same either way.
   `conv_write_json` is where the conversation is charged for: a tool result
   older than `YOKE_ELIDE_TURNS` user turns goes out as a line naming what it
   was, since a file read four turns ago is either reflected in the work

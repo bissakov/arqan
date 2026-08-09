@@ -703,7 +703,7 @@ static b8 no_provider(const Config *cfg) {
 /* Copies into `persist` because the endpoint store they came from lives in
  * the scratch arena, which the next turn rewinds. */
 static b8 use_endpoint(Config *cfg, Str name, Str base_url, Str model,
-                       Str key, Arena *persist) {
+                       ApiKind api, Str key, Arena *persist) {
     Str n = str_dup(persist, name);
     Str u = str_dup(persist, base_url);
     Str m = model.n ? str_dup(persist, model) : (Str){0};
@@ -711,6 +711,7 @@ static b8 use_endpoint(Config *cfg, Str name, Str base_url, Str model,
     cfg->provider = n;
     cfg->base_url = u;
     cfg->base_url_set = true;
+    cfg->api      = api;
     cfg->api_key  = key;
     if (m.n) cfg->model = m;
     tui_set_provider(n);
@@ -719,6 +720,7 @@ static b8 use_endpoint(Config *cfg, Str name, Str base_url, Str model,
     TelEvent e;
     tel_open(&e, "provider");
     tel_str(&e, "name", n);
+    tel_str(&e, "api", api_name(api));
     tel_bool(&e, "has_key", key.p != NULL);
     tel_send(&e);
     return true;
@@ -731,8 +733,23 @@ static void provider_chosen(const Config *cfg, Arena *scratch) {
     notice_fmt("provider: %.*s", (i32)cfg->provider.n, cfg->provider.p);
 }
 
-/* Ask for a provider and store it: a name, an OpenAI-compatible base URL and
- * a key, then the model, which is picked from what that endpoint actually
+/* Which wire format a new endpoint speaks. The default is offered first,
+ * since it is what most of them are. */
+static b8 pick_api(ApiKind *out) {
+    const TuiCmd apis[] = {
+        { STR("openai"),    STR("OpenAI-compatible chat completions") },
+        { STR("anthropic"), STR("Anthropic-compatible messages API") },
+    };
+    size_t pick = 0;
+    if (!tui_pick(STR("which API does it speak"), apis, 2, TUI_PICK_FIRST,
+                  TUI_PICK_NONE, &pick))
+        return false;
+    *out = pick == 1 ? API_ANTHROPIC : API_OPENAI;
+    return true;
+}
+
+/* Ask for a provider and store it: a name, the API it speaks, its base URL
+ * and a key, then the model, which is picked from what that endpoint actually
  * lists. Listing is also the check that the URL and the key work, so a typo
  * is answered here rather than on the first turn, and nothing is written
  * until it succeeds. Returns false when the form was cancelled or refused. */
@@ -754,6 +771,8 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
         notice_fmt("no room for another provider (%d)", YOKE_MAX_ENDPOINTS);
         return false;
     }
+    ApiKind api = API_OPENAI;
+    if (!pick_api(&api)) return false;
     if (!tui_ask(STR("its base URL, ending in /v1"), false, url, sizeof url))
         return false;
     if (!str_starts(str_c(url), STR("http://"))
@@ -768,14 +787,15 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
 
     Config probe = *cfg;
     probe.base_url = str_c(url);
+    probe.api = api;
     probe.api_key = key[0] ? str_c(key) : (Str){0};
     probe.model = (Str){0};
     Str model = {0};
     if (!pick_model(&probe, scratch, &model)) return false;
 
     char err[YOKE_MAX_PATH + 64] = {0};
-    if (!endpoints_put(&eps, str_c(name), str_c(url), model, scratch)
-        || !endpoints_save_one(str_c(name), str_c(url), model, scratch)) {
+    if (!endpoints_put(&eps, str_c(name), str_c(url), model, api, scratch)
+        || !endpoints_save_one(str_c(name), str_c(url), model, api, scratch)) {
         tui_notice(STR("could not write the provider store"));
         return false;
     }
@@ -789,7 +809,7 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
         tui_notice(STR("out of memory storing the provider"));
         return false;
     }
-    if (!use_endpoint(cfg, str_c(name), str_c(url), model, stored_key,
+    if (!use_endpoint(cfg, str_c(name), str_c(url), model, api, stored_key,
                       persist)) {
         tui_notice(STR("out of memory storing the provider"));
         return false;
@@ -815,16 +835,21 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
     }
     for (size_t i = 0; i < n; i++) {
         Str desc = eps.base_url[i];
-        if (str_eq(eps.name[i], cfg->provider)) {
-            Buf b; buf_init(&b, scratch, desc.n + 16);
-            buf_puts(&b, STR("current · "));
+        /* The API is named only where it is not the default one, so a line
+         * says what the reader could not have assumed. */
+        b8 current = str_eq(eps.name[i], cfg->provider);
+        b8 anth = eps.api[i] == API_ANTHROPIC;
+        if (current || anth) {
+            Buf b; buf_init(&b, scratch, desc.n + 32);
+            if (current) buf_puts(&b, STR("current · "));
+            if (anth) buf_puts(&b, STR("anthropic · "));
             buf_puts(&b, eps.base_url[i]);
             if (buf_ok(&b)) desc = buf_finish(&b);
         }
         items[i] = (TuiCmd){ eps.name[i], desc };
     }
     items[n] = (TuiCmd){ STR("+ add a provider"),
-                         STR("An OpenAI-compatible URL and key") };
+                         STR("An OpenAI- or Anthropic-compatible endpoint") };
 
     size_t pick = 0;
     if (!tui_pick(STR("pick a provider"), items, n + 1, TUI_PICK_FIRST,
@@ -841,7 +866,7 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
         return;
     }
     if (!use_endpoint(cfg, eps.name[pick], eps.base_url[pick], eps.model[pick],
-                      key, persist)) {
+                      eps.api[pick], key, persist)) {
         tui_notice(STR("out of memory switching provider"));
         return;
     }
@@ -886,6 +911,17 @@ static void ask_max_tokens(Config *cfg) {
     i64 v = str_int(str_trim(str_c(typed)), &ok);
     if (!ok || v < 1) return;
     cfg->max_tokens = v > (1 << 20) ? (1 << 20) : (i32)v;
+}
+
+/* The Provider row names the API only when it is not the default one, since
+ * a row says what the reader could not have assumed. */
+static Str provider_summary(const Config *cfg, Arena *a) {
+    Str name = cfg->provider.n ? cfg->provider : STR("none yet");
+    if (cfg->api != API_ANTHROPIC) return name;
+    Buf b; buf_init(&b, a, name.n + 16);
+    buf_puts(&b, name);
+    buf_puts(&b, STR(" · anthropic"));
+    return buf_ok(&b) ? buf_finish(&b) : name;
 }
 
 /* What the Tools row answers with, since a screen behind a row has to say
@@ -975,7 +1011,7 @@ static void choose_settings(Agent *ag) {
             setting_value(scratch, STR("Model")), cfg->model };
         rows[SET_PROVIDER] = (TuiCmd){
             setting_value(scratch, STR("Provider")),
-            cfg->provider.n ? cfg->provider : STR("none yet") };
+            provider_summary(cfg, scratch) };
         rows[SET_MAX_TOKENS] = (TuiCmd){
             setting_value(scratch, STR("Max tokens")), str_c(tokens) };
 

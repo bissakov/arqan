@@ -1,6 +1,6 @@
 /* config.c: load Config from the environment and the settings files.
  *
- * Keys, all at the head of the config file: base_url, model, api_key,
+ * Keys, all at the head of the config file: base_url, model, api_key, api,
  * max_tokens, max_messages, stream, retries, retry_delay_ms, disable_tools. A "[provider
  * <name>]" section of the same file is an endpoint (see endpoints.c).
  * The system prompt is not a key here: it is a document, so it lives in
@@ -54,7 +54,7 @@ static b8 config_str(Arena *persist, Str src, b8 blocked, Str *dst) {
 }
 
 /* Keys the environment already set: no config file may override them. */
-typedef struct { b8 base, model, key, msgs, tools; } EnvSet;
+typedef struct { b8 base, model, key, api, msgs, tools; } EnvSet;
 
 /* Every key read here is the file's top-level one: a named section is a
  * provider, which endpoints.c reads. */
@@ -86,6 +86,8 @@ static void config_apply_file(Config *c, Str path, EnvSet env,
     config_str(persist, top_key(&s, STR("api_key")), env.key, &c->api_key);
     config_str(persist, top_key(&s, STR("disable_tools")), env.tools,
                &c->disable_tools);
+    Str api = top_key(&s, STR("api"));
+    if (api.n && !env.api) c->api = api_from_str(api);
 
     size_t n;
     if (config_num(&s, STR("max_tokens"), 1, 1u << 20, &n))
@@ -120,6 +122,7 @@ b8 config_load(Config *c, Arena *persist, Arena *scratch) {
     Str env_key   = env_str(persist, "YOKE_API_KEY");
     Str env_sys   = env_str(persist, "YOKE_SYSTEM_PROMPT");
     Str env_tools = env_str(persist, "YOKE_DISABLE_TOOLS");
+    Str env_api   = env_str(persist, "YOKE_API");
     const char *env_msgs = getenv("YOKE_MAX_MESSAGES");
 
     Str candidates[YOKE_MAX_CONFIG_FILES];
@@ -131,6 +134,7 @@ b8 config_load(Config *c, Arena *persist, Arena *scratch) {
         .base  = env_base.p != NULL,
         .model = env_model.p != NULL,
         .key   = env_key.p != NULL,
+        .api   = env_api.p != NULL,
         .msgs  = env_msgs != NULL && *env_msgs != '\0',
         .tools = env_tools.p != NULL,
     };
@@ -163,6 +167,7 @@ b8 config_load(Config *c, Arena *persist, Arena *scratch) {
                 c->provider = name;
                 c->base_url = url;
                 c->base_url_set = true;
+                c->api = eps.api[i];
             }
             config_str(persist, eps.model[i], false, &c->model);
             Str key = endpoints_key(active, persist, scratch, NULL, 0);
@@ -174,9 +179,17 @@ b8 config_load(Config *c, Arena *persist, Arena *scratch) {
     if (env_key.p)   c->api_key = env_key;
     if (env_sys.p)   c->system_prompt = env_sys;
     if (env_tools.p) c->disable_tools = env_tools;
+    if (env_api.p)   c->api = api_from_str(env_api);
 
-    if (!c->base_url.p) c->base_url = str_c("https://api.openai.com/v1");
-    if (!c->model.p)   c->model   = str_c("gpt-4o-mini");
+    /* A placeholder rather than a destination: a run that named no endpoint
+     * asks for one. It follows the API so the pair is at least coherent. */
+    if (!c->base_url.p)
+        c->base_url = c->api == API_ANTHROPIC
+                    ? str_c("https://api.anthropic.com/v1")
+                    : str_c("https://api.openai.com/v1");
+    if (!c->model.p)
+        c->model = c->api == API_ANTHROPIC ? str_c("claude-sonnet-4-5")
+                                           : str_c("gpt-4o-mini");
 
     /* An unset system prompt is prompt_build's cue to look for a SYSTEM.md
      * and fall back to the built-in template. */
