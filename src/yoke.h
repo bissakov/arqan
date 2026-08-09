@@ -455,12 +455,29 @@ typedef struct {
     /* Tools to turn off before the first turn, comma separated. Applied once
      * the registry exists, since config_load runs before tools_init. */
     Str disable_tools;
+    /* Commands may replace these fields after the conversation rewind mark.
+     * Their owned copies live here so /clear cannot reclaim them. */
+    char owned_base_url[YOKE_MAX_URL + 1];
+    char owned_model[YOKE_MAX_MODEL_NAME + 1];
+    char owned_api_key[YOKE_MAX_API_KEY + 1];
+    char owned_provider[YOKE_MAX_ENDPOINT_NAME + 1];
+    char owned_reasoning_efforts[YOKE_MAX_REASONING_LIST + 1];
+    char owned_thinking_budgets[YOKE_MAX_REASONING_LIST + 1];
+    char owned_reasoning_effort[YOKE_MAX_REASONING_LIST + 1];
+    char owned_thinking_budget[YOKE_MAX_REASONING_LIST + 1];
+    char owned_reasoning_template[YOKE_MAX_REASONING_TEMPLATE + 1];
 } Config;
 
 b8    config_load(Config *c, Arena *persist, Arena *scratch);
 /* Writes the state file's `model` key, which config_load applies above the
  * config files and below YOKE_MODEL. */
 b8    config_remember_model(Str model, Arena *scratch);
+/* Runtime choices are copied into Config itself and survive /clear. */
+b8    config_set_model(Config *c, Str model);
+b8    config_set_endpoint(Config *c, Str name, Str base_url, Str model,
+                          ApiKind api, Str key, Str efforts, Str budgets,
+                          Str effort, Str budget, Str templ);
+b8    config_set_reasoning(Config *c, b8 effort, Str value);
 
 
 /* ---- command line ------------------------------------------------------- */
@@ -756,6 +773,12 @@ void tui_set_aliases(const TuiAlias *aliases, size_t n);
  * search: a list ordered like the transcript ends at the entry nearest the
  * composer. */
 typedef enum { TUI_PICK_FIRST = 0, TUI_PICK_LAST } TuiPickAnchor;
+
+typedef enum {
+    TUI_STATUS_STATE, TUI_STATUS_MODEL, TUI_STATUS_REASONING,
+    TUI_STATUS_THINKING, TUI_STATUS_MODE, TUI_STATUS_PROVIDER,
+    TUI_STATUS_CWD, TUI_STATUS_CONTEXT, TUI_STATUS_COPY, TUI_STATUS_N
+} TuiStatusItem;
 /* `start` for a list that recommends none of its entries, which opens on the
  * end `anchor` names. */
 #define TUI_PICK_NONE ((size_t)-1)
@@ -803,6 +826,9 @@ void tui_set_model(Str model);
 void tui_set_mode(AgentMode mode);
 void tui_set_provider(Str name);
 void tui_set_reasoning(Str effort, Str thinking_budget);
+/* Visibility is session-local; every item starts visible. */
+b8   tui_status_visible(TuiStatusItem item);
+void tui_set_status_visible(TuiStatusItem item, b8 visible);
 /* What a run with no endpoint says, on the welcome screen and again if a
  * message is submitted anyway. */
 #define NO_PROVIDER_HINT \

@@ -281,6 +281,29 @@ def test_switching_provider_picks_up_its_model_and_key(ctx):
     assert active(ctx) == "home", ctx.state()
 
 
+def test_switched_provider_survives_clearing_the_conversation(ctx):
+    """Clearing message storage must not reclaim the active connection."""
+    write_provider(ctx, "work", ctx.mock.base_url, model="alpha", key="sk-work")
+    write_provider(ctx, "home", ctx.mock.base_url, model="beta", key="sk-home")
+    select_provider(ctx, "work")
+    ctx.scenario("text=configuration+survived")
+    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+
+    s.submit("/provider")
+    s.wait_status("pick a provider")
+    s.key("down", "enter")
+    s.wait_text("provider: home")
+    s.submit("/clear")
+    s.submit("overwrite reclaimed persistent storage with this prompt")
+    s.wait_text("configuration survived")
+    s.wait_turn_done()
+
+    assert ctx.mock.requests[-1]["model"] == "beta", ctx.mock.requests[-1]
+    assert ctx.mock.auth[-1] == "Bearer sk-home", ctx.mock.auth[-1]
+    assert s.status_field(1) == "beta", s.status_line()
+    assert s.status_field(3) == "home", s.status_line()
+
+
 def test_the_model_picker_writes_to_the_active_provider(ctx):
     """A model id belongs to the endpoint that served it, not to the state."""
     write_provider(ctx, "work", ctx.mock.base_url, model="alpha", key="sk-work")

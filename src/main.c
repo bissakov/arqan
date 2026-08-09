@@ -54,6 +54,7 @@ static size_t commands_init(void) {
     g_commands[n++] = (TuiCmd){ STR("/rewind"), STR("Go back to an earlier message and edit it") };
     g_commands[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
     g_commands[n++] = (TuiCmd){ STR("/settings"), STR("Change how yoke behaves") };
+    g_commands[n++] = (TuiCmd){ STR("/statusline"), STR("Choose what the status line shows") };
     g_commands[n++] = (TuiCmd){ STR("/exit"), STR("Quit yoke") };
     g_command_n = n;
     return n;
@@ -714,16 +715,15 @@ static b8 pick_model(const Config *cfg, Arena *scratch, Str *out) {
 
 /* Switch model for this session and remember it for the next. The
  * conversation is untouched: a model change is not part of it. */
-static void choose_model(Config *cfg, Arena *persist, Arena *scratch) {
+static void choose_model(Config *cfg, Arena *scratch) {
     arena_reset(scratch);
     Str picked = {0};
     if (!pick_model(cfg, scratch, &picked)) return;
-    Str chosen = str_dup(persist, picked);
-    if (!chosen.p) {
+    if (!config_set_model(cfg, picked)) {
         tui_notice(STR("out of memory storing the model"));
         return;
     }
-    cfg->model = chosen;
+    Str chosen = cfg->model;
     tui_set_model(chosen);
     TelEvent e;
     tel_open(&e, "model");
@@ -743,38 +743,19 @@ static b8 no_provider(const Config *cfg) {
     return !cfg->api_key.p && !cfg->base_url_set;
 }
 
-/* Copies into `persist` because the endpoint store they came from lives in
- * the scratch arena, which the next turn rewinds. */
 static b8 use_endpoint(Config *cfg, Str name, Str base_url, Str model,
                        ApiKind api, Str key, Str efforts, Str budgets,
-                       Str effort, Str budget, Str templ, Arena *persist) {
-    Str n = str_dup(persist, name);
-    Str u = str_dup(persist, base_url);
-    Str m = model.n ? str_dup(persist, model) : (Str){0};
-    Str ef = efforts.n ? str_dup(persist, efforts) : (Str){0};
-    Str bu = budgets.n ? str_dup(persist, budgets) : (Str){0};
-    Str es = effort.n ? str_dup(persist, effort) : (Str){0};
-    Str bs = budget.n ? str_dup(persist, budget) : (Str){0};
-    Str te = templ.n ? str_dup(persist, templ) : (Str){0};
-    if (!n.p || !u.p || (model.n && !m.p) || (efforts.n && !ef.p)
-        || (budgets.n && !bu.p) || (effort.n && !es.p) || (budget.n && !bs.p)
-        || (templ.n && !te.p)) return false;
-    cfg->provider = n;
-    cfg->base_url = u;
-    cfg->base_url_set = true;
-    cfg->api      = api;
-    cfg->api_key  = key;
-    if (m.n) cfg->model = m;
-    cfg->reasoning_efforts = ef; cfg->thinking_budgets = bu;
-    cfg->reasoning_effort = es; cfg->thinking_budget = bs;
-    cfg->reasoning_template = te;
-    tui_set_provider(n);
+                       Str effort, Str budget, Str templ) {
+    if (!config_set_endpoint(cfg, name, base_url, model, api, key, efforts,
+                             budgets, effort, budget, templ))
+        return false;
+    tui_set_provider(cfg->provider);
     tui_set_model(cfg->model);
-    tui_set_reasoning(es, bs);
+    tui_set_reasoning(cfg->reasoning_effort, cfg->thinking_budget);
     tui_needs_provider(false);
     TelEvent e;
     tel_open(&e, "provider");
-    tel_str(&e, "name", n);
+    tel_str(&e, "name", cfg->provider);
     tel_str(&e, "api", api_name(api));
     tel_bool(&e, "has_key", key.p != NULL);
     tel_send(&e);
@@ -886,7 +867,7 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
     }
     if (!use_endpoint(cfg, str_c(name), str_c(url), model, api, stored_key,
                       str_c(efforts), str_c(budgets), str_c(effort),
-                      str_c(budget), str_c(templ), persist)) {
+                      str_c(budget), str_c(templ))) {
         tui_notice(STR("out of memory storing the provider"));
         return false;
     }
@@ -972,7 +953,8 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
         tui_notice(str_c(err[0] ? err : "could not store the API key")); return false;
     }
     if (!use_endpoint(cfg, eps->name[i], str_c(url), str_c(model), api, saved_key,
-                      str_c(efforts), str_c(budgets), str_c(effort), str_c(budget), str_c(templ), persist)) return false;
+                      str_c(efforts), str_c(budgets), str_c(effort),
+                      str_c(budget), str_c(templ))) return false;
     provider_chosen(cfg, scratch);
     return true;
 }
@@ -1087,7 +1069,7 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
     if (!use_endpoint(cfg, eps.name[pick], eps.base_url[pick], eps.model[pick],
                       eps.api[pick], key, eps.reasoning_efforts[pick],
                       eps.thinking_budgets[pick], eps.reasoning_effort[pick],
-                      eps.thinking_budget[pick], eps.reasoning_template[pick], persist)) {
+                      eps.thinking_budget[pick], eps.reasoning_template[pick])) {
         tui_notice(STR("out of memory switching provider"));
         return;
     }
@@ -1127,6 +1109,47 @@ static Str setting_value(Arena *a, Str label) {
     return setting_label(a, label, "    ");
 }
 
+static void choose_statusline(Arena *scratch) {
+    const Str labels[TUI_STATUS_N] = {
+        STR("State"), STR("Model"), STR("Reasoning effort"),
+        STR("Thinking budget"), STR("Mode"), STR("Provider"),
+        STR("Working directory"), STR("Context tokens"),
+        STR("Copy confirmation"),
+    };
+    const Str descriptions[TUI_STATUS_N] = {
+        STR("Current ready, thinking, or error state"),
+        STR("Model used for the next request"),
+        STR("Active reasoning effort when configured"),
+        STR("Active thinking budget when configured"),
+        STR("Build or Plan mode"),
+        STR("Active provider name or endpoint host"),
+        STR("Current project directory"),
+        STR("Tokens reported by the provider"),
+        STR("Brief acknowledgement after /copy"),
+    };
+    size_t sel = 0;
+    for (;;) {
+        arena_reset(scratch);
+        TuiCmd rows[TUI_STATUS_N];
+        for (size_t i = 0; i < TUI_STATUS_N; i++) {
+            TuiStatusItem item = (TuiStatusItem)i;
+            rows[i] = (TuiCmd){
+                setting_check(scratch, tui_status_visible(item), labels[i]),
+                descriptions[i],
+            };
+        }
+        i32 delta = 1;
+        if (!tui_settings(STR("status line"), rows, TUI_STATUS_N, &sel,
+                          &delta))
+            break;
+        (void)delta;
+        if (sel < TUI_STATUS_N) {
+            TuiStatusItem item = (TuiStatusItem)sel;
+            tui_set_status_visible(item, !tui_status_visible(item));
+        }
+    }
+}
+
 /* The values Max tokens steps between, since a number typed into a question
  * is a screen away from the row it belongs to. A setting that arrived from a
  * config file or a flag sits wherever it sits: a step moves to the nearest
@@ -1163,7 +1186,7 @@ static Str list_step(Str list, Str current, i32 dir) {
     return pos ? item[(size_t)pos - 1] : (Str){0};
 }
 
-static b8 remember_reasoning(Config *cfg, Arena *persist, Arena *scratch,
+static b8 remember_reasoning(Config *cfg, Arena *scratch,
                              b8 effort, Str value) {
     if (!cfg->provider.n) return false;
     Endpoints e; size_t mark = scratch->off; endpoints_load(&e, scratch);
@@ -1174,9 +1197,7 @@ static b8 remember_reasoning(Config *cfg, Arena *persist, Arena *scratch,
         effort ? e.thinking_budget[i] : value, e.reasoning_template[i], scratch);
     scratch->off = mark;
     if (!ok) return false;
-    Str saved = value.n ? str_dup(persist, value) : (Str){0};
-    if (value.n && !saved.p) return false;
-    if (effort) cfg->reasoning_effort = saved; else cfg->thinking_budget = saved;
+    if (!config_set_reasoning(cfg, effort, value)) return false;
     tui_set_reasoning(cfg->reasoning_effort, cfg->thinking_budget);
     return true;
 }
@@ -1250,7 +1271,7 @@ static void choose_settings(Agent *ag) {
             b8 is_effort = reasoning_row[sel - SET_FIXED_N];
             Str next = list_step(is_effort ? cfg->reasoning_efforts : cfg->thinking_budgets,
                                  is_effort ? cfg->reasoning_effort : cfg->thinking_budget, delta);
-            remember_reasoning(cfg, ag->persist, scratch, is_effort, next);
+            remember_reasoning(cfg, scratch, is_effort, next);
             continue;
         }
         if (sel >= reasoning_n) {
@@ -1674,6 +1695,10 @@ i32 main(i32 argc, char **argv) {
             choose_settings(&agent);
             continue;
         }
+        if (!strcmp(line, "/statusline")) {
+            choose_statusline(&scratch);
+            continue;
+        }
         if (!strncmp(line, "/expand ", 8)) {
             /* Submitted by a click on a block's truncation tail; the id is
              * the slot it was rendered from. */
@@ -1686,7 +1711,7 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
         if (!strcmp(line, "/model")) {
-            choose_model(&cfg, &persist, &scratch);
+            choose_model(&cfg, &scratch);
             continue;
         }
         if (!strcmp(line, "/provider")) {

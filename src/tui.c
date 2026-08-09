@@ -97,6 +97,7 @@ typedef struct {
     Str cwd;
     size_t context_tokens;
     b8 context_known;
+    b8 status_visible[TUI_STATUS_N];
     char status[32];
     /* The operation a spinner row is reporting on, and when it began. Empty
      * when nothing is in flight. */
@@ -666,6 +667,19 @@ static void put_safe_clipped(Str s, size_t max_cells, size_t *used_cells) {
         cells += w; i += used;
     }
     if (used_cells) *used_cells += cells;
+}
+
+static void put_status_field(Str field, const char *field_style,
+                             size_t body_cols, size_t *used, b8 *have_field) {
+    if (!field.n || *used >= body_cols) return;
+    if (*have_field) {
+        if (body_cols - *used <= 3) return;
+        style(S_MUTED);
+        put_safe_clipped(STR(" · "), body_cols - *used, used);
+    }
+    style(field_style);
+    put_safe_clipped(field, body_cols - *used, used);
+    *have_field = true;
 }
 
 static void pad_row(size_t used, size_t cols) {
@@ -1661,6 +1675,8 @@ static void repaint(void) {
                            sizeof g_tui.context_tokens);
     status_hash = hash_add(status_hash, &g_tui.context_known,
                            sizeof g_tui.context_known);
+    status_hash = hash_add(status_hash, g_tui.status_visible,
+                           sizeof g_tui.status_visible);
     status_hash = hash_add(status_hash, &cols, sizeof cols);
     if (row_changed(status_row, status_hash, force)) {
         cup(status_row, 1); put_str(S_RESET "\033[2K");
@@ -1681,82 +1697,59 @@ static void repaint(void) {
         if (!strcmp(status, "ready")) status_style = S_GREEN;
         else if (strstr(status, "error")) status_style = S_RED;
         else if (!strcmp(status, "thinking")) status_style = S_PURPLE;
-        Str separator = STR(" · ");
-        size_t separator_cells = 3;
-        style(status_style);
-        put_safe_clipped(STR("● "), body_cols, &used);
+        b8 have_field = false;
         /* Spelled out rather than only coloured, since the bullet says
          * nothing on a NO_COLOR terminal, and first so a narrow screen clips
          * it last. While the spinner row is up it says the same word beside
          * the seconds it has been true for, so here the bullet carries the
          * state alone rather than repeating it a row below. */
-        if (!g_tui.activity_n && used < body_cols)
-            put_safe_clipped(str_c(status), body_cols - used, &used);
-        if (body_cols - used >= separator_cells) {
-            if (!g_tui.activity_n) {
-                style(S_MUTED);
-                put_safe_clipped(separator, body_cols - used, &used);
+        if (g_tui.status_visible[TUI_STATUS_STATE]) {
+            style(status_style);
+            put_safe_clipped(STR("● "), body_cols, &used);
+            if (!g_tui.activity_n && used < body_cols) {
+                put_safe_clipped(str_c(status), body_cols - used, &used);
+                have_field = true;
             }
-            style(S_TEXT);
-            put_safe_clipped(g_tui.model, body_cols - used, &used);
         }
-        if (body_cols - used >= separator_cells) {
+        if (g_tui.status_visible[TUI_STATUS_MODEL])
+            put_status_field(g_tui.model, S_TEXT, body_cols, &used,
+                             &have_field);
+        if (g_tui.status_visible[TUI_STATUS_REASONING]) {
             Str effort = g_tui.reasoning_effort;
             b8 off = str_eq(effort, STR("off")) || str_eq(effort, STR("Off"))
                   || str_eq(effort, STR("OFF"));
-            if (effort.n && !off) {
-                style(S_MUTED);
-                put_safe_clipped(separator, body_cols - used, &used);
-                style(S_TEXT);
-                put_safe_clipped(effort, body_cols - used, &used);
-            }
+            if (!off)
+                put_status_field(effort, S_TEXT, body_cols, &used,
+                                 &have_field);
         }
-        if (body_cols - used >= separator_cells) {
+        if (g_tui.status_visible[TUI_STATUS_THINKING]) {
             Str budget = g_tui.thinking_budget;
             b8 off = str_eq(budget, STR("off")) || str_eq(budget, STR("Off"))
                   || str_eq(budget, STR("OFF"));
             if (budget.n && !off) {
-                style(S_MUTED);
-                put_safe_clipped(separator, body_cols - used, &used);
-                style(S_TEXT);
-                put_safe_clipped(STR("thinking "), body_cols - used, &used);
-                if (used < body_cols)
-                    put_safe_clipped(budget, body_cols - used, &used);
+                char thinking[YOKE_MAX_REASONING_LIST + 10];
+                i32 n = snprintf(thinking, sizeof thinking, "thinking %.*s",
+                                 (i32)budget.n, budget.p);
+                if (n > 0)
+                    put_status_field((Str){thinking, (size_t)n}, S_TEXT,
+                                     body_cols, &used, &have_field);
             }
         }
-        if (body_cols - used >= separator_cells) {
-            style(S_MUTED);
-            put_safe_clipped(separator, body_cols - used, &used);
-            /* Plan mode is the exceptional one and is coloured as such. */
-            style(g_tui.mode == MODE_PLAN ? S_YELLOW : S_TEXT);
-            put_safe_clipped(g_tui.mode == MODE_PLAN ? STR("plan")
+        if (g_tui.status_visible[TUI_STATUS_MODE])
+            put_status_field(g_tui.mode == MODE_PLAN ? STR("plan")
                                                      : STR("build"),
-                             body_cols - used, &used);
-        }
-        if (body_cols - used >= separator_cells) {
-            style(S_MUTED);
-            put_safe_clipped(separator, body_cols - used, &used);
-            style(S_TEXT);
-            put_safe_clipped(g_tui.provider, body_cols - used, &used);
-        }
-        if (body_cols - used >= separator_cells) {
-            style(S_MUTED);
-            put_safe_clipped(separator, body_cols - used, &used);
-            style(S_TEXT);
-            put_safe_clipped(cwd, body_cols - used, &used);
-        }
-        if (body_cols - used >= separator_cells) {
-            style(S_MUTED);
-            put_safe_clipped(separator, body_cols - used, &used);
-            style(S_TEXT);
-            put_safe_clipped(context, body_cols - used, &used);
-        }
-        if (copied && body_cols - used >= separator_cells) {
-            style(S_MUTED);
-            put_safe_clipped(separator, body_cols - used, &used);
-            style(S_GREEN);
-            put_safe_clipped(STR("copied"), body_cols - used, &used);
-        }
+                             g_tui.mode == MODE_PLAN ? S_YELLOW : S_TEXT,
+                             body_cols, &used, &have_field);
+        if (g_tui.status_visible[TUI_STATUS_PROVIDER])
+            put_status_field(g_tui.provider, S_TEXT, body_cols, &used,
+                             &have_field);
+        if (g_tui.status_visible[TUI_STATUS_CWD])
+            put_status_field(cwd, S_TEXT, body_cols, &used, &have_field);
+        if (g_tui.status_visible[TUI_STATUS_CONTEXT])
+            put_status_field(context, S_TEXT, body_cols, &used, &have_field);
+        if (copied && g_tui.status_visible[TUI_STATUS_COPY])
+            put_status_field(STR("copied"), S_GREEN, body_cols, &used,
+                             &have_field);
         paint_sel_tail(status_row, cols);
         style(S_RESET);
     }
@@ -1787,6 +1780,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, size_t tool_count,
                b8 plain) {
     if (g_tui.raw) return;
     memset(&g_tui, 0, sizeof g_tui);
+    for (size_t i = 0; i < TUI_STATUS_N; i++) g_tui.status_visible[i] = true;
     g_tui.tty = !plain && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
     g_tui.model = model;
     g_tui.base_url = base_url;
@@ -1938,6 +1932,16 @@ void tui_set_provider(Str name) {
 void tui_set_reasoning(Str effort, Str thinking_budget) {
     g_tui.reasoning_effort = effort;
     g_tui.thinking_budget = thinking_budget;
+    repaint();
+}
+
+b8 tui_status_visible(TuiStatusItem item) {
+    return (size_t)item < TUI_STATUS_N && g_tui.status_visible[item];
+}
+
+void tui_set_status_visible(TuiStatusItem item, b8 visible) {
+    if ((size_t)item >= TUI_STATUS_N) return;
+    g_tui.status_visible[item] = visible;
     repaint();
 }
 

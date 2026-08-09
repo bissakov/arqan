@@ -10,14 +10,14 @@
 |
 |
 |    no saved sessions in this directory
-|  › /clear     Start a fresh conversation
-|    /resume    Resume a saved session from this directory
-|    /fork      Continue in a copy, leaving this session as it is
-|    /model     Pick the model
-|    /provider  Switch provider, or add one
-|    /mode      Switch between Build and Plan mode (Shift+Tab)
-|    /rewind    Go back to an earlier message and edit it
-|    /copy      Copy the last response to the clipboard
+|  › /clear       Start a fresh conversation
+|    /resume      Resume a saved session from this directory
+|    /fork        Continue in a copy, leaving this session as it is
+|    /model       Pick the model
+|    /provider    Switch provider, or add one
+|    /mode        Switch between Build and Plan mode (Shift+Tab)
+|    /rewind      Go back to an earlier message and edit it
+|    /copy        Copy the last response to the clipboard
 |
 |  › /
 |
