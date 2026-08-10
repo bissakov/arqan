@@ -18,10 +18,15 @@ def store(ctx):
 
 
 def creds(ctx):
+    """The keys the credentials file holds, by provider.
+
+    A section with no `key` line holds no key: that is what clearing one
+    leaves behind, and it is not the same as a key whose value is empty.
+    """
     return {
         section[len("provider "):]: keys["key"]
         for section, keys in ctx.settings(credentials_file(ctx)).items()
-        if section.startswith("provider ")
+        if section.startswith("provider ") and keys.get("key")
     }
 
 
@@ -55,8 +60,13 @@ def select_provider(ctx, name):
 def add_provider(s, ctx, name, url=None, key="sk-secret", api="openai",
                  reasoning_efforts="", thinking_budgets="",
                  reasoning_effort="", thinking_budget="",
-                 reasoning_template=""):
-    """Drive the creation form to the model picker."""
+                 reasoning_template="", submit_key=True):
+    """Drive the creation form to the model picker.
+
+    A key is followed by the store to keep it in; the default answer is the
+    credentials file. `submit_key=False` stops with the key typed but not
+    entered, which is where the case about the echo looks.
+    """
     s.wait_text("a name for this provider")
     s.type(name).sync()
     s.key("enter")
@@ -81,7 +91,14 @@ def add_provider(s, ctx, name, url=None, key="sk-secret", api="openai",
             s.type(value).sync()
         s.key("enter")
     s.wait_text("its API key")
-    s.type(key).sync()
+    if key:
+        s.type(key).sync()
+    if not submit_key:
+        return s
+    s.key("enter")
+    if key:
+        s.wait_status("where should the key be kept")
+        s.key("enter")
     return s
 
 
@@ -100,7 +117,6 @@ def test_creating_a_provider_stores_it_and_switches_to_it(ctx):
     s = ctx.spawn()
     s.submit("/provider")
     add_provider(s, ctx, "work")
-    s.key("enter")
     s.wait_status("pick a model")
     s.key("enter")
     s.wait_text("provider: work")
@@ -126,7 +142,6 @@ def test_creating_a_provider_includes_reasoning_options(ctx):
         thinking_budget="1024",
         reasoning_template='{"vendor":"$reasoning_effort"}',
     )
-    s.key("enter")
     s.wait_status("pick a model")
     s.key("enter")
     s.wait_text("provider: work")
@@ -194,7 +209,6 @@ def test_the_key_never_lands_in_the_config_directory(ctx):
     s = ctx.spawn()
     s.submit("/provider")
     add_provider(s, ctx, "work", key="sk-topsecret")
-    s.key("enter")
     s.wait_status("pick a model")
     s.key("enter")
     s.wait_text("provider: work")
@@ -211,7 +225,7 @@ def test_the_key_is_not_echoed(ctx):
     ctx.scenario("models=alpha")
     s = ctx.spawn()
     s.submit("/provider")
-    add_provider(s, ctx, "work", key="sk-visible")
+    add_provider(s, ctx, "work", key="sk-visible", submit_key=False)
     text = s.text()
     assert "sk-visible" not in text, text
     assert "**********" in text, text
@@ -244,7 +258,6 @@ def test_provider_creation_allows_an_unverified_manual_model(ctx):
     s = ctx.spawn()
     s.submit("/provider")
     add_provider(s, ctx, "work")
-    s.key("enter")
     s.wait_text("models: HTTP 401; enter a model manually")
     s.type("manual-model").sync()
     s.key("enter")
@@ -331,7 +344,6 @@ def test_creating_an_anthropic_provider_records_the_api(ctx):
     s = ctx.spawn()
     s.submit("/provider")
     add_provider(s, ctx, "anth", key="sk-ant", api="anthropic")
-    s.key("enter")
     s.wait_status("pick a model")
     s.key("enter")
     s.wait_text("provider: anth")
@@ -459,7 +471,7 @@ def test_provider_editor_can_clear_the_stored_key(ctx):
     s.wait_status("which API does it speak")
     s.key("enter")
     s.wait_status("API key")
-    s.key("down", "down", "enter")
+    s.key("down", "down", "down", "enter")   # Keep, Replace, Move, Clear
     s.wait_text("provider: work")
 
     section = ctx.settings(credentials_file(ctx)).get("provider work", {})
@@ -545,7 +557,6 @@ def test_the_welcome_hint_goes_away_once_a_provider_exists(ctx):
     s.wait_text("+ add a provider")
     s.submit("/provider")
     add_provider(s, ctx, "work")
-    s.key("enter")
     s.wait_status("pick a model")
     s.key("enter")
     s.wait_text("provider: work")
@@ -559,3 +570,51 @@ def test_a_configured_endpoint_starts_a_conversation(ctx):
     assert "a name for this provider" not in s.text(), s.text()
     s.submit("hello")
     s.wait_text("no key needed")
+
+
+def test_deleting_removes_the_key_even_when_the_config_cannot_be_written(ctx):
+    """The secret goes first, and no failure elsewhere may strand it.
+
+    Removing an entry touches two files. The config one holds nothing
+    sensitive, so its failure must not leave the key on disk: a provider the
+    user deleted is a key they expect gone.
+    """
+    write_provider(ctx, "work", ctx.mock.base_url, model="alpha", key="sk-work")
+    config_dir = ctx.config_file().parent
+    mode = config_dir.stat().st_mode
+    config_dir.chmod(0o555)          # no new file, so the rewrite cannot land
+    try:
+        s = ctx.spawn()
+        s.submit("/provider")
+        s.wait_status("pick a provider")
+        s.key("down", "down", "down", "enter")
+        s.wait_status("delete a provider")
+        s.key("enter")
+        s.wait_status("delete provider work?")
+        s.key("down", "enter")
+        s.wait_text("could not")
+        assert creds(ctx) == {}, creds(ctx)
+    finally:
+        config_dir.chmod(mode)
+
+
+def test_a_new_provider_never_inherits_a_leftover_key(ctx):
+    """A name reused after a failed delete starts with no key of its own.
+
+    The credential is keyed by name, so one left behind would be picked up
+    silently by the next provider to take that name, and the run would
+    authenticate with a secret its user never entered.
+    """
+    ctx.scenario("models=alpha")
+    c = credentials_file(ctx)
+    c.parent.mkdir(parents=True, exist_ok=True)
+    c.write_text("[provider work]\nkey = sk-leftover\n")
+    c.chmod(0o600)
+
+    s = ctx.spawn()
+    s.submit("/provider")
+    add_provider(s, ctx, "work", key="")     # this endpoint needs no key
+    s.wait_status("pick a model")
+    s.key("enter")
+    s.wait_text("provider: work")
+    assert creds(ctx) == {}, creds(ctx)

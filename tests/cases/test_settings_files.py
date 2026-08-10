@@ -143,3 +143,59 @@ def test_the_state_file_wins_over_the_older_one(ctx):
 
     assert ctx.state()["model"] == "current", ctx.state()
     assert not (d / "model").exists()
+
+
+# ---- legacy credentials ----------------------------------------------------
+
+def legacy_credentials(ctx, text):
+    c = ctx.home / ".local" / "state" / "yoke" / "credentials"
+    c.parent.mkdir(parents=True, exist_ok=True)
+    c.write_text(text)
+    c.chmod(0o600)
+    return c
+
+
+def test_json_lines_credentials_are_migrated_to_sections(ctx):
+    """Keys written before the settings formats were unified stay reachable.
+
+    The old file was JSON Lines. The ini parser reads no keys from one, so
+    without a migration its secrets are invisible: the app cannot use them
+    and deleting the provider cannot remove them.
+    """
+    c = legacy_credentials(ctx, '{"name":"work","key":"sk-legacy"}\n')
+    ctx.write_config(f"[provider work]\nbase_url = {ctx.mock.base_url}\n"
+                     f"model = mock-model\n")
+    (ctx.home / ".local" / "state" / "yoke" / "state").write_text("provider = work\n")
+    ctx.scenario("text=ok")
+
+    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s.submit("hello")
+    s.wait_turn_done()
+    assert ctx.mock.auth[-1] == "Bearer sk-legacy", ctx.mock.auth
+    assert ctx.settings(c).get("provider work", {}).get("key") == "sk-legacy"
+    assert "{" not in c.read_text(), c.read_text()
+
+
+def test_a_key_left_by_a_deleted_provider_becomes_visible(ctx):
+    """An orphaned legacy key stops hiding as an unparseable line.
+
+    Every rewrite copied it forward verbatim, so it survived the deletion of
+    the provider it belonged to and could never be removed through the app.
+    Converting it makes it a section like any other, which is what both a
+    person reading the file and a later delete need.
+    """
+    c = legacy_credentials(
+        ctx,
+        '{"name":"gone","key":"sk-orphan"}\n'
+        '{"name":"work","key":"sk-work"}\n')
+    ctx.write_config(f"[provider work]\nbase_url = {ctx.mock.base_url}\n"
+                     f"model = mock-model\n")
+    (ctx.home / ".local" / "state" / "yoke" / "state").write_text(
+        "provider = work\n")
+
+    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s.settle()
+    sections = ctx.settings(c)
+    assert sections.get("provider gone", {}).get("key") == "sk-orphan", sections
+    assert sections.get("provider work", {}).get("key") == "sk-work", sections
+    assert "{" not in c.read_text(), c.read_text()

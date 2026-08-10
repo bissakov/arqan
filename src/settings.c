@@ -53,7 +53,7 @@ static Str settings_src(Str path, Arena *a, size_t max) {
     return src;
 }
 
-static b8 settings_write_file(Str path, Str data, u32 mode) {
+b8 settings_write(Str path, Str data, u32 mode) {
     char tmp[YOKE_MAX_PATH];
     i32 n = snprintf(tmp, sizeof tmp, "%.*s.tmp", (i32)path.n, path.p);
     if (n <= 0 || (size_t)n >= sizeof tmp) return false;
@@ -210,7 +210,7 @@ b8 settings_set(Str path, Str section, const Str *keys, const Str *vals,
         }
     }
     if (!buf_ok(&out)) { scratch->off = mark; return false; }
-    b8 ok = settings_write_file(path, buf_finish(&out), mode);
+    b8 ok = settings_write(path, buf_finish(&out), mode);
     scratch->off = mark;
     return ok;
 }
@@ -247,7 +247,7 @@ b8 settings_remove_section(Str path, Str section, Arena *scratch) {
         buf_putc(&out, '\n');
     }
     if (!buf_ok(&out)) { scratch->off = mark; return false; }
-    b8 ok = !found || settings_write_file(
+    b8 ok = !found || settings_write(
         path, buf_finish(&out), (u32)(st.st_mode & 0777));
     scratch->off = mark;
     return ok;

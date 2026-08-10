@@ -94,6 +94,11 @@ typedef bool     b8;
 #define YOKE_MAX_URL          512
 #define YOKE_MAX_MODEL_NAME   128
 #define YOKE_MAX_API_KEY      512
+#define YOKE_MAX_SECRET_ARGV  16          /* words a key helper argv may hold  */
+#define YOKE_MAX_SECRET_CMD   512         /* longest key_command line          */
+/* A locked keyring may prompt through its own agent; past this the helper is
+ * killed, since a wait with no end would take the UI with it. */
+#define YOKE_SECRET_TIMEOUT_MS 15000
 #define YOKE_MAX_REASONING_LIST 1024
 #define YOKE_MAX_REASONING_TEMPLATE (16u << 10)
 #define YOKE_MAX_MODEL_BYTES  (1u << 20)  /* largest /models reply we will read */
@@ -314,6 +319,10 @@ b8     settings_set_one(Str path, Str section, Str key, Str val, u32 mode,
 /* Removes one named section whole, preserving every byte outside it. Missing
  * files and sections are already absent and therefore succeed. */
 b8     settings_remove_section(Str path, Str section, Arena *scratch);
+/* Replaces a settings file wholesale, through a temporary file and a rename.
+ * For rewriting a file whose format changed; a per-key change is an upsert,
+ * since a settings file is a document its owner edits. */
+b8     settings_write(Str path, Str data, u32 mode);
 
 /* $XDG_STATE_HOME/yoke/state: the choices the UI remembers between runs. */
 Str    state_get(Str key, Arena *out, Arena *scratch);
@@ -379,6 +388,45 @@ typedef enum { API_OPENAI = 0, API_ANTHROPIC } ApiKind;
 ApiKind api_from_str(Str s);
 Str     api_name(ApiKind k);
 
+/* ---- secrets -------------------------------------------------------------
+ * Where an endpoint's key comes from. SECRET_STORED is yoke's own
+ * credentials file; the rest name an external store that yoke asks through a
+ * helper program, so no plaintext key is written anywhere.
+ *
+ * The directive naming a source is executable content, so it is read only
+ * from $XDG_STATE_HOME/yoke/credentials at mode 0600, never from the config
+ * file a dotfile repository carries. Helpers run through execvp with an argv
+ * built here, never through a shell. See secrets.c.
+ */
+typedef enum {
+    SECRET_STORED = 0,  /* the key line in the credentials file            */
+    SECRET_SERVICE,     /* freedesktop Secret Service, via secret-tool     */
+    SECRET_PASS,        /* password-store, via pass                        */
+    SECRET_KEYCHAIN,    /* macOS keychain, via security                    */
+    SECRET_COMMAND,     /* the credentials file's own key_command argv     */
+} SecretSource;
+
+/* The name written in and read from the credentials file. `known` reports
+ * whether the value matched one; an unknown source is not a silent fallback,
+ * since guessing which store to ask is guessing where the key is. */
+SecretSource secret_source_from_str(Str s, b8 *known);
+Str          secret_source_name(SecretSource src);
+b8           secret_source_external(SecretSource src);
+/* False for the sources yoke can read but not write, which must be filled in
+ * with their own tool. */
+b8           secret_source_can_store(SecretSource src);
+
+/* The key `account` holds in `src`, allocated in `out`. Empty with `err` set
+ * when the helper is missing, fails, answers with more than one line or does
+ * not answer before YOKE_SECRET_TIMEOUT_MS. `command` is read only for
+ * SECRET_COMMAND. No message ever quotes the key. */
+Str secret_lookup(SecretSource src, Str account, Str command, Arena *out,
+                  char *err, size_t err_cap);
+b8  secret_store(SecretSource src, Str account, Str key,
+                 char *err, size_t err_cap);
+/* Removing what is not there is success: this runs to leave no key behind. */
+b8  secret_erase(SecretSource src, Str account, char *err, size_t err_cap);
+
 /* ---- endpoints -----------------------------------------------------------
  * The providers /provider creates and switches between: a name, a base URL,
  * the API that URL speaks and the model last used against it. Each is a
@@ -421,7 +469,12 @@ b8     endpoints_remember_model(Str name, Str model, Arena *scratch);
  * anyone but its owner: that is a key to rotate rather than one to load. */
 Str    endpoints_key(Str name, Arena *out, Arena *scratch,
                      char *err, size_t err_cap);
-b8     endpoints_set_key(Str name, Str key, Arena *scratch,
+/* Which store `name` keeps its key in. SECRET_STORED when it has no
+ * `key_source` line, which is every endpoint written before they existed. */
+SecretSource endpoints_key_source(Str name, Arena *scratch);
+/* Writes the key through `src` and records which one was used. An empty key
+ * clears it from whichever store held it. */
+b8     endpoints_set_key(Str name, Str key, SecretSource src, Arena *scratch,
                          char *err, size_t err_cap);
 /* Removes the provider's config and credential sections. */
 b8     endpoints_delete(Str name, Arena *scratch, char *err, size_t err_cap);

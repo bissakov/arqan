@@ -17,8 +17,12 @@
  * The key is not there. It lives under the same section name in
  * $XDG_STATE_HOME/yoke/credentials at mode 0600, so the file a dotfile
  * repository carries holds no secret, and a credentials file anyone else can
- * read is refused rather than loaded. The active endpoint is the `provider`
- * key of the state file.
+ * read is refused rather than loaded. That file may also say `key_source`
+ * instead, naming an external store to ask (see secrets.c); asking one means
+ * running a program, so the directive is honoured only from there. A config
+ * section that names `key`, `key_source` or `key_command` is ignored with a
+ * warning: a shared file must not be able to choose what yoke executes.
+ * The active endpoint is the `provider` key of the state file.
  */
 #include "yoke.h"
 
@@ -89,6 +93,21 @@ static b8 endpoint_selected_ok(Str list, Str selected) {
     return false;
 }
 
+/* Said rather than obeyed: a shared config file naming a key store would be a
+ * way to choose what yoke runs, so the line is reported and dropped. */
+static void endpoint_warn_credential_keys(const Settings *s, Str section,
+                                          Str name) {
+    const Str keys[3] = { STR("key"), STR("key_source"),
+                          STR("key_command") };
+    for (size_t i = 0; i < 3; i++) {
+        if (!settings_get(s, section, keys[i]).n) continue;
+        yoke_log(YOKE_LOG_WARN,
+                 "ignoring %.*s in the config file for provider %.*s: "
+                 "it belongs in the credentials file",
+                 (i32)keys[i].n, keys[i].p, (i32)name.n, name.p);
+    }
+}
+
 static void endpoints_collect(Endpoints *e, const Settings *s, Arena *a) {
     Str sections[YOKE_MAX_ENDPOINTS];
     size_t n = settings_sections(s, ENDPOINT_SECTION, sections,
@@ -96,6 +115,7 @@ static void endpoints_collect(Endpoints *e, const Settings *s, Arena *a) {
     for (size_t i = 0; i < n; i++) {
         Str name = str_trim(str_drop(sections[i], ENDPOINT_SECTION.n));
         if (!name.n || name.n > YOKE_MAX_ENDPOINT_NAME) continue;
+        endpoint_warn_credential_keys(s, sections[i], name);
         Str url = endpoint_field(s, sections[i], STR("base_url"), YOKE_MAX_URL);
         if (!url.n) continue;
         Str model = endpoint_field(s, sections[i], STR("model"),
@@ -204,6 +224,68 @@ b8 endpoints_remember_model(Str name, Str model, Arena *scratch) {
     return ok;
 }
 
+/* Credentials written before the settings formats were unified are JSON
+ * Lines: {"name":...,"key":...}. The ini parser reads no key from one, so
+ * such a file's secrets are invisible to every path that uses or deletes a
+ * key, while every rewrite copies the unrecognised line faithfully forward:
+ * the key becomes permanent and unreachable. Convert once, in place, so it
+ * can be read and removed like any other. */
+static b8 creds_migrate_legacy(Str path, Arena *scratch) {
+    size_t mark = scratch->off;
+    Str src = {0};
+    if (file_read(scratch, path.p, YOKE_MAX_SETTINGS_BYTES, 0, &src, NULL)
+            != FILE_OK || !src.n) {
+        scratch->off = mark;
+        return false;
+    }
+    /* The first line that is neither blank nor a comment names the format. */
+    size_t off = 0;
+    Str line;
+    b8 legacy = false;
+    while (str_line(src, &off, &line)) {
+        Str t = str_trim(line);
+        if (!t.n || t.p[0] == '#') continue;
+        legacy = t.p[0] == '{';
+        break;
+    }
+    if (!legacy) { scratch->off = mark; return false; }
+
+    Buf b;
+    buf_init(&b, scratch, src.n + 128);
+    size_t n = 0;
+    off = 0;
+    while (str_line(src, &off, &line)) {
+        Str t = str_trim(line);
+        if (!t.n) continue;
+        JVal *j = t.p[0] == '{' ? json_parse(scratch, t) : NULL;
+        Str name = j ? str_trim(json_str(j, STR("name"))) : (Str){0};
+        Str key = j ? str_trim(json_str(j, STR("key"))) : (Str){0};
+        /* Anything this format never wrote is kept rather than dropped: a
+         * line yoke does not understand is not a line it may delete. */
+        if (!name.n || !key.n || name.n > YOKE_MAX_ENDPOINT_NAME
+            || key.n > YOKE_MAX_API_KEY
+            || memchr(name.p, '\n', name.n) || memchr(key.p, '\n', key.n)) {
+            buf_puts(&b, line);
+            buf_putc(&b, '\n');
+            continue;
+        }
+        buf_putc(&b, '[');
+        buf_puts(&b, ENDPOINT_SECTION);
+        buf_puts(&b, name);
+        buf_puts(&b, STR("]\nkey = "));
+        buf_puts(&b, key);
+        buf_putc(&b, '\n');
+        n++;
+    }
+    b8 ok = n && buf_ok(&b) && settings_write(path, buf_finish(&b), 0600);
+    if (ok)
+        yoke_log(YOKE_LOG_WARN, "credentials: converted %zu key(s) from the "
+                 "old format; a provider you already deleted may still have "
+                 "one, so check %.*s", n, (i32)path.n, path.p);
+    scratch->off = mark;
+    return ok;
+}
+
 /* The credentials file, refused when anyone but the owner can read it: a key
  * left world-readable is a key to rotate, not one to load. */
 static b8 creds_open(Settings *s, Arena *a, Str *path_out,
@@ -219,8 +301,36 @@ static b8 creds_open(Settings *s, Arena *a, Str *path_out,
                           "chmod 600 %.*s", (i32)path.n, path.p);
         return false;
     }
+    creds_migrate_legacy(path, a);
     settings_load(s, path, a);
     return true;
+}
+
+/* The source line, read from the credentials file alone. An unknown value is
+ * refused rather than treated as "the key is in the file": that would send a
+ * key the user meant to keep in a keyring back to plaintext. */
+static SecretSource creds_source(const Settings *s, Str section, Str name,
+                                 char *err, size_t err_cap) {
+    Str v = settings_get(s, section, STR("key_source"));
+    b8 known = true;
+    SecretSource src = secret_source_from_str(v, &known);
+    if (!known) {
+        if (err) snprintf(err, err_cap, "provider %.*s names an unknown "
+                          "key_source", (i32)name.n, name.p);
+        return SECRET_STORED;
+    }
+    return src;
+}
+
+SecretSource endpoints_key_source(Str name, Arena *scratch) {
+    Settings s;
+    size_t mark = scratch->off;
+    SecretSource src = SECRET_STORED;
+    Str section = endpoint_section(name, scratch);
+    if (section.n && creds_open(&s, scratch, NULL, NULL, 0))
+        src = creds_source(&s, section, name, NULL, 0);
+    scratch->off = mark;
+    return src;
 }
 
 Str endpoints_key(Str name, Arena *out, Arena *scratch,
@@ -230,28 +340,66 @@ Str endpoints_key(Str name, Arena *out, Arena *scratch,
     Str key = {0};
     Str section = endpoint_section(name, scratch);
     if (section.n && creds_open(&s, scratch, NULL, err, err_cap)) {
-        Str v = endpoint_field(&s, section, STR("key"), YOKE_MAX_API_KEY);
-        if (v.n) key = str_dup(out, v);
+        char src_err[160] = {0};
+        SecretSource src = creds_source(&s, section, name, src_err,
+                                        sizeof src_err);
+        if (src_err[0]) {
+            if (err) snprintf(err, err_cap, "%s", src_err);
+        } else if (src == SECRET_STORED) {
+            Str v = endpoint_field(&s, section, STR("key"), YOKE_MAX_API_KEY);
+            if (v.n) key = str_dup(out, v);
+        } else {
+            Str cmd = settings_get(&s, section, STR("key_command"));
+            key = secret_lookup(src, name, cmd, out, src_err, sizeof src_err);
+            if (!key.n && src_err[0] && err)
+                snprintf(err, err_cap, "%.*s key store: %s",
+                         (i32)name.n, name.p, src_err);
+        }
     }
     scratch->off = mark;
     return key;
 }
 
-b8 endpoints_set_key(Str name, Str key, Arena *scratch,
+b8 endpoints_set_key(Str name, Str key, SecretSource src, Arena *scratch,
                      char *err, size_t err_cap) {
     if (!name.n || key.n > YOKE_MAX_API_KEY) return false;
+    if (src == SECRET_COMMAND) {
+        if (err) snprintf(err, err_cap, "a key_command provider is filled in "
+                          "with its own tool");
+        return false;
+    }
     size_t mark = scratch->off;
     Settings s;
     Str path = {0};
     Str section = endpoint_section(name, scratch);
     Str dir = paths_dir(YOKE_DIR_STATE, scratch);
     b8 ok = section.n && creds_open(&s, scratch, &path, err, err_cap)
-         && path.n && dir.n && paths_ensure_dir(dir)
-         && settings_set_one(path, section, STR("key"), key, 0600, scratch);
+         && path.n && dir.n && paths_ensure_dir(dir);
+
+    /* The store that held it is cleared first, so switching stores or
+     * clearing a key never leaves a live copy in the other one. */
+    if (ok) {
+        SecretSource old = creds_source(&s, section, name, NULL, 0);
+        if (secret_source_external(old) && (old != src || !key.n))
+            secret_erase(old, name, NULL, 0);
+        if (secret_source_external(src) && key.n)
+            ok = secret_store(src, name, key, err, err_cap);
+    }
+    /* An external key never reaches the file: only the name of its store. */
+    Str keys[2] = { STR("key"), STR("key_source") };
+    Str vals[2] = { secret_source_external(src) ? (Str){0} : key,
+                    secret_source_external(src) ? secret_source_name(src)
+                                                : (Str){0} };
+    ok = ok && settings_set(path, section, keys, vals, 2, 0600, scratch);
     scratch->off = mark;
     return ok;
 }
 
+/* The key goes first and on its own. Removing an endpoint touches two files,
+ * and only one of them holds a secret: gating the credential's removal on the
+ * config rewrite would leave a deleted provider's key on disk whenever that
+ * rewrite failed, which is the one outcome this must never have. Each step is
+ * reported separately for the same reason. */
 b8 endpoints_delete(Str name, Arena *scratch, char *err, size_t err_cap) {
     if (!name.n || name.n > YOKE_MAX_ENDPOINT_NAME) return false;
     size_t mark = scratch->off;
@@ -259,12 +407,30 @@ b8 endpoints_delete(Str name, Arena *scratch, char *err, size_t err_cap) {
     Str credential_path = {0};
     Str config_path = paths_file(YOKE_DIR_CONFIG, STR("config"), scratch);
     Str section = endpoint_section(name, scratch);
-    b8 ok = config_path.n && section.n
-         && creds_open(&credentials, scratch, &credential_path, err, err_cap)
-         && settings_remove_section(config_path, section, scratch)
-         && settings_remove_section(credential_path, section, scratch);
+    if (!config_path.n || !section.n
+        || !creds_open(&credentials, scratch, &credential_path, err, err_cap)) {
+        scratch->off = mark;
+        return false;
+    }
+
+    /* Whichever store held it, wherever the rest of the delete ends up. */
+    char store_err[160] = {0};
+    SecretSource src = creds_source(&credentials, section, name, NULL, 0);
+    b8 erased = !secret_source_external(src)
+             || secret_erase(src, name, store_err, sizeof store_err);
+    b8 cleared = settings_remove_section(credential_path, section, scratch);
+    b8 removed = settings_remove_section(config_path, section, scratch);
+
+    if (!erased)
+        snprintf(err, err_cap, "the key is still in its store: %s", store_err);
+    else if (!cleared)
+        snprintf(err, err_cap, "the key could not be removed from %.*s",
+                 (i32)credential_path.n, credential_path.p);
+    else if (!removed)
+        snprintf(err, err_cap, "the key is gone, but its settings could not "
+                 "be removed from %.*s", (i32)config_path.n, config_path.p);
     scratch->off = mark;
-    return ok;
+    return erased && cleared && removed;
 }
 
 Str endpoints_active(Arena *a) {

@@ -12,6 +12,7 @@
 #include "settings.c"
 #include "telemetry.c"
 #include "history.c"
+#include "secrets.c"
 #include "endpoints.c"
 #include "config.c"
 #include "cli.c"
@@ -683,6 +684,10 @@ static Str help_build(Agent *ag) {
     buf_putf(&b, "- model: %.*s\n", (i32)cfg->model.n, cfg->model.p);
     buf_puts(&b, STR("- base URL: ")); buf_json_str(&b, cfg->base_url); buf_putc(&b, '\n');
     buf_putf(&b, "- active API key: %s\n", cfg->api_key.n ? "present" : "missing");
+    if (cfg->provider.n) {
+        Str src = secret_source_name(endpoints_key_source(cfg->provider, a));
+        buf_putf(&b, "- API key store: %.*s\n", (i32)src.n, src.p);
+    }
     buf_putf(&b, "- streaming: %s\n", help_toggle(cfg->stream));
     buf_putf(&b, "- verbose tool output: %s\n", help_toggle(render_verbose()));
     buf_putf(&b, "- raw Markdown: %s\n", help_toggle(md_raw()));
@@ -1134,6 +1139,26 @@ static void provider_chosen(const Config *cfg, Arena *scratch) {
     notice_fmt("provider: %.*s", (i32)cfg->provider.n, cfg->provider.p);
 }
 
+/* Where the key is kept. The file is offered first because it always works:
+ * a keyring needs its daemon and its helper installed, and a run with no
+ * session bus has neither. Only the stores yoke can write to are listed;
+ * `command` is deliberately absent, since a provider that runs a program of
+ * the user's choosing is set up by editing the credentials file. */
+static b8 pick_key_source(SecretSource *out) {
+    const TuiCmd stores[] = {
+        { STR("Credentials file"), STR("$XDG_STATE_HOME/yoke/credentials, mode 0600") },
+        { STR("System keyring"),   STR("Secret Service, through secret-tool") },
+        { STR("Password store"),   STR("pass, under yoke/<provider>") },
+    };
+    size_t pick = *out == SECRET_SERVICE ? 1 : *out == SECRET_PASS ? 2 : 0;
+    if (!tui_pick(STR("where should the key be kept"), stores, 3,
+                  TUI_PICK_FIRST, pick, &pick))
+        return false;
+    *out = pick == 1 ? SECRET_SERVICE : pick == 2 ? SECRET_PASS
+                                                  : SECRET_STORED;
+    return true;
+}
+
 /* Which wire format a new endpoint speaks. The default is offered first,
  * since it is what most of them are. */
 static b8 pick_api(ApiKind *out) {
@@ -1201,6 +1226,8 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
     if (!tui_ask(STR("its API key (empty if it needs none)"), true, key,
                  sizeof key))
         key[0] = '\0';
+    SecretSource key_source = SECRET_STORED;
+    if (key[0] && !pick_key_source(&key_source)) return false;
 
     Config probe = *cfg;
     probe.base_url = str_c(url);
@@ -1221,8 +1248,11 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
         tui_notice(STR("could not write the provider store"));
         return false;
     }
-    if (key[0] && !endpoints_set_key(str_c(name), str_c(key), scratch,
-                                     err, sizeof err)) {
+    /* Written even when the answer was empty: a credential is keyed by name,
+     * so one an earlier provider of this name left behind would be adopted
+     * silently, and the run would authenticate with a key nobody entered. */
+    if (!endpoints_set_key(str_c(name), str_c(key), key_source, scratch,
+                           err, sizeof err)) {
         tui_notice(str_c(err[0] ? err : "could not store the API key"));
         return false;
     }
@@ -1273,24 +1303,43 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
     }
     ApiKind api = eps->api[i];
     if (!pick_api(&api)) return false;
+    /* Which store holds it belongs in the menu: it is the only place the
+     * answer is ever shown, and a key cannot be moved out of a store the user
+     * cannot see it is in. */
+    SecretSource key_source = endpoints_key_source(eps->name[i], scratch);
+    Str store = secret_source_name(key_source);
+    Buf keep_desc;
+    buf_init(&keep_desc, scratch, store.n + 40);
+    buf_puts(&keep_desc, STR("Leave it where it is, in: "));
+    buf_puts(&keep_desc, store);
     const TuiCmd key_actions[] = {
-        { STR("Keep current"), STR("Leave the stored credential unchanged") },
+        { STR("Keep current"), buf_ok(&keep_desc) ? buf_finish(&keep_desc)
+                             : STR("Leave the stored credential unchanged") },
         { STR("Replace"), STR("Enter and store a different credential") },
+        { STR("Move"), STR("Keep the same key, change which store holds it") },
         { STR("Clear"), STR("Remove the stored credential") },
     };
-    enum { KEY_KEEP, KEY_REPLACE, KEY_CLEAR };
+    enum { KEY_KEEP, KEY_REPLACE, KEY_MOVE, KEY_CLEAR };
     size_t key_action = KEY_KEEP;
-    if (!tui_pick(STR("API key"), key_actions, 3, TUI_PICK_FIRST,
+    if (!tui_pick(STR("API key"), key_actions, 4, TUI_PICK_FIRST,
                   KEY_KEEP, &key_action)) return false;
     if (key_action == KEY_REPLACE
-        && !tui_ask(STR("replacement API key"), true, key, sizeof key))
+        && (!tui_ask(STR("replacement API key"), true, key, sizeof key)
+            || !pick_key_source(&key_source)))
         return false;
+    if (key_action == KEY_MOVE && !pick_key_source(&key_source)) return false;
     char err[YOKE_MAX_PATH + 64] = {0};
     Str saved_key = {0};
-    if (key_action == KEY_KEEP) {
+    /* Moving reads the key yoke already holds rather than asking for it
+     * again: requiring the value is what keeps keys in the file. */
+    if (key_action == KEY_KEEP || key_action == KEY_MOVE) {
         saved_key = endpoints_key(eps->name[i], persist, scratch,
                                   err, sizeof err);
         if (err[0]) { tui_notice(str_c(err)); return false; }
+        if (key_action == KEY_MOVE && !saved_key.n) {
+            tui_notice(STR("this provider has no stored key to move"));
+            return false;
+        }
     } else if (key_action == KEY_REPLACE) {
         saved_key = str_dup(persist, str_c(key));
         if (!saved_key.p) {
@@ -1322,8 +1371,10 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
         tui_notice(STR("invalid provider reasoning settings")); return false;
     }
     if (key_action != KEY_KEEP
-        && !endpoints_set_key(eps->name[i], key_action == KEY_CLEAR
-            ? (Str){0} : str_c(key), scratch, err, sizeof err)) {
+        && !endpoints_set_key(eps->name[i],
+            key_action == KEY_CLEAR ? (Str){0}
+          : key_action == KEY_MOVE ? saved_key : str_c(key),
+            key_source, scratch, err, sizeof err)) {
         tui_notice(str_c(err[0] ? err : "could not store the API key")); return false;
     }
     if (!use_endpoint(cfg, eps->name[i], str_c(url), str_c(model), api, saved_key,

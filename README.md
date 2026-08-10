@@ -44,6 +44,33 @@ api = openai
 `$XDG_STATE_HOME/yoke/credentials` (mode 0600). Command-line options override
 environment, saved choices, and config. Run `yoke --help` for all options.
 
+### External key stores
+
+`/provider` can leave the key to an external store instead, so no plaintext
+key is written anywhere. It asks which store to use right after a key is
+entered, so a provider that needs no key is never asked. To move a key that
+is already stored, use `+ edit a provider` and choose **Move**: that names the
+store holding it now and writes it to another without asking for the value
+again. The credentials file then records only which store to ask:
+
+```ini
+[provider openai]
+key_source = secret-service   # or: pass, keychain, file
+```
+
+yoke builds the helper's command line itself, looking the key up under the
+service `yoke` and the account `<provider>`: `secret-tool` for
+`secret-service`, `pass` under `yoke/<provider>`, and `security` for the macOS
+`keychain`. For a store with no entry above, `key_source = command` runs the
+section's own `key_command` and reads the key from its first output line.
+
+A source directive says what yoke executes, so it is read only from the
+credentials file: that file is mode 0600, machine-local, and not the one a
+dotfile repository carries. The same keys in the shared config file are
+ignored with a warning, and no helper is ever run through a shell, so a value
+in either file cannot become a pipeline or a substitution. `key_command` is
+split on whitespace; anything needing quoting belongs in a wrapper script.
+
 ## Use
 
 - Enter sends; Alt+Enter adds a line. Ctrl-C or Esc cancels; Ctrl-D quits an
