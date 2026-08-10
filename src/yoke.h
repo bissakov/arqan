@@ -1066,6 +1066,10 @@ void tui_pin(u32 id);
 void tui_anchor_zone(u32 id);
 void tui_anchor_view(void);
 void tui_restore_anchor(void);
+/* Holds frames while the transcript is rebuilt from the conversation, so a
+ * replay paints once rather than once per line it lays down. Not nested. */
+void tui_batch_begin(void);
+void tui_batch_end(void);
 /* One line where the completion popup would be: the answer to a command that
  * opened no popup, retired by the next keystroke. Empty clears it. */
 void tui_notice(Str msg);

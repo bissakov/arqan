@@ -576,9 +576,11 @@ static void rerender_conv(const Conv *conv, const Config *cfg,
                           b8 show_instructions, Arena *scratch, u32 zone) {
     arena_reset(scratch);
     if (zone) tui_anchor_zone(zone); else tui_anchor_view();
+    tui_batch_begin();
     tui_clear_transcript();
     render_conv(conv, cfg, show_instructions, scratch);
     tui_restore_anchor();
+    tui_batch_end();
     arena_reset(scratch);
 }
 
@@ -890,8 +892,10 @@ static void resume_session(Agent *ag) {
     persist->off = session_mark;
     b8 whole = session_apply(sess, src, list.path[pick], list.name[pick], conv,
                              persist, scratch);
+    tui_batch_begin();
     tui_clear();
     render_conv(conv, ag->cfg, ag->show_instructions, scratch);
+    tui_batch_end();
     if (!whole) tui_notice(STR("session truncated: the conversation is full"));
 }
 
@@ -957,8 +961,10 @@ static void rewind_conversation(Agent *ag) {
     size_t slot = at[pick];
     tui_set_input(conv->text[slot]);
     conv->n = slot;
+    tui_batch_begin();
     tui_clear();
     render_conv(conv, ag->cfg, ag->show_instructions, scratch);
+    tui_batch_end();
     /* A session file is append-only and this one no longer describes the
      * conversation, so what is left of it continues in a new file. */
     session_fork(sess, conv);

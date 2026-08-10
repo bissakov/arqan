@@ -774,9 +774,19 @@ void md_write(Str delta) {
             if (c == '\n') {
                 md_line_end();
                 g_md.line_long = false;
-            } else {
-                md_low_write((Str){ delta.p + i, 1 });
+                continue;
             }
+            /* A line past MD_LINE_MAX is written through as it arrives, so
+             * it is handed over a run at a time: md_low_write drains to the
+             * transcript once per call, and a byte per call turns a long
+             * line, a minified blob or a wide log record into one drain per
+             * character. The run stops at the bytes the loop above treats
+             * specially, which keeps them on their existing paths. */
+            size_t run = i;
+            while (run < delta.n && delta.p[run] != '\n' && delta.p[run] != '\r')
+                run++;
+            md_low_write((Str){ delta.p + i, run - i });
+            i = run - 1;   /* the loop's ++ lands on the stopper or the end */
             continue;
         }
         if (c == '\n') {

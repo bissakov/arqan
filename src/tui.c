@@ -112,7 +112,6 @@ typedef struct {
     size_t activity_n;
     f64 activity_started;      /* when the operation on screen began       */
     f64 activity_turn;         /* when the wait it belongs to began        */
-    char transcript[TUI_TRANSCRIPT_CAP];
     size_t transcript_n;
     /* Newlines written but not committed. The transcript never ends with one,
      * so the air between two blocks is decided in tui_block alone instead of
@@ -187,7 +186,6 @@ typedef struct {
     b8 bar_valid;
     /* The composer outlives a single tui_readline: text typed while a turn is
      * running is still here when the next prompt opens. */
-    char input[YOKE_LINE_BUF];
     size_t input_n;
     size_t input_cur;
     /* The registered command table plus the filtered view of it on screen. */
@@ -235,14 +233,13 @@ typedef struct {
     char notice[160];
     size_t notice_n;
     b8 needs_provider;
-    /* Prompt history recall: `draft` holds the text the first Up displaced. */
+    /* Prompt history recall: `g_bulk.draft` holds the text the first Up
+     * displaced. */
     History *hist;
-    char draft[YOKE_LINE_BUF];
     size_t draft_n;
     /* What the frame put on screen, one entry per row: what selection
      * highlights and copies, so any painted cell is selectable without
      * re-deriving its source. */
-    char row_text[TUI_SEL_ROWS][TUI_SEL_ROW_BYTES];
     u16 row_text_n[TUI_SEL_ROWS];
     u16 row_text_w[TUI_SEL_ROWS];
     /* Where each painted transcript row starts, SIZE_MAX for a row from
@@ -258,7 +255,20 @@ typedef struct {
     size_t out_n;
 } TuiState;
 
+/* The bulk payload buffers, held apart from TuiState because every one of
+ * them is read only up to a counter that lives there. Their bytes therefore
+ * carry no state of their own, so tui_start resets the control block alone
+ * and these pages stay untouched until something is actually written into
+ * them: a session that never fills the scrollback never pays for it. */
+typedef struct {
+    char transcript[TUI_TRANSCRIPT_CAP];   /* to g_tui.transcript_n         */
+    char input[YOKE_LINE_BUF];             /* to g_tui.input_n              */
+    char draft[YOKE_LINE_BUF];             /* to g_tui.draft_n              */
+    char row_text[TUI_SEL_ROWS][TUI_SEL_ROW_BYTES];  /* g_tui.row_text_n[r] */
+} TuiBulk;
+
 static TuiState g_tui;
+static TuiBulk g_bulk;
 static volatile sig_atomic_t g_winch = 0;
 
 static void on_winch(i32 sig) { (void)sig; g_winch = 1; }
@@ -399,7 +409,7 @@ static size_t g_cap_col;   /* 0-based column the next glyph lands on        */
 /* Byte offset of the first glyph at or after `cell`; *reached is the column
  * landed on, since a wide glyph can straddle the requested one. */
 static size_t row_byte_at(size_t r, size_t cell, size_t *reached) {
-    const char *p = g_tui.row_text[r];
+    const char *p = g_bulk.row_text[r];
     size_t n = g_tui.row_text_n[r], bytes = 0, col = 0;
     while (bytes < n && col < cell) {
         i32 width = 0;
@@ -426,7 +436,7 @@ static void snap_seek(size_t row, size_t col) {
     /* Cells the painter skipped over are blanks on screen. */
     while (g_tui.row_text_w[r] < g_cap_col
            && (size_t)g_tui.row_text_n[r] + 1 < TUI_SEL_ROW_BYTES) {
-        g_tui.row_text[r][g_tui.row_text_n[r]++] = ' ';
+        g_bulk.row_text[r][g_tui.row_text_n[r]++] = ' ';
         g_tui.row_text_w[r]++;
     }
 }
@@ -436,7 +446,7 @@ static void snap_put(const char *s, size_t used, size_t width) {
         size_t r = g_cap_row - 1;
         if ((size_t)g_tui.row_text_n[r] + used < TUI_SEL_ROW_BYTES
             && (size_t)g_tui.row_text_w[r] + width < 0xffffu) {
-            memcpy(g_tui.row_text[r] + g_tui.row_text_n[r], s, used);
+            memcpy(g_bulk.row_text[r] + g_tui.row_text_n[r], s, used);
             g_tui.row_text_n[r] = (u16)((size_t)g_tui.row_text_n[r] + used);
             g_tui.row_text_w[r] = (u16)((size_t)g_tui.row_text_w[r] + width);
         }
@@ -510,9 +520,9 @@ static size_t sel_extract(char *out, size_t cap) {
         size_t reached = 0;
         size_t a = row_byte_at(r, r == r0 ? c0 : 0, &reached);
         size_t b = row_byte_at(r, r == r1 ? c1 : (size_t)-1, &reached);
-        while (b > a && g_tui.row_text[r][b - 1] == ' ') b--;  /* padding */
+        while (b > a && g_bulk.row_text[r][b - 1] == ' ') b--;  /* padding */
         for (size_t i = a; i < b && n + 1 < cap; i++)
-            out[n++] = g_tui.row_text[r][i];
+            out[n++] = g_bulk.row_text[r][i];
         if (r < r1 && n + 1 < cap) out[n++] = '\n';
     }
     while (n && out[n - 1] == '\n') n--;
@@ -1261,7 +1271,7 @@ static size_t wrap_scan(size_t cols) {
         g_tui.wrap_cols = cols;
         ckpt_record(0, 0);
     }
-    Str s = { g_tui.transcript, g_tui.transcript_n };
+    Str s = { g_bulk.transcript, g_tui.transcript_n };
     size_t i = g_tui.wrap_scanned, row = g_tui.wrap_rows;
     for (;;) {
         Row r = row_break(s, i, cols, 0);
@@ -1309,7 +1319,7 @@ static size_t justify_pad(Str text, u8 kind, Row r, size_t cols,
 /* A composed line starting with '!' runs in the shell instead of reaching
  * the model, which the composer's marker announces. */
 static b8 composer_shell(void) {
-    return !g_tui.ask && g_tui.input_n > 0 && g_tui.input[0] == '!';
+    return !g_tui.ask && g_tui.input_n > 0 && g_bulk.input[0] == '!';
 }
 
 /* `base_off` is where `s` starts inside the transcript, so spans still line
@@ -1705,8 +1715,24 @@ static Str format_context_size(char *buf, size_t cap) {
     return (Str){buf, len};
 }
 
+/* Replaying a conversation rebuilds the transcript a line at a time, and
+ * every line that ends asks for a frame. Only the last of those frames is
+ * ever seen, so a rebuild holds them: the paint the screen actually needs is
+ * the one tui_batch_end makes. */
+static b8 g_batch;
+
+void tui_batch_begin(void) { g_batch = true; }
+
+static void repaint(void);
+
+void tui_batch_end(void) {
+    if (!g_batch) return;
+    g_batch = false;
+    repaint();
+}
+
 static void repaint(void) {
-    if (!g_tui.fullscreen) return;
+    if (!g_tui.fullscreen || g_batch) return;
     g_tui.last_paint = yoke_now_seconds();
 
     size_t rows, cols;
@@ -1731,7 +1757,7 @@ static void repaint(void) {
     size_t body_cols = cols - gutter * 2;
     size_t body_col = gutter + 1;
     size_t cursor_row = 0, cursor_col = 2;
-    Str input = { g_tui.input, g_tui.input_n };
+    Str input = { g_bulk.input, g_tui.input_n };
     size_t input_cur = g_tui.input_cur;
     /* One dot per byte, so the cursor column still lands where the caret is. */
     char mask[TUI_ASK_MAX];
@@ -1801,7 +1827,7 @@ static void repaint(void) {
         /* Start from the checkpoint nearest the first visible row. */
         size_t at_row = 0;
         size_t off = wrap_seek(first, &at_row);
-        Str slice = { g_tui.transcript + off, g_tui.transcript_n - off };
+        Str slice = { g_bulk.transcript + off, g_tui.transcript_n - off };
         update_text_rows(slice, off, body_cols, 0, first - at_row,
                          transcript_rows, 1, body_col, cols, ROW_PLAIN, force);
     }
@@ -1973,6 +1999,8 @@ void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
                size_t tool_count, b8 show_ignored, b8 justify,
                u64 status_fields, AgentMode mode, b8 plain) {
     if (g_tui.raw) return;
+    /* The control block alone: g_bulk is addressed through the counters this
+     * clears, so its bytes are already unreachable. */
     memset(&g_tui, 0, sizeof g_tui);
     for (size_t i = 0; i < TUI_STATUS_N; i++)
         g_tui.status_visible[i] = (status_fields & ((u64)1 << i)) != 0;
@@ -2235,7 +2263,7 @@ void tui_zone_end(void) {
 static size_t rows_below(size_t off) {
     size_t cols = tui_body_cols();
     if (!cols || off >= g_tui.transcript_n) return 0;
-    Str tail = { g_tui.transcript + off, g_tui.transcript_n - off };
+    Str tail = { g_bulk.transcript + off, g_tui.transcript_n - off };
     return text_rows(tail, cols, 0, 0, NULL, NULL);
 }
 
@@ -2348,8 +2376,8 @@ static void transcript_put(Str s) {
         size_t keep = g_tui.transcript_n;
         if (keep > TUI_TRANSCRIPT_CAP / 2) keep = TUI_TRANSCRIPT_CAP / 2;
         if (keep > room_for_old) keep = room_for_old;
-        memmove(g_tui.transcript,
-                g_tui.transcript + g_tui.transcript_n - keep, keep);
+        memmove(g_bulk.transcript,
+                g_bulk.transcript + g_tui.transcript_n - keep, keep);
         spans_shift(g_tui.transcript_n - keep);
         syntax_shift(g_tui.transcript_n - keep);
         g_tui.transcript_epoch++;
@@ -2365,10 +2393,10 @@ static void transcript_put(Str s) {
         unsigned char c = (unsigned char)s.p[i];
         if (c == '\r') continue;
         if (c == '\t') {
-            memcpy(g_tui.transcript + g_tui.transcript_n, "    ", 4);
+            memcpy(g_bulk.transcript + g_tui.transcript_n, "    ", 4);
             g_tui.transcript_n += 4;
         } else if (c == '\n' || c >= 0x20) {
-            g_tui.transcript[g_tui.transcript_n++] = (char)c;
+            g_bulk.transcript[g_tui.transcript_n++] = (char)c;
         } else {
             continue;
         }
@@ -2962,13 +2990,13 @@ static b8 path_prefix(Str *out) {
     size_t cur = g_tui.input_cur;
     size_t start = cur;
     while (start > 0) {
-        char c = g_tui.input[start - 1];
+        char c = g_bulk.input[start - 1];
         if (c == ' ' || c == '\t' || c == '\n') break;
         start--;
     }
-    if (start >= cur || g_tui.input[start] != '@') return false;
+    if (start >= cur || g_bulk.input[start] != '@') return false;
     g_tui.path_at = start;
-    *out = (Str){ g_tui.input + start + 1, cur - start - 1 };
+    *out = (Str){ g_bulk.input + start + 1, cur - start - 1 };
     return true;
 }
 
@@ -2999,7 +3027,7 @@ static void completion_refresh(void) {
         return;
     }
     if (!g_tui.cmds || !g_tui.cmd_n) return;
-    Str in = { g_tui.input, g_tui.input_n };
+    Str in = { g_bulk.input, g_tui.input_n };
     if (in.n == 0 || in.p[0] != '/') return;
     for (size_t i = 0; i < in.n; i++)
         if (in.p[i] == ' ' || in.p[i] == '\t' || in.p[i] == '\n') return;
@@ -3049,7 +3077,7 @@ static b8 completion_would_change(void) {
     if (g_tui.path_mode) return true;
     Str name = g_tui.cmds[g_tui.comp_idx[g_tui.comp_sel]].name;
     return name.n != g_tui.input_n
-        || memcmp(name.p, g_tui.input, name.n) != 0;
+        || memcmp(name.p, g_bulk.input, name.n) != 0;
 }
 
 /* The picked path replaces the word it was picked for, the '@' left in place
@@ -3058,12 +3086,12 @@ static void path_accept(Str name) {
     size_t start = g_tui.path_at + 1;
     size_t cur = g_tui.input_cur;
     size_t tail = g_tui.input_n - cur;
-    if (start + name.n + tail + 1 > sizeof g_tui.input) return;
-    memmove(g_tui.input + start + name.n, g_tui.input + cur, tail);
-    memcpy(g_tui.input + start, name.p, name.n);
+    if (start + name.n + tail + 1 > sizeof g_bulk.input) return;
+    memmove(g_bulk.input + start + name.n, g_bulk.input + cur, tail);
+    memcpy(g_bulk.input + start, name.p, name.n);
     g_tui.input_n = start + name.n + tail;
     g_tui.input_cur = start + name.n;
-    g_tui.input[g_tui.input_n] = '\0';
+    g_bulk.input[g_tui.input_n] = '\0';
     /* A directory is a step rather than a choice, so its contents are the
      * next list; a file is the answer and closes the popup. */
     if (name.n && name.p[name.n - 1] == '/') {
@@ -3084,9 +3112,9 @@ static void completion_accept(void) {
         return;
     }
     Str name = g_tui.cmds[g_tui.comp_idx[g_tui.comp_sel]].name;
-    size_t n = name.n < sizeof g_tui.input - 1 ? name.n : sizeof g_tui.input - 1;
-    memcpy(g_tui.input, name.p, n);
-    g_tui.input[n] = '\0';
+    size_t n = name.n < sizeof g_bulk.input - 1 ? name.n : sizeof g_bulk.input - 1;
+    memcpy(g_bulk.input, name.p, n);
+    g_bulk.input[n] = '\0';
     g_tui.input_n = n;
     g_tui.input_cur = n;
     /* Showing the one entry a complete name still matches is noise. */
@@ -3131,7 +3159,7 @@ static b8 history_recall(i32 dir, char *buf, size_t *n, size_t *cur) {
     Str entry;
     if (dir < 0) {
         if (!history_browsing(h)) {
-            memcpy(g_tui.draft, buf, *n);
+            memcpy(g_bulk.draft, buf, *n);
             g_tui.draft_n = *n;
         }
         if (!history_prev(h, &entry)) return false;
@@ -3140,13 +3168,13 @@ static b8 history_recall(i32 dir, char *buf, size_t *n, size_t *cur) {
     }
     if (!history_browsing(h)) return false;
     if (history_next(h, &entry)) { composer_load(buf, n, cur, entry); return true; }
-    composer_load(buf, n, cur, (Str){ g_tui.draft, g_tui.draft_n });
+    composer_load(buf, n, cur, (Str){ g_bulk.draft, g_tui.draft_n });
     return true;
 }
 
 void tui_set_input(Str s) {
     if (!g_tui.fullscreen) return;
-    composer_load(g_tui.input, &g_tui.input_n, &g_tui.input_cur, s);
+    composer_load(g_bulk.input, &g_tui.input_n, &g_tui.input_cur, s);
     g_tui.comp_dismissed = false;
     completion_refresh();
     repaint();
@@ -3511,13 +3539,13 @@ static b8 ask_impl(Str question, b8 secret, char *out, size_t cap,
     size_t saved_notice_n = g_tui.notice_n;
     size_t saved_comp_n = g_tui.comp_n;
     b8 saved_editing = g_tui.editing;
-    memcpy(saved_input, g_tui.input, saved_n);
+    memcpy(saved_input, g_bulk.input, saved_n);
     memcpy(saved_notice, g_tui.notice, sizeof saved_notice);
 
     g_tui.ask = true;
     g_tui.ask_secret = secret;
     g_tui.editing = true;
-    if (initial_n) memcpy(g_tui.input, out, initial_n);
+    if (initial_n) memcpy(g_bulk.input, out, initial_n);
     g_tui.input_n = initial_n;
     g_tui.input_cur = initial_n;
     g_tui.comp_n = 0;
@@ -3544,28 +3572,28 @@ static b8 ask_impl(Str question, b8 secret, char *out, size_t cap,
             if (key == KEY_NONE) break;             /* bare Esc cancels */
             scroll_key(key);
         } else if (c == 0x7f || c == 0x08) {
-            if (g_tui.input_n) g_tui.input_n = prev_glyph(g_tui.input, g_tui.input_n);
+            if (g_tui.input_n) g_tui.input_n = prev_glyph(g_bulk.input, g_tui.input_n);
         } else if (c == 0x15) {
             g_tui.input_n = 0;
         } else if (((c >= 0x20 && c < 0x7f) || c >= 0x80)
                    && g_tui.input_n < limit) {
-            g_tui.input[g_tui.input_n++] = (char)c;
+            g_bulk.input[g_tui.input_n++] = (char)c;
         }
         g_tui.input_cur = g_tui.input_n;
         repaint();
     }
 
     size_t n = answered ? g_tui.input_n : 0;
-    memcpy(out, g_tui.input, n);
+    memcpy(out, g_bulk.input, n);
     out[n] = '\0';
 
     /* A secret has no reason to stay in a buffer the composer keeps for the
      * rest of the session. */
-    memset(g_tui.input, 0, g_tui.input_n);
+    memset(g_bulk.input, 0, g_tui.input_n);
     g_tui.ask = false;
     g_tui.ask_secret = false;
     g_tui.editing = saved_editing;
-    memcpy(g_tui.input, saved_input, saved_n);
+    memcpy(g_bulk.input, saved_input, saved_n);
     g_tui.input_n = saved_n;
     g_tui.input_cur = saved_cur;
     g_tui.comp_n = saved_comp_n;
@@ -3611,9 +3639,9 @@ static void paste_byte(i32 c) {
     else if ((c >= 0x20 && c < 0x7f) || c >= 0x80) run[run_n++] = (char)c;
     else return;
 
-    char *buf = g_tui.input;
+    char *buf = g_bulk.input;
     size_t n = g_tui.input_n, cur = g_tui.input_cur;
-    if (n + run_n >= sizeof g_tui.input) return;
+    if (n + run_n >= sizeof g_bulk.input) return;
     memmove(buf + cur + run_n, buf + cur, n - cur);
     memcpy(buf + cur, run, run_n);
     cur += run_n; n += run_n; buf[n] = '\0';
@@ -3626,8 +3654,8 @@ static void paste_byte(i32 c) {
  * keep-typing-while-busy path. */
 static EdAction editor_key(i32 c) {
     if (g_tui.pasting && c != 0x1b) { paste_byte(c); return ED_EDIT; }
-    char *buf = g_tui.input;
-    const size_t cap = sizeof g_tui.input;
+    char *buf = g_bulk.input;
+    const size_t cap = sizeof g_bulk.input;
     size_t n = g_tui.input_n, cur = g_tui.input_cur;
     EdAction action = ED_EDIT;
     /* Anything but the mouse itself invalidates a highlight, as a keystroke
@@ -3772,7 +3800,7 @@ static EdAction editor_key(i32 c) {
 static void composer_clear(void) {
     g_tui.notice_n = 0;
     g_tui.esc_armed = false;
-    g_tui.input[0] = '\0';
+    g_bulk.input[0] = '\0';
     g_tui.input_n = 0;
     g_tui.input_cur = 0;
     g_tui.comp_n = 0;
@@ -3796,13 +3824,13 @@ void tui_set_busy_command(b8 (*fn)(Str line, void *ud), void *ud) {
  * before the hook runs, since a screen it opens owns the popup afterwards,
  * and the text is handed back when the command was refused. */
 static void busy_submit(void) {
-    if (!g_busy_cmd || !g_tui.input_n || g_tui.input[0] != '/') return;
+    if (!g_busy_cmd || !g_tui.input_n || g_bulk.input[0] != '/') return;
     /* A line longer than any command is prose that happens to start with a
      * slash, and it waits in the composer like every other message. */
     char cmd[256];
     size_t n = g_tui.input_n;
     if (n >= sizeof cmd) return;
-    memcpy(cmd, g_tui.input, n);
+    memcpy(cmd, g_bulk.input, n);
     cmd[n] = '\0';
     composer_clear();
     if (g_busy_cmd((Str){cmd, n}, g_busy_cmd_ud)) {
@@ -3903,7 +3931,7 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
         }
         if (action == ED_SUBMIT) {
             size_t n = g_tui.input_n < cap ? g_tui.input_n : cap - 1;
-            memcpy(buf, g_tui.input, n);
+            memcpy(buf, g_bulk.input, n);
             buf[n] = '\0';
             /* Here, so the slash commands the caller consumes are recallable
              * too. */
