@@ -32,6 +32,9 @@
 #include <string.h>
 #include <signal.h>
 #include <sys/stat.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 #include <unistd.h>
 
 static volatile sig_atomic_t g_got_sigint = 0;
@@ -2283,6 +2286,12 @@ static void write_final_reply(const Conv *conv) {
 }
 
 i32 main(i32 argc, char **argv) {
+#ifdef PR_SET_THP_DISABLE
+    /* The large static arenas and TUI buffers are sparse. Under an "always"
+     * THP policy a few writes would otherwise make their unused capacity
+     * resident in 2 MiB increments. */
+    (void)prctl(PR_SET_THP_DISABLE, 1L, 0L, 0L, 0L);
+#endif
     CliOpts opts;
     switch (cli_parse(argc, argv, &opts)) {
         case CLI_DONE:  return 0;
