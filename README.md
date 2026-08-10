@@ -146,6 +146,13 @@ latency.
 Private dirty is memory written for this process alone; RSS also counts
 resident shared libraries and file-backed pages.
 
+## License
+
+Except where otherwise noted, yoke is licensed under the
+[Mozilla Public License 2.0](LICENSE). Vendored Tree-sitter components retain
+their upstream licenses under
+[`vendor/tree-sitter/licenses/`](vendor/tree-sitter/licenses/).
+
 ## Development
 
 The app is a unity build: `src/main.c` includes all implementation files and
