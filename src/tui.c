@@ -1813,13 +1813,15 @@ static void repaint(void) {
     size_t overlay_rows = notice_rows + popup_rows;
     size_t transcript_rows = body_rows - overlay_rows - activity_rows;
 
-    /* Pinned to the bottom unless PageUp moved the viewport. The window is
-     * the whole body region, overlays included. */
+    /* Pinned to the bottom unless PageUp moved the viewport. Overlays stay in
+     * the window because they cover the transcript; the spinner is stacked
+     * below it and would otherwise hide the newest line. */
     size_t all_rows = wrap_scan(body_cols);
-    size_t max_scroll = all_rows > body_rows ? all_rows - body_rows : 0;
+    size_t view_rows = body_rows - activity_rows;
+    size_t max_scroll = all_rows > view_rows ? all_rows - view_rows : 0;
     if (g_tui.scroll_rows > max_scroll) g_tui.scroll_rows = max_scroll;
-    size_t first = all_rows > body_rows + g_tui.scroll_rows
-                 ? all_rows - body_rows - g_tui.scroll_rows : 0;
+    size_t first = all_rows > view_rows + g_tui.scroll_rows
+                 ? all_rows - view_rows - g_tui.scroll_rows : 0;
     if (g_tui.transcript_n == 0 && welcome_fits(body_cols, transcript_rows))
         paint_welcome(body_rows, transcript_rows, body_col, body_cols, cols,
                       force);

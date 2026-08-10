@@ -66,6 +66,24 @@ def test_scrollbar_thumb_tracks_position(ctx):
     assert bar[-1] == "\u2502", f"track expected below the thumb: {bar}"
 
 
+def test_the_thumb_reaches_the_bottom_while_streaming(ctx):
+    """A running turn keeps the newest row visible, not under the spinner.
+
+    The spinner is stacked below the transcript rather than drawn over it, so
+    counting its rows as part of the scroll window pins the view one block too
+    high and leaves the newest line off screen until the turn ends.
+    """
+    ctx.scenario("words=600,paragraphs=8,chunk=4,delay=0.02")
+    s = ctx.spawn()
+    s.submit("write a lot")
+    s.wait_for(lambda t: "\u2503" in s.scrollbar(), "a scrollable transcript")
+    # The spinner takes the last two body rows: its own and the air above it.
+    bar = s.scrollbar(popup_rows=2)
+    assert bar[-1] == "\u2503", (
+        f"thumb should reach the bottom while pinned: {bar}\n{s.text()}")
+    s.wait_turn_done()
+
+
 def test_no_scrollbar_when_everything_fits(ctx):
     """A short transcript gets a blank bar column, not a full-height thumb."""
     ctx.scenario("text=short")
