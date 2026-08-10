@@ -157,3 +157,84 @@ def test_up_still_drives_the_command_popup(ctx):
     s.type("/").sync()
     s.key("up").sync()
     assert s.composer_text() == "/", s.composer_lines()
+
+
+def multiline(s, *lines):
+    for i, line in enumerate(lines):
+        if i: s.key("newline")
+        s.type(line)
+    s.sync()
+
+
+def test_up_leaves_a_multiline_draft_only_from_its_first_row(ctx):
+    """The draft's own rows come first; history is reached off the top."""
+    s = ctx.spawn()
+    submit_all(ctx, s, "older")
+    multiline(s, "draft one", "draft two")
+    s.key("up").sync()
+    assert s.composer_body(2) == ["draft one", "draft two"], s.composer_lines(2)
+    s.key("up").sync()
+    assert s.composer_text() == "older", s.composer_lines()
+
+
+def test_down_leaves_history_and_restores_the_draft(ctx):
+    """Down off the newest entry hands the keys back to the draft."""
+    s = ctx.spawn()
+    submit_all(ctx, s, "older")
+    multiline(s, "draft one", "draft two")
+    s.key("up", "up").sync()
+    assert s.composer_text() == "older", s.composer_lines()
+    s.key("down").sync()
+    assert s.composer_body(2) == ["draft one", "draft two"], s.composer_lines(2)
+
+
+def test_recalled_entry_keeps_browsing_until_it_is_edited(ctx):
+    """Up on a recalled multi-line entry walks history, not its rows."""
+    s = ctx.spawn()
+    ctx.scenario("text=ok")
+    multiline(s, "first line", "second line")
+    s.key("enter")
+    s.wait_turn_done()
+    submit_all(ctx, s, "newest")
+
+    s.key("up").sync()
+    assert s.composer_text() == "newest", s.composer_lines()
+    s.key("up").sync()
+    assert s.composer_body(2) == ["first line", "second line"], s.composer_lines(2)
+    # Still browsing: the caret sits in a two-row entry but Up is history's.
+    s.key("down").sync()
+    assert s.composer_text() == "newest", s.composer_lines()
+
+
+def test_editing_a_recall_returns_up_to_the_draft(ctx):
+    """A typed character ends recall, so Up walks the entry's rows again."""
+    s = ctx.spawn()
+    ctx.scenario("text=ok")
+    multiline(s, "first line", "second line")
+    s.key("enter")
+    s.wait_turn_done()
+    submit_all(ctx, s, "newest")
+
+    s.key("up", "up").sync()
+    assert s.composer_body(2) == ["first line", "second line"], s.composer_lines(2)
+    s.type("!").sync()
+    s.key("up").sync()
+    s.type("X").sync()
+    assert s.composer_body(2) == ["first lineX", "second line!"], s.composer_lines(2)
+
+
+def test_a_plain_arrow_ends_recall(ctx):
+    """Left is an edit-mode key: after it Up belongs to the draft's rows."""
+    s = ctx.spawn()
+    ctx.scenario("text=ok")
+    multiline(s, "first line", "second line")
+    s.key("enter")
+    s.wait_turn_done()
+    submit_all(ctx, s, "newest")
+
+    s.key("up", "up").sync()
+    s.key("left").sync()
+    s.key("up").sync()
+    assert s.composer_body(2) == ["first line", "second line"], "no older entry"
+    s.type("X").sync()
+    assert s.composer_body(2) == ["first liXne", "second line"], s.composer_lines(2)

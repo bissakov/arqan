@@ -286,3 +286,66 @@ def test_pasted_tab_becomes_spaces(ctx):
     s.paste("if x:\n\tpass")
     s.sync()
     assert s.composer_body(2) == ["if x:", "    pass"], s.composer_lines(2)
+
+
+def test_up_moves_between_draft_lines(ctx):
+    """Up walks the draft's own rows instead of leaving for history."""
+    s = ctx.spawn()
+    s.type("abcdef")
+    s.key("newline")
+    s.type("ghijkl").sync()
+    s.key("up").sync()
+    s.type("X").sync()
+    assert s.composer_body(2) == ["abcdXef", "ghijkl"], s.composer_lines(2)
+
+
+def test_down_moves_back_to_the_lower_line(ctx):
+    """Down mirrors Up, landing on the column the run started from."""
+    s = ctx.spawn()
+    s.type("abcdef")
+    s.key("newline")
+    s.type("ghijkl").sync()
+    s.key("up", "down").sync()
+    s.type("Y").sync()
+    assert s.composer_body(2) == ["abcdef", "ghijklY"], s.composer_lines(2)
+
+
+def test_vertical_motion_keeps_its_goal_column(ctx):
+    """Crossing a short row does not shorten the rows after it."""
+    s = ctx.spawn()
+    s.type("aaaaaaaa")
+    s.key("newline")
+    s.type("bb")
+    s.key("newline")
+    s.type("cccccccc").sync()
+    s.key("up", "up").sync()
+    s.type("X").sync()
+    # The first row carries the two-cell prompt, so the same screen column is
+    # two bytes earlier in its text.
+    assert s.composer_body(3) == ["aaaaaaXaa", "bb", "cccccccc"], s.composer_lines(3)
+
+
+def test_up_walks_wrapped_rows(ctx):
+    """A soft-wrapped line is two rows to walk, not one."""
+    s = ctx.spawn(cols=40, rows=20)
+    body = "w" * 34            # 40 cols - 2*2 gutter - 2 prompt cells
+    s.type(body + "tail").sync()
+    s.key("up").sync()
+    s.type("X").sync()
+    assert s.composer_text(2) == body[:2] + "X" + body[2:] + "tail", s.composer_lines(2)
+
+
+def test_up_pages_through_a_tall_draft(ctx):
+    """Walking off the top of the composer box scrolls it, one row at a time."""
+    s = ctx.spawn(cols=60, rows=24)
+    for i in range(12):
+        s.type(f"line{i}")
+        s.key("newline")
+    s.type("last").sync()
+    assert "line0" not in s.text(), "the oldest rows start out of view"
+    for _ in range(12):
+        s.key("up")
+    s.sync()
+    text = s.text()
+    assert "line0" in text, text
+    assert "last" not in text, "the box scrolled past the bottom rows"

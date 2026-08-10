@@ -195,6 +195,14 @@ typedef struct {
      * running is still here when the next prompt opens. */
     size_t input_n;
     size_t input_cur;
+    /* Vertical motion inside the composer. `input_top` is the visual row the
+     * composer window starts at, kept across frames so a tall draft scrolls
+     * by the row the cursor left rather than snapping to the caret; the goal
+     * column holds the cell a run of Up/Down aims for, so crossing a short
+     * row does not shorten the ones after it. */
+    size_t input_top;
+    size_t goal_col;
+    b8 goal_col_valid;
     /* The registered command table plus the filtered view of it on screen. */
     const TuiCmd *cmds;
     const TuiMark *marks;   /* parallel to cmds, or NULL for none          */
@@ -244,6 +252,11 @@ typedef struct {
      * displaced. */
     History *hist;
     size_t draft_n;
+    /* Up and Down walk the draft's own rows; they recall history only from
+     * its first and last row, and keep recalling while this is set. Any key
+     * that is not a recall or a viewport move clears it, so editing a
+     * recalled entry hands the two keys back to the draft. */
+    b8 hist_nav;
     /* What the frame put on screen, one entry per row: what selection
      * highlights and copies, so any painted cell is selectable without
      * re-deriving its source. */
@@ -720,6 +733,34 @@ static size_t text_rows(Str s, size_t cols, size_t prompt_cells,
         col0 = 0;
     }
     return row + 1;
+}
+
+/* The byte the caret lands on when it moves to cell `want_col` of visual row
+ * `want_row`, breaking the text exactly as text_rows counts it. A column past
+ * the end of that row lands on its last byte, and a row past the end of the
+ * text lands on the end of the text. */
+static size_t row_col_off(Str s, size_t cols, size_t prompt_cells,
+                          size_t want_row, size_t want_col) {
+    size_t row = 0, col0 = prompt_cells;
+    for (size_t i = 0;;) {
+        Row r = row_break(s, i, cols, col0);
+        if (row == want_row) {
+            size_t at = col0, j = i;
+            while (j < r.end) {
+                i32 w = 0;
+                size_t used = glyph(s.p + j, s.n - j, &w);
+                size_t cw = w > 0 ? (size_t)w : 0;
+                if (at + cw > want_col) break;
+                at += cw;
+                j += used;
+            }
+            return j;
+        }
+        if (r.hard && r.end >= s.n) return s.n;
+        i = r.next;
+        row++;
+        col0 = 0;
+    }
 }
 
 static void put_safe_clipped(Str s, size_t max_cells, size_t *used_cells) {
@@ -1548,10 +1589,17 @@ static size_t justify_pad(Str text, u8 kind, Row r, size_t cols,
     return row_gaps(text) ? pad : 0;
 }
 
+/* Bytes at the head of the composer painted as the prompt rather than as
+ * text: a shell line's '!' is the marker, so a motion measured over the
+ * buffer must skip it to land where the caret is drawn. */
+static size_t composer_marker(const char *buf, size_t n) {
+    return !g_tui.ask && n > 0 && buf[0] == '!' ? 1 : 0;
+}
+
 /* A composed line starting with '!' runs in the shell instead of reaching
  * the model, which the composer's marker announces. */
 static b8 composer_shell(void) {
-    return !g_tui.ask && g_tui.input_n > 0 && g_bulk.input[0] == '!';
+    return composer_marker(g_bulk.input, g_tui.input_n) != 0;
 }
 
 /* `base_off` is where `s` starts inside the transcript, so spans still line
@@ -2198,8 +2246,19 @@ static void repaint(void) {
                       body_col, cols, body_cols, force);
 
     /* Composer, including one quiet row of breathing room on each side. */
-    size_t input_first = cursor_row >= composer_rows
-                       ? cursor_row - composer_rows + 1 : 0;
+    /* The window over a draft taller than the box scrolls by the row the
+     * caret leaves rather than snapping to it, so walking a long draft pages
+     * through it and the rows around the caret stay where the reader put
+     * them. It is only ever moved far enough to keep the caret in view, and
+     * never past the last row of the text. */
+    size_t input_first = g_tui.input_top;
+    size_t input_max_top = input_rows > composer_rows
+                         ? input_rows - composer_rows : 0;
+    if (input_first > input_max_top) input_first = input_max_top;
+    if (cursor_row < input_first) input_first = cursor_row;
+    else if (cursor_row >= input_first + composer_rows)
+        input_first = cursor_row - composer_rows + 1;
+    g_tui.input_top = input_first;
     size_t composer_top_row = overlay_top + overlay_rows;
     size_t composer_screen_row = composer_top_row + composer_padding;
     if (composer_padding)
@@ -3643,6 +3702,7 @@ void tui_set_justify(b8 on) {
 void tui_set_history(History *h) {
     g_tui.hist = h;
     g_tui.draft_n = 0;
+    g_tui.hist_nav = false;
     if (h) history_reset_cursor(h);
 }
 
@@ -3652,6 +3712,31 @@ static void composer_load(char *buf, size_t *n, size_t *cur, Str s) {
     buf[take] = '\0';
     *n = take;
     *cur = take;
+    /* Different text, so the window and the goal column of whatever was on
+     * screen mean nothing. */
+    g_tui.input_top = 0;
+    g_tui.goal_col_valid = false;
+}
+
+/* Up or Down over the draft's own visual rows, wrapped ones included, aiming
+ * at the column the run of moves started from. False when there is no row
+ * that way, which is the caller's cue to hand the key to history recall. */
+static b8 composer_move_row(i32 dir, const char *buf, size_t n, size_t *cur) {
+    size_t mark = composer_marker(buf, n);
+    Str s = { (char *)buf + mark, n - mark };
+    size_t view_cur = *cur > mark ? *cur - mark : 0;
+    size_t cols = tui_body_cols();
+    if (!cols) return false;
+    size_t row = 0, col = 0;
+    size_t total = text_rows(s, cols, 2, view_cur, &row, &col);
+    if (dir < 0 ? row == 0 : row + 1 >= total) return false;
+    if (!g_tui.goal_col_valid) {
+        g_tui.goal_col = col;
+        g_tui.goal_col_valid = true;
+    }
+    size_t want = dir < 0 ? row - 1 : row + 1;
+    *cur = mark + row_col_off(s, cols, 2, want, g_tui.goal_col);
+    return true;
 }
 
 /* Stepping off the newest entry brings back the draft the first Up put
@@ -3679,6 +3764,7 @@ void tui_set_input(Str s) {
     if (!g_tui.fullscreen) return;
     composer_load(g_bulk.input, &g_tui.input_n, &g_tui.input_cur, s);
     g_tui.comp_dismissed = false;
+    g_tui.hist_nav = false;
     completion_refresh();
     repaint();
 }
@@ -4252,6 +4338,10 @@ static EdAction editor_key(i32 c) {
     b8 keep_sel = false;
     /* A recall is not typing: it must not reopen a dismissed popup. */
     b8 recalled = false;
+    /* A vertical move keeps the column a run of them aims for, and only the
+     * keys that do not edit keep the history-recall mode Up/Down enter. */
+    b8 vertical = false;
+    b8 keep_nav = false;
     /* Only a second Esc rewinds, so the arming is consumed here. */
     b8 was_armed = g_tui.esc_armed;
     g_tui.esc_armed = false;
@@ -4325,7 +4415,9 @@ static EdAction editor_key(i32 c) {
         else if (key == KEY_PREV_WORD) cur = prev_word(buf, cur);
         else if (key == KEY_NEXT_WORD) cur = next_word(buf, n, cur);
         else if (scroll_key(key)) {
-            /* The viewport moved; the draft did not. */
+            /* The viewport moved; the draft did not, so neither the goal
+             * column nor a recall in progress is disturbed. */
+            vertical = true; keep_nav = true;
         } else if (key == KEY_MOUSE_DOWN) {
             sel_begin(g_mouse_row, g_mouse_col); keep_sel = true;
             g_tui.click_down = zone_at_cell(g_mouse_row, g_mouse_col);
@@ -4333,7 +4425,7 @@ static EdAction editor_key(i32 c) {
             sel_extend(g_mouse_row, g_mouse_col); keep_sel = true;
         } else if (key == KEY_MOUSE_MOVE) {
             g_tui.hover_id = zone_at_cell(g_mouse_row, g_mouse_col);
-            keep_sel = true;
+            keep_sel = true; vertical = true; keep_nav = true;
         } else if (key == KEY_MOUSE_UP) {
             /* A click, not a drag: a range being selected is a copy, and the
              * zone it starts in is not what the pointer meant. */
@@ -4347,8 +4439,24 @@ static EdAction editor_key(i32 c) {
             action = ED_MODE;
         } else if (g_tui.comp_n && (key == KEY_DOWN || key == KEY_UP)) {
             completion_move(key == KEY_DOWN ? 1 : -1);
+            keep_nav = true;
         } else if (key == KEY_UP || key == KEY_DOWN) {
-            recalled = history_recall(key == KEY_UP ? -1 : 1, buf, &n, &cur);
+            /* Inside a multi-line draft the two keys walk its own rows.
+             * History is reached from the first row going up and the last
+             * going down, and it then keeps them until the draft is edited,
+             * so a recalled entry is browsed rather than walked. */
+            i32 dir = key == KEY_UP ? -1 : 1;
+            vertical = true;
+            if (!g_tui.hist_nav && composer_move_row(dir, buf, n, &cur)) {
+                keep_nav = true;
+            } else {
+                recalled = history_recall(dir, buf, &n, &cur);
+                /* Stepping back down onto the draft hands the keys back to
+                 * it; anything else on screen is still history. */
+                g_tui.hist_nav = recalled && g_tui.hist
+                              && history_browsing(g_tui.hist);
+                keep_nav = true;
+            }
         } else if (key == KEY_NONE && g_tui.comp_n) {
             g_tui.comp_dismissed = true;   /* bare Esc closes the popup */
         } else if (key == KEY_NONE && was_armed) {
@@ -4375,6 +4483,10 @@ static EdAction editor_key(i32 c) {
     }
 
     if (!keep_sel) sel_clear();
+    /* Editing, or any motion that is not vertical, returns Up and Down to the
+     * draft and drops the column a run of them was aiming for. */
+    if (!keep_nav) g_tui.hist_nav = false;
+    if (!vertical) g_tui.goal_col_valid = false;
     g_tui.input_n = n;
     g_tui.input_cur = cur;
     /* Any change to the text reopens a popup an earlier Esc/Tab closed. */
@@ -4396,6 +4508,9 @@ static void composer_clear(void) {
     g_tui.comp_sel = 0;
     g_tui.comp_dismissed = false;
     g_tui.draft_n = 0;
+    g_tui.hist_nav = false;
+    g_tui.input_top = 0;
+    g_tui.goal_col_valid = false;
     if (g_tui.hist) history_reset_cursor(g_tui.hist);
 }
 
