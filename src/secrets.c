@@ -4,8 +4,8 @@
  * store that yoke only asks. The second kind is named by a `key_source` line
  * in the credentials file:
  *
- *   [provider openai]
- *   key_source = secret-service
+ *   [providers.openai]
+ *   key_source = "secret-service"
  *
  * and yoke builds the helper's argv itself from the table below, so the file
  * carries a keyword rather than a command. `key_source = command` is the
@@ -16,7 +16,7 @@
  * the config file:
  *
  *   - A source directive is a request to execute a program, so it lives only
- *     in $XDG_STATE_HOME/yoke/credentials, which is mode 0600, machine-local
+ *     in $XDG_STATE_HOME/yoke/credentials.toml, which is mode 0600, machine-local
  *     and never carried by a dotfile repository. The config file stays inert
  *     data that is safe to commit and share; endpoints.c warns when a config
  *     section names one of these keys and ignores it.

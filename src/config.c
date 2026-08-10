@@ -1,14 +1,24 @@
-/* config.c: load Config from the environment and the settings files.
+/* config.c: every setting yoke has, in one table, resolved once.
  *
- * Keys, all at the head of the config file: base_url, model, api_key, api,
- * max_tokens, max_messages, stream, mode, retries, retry_delay_ms,
- * disable_tools. A "[provider
- * <name>]" section of the same file is an endpoint (see endpoints.c).
- * The system prompt is not a key here: it is a document, so it lives in
- * SYSTEM.md (see prompt.c).
- * Precedence: CLI > env var YOKE_<KEY> > remembered UI state > the active
- * provider > $XDG_CONFIG_HOME/yoke/config > the same file in each
- * $XDG_CONFIG_DIRS entry. See paths.c for the directories.
+ * A setting is a row of k_conf: the name it has in a file, its type, its
+ * bounds and whether a project file may set it. That name is also its
+ * environment variable, upper-cased under YOKE_, and the name the state file
+ * remembers it by, so a new setting is a row rather than a branch in each of
+ * five readers.
+ *
+ * Sources are read lowest precedence first (see ConfOrigin); a write from an
+ * origin below the one already recorded is dropped, which is the whole of the
+ * precedence rule. A value a source may not set, or one outside its bounds,
+ * is reported and dropped rather than clamped: a mistyped line should fall
+ * through to the value below it, not shadow it with something nobody wrote.
+ *
+ * A project's .yoke/config.toml arrives with a `git clone`, so it is not
+ * trusted with anything that names a secret or chooses what yoke runs:
+ * `api_key` is refused there, and the key directives are refused in every
+ * config file (see endpoints.c and secrets.c).
+ *
+ * The system prompt is not a row here: it is a document, so it lives in
+ * SYSTEM.md (see prompt.c). Only YOKE_SYSTEM_PROMPT and --system set it.
  */
 #include "yoke.h"
 
@@ -17,100 +27,304 @@
 #include <string.h>
 #include <unistd.h>
 
-static Str env_str(Arena *a, const char *name) {
-    const char *v = getenv(name);
-    if (!v || !*v) return (Str){0};
-    return str_dup(a, str_c(v));
+typedef enum { CV_STR, CV_NUM, CV_BOOL, CV_ENUM } ConfType;
+
+typedef struct {
+    const char *name;
+    const char *dflt;
+    const char *options;   /* CV_ENUM: every value it may take            */
+    ConfType    type;
+    i64         lo, hi;    /* CV_NUM: the range, refused outside          */
+    size_t      max_len;   /* CV_STR: longer is refused, never truncated  */
+    b8          project;   /* may a project's .yoke/config.toml set it    */
+} ConfSpec;
+
+#define CONF_TEXT2(x) #x
+#define CONF_TEXT(x)  CONF_TEXT2(x)
+/* The status field mask has one bit per field, so its default is all of
+ * them; a literal is needed because the table's defaults are text. */
+_Static_assert(YOKE_STATUS_FIELDS == 9, "the status_fields default is 511");
+
+static const ConfSpec k_conf[CONF_N] = {
+    [CONF_PROVIDER] = { "provider", "", NULL, CV_STR, 0, 0,
+                        YOKE_MAX_ENDPOINT_NAME, true },
+    [CONF_BASE_URL] = { "base_url", "", NULL, CV_STR, 0, 0,
+                        YOKE_MAX_URL, true },
+    [CONF_MODEL]    = { "model", "", NULL, CV_STR, 0, 0,
+                        YOKE_MAX_MODEL_NAME, true },
+    [CONF_API]      = { "api", "openai", "openai,anthropic", CV_ENUM,
+                        0, 0, 0, true },
+    /* Never from a project file: a repository must not be able to hand a
+     * key to the endpoint it also names. */
+    [CONF_API_KEY]  = { "api_key", "", NULL, CV_STR, 0, 0,
+                        YOKE_MAX_API_KEY, false },
+    [CONF_MAX_TOKENS]     = { "max_tokens", CONF_TEXT(YOKE_MAX_TOKENS), NULL,
+                              CV_NUM, 1, 1 << 20, 0, true },
+    [CONF_MAX_MESSAGES]   = { "max_messages", CONF_TEXT(YOKE_MAX_MESSAGES),
+                              NULL, CV_NUM, 8, 1 << 20, 0, true },
+    [CONF_STREAM]         = { "stream", "true", NULL, CV_BOOL, 0, 0, 0, true },
+    [CONF_MODE]           = { "mode", "build", "build,plan", CV_ENUM,
+                              0, 0, 0, true },
+    [CONF_RETRIES]        = { "retries", CONF_TEXT(YOKE_RETRIES), NULL,
+                              CV_NUM, 0, 16, 0, true },
+    [CONF_RETRY_DELAY_MS] = { "retry_delay_ms", CONF_TEXT(YOKE_RETRY_DELAY_MS),
+                              NULL, CV_NUM, 0, YOKE_MAX_RETRY_DELAY_MS, 0,
+                              true },
+    /* "none" rather than an empty value: an empty value removes the key,
+     * which would read as "nothing was ever chosen" on the next run. */
+    [CONF_DISABLE_TOOLS]  = { "disable_tools", "", NULL, CV_STR, 0, 0,
+                              YOKE_MAX_TOOL_LIST, true },
+    [CONF_VERBOSE_TOOLS]  = { "verbose_tools", "false", NULL, CV_BOOL,
+                              0, 0, 0, true },
+    [CONF_RAW_MARKDOWN]   = { "raw_markdown", "false", NULL, CV_BOOL,
+                              0, 0, 0, true },
+    [CONF_SHOW_IGNORED]   = { "show_ignored", "false", NULL, CV_BOOL,
+                              0, 0, 0, true },
+    [CONF_SHOW_INSTRUCTIONS] = { "show_instructions", "false", NULL, CV_BOOL,
+                                 0, 0, 0, true },
+    [CONF_WRAP]           = { "wrap", "word", "word,justified", CV_ENUM,
+                              0, 0, 0, true },
+    [CONF_STATUS_FIELDS]  = { "status_fields", "511", NULL, CV_NUM,
+                              0, 511, 0, true },
+    /* Recording is the user's decision about their own machine, so a cloned
+     * repository does not get to make it. */
+    [CONF_TELEMETRY]      = { "telemetry", "false", NULL, CV_BOOL,
+                              0, 0, 0, false },
+};
+
+Str conf_key_name(ConfKey k) {
+    return k < CONF_N ? str_c(k_conf[k].name) : (Str){0};
 }
 
-/* Bounds every numeric setting: a config file or environment is not a
- * trusted source of array capacities. */
-static size_t clamp_size(i64 v, size_t lo, size_t hi) {
-    if (v < 0 || (u64)v < lo) return lo;
-    if ((u64)v > hi) return hi;
-    return (size_t)v;
+/* ---- values -------------------------------------------------------------- */
+
+static b8 conf_bool_value(Str v, b8 *out) {
+    if (str_eq(v, STR("true")) || str_eq(v, STR("on"))) { *out = true; return true; }
+    if (str_eq(v, STR("false")) || str_eq(v, STR("off"))) { *out = false; return true; }
+    return false;
 }
 
-/* False when the variable is unset or is not a number, which leaves the
- * setting as whatever set it before. */
-static b8 env_num(const char *name, size_t lo, size_t hi, size_t *out) {
-    const char *v = getenv(name);
-    if (!v || !*v) return false;
+/* True when `v` is one of the comma separated `options`. */
+static b8 conf_option_has(const char *options, Str v) {
+    Str all = str_c(options);
+    size_t start = 0;
+    for (size_t i = 0; i <= all.n; i++) {
+        if (i != all.n && all.p[i] != ',') continue;
+        if (str_eq(str_trim((Str){ all.p + start, i - start }), v)) return true;
+        start = i + 1;
+    }
+    return false;
+}
+
+b8 conf_value_ok(ConfKey k, Str val) {
+    if (k >= CONF_N) return false;
+    const ConfSpec *sp = &k_conf[k];
+    switch (sp->type) {
+        case CV_STR:  return val.n <= sp->max_len;
+        case CV_ENUM: return conf_option_has(sp->options, val);
+        case CV_BOOL: { b8 b; return conf_bool_value(val, &b); }
+        case CV_NUM: {
+            b8 ok = false;
+            i64 n = str_int(val, &ok);
+            return ok && n >= sp->lo && n <= sp->hi;
+        }
+    }
+    return false;
+}
+
+Str conf_str(const Conf *c, ConfKey k) {
+    return k < CONF_N ? c->val[k] : (Str){0};
+}
+
+i64 conf_num(const Conf *c, ConfKey k) {
     b8 ok = false;
-    i64 n = str_int(str_c(v), &ok);
-    if (!ok) return false;
-    *out = clamp_size(n, lo, hi);
-    return true;
+    i64 n = str_int(conf_str(c, k), &ok);
+    return ok ? n : 0;
 }
 
-/* Copies `src` into `persist` over `*dst` unless it is empty or `blocked` by
- * a higher-precedence source. True when it landed, which is what tells
- * base_url it has one. */
-static b8 config_str(Arena *persist, Str src, b8 blocked, Str *dst) {
-    if (!src.n || blocked) return false;
-    Str v = str_dup(persist, src);
-    if (!v.p) return false;
-    *dst = v;
-    return true;
+b8 conf_bool(const Conf *c, ConfKey k) {
+    b8 out = false;
+    conf_bool_value(conf_str(c, k), &out);
+    return out;
 }
 
-/* Keys the environment already set: no config file may override them. */
-typedef struct { b8 base, model, key, api, msgs, tools; } EnvSet;
+/* ---- resolution ---------------------------------------------------------- */
 
-/* Every key read here is the file's top-level one: a named section is a
- * provider, which endpoints.c reads. */
-static Str top_key(const Settings *s, Str key) {
-    return settings_get(s, (Str){0}, key);
+static Str conf_dup(Arena *a, Str s) {
+    return s.n ? str_dup(a, s) : (Str){0};
 }
 
-static b8 config_num(const Settings *s, Str key, size_t lo, size_t hi,
-                     size_t *out) {
-    Str v = top_key(s, key);
-    if (!v.n) return false;
-    b8 ok = false;
-    i64 m = str_int(v, &ok);
-    if (!ok) return false;
-    *out = clamp_size(m, lo, hi);
-    return true;
+/* One value from one source. `where` names the file for a diagnostic and is
+ * empty for the built-in defaults. */
+static void conf_take(Conf *c, ConfKey k, Str v, ConfOrigin o, Str where,
+                      Arena *persist) {
+    const ConfSpec *sp = &k_conf[k];
+    if (o == CONF_FROM_PROJECT && !sp->project) {
+        yoke_log(YOKE_LOG_WARN, "ignoring %s in %.*s: a project file may not "
+                 "set it", sp->name, (i32)where.n, where.p);
+        return;
+    }
+    if (!conf_value_ok(k, v)) {
+        yoke_log(YOKE_LOG_WARN, "ignoring %s in %.*s: %.*s is not a value it "
+                 "takes", sp->name, (i32)where.n, where.p, (i32)v.n, v.p);
+        return;
+    }
+    if (c->origin[k] > o) return;
+    /* An empty value is "unset", and callers that pass the string to curl or
+     * test for a pointer must not see an allocated empty one. */
+    Str dup = v.n ? str_dup(persist, v) : (Str){0};
+    if (v.n && !dup.p) return;
+    c->val[k] = dup;
+    c->origin[k] = (u8)o;
 }
 
-static void config_apply_file(Config *c, Str path, EnvSet env,
-                              Arena *persist, Arena *scratch) {
+/* Top-level keys of one settings file. A named section is a provider, which
+ * endpoints.c reads. */
+static void conf_apply_settings(Conf *c, const Settings *s, ConfOrigin o,
+                                Str where, Arena *persist) {
+    for (size_t i = 0; i < s->n; i++) {
+        if (s->section[i].n) continue;
+        ConfKey k = CONF_N;
+        for (ConfKey j = 0; j < CONF_N; j++)
+            if (str_eq(s->key[i], str_c(k_conf[j].name))) { k = j; break; }
+        if (k == CONF_N) {
+            /* The state file is yoke's own and may carry a key this build no
+             * longer has; a config file is the user's and a typo in it is
+             * worth saying out loud. */
+            if (o != CONF_FROM_STATE)
+                yoke_log(YOKE_LOG_WARN, "unknown setting %.*s in %.*s",
+                         (i32)s->key[i].n, s->key[i].p,
+                         (i32)where.n, where.p);
+            continue;
+        }
+        conf_take(c, k, s->val[i], o, where, persist);
+    }
+}
+
+static void conf_apply_file(Conf *c, Str path, ConfOrigin o, Arena *persist,
+                            Arena *scratch) {
     size_t mark = scratch->off;
     Settings s;
-    if (!settings_load(&s, path, scratch)) { scratch->off = mark; return; }
-
-    if (config_str(persist, top_key(&s, STR("base_url")), env.base,
-                   &c->base_url))
-        c->base_url_set = true;
-    config_str(persist, top_key(&s, STR("model")), env.model, &c->model);
-    config_str(persist, top_key(&s, STR("api_key")), env.key, &c->api_key);
-    config_str(persist, top_key(&s, STR("disable_tools")), env.tools,
-               &c->disable_tools);
-    Str api = top_key(&s, STR("api"));
-    if (api.n && !env.api) c->api = api_from_str(api);
-
-    size_t n;
-    if (config_num(&s, STR("max_tokens"), 1, 1u << 20, &n))
-        c->max_tokens = (i32)n;
-    if (!env.msgs && config_num(&s, STR("max_messages"), 8, 1u << 20, &n))
-        c->max_messages = n;
-    if (config_num(&s, STR("retries"), 0, 16, &n))
-        c->retries = (i32)n;
-    if (config_num(&s, STR("retry_delay_ms"), 0, YOKE_MAX_RETRY_DELAY_MS, &n))
-        c->retry_delay_ms = (i32)n;
-    Str stream = top_key(&s, STR("stream"));
-    if (stream.n) c->stream = !str_eq(stream, STR("false"));
-    Str mode = top_key(&s, STR("mode"));
-    if (str_eq(mode, STR("plan"))) c->mode = MODE_PLAN;
-    else if (str_eq(mode, STR("build"))) c->mode = MODE_BUILD;
-
+    if (settings_load(&s, path, scratch))
+        conf_apply_settings(c, &s, o, path, persist);
     scratch->off = mark;
 }
 
+/* YOKE_<NAME>, built from the key's own name so the two cannot drift. */
+static void conf_apply_env(Conf *c, Arena *persist) {
+    for (ConfKey k = 0; k < CONF_N; k++) {
+        char name[64] = "YOKE_";
+        size_t n = 5, len = strlen(k_conf[k].name);
+        if (len + n >= sizeof name) continue;
+        for (size_t i = 0; i < len; i++) {
+            char ch = k_conf[k].name[i];
+            name[n++] = ch >= 'a' && ch <= 'z' ? (char)(ch - 'a' + 'A') : ch;
+        }
+        name[n] = '\0';
+        const char *v = getenv(name);
+        if (!v || !*v) continue;
+        conf_take(c, k, str_c(v), CONF_FROM_ENV, STR("the environment"),
+                  persist);
+    }
+}
+
+/* The active provider's own settings. They sit above the state file and below
+ * the environment: the endpoint is what /provider last configured, while a
+ * variable is a statement about this one run. A `provider` naming nothing is
+ * cleared, since a name with no endpoint behind it is not a selection. */
+static void conf_apply_endpoint(Conf *c, Arena *persist, Arena *scratch) {
+    Str name = conf_str(c, CONF_PROVIDER);
+    if (!name.n) return;
+    size_t mark = scratch->off;
+    Endpoints e;
+    endpoints_load(&e, scratch);
+    size_t i = endpoints_find(&e, name);
+    if (i == ENDPOINT_NONE) {
+        yoke_log(YOKE_LOG_WARN, "no provider named %.*s is configured",
+                 (i32)name.n, name.p);
+        c->val[CONF_PROVIDER] = (Str){0};
+        scratch->off = mark;
+        return;
+    }
+    Str where = STR("the provider's settings");
+    conf_take(c, CONF_BASE_URL, e.base_url[i], CONF_FROM_ENDPOINT, where,
+              persist);
+    conf_take(c, CONF_API, api_name(e.api[i]), CONF_FROM_ENDPOINT, where,
+              persist);
+    if (e.model[i].n)
+        conf_take(c, CONF_MODEL, e.model[i], CONF_FROM_ENDPOINT, where,
+                  persist);
+
+    c->reasoning_efforts   = conf_dup(persist, e.reasoning_efforts[i]);
+    c->thinking_budgets    = conf_dup(persist, e.thinking_budgets[i]);
+    c->reasoning_effort    = conf_dup(persist, e.reasoning_effort[i]);
+    c->thinking_budget     = conf_dup(persist, e.thinking_budget[i]);
+    c->reasoning_template  = conf_dup(persist, e.reasoning_template[i]);
+    scratch->off = mark;
+
+    /* The key is kept apart from the settings, in the credentials file. */
+    char err[YOKE_MAX_PATH + 96] = {0};
+    Str key = endpoints_key(name, persist, scratch, err, sizeof err);
+    if (err[0]) yoke_log(YOKE_LOG_WARN, "%s", err);
+    if (key.n)
+        conf_take(c, CONF_API_KEY, key, CONF_FROM_ENDPOINT, where, persist);
+}
+
+void conf_resolve(Conf *c, Arena *persist, Arena *scratch) {
+    memset(c, 0, sizeof *c);
+    for (ConfKey k = 0; k < CONF_N; k++)
+        conf_take(c, k, str_c(k_conf[k].dflt), CONF_FROM_DEFAULT,
+                  STR("the defaults"), persist);
+
+    size_t mark = scratch->off;
+    Str user = paths_file(YOKE_DIR_CONFIG, YOKE_CONFIG_NAME, scratch);
+    Str files[YOKE_MAX_CONFIG_FILES];
+    size_t n = paths_config_files(YOKE_CONFIG_NAME, scratch, files,
+                                  YOKE_MAX_CONFIG_FILES);
+    for (size_t i = 0; i < n; i++)
+        conf_apply_file(c, files[i], str_eq(files[i], user) ? CONF_FROM_USER
+                                                            : CONF_FROM_SYSTEM,
+                        persist, scratch);
+
+    Str project[YOKE_MAX_PROJECT_FILES];
+    n = paths_project_files(YOKE_CONFIG_NAME, scratch, project,
+                            YOKE_MAX_PROJECT_FILES);
+    for (size_t i = 0; i < n; i++)
+        conf_apply_file(c, project[i], CONF_FROM_PROJECT, persist, scratch);
+
+    Str state = paths_file(YOKE_DIR_STATE, YOKE_STATE_NAME, scratch);
+    if (state.n) conf_apply_file(c, state, CONF_FROM_STATE, persist, scratch);
+    scratch->off = mark;
+
+    conf_apply_env(c, persist);
+    conf_apply_endpoint(c, persist, scratch);
+}
+
+b8 conf_remember(ConfKey k, Str val, Arena *scratch) {
+    if (k >= CONF_N || !conf_value_ok(k, val)) return false;
+    return state_set(conf_key_name(k), val, scratch);
+}
+
+b8 conf_remember_bool(ConfKey k, b8 on, Arena *scratch) {
+    return conf_remember(k, on ? STR("true") : STR("false"), scratch);
+}
+
+void ui_prefs_load(UiPrefs *p, const Conf *conf) {
+    memset(p, 0, sizeof *p);
+    p->verbose_tools     = conf_bool(conf, CONF_VERBOSE_TOOLS);
+    p->raw_markdown      = conf_bool(conf, CONF_RAW_MARKDOWN);
+    p->show_ignored      = conf_bool(conf, CONF_SHOW_IGNORED);
+    p->show_instructions = conf_bool(conf, CONF_SHOW_INSTRUCTIONS);
+    p->telemetry         = conf_bool(conf, CONF_TELEMETRY);
+    p->justify           = str_eq(conf_str(conf, CONF_WRAP),
+                                  STR("justified"));
+    p->status_fields     = (u64)conf_num(conf, CONF_STATUS_FIELDS);
+}
+
+/* ---- Config -------------------------------------------------------------- */
+
 b8 config_remember_model(Str model, Arena *scratch) {
-    if (!model.n || model.n >= 256) return false;
-    return state_set(STR("model"), model, scratch);
+    return conf_remember(CONF_MODEL, model, scratch);
 }
 
 static Str config_owned(char *dst, size_t cap, Str src) {
@@ -190,126 +404,48 @@ b8 config_set_reasoning(Config *c, b8 effort, Str value) {
     return true;
 }
 
-b8 config_load(Config *c, Arena *persist, Arena *scratch) {
+b8 config_load(Config *c, const Conf *conf, Arena *persist) {
     memset(c, 0, sizeof *c);
-    c->max_tokens   = YOKE_MAX_TOKENS;
-    c->max_messages = YOKE_MAX_MESSAGES;
-    c->stream       = true;
-    c->retries        = YOKE_RETRIES;
-    c->retry_delay_ms = YOKE_RETRY_DELAY_MS;
 
-    Str env_base = env_str(persist, "YOKE_BASE_URL");
-    Str env_model = env_str(persist, "YOKE_MODEL");
-    Str env_key   = env_str(persist, "YOKE_API_KEY");
-    Str env_sys   = env_str(persist, "YOKE_SYSTEM_PROMPT");
-    Str env_tools = env_str(persist, "YOKE_DISABLE_TOOLS");
-    Str env_api   = env_str(persist, "YOKE_API");
-    const char *env_msgs = getenv("YOKE_MAX_MESSAGES");
+    c->provider = conf_str(conf, CONF_PROVIDER);
+    c->base_url = conf_str(conf, CONF_BASE_URL);
+    c->base_url_set = c->base_url.n != 0;
+    c->model    = conf_str(conf, CONF_MODEL);
+    c->api_key  = conf_str(conf, CONF_API_KEY);
+    c->api = str_eq(conf_str(conf, CONF_API), STR("anthropic"))
+           ? API_ANTHROPIC : API_OPENAI;
+    c->mode = str_eq(conf_str(conf, CONF_MODE), STR("plan"))
+            ? MODE_PLAN : MODE_BUILD;
+    c->stream         = conf_bool(conf, CONF_STREAM);
+    c->max_tokens     = (i32)conf_num(conf, CONF_MAX_TOKENS);
+    c->max_messages   = (size_t)conf_num(conf, CONF_MAX_MESSAGES);
+    c->retries        = (i32)conf_num(conf, CONF_RETRIES);
+    c->retry_delay_ms = (i32)conf_num(conf, CONF_RETRY_DELAY_MS);
 
-    Str candidates[YOKE_MAX_CONFIG_FILES];
-    size_t cand_n = paths_config_files(STR("config"), scratch, candidates,
-                                       YOKE_MAX_CONFIG_FILES);
+    /* "none" is how the UI records that nothing is disabled: an empty value
+     * removes the key, which the next run would read as never chosen. */
+    Str tools = conf_str(conf, CONF_DISABLE_TOOLS);
+    c->disable_tools = str_eq(tools, STR("none")) ? (Str){0} : tools;
 
-    /* Lowest precedence first: a later file overwrites what an earlier set. */
-    EnvSet env = {
-        .base  = env_base.p != NULL,
-        .model = env_model.p != NULL,
-        .key   = env_key.p != NULL,
-        .api   = env_api.p != NULL,
-        .msgs  = env_msgs != NULL && *env_msgs != '\0',
-        .tools = env_tools.p != NULL,
-    };
-    for (size_t ci = 0; ci < cand_n; ci++)
-        config_apply_file(c, candidates[ci], env, persist, scratch);
+    c->reasoning_efforts   = conf->reasoning_efforts;
+    c->thinking_budgets    = conf->thinking_budgets;
+    c->reasoning_effort    = conf->reasoning_effort;
+    c->thinking_budget     = conf->thinking_budget;
+    c->reasoning_template  = conf->reasoning_template;
 
-    /* Remembered UI choices are newer than config files but remain below
-     * per-invocation environment variables and command-line options. */
-    Str remembered = state_get(STR("ui_stream"), persist, scratch);
-    if (remembered.n) c->stream = !str_eq(remembered, STR("false"));
-    remembered = state_get(STR("ui_mode"), persist, scratch);
-    if (str_eq(remembered, STR("plan"))) c->mode = MODE_PLAN;
-    else if (str_eq(remembered, STR("build"))) c->mode = MODE_BUILD;
-    remembered = state_get(STR("ui_max_tokens"), persist, scratch);
-    if (remembered.n) {
-        b8 ok = false;
-        i64 value = str_int(remembered, &ok);
-        if (ok) c->max_tokens = (i32)clamp_size(value, 1, 1u << 20);
-    }
-    remembered = state_get(STR("ui_disable_tools"), persist, scratch);
-    if (str_eq(remembered, STR("none"))) c->disable_tools = (Str){0};
-    else if (remembered.n) c->disable_tools = remembered;
-
-    size_t n;
-    if (env_num("YOKE_MAX_TOKENS", 1, 1u << 20, &n))
-        c->max_tokens = (i32)n;
-    if (env_num("YOKE_MAX_MESSAGES", 8, 1u << 20, &n)) c->max_messages = n;
-    if (env_num("YOKE_RETRIES", 0, 16, &n)) c->retries = (i32)n;
-    if (env_num("YOKE_RETRY_DELAY_MS", 0, YOKE_MAX_RETRY_DELAY_MS, &n))
-        c->retry_delay_ms = (i32)n;
-    /* An in-app choice outranks the config files: it was made later and more
-     * explicitly. The environment still wins, being per invocation. */
-    if (!env_model.p) {
-        remembered = state_get(STR("model"), persist, scratch);
-        if (remembered.n) c->model = remembered;
-    }
-    /* The provider chosen with /provider: the endpoint the user last selected
-     * in the UI, so it outranks a file written once and forgotten. Its key is
-     * kept apart from its settings and read from the state directory. */
-    Str active = endpoints_active(scratch);
-    if (active.n) {
-        Endpoints eps;
-        endpoints_load(&eps, scratch);
-        size_t i = endpoints_find(&eps, active);
-        if (i != ENDPOINT_NONE) {
-            Str name = str_dup(persist, eps.name[i]);
-            Str url  = str_dup(persist, eps.base_url[i]);
-            if (name.p && url.p) {
-                c->provider = name;
-                c->base_url = url;
-                c->base_url_set = true;
-                c->api = eps.api[i];
-            }
-            config_str(persist, eps.model[i], false, &c->model);
-            c->reasoning_efforts = eps.reasoning_efforts[i].n
-                ? str_dup(persist, eps.reasoning_efforts[i]) : (Str){0};
-            c->thinking_budgets = eps.thinking_budgets[i].n
-                ? str_dup(persist, eps.thinking_budgets[i]) : (Str){0};
-            c->reasoning_effort = eps.reasoning_effort[i].n
-                ? str_dup(persist, eps.reasoning_effort[i]) : (Str){0};
-            c->thinking_budget = eps.thinking_budget[i].n
-                ? str_dup(persist, eps.thinking_budget[i]) : (Str){0};
-            c->reasoning_template = eps.reasoning_template[i].n
-                ? str_dup(persist, eps.reasoning_template[i]) : (Str){0};
-            Str key = endpoints_key(active, persist, scratch, NULL, 0);
-            if (key.n) c->api_key = key;
-        }
-    }
-    if (env_base.p)  { c->base_url = env_base; c->base_url_set = true; }
-    if (env_model.p) c->model = env_model;
-    if (env_key.p)   c->api_key = env_key;
-    if (env_sys.p)   c->system_prompt = env_sys;
-    if (env_tools.p) c->disable_tools = env_tools;
-    if (env_api.p)   c->api = api_from_str(env_api);
-    const char *env_stream = getenv("YOKE_STREAM");
-    if (env_stream && *env_stream)
-        c->stream = strcmp(env_stream, "false") != 0
-                 && strcmp(env_stream, "off") != 0;
-    const char *env_mode = getenv("YOKE_MODE");
-    if (env_mode && !strcmp(env_mode, "plan")) c->mode = MODE_PLAN;
-    else if (env_mode && !strcmp(env_mode, "build")) c->mode = MODE_BUILD;
+    /* A prompt is a document rather than a setting, so it has no row in the
+     * table; the variable and --system are the only ways to pass one. */
+    const char *sys = getenv("YOKE_SYSTEM_PROMPT");
+    if (sys && *sys) c->system_prompt = str_dup(persist, str_c(sys));
 
     /* A placeholder rather than a destination: a run that named no endpoint
      * asks for one. It follows the API so the pair is at least coherent. */
-    if (!c->base_url.p)
+    if (!c->base_url.n)
         c->base_url = c->api == API_ANTHROPIC
                     ? str_c("https://api.anthropic.com/v1")
                     : str_c("https://api.openai.com/v1");
-    if (!c->model.p)
+    if (!c->model.n)
         c->model = c->api == API_ANTHROPIC ? str_c("claude-sonnet-4-5")
                                            : str_c("gpt-4o-mini");
-
-    /* An unset system prompt is prompt_build's cue to look for a SYSTEM.md
-     * and fall back to the built-in template. */
-
     return true;
 }

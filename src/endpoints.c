@@ -6,23 +6,23 @@
  * (`Provider` in provider.c is the streaming run context; this is the entry a
  * run is configured from.)
  *
- * An endpoint is a section of the config file, so the settings a user edits
+ * An endpoint is a section of the config files, so the settings a user edits
  * are one document:
  *
- *   [provider openai]
- *   base_url = https://api.openai.com/v1
- *   model = gpt-4o-mini
- *   api = openai
+ *   [providers.openai]
+ *   base_url = "https://api.openai.com/v1"
+ *   model = "gpt-4o-mini"
+ *   api = "openai"
  *
  * The key is not there. It lives under the same section name in
- * $XDG_STATE_HOME/yoke/credentials at mode 0600, so the file a dotfile
+ * $XDG_STATE_HOME/yoke/credentials.toml at mode 0600, so the file a dotfile
  * repository carries holds no secret, and a credentials file anyone else can
  * read is refused rather than loaded. That file may also say `key_source`
  * instead, naming an external store to ask (see secrets.c); asking one means
  * running a program, so the directive is honoured only from there. A config
  * section that names `key`, `key_source` or `key_command` is ignored with a
  * warning: a shared file must not be able to choose what yoke executes.
- * The active endpoint is the `provider` key of the state file.
+ * The active endpoint is named by the `provider` setting (see config.c).
  */
 #include "yoke.h"
 
@@ -30,7 +30,7 @@
 #include <stdio.h>
 #include <sys/stat.h>
 
-#define ENDPOINT_SECTION STR("provider ")
+#define ENDPOINT_SECTION STR("providers.")
 
 ApiKind api_from_str(Str s) {
     return str_eq(str_trim(s), STR("anthropic")) ? API_ANTHROPIC : API_OPENAI;
@@ -40,7 +40,20 @@ Str api_name(ApiKind k) {
     return k == API_ANTHROPIC ? STR("anthropic") : STR("openai");
 }
 
-/* "provider <name>", the section both files key an endpoint by. */
+/* A name that is a TOML bare key, so "[providers.<name>]" stays a header a
+ * TOML reader and this one agree on. */
+b8 endpoint_name_ok(Str name) {
+    if (!name.n || name.n > YOKE_MAX_ENDPOINT_NAME) return false;
+    for (size_t i = 0; i < name.n; i++) {
+        char c = name.p[i];
+        b8 ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+             || (c >= '0' && c <= '9') || c == '-' || c == '_';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+/* "providers.<name>", the section both files key an endpoint by. */
 static Str endpoint_section(Str name, Arena *a) {
     Buf b; buf_init(&b, a, ENDPOINT_SECTION.n + name.n + 1);
     buf_puts(&b, ENDPOINT_SECTION);
@@ -114,7 +127,7 @@ static void endpoints_collect(Endpoints *e, const Settings *s, Arena *a) {
                                  YOKE_MAX_ENDPOINTS);
     for (size_t i = 0; i < n; i++) {
         Str name = str_trim(str_drop(sections[i], ENDPOINT_SECTION.n));
-        if (!name.n || name.n > YOKE_MAX_ENDPOINT_NAME) continue;
+        if (!endpoint_name_ok(name)) continue;
         endpoint_warn_credential_keys(s, sections[i], name);
         Str url = endpoint_field(s, sections[i], STR("base_url"), YOKE_MAX_URL);
         if (!url.n) continue;
@@ -132,8 +145,13 @@ static void endpoints_collect(Endpoints *e, const Settings *s, Arena *a) {
 
 size_t endpoints_load(Endpoints *e, Arena *a) {
     memset(e, 0, sizeof *e);
-    Str files[YOKE_MAX_CONFIG_FILES];
-    size_t n = paths_config_files(STR("config"), a, files, YOKE_MAX_CONFIG_FILES);
+    Str files[YOKE_MAX_CONFIG_FILES + YOKE_MAX_PROJECT_FILES];
+    size_t n = paths_config_files(YOKE_CONFIG_NAME, a, files,
+                                  YOKE_MAX_CONFIG_FILES);
+    /* A project may name endpoints too, and its files sit above the global
+     * ones for the same reason its settings do. */
+    n += paths_project_files(YOKE_CONFIG_NAME, a, files + n,
+                             YOKE_MAX_PROJECT_FILES);
     /* Lowest precedence first, so a user's entry replaces a system one of the
      * same name the way a config key does. */
     for (size_t i = 0; i < n; i++) {
@@ -152,7 +170,7 @@ size_t endpoints_find(const Endpoints *e, Str name) {
 b8 endpoints_put(Endpoints *e, Str name, Str base_url, Str model, ApiKind api,
                  Str efforts, Str budgets, Str effort, Str budget, Str templ,
                  Arena *a) {
-    if (!name.n || name.n > YOKE_MAX_ENDPOINT_NAME) return false;
+    if (!endpoint_name_ok(name)) return false;
     if (!base_url.n || base_url.n > YOKE_MAX_URL) return false;
     if (model.n > YOKE_MAX_MODEL_NAME) return false;
     if (!endpoint_list_ok(efforts, false) || !endpoint_list_ok(budgets, true)
@@ -196,7 +214,7 @@ b8 endpoints_save_one(Str name, Str base_url, Str model, ApiKind api,
                       Str templ, Arena *scratch) {
     size_t mark = scratch->off;
     Str dir  = paths_dir(YOKE_DIR_CONFIG, scratch);
-    Str path = paths_file(YOKE_DIR_CONFIG, STR("config"), scratch);
+    Str path = paths_file(YOKE_DIR_CONFIG, YOKE_CONFIG_NAME, scratch);
     Str section = endpoint_section(name, scratch);
     if (!dir.n || !path.n || !section.n || !paths_ensure_dir(dir)) {
         scratch->off = mark;
@@ -224,74 +242,12 @@ b8 endpoints_remember_model(Str name, Str model, Arena *scratch) {
     return ok;
 }
 
-/* Credentials written before the settings formats were unified are JSON
- * Lines: {"name":...,"key":...}. The ini parser reads no key from one, so
- * such a file's secrets are invisible to every path that uses or deletes a
- * key, while every rewrite copies the unrecognised line faithfully forward:
- * the key becomes permanent and unreachable. Convert once, in place, so it
- * can be read and removed like any other. */
-static b8 creds_migrate_legacy(Str path, Arena *scratch) {
-    size_t mark = scratch->off;
-    Str src = {0};
-    if (file_read(scratch, path.p, YOKE_MAX_SETTINGS_BYTES, 0, &src, NULL)
-            != FILE_OK || !src.n) {
-        scratch->off = mark;
-        return false;
-    }
-    /* The first line that is neither blank nor a comment names the format. */
-    size_t off = 0;
-    Str line;
-    b8 legacy = false;
-    while (str_line(src, &off, &line)) {
-        Str t = str_trim(line);
-        if (!t.n || t.p[0] == '#') continue;
-        legacy = t.p[0] == '{';
-        break;
-    }
-    if (!legacy) { scratch->off = mark; return false; }
-
-    Buf b;
-    buf_init(&b, scratch, src.n + 128);
-    size_t n = 0;
-    off = 0;
-    while (str_line(src, &off, &line)) {
-        Str t = str_trim(line);
-        if (!t.n) continue;
-        JVal *j = t.p[0] == '{' ? json_parse(scratch, t) : NULL;
-        Str name = j ? str_trim(json_str(j, STR("name"))) : (Str){0};
-        Str key = j ? str_trim(json_str(j, STR("key"))) : (Str){0};
-        /* Anything this format never wrote is kept rather than dropped: a
-         * line yoke does not understand is not a line it may delete. */
-        if (!name.n || !key.n || name.n > YOKE_MAX_ENDPOINT_NAME
-            || key.n > YOKE_MAX_API_KEY
-            || memchr(name.p, '\n', name.n) || memchr(key.p, '\n', key.n)) {
-            buf_puts(&b, line);
-            buf_putc(&b, '\n');
-            continue;
-        }
-        buf_putc(&b, '[');
-        buf_puts(&b, ENDPOINT_SECTION);
-        buf_puts(&b, name);
-        buf_puts(&b, STR("]\nkey = "));
-        buf_puts(&b, key);
-        buf_putc(&b, '\n');
-        n++;
-    }
-    b8 ok = n && buf_ok(&b) && settings_write(path, buf_finish(&b), 0600);
-    if (ok)
-        yoke_log(YOKE_LOG_WARN, "credentials: converted %zu key(s) from the "
-                 "old format; a provider you already deleted may still have "
-                 "one, so check %.*s", n, (i32)path.n, path.p);
-    scratch->off = mark;
-    return ok;
-}
-
 /* The credentials file, refused when anyone but the owner can read it: a key
  * left world-readable is a key to rotate, not one to load. */
 static b8 creds_open(Settings *s, Arena *a, Str *path_out,
                      char *err, size_t err_cap) {
     s->n = 0;
-    Str path = paths_file(YOKE_DIR_STATE, STR("credentials"), a);
+    Str path = paths_file(YOKE_DIR_STATE, YOKE_CREDENTIALS_NAME, a);
     if (path_out) *path_out = path;
     if (!path.n) return false;
     struct stat st;
@@ -301,7 +257,6 @@ static b8 creds_open(Settings *s, Arena *a, Str *path_out,
                           "chmod 600 %.*s", (i32)path.n, path.p);
         return false;
     }
-    creds_migrate_legacy(path, a);
     settings_load(s, path, a);
     return true;
 }
@@ -401,11 +356,11 @@ b8 endpoints_set_key(Str name, Str key, SecretSource src, Arena *scratch,
  * rewrite failed, which is the one outcome this must never have. Each step is
  * reported separately for the same reason. */
 b8 endpoints_delete(Str name, Arena *scratch, char *err, size_t err_cap) {
-    if (!name.n || name.n > YOKE_MAX_ENDPOINT_NAME) return false;
+    if (!endpoint_name_ok(name)) return false;
     size_t mark = scratch->off;
     Settings credentials;
     Str credential_path = {0};
-    Str config_path = paths_file(YOKE_DIR_CONFIG, STR("config"), scratch);
+    Str config_path = paths_file(YOKE_DIR_CONFIG, YOKE_CONFIG_NAME, scratch);
     Str section = endpoint_section(name, scratch);
     if (!config_path.n || !section.n
         || !creds_open(&credentials, scratch, &credential_path, err, err_cap)) {
@@ -433,12 +388,7 @@ b8 endpoints_delete(Str name, Arena *scratch, char *err, size_t err_cap) {
     return erased && cleared && removed;
 }
 
-Str endpoints_active(Arena *a) {
-    Str name = state_get(STR("provider"), a, a);
-    return name.n <= YOKE_MAX_ENDPOINT_NAME ? name : (Str){0};
-}
-
 b8 endpoints_remember_active(Str name, Arena *scratch) {
-    if (name.n > YOKE_MAX_ENDPOINT_NAME) return false;
+    if (name.n && !endpoint_name_ok(name)) return false;
     return state_set(STR("provider"), name, scratch);
 }

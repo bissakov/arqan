@@ -41,8 +41,11 @@ failure. For suspected flakes, use `python3 tests/run.py --repeat 5`.
 - `core.c`: arenas, strings/buffers, logging, time, file reads.
 - `json.c`: arena-backed JSON parser and serializer.
 - `http.c`: libcurl requests, streaming SSE, idle polling.
-- `paths.c`, `settings.c`: XDG paths, settings/state persistence.
-- `config.c`, `endpoints.c`: configuration and provider definitions.
+- `paths.c`: XDG paths and the `.yoke` project directory chain.
+- `settings.c`: the TOML-subset file format, upserts, state writes.
+- `config.c`: the settings table, source precedence, `Config` and
+  `UiPrefs`. A new setting is a row of `k_conf`, not a new reader.
+- `endpoints.c`: provider definitions, one `[providers.<name>]` section each.
 - `prompt.c`: system prompt discovery and expansion.
 - `cli.c`: command-line parsing.
 - `tools.c`: registry and built-in tool implementations.
@@ -60,10 +63,14 @@ them in a new path.
 
 ## Important behaviour
 
-- Configuration uses environment variables and XDG config files. API keys may
-  come from `YOKE_API_KEY` or a top-level `api_key`. Keys managed by `/provider`
-  live in the credentials file at mode 0600; refuse that file when group or
-  other permissions are present, and never copy those keys into shared config.
+- Settings resolve through one table in `config.c`: defaults, the XDG config
+  files, `$cwd/.yoke/config.toml` and the directories above it, the state
+  file, the active provider, `YOKE_<NAME>`, then CLI options. A project
+  file is untrusted input: it may not set `api_key` or any key-store
+  directive. A refused value is reported and dropped, never clamped.
+- Keys managed by `/provider` live in the credentials file at mode 0600;
+  refuse that file when group or other permissions are present, and never
+  copy those keys into shared config.
 - Prompts are documents, not config values. Project `AGENTS.md` files are
   appended to the chosen system prompt.
 - Tool output is replayed to the provider, so it must be bounded and explain

@@ -1,8 +1,8 @@
 /* cli.c: command line parsing.
  *
- * Options only override what config_load already resolved, so the precedence
- * is flag > env > state > config file: a flag is the most explicit and the
- * most local statement about this one invocation.
+ * Options only override what conf_resolve already settled, so the precedence
+ * is flag > env > provider > state > project > user > site config: a flag is
+ * the most explicit and the most local statement about this one invocation.
  *
  * Values attach either way, "--model=m", "--model m", "-mm" and "-m m" all
  * name the same thing, and "--" ends the options.
@@ -31,10 +31,11 @@ static const char g_usage[] =
     "  -h, --help          print help\n"
     "  -v, --version       print version\n"
     "\n"
-    "environment: YOKE_BASE_URL, YOKE_MODEL, YOKE_API_KEY, YOKE_API,\n"
-    "YOKE_SYSTEM_PROMPT, YOKE_MAX_TOKENS, YOKE_MAX_MESSAGES, YOKE_STREAM,\n"
-    "YOKE_MODE, YOKE_DISABLE_TOOLS, and YOKE_* presentation settings.\n"
-    "Config file: $XDG_CONFIG_HOME/yoke/config.\n"
+    "environment: every setting is YOKE_<NAME>, e.g. YOKE_BASE_URL,\n"
+    "YOKE_MODEL, YOKE_API_KEY, YOKE_API, YOKE_MAX_TOKENS, YOKE_STREAM,\n"
+    "YOKE_MODE, YOKE_DISABLE_TOOLS, plus YOKE_SYSTEM_PROMPT.\n"
+    "Config: $XDG_CONFIG_HOME/yoke/config.toml, overridden by\n"
+    "$PWD/.yoke/config.toml.\n"
     "Without any of them, yoke asks for a provider; /provider adds and "
     "switches later.\n";
 

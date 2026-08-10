@@ -384,8 +384,8 @@ def test_state_precedence_is_below_environment_and_cli(ctx):
     state = ctx.state_file()
     state.parent.mkdir(parents=True, exist_ok=True)
     state.write_text(
-        "ui_stream = false\nui_mode = plan\nui_max_tokens = 2048\n"
-        "ui_disable_tools = read\n"
+        "stream = false\nmode = plan\nmax_tokens = 2048\n"
+        "disable_tools = read\n"
     )
     ctx.write_config(
         "stream = false\nmode = plan\nmax_tokens = 1024\n"

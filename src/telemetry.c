@@ -180,7 +180,7 @@ Str telemetry_file(void) {
     return g_tel.ready && g_tel.path_buf[0] ? str_c(g_tel.path_buf) : (Str){0};
 }
 
-void telemetry_init(Arena *scratch) {
+void telemetry_init(Arena *scratch, b8 on) {
     g_tel.t0 = yoke_now_seconds();
     size_t mark = scratch->off;
     g_tel.ready = tel_keep(g_tel.root_buf, sizeof g_tel.root_buf,
@@ -209,18 +209,14 @@ void telemetry_init(Arena *scratch) {
         return;
     }
     g_tel.header_due = true;
-
-    mark = scratch->off;
-    Str set = state_get(STR("telemetry"), scratch, scratch);
-    g_tel.on = str_eq(set, STR("on"));
-    scratch->off = mark;
+    g_tel.on = on;
 }
 
 b8 telemetry_set(b8 on, Arena *scratch) {
     if (!g_tel.ready) return false;
     g_tel.on = on;
     if (on) g_tel.header_due = true;
-    return state_set(STR("telemetry"), on ? STR("on") : STR("off"), scratch);
+    return conf_remember_bool(CONF_TELEMETRY, on, scratch);
 }
 
 /* ---- one event ---------------------------------------------------------- */

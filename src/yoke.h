@@ -76,9 +76,19 @@ typedef bool     b8;
 #define YOKE_MAX_HISTORY_LINE (1u << 16)  /* longest prompt worth remembering  */
 #define YOKE_MAX_HISTORY_BYTES (8u << 20) /* largest history file we will read */
 #define YOKE_MAX_CONFIG_FILES 8           /* XDG config candidates we consider */
+#define YOKE_MAX_PROJECT_FILES 8          /* .yoke/config.toml files we collect */
 #define YOKE_MAX_SETTINGS     512         /* key lines one settings file holds */
 #define YOKE_MAX_SETTINGS_BYTES (1u << 20)/* largest settings file we will read */
 #define YOKE_MAX_SET_KEYS     8           /* keys one settings_set writes      */
+#define YOKE_MAX_TOOL_LIST    256         /* longest disable_tools value       */
+/* The three files settings live in. One format, three audiences: the config
+ * is the user's document, the state is what the UI remembers, and the
+ * credentials file holds keys alone at mode 0600. */
+#define YOKE_CONFIG_NAME      STR("config.toml")
+#define YOKE_STATE_NAME       STR("state.toml")
+#define YOKE_CREDENTIALS_NAME STR("credentials.toml")
+/* A project's own settings, beside its .yoke/SYSTEM.md. */
+#define YOKE_PROJECT_DIR      STR(".yoke")
 /* Past this yoke refuses to start rather than send a truncated prompt. */
 #define YOKE_MAX_PROMPT_FILE  (1u << 16)
 #define YOKE_MAX_AGENTS_FILES 8           /* AGENTS.md chain depth we collect  */
@@ -199,7 +209,8 @@ void    yoke_log_set_sink(YokeLogSink sink, void *ud);
  * counters and curl's own timings. */
 typedef struct { char buf[1024]; size_t n; b8 full, live; } TelEvent;
 
-void telemetry_init(Arena *scratch);
+/* `on` is the resolved `telemetry` setting; /settings changes it later. */
+void telemetry_init(Arena *scratch, b8 on);
 b8   telemetry_on(void);
 /* Records into the file named after `session_path`, under a directory named
  * after its parent, taking with it whatever was recorded while no session had
@@ -281,17 +292,26 @@ typedef enum { YOKE_DIR_CONFIG, YOKE_DIR_DATA, YOKE_DIR_STATE, YOKE_DIR_CACHE } 
 Str    paths_dir(YokeDir kind, Arena *a);
 Str    paths_file(YokeDir kind, Str name, Arena *a);
 b8     paths_ensure_dir(Str dir);    /* mkdir -p, mode 0700                  */
-/* Candidates for a config file, lowest precedence first. */
+/* Candidates for a global config file, lowest precedence first: each
+ * XDG_CONFIG_DIRS entry, then XDG_CONFIG_HOME. */
 size_t paths_config_files(Str name, Arena *a, Str *out, size_t max);
+/* "<dir>/.yoke/<name>" for the working directory and every directory above
+ * it, outermost first, so the nearest file is applied last and wins. Only
+ * files that exist are returned. */
+size_t paths_project_files(Str name, Arena *a, Str *out, size_t max);
+/* "$cwd/.yoke", where a project keeps its own settings and prompts. */
+Str    paths_project_dir(Arena *a);
 
 /* ---- settings files ------------------------------------------------------
- * One syntax for every setting yoke owns: "key = value" lines grouped under
- * optional "[section]" headers, '#' comments, values unquoted to end of line.
- * The config file carries the user's settings and their providers, the state
- * file what the UI last chose, the credentials file the keys alone.
+ * One syntax for every setting yoke owns, a subset of TOML: "key = value"
+ * lines grouped under optional "[section]" headers, with '#' comments. A
+ * value may be quoted or bare; reading accepts both and writing quotes
+ * anything that is not an integer or a boolean, so the result parses as TOML
+ * and an editor highlights it.
  *
  * Parsed Strs point into the arena copy of the file, so they live as long as
- * the arena they were read into.
+ * the arena they were read into. A quoted value is unescaped in place in
+ * that copy.
  */
 typedef struct {
     Str    section[YOKE_MAX_SETTINGS];   /* empty above the first header    */
@@ -324,27 +344,10 @@ b8     settings_remove_section(Str path, Str section, Arena *scratch);
  * since a settings file is a document its owner edits. */
 b8     settings_write(Str path, Str data, u32 mode);
 
-/* $XDG_STATE_HOME/yoke/state: the choices the UI remembers between runs. */
-Str    state_get(Str key, Arena *out, Arena *scratch);
+/* $XDG_STATE_HOME/yoke/state.toml: the choices the UI remembers between runs.
+ * Keys are the configuration keys of config.c, so what the UI writes reads
+ * back through the same table the config files feed. */
 b8     state_set(Str key, Str val, Arena *scratch);
-/* Folds an older yoke's one-file-per-key state into that file and removes
- * the files. Call before anything reads the state. */
-void   state_sweep(Arena *scratch);
-
-/* Presentation choices remembered by /settings and /statusline. Values are
- * loaded with config files below remembered UI state and environment above
- * it. The structure owns no strings. */
-typedef struct {
-    b8 verbose_tools;
-    b8 raw_markdown;
-    b8 show_ignored;
-    b8 show_instructions;
-    b8 justify;
-    u64 status_fields;
-} UiPrefs;
-
-void   ui_prefs_load(UiPrefs *p, Arena *scratch);
-b8     ui_pref_set(Str key, Str val, Arena *scratch);
 
 /* ---- prompt history ------------------------------------------------------
  * A ring of past prompts, mirrored to $XDG_STATE_HOME/yoke/history as they
@@ -394,7 +397,7 @@ Str     api_name(ApiKind k);
  * helper program, so no plaintext key is written anywhere.
  *
  * The directive naming a source is executable content, so it is read only
- * from $XDG_STATE_HOME/yoke/credentials at mode 0600, never from the config
+ * from $XDG_STATE_HOME/yoke/credentials.toml at mode 0600, never from the config
  * file a dotfile repository carries. Helpers run through execvp with an argv
  * built here, never through a shell. See secrets.c.
  */
@@ -430,9 +433,9 @@ b8  secret_erase(SecretSource src, Str account, char *err, size_t err_cap);
 /* ---- endpoints -----------------------------------------------------------
  * The providers /provider creates and switches between: a name, a base URL,
  * the API that URL speaks and the model last used against it. Each is a
- * "[provider <name>]" section of the config file, and its key alone lives
- * under the same section of $XDG_STATE_HOME/yoke/credentials, so a shared
- * configuration cannot carry a secret; the state file's `provider` key names
+ * "[providers.<name>]" section of a config file, and its key alone lives
+ * under the same section of $XDG_STATE_HOME/yoke/credentials.toml, so a
+ * shared configuration cannot carry a secret; the `provider` setting names
  * the active one. An oversized field is dropped on load rather than
  * truncated, since a cut URL names a different service.
  */
@@ -454,6 +457,9 @@ typedef struct {
 /* Every Str lands in `a` and lives as long as it does. */
 size_t endpoints_load(Endpoints *e, Arena *a);
 size_t endpoints_find(const Endpoints *e, Str name);
+/* A name that is a TOML bare key, which is what "[providers.<name>]" needs
+ * to stay a header a TOML reader and yoke agree on. */
+b8     endpoint_name_ok(Str name);
 /* False when the store is full or a field is past its cap. */
 b8     endpoints_put(Endpoints *e, Str name, Str base_url, Str model,
                      ApiKind api, Str efforts, Str budgets, Str effort,
@@ -478,7 +484,6 @@ b8     endpoints_set_key(Str name, Str key, SecretSource src, Arena *scratch,
                          char *err, size_t err_cap);
 /* Removes the provider's config and credential sections. */
 b8     endpoints_delete(Str name, Arena *scratch, char *err, size_t err_cap);
-Str    endpoints_active(Arena *a);
 /* An empty name forgets the active provider. */
 b8     endpoints_remember_active(Str name, Arena *scratch);
 
@@ -499,6 +504,77 @@ typedef struct {
     Str agent_paths[YOKE_MAX_AGENTS_FILES];
     size_t n_agents;
 } PromptSources;
+
+/* ---- configuration keys --------------------------------------------------
+ * Every setting yoke has is a row of one table in config.c: its name in a
+ * file, its type, its bounds and whether a project may set it. The name is
+ * also its environment variable, upper-cased under YOKE_.
+ *
+ * Sources, lowest precedence first. See conf_resolve.
+ *   defaults
+ *   $XDG_CONFIG_DIRS/yoke/config.toml   site-wide
+ *   $XDG_CONFIG_HOME/yoke/config.toml   the user's; what /provider writes
+ *   <dir>/.yoke/config.toml             the project's, nearest last
+ *   $XDG_STATE_HOME/yoke/state.toml     what the UI last chose
+ *   [providers.<name>]                  the active provider's own settings
+ *   YOKE_<NAME>                         per invocation
+ *   command-line options                applied to Config by cli_apply
+ */
+typedef enum {
+    CONF_PROVIDER, CONF_BASE_URL, CONF_MODEL, CONF_API, CONF_API_KEY,
+    CONF_MAX_TOKENS, CONF_MAX_MESSAGES, CONF_STREAM, CONF_MODE,
+    CONF_RETRIES, CONF_RETRY_DELAY_MS, CONF_DISABLE_TOOLS,
+    CONF_VERBOSE_TOOLS, CONF_RAW_MARKDOWN, CONF_SHOW_IGNORED,
+    CONF_SHOW_INSTRUCTIONS, CONF_WRAP, CONF_STATUS_FIELDS, CONF_TELEMETRY,
+    CONF_N
+} ConfKey;
+
+/* Where a value came from. A write from a lower origin than the one already
+ * recorded is dropped, which is the whole of the precedence rule. */
+typedef enum {
+    CONF_FROM_DEFAULT, CONF_FROM_SYSTEM, CONF_FROM_USER, CONF_FROM_PROJECT,
+    CONF_FROM_STATE, CONF_FROM_ENDPOINT, CONF_FROM_ENV
+} ConfOrigin;
+
+/* Resolved settings. Values live in the arena conf_resolve was given and are
+ * already validated, so a reader never rechecks a bound. */
+typedef struct {
+    Str val[CONF_N];
+    u8  origin[CONF_N];
+    /* The active provider's reasoning controls. Only a provider defines
+     * these, so they are its section's rather than the table's. */
+    Str reasoning_efforts, thinking_budgets;
+    Str reasoning_effort, thinking_budget, reasoning_template;
+} Conf;
+
+/* Reads every source in precedence order. Values are copied into `persist`;
+ * `scratch` is rewound before returning. A value a source cannot set, or one
+ * outside its bounds, is reported and dropped rather than clamped, so a
+ * mistyped line never shadows a good one below it. */
+void   conf_resolve(Conf *c, Arena *persist, Arena *scratch);
+Str    conf_key_name(ConfKey k);
+Str    conf_str(const Conf *c, ConfKey k);
+i64    conf_num(const Conf *c, ConfKey k);
+b8     conf_bool(const Conf *c, ConfKey k);
+/* True when `val` is one this key accepts; what refuses a bad UI write. */
+b8     conf_value_ok(ConfKey k, Str val);
+/* Records a choice in the state file under this key's name. */
+b8     conf_remember(ConfKey k, Str val, Arena *scratch);
+b8     conf_remember_bool(ConfKey k, b8 on, Arena *scratch);
+
+/* Presentation choices remembered by /settings and /statusline, read from the
+ * same table. The structure owns no strings. */
+typedef struct {
+    b8 verbose_tools;
+    b8 raw_markdown;
+    b8 show_ignored;
+    b8 show_instructions;
+    b8 justify;
+    b8 telemetry;
+    u64 status_fields;
+} UiPrefs;
+
+void   ui_prefs_load(UiPrefs *p, const Conf *conf);
 
 /* ---- config ------------------------------------------------------------- */
 typedef struct {
@@ -542,8 +618,9 @@ typedef struct {
     char owned_reasoning_template[YOKE_MAX_REASONING_TEMPLATE + 1];
 } Config;
 
-b8    config_load(Config *c, Arena *persist, Arena *scratch);
-/* Writes the state file's `model` key, which config_load applies above the
+/* Fills `c` from resolved settings. `persist` holds what it copies. */
+b8    config_load(Config *c, const Conf *conf, Arena *persist);
+/* Writes the state file's `model` key, which conf_resolve applies above the
  * config files and below YOKE_MODEL. */
 b8    config_remember_model(Str model, Arena *scratch);
 /* Runtime choices are copied into Config itself and survive /clear. */

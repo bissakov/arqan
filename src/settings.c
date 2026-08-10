@@ -1,19 +1,25 @@
-/* settings.c: the one file format every setting yoke owns is written in.
+/* settings.c: the file format every setting yoke owns is written in.
  *
- * A file is a list of "key = value" lines, optionally grouped under a
- * "[section]" header; a line whose first non-blank byte is '#' is a comment
- * and a value runs to the end of its line, unquoted and unescaped. The same
- * syntax serves the three files a user may look at:
- *   $XDG_CONFIG_HOME/yoke/config       theirs to edit, providers included
- *   $XDG_STATE_HOME/yoke/state         what the UI last chose
- *   $XDG_STATE_HOME/yoke/credentials   the keys alone, mode 0600
+ * A subset of TOML: a file is a list of "key = value" lines, optionally
+ * grouped under a "[section]" header; a line whose first non-blank byte is
+ * '#' is a comment, and so is a '#' after a value. A value may be quoted or
+ * bare. Reading accepts both, since a hand-written file is a document; a
+ * write quotes anything that is not an integer or a boolean, so what yoke
+ * produces parses as TOML and an editor highlights it.
+ *
+ * The same syntax serves the three files a user may look at:
+ *   $XDG_CONFIG_HOME/yoke/config.toml      theirs to edit, providers included
+ *   $cwd/.yoke/config.toml                 the project's, checked in with it
+ *   $XDG_STATE_HOME/yoke/state.toml        what the UI last chose
+ *   $XDG_STATE_HOME/yoke/credentials.toml  the keys alone, mode 0600
  *
  * Reads parse a whole file into a Settings table pointing into the arena copy
- * of its bytes. A write is a per-key upsert rather than a rewrite: a config
- * file is a document its owner edits, so /provider changes the lines it owns
- * and leaves the comments, the order and the unknown keys exactly as they
- * were. The result is written to a temporary file and renamed, so an
- * interrupted write leaves the previous file rather than half a line.
+ * of its bytes; a quoted value is unescaped in place in that copy. A write is
+ * a per-key upsert rather than a rewrite: a config file is a document its
+ * owner edits, so /provider changes the lines it owns and leaves the
+ * comments, the order and the unknown keys exactly as they were. The result
+ * is written to a temporary file and renamed, so an interrupted write leaves
+ * the previous file rather than half a line.
  */
 #include "yoke.h"
 
@@ -25,6 +31,44 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* A quoted value with its escapes resolved. The bytes are this file's own
+ * arena copy and unescaping only shrinks, so it is done in place rather than
+ * allocated: the Settings table is a view of that copy either way. A literal
+ * ('...') string takes no escapes, as TOML has it. */
+static Str setting_unquote(Str v) {
+    char q = v.p[0];
+    char *p = (char *)v.p + 1;
+    size_t n = v.n - 2, out = 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = p[i];
+        if (q == '"' && c == '\\' && i + 1 < n) {
+            char e = p[++i];
+            c = e == 'n' ? '\n' : e == 't' ? '\t' : e == 'r' ? '\r' : e;
+        }
+        p[out++] = c;
+    }
+    return (Str){ p, out };
+}
+
+/* The value part of a line: quoted to its closing quote, else bare to a
+ * comment or the end of the line. A '#' with no space before it stays in the
+ * value, since a URL fragment is not a comment. */
+static Str setting_val(Str rest) {
+    rest = str_trim(rest);
+    if (rest.n >= 2 && (rest.p[0] == '"' || rest.p[0] == '\'')) {
+        char q = rest.p[0];
+        for (size_t i = 1; i < rest.n; i++) {
+            if (q == '"' && rest.p[i] == '\\') { i++; continue; }
+            if (rest.p[i] == q) return setting_unquote((Str){ rest.p, i + 1 });
+        }
+        return rest;   /* unterminated: the line as written */
+    }
+    for (size_t i = 1; i < rest.n; i++)
+        if (rest.p[i] == '#' && (rest.p[i - 1] == ' ' || rest.p[i - 1] == '\t'))
+            { rest.n = i; break; }
+    return str_trim(rest);
+}
+
 /* Splits "key = value"; false for a blank line, a comment and a header. */
 static b8 setting_kv(Str line, Str *k, Str *v) {
     line = str_trim(line);
@@ -33,7 +77,7 @@ static b8 setting_kv(Str line, Str *k, Str *v) {
     while (eq < line.n && line.p[eq] != '=') eq++;
     if (eq == line.n) return false;
     *k = str_trim(str_take(line, eq));
-    *v = str_trim(str_drop(line, eq + 1));
+    *v = setting_val(str_drop(line, eq + 1));
     return k->n > 0;
 }
 
@@ -43,6 +87,35 @@ static Str setting_section(Str line) {
     if (line.n < 2 || line.p[0] != '[' || line.p[line.n - 1] != ']')
         return (Str){0};
     return str_trim(str_drop(str_take(line, line.n - 1), 1));
+}
+
+/* An integer or a boolean is written bare; everything else is a quoted
+ * string, which is what makes the result TOML. */
+static b8 setting_bare(Str v) {
+    if (str_eq(v, STR("true")) || str_eq(v, STR("false"))) return true;
+    if (!v.n) return false;
+    for (size_t i = 0; i < v.n; i++) {
+        char c = v.p[i];
+        if (c >= '0' && c <= '9') continue;
+        if (i == 0 && (c == '-' || c == '+') && v.n > 1) continue;
+        return false;
+    }
+    return true;
+}
+
+static void setting_put_kv(Buf *b, Str key, Str val) {
+    buf_puts(b, key);
+    buf_puts(b, STR(" = "));
+    if (setting_bare(val)) { buf_puts(b, val); buf_putc(b, '\n'); return; }
+    buf_putc(b, '"');
+    for (size_t i = 0; i < val.n; i++) {
+        char c = val.p[i];
+        if (c == '\n') { buf_puts(b, STR("\\n")); continue; }
+        if (c == '\t') { buf_puts(b, STR("\\t")); continue; }
+        if (c == '"' || c == '\\') buf_putc(b, '\\');
+        buf_putc(b, c);
+    }
+    buf_puts(b, STR("\"\n"));
 }
 
 /* Empty for a file that is missing, unreadable or past `max`: a settings file
@@ -162,12 +235,7 @@ b8 settings_set(Str path, Str section, const Str *keys, const Str *vals,
                 if (!done[i] && str_eq(keys[i], k)) { at = i; break; }
             if (at < n) {
                 done[at] = true;
-                if (vals[at].n) {
-                    buf_puts(&b, keys[at]);
-                    buf_puts(&b, STR(" = "));
-                    buf_puts(&b, vals[at]);
-                    buf_putc(&b, '\n');
-                }
+                if (vals[at].n) setting_put_kv(&b, keys[at], vals[at]);
                 if (section_open) tail = b.n;
                 continue;
             }
@@ -183,10 +251,7 @@ b8 settings_set(Str path, Str section, const Str *keys, const Str *vals,
     buf_init(&add, scratch, 256);
     for (size_t i = 0; i < n; i++) {
         if (done[i] || !vals[i].n) continue;
-        buf_puts(&add, keys[i]);
-        buf_puts(&add, STR(" = "));
-        buf_puts(&add, vals[i]);
-        buf_putc(&add, '\n');
+        setting_put_kv(&add, keys[i], vals[i]);
     }
     if (!buf_ok(&add) || !buf_ok(&b)) { scratch->off = mark; return false; }
     Str extra = buf_finish(&add);
@@ -254,144 +319,14 @@ b8 settings_remove_section(Str path, Str section, Arena *scratch) {
 }
 
 /* ---- the state file ------------------------------------------------------
- * What the UI last chose, in one place: the model, the provider and whether
- * telemetry records. It is yoke's memory rather than the user's file, but it
- * is written in the same syntax so there is one thing to learn.
+ * What the UI last chose, keyed by the same names the config files use, so a
+ * remembered choice reads back through one table. It is yoke's memory rather
+ * than the user's file, which is why it is not the config file: a document
+ * a person edits should not be rewritten behind them by a toggle.
  */
-Str state_get(Str key, Arena *out, Arena *scratch) {
-    size_t mark = scratch->off;
-    Str val = {0};
-    Str path = paths_file(YOKE_DIR_STATE, STR("state"), scratch);
-    Settings s;
-    if (path.n && settings_load(&s, path, scratch)) {
-        Str v = settings_get(&s, (Str){0}, key);
-        if (v.n) val = str_dup(out, v);
-    }
-    /* One arena for both is allowed, and rewinding it would take the answer
-     * with the file it was read from. */
-    if (out != scratch) scratch->off = mark;
-    return val;
-}
-
 b8 state_set(Str key, Str val, Arena *scratch) {
     Str dir = paths_dir(YOKE_DIR_STATE, scratch);
-    Str path = paths_file(YOKE_DIR_STATE, STR("state"), scratch);
+    Str path = paths_file(YOKE_DIR_STATE, YOKE_STATE_NAME, scratch);
     if (!dir.n || !path.n || !paths_ensure_dir(dir)) return false;
     return settings_set_one(path, (Str){0}, key, val, 0600, scratch);
-}
-
-/* An older yoke kept each of these in a file of its own, holding a word.
- * They are folded into the state file and removed, so the state directory
- * holds files rather than a key per file, and a name freed this way is
- * available to whatever wants it next. A value the state file already has
- * wins, since it is the one the UI has been writing since. */
-void state_sweep(Arena *scratch) {
-    static const char *keys[] = { "model", "provider", "telemetry" };
-    for (size_t i = 0; i < sizeof keys / sizeof *keys; i++) {
-        size_t mark = scratch->off;
-        Str key = str_c(keys[i]);
-        Str path = paths_file(YOKE_DIR_STATE, key, scratch);
-        struct stat st;
-        if (path.n && stat(path.p, &st) == 0 && S_ISREG(st.st_mode)) {
-            Str src = settings_src(path, scratch, 4096), val = {0};
-            size_t off = 0;
-            if (str_line(src, &off, &val)) val = str_trim(val);
-            Str have = state_get(key, scratch, scratch);
-            if (val.n && !have.n)
-                state_set(key, val, scratch);
-            unlink(path.p);
-        }
-        scratch->off = mark;
-    }
-}
-
-/* ---- remembered UI preferences ---------------------------------------- */
-
-static b8 pref_bool(Str v, b8 dflt) {
-    if (str_eq(v, STR("true")) || str_eq(v, STR("on"))) return true;
-    if (str_eq(v, STR("false")) || str_eq(v, STR("off"))) return false;
-    return dflt;
-}
-
-static void prefs_apply(UiPrefs *p, const Settings *s) {
-    Str v = settings_get(s, (Str){0}, STR("verbose_tools"));
-    if (v.n) p->verbose_tools = pref_bool(v, p->verbose_tools);
-    v = settings_get(s, (Str){0}, STR("raw_markdown"));
-    if (v.n) p->raw_markdown = pref_bool(v, p->raw_markdown);
-    v = settings_get(s, (Str){0}, STR("show_ignored"));
-    if (v.n) p->show_ignored = pref_bool(v, p->show_ignored);
-    v = settings_get(s, (Str){0}, STR("show_instructions"));
-    if (v.n) p->show_instructions = pref_bool(v, p->show_instructions);
-    v = settings_get(s, (Str){0}, STR("wrap"));
-    if (str_eq(v, STR("word"))) p->justify = false;
-    else if (str_eq(v, STR("justified"))) p->justify = true;
-    v = settings_get(s, (Str){0}, STR("status_fields"));
-    if (v.n) {
-        b8 ok = false;
-        i64 mask = str_int(v, &ok);
-        if (ok && mask >= 0) p->status_fields = (u64)mask;
-    }
-}
-
-static void prefs_apply_state(UiPrefs *p, const Settings *s) {
-    Str v = settings_get(s, (Str){0}, STR("ui_verbose_tools"));
-    if (v.n) p->verbose_tools = pref_bool(v, p->verbose_tools);
-    v = settings_get(s, (Str){0}, STR("ui_raw_markdown"));
-    if (v.n) p->raw_markdown = pref_bool(v, p->raw_markdown);
-    v = settings_get(s, (Str){0}, STR("ui_show_ignored"));
-    if (v.n) p->show_ignored = pref_bool(v, p->show_ignored);
-    v = settings_get(s, (Str){0}, STR("ui_show_instructions"));
-    if (v.n) p->show_instructions = pref_bool(v, p->show_instructions);
-    v = settings_get(s, (Str){0}, STR("ui_wrap"));
-    if (str_eq(v, STR("word"))) p->justify = false;
-    else if (str_eq(v, STR("justified"))) p->justify = true;
-    v = settings_get(s, (Str){0}, STR("ui_status_fields"));
-    if (v.n) {
-        b8 ok = false;
-        i64 mask = str_int(v, &ok);
-        if (ok && mask >= 0) p->status_fields = (u64)mask;
-    }
-}
-
-static void prefs_env_bool(const char *name, b8 *out) {
-    const char *v = getenv(name);
-    if (v && *v) *out = pref_bool(str_c(v), *out);
-}
-
-void ui_prefs_load(UiPrefs *p, Arena *scratch) {
-    memset(p, 0, sizeof *p);
-    p->status_fields = ((u64)1 << YOKE_STATUS_FIELDS) - 1u;
-
-    size_t mark = scratch->off;
-    Str files[YOKE_MAX_CONFIG_FILES];
-    size_t n = paths_config_files(STR("config"), scratch, files,
-                                  YOKE_MAX_CONFIG_FILES);
-    for (size_t i = 0; i < n; i++) {
-        Settings s;
-        if (settings_load(&s, files[i], scratch)) prefs_apply(p, &s);
-    }
-    scratch->off = mark;
-
-    Str state = paths_file(YOKE_DIR_STATE, STR("state"), scratch);
-    Settings s;
-    if (state.n && settings_load(&s, state, scratch)) prefs_apply_state(p, &s);
-    scratch->off = mark;
-
-    prefs_env_bool("YOKE_VERBOSE_TOOLS", &p->verbose_tools);
-    prefs_env_bool("YOKE_RAW_MARKDOWN", &p->raw_markdown);
-    prefs_env_bool("YOKE_SHOW_IGNORED", &p->show_ignored);
-    prefs_env_bool("YOKE_SHOW_INSTRUCTIONS", &p->show_instructions);
-    const char *wrap = getenv("YOKE_WRAP");
-    if (wrap && !strcmp(wrap, "word")) p->justify = false;
-    else if (wrap && !strcmp(wrap, "justified")) p->justify = true;
-    const char *fields = getenv("YOKE_STATUS_FIELDS");
-    if (fields && *fields) {
-        b8 ok = false;
-        i64 mask = str_int(str_c(fields), &ok);
-        if (ok && mask >= 0) p->status_fields = (u64)mask;
-    }
-}
-
-b8 ui_pref_set(Str key, Str val, Arena *scratch) {
-    return state_set(key, val, scratch);
 }

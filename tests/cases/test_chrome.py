@@ -146,7 +146,7 @@ def test_context_counter_formats_tokens(ctx):
 def test_status_names_active_reasoning_controls(ctx):
     """Configured reasoning sits between the model and the agent mode."""
     config = ctx.write_config(
-        f"[provider Local ChatGPT]\n"
+        f"[providers.local-chatgpt]\n"
         f"base_url = {ctx.mock.base_url}\n"
         "model = gpt-5.6-terra\n"
         "reasoning_efforts = low,xhigh\n"
@@ -157,13 +157,13 @@ def test_status_names_active_reasoning_controls(ctx):
     assert config.exists()
     state = ctx.state_file()
     state.parent.mkdir(parents=True, exist_ok=True)
-    state.write_text("provider = Local ChatGPT\n")
+    state.write_text("provider = local-chatgpt\n")
     s = ctx.spawn(cols=160, YOKE_BASE_URL=None, YOKE_API_KEY=None,
                   YOKE_MODEL=None)
     fields = [s.status_field(i) for i in range(8)]
     assert fields[:6] == [
         "ready", "gpt-5.6-terra", "xhigh", "thinking 1024", "build",
-        "Local ChatGPT",
+        "local-chatgpt",
     ], s.status_line()
 
 

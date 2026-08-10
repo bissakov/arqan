@@ -96,7 +96,7 @@ def test_config_dirs_are_searched(ctx):
     """A config under XDG_CONFIG_DIRS is picked up when the user has none."""
     etc = ctx.tmp / "etc"
     (etc / "yoke").mkdir(parents=True)
-    (etc / "yoke" / "config").write_text("model=system-model\n")
+    (etc / "yoke" / "config.toml").write_text("model = system-model\n")
 
     s = ctx.spawn(XDG_CONFIG_DIRS=str(etc), YOKE_MODEL=None)
     assert "system-model" in s.status_line(), s.status_line()
@@ -106,8 +106,8 @@ def test_config_home_beats_config_dirs(ctx):
     """XDG_CONFIG_HOME has the higher precedence of the two."""
     etc = ctx.tmp / "etc"
     (etc / "yoke").mkdir(parents=True)
-    (etc / "yoke" / "config").write_text("model=system-model\n")
-    ctx.write_config("model=user-model\n")
+    (etc / "yoke" / "config.toml").write_text("model = system-model\n")
+    ctx.write_config("model = user-model\n")
 
     s = ctx.spawn(XDG_CONFIG_DIRS=str(etc), YOKE_MODEL=None)
     status = s.status_line()
@@ -118,8 +118,8 @@ def test_env_beats_every_config_file(ctx):
     """The environment still wins over both config layers."""
     etc = ctx.tmp / "etc"
     (etc / "yoke").mkdir(parents=True)
-    (etc / "yoke" / "config").write_text("model=system-model\n")
-    ctx.write_config("model=user-model\n")
+    (etc / "yoke" / "config.toml").write_text("model = system-model\n")
+    ctx.write_config("model = user-model\n")
 
     s = ctx.spawn(XDG_CONFIG_DIRS=str(etc))
     assert "mock-model" in s.status_line(), s.status_line()

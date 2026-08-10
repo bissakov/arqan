@@ -270,7 +270,7 @@ static void agent_set_mode(Agent *ag, AgentMode mode) {
     tel_str(&e, "to", mode_name(mode));
     tel_send(&e);
     ag->cfg->mode = mode;
-    if (!ui_pref_set(STR("ui_mode"), mode_name(mode), ag->scratch)) {
+    if (!conf_remember(CONF_MODE, mode_name(mode), ag->scratch)) {
         if (g_one_shot)
             one_shot_diag("warning", (Str){0},
                           STR("mode changed but was not remembered"));
@@ -625,7 +625,8 @@ static void help_path_candidates(Buf *b, Arena *a, Str name,
  * summarized by the effective prompt source instead of flooding the report. */
 static void help_project_paths(Buf *b, Str cwd) {
     static const char *const suffixes[] = {
-        "/.yoke/SYSTEM.md", "/.yoke/PLAN.md", "/AGENTS.md",
+        "/.yoke/config.toml", "/.yoke/SYSTEM.md", "/.yoke/PLAN.md",
+        "/AGENTS.md",
         "/.gitignore", "/.ignore",
     };
     if (!cwd.n || cwd.n >= YOKE_MAX_PATH || cwd.p[0] != '/') return;
@@ -790,12 +791,20 @@ static Str help_build(Agent *ag) {
     Str cwd = getcwd(cwd_buf, sizeof cwd_buf) ? str_c(cwd_buf) : (Str){0};
     help_path(&b, "working directory", cwd);
     help_path(&b, "user config directory", paths_dir(YOKE_DIR_CONFIG, a));
-    help_path_candidates(&b, a, STR("config"), "config candidate");
+    help_path_candidates(&b, a, YOKE_CONFIG_NAME, "config candidate");
+    {
+        Str project[YOKE_MAX_PROJECT_FILES];
+        size_t pn = paths_project_files(YOKE_CONFIG_NAME, a, project,
+                                        YOKE_MAX_PROJECT_FILES);
+        for (size_t i = 0; i < pn; i++)
+            help_path(&b, "project config", project[i]);
+    }
     help_path_candidates(&b, a, STR("SYSTEM.md"), "global Build prompt candidate");
     help_path_candidates(&b, a, STR("PLAN.md"), "global Plan prompt candidate");
     help_path(&b, "state directory", paths_dir(YOKE_DIR_STATE, a));
-    help_path(&b, "state file", paths_file(YOKE_DIR_STATE, STR("state"), a));
-    help_path(&b, "credentials file", paths_file(YOKE_DIR_STATE, STR("credentials"), a));
+    help_path(&b, "state file", paths_file(YOKE_DIR_STATE, YOKE_STATE_NAME, a));
+    help_path(&b, "credentials file",
+              paths_file(YOKE_DIR_STATE, YOKE_CREDENTIALS_NAME, a));
     help_path(&b, "prompt history", paths_file(YOKE_DIR_STATE, STR("history"), a));
     help_path(&b, "telemetry root", paths_file(YOKE_DIR_STATE, STR("telemetry"), a));
     help_path(&b, "data directory", paths_dir(YOKE_DIR_DATA, a));
@@ -1146,7 +1155,7 @@ static void provider_chosen(const Config *cfg, Arena *scratch) {
  * the user's choosing is set up by editing the credentials file. */
 static b8 pick_key_source(SecretSource *out) {
     const TuiCmd stores[] = {
-        { STR("Credentials file"), STR("$XDG_STATE_HOME/yoke/credentials, mode 0600") },
+        { STR("Credentials file"), STR("$XDG_STATE_HOME/yoke/credentials.toml, mode 0600") },
         { STR("System keyring"),   STR("Secret Service, through secret-tool") },
         { STR("Password store"),   STR("pass, under yoke/<provider>") },
     };
@@ -1191,6 +1200,11 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
     char templ[YOKE_MAX_REASONING_TEMPLATE + 1] = {0};
     if (!tui_ask(STR("a name for this provider"), false, name, sizeof name))
         return false;
+    /* The name becomes a TOML header, so it is a bare key or nothing. */
+    if (!endpoint_name_ok(str_c(name))) {
+        tui_notice(STR("a provider name takes letters, digits, - and _"));
+        return false;
+    }
 
     Endpoints eps;
     endpoints_load(&eps, scratch);
@@ -1559,9 +1573,13 @@ static Str setting_options(Arena *a, const Str *opts, size_t n, size_t cur,
     return buf_finish(&b);
 }
 
-static void remember_ui(Arena *scratch, Str key, Str value) {
-    if (!ui_pref_set(key, value, scratch))
+static void remember_ui(Arena *scratch, ConfKey key, Str value) {
+    if (!conf_remember(key, value, scratch))
         tui_notice(STR("setting changed but was not remembered: could not write state"));
+}
+
+static void remember_ui_bool(Arena *scratch, ConfKey key, b8 on) {
+    remember_ui(scratch, key, on ? STR("true") : STR("false"));
 }
 
 static void remember_tools(const ToolRegistry *reg, Arena *scratch) {
@@ -1577,7 +1595,7 @@ static void remember_tools(const ToolRegistry *reg, Arena *scratch) {
         return;
     }
     Str value = list.n ? buf_finish(&list) : STR("none");
-    remember_ui(scratch, STR("ui_disable_tools"), value);
+    remember_ui(scratch, CONF_DISABLE_TOOLS, value);
 }
 
 /* The rows the screen is showing, rebuilt in place after every change: the
@@ -1634,7 +1652,7 @@ static void statusline_act(void *ud, size_t row, i32 delta) {
         if (tui_status_visible((TuiStatusItem)i)) mask |= (u64)1 << i;
     char value[32];
     snprintf(value, sizeof value, "%llu", (unsigned long long)mask);
-    remember_ui(v->scratch, STR("ui_status_fields"), str_c(value));
+    remember_ui(v->scratch, CONF_STATUS_FIELDS, str_c(value));
     v->scratch->off = mark;
 }
 
@@ -1889,25 +1907,21 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
         }
         case SET_VERBOSE:
             render_set_verbose(!render_verbose());
-            remember_ui(scratch, STR("ui_verbose_tools"),
-                        render_verbose() ? STR("true") : STR("false"));
+            remember_ui_bool(scratch, CONF_VERBOSE_TOOLS, render_verbose());
             rerender_or_defer(ag);
             break;
         case SET_RAW:
             md_set_raw(!md_raw());
-            remember_ui(scratch, STR("ui_raw_markdown"),
-                        md_raw() ? STR("true") : STR("false"));
+            remember_ui_bool(scratch, CONF_RAW_MARKDOWN, md_raw());
             rerender_or_defer(ag);
             break;
         case SET_STREAM:
             cfg->stream = !cfg->stream;
-            remember_ui(scratch, STR("ui_stream"),
-                        cfg->stream ? STR("true") : STR("false"));
+            remember_ui_bool(scratch, CONF_STREAM, cfg->stream);
             break;
         case SET_IGNORED:
             tui_set_show_ignored(!tui_show_ignored());
-            remember_ui(scratch, STR("ui_show_ignored"),
-                        tui_show_ignored() ? STR("true") : STR("false"));
+            remember_ui_bool(scratch, CONF_SHOW_IGNORED, tui_show_ignored());
             break;
         case SET_TELEMETRY:
             if (!telemetry_set(!telemetry_on(), scratch))
@@ -1915,7 +1929,7 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
             break;
         case SET_WRAP:
             tui_set_justify(!tui_justify());
-            remember_ui(scratch, STR("ui_wrap"),
+            remember_ui(scratch, CONF_WRAP,
                         tui_justify() ? STR("justified") : STR("word"));
             break;
         case SET_MODE:
@@ -1924,8 +1938,8 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
             break;
         case SET_SHOW_INSTRUCTIONS:
             ag->show_instructions = !ag->show_instructions;
-            remember_ui(scratch, STR("ui_show_instructions"),
-                        ag->show_instructions ? STR("true") : STR("false"));
+            remember_ui_bool(scratch, CONF_SHOW_INSTRUCTIONS,
+                             ag->show_instructions);
             rerender_or_defer(ag);
             break;
         case SET_MAX_TOKENS:
@@ -1933,7 +1947,7 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
             {
                 char value[16];
                 snprintf(value, sizeof value, "%d", cfg->max_tokens);
-                remember_ui(scratch, STR("ui_max_tokens"), str_c(value));
+                remember_ui(scratch, CONF_MAX_TOKENS, str_c(value));
             }
             break;
         default: break;
@@ -2264,11 +2278,12 @@ i32 main(i32 argc, char **argv) {
     arena_init(&scratch,  g_scratch, sizeof g_scratch);
 
     Config cfg;
-    state_sweep(&scratch);
-    config_load(&cfg, &persist, &scratch);
+    Conf conf;
+    conf_resolve(&conf, &persist, &scratch);
+    config_load(&cfg, &conf, &persist);
     cli_apply(&opts, &cfg);
     UiPrefs prefs;
-    ui_prefs_load(&prefs, &scratch);
+    ui_prefs_load(&prefs, &conf);
     arena_reset(&scratch);
 
     ToolRegistry tools;
@@ -2363,7 +2378,7 @@ i32 main(i32 argc, char **argv) {
     atexit(highlight_close);
 
     /* After tui_start, since the record names the shape of the terminal. */
-    telemetry_init(&scratch);
+    telemetry_init(&scratch, prefs.telemetry);
     static TelHead head;
     head.cfg = &cfg;
     head.tools = &tools;

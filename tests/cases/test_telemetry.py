@@ -163,8 +163,8 @@ def test_the_record_lands_in_the_state_dir(ctx):
     s.submit("/exit")
     s.wait_exit()
 
-    settings = ctx.settings(state / "yoke" / "state")
-    assert settings[""]["telemetry"] == "on", settings
+    settings = ctx.settings(state / "yoke" / "state.toml")
+    assert settings[""]["telemetry"] == "true", settings
     assert len(log_files(ctx, state)) == 1, log_dir(ctx, state)
     assert not log_files(ctx), "the default must stay unused"
 
@@ -279,21 +279,21 @@ def test_diagnostics_land_beside_the_events(ctx):
     assert errors and errors[-1]["detail"] == "HTTP 500", events(ctx)
 
 
-def test_a_file_where_the_directory_goes_does_not_silence_it(ctx):
-    """An older yoke left a file named `telemetry`; recording still happens."""
+def test_a_file_where_the_directory_goes_leaves_the_session_alone(ctx):
+    """The record root may be taken by a file; a session must not care."""
     d = log_dir(ctx)
     d.parent.mkdir(parents=True, exist_ok=True)
-    d.write_text("on\n")                 # the file the directory replaces
+    d.write_text("not a directory\n")
+    ctx.write_config("telemetry = true\n")
     ctx.scenario("text=ok")
 
     s = ctx.spawn()
-    s.submit("say hi")                   # the setting came from that file
+    s.submit("say hi")
     s.wait_turn_done()
     s.submit("/exit")
     s.wait_exit()
 
-    assert d.is_dir(), sorted(p.name for p in d.parent.iterdir())
-    assert kinds(ctx).count("turn_start") == 1, kinds(ctx)
+    assert d.read_text() == "not a directory\n", d.read_text()
 
 
 def test_the_record_is_the_conversation_it_belongs_to(ctx):

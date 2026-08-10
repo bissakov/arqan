@@ -4,16 +4,16 @@ import stat
 
 
 def credentials_file(ctx):
-    return ctx.home / ".local" / "state" / "yoke" / "credentials"
+    return ctx.home / ".local" / "state" / "yoke" / "credentials.toml"
 
 
 def store(ctx):
     """The [provider ...] sections of the config file, in file order."""
     out = []
     for section, keys in ctx.settings(ctx.config_file()).items():
-        if not section.startswith("provider "):
+        if not section.startswith("providers."):
             continue
-        out.append({"name": section[len("provider "):], **keys})
+        out.append({"name": section[len("providers."):], **keys})
     return out
 
 
@@ -24,9 +24,9 @@ def creds(ctx):
     leaves behind, and it is not the same as a key whose value is empty.
     """
     return {
-        section[len("provider "):]: keys["key"]
+        section[len("providers."):]: keys["key"]
         for section, keys in ctx.settings(credentials_file(ctx)).items()
-        if section.startswith("provider ") and keys.get("key")
+        if section.startswith("providers.") and keys.get("key")
     }
 
 
@@ -40,14 +40,14 @@ def write_provider(ctx, name, base_url, model="mock-model", key="stored-key",
     p = ctx.config_file()
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a") as f:
-        f.write(f"[provider {name}]\nbase_url = {base_url}\nmodel = {model}\n")
+        f.write(f"[providers.{name}]\nbase_url = {base_url}\nmodel = {model}\n")
         if api:
             f.write(f"api = {api}\n")
     if key is not None:
         c = credentials_file(ctx)
         c.parent.mkdir(parents=True, exist_ok=True)
         with c.open("a") as f:
-            f.write(f"[provider {name}]\nkey = {key}\n")
+            f.write(f"[providers.{name}]\nkey = {key}\n")
         c.chmod(0o600)
 
 
@@ -474,7 +474,7 @@ def test_provider_editor_can_clear_the_stored_key(ctx):
     s.key("down", "down", "down", "enter")   # Keep, Replace, Move, Clear
     s.wait_text("provider: work")
 
-    section = ctx.settings(credentials_file(ctx)).get("provider work", {})
+    section = ctx.settings(credentials_file(ctx)).get("providers.work", {})
     assert "key" not in section, section
 
 
@@ -608,7 +608,7 @@ def test_a_new_provider_never_inherits_a_leftover_key(ctx):
     ctx.scenario("models=alpha")
     c = credentials_file(ctx)
     c.parent.mkdir(parents=True, exist_ok=True)
-    c.write_text("[provider work]\nkey = sk-leftover\n")
+    c.write_text("[providers.work]\nkey = sk-leftover\n")
     c.chmod(0o600)
 
     s = ctx.spawn()

@@ -35,7 +35,11 @@ class GoldenMismatch(AssertionError):
 
 
 def parse_settings(text: str) -> dict:
-    """A settings file as {section: {key: value}}; "" holds its head."""
+    """A settings file as {section: {key: value}}; "" holds its head.
+
+    The format is a TOML subset, so a value may be quoted or bare; quotes and
+    their escapes are removed here the way settings.c removes them.
+    """
     out: dict = {"": {}}
     section = ""
     for line in text.splitlines():
@@ -49,7 +53,14 @@ def parse_settings(text: str) -> dict:
         if "=" not in line:
             continue
         k, v = line.split("=", 1)
-        out[section][k.strip()] = v.strip()
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            body = v[1:-1]
+            if v[0] == '"':
+                body = (body.replace("\\n", "\n").replace("\\t", "\t")
+                        .replace('\\"', '"').replace("\\\\", "\\"))
+            v = body
+        out[section][k.strip()] = v
     return out
 
 
@@ -93,16 +104,23 @@ class Ctx:
         return p
 
     def write_config(self, content: str) -> Path:
-        p = self.xdg / "yoke" / "config"
+        p = self.config_file()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+        return p
+
+    def write_project_config(self, content: str, at: Path | None = None) -> Path:
+        """A project's own settings, in <dir>/.yoke/config.toml."""
+        p = (at or self.work) / ".yoke" / "config.toml"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
         return p
 
     def config_file(self) -> Path:
-        return self.xdg / "yoke" / "config"
+        return self.xdg / "yoke" / "config.toml"
 
     def state_file(self) -> Path:
-        return self.home / ".local" / "state" / "yoke" / "state"
+        return self.home / ".local" / "state" / "yoke" / "state.toml"
 
     def settings(self, path: Path) -> dict:
         """A settings file as {section: {key: value}}; "" is its head."""

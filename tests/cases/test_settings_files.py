@@ -1,18 +1,19 @@
-"""The settings files: one config to edit, one state file yoke remembers in.
+"""The settings files: a global config, a project config, and yoke's state.
 
-Providers are sections of the config file rather than a store of their own, so
-a write by the UI has to leave the rest of the document exactly as its owner
-wrote it.
+Settings are one table read from several files. The global config is the
+user's document, a project's `.yoke/config.toml` overrides it for the tree it
+sits in, and the state file is what the UI remembers. Providers are sections
+of the config files rather than a store of their own, so a write by the UI has
+to leave the rest of the document exactly as its owner wrote it.
 """
 
 CONFIG = """\
 # my endpoints
 max_tokens = 1234
-unknown_key = kept
 
-[provider work]
-base_url = {url}
-model = alpha
+[providers.work]
+base_url = "{url}"
+model = "alpha"
 """
 
 
@@ -23,7 +24,7 @@ def state_dir(ctx):
 def select_provider(ctx, name):
     p = ctx.state_file()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(f"provider = {name}\n")
+    p.write_text(f'provider = "{name}"\n')
 
 
 def test_a_hand_written_provider_section_configures_the_run(ctx):
@@ -41,7 +42,9 @@ def test_a_hand_written_provider_section_configures_the_run(ctx):
 
 def test_writing_a_provider_keeps_the_rest_of_the_config(ctx):
     """/model rewrites one key, not the file: comments and order survive."""
-    ctx.write_config(CONFIG.format(url=ctx.mock.base_url))
+    ctx.write_config(
+        CONFIG.format(url=ctx.mock.base_url).replace(
+            "max_tokens = 1234", "max_tokens = 1234\nunknown_key = 1"))
     select_provider(ctx, "work")
     ctx.scenario("models=alpha|beta")
     s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
@@ -55,15 +58,18 @@ def test_writing_a_provider_keeps_the_rest_of_the_config(ctx):
     assert "# my endpoints" in text, text
     settings = ctx.settings(ctx.config_file())
     assert settings[""]["max_tokens"] == "1234", settings
-    assert settings[""]["unknown_key"] == "kept", settings
-    assert settings["provider work"]["model"] == "beta", settings
-    assert settings["provider work"]["base_url"] == ctx.mock.base_url, settings
+    assert settings[""]["unknown_key"] == "1", settings
+    assert settings["providers.work"]["model"] == "beta", settings
+    assert settings["providers.work"]["base_url"] == ctx.mock.base_url, settings
 
 
-def test_a_write_keeps_the_config_files_mode(ctx):
-    """The file is the user's, so yoke does not decide who may read it."""
+def test_what_yoke_writes_is_toml(ctx):
+    """The format is a TOML subset, so what yoke writes a TOML reader parses.
+
+    A string is quoted and a number is bare; anything else would be a file
+    yoke could read back and an editor could not.
+    """
     ctx.write_config(CONFIG.format(url=ctx.mock.base_url))
-    ctx.config_file().chmod(0o644)
     select_provider(ctx, "work")
     ctx.scenario("models=alpha|beta")
     s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
@@ -72,17 +78,32 @@ def test_a_write_keeps_the_config_files_mode(ctx):
     s.key("down").sync()
     s.key("enter")
     s.wait_text("model: beta")
+    s.settings_toggle("Verbose tool output")
+    s.submit("/exit")
+    s.wait_exit()
 
-    mode = ctx.config_file().stat().st_mode & 0o777
-    assert mode == 0o644, oct(mode)
+    assert 'model = "beta"' in ctx.config_file().read_text()
+    state = ctx.state_file().read_text()
+    assert 'provider = "work"' in state, state
+    assert "verbose_tools = true" in state, state
+
+
+def test_a_quoted_value_keeps_what_is_inside_it(ctx):
+    """Quotes delimit the value; a trailing comment is not part of it."""
+    ctx.write_config(
+        f'model = "spaced model"   # the one this project uses\n'
+        f'base_url = "{ctx.mock.base_url}"\n'
+    )
+    s = ctx.spawn(YOKE_MODEL=None, YOKE_BASE_URL=None)
+    assert s.status_field(1) == "spaced model", s.status_line()
 
 
 def test_a_provider_in_the_config_dirs_is_offered(ctx):
     """The system config is searched for providers as it is for keys."""
     etc = ctx.tmp / "etc"
     (etc / "yoke").mkdir(parents=True)
-    (etc / "yoke" / "config").write_text(
-        f"[provider sitewide]\nbase_url = {ctx.mock.base_url}\n"
+    (etc / "yoke" / "config.toml").write_text(
+        f'[providers.sitewide]\nbase_url = "{ctx.mock.base_url}"\n'
     )
     s = ctx.spawn(XDG_CONFIG_DIRS=str(etc))
     s.submit("/provider")
@@ -104,98 +125,85 @@ def test_every_remembered_choice_lands_in_one_state_file(ctx):
     s.submit("/exit")
     s.wait_exit()
 
-    assert ctx.state() == {"model": "beta", "telemetry": "on"}, ctx.state()
+    assert ctx.state() == {"model": "beta", "telemetry": "true"}, ctx.state()
     left = {p.name for p in state_dir(ctx).iterdir()}
-    assert left == {"state", "history", "telemetry"}, left
+    assert left == {"state.toml", "history", "telemetry"}, left
 
 
-def test_an_older_per_key_state_file_is_folded_into_the_state_file(ctx):
-    """A word in a file of its own becomes a key, and the file is removed."""
-    d = state_dir(ctx)
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "model").write_text("gamma\n")
-    (d / "telemetry").write_text("on\n")
+# ---- project settings ------------------------------------------------------
 
-    s = ctx.spawn(YOKE_MODEL=None)
-    assert s.status_field(1) == "gamma", s.status_line()
-    s.submit("/exit")
-    s.wait_exit()
-
-    assert ctx.state()["model"] == "gamma", ctx.state()
-    assert ctx.state()["telemetry"] == "on", ctx.state()
-    left = {p.name for p in d.iterdir()}
-    assert "model" not in left, left
-    # The name is free again: the record is the directory that took it.
-    assert (d / "telemetry").is_dir(), left
-
-
-def test_the_state_file_wins_over_the_older_one(ctx):
-    """The file the UI has been writing since is the answer; the other goes."""
-    d = state_dir(ctx)
-    d.mkdir(parents=True, exist_ok=True)
-    ctx.state_file().write_text("model = current\n")
-    (d / "model").write_text("stale\n")
-
-    s = ctx.spawn(YOKE_MODEL=None)
-    assert s.status_field(1) == "current", s.status_line()
-    s.submit("/exit")
-    s.wait_exit()
-
-    assert ctx.state()["model"] == "current", ctx.state()
-    assert not (d / "model").exists()
-
-
-# ---- legacy credentials ----------------------------------------------------
-
-def legacy_credentials(ctx, text):
-    c = ctx.home / ".local" / "state" / "yoke" / "credentials"
-    c.parent.mkdir(parents=True, exist_ok=True)
-    c.write_text(text)
-    c.chmod(0o600)
-    return c
-
-
-def test_json_lines_credentials_are_migrated_to_sections(ctx):
-    """Keys written before the settings formats were unified stay reachable.
-
-    The old file was JSON Lines. The ini parser reads no keys from one, so
-    without a migration its secrets are invisible: the app cannot use them
-    and deleting the provider cannot remove them.
-    """
-    c = legacy_credentials(ctx, '{"name":"work","key":"sk-legacy"}\n')
-    ctx.write_config(f"[provider work]\nbase_url = {ctx.mock.base_url}\n"
-                     f"model = mock-model\n")
-    (ctx.home / ".local" / "state" / "yoke" / "state").write_text("provider = work\n")
+def test_a_project_config_overrides_the_global_one(ctx):
+    """`.yoke/config.toml` is the more local statement, so it is the answer."""
+    ctx.write_config("max_tokens = 1000\nmodel = \"global-model\"\n")
+    ctx.write_project_config("max_tokens = 2000\n")
     ctx.scenario("text=ok")
-
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(YOKE_MODEL=None)
+    assert s.status_field(1) == "global-model", s.status_line()
     s.submit("hello")
     s.wait_turn_done()
-    assert ctx.mock.auth[-1] == "Bearer sk-legacy", ctx.mock.auth
-    assert ctx.settings(c).get("provider work", {}).get("key") == "sk-legacy"
-    assert "{" not in c.read_text(), c.read_text()
+    assert ctx.mock.requests[-1]["max_tokens"] == 2000, ctx.mock.requests[-1]
 
 
-def test_a_key_left_by_a_deleted_provider_becomes_visible(ctx):
-    """An orphaned legacy key stops hiding as an unparseable line.
+def test_the_nearest_project_config_wins(ctx):
+    """The chain is walked to the root, and the nearest file has the say."""
+    ctx.write_project_config("max_tokens = 2000\n")
+    inner = ctx.work / "sub"
+    inner.mkdir()
+    ctx.write_project_config("max_tokens = 3000\n", at=inner)
+    ctx.scenario("text=ok")
+    s = ctx.spawn(cwd=str(inner))
+    s.submit("hello")
+    s.wait_turn_done()
+    assert ctx.mock.requests[-1]["max_tokens"] == 3000, ctx.mock.requests[-1]
 
-    Every rewrite copied it forward verbatim, so it survived the deletion of
-    the provider it belonged to and could never be removed through the app.
-    Converting it makes it a section like any other, which is what both a
-    person reading the file and a later delete need.
-    """
-    c = legacy_credentials(
-        ctx,
-        '{"name":"gone","key":"sk-orphan"}\n'
-        '{"name":"work","key":"sk-work"}\n')
-    ctx.write_config(f"[provider work]\nbase_url = {ctx.mock.base_url}\n"
-                     f"model = mock-model\n")
-    (ctx.home / ".local" / "state" / "yoke" / "state").write_text(
-        "provider = work\n")
 
+def test_a_project_config_may_not_carry_an_api_key(ctx):
+    """It arrives with a clone, so it does not get to authenticate anyone."""
+    ctx.write_project_config('api_key = "sk-from-the-repo"\n')
+    ctx.scenario("text=ok")
+    out = ctx.run_cli("-p", "hello", YOKE_API_KEY=None)
+    assert "api_key" in out.stderr, out.stderr
+    assert "may not set it" in out.stderr, out.stderr
+    assert ctx.mock.auth[-1] != "Bearer sk-from-the-repo", ctx.mock.auth
+
+
+def test_a_project_config_may_define_a_provider(ctx):
+    """An endpoint is a URL, not a secret, so a repository may name one."""
+    ctx.write_project_config(
+        f'provider = "repo"\n'
+        f'[providers.repo]\nbase_url = "{ctx.mock.base_url}"\n'
+        f'model = "repo-model"\n'
+    )
+    ctx.scenario("text=ok")
     s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
-    s.settle()
-    sections = ctx.settings(c)
-    assert sections.get("provider gone", {}).get("key") == "sk-orphan", sections
-    assert sections.get("provider work", {}).get("key") == "sk-work", sections
-    assert "{" not in c.read_text(), c.read_text()
+    assert s.status_field(1) == "repo-model", s.status_line()
+    s.submit("hello")
+    s.wait_turn_done()
+    assert ctx.mock.requests[-1]["model"] == "repo-model"
+
+
+# ---- bad input -------------------------------------------------------------
+
+def test_an_unknown_key_is_reported(ctx):
+    """A typo in a document is worth saying out loud rather than ignoring."""
+    ctx.write_config("moddel = gpt-4o-mini\n")
+    ctx.scenario("text=ok")
+    out = ctx.run_cli("-p", "hello")
+    assert "unknown setting moddel" in out.stderr, out.stderr
+
+
+def test_a_value_outside_its_bounds_falls_through(ctx):
+    """A refused value must not shadow the good one below it."""
+    ctx.write_config("max_tokens = 4096\n")
+    ctx.write_project_config("max_tokens = 99999999\n")
+    ctx.scenario("text=ok")
+    out = ctx.run_cli("-p", "hello")
+    assert "max_tokens" in out.stderr, out.stderr
+    assert ctx.mock.requests[-1]["max_tokens"] == 4096, ctx.mock.requests[-1]
+
+
+def test_a_provider_naming_nothing_is_not_a_selection(ctx):
+    """A name with no section behind it leaves the run asking for one."""
+    ctx.write_config('provider = "ghost"\n')
+    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s.wait_text("no provider yet")

@@ -31,18 +31,35 @@ export YOKE_API_KEY=sk-...
 export YOKE_API=openai       # or anthropic
 ```
 
-The same values can live in `$XDG_CONFIG_HOME/yoke/config`:
+Every setting is `YOKE_<NAME>` in the environment and `<name>` in a config
+file, which is TOML:
 
-```ini
-base_url = https://api.openai.com/v1
-model = gpt-4o-mini
-api_key = sk-...
-api = openai
+```toml
+# $XDG_CONFIG_HOME/yoke/config.toml
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+api_key = "sk-..."
+api = "openai"
+max_tokens = 32768
+stream = true
+
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+api = "openai"
 ```
 
-`/provider` stores provider definitions in that config and keys in
-`$XDG_STATE_HOME/yoke/credentials` (mode 0600). Command-line options override
-environment, saved choices, and config. Run `yoke --help` for all options.
+A project overrides that in `.yoke/config.toml`, which is looked for in the
+working directory and every directory above it, nearest last. It arrives with
+a `git clone`, so it may not set `api_key` or anything naming a key store;
+such a line is reported and ignored.
+
+Precedence, lowest first: defaults, `$XDG_CONFIG_DIRS/yoke/config.toml`,
+`$XDG_CONFIG_HOME/yoke/config.toml`, `.yoke/config.toml`, remembered UI
+choices in `$XDG_STATE_HOME/yoke/state.toml`, the active provider's section,
+`YOKE_*`, then command-line options. `/provider` writes provider definitions
+to the user's config and keys to `$XDG_STATE_HOME/yoke/credentials.toml`
+(mode 0600). Run `yoke --help` for all options.
 
 ### External key stores
 
@@ -53,9 +70,9 @@ is already stored, use `+ edit a provider` and choose **Move**: that names the
 store holding it now and writes it to another without asking for the value
 again. The credentials file then records only which store to ask:
 
-```ini
-[provider openai]
-key_source = secret-service   # or: pass, keychain, file
+```toml
+[providers.openai]
+key_source = "secret-service"   # or: pass, keychain, file
 ```
 
 yoke builds the helper's command line itself, looking the key up under the
@@ -97,8 +114,8 @@ locations. `AGENTS.md` files between the working directory and root are
 appended as project instructions. Prompt placeholders are `{tools}` and
 `{cwd}`.
 
-yoke follows XDG paths: config is under `yoke/config`, state includes history,
-credentials, and UI choices, and sessions are under
+yoke follows XDG paths: config is under `yoke/config.toml`, state holds
+history, credentials, and UI choices, and sessions are under
 `$XDG_DATA_HOME/yoke/sessions`. Optional anonymized telemetry is off by
 default and never includes prompt, tool-argument, raw-path, or endpoint data.
 

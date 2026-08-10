@@ -88,7 +88,7 @@ def write_endpoint(ctx, name, ctx_url, model="mock-model"):
     p = ctx.config_file()
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a") as f:
-        f.write(f"[provider {name}]\nbase_url = {ctx_url}\nmodel = {model}\n")
+        f.write(f"[providers.{name}]\nbase_url = {ctx_url}\nmodel = {model}\n")
 
 
 def start_with(ctx, name, **env):
@@ -104,7 +104,7 @@ def test_a_key_from_the_system_keyring_reaches_the_provider(ctx):
     """key_source names a store; the key itself is nowhere in yoke's files."""
     seed_keyring(ctx, "work", "sk-from-keyring")
     write_endpoint(ctx, "work", ctx.mock.base_url)
-    write_credentials(ctx, "[provider work]\nkey_source = secret-service\n")
+    write_credentials(ctx, "[providers.work]\nkey_source = secret-service\n")
     ctx.scenario("text=ok")
 
     s = start_with(ctx, "work")
@@ -116,7 +116,7 @@ def test_a_key_from_the_system_keyring_reaches_the_provider(ctx):
 def test_no_key_store_keeps_the_credentials_file_working(ctx):
     """A provider written before key stores existed still reads its key."""
     write_endpoint(ctx, "work", ctx.mock.base_url)
-    write_credentials(ctx, "[provider work]\nkey = sk-in-file\n")
+    write_credentials(ctx, "[providers.work]\nkey = sk-in-file\n")
     ctx.scenario("text=ok")
 
     s = start_with(ctx, "work")
@@ -128,7 +128,7 @@ def test_no_key_store_keeps_the_credentials_file_working(ctx):
 def test_an_unknown_key_source_is_refused_rather_than_guessed(ctx):
     """Falling back to the file would send a key the user moved off it."""
     write_endpoint(ctx, "work", ctx.mock.base_url)
-    write_credentials(ctx, "[provider work]\nkey_source = wallet\nkey = sk-file\n")
+    write_credentials(ctx, "[providers.work]\nkey_source = wallet\nkey = sk-file\n")
     s = start_with(ctx, "work")
     s.submit("/provider")
     s.wait_status("pick a provider")
@@ -139,7 +139,7 @@ def test_an_unknown_key_source_is_refused_rather_than_guessed(ctx):
 def test_a_missing_helper_is_reported_not_silently_ignored(ctx):
     """Nothing on PATH answers, so the run says so instead of losing the key."""
     write_endpoint(ctx, "work", ctx.mock.base_url)
-    write_credentials(ctx, "[provider work]\nkey_source = secret-service\n")
+    write_credentials(ctx, "[providers.work]\nkey_source = secret-service\n")
     # Only the empty stub directory: a secret-tool the developer happens to
     # have installed would answer, and this case is about one that is absent.
     select_provider(ctx, "work")
@@ -168,10 +168,10 @@ print("sk-evil")
 """)
     p = ctx.config_file()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(f"[provider work]\nbase_url = {ctx.mock.base_url}\n"
+    p.write_text(f"[providers.work]\nbase_url = {ctx.mock.base_url}\n"
                  f"model = mock-model\nkey_source = command\n"
                  f"key_command = {helper}\n")
-    write_credentials(ctx, "[provider work]\nkey = sk-real\n")
+    write_credentials(ctx, "[providers.work]\nkey = sk-real\n")
     ctx.scenario("text=ok")
 
     s = start_with(ctx, "work")
@@ -185,7 +185,7 @@ def test_a_key_command_in_the_credentials_file_is_run(ctx):
     """The 0600 machine-local file is the one place a directive is honoured."""
     helper = write_script(ctx, "helper", 'print("sk-from-command")\n')
     write_endpoint(ctx, "work", ctx.mock.base_url)
-    write_credentials(ctx, f"[provider work]\nkey_source = command\n"
+    write_credentials(ctx, f"[providers.work]\nkey_source = command\n"
                            f"key_command = {helper}\n")
     ctx.scenario("text=ok")
 
@@ -202,7 +202,7 @@ def test_a_key_command_is_not_run_through_a_shell(ctx):
     write_endpoint(ctx, "work", ctx.mock.base_url)
     write_credentials(
         ctx,
-        f"[provider work]\nkey_source = command\n"
+        f"[providers.work]\nkey_source = command\n"
         f"key_command = {helper} ; touch {marker}\n")
     ctx.scenario("text=ok")
 
@@ -241,7 +241,7 @@ def test_choosing_the_keyring_writes_no_key_to_disk(ctx):
     s.key("enter")
     s.wait_text("provider: work")
 
-    section = ctx.settings(credentials_file(ctx)).get("provider work", {})
+    section = ctx.settings(credentials_file(ctx)).get("providers.work", {})
     assert section.get("key_source") == "secret-service", section
     assert not section.get("key"), section
     assert "sk-topsecret" in keyring_file(ctx).read_text()
@@ -250,28 +250,27 @@ def test_choosing_the_keyring_writes_no_key_to_disk(ctx):
             assert "sk-topsecret" not in path.read_text(), path
 
 
-def test_a_provider_name_with_a_space_can_use_a_key_store(ctx):
-    """Names are argv elements, not shell words, so a space is just a space.
+def test_a_provider_name_that_is_not_a_bare_key_is_not_a_provider(ctx):
+    """A name lands in a "[providers.<name>]" header, so it is a TOML key.
 
-    Refusing them would lock out the names people actually pick, and buys
-    nothing: the helper is exec'd directly.
+    A section a TOML reader would reject is not an endpoint yoke will use: it
+    would mean the file yoke writes and the file an editor parses disagree.
+    The keyring holds a key for the name either way, and it stays unused.
     """
     seed_keyring(ctx, "Local Claude", "sk-spaced")
     write_endpoint(ctx, "Local Claude", ctx.mock.base_url)
-    write_credentials(ctx, "[provider Local Claude]\nkey_source = secret-service\n")
-    ctx.scenario("text=ok")
+    write_credentials(ctx, "[providers.Local Claude]\nkey_source = secret-service\n")
 
     s = start_with(ctx, "Local Claude")
-    s.submit("hello")
-    s.wait_turn_done()
-    assert ctx.mock.auth[-1] == "Bearer sk-spaced", ctx.mock.auth
+    s.wait_text("no provider yet")
+    assert ctx.mock.auth == [], ctx.mock.auth
 
 
 def test_a_provider_name_that_could_become_an_option_is_refused(ctx):
     """A leading dash or a slash would change what the helper is asked."""
     seed_keyring(ctx, "-w", "sk-nope")
     write_endpoint(ctx, "-w", ctx.mock.base_url)
-    write_credentials(ctx, "[provider -w]\nkey_source = secret-service\n")
+    write_credentials(ctx, "[providers.-w]\nkey_source = secret-service\n")
     s = start_with(ctx, "-w")
     s.submit("/provider")
     s.wait_status("pick a provider")
@@ -287,7 +286,7 @@ def test_an_existing_key_can_move_stores_without_being_retyped(ctx):
     """
     install_secret_tool(ctx)
     write_endpoint(ctx, "work", ctx.mock.base_url, model="alpha")
-    write_credentials(ctx, "[provider work]\nkey = sk-was-in-file\n")
+    write_credentials(ctx, "[providers.work]\nkey = sk-was-in-file\n")
     ctx.scenario("models=alpha")
 
     s = start_with(ctx, "work")
@@ -306,7 +305,7 @@ def test_an_existing_key_can_move_stores_without_being_retyped(ctx):
     s.key("down", "enter")                   # System keyring
     s.wait_text("provider: work")
 
-    section = ctx.settings(credentials_file(ctx)).get("provider work", {})
+    section = ctx.settings(credentials_file(ctx)).get("providers.work", {})
     assert section.get("key_source") == "secret-service", section
     assert not section.get("key"), section
     assert "sk-was-in-file" in keyring_file(ctx).read_text()
@@ -315,7 +314,7 @@ def test_an_existing_key_can_move_stores_without_being_retyped(ctx):
 def test_the_key_menu_names_the_store_that_holds_it(ctx):
     """Where a key lives is not discoverable unless the menu says so."""
     write_endpoint(ctx, "work", ctx.mock.base_url, model="alpha")
-    write_credentials(ctx, "[provider work]\nkey_source = pass\n")
+    write_credentials(ctx, "[providers.work]\nkey_source = pass\n")
     ctx.scenario("models=alpha")
 
     s = start_with(ctx, "work")
