@@ -532,6 +532,25 @@ static void render_user_message(Str text, u32 id) {
     tui_user_end();
 }
 
+static void render_saved_thinking(Str raw, Arena *scratch) {
+    if (!raw.n) return;
+    size_t mark = scratch->off;
+    const JVal *blocks = json_parse(scratch, raw);
+    if (!blocks || blocks->type != J_ARR) { scratch->off = mark; return; }
+    for (size_t i = 0; i < blocks->u.arr.n; i++) {
+        const JVal *blk = &blocks->u.arr.items[i];
+        if (!str_eq(json_str(blk, STR("type")), STR("thinking"))) continue;
+        Str thought = json_str(blk, STR("thinking"));
+        if (!thought.n) continue;
+        md_set_muted(true);
+        tui_block();
+        md_write(thought);
+        md_end();
+        md_set_muted(false);
+    }
+    scratch->off = mark;
+}
+
 static void render_conv(const Conv *c, const Config *cfg,
                         b8 show_instructions, Arena *scratch) {
     for (size_t i = 0; i < c->n; i++) {
@@ -565,10 +584,13 @@ static void render_conv(const Conv *c, const Config *cfg,
                 if (conv_is_call(c, i)) {
                     render_tool_call(c->tool_name[i], c->text[i], scratch,
                                      (u32)(i + 1), c->expanded[i]);
-                } else if (c->text[i].n) {
-                    tui_block();
-                    md_write(c->text[i]);
-                    md_end();
+                } else {
+                    render_saved_thinking(c->anthropic_thinking[i], scratch);
+                    if (c->text[i].n) {
+                        tui_block();
+                        md_write(c->text[i]);
+                        md_end();
+                    }
                 }
                 break;
         }

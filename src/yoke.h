@@ -779,6 +779,9 @@ typedef enum { M_SYSTEM = 0, M_USER, M_ASSISTANT, M_TOOL } MRole;
 typedef struct {
     MRole *role;          /* [cap]                                       */
     Str   *text;          /* [cap] prose, tool result or call arguments  */
+    /* [cap] canonical JSON array of Anthropic thinking blocks attached to
+     * an assistant head. The encrypted signatures must survive tool rounds. */
+    Str   *anthropic_thinking;
     Str   *tool_name;     /* [cap]                                       */
     Str   *tool_call_id;  /* [cap]                                       */
     Str   *shell_out;     /* [cap] what a '!' run printed                */
@@ -809,10 +812,9 @@ size_t  conv_room(const Conv *c);
  * message like any other. */
 void    conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg);
 /* The same conversation as Anthropic messages: content blocks rather than
- * flat text, tool results carried by the user, and consecutive slots of one
- * role merged into a single message, which is what that API accepts. The
- * system prompt is not a message there, so it is written by the caller and
- * skipped here. */
+ * flat text, preserved thinking blocks before their assistant content, tool
+ * results carried by the user, and consecutive slots of one role merged into
+ * a single message. The system prompt is written by the caller and skipped. */
 void    conv_write_json_anthropic(Buf *b, const Conv *c);
 
 /* ---- sessions ------------------------------------------------------------
@@ -868,9 +870,9 @@ typedef struct {
     Arena             *persist;   /* message storage                           */
     Arena             *scratch;   /* reset each turn                           */
     void (*on_text)(Str delta, void *ud);
-    /* "reasoning_content" or "reasoning": displayed as the turn streams,
-     * never appended to the conversation, since a provider rejects a
-     * thinking trace it did not produce itself. */
+    /* OpenAI reasoning text or an Anthropic thinking summary, displayed as
+     * the turn streams. Anthropic's complete signed blocks are also retained
+     * privately in Conv so a tool-result request can return them unchanged. */
     void (*on_reason)(Str delta, void *ud);
     void (*on_tool_call)(i32 index, Str id, Str name, Str args_delta, void *ud);
     /* The request's usage as it is heard: the mock and most providers send it
@@ -890,6 +892,8 @@ typedef struct {
     const volatile sig_atomic_t *interrupt_flag;
     size_t prompt_tokens;
     size_t completion_tokens;
+    size_t cache_creation_tokens;
+    size_t cache_read_tokens;
     size_t total_tokens;
     b8 usage_valid;
 } Provider;

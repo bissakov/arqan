@@ -20,10 +20,31 @@ def test_a_reply_streams_from_content_blocks(ctx):
     s.wait_text("hello from anthropic")
     s.wait_turn_done()
     body = ctx.mock.requests[-1]
-    assert body["messages"] == [
-        {"role": "user", "content": [{"type": "text", "text": "say hi"}]}
-    ], body["messages"]
-    assert body["system"] == "You are a test fixture.", body
+    assert body["messages"] == [{
+        "role": "user",
+        "content": [{
+            "type": "text", "text": "say hi",
+            "cache_control": {"type": "ephemeral"},
+        }],
+    }], body["messages"]
+    assert body["system"] == [{
+        "type": "text",
+        "text": "You are a test fixture.",
+        "cache_control": {"type": "ephemeral"},
+    }], body
+
+
+def test_requests_enable_prompt_caching(ctx):
+    """A growing agent loop caches its system and newest user prefixes."""
+    ctx.scenario("text=cached")
+    s = anth(ctx)
+    s.submit("hello")
+    s.wait_turn_done()
+    body = ctx.mock.requests[-1]
+    assert body["system"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert body["messages"][-1]["content"][-1]["cache_control"] == {
+        "type": "ephemeral"
+    }
 
 
 def test_the_system_prompt_is_a_parameter_not_a_message(ctx):
@@ -34,7 +55,7 @@ def test_the_system_prompt_is_a_parameter_not_a_message(ctx):
     s.wait_turn_done()
     body = ctx.mock.requests[-1]
     assert all(m["role"] != "system" for m in body["messages"]), body["messages"]
-    assert body["system"] == "You are a test fixture."
+    assert body["system"][0]["text"] == "You are a test fixture."
 
 
 def test_tools_are_declared_with_an_input_schema(ctx):
@@ -87,24 +108,39 @@ def test_parallel_results_ride_in_one_user_message(ctx):
     assert kinds == ["tool_result", "tool_result"], messages[2]
 
 
-def test_a_thinking_block_reaches_the_screen_and_not_the_wire(ctx):
-    """A trace is shown as it streams and never replayed to the provider."""
-    ctx.scenario("reasoning=weighing+it+up,text=done,tool_rounds=0")
+def test_a_thinking_block_reaches_the_screen_and_the_tool_follow_up(ctx):
+    """A trace is shown, then returned unchanged to continue a tool turn."""
+    ctx.write_file("notes.txt", "kept it\n")
+    ctx.scenario(
+        'redacted=opaque-secret,reasoning=weighing+it+up,'
+        'tool=read:{"path":"notes.txt"},'
+        'final_text=done'
+    )
     s = anth(ctx)
     s.submit("think first")
     s.wait_text("weighing it up")
     s.wait_text("done")
     s.wait_turn_done()
-    s.submit("again")
-    s.wait_turn_done()
-    raw = json.dumps(ctx.mock.requests[-1])
-    assert "weighing it up" not in raw, raw
+    assistant = ctx.mock.requests[-1]["messages"][1]["content"]
+    assert assistant[0] == {
+        "type": "redacted_thinking",
+        "data": "opaque-secret",
+    }, json.dumps(assistant)
+    assert assistant[1] == {
+        "type": "thinking",
+        "thinking": "weighing it up",
+        "signature": "sig_mock",
+    }, json.dumps(assistant)
+    assert assistant[2]["type"] == "tool_use", assistant
 
 
 def test_an_unstreamed_reply_is_read_the_same_way(ctx):
     """With streaming off the message document reaches the same slots."""
     ctx.write_file("notes.txt", "kept it\n")
-    ctx.scenario('tool=read:{"path":"notes.txt"},final_text=whole+reply')
+    ctx.scenario(
+        'reasoning=checking+the+file,tool=read:{"path":"notes.txt"},'
+        'final_text=whole+reply'
+    )
     s = anth(ctx)
     s.settings_toggle("Stream replies")
     s.submit("read the notes")
@@ -112,11 +148,41 @@ def test_an_unstreamed_reply_is_read_the_same_way(ctx):
     s.wait_turn_done()
     assert ctx.mock.requests[-1]["stream"] is False, ctx.mock.requests[-1]
     assert any("kept it" in r for r in ctx.mock.tool_results()), ctx.mock.tool_results()
+    thinking = ctx.mock.requests[-1]["messages"][1]["content"][0]
+    assert thinking["thinking"] == "checking the file", thinking
+    assert thinking["signature"] == "sig_mock", thinking
+
+
+def test_signed_thinking_survives_a_session_resume(ctx):
+    """Resuming keeps both the visible summary and its opaque signature."""
+    ctx.scenario("reasoning=remembering+why,text=first+answer")
+    first = anth(ctx)
+    first.submit("first question")
+    first.wait_text("first answer")
+    first.wait_turn_done()
+    first.submit("/exit")
+    first.wait_exit()
+
+    again = anth(ctx)
+    again.submit("/resume")
+    again.wait_status("pick a session")
+    again.key("enter")
+    again.wait_text("remembering why")
+
+    ctx.scenario("text=second+answer")
+    again.submit("second question")
+    again.wait_turn_done()
+    old = ctx.mock.requests[-1]["messages"][1]["content"][0]
+    assert old == {
+        "type": "thinking",
+        "thinking": "remembering why",
+        "signature": "sig_mock",
+    }, old
 
 
 def test_usage_from_message_start_and_message_delta(ctx):
     """The prompt is priced on the first event and the reply on the last."""
-    ctx.scenario("text=counted,usage=1200/40")
+    ctx.scenario("text=counted,usage=200/40,cache_read=1000")
     s = anth(ctx)
     s.submit("hello")
     s.wait_turn_done()

@@ -392,6 +392,22 @@ def test_provider_reasoning_controls_shape_requests(ctx):
     assert ctx.mock.requests[-1]["reasoning_effort"] == "careful"
 
 
+def test_anthropic_effort_enables_visible_adaptive_thinking(ctx):
+    """Anthropic efforts use output_config and request summarized thinking."""
+    write_provider(ctx, "anth", ctx.mock.base_url, key="sk", api="anthropic")
+    with ctx.config_file().open("a") as f:
+        f.write("reasoning_efforts = low,medium,high\nreasoning_effort = medium\n"
+                "thinking_budgets = 1024\nthinking_budget = 1024\n")
+    select_provider(ctx, "anth")
+    ctx.scenario("text=ok")
+    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s.submit("hello")
+    s.wait_turn_done()
+    body = ctx.mock.requests[-1]
+    assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert body["output_config"] == {"effort": "medium"}
+
+
 def test_provider_reasoning_controls_are_editable_in_the_tui(ctx):
     """Editing keeps defaults and the key while optional controls may stay Off."""
     write_provider(ctx, "work", ctx.mock.base_url, key="sk-kept", api="openai")

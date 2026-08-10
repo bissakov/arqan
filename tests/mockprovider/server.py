@@ -73,10 +73,13 @@ class Scenario:
         # reasoning: streamed before the content, in the field a provider of
         # that family uses ("reasoning_content" or "reasoning").
         self.reasoning: str | None = kw.get("reasoning")
+        self.redacted: str | None = kw.get("redacted")
         self.reasoning_field: str = kw.get("reasoning_field", "reasoning_content")
         self.final_text: str | None = kw.get("final_text")
         self.prompt_tokens = kw.get("prompt_tokens")
         self.completion_tokens = kw.get("completion_tokens")
+        self.cache_creation_tokens: int = int(kw.get("cache_creation", 0))
+        self.cache_read_tokens: int = int(kw.get("cache_read", 0))
         self.usage: bool = _truthy(kw.get("usage", True))
         # Some providers report usage on an early event rather than the last;
         # when set, yoke hears it before any reasoning or content, which is
@@ -143,7 +146,8 @@ class Scenario:
                     kw["usage"] = value
             elif key == "models":
                 kw["models"] = [m for m in _unescape(value).split("|") if m]
-            elif key in ("text", "final_text", "prefix", "error", "reasoning"):
+            elif key in ("text", "final_text", "prefix", "error", "reasoning",
+                         "redacted"):
                 kw[key] = _unescape(value)
             else:
                 kw[key] = value
@@ -288,7 +292,12 @@ class _AnthropicHandlerMixin:
                 "role": "assistant",
                 "model": model or "mock",
                 "content": [],
-                "usage": {"input_tokens": prompt, "output_tokens": 0},
+                "usage": {
+                    "input_tokens": prompt,
+                    "output_tokens": 0,
+                    "cache_creation_input_tokens": scenario.cache_creation_tokens,
+                    "cache_read_input_tokens": scenario.cache_read_tokens,
+                },
             }
         }
         if not self._anth_sse("message_start", start):
@@ -299,11 +308,19 @@ class _AnthropicHandlerMixin:
 
         index = 0
         completion_chars = 0
+        if scenario.redacted and tool_replies == 0:
+            if not self._anth_block(
+                index, {"type": "redacted_thinking", "data": scenario.redacted},
+                [], scenario,
+            ):
+                return
+            index += 1
         if scenario.reasoning and tool_replies == 0:
             if not self._anth_block(
                 index, {"type": "thinking", "thinking": ""},
                 [{"type": "thinking_delta", "thinking": piece}
-                 for piece in chunks(scenario.reasoning, scenario.chunk)],
+                 for piece in chunks(scenario.reasoning, scenario.chunk)]
+                + [{"type": "signature_delta", "signature": "sig_mock"}],
                 scenario,
             ):
                 return
@@ -367,8 +384,11 @@ class _AnthropicHandlerMixin:
         """`stream: false`: the same reply as one message document."""
         content = []
         completion_chars = 0
+        if scenario.redacted and tool_replies == 0:
+            content.append({"type": "redacted_thinking", "data": scenario.redacted})
         if scenario.reasoning and tool_replies == 0:
-            content.append({"type": "thinking", "thinking": scenario.reasoning})
+            content.append({"type": "thinking", "thinking": scenario.reasoning,
+                            "signature": "sig_mock"})
         if emit_tools:
             for order, (name, args) in enumerate(scenario.tools):
                 try:
@@ -393,7 +413,12 @@ class _AnthropicHandlerMixin:
             "model": model or "mock",
             "content": content,
             "stop_reason": stop,
-            "usage": {"input_tokens": prompt, "output_tokens": completion},
+            "usage": {
+                "input_tokens": prompt,
+                "output_tokens": completion,
+                "cache_creation_input_tokens": scenario.cache_creation_tokens,
+                "cache_read_input_tokens": scenario.cache_read_tokens,
+            },
         }
         if scenario.first_delay:
             time.sleep(scenario.first_delay)

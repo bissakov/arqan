@@ -25,6 +25,7 @@
 b8 conv_init(Conv *c, Arena *persist, size_t cap) {
     c->role           = arena_new(persist, MRole, cap);
     c->text           = arena_new(persist, Str,   cap);
+    c->anthropic_thinking = arena_new(persist, Str, cap);
     c->tool_name      = arena_new(persist, Str,   cap);
     c->tool_call_id   = arena_new(persist, Str,   cap);
     c->shell_out      = arena_new(persist, Str,   cap);
@@ -33,7 +34,8 @@ b8 conv_init(Conv *c, Arena *persist, size_t cap) {
     c->ms             = arena_new(persist, u32, cap);
     c->n = 0;
     c->cap = cap;
-    if (!c->role || !c->text || !c->tool_name || !c->tool_call_id
+    if (!c->role || !c->text || !c->anthropic_thinking || !c->tool_name
+        || !c->tool_call_id
         || !c->shell_out || !c->has_tool_call || !c->expanded || !c->ms) {
         c->cap = 0;
         return false;
@@ -50,6 +52,7 @@ static size_t conv_push(Conv *c, MRole role, Str text, Str id, Str name,
     size_t i = c->n++;
     c->role[i] = role;
     c->text[i] = text;
+    c->anthropic_thinking[i] = (Str){0};
     c->tool_call_id[i] = id;
     c->tool_name[i] = name;
     c->shell_out[i] = (Str){0};
@@ -198,20 +201,44 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
 
 /* A slot with nothing to say contributes no block, and a message with no
  * blocks is refused rather than read as an empty turn. */
-static b8 anth_has_block(const Conv *c, size_t i) {
+static b8 anth_has_plain_block(const Conv *c, size_t i) {
     if (c->role[i] == M_SYSTEM) return false;
     if (c->role[i] == M_TOOL || conv_is_call(c, i) || conv_is_shell(c, i))
         return true;
     return c->text[i].n > 0;
 }
 
-static void anth_write_block(Buf *b, const Conv *c, size_t i, size_t recent) {
+static b8 anth_has_block(const Conv *c, size_t i) {
+    return c->anthropic_thinking[i].n || anth_has_plain_block(c, i);
+}
+
+/* Stored arrays are produced by the parser or validated while a session is
+ * resumed. Splice their elements into this assistant content array so the
+ * signed blocks precede the text and tool calls they belong to. */
+static void anth_write_thinking(Buf *b, Str raw, b8 *first) {
+    if (raw.n < 2 || raw.p[0] != '[' || raw.p[raw.n - 1] != ']') return;
+    Str inner = { raw.p + 1, raw.n - 2 };
+    if (!inner.n) return;
+    if (!*first) buf_putc(b, ',');
+    *first = false;
+    buf_puts(b, inner);
+}
+
+static void anth_write_cache(Buf *b, b8 cache) {
+    if (cache)
+        buf_puts(b, STR(",\"cache_control\":{\"type\":\"ephemeral\"}"));
+}
+
+static void anth_write_block(Buf *b, const Conv *c, size_t i, size_t recent,
+                             b8 cache) {
     if (conv_is_shell(c, i)) {
         buf_puts(b, STR("{\"type\":\"text\",\"text\":\"!"));
         buf_json_chars(b, c->text[i]);
         buf_json_chars(b, STR("\n"));
         buf_json_chars(b, c->shell_out[i]);
-        buf_puts(b, STR("\"}"));
+        buf_putc(b, '"');
+        anth_write_cache(b, cache);
+        buf_putc(b, '}');
         return;
     }
     if (c->role[i] == M_TOOL) {
@@ -219,6 +246,7 @@ static void anth_write_block(Buf *b, const Conv *c, size_t i, size_t recent) {
         buf_json_str(b, c->tool_call_id[i]);
         buf_puts(b, STR(",\"content\":"));
         write_tool_result(b, c, i, recent);
+        anth_write_cache(b, cache);
         buf_putc(b, '}');
         return;
     }
@@ -238,11 +266,17 @@ static void anth_write_block(Buf *b, const Conv *c, size_t i, size_t recent) {
     }
     buf_puts(b, STR("{\"type\":\"text\",\"text\":"));
     buf_json_str(b, c->text[i]);
+    anth_write_cache(b, cache);
     buf_putc(b, '}');
 }
 
 void conv_write_json_anthropic(Buf *b, const Conv *c) {
     size_t recent = conv_recent_start(c, YOKE_ELIDE_TURNS);
+    size_t cache_at = CONV_NONE;
+    for (size_t j = c->n; j-- > 0;) {
+        if ((c->role[j] == M_USER || c->role[j] == M_TOOL)
+            && anth_has_plain_block(c, j)) { cache_at = j; break; }
+    }
     buf_putc(b, '[');
     b8 first_msg = true;
     size_t i = 0;
@@ -257,9 +291,11 @@ void conv_write_json_anthropic(Buf *b, const Conv *c) {
         for (; i < c->n && c->role[i] != M_SYSTEM
                && (c->role[i] == M_ASSISTANT) == assistant; i++) {
             if (!anth_has_block(c, i)) continue;
+            anth_write_thinking(b, c->anthropic_thinking[i], &first_block);
+            if (!anth_has_plain_block(c, i)) continue;
             if (!first_block) buf_putc(b, ',');
             first_block = false;
-            anth_write_block(b, c, i, recent);
+            anth_write_block(b, c, i, recent, i == cache_at);
         }
         buf_puts(b, STR("]}"));
     }
@@ -280,6 +316,14 @@ typedef struct {
     i32  count;
     i32  dropped;      /* calls past the per-turn cap */
     Buf  text;
+    /* Canonical JSON array of signed Anthropic thinking blocks. The readable
+     * summary is also sent to on_reason, but this whole form is what a later
+     * tool-result request must return. */
+    Buf  anth_blocks;
+    b8   anth_first;
+    b8   anth_thinking_open;
+    b8   anth_thinking_closed;
+    b8   anth_signature_open;
     b8   text_started;
     b8   reason_started;
     /* Anthropic streams one content block at a time, so the open block is
@@ -340,8 +384,8 @@ static Str reasoning_of(const JVal *v) {
 }
 
 /* The three things a reply carries, taken the same way whether they arrived a
- * delta at a time or whole: a thinking trace the conversation never keeps,
- * the reply itself, and one tool call per slot. */
+ * delta at a time or whole: displayed thinking, the reply itself, and one
+ * tool call per slot. */
 static void take_reason(Provider *p, StreamState *s, Str raw) {
     Str rt = skip_leading_breaks(raw, s->reason_started);
     if (!rt.n) return;
@@ -403,15 +447,34 @@ static void openai_event(Provider *p, StreamState *s, const JVal *ev) {
 /* Anthropic reports the prompt on message_start and the completion on
  * message_delta, so each is kept where it was heard rather than replacing the
  * pair. */
+static b8 usage_size(const JVal *v, size_t *out) {
+    if (!v || v->type != J_NUM || !(v->u.n >= 0)
+        || v->u.n >= (f64)SIZE_MAX) return false;
+    *out = (size_t)v->u.n;
+    return true;
+}
+
+static size_t usage_add(size_t a, size_t b) {
+    return a > SIZE_MAX - b ? SIZE_MAX : a + b;
+}
+
 static void read_usage_anth(Provider *p, const JVal *owner) {
     const JVal *usage = json_get(owner, STR("usage"));
     if (!usage || usage->type != J_OBJ) return;
     const JVal *in = json_get(usage, STR("input_tokens"));
     const JVal *out = json_get(usage, STR("output_tokens"));
-    if (in && in->type == J_NUM) p->prompt_tokens = (size_t)in->u.n;
-    if (out && out->type == J_NUM) p->completion_tokens = (size_t)out->u.n;
+    const JVal *created = json_get(usage, STR("cache_creation_input_tokens"));
+    const JVal *cached = json_get(usage, STR("cache_read_input_tokens"));
+    size_t uncached = 0;
+    if (usage_size(created, &uncached)) p->cache_creation_tokens = uncached;
+    if (usage_size(cached, &uncached)) p->cache_read_tokens = uncached;
+    if (usage_size(in, &uncached))
+        p->prompt_tokens = usage_add(usage_add(uncached,
+                                      p->cache_creation_tokens),
+                                      p->cache_read_tokens);
+    if (usage_size(out, &uncached)) p->completion_tokens = uncached;
     if (!p->prompt_tokens && !p->completion_tokens) return;
-    p->total_tokens = p->prompt_tokens + p->completion_tokens;
+    p->total_tokens = usage_add(p->prompt_tokens, p->completion_tokens);
     p->usage_valid = true;
     if (p->on_usage) p->on_usage(p->total_tokens, p->ud);
 }
@@ -431,6 +494,61 @@ static void anth_open_tool(Provider *p, StreamState *s, const JVal *blk) {
                         (Str){ s->args[sl].p, s->args[sl].n }, p->ud);
 }
 
+static void anth_block_sep(StreamState *s) {
+    if (!s->anth_first) buf_putc(&s->anth_blocks, ',');
+    s->anth_first = false;
+}
+
+static void anth_close_thinking(StreamState *s) {
+    if (!s->anth_thinking_open) return;
+    if (!s->anth_thinking_closed) buf_putc(&s->anth_blocks, '"');
+    if (s->anth_signature_open) buf_putc(&s->anth_blocks, '"');
+    buf_putc(&s->anth_blocks, '}');
+    s->anth_thinking_open = false;
+    s->anth_thinking_closed = false;
+    s->anth_signature_open = false;
+}
+
+static void anth_open_thinking(Provider *p, StreamState *s, const JVal *blk) {
+    anth_close_thinking(s);
+    anth_block_sep(s);
+    buf_puts(&s->anth_blocks, STR("{\"type\":\"thinking\",\"thinking\":\""));
+    Str thought = json_str(blk, STR("thinking"));
+    buf_json_chars(&s->anth_blocks, thought);
+    take_reason(p, s, thought);
+    s->anth_thinking_open = true;
+
+    Str signature = json_str(blk, STR("signature"));
+    if (signature.n) {
+        buf_puts(&s->anth_blocks, STR("\",\"signature\":\""));
+        s->anth_thinking_closed = true;
+        s->anth_signature_open = true;
+        buf_json_chars(&s->anth_blocks, signature);
+    }
+}
+
+static void anth_thinking_delta(Provider *p, StreamState *s, Str thought) {
+    if (!s->anth_thinking_open || s->anth_thinking_closed) return;
+    buf_json_chars(&s->anth_blocks, thought);
+    take_reason(p, s, thought);
+}
+
+static void anth_signature_delta(StreamState *s, Str signature) {
+    if (!s->anth_thinking_open) return;
+    if (!s->anth_thinking_closed) {
+        buf_puts(&s->anth_blocks, STR("\",\"signature\":\""));
+        s->anth_thinking_closed = true;
+        s->anth_signature_open = true;
+    }
+    buf_json_chars(&s->anth_blocks, signature);
+}
+
+static void anth_save_block(StreamState *s, const JVal *blk) {
+    anth_close_thinking(s);
+    anth_block_sep(s);
+    json_write(&s->anth_blocks, blk);
+}
+
 static void anth_event(Provider *p, StreamState *s, const JVal *ev) {
     Str type = json_str(ev, STR("type"));
     if (str_eq(type, STR("message_start"))) {
@@ -447,7 +565,9 @@ static void anth_event(Provider *p, StreamState *s, const JVal *ev) {
         s->open_slot = -1;
         if (str_eq(kind, STR("tool_use"))) anth_open_tool(p, s, blk);
         else if (str_eq(kind, STR("thinking")))
-            take_reason(p, s, json_str(blk, STR("thinking")));
+            anth_open_thinking(p, s, blk);
+        else if (str_eq(kind, STR("redacted_thinking")))
+            anth_save_block(s, blk);
         else take_text(p, s, json_str(blk, STR("text")));
         return;
     }
@@ -457,7 +577,9 @@ static void anth_event(Provider *p, StreamState *s, const JVal *ev) {
         if (str_eq(kind, STR("text_delta"))) {
             take_text(p, s, json_str(d, STR("text")));
         } else if (str_eq(kind, STR("thinking_delta"))) {
-            take_reason(p, s, json_str(d, STR("thinking")));
+            anth_thinking_delta(p, s, json_str(d, STR("thinking")));
+        } else if (str_eq(kind, STR("signature_delta"))) {
+            anth_signature_delta(s, json_str(d, STR("signature")));
         } else if (str_eq(kind, STR("input_json_delta")) && s->open_slot >= 0) {
             i32 sl = s->open_slot;
             buf_puts(&s->args[sl], json_str(d, STR("partial_json")));
@@ -467,7 +589,10 @@ static void anth_event(Provider *p, StreamState *s, const JVal *ev) {
         }
         return;
     }
-    if (str_eq(type, STR("content_block_stop"))) s->open_slot = -1;
+    if (str_eq(type, STR("content_block_stop"))) {
+        anth_close_thinking(s);
+        s->open_slot = -1;
+    }
 }
 
 static b8 on_line(Str line, void *ud) {
@@ -541,6 +666,9 @@ static b8 read_message_anth(Provider *p, StreamState *s, Str raw,
             take_text(p, s, json_str(blk, STR("text")));
         } else if (str_eq(kind, STR("thinking"))) {
             take_reason(p, s, json_str(blk, STR("thinking")));
+            anth_save_block(s, blk);
+        } else if (str_eq(kind, STR("redacted_thinking"))) {
+            anth_save_block(s, blk);
         } else if (str_eq(kind, STR("tool_use"))) {
             anth_open_tool(p, s, blk);
             i32 sl = s->open_slot;
@@ -637,8 +765,11 @@ static b8 template_owned(Str key, const Provider *p) {
         || str_eq(key, STR("stream_options"))) return true;
     if (str_eq(key, STR("reasoning_effort")) && p->cfg->api == API_OPENAI
         && p->cfg->reasoning_effort.n) return true;
-    return str_eq(key, STR("thinking")) && p->cfg->api == API_ANTHROPIC
-        && p->cfg->thinking_budget.n;
+    if (p->cfg->api != API_ANTHROPIC) return false;
+    if (str_eq(key, STR("output_config"))
+        && p->cfg->reasoning_effort.n) return true;
+    return str_eq(key, STR("thinking"))
+        && (p->cfg->thinking_budget.n || p->cfg->reasoning_effort.n);
 }
 
 static b8 write_template_value(Buf *b, const JVal *v, const Config *c,
@@ -679,8 +810,9 @@ static b8 build_request(Buf *b, const Provider *p, char *err, size_t err_cap) {
         for (size_t i = 0; i < c->n; i++) {
             if (c->role[i] != M_SYSTEM) continue;
             if (c->text[i].n) {
-                buf_puts(b, STR(",\"system\":"));
+                buf_puts(b, STR(",\"system\":[{\"type\":\"text\",\"text\":"));
                 buf_json_str(b, c->text[i]);
+                buf_puts(b, STR(",\"cache_control\":{\"type\":\"ephemeral\"}}]"));
             }
             break;
         }
@@ -697,9 +829,19 @@ static b8 build_request(Buf *b, const Provider *p, char *err, size_t err_cap) {
         buf_puts(b, STR(",\"reasoning_effort\":"));
         buf_json_str(b, p->cfg->reasoning_effort);
     }
-    if (anth && p->cfg->thinking_budget.n)
-        buf_putf(b, ",\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":%.*s}",
+    if (anth && p->cfg->reasoning_effort.n) {
+        buf_puts(b, STR(",\"thinking\":{\"type\":\"adaptive\","
+                        "\"display\":\"summarized\"}"));
+    } else if (anth && p->cfg->thinking_budget.n) {
+        buf_putf(b, ",\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":%.*s,"
+                 "\"display\":\"summarized\"}",
                  (i32)p->cfg->thinking_budget.n, p->cfg->thinking_budget.p);
+    }
+    if (anth && p->cfg->reasoning_effort.n) {
+        buf_puts(b, STR(",\"output_config\":{\"effort\":"));
+        buf_json_str(b, p->cfg->reasoning_effort);
+        buf_putc(b, '}');
+    }
     if (p->cfg->reasoning_template.n) {
         JVal *root = json_parse(p->scratch, p->cfg->reasoning_template);
         if (!root || root->type != J_OBJ) { snprintf(err, err_cap, "reasoning template must be a JSON object"); return false; }
@@ -726,6 +868,8 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     arena_reset(scratch);
     p->prompt_tokens = 0;
     p->completion_tokens = 0;
+    p->cache_creation_tokens = 0;
+    p->cache_read_tokens = 0;
     p->total_tokens = 0;
     p->usage_valid = false;
 
@@ -740,6 +884,9 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     if (!ev_mem) { snprintf(err, err_cap, "out of memory starting a turn"); return -1; }
     arena_init(&s->ev, ev_mem, EVENT_ARENA_BYTES);
     buf_init(&s->text, scratch, 1024);
+    buf_init(&s->anth_blocks, scratch, 1024);
+    buf_putc(&s->anth_blocks, '[');
+    s->anth_first = true;
 
     void *saved_ud = p->ud;
     p->ud = s;
@@ -816,6 +963,12 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         s->reason_started = false;
         s->open_slot = -1;
         s->blocks = 0;
+        s->anth_blocks.n = 1;
+        s->anth_blocks.oom = false;
+        s->anth_first = true;
+        s->anth_thinking_open = false;
+        s->anth_thinking_closed = false;
+        s->anth_signature_open = false;
         if (!p->cfg->stream) { whole.n = 0; whole.oom = false; }
         attempt++;
     }
@@ -855,6 +1008,9 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     if (p->usage_valid) {
         tel_int(&tev, "prompt_tokens", (i64)p->prompt_tokens);
         tel_int(&tev, "completion_tokens", (i64)p->completion_tokens);
+        tel_int(&tev, "cache_creation_tokens",
+                (i64)p->cache_creation_tokens);
+        tel_int(&tev, "cache_read_tokens", (i64)p->cache_read_tokens);
         tel_int(&tev, "total_tokens", (i64)p->total_tokens);
     }
     tel_send(&tev);
@@ -882,11 +1038,26 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         return -1;
     }
 
+    anth_close_thinking(s);
+    buf_putc(&s->anth_blocks, ']');
     Str text = buf_finish(&s->text);
+    Str anth_blocks = buf_finish(&s->anth_blocks);
+    if (!buf_ok(&s->anth_blocks)) {
+        snprintf(err, err_cap, "out of memory storing Anthropic thinking");
+        return -1;
+    }
     Str text_dup = str_dup(p->persist, text);
     if (text.n && !text_dup.p) {
         snprintf(err, err_cap, "out of memory storing the reply");
         return -1;
+    }
+    Str anth_dup = {0};
+    if (p->cfg->api == API_ANTHROPIC && anth_blocks.n > 2) {
+        anth_dup = str_dup(p->persist, anth_blocks);
+        if (!anth_dup.p) {
+            snprintf(err, err_cap, "out of memory storing Anthropic thinking");
+            return -1;
+        }
     }
 
     /* Count first: a turn is appended whole or not at all. */
@@ -901,11 +1072,13 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     }
 
     if (calls == 0) {
-        conv_add(p->conv, M_ASSISTANT, text_dup);
+        size_t head = conv_add(p->conv, M_ASSISTANT, text_dup);
+        p->conv->anthropic_thinking[head] = anth_dup;
         return 0;
     }
 
-    conv_add_assistant_calls(p->conv, text_dup);
+    size_t head = conv_add_assistant_calls(p->conv, text_dup);
+    p->conv->anthropic_thinking[head] = anth_dup;
     i32 emitted = 0;
     for (i32 i = 0; i < s->count; i++) {
         if (!s->used[i] || !s->name[i].p) continue;

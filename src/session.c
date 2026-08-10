@@ -189,6 +189,11 @@ void session_save(Session *s, const Conv *c) {
         }
         if (c->role[i] == M_ASSISTANT && c->has_tool_call[i] && !c->tool_name[i].n)
             fputs(",\"calls\":true", f);
+        if (c->anthropic_thinking[i].n) {
+            fputs(",\"anthropic_thinking\":", f);
+            fwrite(c->anthropic_thinking[i].p, 1,
+                   c->anthropic_thinking[i].n, f);
+        }
         /* A '!' run keeps its output beside the command it ran. */
         if (c->shell_out[i].n) {
             fputs(",\"output\":", f);
@@ -318,6 +323,33 @@ static Str sess_field(Arena *persist, const JVal *v, Str key) {
     return s.n ? str_dup(persist, s) : (Str){0};
 }
 
+/* Session files are editable external input. Only validated thinking block
+ * arrays may later be spliced into an Anthropic request. Canonicalizing them
+ * through the serializer also prevents raw JSON from becoming request syntax. */
+static Str sess_thinking(Arena *persist, const JVal *v) {
+    const JVal *blocks = json_get(v, STR("anthropic_thinking"));
+    if (!blocks || blocks->type != J_ARR || !blocks->u.arr.n) return (Str){0};
+    for (size_t i = 0; i < blocks->u.arr.n; i++) {
+        const JVal *blk = &blocks->u.arr.items[i];
+        if (blk->type != J_OBJ) return (Str){0};
+        Str kind = json_str(blk, STR("type"));
+        if (str_eq(kind, STR("thinking"))) {
+            const JVal *thought = json_get(blk, STR("thinking"));
+            const JVal *signature = json_get(blk, STR("signature"));
+            if (!thought || thought->type != J_STR
+                || !signature || signature->type != J_STR) return (Str){0};
+        } else if (str_eq(kind, STR("redacted_thinking"))) {
+            const JVal *data = json_get(blk, STR("data"));
+            if (!data || data->type != J_STR) return (Str){0};
+        } else {
+            return (Str){0};
+        }
+    }
+    Buf out; buf_init(&out, persist, 1024);
+    json_write(&out, blocks);
+    return buf_ok(&out) ? buf_finish(&out) : (Str){0};
+}
+
 /* Replay contents into `c`, which the caller has already rewound to the
  * system prompt. Messages are copied into `persist`; `scratch` holds each
  * parsed line and is rewound to where it started. False means the
@@ -362,6 +394,8 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
         if (slot != CONV_NONE && ms && ms->type == J_NUM && ms->u.n > 0)
             c->ms[slot] = ms->u.n > (f64)UINT32_MAX ? UINT32_MAX
                                                     : (u32)ms->u.n;
+        if (slot != CONV_NONE && c->role[slot] == M_ASSISTANT)
+            c->anthropic_thinking[slot] = sess_thinking(persist, v);
         scratch->off = line_mark;
         if (slot == CONV_NONE) { ok = false; break; }
     }
