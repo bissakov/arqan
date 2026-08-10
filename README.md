@@ -122,6 +122,30 @@ history, credentials, and UI choices, and sessions are under
 `$XDG_DATA_HOME/yoke/sessions`. Optional anonymized telemetry is off by
 default and never includes prompt, tool-argument, raw-path, or endpoint data.
 
+## Performance
+
+Measured at `0bf0805` on Linux 7.1.6 with GCC 16.1.1 and a Ryzen 7 7800X3D.
+Build times are medians of three clean builds; runtime tests use the real TUI
+and agent loop against the local mock provider, excluding network and model
+latency.
+
+- Clean build: 1.41 s for `make -j16 minimal`; 2.92 s for `make -j16`.
+- Executables: 356 KiB for `bin/yoke`; 12.6 MiB for `bin/yoke-highlight`.
+- Startup: 4.53 ms median and 5.19 ms p95 to the first TUI frame over 20 runs.
+- Idle memory: 1.94 MiB private dirty; 11.0 MiB resident including shared and
+  file-backed pages.
+- Simulated coding work: eight turns using `read`, `grep`, `find`, and `bash`
+  across 16 provider requests took 1.59 s wall and 0.017 s CPU; the session
+  ended at 2.95 MiB private dirty with 14.4 MiB peak RSS.
+- Large context: resuming a 1.003M-token, 4.0 MB session took 0.24 s wall and
+  0.04 s CPU at 13.5 MiB private dirty. Four switches between 1M- and
+  200k-token sessions left that footprint unchanged.
+- Test suite: 586/586 end-to-end cases passed in 28.9 s; the same 586 passed
+  under ASan and UBSan in 29.4 s.
+
+Private dirty is memory written for this process alone; RSS also counts
+resident shared libraries and file-backed pages.
+
 ## Development
 
 The app is a unity build: `src/main.c` includes all implementation files and
