@@ -61,6 +61,7 @@ static size_t commands_init(void) {
     g_commands[n++] = (TuiCmd){ STR("/mode"), STR("Switch between Build and Plan mode (Shift+Tab)") };
     g_commands[n++] = (TuiCmd){ STR("/rewind"), STR("Go back to an earlier message and edit it") };
     g_commands[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
+    g_commands[n++] = (TuiCmd){ STR("/find"), STR("Search the transcript (Ctrl-R)") };
     g_commands[n++] = (TuiCmd){ STR("/settings"), STR("Change how yoke behaves") };
     g_commands[n++] = (TuiCmd){ STR("/statusline"), STR("Choose what the status line shows") };
     g_commands[n++] = (TuiCmd){ STR("/about"), STR("About yoke and its contributors") };
@@ -75,6 +76,7 @@ static size_t commands_init(void) {
 static const TuiAlias k_aliases[] = {
     ALIAS("/config", "/settings"),
     ALIAS("/new", "/clear"),
+    ALIAS("/search", "/find"),
     ALIAS("/quit", "/exit"),
 };
 #define ALIAS_N (sizeof k_aliases / sizeof k_aliases[0])
@@ -1878,6 +1880,19 @@ static void rerender_or_defer(Agent *ag) {
     rerender_conv(ag->conv, ag->cfg, ag->show_instructions, ag->scratch, 0);
 }
 
+/* A search reaches what the transcript rendered, and a tool's output is
+ * rendered under a cap. Ctrl-E in the search box lifts it for this session:
+ * the setting is the reader's to keep, so this one is not remembered. Once
+ * every line is on screen the key has nothing left to reveal, so the box
+ * stops offering it. */
+static void find_expand(void *ud) {
+    Agent *ag = ud;
+    tui_set_find_expand(NULL, NULL);
+    if (render_verbose()) return;
+    render_set_verbose(true);
+    rerender_or_defer(ag);
+}
+
 /* What the running turn reads when it builds its next request. Changing one
  * of these mid-turn would move the agent's ground under it, so the screen
  * refuses them while a turn is in flight and takes them at the prompt. */
@@ -2399,6 +2414,7 @@ i32 main(i32 argc, char **argv) {
         .show_instructions = prefs.show_instructions,
     };
     tui_set_busy_command(on_busy_command, &agent);
+    if (!render_verbose()) tui_set_find_expand(find_expand, &agent);
 
     /* One-shot: the reply is the output and the exit status reports whether
      * the turn completed. */
@@ -2463,6 +2479,10 @@ i32 main(i32 argc, char **argv) {
         }
         if (!strcmp(line, "/fork")) {
             fork_session(&sess, &conv);
+            continue;
+        }
+        if (!strcmp(line, "/find")) {
+            tui_find_open();
             continue;
         }
         if (!strcmp(line, "/rewind")) {

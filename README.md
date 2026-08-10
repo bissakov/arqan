@@ -95,6 +95,9 @@ split on whitespace; anything needing quoting belongs in a wrapper script.
 - `!command` runs a local shell command. Prefix with `\!` to send it to the
   model instead.
 - `@` opens the project file picker.
+- Ctrl-R (or `/find`) searches the transcript: Enter or Up walks older matches,
+  Down newer, Esc closes. The reach is the scrollback's, and Ctrl-E lifts the
+  caps on tool output when a match may be hiding under one.
 - `/` opens commands: `/clear`, `/resume`, `/fork`, `/model`, `/provider`,
   `/mode`, `/settings`, `/help`, and `/exit`.
 - Shift+Tab toggles Build and Plan modes. Plan mode can inspect but cannot

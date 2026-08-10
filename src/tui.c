@@ -42,6 +42,8 @@ _Static_assert(TUI_STATUS_N == YOKE_STATUS_FIELDS,
 #define TUI_IGNORE_PATS 512      /* ignore patterns in force for one listing  */
 #define TUI_IGNORE_BUF (1u << 14)
 #define TUI_PICK_QUERY 64        /* longest search a picker accepts          */
+#define TUI_FIND_QUERY 128       /* longest transcript search a box accepts  */
+#define TUI_FIND_ROW_HITS 64     /* matches one painted row highlights       */
 #define TUI_ASK_MAX YOKE_MAX_REASONING_TEMPLATE
 /* Markdown claims one span per emphasis run, so this counts words of a reply
  * rather than messages. */
@@ -75,6 +77,11 @@ _Static_assert(TUI_STATUS_N == YOKE_STATUS_FIELDS,
 /* A clickable row reads like a link, and brightens under the pointer. */
 #define S_LINK        "\033[4;38;5;81m"
 #define S_LINK_HOVER  "\033[1;4;38;5;81m"
+/* A search hit keeps the text's own colour and takes a background, so a match
+ * inside code, a tool result or a heading still reads as what it is. The one
+ * the box is standing on is the brighter of the two. */
+#define S_FIND        "\033[48;5;94m"
+#define S_FIND_CUR    "\033[48;5;214m\033[38;5;16m"
 
 typedef struct {
     struct termios original_termios;
@@ -245,6 +252,28 @@ typedef struct {
     /* Where each painted transcript row starts, SIZE_MAX for a row from
      * anywhere else: this turns a click's cell into a byte offset. */
     size_t row_src[TUI_SEL_ROWS];
+    /* Transcript search. The corpus is the transcript, so what a search
+     * reaches is exactly what scrolling reaches. No match list is kept: the
+     * count is carried forward over appended bytes, the current match is one
+     * offset, and a row's highlights are recomputed from its own bytes as it
+     * is painted. `find_q` is stored case-folded, which is what a match is
+     * tested against. */
+    b8 find_open;            /* the box owns the keyboard                  */
+    void (*find_expand)(void *ud);   /* lifts the transcript's output caps */
+    void *find_expand_ud;
+    b8 find_wrapped;         /* the last step ran off an end and came back */
+    char find_q[TUI_FIND_QUERY];
+    size_t find_q_n;
+    size_t find_cur;         /* offset of the current match, SIZE_MAX none */
+    size_t find_count;
+    size_t find_index;       /* 1-based place of find_cur, oldest first    */
+    size_t find_scanned;     /* transcript bytes the count covers          */
+    u64    find_epoch;       /* transcript epoch the count was taken in    */
+    /* Where the last frame's transcript rows started and ended, which is how
+     * a match is told from one already on screen without re-deriving the
+     * viewport from the row index. */
+    size_t view_first_off;
+    size_t view_end_off;
     b8 sel_active;    /* a range is highlighted                            */
     b8 sel_drag;      /* the button is still down                          */
     size_t sel_ar, sel_ac;   /* anchor cell (0-based row, column)          */
@@ -1128,6 +1157,204 @@ static const char *syntax_style(u8 kind) {
     }
 }
 
+/* ---- transcript search ---------------------------------------------------
+ * Matching is ASCII case-insensitive: bytes above 0x7f compare exactly, so a
+ * UTF-8 query is matched literally rather than half-folded. The query is held
+ * as it was typed, since the box shows it back.
+ */
+static u8 fold(u8 c) { return c >= 'A' && c <= 'Z' ? (u8)(c + 32) : c; }
+
+static b8 find_match_at(size_t off) {
+    size_t n = g_tui.find_q_n;
+    if (!n || g_tui.transcript_n < n || off > g_tui.transcript_n - n)
+        return false;
+    for (size_t i = 0; i < n; i++)
+        if (fold((u8)g_bulk.transcript[off + i]) != fold((u8)g_tui.find_q[i]))
+            return false;
+    return true;
+}
+
+/* First match starting at or after `from` and before `until`, SIZE_MAX for
+ * none. The first byte drives a memchr in both its cases, so a scan of the
+ * whole scrollback costs a pair of word-at-a-time passes rather than a
+ * comparison per byte, and a caller that cares about one row pays for that
+ * row rather than for everything after it.
+ *
+ * The upper-case pass stops at the lower-case hit rather than running to the
+ * end of the range: a letter that never appears in that case would otherwise
+ * re-scan the whole scrollback once per match, which is the difference
+ * between a keystroke and a hang on a transcript of any size. */
+static size_t find_next_in(size_t from, size_t until) {
+    size_t n = g_tui.find_q_n;
+    if (!n || g_tui.transcript_n < n) return SIZE_MAX;
+    size_t last = g_tui.transcript_n - n;
+    if (until && until - 1 < last) last = until - 1;
+    u8 lo = fold((u8)g_tui.find_q[0]);
+    u8 up = lo >= 'a' && lo <= 'z' ? (u8)(lo - 32) : lo;
+    for (size_t i = from; i <= last;) {
+        size_t span = last - i + 1;
+        const char *base = g_bulk.transcript + i;
+        const char *a = memchr(base, lo, span);
+        size_t before = a ? (size_t)(a - base) : span;
+        const char *b = up != lo ? memchr(base, up, before) : NULL;
+        const char *hit = b ? b : a;
+        if (!hit) return SIZE_MAX;
+        i = (size_t)(hit - g_bulk.transcript);
+        if (find_match_at(i)) return i;
+        i++;
+    }
+    return SIZE_MAX;
+}
+
+static size_t find_next_at(size_t from) {
+    return find_next_in(from, g_tui.transcript_n);
+}
+
+/* Last match before `limit`, SIZE_MAX for none.
+ *
+ * Backward is the direction the scan cannot take, so the text before `limit`
+ * is walked forward a window at a time from the nearest one back. The window
+ * starts a needle short of its own end so a match straddling the boundary is
+ * found by the window below it and by that one only. Stepping back through a
+ * dense query costs the window; only a query with nothing behind the reader
+ * walks the whole scrollback. */
+#define FIND_BACK_WINDOW (64u << 10)
+
+static size_t find_prev_before(size_t limit) {
+    size_t q = g_tui.find_q_n;
+    if (!q || !limit) return SIZE_MAX;
+    for (size_t hi = limit;;) {
+        size_t lo = hi > FIND_BACK_WINDOW ? hi - FIND_BACK_WINDOW : 0;
+        size_t from = lo > q - 1 ? lo - (q - 1) : 0;
+        size_t best = SIZE_MAX;
+        for (size_t i = find_next_in(from, hi); i != SIZE_MAX;
+             i = find_next_in(i + 1, hi))
+            best = i;
+        if (best != SIZE_MAX) return best;
+        if (!lo) return SIZE_MAX;
+        hi = lo;
+    }
+}
+
+static size_t find_count_from(size_t from) {
+    size_t n = 0;
+    for (size_t i = find_next_at(from); i != SIZE_MAX; i = find_next_at(i + 1))
+        n++;
+    return n;
+}
+
+/* The transcript dropped `delta` bytes off its front, or all of them. Either
+ * way the count is stale, and SIZE_MAX bytes scanned is what the refresh
+ * reads as "take it again". */
+static void find_shift(size_t delta) {
+    if (g_tui.find_cur != SIZE_MAX)
+        g_tui.find_cur = g_tui.find_cur >= delta ? g_tui.find_cur - delta
+                                                 : SIZE_MAX;
+    g_tui.find_scanned = SIZE_MAX;
+}
+
+static void find_invalidate(void) {
+    g_tui.find_cur = SIZE_MAX;
+    g_tui.find_index = 0;
+    g_tui.find_count = 0;
+    g_tui.find_scanned = SIZE_MAX;
+}
+
+/* The matches a painted row shows, in row-relative bytes. Built once per row
+ * by the painter and read by the run splitters below, so highlighting needs
+ * no index over the transcript. A row holding more matches than the array
+ * takes highlights the ones it has room for. */
+static struct {
+    size_t a[TUI_FIND_ROW_HITS];
+    size_t b[TUI_FIND_ROW_HITS];
+    b8     cur[TUI_FIND_ROW_HITS];
+    size_t n;
+} g_find_row;
+
+static void find_row_build(size_t off, size_t len) {
+    g_find_row.n = 0;
+    size_t q = g_tui.find_q_n;
+    if (!q || off == SIZE_MAX) return;
+    /* A match may begin before the row and reach into it, so the scan starts
+     * a needle short of the row's first byte. */
+    size_t from = off > q - 1 ? off - (q - 1) : 0;
+    size_t stop = off + len;
+    for (size_t i = find_next_in(from, stop);
+         i != SIZE_MAX && g_find_row.n < TUI_FIND_ROW_HITS;
+         i = find_next_in(i + 1, stop)) {
+        if (i + q <= off) continue;
+        size_t a = i > off ? i - off : 0;
+        size_t b = i + q < stop ? i + q - off : len;
+        size_t k = g_find_row.n;
+        /* Overlapping matches paint as one block, which is what a run of
+         * repeats reads as on screen. */
+        if (k && g_find_row.b[k - 1] >= a) {
+            if (b > g_find_row.b[k - 1]) g_find_row.b[k - 1] = b;
+            if (i == g_tui.find_cur) g_find_row.cur[k - 1] = true;
+            continue;
+        }
+        g_find_row.a[k] = a;
+        g_find_row.b[k] = b;
+        g_find_row.cur[k] = i == g_tui.find_cur;
+        g_find_row.n = k + 1;
+    }
+}
+
+/* Whether row byte `i` is highlighted, and how many bytes past it hold the
+ * same answer, capped at `max`. */
+static b8 find_row_run(size_t i, size_t max, size_t *len, b8 *current) {
+    *len = max;
+    *current = false;
+    for (size_t k = 0; k < g_find_row.n; k++) {
+        if (i < g_find_row.a[k]) {
+            if (g_find_row.a[k] - i < *len) *len = g_find_row.a[k] - i;
+            return false;
+        }
+        if (i < g_find_row.b[k]) {
+            if (g_find_row.b[k] - i < *len) *len = g_find_row.b[k] - i;
+            *current = g_find_row.cur[k];
+            return true;
+        }
+    }
+    return false;
+}
+
+static u64 hash_find_row(u64 h) {
+    h = hash_add(h, &g_find_row.n, sizeof g_find_row.n);
+    for (size_t i = 0; i < g_find_row.n; i++) {
+        h = hash_add(h, &g_find_row.a[i], sizeof g_find_row.a[i]);
+        h = hash_add(h, &g_find_row.b[i], sizeof g_find_row.b[i]);
+        h = hash_add(h, &g_find_row.cur[i], sizeof g_find_row.cur[i]);
+    }
+    return h;
+}
+
+/* `p` starts at row byte `rel`. The base style is re-emitted after every
+ * highlighted stretch, since the background is layered over it rather than
+ * replacing it. */
+static void put_hits(const char *p, size_t rel, size_t n, Just *j,
+                     void (*restore)(void *ud), void *ud) {
+    for (size_t k = 0; k < n;) {
+        size_t seg = 0;
+        b8 cur = false;
+        b8 hit = find_row_run(rel + k, n - k, &seg, &cur);
+        if (restore) restore(ud);
+        if (hit) style(cur ? S_FIND_CUR : S_FIND);
+        put_just(p + k, seg, j);
+        k += seg;
+    }
+}
+
+typedef struct { u8 kind, base, syntax; b8 user; } RunStyle;
+
+static void run_style(void *ud) {
+    const RunStyle *r = ud;
+    style(S_RESET);
+    if (r->user && r->base != ROW_CODE) style(S_USER_BG);
+    style(kind_style(r->kind ? r->kind : r->base));
+    if (r->syntax) style(syntax_style(r->syntax));
+}
+
 static void paint_runs(Str text, size_t off, Just *j, u8 base, b8 user) {
     for (size_t i = 0; i < text.n;) {
         size_t end = 0, syntax_end = 0;
@@ -1135,11 +1362,10 @@ static void paint_runs(Str text, size_t off, Just *j, u8 base, b8 user) {
         u8 syntax = syntax_run(off + i, off + text.n, &syntax_end);
         if (syntax_end < end) end = syntax_end;
         size_t take = end - (off + i);
-        style(S_RESET);
-        if (user && base != ROW_CODE) style(S_USER_BG);
-        style(kind_style(kind ? kind : base));
-        if (syntax) style(syntax_style(syntax));
-        put_just(text.p + i, take, j);
+        RunStyle rs = { kind, base, syntax, user };
+        run_style(&rs);
+        if (!g_find_row.n) put_just(text.p + i, take, j);
+        else put_hits(text.p + i, i, take, j, run_style, &rs);
         i += take;
     }
 }
@@ -1160,7 +1386,11 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
     kind = display_kind(kind, text);
     b8 user = text_off != SIZE_MAX && user_at_off(text_off);
     Just just = { pad ? row_gaps(text) : 0, pad, 0, false, false };
+    /* Cleared for a row that carries no transcript bytes, so nothing here
+     * inherits the highlights of the row painted before it. */
+    find_row_build(text_off, text.n);
     u64 hash = row_hash(prefix, text, kind);
+    hash = hash_find_row(hash);
     hash = hash_add(hash, &user, sizeof user);
     hash = hash_add(hash, &just.gaps, sizeof just.gaps);
     hash = hash_add(hash, &just.extra, sizeof just.extra);
@@ -1221,8 +1451,10 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
         size_t lead = 0;
         while (lead < text.n && text.p[lead] == ' ') lead++;
         put_text(text.p, lead);
-        style(kind_style(kind));
-        put_text(text.p + lead, text.n - lead);
+        RunStyle rs = { kind, kind, 0, false };
+        run_style(&rs);
+        if (!g_find_row.n) put_text(text.p + lead, text.n - lead);
+        else put_hits(text.p + lead, lead, text.n - lead, NULL, run_style, &rs);
         style(S_RESET);
     } else if (text_off != SIZE_MAX) {
         paint_runs(text, text_off, &just, kind, user);
@@ -1346,13 +1578,20 @@ static void update_text_rows(Str s, size_t base_off, size_t cols,
                 text_off = base_off + start;
                 size_t sr = screen_row + row - first_row - 1;
                 if (sr < TUI_SEL_ROWS) g_tui.row_src[sr] = base_off + start;
-                /* A clickable row says so, louder under the pointer. */
+                /* A clickable row says so, louder under the pointer, and
+                 * keeps its offset: it carries no spans the link style would
+                 * fight with, so a search still highlights what it matched
+                 * inside it. */
                 u32 zone = zone_at_off(base_off + start);
-                if (zone) {
+                if (zone)
                     row_kind = zone == g_tui.hover_id ? ROW_ZONE_HOVER
                                                       : ROW_ZONE;
-                    text_off = SIZE_MAX;
-                }
+            }
+            /* What the reader can see, which is how a search decides whether
+             * a match needs the viewport moved at all. */
+            if (kind == ROW_PLAIN) {
+                if (painted == 0) g_tui.view_first_off = base_off + start;
+                g_tui.view_end_off = base_off + r.next;
             }
             Str text = { s.p + start, r.end - start };
             size_t pad = justify_pad(text, row_kind, r, cols, col0);
@@ -1360,6 +1599,10 @@ static void update_text_rows(Str s, size_t base_off, size_t cols,
                             screen_col, screen_cols, row_kind, text_off, pad,
                             force);
             painted++;
+            /* Rows below the window are not painted, and wrapping toward them
+             * is a walk over the rest of the transcript: a viewport scrolled
+             * up would pay for every megabyte under it, once a frame. */
+            if (painted == visible_rows) break;
         }
         if (r.hard && r.end >= s.n) break;
         start = r.next;
@@ -1488,6 +1731,72 @@ static void update_notice_row(size_t screen_row, Str text, size_t screen_col,
     size_t used = 0;
     put_safe_clipped(STR("  "), body_cols, &used);
     if (used < body_cols) put_safe_clipped(text, body_cols - used, &used);
+    paint_sel_tail(screen_row, screen_cols);
+    style(S_RESET);
+}
+
+/* The search box, and the cells its caret sits at. It is an overlay of its
+ * own rather than a notice: a notice answers the last command and is retired
+ * by the next keystroke, while a search survives every keystroke it is being
+ * typed into and every line the transcript grows by. */
+static size_t find_row_caret(size_t body_cols) {
+    size_t caret = 2 + tui_text_cells(STR("find: "))
+                 + tui_text_cells((Str){ g_tui.find_q, g_tui.find_q_n });
+    return caret < body_cols ? caret : body_cols;
+}
+
+static void update_find_row(size_t screen_row, size_t screen_col,
+                            size_t screen_cols, size_t body_cols, b8 force) {
+    Str query = { g_tui.find_q, g_tui.find_q_n };
+    char tail[64];
+    i32 written;
+    if (!g_tui.find_q_n)
+        written = snprintf(tail, sizeof tail, "type to search the transcript");
+    else if (!g_tui.find_count)
+        written = snprintf(tail, sizeof tail, "no match");
+    else
+        written = snprintf(tail, sizeof tail, "%zu of %zu%s", g_tui.find_index,
+                           g_tui.find_count,
+                           g_tui.find_wrapped ? " (wrapped)" : "");
+    size_t tail_n = written > 0 && (size_t)written < sizeof tail
+                  ? (size_t)written : 0;
+    Str status = { tail, tail_n };
+    Str hint = g_tui.find_expand
+             ? STR("\u2191 older \u00b7 \u2193 newer \u00b7 "
+                   "^E all output \u00b7 Esc")
+             : STR("Enter/\u2191 older \u00b7 \u2193 newer \u00b7 Esc close");
+
+    u64 hash = row_hash(query, status, ROW_POPUP);
+    size_t sel_c0, sel_c1;
+    sel_row_range(screen_row, &sel_c0, &sel_c1);
+    hash = hash_add(hash, &sel_c0, sizeof sel_c0);
+    hash = hash_add(hash, &sel_c1, sizeof sel_c1);
+    hash = hash_add(hash, &body_cols, sizeof body_cols);
+    if (!row_changed(screen_row, hash, force)) return;
+    g_tui.bar_valid = false;
+
+    cup(screen_row, 1);
+    put_str(S_RESET "\033[2K");
+    style(S_POPUP_BG);
+    pad_row(0, screen_cols);
+    cup(screen_row, screen_col);
+    size_t used = 0;
+    style(S_POPUP_BG S_CYAN);
+    put_safe_clipped(STR("  find: "), body_cols, &used);
+    style(S_POPUP_BG S_TEXT);
+    if (used < body_cols) put_safe_clipped(query, body_cols - used, &used);
+    style(S_POPUP_BG S_MUTED);
+    if (used + 3 < body_cols) {
+        put_safe_clipped(STR("  \u00b7  "), body_cols - used, &used);
+        put_safe_clipped(status, body_cols - used, &used);
+    }
+    /* The keys go last: they are the first thing a narrow screen drops. */
+    size_t hint_cells = tui_text_cells(hint);
+    if (used + hint_cells < body_cols) {
+        size_t pad = body_cols - used - hint_cells;
+        while (pad--) { put_text(" ", 1); used++; }
+        put_safe_clipped(hint, body_cols - used, &used);
+    }
     paint_sel_tail(screen_row, screen_cols);
     style(S_RESET);
 }
@@ -1731,9 +2040,20 @@ void tui_batch_end(void) {
     repaint();
 }
 
+static void find_refresh(void);
+static void find_goto(size_t off);
+static void find_close(void);
+
+/* Set while a frame is correcting the viewport it just measured, so the
+ * correction paints exactly one more frame. */
+static b8 g_find_moving;
+
 static void repaint(void) {
     if (!g_tui.fullscreen || g_batch) return;
     g_tui.last_paint = yoke_now_seconds();
+    /* The count the box shows is carried over the bytes appended since the
+     * last frame, so a streaming turn costs the delta rather than a scan. */
+    if (g_tui.find_open) find_refresh();
 
     size_t rows, cols;
     screen_size(&rows, &cols);
@@ -1798,6 +2118,7 @@ static void repaint(void) {
     size_t popup_rows = g_tui.comp_n < TUI_POPUP_ROWS
                       ? g_tui.comp_n : TUI_POPUP_ROWS;
     size_t notice_rows = g_tui.notice_n ? 1 : 0;
+    size_t find_rows = g_tui.find_open ? 1 : 0;
     /* The spinner row reads as the next line of the conversation, so it sits
      * against the transcript with a block's row of air above it rather than
      * among the overlays below. */
@@ -1806,18 +2127,25 @@ static void repaint(void) {
     if (popup_rows > overlay_cap) popup_rows = overlay_cap;
     if (notice_rows + popup_rows > overlay_cap)
         notice_rows = overlay_cap - popup_rows;
-    if (activity_rows + notice_rows + popup_rows > overlay_cap)
-        activity_rows = overlay_cap - notice_rows - popup_rows;
+    if (find_rows + notice_rows + popup_rows > overlay_cap)
+        find_rows = overlay_cap - notice_rows - popup_rows;
+    if (activity_rows + find_rows + notice_rows + popup_rows > overlay_cap)
+        activity_rows = overlay_cap - find_rows - notice_rows - popup_rows;
     /* The spinner is not one of them: it is stacked above the notice row and
      * below the transcript, so only these two move the composer. */
-    size_t overlay_rows = notice_rows + popup_rows;
+    size_t overlay_rows = find_rows + notice_rows + popup_rows;
     size_t transcript_rows = body_rows - overlay_rows - activity_rows;
 
     /* Pinned to the bottom unless PageUp moved the viewport. Overlays stay in
      * the window because they cover the transcript; the spinner is stacked
      * below it and would otherwise hide the newest line. */
     size_t all_rows = wrap_scan(body_cols);
-    size_t view_rows = body_rows - activity_rows;
+    /* An overlay covers the bottom of the transcript rather than pushing it
+     * up, which leaves the newest rows under it. A search box may not: a match
+     * it cannot show is a search that did not answer, so while it is open the
+     * rows it covers are scrolled out from under it. */
+    size_t view_rows = g_tui.find_open ? transcript_rows
+                                       : body_rows - activity_rows;
     size_t max_scroll = all_rows > view_rows ? all_rows - view_rows : 0;
     if (g_tui.scroll_rows > max_scroll) g_tui.scroll_rows = max_scroll;
     size_t first = all_rows > view_rows + g_tui.scroll_rows
@@ -1833,6 +2161,19 @@ static void repaint(void) {
         update_text_rows(slice, off, body_cols, 0, first - at_row,
                          transcript_rows, 1, body_col, cols, ROW_PLAIN, force);
     }
+    /* Whether a match is visible is a property of the frame, not of the one
+     * before it: opening the box takes a row off the transcript, and a match
+     * on that row has to be scrolled out from under it. The correction runs
+     * once, on the frame that discovered it, so it cannot chase itself. */
+    if (g_tui.find_open && g_tui.find_cur != SIZE_MAX && !g_find_moving
+        && (g_tui.find_cur < g_tui.view_first_off
+            || g_tui.find_cur >= g_tui.view_end_off)) {
+        g_find_moving = true;
+        find_goto(g_tui.find_cur);
+        repaint();
+        g_find_moving = false;
+        return;
+    }
     paint_scrollbar(first, all_rows, transcript_rows, cols, force);
     if (activity_rows > 1)
         update_text_row(transcript_rows + 1, (Str){0}, (Str){0}, body_col,
@@ -1847,12 +2188,14 @@ static void repaint(void) {
 
     /* The overlays, in that order. */
     size_t overlay_top = transcript_rows + activity_rows + body_gap + 1;
+    if (find_rows)
+        update_find_row(overlay_top, body_col, cols, body_cols, force);
     if (notice_rows)
-        update_notice_row(overlay_top,
+        update_notice_row(overlay_top + find_rows,
                           (Str){ g_tui.notice, g_tui.notice_n }, body_col, cols,
                           body_cols, force);
-    paint_completions(overlay_top + notice_rows, popup_rows, body_col,
-                      cols, body_cols, force);
+    paint_completions(overlay_top + find_rows + notice_rows, popup_rows,
+                      body_col, cols, body_cols, force);
 
     /* Composer, including one quiet row of breathing room on each side. */
     size_t input_first = cursor_row >= composer_rows
@@ -1976,8 +2319,14 @@ static void repaint(void) {
     }
 
     if (g_tui.editing) {
-        size_t screen_cursor_row = composer_screen_row + cursor_row - input_first;
-        size_t screen_cursor_col = gutter + cursor_col + 1;
+        /* The caret belongs to whatever is being typed into: while the search
+         * box holds the keyboard, that is the query rather than the draft. */
+        size_t screen_cursor_row = find_rows
+                                 ? overlay_top
+                                 : composer_screen_row + cursor_row - input_first;
+        size_t screen_cursor_col = find_rows
+                                 ? gutter + find_row_caret(body_cols) + 1
+                                 : gutter + cursor_col + 1;
         if (screen_cursor_col > cols) screen_cursor_col = cols;
         cup(screen_cursor_row, screen_cursor_col);
         put_str("\033[?25h");
@@ -2006,6 +2355,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
     memset(&g_tui, 0, sizeof g_tui);
     for (size_t i = 0; i < TUI_STATUS_N; i++)
         g_tui.status_visible[i] = (status_fields & ((u64)1 << i)) != 0;
+    g_tui.find_cur = SIZE_MAX;
     g_tui.tty = !plain && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
     g_tui.model = setup ? (Str){0} : model;
     g_tui.base_url = base_url;
@@ -2241,6 +2591,7 @@ void tui_clear_transcript(void) {
     g_tui.zone_open = 0;
     g_tui.pin_n = 0;
     g_tui.hover_id = 0;
+    find_invalidate();
     wrap_invalidate();
     g_tui.scroll_rows = 0;
     g_tui.frame_valid = false;
@@ -2261,12 +2612,157 @@ void tui_zone_end(void) {
 }
 
 /* Rows from `off` to the end, which is what a zone's place on screen is
- * measured against: a re-render is free to change everything above it. */
+ * measured against: a re-render is free to change everything above it.
+ *
+ * The wrapped-row index answers this from the checkpoint before `off`, so an
+ * offset megabytes back costs the rows since that checkpoint rather than a
+ * wrap of everything under it. The index belongs to the width it was built
+ * at; at any other the tail is wrapped directly. */
 static size_t rows_below(size_t off) {
     size_t cols = tui_body_cols();
     if (!cols || off >= g_tui.transcript_n) return 0;
+    if (g_tui.wrap_cols == cols && g_tui.ckpt_n
+        && g_tui.wrap_scanned <= g_tui.transcript_n) {
+        size_t lo = 0, hi = g_tui.ckpt_n;
+        while (lo < hi) {
+            size_t mid = lo + (hi - lo) / 2;
+            if (g_tui.ckpt_off[mid] <= off) lo = mid + 1; else hi = mid;
+        }
+        size_t k = lo ? lo - 1 : 0;
+        Str s = { g_bulk.transcript, g_tui.transcript_n };
+        size_t row = k * g_tui.ckpt_step, i = g_tui.ckpt_off[k];
+        while (i < off) {
+            Row r = row_break(s, i, cols, 0);
+            if (r.next <= i || r.next > off) break;
+            i = r.next;
+            row++;
+        }
+        size_t all = g_tui.wrap_rows + 1;
+        return all > row ? all - row : 1;
+    }
     Str tail = { g_bulk.transcript + off, g_tui.transcript_n - off };
     return text_rows(tail, cols, 0, 0, NULL, NULL);
+}
+
+/* One walk of every match: how many there are, the last one before `limit`,
+ * and how many precede it, which together are the whole of the "3 of 17" the
+ * box shows. A query keystroke costs this one pass over the transcript and
+ * nothing per frame after it. */
+static void find_survey(size_t limit, size_t *count, size_t *last,
+                        size_t *rank) {
+    size_t n = 0, best = SIZE_MAX, best_rank = 0;
+    for (size_t i = find_next_at(0); i != SIZE_MAX; i = find_next_at(i + 1)) {
+        if (i < limit) { best = i; best_rank = n; }
+        n++;
+    }
+    *count = n;
+    *last = best;
+    *rank = best_rank;
+}
+
+/* Put the match on screen. A match already in the viewport moves nothing:
+ * typing another letter should narrow the search, not shuffle the reader's
+ * page. Anything else lands a third of the way down, where the lines that led
+ * to it are visible above it. */
+static void find_goto(size_t off) {
+    if (off == SIZE_MAX) return;
+    if (off >= g_tui.view_first_off && off < g_tui.view_end_off) return;
+    size_t view = g_tui.bar_visible ? g_tui.bar_visible : 1;
+    size_t keep = view - view / 3;
+    if (keep) keep--;
+    size_t below = rows_below(off);
+    g_tui.scroll_rows = below > keep ? below - keep : 0;
+}
+
+/* The match a new query starts on: the newest one at or above the viewport,
+ * so a search run from the bottom lands on the most recent occurrence and one
+ * run from halfway up lands where the reader is looking. A viewport pinned to
+ * the bottom is reading the newest rows even where an overlay covers the last
+ * of them, so there the whole transcript is what it starts from. */
+static void find_seek(void) {
+    g_tui.find_wrapped = false;
+    g_tui.find_epoch = g_tui.transcript_epoch;
+    g_tui.find_scanned = g_tui.transcript_n;
+    if (!g_tui.find_q_n) {
+        g_tui.find_count = 0;
+        g_tui.find_index = 0;
+        g_tui.find_cur = SIZE_MAX;
+        return;
+    }
+    size_t limit = g_tui.scroll_rows ? g_tui.view_end_off : g_tui.transcript_n;
+    size_t off = SIZE_MAX, rank = 0;
+    find_survey(limit, &g_tui.find_count, &off, &rank);
+    if (off == SIZE_MAX) {
+        /* Every match is below the viewport: the search came round to the
+         * oldest, which is where a wrapped one lands. */
+        off = find_next_at(0);
+        rank = 0;
+    }
+    g_tui.find_cur = off;
+    g_tui.find_index = off == SIZE_MAX ? 0 : rank + 1;
+    find_goto(off);
+}
+
+static void find_refresh(void) {
+    if (!g_tui.find_q_n) {
+        g_tui.find_count = 0;
+        g_tui.find_index = 0;
+        g_tui.find_cur = SIZE_MAX;
+        g_tui.find_scanned = g_tui.transcript_n;
+        g_tui.find_epoch = g_tui.transcript_epoch;
+        return;
+    }
+    if (g_tui.find_epoch == g_tui.transcript_epoch
+        && g_tui.find_scanned == g_tui.transcript_n)
+        return;
+    if (g_tui.find_epoch != g_tui.transcript_epoch
+        || g_tui.find_scanned == SIZE_MAX
+        || g_tui.find_scanned > g_tui.transcript_n) {
+        /* A replay or an eviction: every offset the count was taken over is
+         * gone. A current match that survived keeps the reader where they
+         * were; one that did not is seeked again. */
+        if (g_tui.find_cur != SIZE_MAX && find_match_at(g_tui.find_cur)) {
+            size_t last = SIZE_MAX, rank = 0;
+            find_survey(g_tui.find_cur, &g_tui.find_count, &last, &rank);
+            /* `rank` counts the matches before the last one under the current
+             * match, so the current match is one place past it. */
+            g_tui.find_index = last == SIZE_MAX ? 1 : rank + 2;
+            g_tui.find_epoch = g_tui.transcript_epoch;
+            g_tui.find_scanned = g_tui.transcript_n;
+        } else {
+            find_seek();
+        }
+        return;
+    }
+    /* Appended bytes only. A match reaching into them starts at most a needle
+     * short of where the last scan stopped, and one that started earlier was
+     * already counted, so the overlap adds nothing twice. New matches all sit
+     * after the current one, which keeps its place in the count. */
+    size_t q = g_tui.find_q_n;
+    size_t from = g_tui.find_scanned > q - 1 ? g_tui.find_scanned - (q - 1) : 0;
+    g_tui.find_count += find_count_from(from);
+    g_tui.find_scanned = g_tui.transcript_n;
+}
+
+/* Older is up the transcript and newer is down it, and either wraps: a search
+ * that stops at an end is a search that has to be reopened to go on. */
+static void find_step(i32 dir) {
+    find_refresh();
+    if (!g_tui.find_count) return;
+    if (g_tui.find_cur == SIZE_MAX) { find_seek(); return; }
+    size_t off = dir < 0 ? find_prev_before(g_tui.find_cur)
+                         : find_next_at(g_tui.find_cur + 1);
+    g_tui.find_wrapped = off == SIZE_MAX;
+    if (g_tui.find_wrapped) {
+        off = dir < 0 ? find_prev_before(g_tui.transcript_n) : find_next_at(0);
+        g_tui.find_index = dir < 0 ? g_tui.find_count : 1;
+    } else {
+        g_tui.find_index = dir < 0 ? g_tui.find_index - 1
+                                   : g_tui.find_index + 1;
+    }
+    if (off == SIZE_MAX) return;
+    g_tui.find_cur = off;
+    find_goto(off);
 }
 
 static size_t zone_start(u32 id) {
@@ -2372,6 +2868,7 @@ static void transcript_put(Str s) {
         g_tui.user_n = 0;
         g_tui.zone_n = 0;
         g_tui.pin_n = 0;
+        find_invalidate();
         wrap_invalidate();   /* the bytes the index described are gone */
     } else if (g_tui.transcript_n + s.n >= TUI_TRANSCRIPT_CAP) {
         size_t room_for_old = TUI_TRANSCRIPT_CAP - 1 - s.n;
@@ -2386,6 +2883,7 @@ static void transcript_put(Str s) {
         users_shift(g_tui.transcript_n - keep);
         zones_shift(g_tui.transcript_n - keep);
         pins_shift(g_tui.transcript_n - keep);
+        find_shift(g_tui.transcript_n - keep);
         g_tui.transcript_n = keep;
         wrap_invalidate();   /* every offset in the index just moved */
     }
@@ -2404,7 +2902,10 @@ static void transcript_put(Str s) {
         }
         g_tui.trail_nl = c == '\n' ? g_tui.trail_nl + 1 : 0;
     }
-    g_tui.scroll_rows = 0;
+    /* New output pins the viewport back to the newest row, except while a
+     * search is standing on a match: reading back through the conversation is
+     * not something a streaming reply gets to interrupt. */
+    if (!g_tui.find_open) g_tui.scroll_rows = 0;
 }
 
 /* One run of content bytes, wherever this run's output is going. */
@@ -3309,6 +3810,9 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
                     size_t start, PickKind kind, const TuiSettings *set,
                     b8 modal) {
     if (!g_tui.fullscreen || !items || !n) return false;
+    /* A list is chosen from with the keys the search box reads, so opening one
+     * closes it. */
+    if (g_tui.find_open) find_close();
     /* A screen left open during a turn yields to a modal caller, whose answer
      * the agent loop is waiting for. Two screens have no keyboard to share,
      * so anything else is refused. */
@@ -3525,6 +4029,7 @@ b8 tui_screen_open(void) { return g_pick.active; }
 static b8 ask_impl(Str question, b8 secret, char *out, size_t cap,
                    b8 edit, b8 allow_empty) {
     if (!g_tui.fullscreen || !out || cap < 2) return false;
+    if (g_tui.find_open) find_close();
     /* The question owns the composer, which a screen opened during the turn
      * is drawn over. */
     if (g_pick.active && !g_pick.modal) pick_close();
@@ -3651,11 +4156,93 @@ static void paste_byte(i32 c) {
     g_tui.input_cur = cur;
 }
 
+/* ---- the search box ------------------------------------------------------
+ * A mode of the composer rather than a screen of its own: it is driven from
+ * the same byte-at-a-time editor, so it works at the prompt and while a turn
+ * streams, and the draft it covers is never touched.
+ */
+static void find_requery(void) { find_seek(); }
+
+void tui_set_find_expand(void (*fn)(void *ud), void *ud) {
+    g_tui.find_expand = fn;
+    g_tui.find_expand_ud = ud;
+}
+
+void tui_find_open(void) {
+    if (!g_tui.fullscreen) return;
+    g_tui.find_open = true;
+    g_tui.find_wrapped = false;
+    /* The composer is not being typed into while the box holds the keyboard,
+     * so what it was offering is put away. */
+    g_tui.comp_n = 0;
+    g_tui.comp_sel = 0;
+    g_tui.comp_dismissed = true;
+    g_tui.esc_armed = false;
+    find_requery();   /* a reopened box searches for what it last held */
+    repaint();
+}
+
+/* Closing leaves the viewport on the match: the reader went there to read it.
+ * Only the highlights and the box go. */
+static void find_close(void) {
+    g_tui.find_open = false;
+    g_tui.find_cur = SIZE_MAX;
+    g_tui.find_wrapped = false;
+    repaint();
+}
+
+static void find_type(i32 c) {
+    if (g_tui.find_q_n + 1 > sizeof g_tui.find_q) return;
+    g_tui.find_q[g_tui.find_q_n++] = (char)c;
+    find_requery();
+}
+
+static void find_key(i32 c) {
+    if (g_tui.pasting && c != 0x1b) {
+        if ((c >= 0x20 && c < 0x7f) || c >= 0x80) find_type(c);
+        repaint();
+        return;
+    }
+    if (c == '\r' || c == '\n' || c == 0x10) find_step(-1);
+    else if (c == 0x0e) find_step(1);
+    else if (c == 0x07) find_close();
+    else if (c == 0x05 && g_tui.find_expand)
+        /* The re-render changes every offset, which the next refresh sees as
+         * a new epoch and answers by counting again. */
+        g_tui.find_expand(g_tui.find_expand_ud);
+    else if (c == 0x0c) g_tui.frame_valid = false;
+    else if (c == 0x7f || c == 0x08) {
+        if (g_tui.find_q_n) {
+            g_tui.find_q_n = prev_glyph(g_tui.find_q, g_tui.find_q_n);
+            find_requery();
+        }
+    } else if (c == 0x15) {
+        g_tui.find_q_n = 0;
+        find_requery();
+    } else if (c == 0x17) {
+        g_tui.find_q_n = prev_word(g_tui.find_q, g_tui.find_q_n);
+        find_requery();
+    } else if (c == 0x1b) {
+        i32 key = read_escape();
+        if (key == KEY_UP) find_step(-1);
+        else if (key == KEY_DOWN) find_step(1);
+        else if (scroll_key(key)) { /* the viewport moves, the query stays */ }
+        else if (key == KEY_NONE) find_close();
+    } else if ((c >= 0x20 && c < 0x7f) || c >= 0x80) {
+        find_type(c);
+    }
+    repaint();
+}
+
 /* One input byte applied to the shared composer. The caller decides whether a
  * submit is honoured, so the same editor drives the prompt and the
  * keep-typing-while-busy path. */
 static EdAction editor_key(i32 c) {
+    if (g_tui.find_open) { find_key(c); return ED_EDIT; }
     if (g_tui.pasting && c != 0x1b) { paste_byte(c); return ED_EDIT; }
+    /* Ctrl-R searches what is already on screen: the terminal's own find only
+     * sees the rows the frame is showing. */
+    if (c == 0x12) { tui_find_open(); return ED_EDIT; }
     char *buf = g_bulk.input;
     const size_t cap = sizeof g_bulk.input;
     size_t n = g_tui.input_n, cur = g_tui.input_cur;

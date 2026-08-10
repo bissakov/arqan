@@ -1073,6 +1073,18 @@ void tui_batch_end(void);
 /* One line where the completion popup would be: the answer to a command that
  * opened no popup, retired by the next keystroke. Empty clears it. */
 void tui_notice(Str msg);
+/* Open the transcript search box, which takes the keyboard from the composer
+ * until Escape closes it and leaves the draft untouched. Ctrl-R opens it too.
+ * What it searches is the transcript, so its reach is the scrollback's: a
+ * match is always a line the reader can also scroll to. Ignored without a
+ * fullscreen UI. */
+void tui_find_open(void);
+/* What Ctrl-E in the search box runs: the transcript caps a tool's output, and
+ * text that was never rendered is text the search cannot reach, so the box
+ * offers to lift them. The hook re-renders the transcript and is expected to
+ * unregister itself once there is nothing left to reveal, which is also what
+ * takes the key off the box. */
+void tui_set_find_expand(void (*fn)(void *ud), void *ud);
 /* Open a transcript block; the only place the air above one comes from. A
  * block writes no air of its own, so the gap between any two is one blank
  * row, and a trailing newline a writer did emit is absorbed rather than
