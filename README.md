@@ -175,3 +175,7 @@ The app is a unity build: `src/main.c` includes all implementation files and
 `src/agent.h` is the shared header. Application memory comes from startup
 arenas, not `malloc`. See [tests/README.md](tests/README.md) for the TUI test
 harness and writing cases.
+
+`make bench` measures the same binary through the same harness: cost per
+keystroke, per delta, per turn and per tool call, plus stress cases that only
+assert survival. See [bench/README.md](bench/README.md).

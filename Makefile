@@ -30,7 +30,8 @@ VENDOR_CFLAGS ?= -std=c17 -O2 -fno-strict-aliasing -pipe -w \
 
 PYTHON  ?= python3
 
-.PHONY: all minimal clean run test test-update test-asan mock
+.PHONY: all minimal clean run test test-update test-asan mock bench bench-slow \
+        bench-baseline
 
 all: $(BIN) $(HL_BIN)
 
@@ -117,6 +118,18 @@ test-asan:
 
 mock:
 	$(PYTHON) -m tests.mockprovider.server $(MOCK_ARGS)
+
+# Benchmarks measure the shipped binary, never the instrumented one, and run
+# one case at a time: a benchmark sharing the machine measures its neighbours.
+bench: all
+	$(PYTHON) -m bench.run $(B)
+
+bench-slow: all
+	$(PYTHON) -m bench.run --slow $(B)
+
+# Record a baseline, then `make bench B="--baseline bench-baseline.json"`.
+bench-baseline: all
+	$(PYTHON) -m bench.run --slow --json bench-baseline.json $(B)
 
 clean:
 	rm -rf build bin
