@@ -112,6 +112,12 @@ typedef bool     b8;
 #define YOKE_MAX_REASONING_LIST 1024
 #define YOKE_MAX_REASONING_TEMPLATE (16u << 10)
 #define YOKE_MAX_MODEL_BYTES  (1u << 20)  /* largest /models reply we will read */
+#define YOKE_WEB_BODY_BYTES   (2u << 20)  /* decompressed page source limit      */
+#define YOKE_WEB_URL_BYTES    4096        /* URL bytes plus its terminating nul  */
+#define YOKE_WEB_QUERY_BYTES  1025        /* search query plus its terminating nul*/
+#define YOKE_WEB_TYPE_BYTES   128         /* normalized response media type      */
+#define YOKE_WEB_SEARCH_INTERVAL_MS 10000 /* minimum spacing between searches     */
+#define YOKE_WEB_SEARCH_PAUSE_MS 3600000  /* quarantine after service refusal      */
 #define YOKE_STATUS_FIELDS    9
 
 /* ---- arenas ------------------------------------------------------------- */
@@ -690,6 +696,32 @@ i32     http_post(const HttpReq *r);
 i32     http_get(const char *base_url, const char *path, const char *api_key,
                 ApiKind api, Buf *out);
 
+typedef struct {
+    const char *url;
+    const char *operation;       /* fixed telemetry label, never URL text    */
+    Buf *out;
+    size_t max_bytes;
+    i32 connect_timeout_ms;
+    i32 timeout_ms;
+    i32 max_redirects;
+    b8 public_only;
+    const volatile sig_atomic_t *interrupt_flag;
+    i32 idle_fd;
+    void (*on_idle)(void *ud);
+    void *idle_ud;
+
+    char effective_url[YOKE_WEB_URL_BYTES];
+    char content_type[YOKE_WEB_TYPE_BYTES];
+    char failure[256];
+    i64 status;
+} HttpUrlReq;
+
+/* GET one arbitrary HTTP(S) URL. The decompressed body is either complete in
+ * `out` or absent with a failure: a source document is never truncated.
+ * Redirects share the protocol, credential and socket-address restrictions.
+ * Returns the same status classes as http_post. */
+i32     http_url_get(HttpUrlReq *r);
+
 /* ---- tools (SoA registry) ----------------------------------------------- */
 typedef b8 (*ToolRun)(Str args_json, Arena *scratch, Buf *out,
                       char *err, size_t err_cap);
@@ -739,6 +771,13 @@ b8          tools_run(const ToolRegistry *r, size_t id, Str args,
 /* The registry as the API declares tools: an array of OpenAI "function"
  * wrappers, or of Anthropic entries carrying an "input_schema". */
 void        tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api);
+/* The built-in web tools share the TUI's single-threaded idle loop. */
+void        web_set_idle(void (*fn)(void *ud), void *ud, i32 idle_fd,
+                         const volatile sig_atomic_t *interrupt_flag);
+b8          internet_search_run(Str args, Arena *scratch, Buf *out,
+                                char *err, size_t err_cap);
+b8          page_fetch_run(Str args, Arena *scratch, Buf *out,
+                           char *err, size_t err_cap);
 /* Run `cmd` through the shell, appending its output to `out` followed by a
  * bracketed status line ("[exit 0]") that render.c reads back. Only the last
  * YOKE_SHELL_OUT_BYTES are kept, behind a line saying how much was dropped.

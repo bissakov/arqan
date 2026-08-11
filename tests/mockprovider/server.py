@@ -26,12 +26,14 @@ Standalone:
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import socket
 import struct
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, quote, urlsplit
 
 try:  # importable both as a package module and as a script
     from . import lorem
@@ -445,6 +447,63 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
         self.wfile.write(raw)
         self.close_connection = True
 
+    def _body(self, code: int, content_type: str, body: bytes, **headers):
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        for name, value in headers.items():
+            self.send_header(name.replace("_", "-"), value)
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        self.close_connection = True
+
+    def _web_search(self):
+        query = parse_qs(urlsplit(self.path).query).get("q", [""])[0]
+        if query in ("status202", "status403", "status429"):
+            status = int(query.removeprefix("status"))
+            self._body(status, "text/html", b"<html><body>refused</body></html>")
+            return
+        if query == "challenge":
+            self._body(200, "text/html", b"<html><body><form class='challenge-form'>captcha</form></body></html>")
+            return
+        if query == "changed":
+            self._body(200, "text/html", b"<html><body>different markup</body></html>")
+            return
+        if query == "empty":
+            self._body(200, "text/html", b"<html><body><div class='no-results'>No results.</div></body></html>")
+            return
+        one = quote("https://example.com/first?a=1&b=two", safe="")
+        duplicate = quote("https://example.com/first?a=1&b=two", safe="")
+        two = quote("http://example.org/two", safe="")
+        html = f"""<!doctype html><html><body>
+          <a class="result-link" href="//duckduckgo.com/l/?uddg={one}">First &amp; best</a>
+          <div class="result-snippet">A <b>nested</b> snippet for {query}.</div>
+          <a class="result-link" href="//duckduckgo.com/l/?uddg={duplicate}">Duplicate</a>
+          <div class="result-snippet">duplicate snippet</div>
+          <a class="result-link" href="%zz">Malformed</a>
+          <a class="other" href="https://ignored.example/">Ignored</a>
+          <a class="result-link extra" href="//duckduckgo.com/l/?uddg={two}">Second result Ω</a>
+        </body></html>""".encode()
+        self._body(200, "text/html; charset=utf-8", html)
+
+    def _web_page(self):
+        filler = " ".join(["visible article content"] * 12)
+        html = f"""<!doctype html><html><head>
+          <title>Fixture &amp; title</title><base href="/web/base/">
+        </head><body><nav>hidden navigation</nav><main>
+          <h1>Heading</h1><p>{filler}</p>
+          <ul><li>First item</li><li>Second item</li></ul>
+          <table><tr><th>Name</th><th>Value</th></tr><tr><td>A</td><td>B</td></tr></table>
+          <pre>if (x &lt; 2) {{\n    go();\n}}</pre>
+          <p>Read <a href="child?q=one&amp;x=two">the child</a>.</p>
+          <footer>hidden footer</footer>
+        </main><article>{'fallback ' * 40}</article></body></html>""".encode()
+        self._body(200, "text/html; charset=UTF-8", html)
+
     def _reset(self):
         """Break the connection with an RST, so a client mid-stream sees a
         transport failure rather than a body the close ended."""
@@ -477,7 +536,51 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
     # -- routes ------------------------------------------------------------
     def do_GET(self):
         srv = self.server
-        if self.path.startswith("/__requests"):
+        path = urlsplit(self.path).path
+        if path.startswith("/web/"):
+            srv.web_user_agents.append(self.headers.get("User-Agent"))
+            srv.web_request_times.append(time.monotonic())
+        if path == "/web/search":
+            self._web_search()
+        elif path == "/web/page":
+            self._web_page()
+        elif path == "/web/malformed":
+            article = " ".join(["chosen article text"] * 15)
+            self._body(200, "text/html", (
+                "<title>Broken &amp; useful</title><body>"
+                "<main>too short</main><article><h2>Article</h2><p>"
+                + article + "<b>bold"
+            ).encode())
+        elif path == "/web/redirect":
+            self.send_response(302)
+            self.send_header("Location", "/web/page")
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+        elif path == "/web/text":
+            self._body(200, "text/plain", b"one\r\ntwo\nthree\n")
+        elif path == "/web/json":
+            self._body(200, "application/problem+json", b'{"ok": true}\n')
+        elif path == "/web/xml":
+            self._body(200, "application/xml", b"<root>value</root>\n")
+        elif path == "/web/binary":
+            self._body(200, "application/pdf", b"%PDF-1.7\x00")
+        elif path == "/web/oversized":
+            self._body(200, "text/plain", b"x" * ((2 << 20) + 1))
+        elif path == "/web/gzip-oversized":
+            body = gzip.compress(b"x" * ((2 << 20) + 1))
+            self._body(200, "text/plain", body, Content_Encoding="gzip")
+        elif path == "/web/slow":
+            time.sleep(2.0)
+            self._body(200, "text/plain", b"finally\n")
+        elif path == "/web/lines":
+            self._body(200, "text/plain", b"".join(
+                f"line {i}\n".encode() for i in range(1, 2501)
+            ))
+        elif path == "/web/base/child":
+            self._body(200, "text/plain", b"child\n")
+        elif self.path.startswith("/__requests"):
             self._json(200, srv.requests)
         elif self.path.startswith("/health"):
             self._json(200, {"ok": True, "requests": len(srv.requests)})
@@ -763,6 +866,8 @@ class MockProvider:
         self.httpd.auth = []               # type: ignore[attr-defined]
         self.httpd.keys = []               # type: ignore[attr-defined]
         self.httpd.versions = []           # type: ignore[attr-defined]
+        self.httpd.web_user_agents = []     # type: ignore[attr-defined]
+        self.httpd.web_request_times = []   # type: ignore[attr-defined]
         self.httpd.verbose = False         # type: ignore[attr-defined]
         self.scenario = scenario
         # socketserver's shutdown() only returns on the next poll tick, so the
@@ -797,6 +902,10 @@ class MockProvider:
         return f"http://{self.host}:{self.port}/v1"
 
     @property
+    def origin(self) -> str:
+        return f"http://{self.host}:{self.port}"
+
+    @property
     def requests(self) -> list:
         return self.httpd.requests  # type: ignore[attr-defined]
 
@@ -816,11 +925,23 @@ class MockProvider:
         """The anthropic-version header of each request, None when absent."""
         return self.httpd.versions  # type: ignore[attr-defined]
 
+    @property
+    def web_user_agents(self) -> list:
+        """The User-Agent header of each fixture web request, if present."""
+        return self.httpd.web_user_agents  # type: ignore[attr-defined]
+
+    @property
+    def web_request_times(self) -> list:
+        """Monotonic arrival times for fixture web requests."""
+        return self.httpd.web_request_times  # type: ignore[attr-defined]
+
     def reset(self):
         self.requests.clear()
         self.auth.clear()
         self.keys.clear()
         self.versions.clear()
+        self.web_user_agents.clear()
+        self.web_request_times.clear()
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> "MockProvider":

@@ -8,6 +8,7 @@
 #include "core.c"
 #include "json.c"
 #include "http.c"
+#include "web.c"
 #include "paths.c"
 #include "settings.c"
 #include "telemetry.c"
@@ -90,7 +91,7 @@ static const TuiCmd k_about[] = {
     INFO_ROW("yoke " YOKE_VERSION, "A tiny C17 terminal coding agent"),
     INFO_ROW("Created by", "Alikhan Bissakov"),
     INFO_ROW("Source", "github.com/bissakov/yoke"),
-    INFO_ROW("Built with", "C17, libc and libcurl"),
+    INFO_ROW("Built with", "C17, libc, libcurl and Lexbor"),
     INFO_ROW("Inspired by", "Claude Code, Codex, OpenCode and Pi"),
 };
 #define ABOUT_N (sizeof k_about / sizeof k_about[0])
@@ -2425,6 +2426,7 @@ i32 main(i32 argc, char **argv) {
     /* A command runs where a request would, so it keeps the frame alive the
      * same way. */
     shell_set_idle(on_idle, NULL);
+    web_set_idle(on_idle, NULL, tui_input_fd(), &g_got_sigint);
     atexit(tui_stop);
     highlight_init(argv[0]);
     atexit(highlight_close);

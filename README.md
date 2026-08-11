@@ -2,7 +2,8 @@
 
 `yoke` is a C17 terminal coding agent for OpenAI-compatible Chat Completions
 and Anthropic Messages APIs. It streams replies in a fullscreen TUI and can
-read, write, patch, search, and run shell commands.
+read, write, patch, search local files and the public web, fetch web pages,
+and run shell commands.
 
 ## Build
 
@@ -13,11 +14,16 @@ make test
 make test-asan
 ```
 
+Building requires a C17 compiler and libcurl development files. Lexbor 3.0.0
+is vendored and built as a separate object; no system Lexbor package, browser,
+JavaScript runtime, API key, or web-search daemon is needed.
+
 Run `./bin/yoke`, or supply a prompt for a non-interactive response:
 
 ```sh
 yoke -p "summarise src/tui.c"
 yoke --disable-tools bash,write,patch
+yoke --disable-tools internet_search,page_fetch
 ```
 
 ## Configure
@@ -106,8 +112,16 @@ split on whitespace; anything needing quoting belongs in a wrapper script.
   work; a message waits in the composer, and a setting the running request
   reads changes at the next prompt.
 
-The built-in tools are `read`, `write`, `bash`, `patch`, `grep`, and `find`.
-Disable tools with `/settings`, `YOKE_DISABLE_TOOLS`, or `--disable-tools`.
+The built-in tools are `read`, `write`, `bash`, `patch`, `grep`, `find`,
+`internet_search`, and `page_fetch`. Web results are untrusted reference content;
+searching never fetches a result automatically. For example, an agent can call
+`internet_search` with `{"query":"site:example.com C17"}` and then call `page_fetch`
+on one returned public HTTP(S) URL. Disable either tool with `/settings`,
+`YOKE_DISABLE_TOOLS`, or `--disable-tools`.
+
+Search requests are spaced at least ten seconds apart. A challenge, HTTP 202,
+403, or 429 pauses further searches in that yoke process for one hour; yoke
+does not retry or attempt to solve service challenges.
 
 ## Prompts and files
 
@@ -151,7 +165,9 @@ resident shared libraries and file-backed pages.
 Except where otherwise noted, yoke is licensed under the
 [Mozilla Public License 2.0](LICENSE). Vendored Tree-sitter components retain
 their upstream licenses under
-[`vendor/tree-sitter/licenses/`](vendor/tree-sitter/licenses/).
+[`vendor/tree-sitter/licenses/`](vendor/tree-sitter/licenses/). The vendored
+Lexbor 3.0.0 HTML parser retains its Apache-2.0 license and notice in
+[`vendor/lexbor/`](vendor/lexbor/).
 
 ## Development
 

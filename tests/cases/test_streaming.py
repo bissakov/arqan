@@ -33,7 +33,9 @@ def test_request_shape(ctx):
     assert req["messages"][0]["content"] == "You are a test fixture."
     assert req["messages"][1]["content"] == "what is 2+2?"
     names = sorted(t["function"]["name"] for t in req["tools"])
-    assert names == ["bash", "find", "grep", "patch", "read", "write"], names
+    assert names == [
+        "bash", "find", "grep", "internet_search", "page_fetch", "patch", "read", "write"
+    ], names
 
 
 def test_usage_updates_context_counter(ctx):

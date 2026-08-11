@@ -21,9 +21,11 @@ def open_tools(s):
 def test_the_tools_are_rows_of_the_settings_screen(ctx):
     """Every runnable tool has a checkbox; the plan tools are not rows."""
     s = ctx.spawn()
-    s.open_settings().settings_select("write")   # the last row: all six show
+    s.open_settings().settings_select("write")   # the last row: all eight show
     text = s.text()
-    for name in ("read", "grep", "find", "bash", "patch", "write"):
+    for name in (
+        "read", "grep", "find", "internet_search", "page_fetch", "bash", "patch", "write"
+    ):
         assert f"[x] {name}" in text, text
     assert "submit_plan" not in text and "ask_user" not in text, text
     ctx.check_screen(s)
@@ -101,7 +103,7 @@ def test_the_flag_disables_a_list(ctx):
     s.wait_turn_done()
 
     names = tool_names(ctx.mock.requests[-1])
-    assert names == ["find", "grep", "read"], names
+    assert names == ["find", "grep", "internet_search", "page_fetch", "read"], names
 
 
 def test_the_flag_keeps_them_out_of_the_prompt(ctx):

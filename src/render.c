@@ -183,6 +183,7 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
     JVal *j = json_parse(scratch, args);
 
     Str path = json_str(j, STR("path"));
+    if (str_eq(name, STR("page_fetch"))) path = json_str(j, STR("url"));
     Str cmd  = json_str(j, STR("command"));
     Str content = json_str(j, STR("content"));
     Str patch = json_str(j, STR("patch"));
@@ -193,6 +194,7 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
     /* What a search is about is what it looks for, not where it starts. */
     Str query = str_eq(name, STR("grep")) ? json_str(j, STR("pattern"))
               : str_eq(name, STR("find")) ? json_str(j, STR("name"))
+              : str_eq(name, STR("internet_search")) ? json_str(j, STR("query"))
               : (Str){0};
     Str target = query.n ? query : path.n ? path : cmd;
     size_t cmd_off = 0;
@@ -233,7 +235,8 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
         }
         if (shown.n < target.n) tui_write_tool(STR(" ..."));
     }
-    if (str_eq(name, STR("read"))) write_read_range(j);
+    if (str_eq(name, STR("read")) || str_eq(name, STR("page_fetch")))
+        write_read_range(j);
     tui_write_tool(STR("\n"));
 
     if (str_eq(name, STR("write"))) {

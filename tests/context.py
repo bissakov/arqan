@@ -22,7 +22,7 @@ from .harness.session import QUIET
 from .mockprovider import MockProvider, Scenario
 
 ROOT = Path(__file__).resolve().parent.parent
-BIN = ROOT / "bin" / "yoke"
+BIN = ROOT / os.environ.get("YOKE_TEST_BIN", "bin/yoke")
 GOLDEN = Path(__file__).resolve().parent / "golden"
 
 # Enough room for the status line's model · provider · cwd · tokens groups.

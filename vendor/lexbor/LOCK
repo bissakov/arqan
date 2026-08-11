@@ -1,0 +1,6 @@
+name: Lexbor
+version: 3.0.0
+source: https://github.com/lexbor/lexbor/archive/refs/tags/v3.0.0.tar.gz
+source-sha256: eafaa79ef9871f0bbb1978eda8677d184f7ecdcaa203d7cd25b3f86e32c014c2
+generator: perl single.pl html > lexbor.c
+modules: html-2.9.0, core-3.0.0, dom-2.1.0, ns-1.4.0, tag-1.5.0

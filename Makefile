@@ -13,7 +13,10 @@ SANFLAGS := -fsanitize=address,undefined -fno-sanitize-recover=all \
 
 SRC     := src/main.c
 OBJ     := build/yoke.o
+LEXBOR_OBJ := build/vendor/lexbor.o
 BIN     := bin/yoke
+TEST_OBJ := build/yoke-test.o
+TEST_BIN := bin/yoke-test
 HL_BIN  := bin/yoke-highlight
 HL_OWN  := build/highlight/yoke-highlight.o build/highlight/queries.o
 HL_LANG := c cpp rust go python javascript typescript tsx bash json toml yaml
@@ -33,13 +36,26 @@ all: $(BIN) $(HL_BIN)
 
 minimal: $(BIN)
 
-$(BIN): $(OBJ)
+$(BIN): $(OBJ) $(LEXBOR_OBJ)
 	@mkdir -p bin
-	$(CC) $(CFLAGS) $(OBJ) -o $@ $(LDFLAGS) $(LIBS)
+	$(CC) $(CFLAGS) $(OBJ) $(LEXBOR_OBJ) -o $@ $(LDFLAGS) $(LIBS)
 
 $(OBJ): $(SRC) $(wildcard src/*.c) $(wildcard src/*.h)
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c $(SRC) -o $@
+
+$(LEXBOR_OBJ): vendor/lexbor/bridge.c vendor/lexbor/bridge.h \
+               vendor/lexbor/lexbor.c
+	@mkdir -p build/vendor
+	$(CC) $(VENDOR_CFLAGS) -Ivendor/lexbor -c $< -o $@
+
+$(TEST_OBJ): $(SRC) $(wildcard src/*.c) $(wildcard src/*.h)
+	@mkdir -p build
+	$(CC) $(CFLAGS) -DYOKE_TESTING -c $(SRC) -o $@
+
+$(TEST_BIN): $(TEST_OBJ) $(LEXBOR_OBJ)
+	@mkdir -p bin
+	$(CC) $(CFLAGS) $(TEST_OBJ) $(LEXBOR_OBJ) -o $@ $(LDFLAGS) $(LIBS)
 
 $(HL_BIN): $(HL_OBJ)
 	@mkdir -p bin
@@ -82,21 +98,22 @@ $(foreach lang,$(HL_SCAN_LANG),$(eval $(call HL_SCANNER_RULE,$(lang))))
 run: $(BIN)
 	./$(BIN)
 
-test: all
-	$(PYTHON) tests/run.py $(T)
+test: all $(TEST_BIN)
+	YOKE_TEST_BIN=$(TEST_BIN) $(PYTHON) tests/run.py $(T)
 
-test-update: all
-	$(PYTHON) tests/run.py --update $(T)
+test-update: all $(TEST_BIN)
+	YOKE_TEST_BIN=$(TEST_BIN) $(PYTHON) tests/run.py --update $(T)
 
 # Rebuilds bin/yoke instrumented, runs the suite, then leaves it instrumented:
 # `make` puts the normal binary back.
 test-asan:
 	$(MAKE) clean
-	$(MAKE) all \
+	$(MAKE) all $(TEST_BIN) \
 	    CFLAGS='$(filter-out -flto -D_FORTIFY_SOURCE=2,$(CFLAGS)) $(SANFLAGS)' \
 	    LDFLAGS='$(filter-out -flto,$(LDFLAGS)) $(SANFLAGS)' \
 	    VENDOR_CFLAGS='$(VENDOR_CFLAGS) $(SANFLAGS)'
-	ASAN_OPTIONS=detect_leaks=0 $(PYTHON) tests/run.py $(T)
+	ASAN_OPTIONS=detect_leaks=0 YOKE_TEST_BIN=$(TEST_BIN) \
+	    $(PYTHON) tests/run.py $(T)
 
 mock:
 	$(PYTHON) -m tests.mockprovider.server $(MOCK_ARGS)
