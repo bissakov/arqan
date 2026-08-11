@@ -237,4 +237,4 @@ def test_a_plain_arrow_ends_recall(ctx):
     s.key("up").sync()
     assert s.composer_body(2) == ["first line", "second line"], "no older entry"
     s.type("X").sync()
-    assert s.composer_body(2) == ["first liXne", "second line"], s.composer_lines(2)
+    assert s.composer_body(2) == ["first lineX", "second line"], s.composer_lines(2)

@@ -1,0 +1,22 @@
+--- screen 40x20 ---
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|  › first line
+|    second line
+|
+|
+|  ● ready · mock-model · build · local
+--- cursor row=17 col=16 visible=yes ---

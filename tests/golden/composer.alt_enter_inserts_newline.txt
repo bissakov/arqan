@@ -19,8 +19,8 @@
 |
 |
 |  › first line
-|  second line
+|    second line
 |
 |
 |  ● ready · mock-model · build · local · ~/work · -
---- cursor row=21 col=14 visible=yes ---
+--- cursor row=21 col=16 visible=yes ---

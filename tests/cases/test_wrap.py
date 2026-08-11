@@ -98,9 +98,10 @@ def test_the_composer_wraps_between_words_too(ctx):
     first, second = s.composer_body(2)
     assert first == "alpha bravo charlie delta echo", (first, second)
     assert second == "foxtrot golf", (first, second)
-    # The cursor sits one cell past the last typed one, on the second row.
+    # The cursor sits one cell past the last typed one, on the second row,
+    # which hangs under the prompt like the first.
     row, col = s.cursor
-    assert col == s.gutter() + len(second) + 1, (row, col)
+    assert col == s.gutter() + 2 + len(second) + 1, (row, col)
 
 
 def test_a_tool_result_is_not_justified(ctx):

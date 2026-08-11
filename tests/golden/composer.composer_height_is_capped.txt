@@ -12,15 +12,15 @@
 |
 |
 |
-|  line5
-|  line6
-|  line7
-|  line8
-|  line9
-|  line10
-|  line11
-|  last
+|    line5
+|    line6
+|    line7
+|    line8
+|    line9
+|    line10
+|    line11
+|    last
 |
 |
 |  ● ready · mock-model · build · local · work · -
---- cursor row=21 col=7 visible=yes ---
+--- cursor row=21 col=9 visible=yes ---

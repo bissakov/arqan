@@ -439,17 +439,19 @@ class Session:
         return [self.term.buf.chars[r][col] for r in range(rows)]
 
     def composer_body(self, count: int = 1) -> list[str]:
-        """Composer rows with the gutter and the '› ' prompt removed.
+        """Composer rows with the gutter and the prompt column removed.
 
         The composer panel pads every row to the full width, so trailing
         spaces in the typed text are not recoverable from the screen; rows
         come back right-stripped. The empty-composer placeholder is chrome and
-        reads back as an empty row.
+        reads back as an empty row. The prompt is a hanging indent: the marker
+        holds those cells on the first row and blanks hold them below it, so
+        every row gives up the same two columns.
         """
         g = self.gutter()
         out = []
         for i, line in enumerate(self.composer_lines(count)):
-            skip = g + 2 if i == 0 else g
+            skip = g + 2
             body = line[skip:] if len(line) > skip else ""
             if i == 0 and body == self.PLACEHOLDER:
                 body = ""

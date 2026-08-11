@@ -185,6 +185,48 @@ def test_wraps_long_input(ctx):
     assert s.composer_text(2) == body + "TAIL", s.composer_lines(2)
 
 
+def test_prompt_weight_stays_on_the_prompt(ctx):
+    """Every composed row reads the same: the marker is bold, the text is not."""
+    s = ctx.spawn(cols=60, rows=24)
+    s.type("first line")
+    s.key("newline")
+    s.type("second line").sync()
+    g = s.gutter()
+    top, bottom = s.term.rows - 5, s.term.rows - 4
+    assert s.term.attr_at(top, g).bold, "the '\u203a' marker keeps its weight"
+    first = s.term.attr_at(top, g + 2)
+    second = s.term.attr_at(bottom, g + 2)
+    assert not first.bold, "composed text is not bold"
+    assert first.fg == second.fg and first.bold == second.bold, (first, second)
+
+
+def test_wrapped_rows_hang_under_the_prompt(ctx):
+    """The marker holds a column: every composed row starts at the same cell."""
+    s = ctx.spawn(cols=40, rows=20)
+    s.type("first line")
+    s.key("newline")
+    s.type("second line").sync()
+    top, bottom = s.composer_lines(2)
+    g = s.gutter()
+    assert top[g:g + 2] == "\u203a ", repr(top)
+    assert bottom[g:g + 2] == "  ", "the indent stands in for the marker"
+    assert top.index("first") == bottom.index("second"), (top, bottom)
+    ctx.check_screen(s)
+
+
+def test_the_indent_is_not_typed_text(ctx):
+    """The hanging indent is chrome: it never reaches the provider."""
+    ctx.scenario("final_text=ok")
+    s = ctx.spawn(cols=40, rows=20)
+    s.type("first line")
+    s.key("newline")
+    s.type("second line").sync()
+    s.key("enter")
+    s.wait_turn_done()
+    sent = ctx.mock.requests[0]["messages"][-1]["content"]
+    assert sent == "first line\nsecond line", repr(sent)
+
+
 def test_composer_height_is_capped(ctx):
     """A tall composer stops at a third of the screen and scrolls internally."""
     s = ctx.spawn(cols=60, rows=24)
@@ -365,7 +407,9 @@ def test_up_moves_between_draft_lines(ctx):
     s.type("ghijkl").sync()
     s.key("up").sync()
     s.type("X").sync()
-    assert s.composer_body(2) == ["abcdXef", "ghijkl"], s.composer_lines(2)
+    # Every row hangs under the prompt, so a screen column is the same text
+    # column on the row above it.
+    assert s.composer_body(2) == ["abcdefX", "ghijkl"], s.composer_lines(2)
 
 
 def test_down_moves_back_to_the_lower_line(ctx):
@@ -389,9 +433,9 @@ def test_vertical_motion_keeps_its_goal_column(ctx):
     s.type("cccccccc").sync()
     s.key("up", "up").sync()
     s.type("X").sync()
-    # The first row carries the two-cell prompt, so the same screen column is
-    # two bytes earlier in its text.
-    assert s.composer_body(3) == ["aaaaaaXaa", "bb", "cccccccc"], s.composer_lines(3)
+    # The goal column survives the short row and means the same thing on the
+    # first row as it did on the last.
+    assert s.composer_body(3) == ["aaaaaaaaX", "bb", "cccccccc"], s.composer_lines(3)
 
 
 def test_up_walks_wrapped_rows(ctx):
@@ -401,7 +445,7 @@ def test_up_walks_wrapped_rows(ctx):
     s.type(body + "tail").sync()
     s.key("up").sync()
     s.type("X").sync()
-    assert s.composer_text(2) == body[:2] + "X" + body[2:] + "tail", s.composer_lines(2)
+    assert s.composer_text(2) == body[:4] + "X" + body[4:] + "tail", s.composer_lines(2)
 
 
 def test_up_pages_through_a_tall_draft(ctx):
@@ -418,3 +462,12 @@ def test_up_pages_through_a_tall_draft(ctx):
     text = s.text()
     assert "line0" in text, text
     assert "last" not in text, "the box scrolled past the bottom rows"
+
+
+def test_an_empty_trailing_row_is_not_a_placeholder(ctx):
+    """The placeholder belongs to the marker row, not to every blank one."""
+    s = ctx.spawn(cols=40, rows=20)
+    s.type("first line")
+    s.key("newline").sync()
+    assert s.PLACEHOLDER not in s.text(), s.composer_lines(2)
+    assert s.composer_body(2) == ["first line", ""], s.composer_lines(2)

@@ -67,6 +67,9 @@ _Static_assert(TUI_STATUS_N == AGENT_STATUS_FIELDS,
 #define S_RED         "\033[1;38;5;203m"
 #define S_PURPLE      "\033[1;38;5;177m"
 #define S_BOLD        "\033[1m"
+/* Colour codes carry their own intensity, so returning to body text has to
+ * clear it: a foreground change alone leaves a bold marker's weight behind. */
+#define S_NOBOLD      "\033[22m"
 #define S_ITALIC      "\033[3m"
 #define S_MONO        "\033[38;5;180m"
 #define S_STRIKE      "\033[9;38;5;245m"
@@ -711,7 +714,11 @@ static Row row_break(Str s, size_t from, size_t cols, size_t col0) {
 /* Count visual rows and, optionally, locate a byte cursor. Newlines and soft
  * wrapping both start a new visual row. A cursor inside the spaces a break
  * consumed sits at the end of the row they closed, which is where the glyph
- * before it was painted. */
+ * before it was painted.
+ *
+ * `prompt_cells` is a hanging indent, not a first-line one: every row of a
+ * composed draft is inset by the prompt so the text keeps one left edge, and
+ * the painter, the row count and the caret all have to agree on that. */
 static size_t text_rows(Str s, size_t cols, size_t prompt_cells,
                         size_t cursor, size_t *cursor_row, size_t *cursor_col) {
     size_t row = 0, col0 = prompt_cells;
@@ -734,7 +741,6 @@ static size_t text_rows(Str s, size_t cols, size_t prompt_cells,
         if (r.hard && r.end >= s.n) break;
         i = r.next;
         row++;
-        col0 = 0;
     }
     return row + 1;
 }
@@ -763,7 +769,6 @@ static size_t row_col_off(Str s, size_t cols, size_t prompt_cells,
         if (r.hard && r.end >= s.n) return s.n;
         i = r.next;
         row++;
-        col0 = 0;
     }
 }
 
@@ -826,6 +831,9 @@ static const char *kind_style(u8 kind) {
         case ROW_WELCOME_TEXT: return S_MUTED;
         case ROW_HEADING:      return S_CYAN;
         case ROW_CODE:         return S_CODE_BG S_TEXT;
+        /* Wrapped composer rows are painted from a reset, so they name the
+         * panel's text colour rather than inherit the terminal's. */
+        case ROW_COMPOSER:     return S_PANEL_BG S_TEXT;
         case ROW_ZONE:         return S_LINK;
         case ROW_ZONE_HOVER:   return S_POPUP_BG S_LINK_HOVER;
         case ROW_QUOTE:        return S_MUTED;
@@ -1422,6 +1430,20 @@ static u8 display_kind(u8 kind, Str text) {
     return kind;
 }
 
+/* The composer's hanging indent: the cells under the prompt marker, painted
+ * as panel background so a wrapped row lines up with the first one. */
+static Str prompt_indent(size_t cells) {
+    static const char blanks[] = "        ";
+    if (cells > sizeof blanks - 1) cells = sizeof blanks - 1;
+    return (Str){ blanks, cells };
+}
+
+/* Whether a composer prefix is the marker itself rather than the indent that
+ * stands in for it on the rows below. */
+static b8 is_marker(Str prefix) {
+    return prefix.n != 0 && prefix.p[0] != ' ';
+}
+
 /* `text_off` is where the row's bytes sit in the transcript, or SIZE_MAX when
  * they carry no inline styles. `pad` is the cells a justified row spreads
  * over its word gaps, 0 for every row painted as it was written. */
@@ -1465,24 +1487,27 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
         cup(screen_row, screen_col);
     }
 
-    if (kind == ROW_COMPOSER && prefix.n) {
+    if (kind == ROW_COMPOSER && is_marker(prefix)) {
         /* The marker is the mode: a line bound for the shell says so in red. */
         const char *mark = prefix.p[0] == '!' ? S_PANEL_BG S_RED
                                               : S_PANEL_BG S_CYAN;
         style(g_tui.busy ? S_PANEL_BG S_MUTED : mark);
         put_text(prefix.p, prefix.n);
-        style(S_PANEL_BG S_TEXT);
+        /* The first composed row reads the same as the ones the wrapper puts
+         * under it, which start from a reset. */
+        style(S_PANEL_BG S_NOBOLD S_TEXT);
     } else if (prefix.n) {
         /* The welcome rows centre themselves with a prefix of spaces; styling
          * it like the text keeps a selection from splitting at the padding. */
         if (kind == ROW_WELCOME_ART) style(S_CYAN);
         else if (kind == ROW_WELCOME_TEXT) style(S_MUTED);
+        else if (kind == ROW_COMPOSER) style(S_PANEL_BG);
         put_text(prefix.p, prefix.n);
     }
 
     /* The notice row above a question already says what is being asked, so a
      * placeholder would only argue with it. */
-    if (kind == ROW_COMPOSER && prefix.n && text.n == 0 && !g_tui.ask) {
+    if (kind == ROW_COMPOSER && is_marker(prefix) && text.n == 0 && !g_tui.ask) {
         size_t gutter = screen_col - 1;
         size_t body = screen_cols > gutter * 2 ? screen_cols - gutter * 2 : 0;
         size_t room = body > 2 ? body - 2 : 0;
@@ -1620,6 +1645,8 @@ static void update_text_rows(Str s, size_t base_off, size_t cols,
             Str prefix = (Str){0};
             if (row == 0 && prompt_cells)
                 prefix = composer_shell() ? STR("! ") : STR("› ");
+            else if (prompt_cells)
+                prefix = prompt_indent(prompt_cells);
             /* Only the transcript carries spans. */
             u8 row_kind = kind;
             size_t text_off = SIZE_MAX;
@@ -1659,7 +1686,6 @@ static void update_text_rows(Str s, size_t base_off, size_t cols,
         if (r.hard && r.end >= s.n) break;
         start = r.next;
         row++;
-        col0 = 0;
     }
 
     /* Rows below short content are the frame's too. */
