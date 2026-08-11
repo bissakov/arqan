@@ -2056,6 +2056,18 @@ static b8 on_busy_command(Str line, void *ud) {
     if (!line.n || line.n >= sizeof cmd) return false;
     memcpy(cmd, line.p, line.n);
     cmd[line.n] = '\0';
+    /* A click on a block's tail folds what is already on screen, so it is
+     * taken where it lands. The transcript itself is rebuilt once the turn
+     * has stopped writing to it, since a rebuild now would drop the reply
+     * still streaming into it. */
+    if (!strncmp(cmd, "/expand ", 8)) {
+        unsigned long id = strtoul(cmd + 8, NULL, 10);
+        if (!id || id > ag->conv->n) return false;
+        ag->conv->expanded[id - 1] = !ag->conv->expanded[id - 1];
+        rerender_or_defer(ag);
+        if (tui_busy()) tui_notice(STR("the block folds when the turn ends"));
+        return true;
+    }
     Str name = { cmd, resolve_alias(cmd, line.n, sizeof cmd) };
 
     b8 ran;

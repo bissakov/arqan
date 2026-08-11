@@ -4648,6 +4648,16 @@ static void busy_submit(void) {
     tui_set_input((Str){cmd, n});
 }
 
+/* A click on a block's truncation tail is a command rather than an edit, so
+ * mid-turn it reaches the same hook the prompt would send it to. Nothing is
+ * recalled from it: the gesture is the request, and it left no draft. */
+static void busy_expand(void) {
+    if (!g_busy_cmd) return;
+    char cmd[32];
+    i32 len = snprintf(cmd, sizeof cmd, "/expand %u", g_tui.click_id);
+    if (len > 0) g_busy_cmd((Str){cmd, (size_t)len}, g_busy_cmd_ud);
+}
+
 /* Drain what the terminal already has, without ever blocking. Enter submits
  * only the commands a running turn can afford; anything else stays in the
  * composer until the prompt reopens. */
@@ -4685,11 +4695,12 @@ void tui_poll_input(void) {
          * Enter reaches the editor so an open popup can complete an entry and
          * so a command the turn can afford is submitted where it stands. */
         if ((c == 0x03 || c == 0x04) && !g_tui.pasting) continue;
-        if (editor_key(c) == ED_SUBMIT) {
+        EdAction action = editor_key(c);
+        if (action == ED_SUBMIT) {
             busy_submit();
             /* The hook may have opened a screen, which owns what follows. */
             if (g_pick.active && !g_pick.modal) { repaint(); return; }
-        }
+        } else if (action == ED_EXPAND) busy_expand();
         dirty = true;
     }
     if (dirty) repaint();

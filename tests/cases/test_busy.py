@@ -150,3 +150,23 @@ def test_a_screen_left_open_survives_the_end_of_the_turn(ctx):
     s.wait_turn_done()
     s.open_settings()
     assert "[x] Display raw" in s.text(), s.text()
+
+
+def test_clicking_a_block_tail_mid_turn_is_taken_and_applied_after(ctx):
+    """A fold is the reader's, not the turn's: the click lands where it was
+    made and the transcript is rebuilt once the turn stops writing to it."""
+    body = "\n".join(f"line {i:04d} of output" for i in range(40))
+    ctx.write_file("big.txt", body)
+    ctx.scenario('tool=read:{"path":"big.txt"},first_delay=4,final_text=done')
+    s = ctx.spawn()
+    s.submit("read big.txt")
+    s.wait_text("\u25be 28 more lines")
+
+    row = s.screen.find_row("\u25be 28 more lines") + 1
+    s.mouse("down", row, 6)
+    s.mouse("up", row, 6).sync()
+    s.wait_text("when the turn ends")
+
+    s.wait_turn_done()
+    s.wait_text("\u25b4 show less")
+    assert "line 0039 of output" in s.text(), s.text()
