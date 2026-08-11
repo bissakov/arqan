@@ -109,11 +109,24 @@ def test_word_motion(ctx):
 
 
 def test_forward_delete(ctx):
-    """Ctrl-D deletes forward while there is text to delete."""
+    """Delete removes the glyph at the cursor while there is text to remove."""
     s = ctx.spawn()
     s.type("abcdef").sync()
     s.key("ctrl-a", "delete", "delete").sync()
     assert s.composer_text() == "cdef", s.composer_lines()
+
+
+def test_delete_key_is_an_edit_not_an_escape(ctx):
+    """The Delete sequence edits; it never arms the rewind Esc arms."""
+    s = ctx.spawn()
+    s.type("abcdef").sync()
+    s.key("home", "delete").sync()
+    assert s.composer_text() == "bcdef", s.composer_lines()
+    assert "Press Escape again" not in s.text(), s.text()
+
+    s.key("end", "ctrl-u", "delete").sync()   # empty draft: nothing to delete
+    assert s.composer_text() == "", s.composer_lines()
+    assert "Press Escape again" not in s.text(), s.text()
 
 
 def test_meta_word_motion(ctx):

@@ -18,7 +18,7 @@ KEYS = {
     "esc": ESC,
     "backspace": "\x7f",
     "bs": "\x7f",
-    "delete": "\x04",           # the composer treats ^D as forward-delete
+    "delete": ESC + "[3~",      # forward-delete, what xterm sends
     "space": " ",
     "up": ESC + "[A",
     "down": ESC + "[B",

@@ -3274,6 +3274,7 @@ enum {
     KEY_PREV_WORD, KEY_NEXT_WORD, KEY_NEWLINE, KEY_PAGE_UP, KEY_PAGE_DOWN,
     KEY_WHEEL_UP, KEY_WHEEL_DOWN, KEY_MOUSE_DOWN, KEY_MOUSE_DRAG, KEY_MOUSE_UP,
     KEY_MOUSE_MOVE, KEY_SHIFT_TAB, KEY_PASTE,
+    KEY_DELETE,
     /* Meta (Alt) bindings: the readline keys a terminal cannot send as Ctrl. */
     KEY_KILL_WORD, KEY_KILL_PREV_WORD
 };
@@ -3317,6 +3318,7 @@ static i32 read_escape(void) {
             case '~':
                 if (csi.nparams < 1) return KEY_NONE;
                 if (csi.p[0] == 1 || csi.p[0] == 7) return KEY_HOME;
+                if (csi.p[0] == 3) return KEY_DELETE;
                 if (csi.p[0] == 4 || csi.p[0] == 8) return KEY_END;
                 if (csi.p[0] == 5) return KEY_PAGE_UP;
                 if (csi.p[0] == 6) return KEY_PAGE_DOWN;
@@ -4196,6 +4198,116 @@ b8 tui_info_open(Str title, const TuiCmd *rows, size_t n) {
 
 b8 tui_screen_open(void) { return g_pick.active; }
 
+/* Remember what a kill key removed, so Ctrl-Y can put it back. Text longer
+ * than the buffer is dropped rather than truncated: half a kill is not what
+ * the yank promised. */
+static void kill_store(const char *s, size_t n) {
+    if (!n || n > sizeof g_bulk.kill) return;
+    memcpy(g_bulk.kill, s, n);
+    g_tui.kill_n = n;
+}
+
+/* Delete [a,b) from the draft, keeping the text for Ctrl-Y. The cursor ends
+ * at `a`, which is where every kill key leaves it. */
+static void kill_range(char *buf, size_t *n, size_t *cur, size_t a, size_t b) {
+    if (a >= b) return;
+    kill_store(buf + a, b - a);
+    memmove(buf + a, buf + b, *n - b);
+    *n -= b - a;
+    *cur = a;
+    buf[*n] = '\0';
+}
+
+/* The glyph at the cursor goes; the cursor stays where it is. */
+static void edit_delete(char *buf, size_t *n, size_t *cur) {
+    if (*cur >= *n) return;
+    size_t next = next_glyph(buf, *n, *cur);
+    memmove(buf + *cur, buf + next, *n - next);
+    *n -= next - *cur;
+    buf[*n] = '\0';
+}
+
+static void edit_backspace(char *buf, size_t *n, size_t *cur) {
+    if (*cur == 0) return;
+    size_t prev = prev_glyph(buf, *cur);
+    memmove(buf + prev, buf + *cur, *n - *cur);
+    *n -= *cur - prev;
+    *cur = prev;
+    buf[*n] = '\0';
+}
+
+/* `cap` counts the terminator, so the text grows to `cap - 1` bytes. */
+static void edit_insert(char c, char *buf, size_t *n, size_t *cur, size_t cap) {
+    if (*n + 1 >= cap) return;
+    memmove(buf + *cur + 1, buf + *cur, *n - *cur);
+    buf[(*cur)++] = c;
+    (*n)++;
+    buf[*n] = '\0';
+}
+
+/* One plain editing byte applied to `buf`. The composer and a question share
+ * this, so both answer the same readline keys. Returns whether the byte was
+ * an editing key; anything else is the caller's to interpret. */
+static b8 edit_byte(i32 c, char *buf, size_t *n, size_t *cur, size_t cap) {
+    switch (c) {
+        case 0x01: *cur = line_start(buf, *cur); return true;
+        case 0x02: *cur = prev_glyph(buf, *cur); return true;
+        case 0x04: edit_delete(buf, n, cur); return true;
+        case 0x05: *cur = line_end(buf, *n, *cur); return true;
+        case 0x06: *cur = next_glyph(buf, *n, *cur); return true;
+        case 0x08: case 0x7f: edit_backspace(buf, n, cur); return true;
+        case 0x0b: {
+            /* On an empty tail, eat the line break itself, so repeated Ctrl-K
+             * walks down the composer the way readline does. */
+            size_t end = line_end(buf, *n, *cur);
+            if (end == *cur && end < *n) end++;
+            kill_range(buf, n, cur, *cur, end);
+            return true;
+        }
+        case 0x15: kill_range(buf, n, cur, line_start(buf, *cur), *cur);
+                   return true;
+        case 0x17: kill_range(buf, n, cur, prev_word(buf, *cur), *cur);
+                   return true;
+        case 0x19: {
+            /* Ctrl-Y puts back what the last kill took. */
+            size_t k = g_tui.kill_n;
+            if (k && *n + k < cap) {
+                memmove(buf + *cur + k, buf + *cur, *n - *cur);
+                memcpy(buf + *cur, g_bulk.kill, k);
+                *cur += k; *n += k; buf[*n] = '\0';
+            }
+            return true;
+        }
+        default: break;
+    }
+    if ((c >= 0x20 && c < 0x7f) || c >= 0x80) {
+        edit_insert((char)c, buf, n, cur, cap);
+        return true;
+    }
+    return false;
+}
+
+/* The escape-sequence half of `edit_byte`: motion and the kills a terminal
+ * sends as a sequence rather than a control byte. */
+static b8 edit_escape(i32 key, char *buf, size_t *n, size_t *cur) {
+    switch (key) {
+        case KEY_LEFT:      *cur = prev_glyph(buf, *cur); return true;
+        case KEY_RIGHT:     *cur = next_glyph(buf, *n, *cur); return true;
+        case KEY_HOME:      *cur = line_start(buf, *cur); return true;
+        case KEY_END:       *cur = line_end(buf, *n, *cur); return true;
+        case KEY_PREV_WORD: *cur = prev_word(buf, *cur); return true;
+        case KEY_NEXT_WORD: *cur = next_word(buf, *n, *cur); return true;
+        case KEY_DELETE:    edit_delete(buf, n, cur); return true;
+        case KEY_KILL_WORD:
+            kill_range(buf, n, cur, *cur, next_word(buf, *n, *cur));
+            return true;
+        case KEY_KILL_PREV_WORD:
+            kill_range(buf, n, cur, prev_word(buf, *cur), *cur);
+            return true;
+        default: return false;
+    }
+}
+
 /* A question the composer is borrowed for. The editor is deliberately not the
  * composer's own, since a question wants none of its history recall,
  * completion or shell mode, and a secret answer must not survive in a buffer
@@ -4249,19 +4361,23 @@ static b8 ask_impl(Str question, b8 secret, char *out, size_t cap,
             break;
         }
         if (g_tui.pasting && (c == '\r' || c == '\n')) continue;
-        if (c == 0x1b) {
+        size_t n = g_tui.input_n, cur = g_tui.input_cur;
+        if (g_tui.pasting) {
+            if ((c >= 0x20 && c < 0x7f) || c >= 0x80)
+                edit_insert((char)c, g_bulk.input, &n, &cur, limit + 1);
+        } else if (c == 0x1b) {
             i32 key = read_escape();
             if (key == KEY_NONE) break;             /* bare Esc cancels */
-            scroll_key(key);
-        } else if (c == 0x7f || c == 0x08) {
-            if (g_tui.input_n) g_tui.input_n = prev_glyph(g_bulk.input, g_tui.input_n);
-        } else if (c == 0x15) {
-            g_tui.input_n = 0;
-        } else if (((c >= 0x20 && c < 0x7f) || c >= 0x80)
-                   && g_tui.input_n < limit) {
-            g_bulk.input[g_tui.input_n++] = (char)c;
+            if (!edit_escape(key, g_bulk.input, &n, &cur)) scroll_key(key);
+        } else if (c == 0x0c) {
+            g_tui.frame_valid = false;
+        } else {
+            /* An answer is one line, so a line break is not offered and every
+             * other editing key is the composer's. */
+            edit_byte(c, g_bulk.input, &n, &cur, limit + 1);
         }
-        g_tui.input_cur = g_tui.input_n;
+        g_tui.input_n = n;
+        g_tui.input_cur = cur;
         repaint();
     }
 
@@ -4307,26 +4423,6 @@ static b8 composer_vertical(i32 dir, char *buf, size_t *n, size_t *cur) {
      * else on screen is still history. */
     g_tui.hist_nav = recalled && g_tui.hist && history_browsing(g_tui.hist);
     return recalled;
-}
-
-/* Remember what a kill key removed, so Ctrl-Y can put it back. Text longer
- * than the buffer is dropped rather than truncated: half a kill is not what
- * the yank promised. */
-static void kill_store(const char *s, size_t n) {
-    if (!n || n > sizeof g_bulk.kill) return;
-    memcpy(g_bulk.kill, s, n);
-    g_tui.kill_n = n;
-}
-
-/* Delete [a,b) from the draft, keeping the text for Ctrl-Y. The cursor ends
- * at `a`, which is where every kill key leaves it. */
-static void kill_range(char *buf, size_t *n, size_t *cur, size_t a, size_t b) {
-    if (a >= b) return;
-    kill_store(buf + a, b - a);
-    memmove(buf + a, buf + b, *n - b);
-    *n -= b - a;
-    *cur = a;
-    buf[*n] = '\0';
 }
 
 /* The zone under a mouse cell, 0 outside them all. */
@@ -4492,61 +4588,19 @@ static EdAction editor_key(i32 c) {
         return ED_SUBMIT;
     }
     if (c == '\r' || c == '\n') { sel_clear(); return ED_SUBMIT; }
-    if (c == 0x04) {
-        if (n == 0) return ED_EOF;
-        if (cur < n) {
-            size_t next = next_glyph(buf, n, cur);
-            memmove(buf + cur, buf + next, n - next);
-            n -= next - cur; buf[n] = '\0';
-        }
-    } else if (c == 0x01) cur = line_start(buf, cur);
-    else if (c == 0x05) cur = line_end(buf, n, cur);
-    else if (c == 0x02) cur = prev_glyph(buf, cur);
-    else if (c == 0x06) cur = next_glyph(buf, n, cur);
-    else if (c == 0x0e || c == 0x10) {
+    if (c == 0x04 && n == 0) return ED_EOF;
+    if (c == 0x0e || c == 0x10) {
         /* Ctrl-N/Ctrl-P are Down/Up: the popup took them above when open. */
         vertical = true; keep_nav = true;
         recalled = composer_vertical(c == 0x0e ? 1 : -1, buf, &n, &cur);
-    } else if (c == 0x19) {
-        /* Ctrl-Y puts back what the last kill took. */
-        size_t k = g_tui.kill_n;
-        if (k && n + k < cap) {
-            memmove(buf + cur + k, buf + cur, n - cur);
-            memcpy(buf + cur, g_bulk.kill, k);
-            cur += k; n += k; buf[n] = '\0';
-        }
-    } else if (c == 0x0b) {
-        /* On an empty tail, eat the line break itself, so repeated Ctrl-K
-         * walks down the composer the way readline does. */
-        size_t end = line_end(buf, n, cur);
-        if (end == cur && end < n) end++;
-        kill_range(buf, &n, &cur, cur, end);
-    } else if (c == 0x15) {
-        kill_range(buf, &n, &cur, line_start(buf, cur), cur);
-    } else if (c == 0x17) {
-        kill_range(buf, &n, &cur, prev_word(buf, cur), cur);
     } else if (c == 0x0c) {
         /* An explicit repaint also repairs a terminal after stray output. */
         g_tui.frame_valid = false;
-    } else if (c == 0x7f || c == 0x08) {
-        if (cur > 0) {
-            size_t prev = prev_glyph(buf, cur);
-            memmove(buf + prev, buf + cur, n - cur);
-            n -= cur - prev; cur = prev; buf[n] = '\0';
-        }
     } else if (c == 0x1b) {
         i32 key = read_escape();
-        if (key == KEY_LEFT) cur = prev_glyph(buf, cur);
-        else if (key == KEY_RIGHT) cur = next_glyph(buf, n, cur);
-        else if (key == KEY_HOME) cur = line_start(buf, cur);
-        else if (key == KEY_END) cur = line_end(buf, n, cur);
-        else if (key == KEY_PREV_WORD) cur = prev_word(buf, cur);
-        else if (key == KEY_NEXT_WORD) cur = next_word(buf, n, cur);
-        else if (key == KEY_KILL_WORD)
-            kill_range(buf, &n, &cur, cur, next_word(buf, n, cur));
-        else if (key == KEY_KILL_PREV_WORD)
-            kill_range(buf, &n, &cur, prev_word(buf, cur), cur);
-        else if (scroll_key(key)) {
+        if (edit_escape(key, buf, &n, &cur)) {
+            /* an editing key, already applied */
+        } else if (scroll_key(key)) {
             /* The viewport moved; the draft did not, so neither the goal
              * column nor a recall in progress is disturbed. */
             vertical = true; keep_nav = true;
@@ -4596,11 +4650,8 @@ static EdAction editor_key(i32 c) {
             memmove(buf + cur + 1, buf + cur, n - cur);
             buf[cur++] = '\n'; n++; buf[n] = '\0';
         }
-    } else if ((c >= 0x20 && c < 0x7f) || c >= 0x80) {
-        if (n + 1 < cap) {
-            memmove(buf + cur + 1, buf + cur, n - cur);
-            buf[cur++] = (char)c; n++; buf[n] = '\0';
-        }
+    } else {
+        edit_byte(c, buf, &n, &cur, cap);
     }
 
     if (!keep_sel) sel_clear();

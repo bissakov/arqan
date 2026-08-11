@@ -443,6 +443,48 @@ def test_provider_reasoning_controls_are_editable_in_the_tui(ctx):
     assert creds(ctx) == {"work": "sk-kept"}, creds(ctx)
 
 
+def test_provider_answers_take_the_composer_editing_keys(ctx):
+    """A question borrows the composer, so it answers the same editing keys."""
+    write_provider(ctx, "work", ctx.mock.base_url, key="sk-kept", api="openai")
+    select_provider(ctx, "work")
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
+    s.submit("/provider")
+    s.wait_status("pick a provider")
+    s.key("down", "down", "enter")
+    s.wait_status("edit a provider")
+    s.key("enter")
+
+    s.wait_text("base URL  (Esc cancels)")
+    s.key("enter").sync()                      # keep the URL, on to the model
+    assert s.composer_text() == "mock-model", s.composer_text()
+
+    s.key("home").sync()
+    s.type("x").sync()
+    assert s.composer_text() == "xmock-model", s.composer_text()
+    s.key("delete").sync()                     # the glyph at the cursor goes
+    assert s.composer_text() == "xock-model", s.composer_text()
+    s.key("ctrl-k").sync()                     # kill the tail
+    assert s.composer_text() == "x", s.composer_text()
+    s.key("ctrl-y").sync()                     # and put it back
+    assert s.composer_text() == "xock-model", s.composer_text()
+    s.key("end").sync()
+    s.type("-2").sync()
+    s.key("enter").sync()
+
+    s.key(*(["enter"] * 5))                    # the reasoning questions
+    s.wait_status("which API does it speak")
+    s.key("enter")
+    s.wait_status("API key")
+    s.key("enter")                             # keep the credential stored
+    s.wait_text("provider: work")
+
+    assert store(ctx) == [{
+        "name": "work", "base_url": ctx.mock.base_url,
+        "model": "xock-model-2", "api": "openai",
+    }], store(ctx)
+    assert creds(ctx) == {"work": "sk-kept"}, creds(ctx)
+
+
 def test_provider_editor_clears_values_and_keeps_a_long_template(ctx):
     """Empty is distinct from cancel, and templates are not clipped to 1 KiB."""
     template = '{"padding":"' + "x" * 1200 + '"}'

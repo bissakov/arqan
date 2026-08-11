@@ -100,7 +100,8 @@ split on whitespace; anything needing quoting belongs in a wrapper script.
   empty composer.
 - The composer takes the readline editing keys: Ctrl-A/E, Ctrl-B/F, Ctrl-P/N,
   Alt+B/F, Ctrl-K, Ctrl-U, Ctrl-W, Alt+D, Alt+Backspace, and Ctrl-Y to put
-  the last kill back.
+  the last kill back. Delete removes the glyph at the cursor. A question a
+  command asks (`/provider`, for one) answers the same keys.
 - `!command` runs a local shell command. Prefix with `\!` to send it to the
   model instead.
 - `@` opens the project file picker.
