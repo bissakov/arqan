@@ -385,7 +385,7 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
         } else if (str_eq(role, STR("tool"))) {
             slot = conv_add_tool(c, call_id, text);
         } else if (tool.n) {
-            slot = conv_add_call(c, call_id, tool, text);
+            slot = conv_add_call(c, scratch, call_id, tool, text);
         } else if (json_bool(v, STR("calls"))) {
             slot = conv_add_assistant_calls(c, text);
         } else {

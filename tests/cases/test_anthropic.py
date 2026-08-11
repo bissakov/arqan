@@ -218,3 +218,37 @@ def test_malformed_tool_arguments_keep_the_request_valid(ctx):
     assert use["input"] == {"invalid_arguments": bad}, use
     assert any("bad args json" in r for r in ctx.mock.tool_results()), \
         ctx.mock.tool_results()
+
+
+def test_resumed_tool_arguments_keep_their_shape(ctx):
+    """Validity is decided when a call is recorded, so a resume must redecide.
+
+    A resumed session sends the arguments it saved: well-formed ones as the
+    object the model wrote, malformed ones as the string it wrote instead.
+    """
+    ctx.write_file("notes.txt", "hello from disk\n")
+    bad = '{"path":"notes.txt",,"limit":3}'
+    ctx.scenario("tool=read:" + bad
+                 + ',tool=read:{"path":"notes.txt"},final_text=recovered')
+    s = anth(ctx)
+    s.submit("read the notes")
+    s.wait_text("recovered")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+
+    s = anth(ctx)
+    s.submit("/resume")
+    s.wait_status("pick a session")
+    s.key("enter")
+    s.wait_text("recovered")
+    ctx.scenario("final_text=and+again")
+    s.submit("thanks")
+    s.wait_text("and again")
+    s.wait_turn_done()
+    uses = [b for m in ctx.mock.requests[-1]["messages"]
+            if isinstance(m["content"], list)
+            for b in m["content"] if b["type"] == "tool_use"]
+    assert [u["input"] for u in uses] == [
+        {"invalid_arguments": bad}, {"path": "notes.txt"},
+    ], uses

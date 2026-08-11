@@ -832,6 +832,10 @@ typedef struct {
     Str   *shell_out;     /* [cap] what a '!' run printed                */
     b8  *has_tool_call; /* [cap]                                       */
     b8  *expanded;      /* [cap] this block's transcript caps are lifted */
+    /* [cap] the carrier's arguments parse as a JSON object. Decided once,
+     * when the call is recorded, since every later Anthropic request would
+     * otherwise re-parse the whole history to ask the same question. */
+    b8  *args_object;
     /* [cap] milliseconds the work behind a slot took, 0 when it took none
      * that was measured. A tool result and a '!' run carry one, which is
      * what lets a replay render the time a live turn showed. */
@@ -845,7 +849,9 @@ size_t  conv_add(Conv *c, MRole role, Str text);
  * carrier slot per call, each keeping its own id. `conv_is_call` picks the
  * carriers out of a tail scan. */
 size_t  conv_add_assistant_calls(Conv *c, Str content);
-size_t  conv_add_call(Conv *c, Str id, Str name, Str args);
+/* `scratch` holds the parse that decides whether `args` are a JSON object;
+ * it is rewound before returning. */
+size_t  conv_add_call(Conv *c, Arena *scratch, Str id, Str name, Str args);
 size_t  conv_add_tool(Conv *c, Str tool_call_id, Str text);
 /* A '!' shell run: one user slot holding the command and what it printed,
  * since it is one turn the user took. */
@@ -859,9 +865,8 @@ void    conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg);
 /* The same conversation as Anthropic messages: content blocks rather than
  * flat text, preserved thinking blocks before their assistant content, tool
  * results carried by the user, and consecutive slots of one role merged into
- * a single message. The system prompt is written by the caller and skipped.
- * `scratch` holds the parse used to validate stored tool-call arguments. */
-void    conv_write_json_anthropic(Buf *b, Arena *scratch, const Conv *c);
+ * a single message. The system prompt is written by the caller and skipped. */
+void    conv_write_json_anthropic(Buf *b, const Conv *c);
 
 /* ---- sessions ------------------------------------------------------------
  * The conversation as it happened, one JSON object per line under
