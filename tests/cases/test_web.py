@@ -19,6 +19,21 @@ def run_web(ctx, name, args, reply="web done"):
     return s, ctx.mock.tool_results()[-1]
 
 
+def run_web_fallback(ctx, args, reply="web done"):
+    """Search with both the lite and HTML endpoints configured."""
+    ctx.scenario(
+        f"tool=internet_search:{json.dumps(args)},final_text={reply.replace(' ', '+')}"
+    )
+    env = dict(web_env(ctx))
+    env["ARQAN_TEST_WEB_SEARCH_FALLBACK_URL"] = f"{ctx.mock.origin}/web/search-html?q="
+    env["ARQAN_TEST_WEB_SEARCH_INTERVAL_MS"] = "0"
+    s = ctx.spawn(rows=40, **env)
+    s.submit("use internet_search")
+    s.wait_text(reply)
+    s.wait_turn_done()
+    return s, ctx.mock.tool_results()[-1]
+
+
 def test_web_tool_schemas_are_offered_in_build_mode(ctx):
     """Both public schemas carry their required argument and limits."""
     ctx.scenario("text=ok")
@@ -84,6 +99,25 @@ def test_web_search_refuses_service_statuses(ctx):
         ctx.mock.reset()
         _, result = run_web(ctx, "internet_search", {"query": f"status{status}"})
         assert result.startswith("ERROR: ") and f"HTTP {status}" in result, result
+
+
+def test_web_search_falls_back_to_the_html_endpoint(ctx):
+    """A refusal from the lite endpoint retries once on the HTML layout."""
+    _, result = run_web_fallback(ctx, {"query": "liteblocked"})
+    assert result.startswith("External search results (untrusted): 2"), result
+    assert "First & best" in result and "snippet for liteblocked." in result, result
+    assert "https://example.com/first?a=1&b=two" in result, result
+    assert "http://example.org/two" in result and "Second result Ω" in result, result
+    assert "example.com</a>" not in result, result
+    assert len(ctx.mock.web_request_times) == 2, ctx.mock.web_request_times
+
+
+def test_web_search_pauses_only_when_every_endpoint_refuses(ctx):
+    """Both endpoints blocking is a refusal that reports the first status."""
+    _, result = run_web_fallback(ctx, {"query": "status403"})
+    assert result.startswith("ERROR: ") and "HTTP 403" in result, result
+    assert "paused" in result and "do not retry" in result, result
+    assert len(ctx.mock.web_request_times) == 2, ctx.mock.web_request_times
 
 
 def test_web_search_spaces_repeated_requests(ctx):

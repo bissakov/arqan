@@ -467,6 +467,9 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             status = int(query.removeprefix("status"))
             self._body(status, "text/html", b"<html><body>refused</body></html>")
             return
+        if query == "liteblocked":
+            self._body(202, "text/html", b"<html><body>refused</body></html>")
+            return
         if query == "challenge":
             self._body(200, "text/html", b"<html><body><form class='challenge-form'>captcha</form></body></html>")
             return
@@ -487,6 +490,28 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
           <a class="result-link" href="%zz">Malformed</a>
           <a class="other" href="https://ignored.example/">Ignored</a>
           <a class="result-link extra" href="//duckduckgo.com/l/?uddg={two}">Second result Ω</a>
+        </body></html>""".encode()
+        self._body(200, "text/html; charset=utf-8", html)
+
+    def _web_search_html(self):
+        """The html.duckduckgo.com layout used when the lite endpoint refuses."""
+        query = parse_qs(urlsplit(self.path).query).get("q", [""])[0]
+        if query in ("status202", "status403", "status429"):
+            status = int(query.removeprefix("status"))
+            self._body(status, "text/html", b"<html><body>refused</body></html>")
+            return
+        one = quote("https://example.com/first?a=1&b=two", safe="")
+        two = quote("http://example.org/two", safe="")
+        html = f"""<!doctype html><html><body>
+          <div class="result results_links">
+            <a class="result__a" href="//duckduckgo.com/l/?uddg={one}&amp;rut=x">First &amp; best</a>
+            <a class="result__url" href="//duckduckgo.com/l/?uddg={one}">example.com</a>
+            <a class="result__snippet" href="#">A <b>nested</b> snippet for {query}.</a>
+          </div>
+          <div class="result results_links">
+            <a class="result__a" href="//duckduckgo.com/l/?uddg={two}">Second result Ω</a>
+            <a class="result__snippet" href="#">second snippet</a>
+          </div>
         </body></html>""".encode()
         self._body(200, "text/html; charset=utf-8", html)
 
@@ -542,6 +567,8 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             srv.web_request_times.append(time.monotonic())
         if path == "/web/search":
             self._web_search()
+        elif path == "/web/search-html":
+            self._web_search_html()
         elif path == "/web/page":
             self._web_page()
         elif path == "/web/malformed":

@@ -778,7 +778,8 @@ static b8 search_enter(AgentHtmlNode *node, void *ud) {
     if (class_has(node, "challenge-form") || class_has(node, "anomaly-modal"))
         s->challenge = true;
     if (class_has(node, "no-results")) s->explicit_empty = true;
-    if (tag_is(node, "a") && class_has(node, "result-link")) {
+    if (tag_is(node, "a")
+        && (class_has(node, "result-link") || class_has(node, "result__a"))) {
         s->layout_links++;
         s->current = SIZE_MAX;
         size_t hn = 0;
@@ -792,7 +793,9 @@ static b8 search_enter(AgentHtmlNode *node, void *ud) {
             if (str_eq(s->result[i].url, url)) return true;
         s->result[s->n] = (SearchResult){title, url, {0}};
         s->current = s->n++;
-    } else if (class_has(node, "result-snippet") && s->current < s->n
+    } else if ((class_has(node, "result-snippet")
+                || class_has(node, "result__snippet"))
+               && s->current < s->n
                && !s->result[s->current].snippet.n) {
         b8 large = false;
         s->result[s->current].snippet =
@@ -816,12 +819,105 @@ static b8 encode_query(Str query, Buf *url) {
     return buf_ok(url);
 }
 
-static const char *search_prefix(void) {
+/* Query prefixes tried in order. The lite endpoint answers with the smallest
+ * markup; the HTML endpoint is a separate host with its own bot detection, so
+ * a refusal or unfamiliar layout on one is retried on the other. */
+typedef struct {
+    const char *prefix;
+    const char *label;
+} SearchBackend;
+
+static size_t search_backends(SearchBackend out[2]) {
 #ifdef AGENT_TESTING
-    const char *override = getenv(AGENT_ENV_PREFIX "TEST_WEB_SEARCH_URL");
-    if (override && *override) return override;
+    const char *primary = getenv(AGENT_ENV_PREFIX "TEST_WEB_SEARCH_URL");
+    if (primary && *primary) {
+        size_t n = 0;
+        out[n++] = (SearchBackend){primary, "lite"};
+        const char *fallback =
+            getenv(AGENT_ENV_PREFIX "TEST_WEB_SEARCH_FALLBACK_URL");
+        if (fallback && *fallback)
+            out[n++] = (SearchBackend){fallback, "html"};
+        return n;
+    }
 #endif
-    return "https://lite.duckduckgo.com/lite/?q=";
+    out[0] = (SearchBackend){"https://lite.duckduckgo.com/lite/?q=", "lite"};
+    out[1] = (SearchBackend){"https://html.duckduckgo.com/html/?q=", "html"};
+    return 2;
+}
+
+typedef enum {
+    SEARCH_OK,      /* results, or a layout that states there are none */
+    SEARCH_BLOCKED, /* refusal or challenge; pause if no backend answers */
+    SEARCH_UNKNOWN, /* transport failure or unfamiliar layout */
+    SEARCH_ERROR,   /* local failure; give up without trying another backend */
+} SearchOutcome;
+
+static SearchOutcome search_backend_run(const SearchBackend *backend,
+                                        const char *query, Arena *scratch,
+                                        SearchCtx *found,
+                                        char *err, size_t err_cap) {
+    Buf url;
+    buf_init(&url, scratch, 2048);
+    buf_puts(&url, str_c(backend->prefix));
+    if (!encode_query(str_c(query), &url)) {
+        snprintf(err, err_cap, "search URL does not fit in memory");
+        return SEARCH_ERROR;
+    }
+    Str request_url = buf_finish(&url);
+    if (!buf_ok(&url) || request_url.n >= AGENT_WEB_URL_BYTES) {
+        snprintf(err, err_cap, "encoded search URL is too long");
+        return SEARCH_ERROR;
+    }
+    if (!search_admit(err, err_cap)) return SEARCH_ERROR;
+
+    Buf source;
+    buf_init(&source, scratch, 65536);
+    HttpUrlReq req;
+    i32 rc = web_request(request_url.p, "internet_search", &source, &req);
+    if (req.status == 202 || req.status == 403 || req.status == 429) {
+        snprintf(err, err_cap,
+                 "the %s search endpoint refused the request with HTTP %lld",
+                 backend->label, (long long)req.status);
+        return SEARCH_BLOCKED;
+    }
+    if (rc != 0) {
+        if (rc < 0)
+            snprintf(err, err_cap, "the %s search endpoint returned HTTP %lld",
+                     backend->label, (long long)-rc);
+        else snprintf(err, err_cap, "%s", req.failure[0] ? req.failure
+                                                         : "search request failed");
+        return SEARCH_UNKNOWN;
+    }
+    Str raw = buf_finish(&source);
+    if (!buf_ok(&source)) {
+        snprintf(err, err_cap, "search response does not fit in memory");
+        return SEARCH_ERROR;
+    }
+    AgentHtmlDoc *doc = agent_html_parse(raw.p, raw.n);
+    if (!doc) {
+        snprintf(err, err_cap, "search HTML parsing failed");
+        return SEARCH_ERROR;
+    }
+    *found = (SearchCtx){.scratch = scratch, .current = SIZE_MAX};
+    html_walk(agent_html_root(doc), search_enter, NULL, found);
+    agent_html_destroy(doc);
+
+    if (found->challenge || contains_ci(raw, "verify you are human")) {
+        snprintf(err, err_cap, "the %s search endpoint returned a challenge page",
+                 backend->label);
+        return SEARCH_BLOCKED;
+    }
+    if (found->oom) {
+        snprintf(err, err_cap, "search result text is too large");
+        return SEARCH_ERROR;
+    }
+    if (!found->layout_links && !found->explicit_empty) {
+        snprintf(err, err_cap,
+                 "the %s search result layout was not recognized; the service "
+                 "may have changed", backend->label);
+        return SEARCH_UNKNOWN;
+    }
+    return SEARCH_OK;
 }
 
 b8 internet_search_run(Str args, Arena *scratch, Buf *out,
@@ -834,65 +930,28 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out,
     size_t limit;
     if (!web_arg_count(j, STR("limit"), 8, 10, &limit, err, err_cap)) return false;
 
-    Buf url;
-    buf_init(&url, scratch, 2048);
-    buf_puts(&url, str_c(search_prefix()));
-    if (!encode_query(str_c(query), &url)) {
-        snprintf(err, err_cap, "search URL does not fit in memory");
-        return false;
-    }
-    Str request_url = buf_finish(&url);
-    if (!buf_ok(&url) || request_url.n >= AGENT_WEB_URL_BYTES) {
-        snprintf(err, err_cap, "encoded search URL is too long");
-        return false;
-    }
-    if (!search_admit(err, err_cap)) return false;
-
-    Buf source;
-    buf_init(&source, scratch, 65536);
-    HttpUrlReq req;
-    i32 rc = web_request(request_url.p, "internet_search", &source, &req);
-    if (rc != 0 || req.status == 202 || req.status == 403 || req.status == 429) {
-        if (req.status == 202 || req.status == 403 || req.status == 429)
-            search_pause();
-        if (req.status == 202 || req.status == 403 || req.status == 429)
-            snprintf(err, err_cap, "search service refused the request with HTTP %lld; "
-                     "searches paused for one hour; do not retry",
-                     (long long)req.status);
-        else if (rc < 0)
-            snprintf(err, err_cap, "search service returned HTTP %lld",
-                     (long long)-rc);
-        else snprintf(err, err_cap, "%s", req.failure[0] ? req.failure
-                                                           : "search request failed");
-        return false;
-    }
-    Str raw = buf_finish(&source);
-    if (!buf_ok(&source)) {
-        snprintf(err, err_cap, "search response does not fit in memory");
-        return false;
-    }
-    AgentHtmlDoc *doc = agent_html_parse(raw.p, raw.n);
-    if (!doc) {
-        snprintf(err, err_cap, "search HTML parsing failed");
-        return false;
-    }
     SearchCtx found = {.scratch = scratch, .current = SIZE_MAX};
-    html_walk(agent_html_root(doc), search_enter, NULL, &found);
-    agent_html_destroy(doc);
-    if (found.challenge || contains_ci(raw, "verify you are human")) {
-        search_pause();
-        snprintf(err, err_cap,
-                 "search service returned a challenge page; searches paused "
-                 "for one hour; do not retry");
-        return false;
+    SearchBackend backend[2];
+    size_t backends = search_backends(backend);
+    char blocked_err[256] = {0};
+    b8 answered = false;
+    for (size_t i = 0; i < backends && !answered; i++) {
+        SearchCtx attempt = {.scratch = scratch, .current = SIZE_MAX};
+        SearchOutcome outcome = search_backend_run(&backend[i], query, scratch,
+                                                   &attempt, err, err_cap);
+        if (outcome == SEARCH_ERROR) return false;
+        if (outcome == SEARCH_BLOCKED && !blocked_err[0])
+            snprintf(blocked_err, sizeof blocked_err, "%s", err);
+        if (outcome != SEARCH_OK) continue;
+        found = attempt;
+        answered = true;
     }
-    if (found.oom) {
-        snprintf(err, err_cap, "search result text is too large");
-        return false;
-    }
-    if (!found.layout_links && !found.explicit_empty) {
-        snprintf(err, err_cap,
-                 "search result layout was not recognized; the service may have changed");
+    if (!answered) {
+        if (blocked_err[0]) {
+            search_pause();
+            snprintf(err, err_cap, "%s; searches paused for one hour; "
+                     "do not retry", blocked_err);
+        }
         return false;
     }
 
