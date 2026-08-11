@@ -330,6 +330,9 @@ static b8 add_result(Agent *ag, size_t call, Str name, Str result, u32 ms) {
     if (g_one_shot) one_shot_diag("tool result", name, result);
     else render_tool_result(name, conv->text[call], result, ag->scratch,
                             (u32)(slot + 1), conv->expanded[slot], ms);
+    /* Saved per result, not per turn: a build that dies in its tenth round
+     * must still be resumable up to its ninth. */
+    session_save(ag->sess, conv);
     return true;
 }
 
@@ -2227,6 +2230,9 @@ static b8 agent_turn(Agent *ag, Str text) {
          * lose the context the response metadata reported. */
         md_end();
         md_set_muted(false);
+        /* Whatever the round committed goes to disk before the tools it asked
+         * for run, so a crash inside one keeps the round that asked. */
+        session_save(ag->sess, conv);
         if (g_got_sigint) {
             if (g_one_shot)
                 one_shot_diag("error", (Str){0}, STR("interrupted"));

@@ -384,16 +384,22 @@ static b8 patch_fragment(Str line, Str *fragment) {
     return true;
 }
 
+/* An empty fragment carries a null pointer, so skip the copy for it. */
+static b8 batch_line(char *out, size_t cap, size_t *n, Str fragment) {
+    if (fragment.n + 1 > cap - *n) return false;
+    if (fragment.n) memcpy(out + *n, fragment.p, fragment.n);
+    *n += fragment.n;
+    out[(*n)++] = '\n';
+    return true;
+}
+
 static size_t patch_batch(Str patch, char *out, size_t cap) {
     size_t off = 0, n = 0;
     Str line;
     while (str_line(patch, &off, &line)) {
         Str fragment;
         if (!patch_fragment(line, &fragment)) continue;
-        if (fragment.n + 1 > cap - n) return 0;
-        memcpy(out + n, fragment.p, fragment.n);
-        n += fragment.n;
-        out[n++] = '\n';
+        if (!batch_line(out, cap, &n, fragment)) return 0;
     }
     return n;
 }
@@ -471,10 +477,7 @@ static size_t grep_batch(Str result, char *out, size_t cap) {
     while (str_line(result, &off, &line)) {
         Str prefix, fragment;
         if (!grep_fragment(line, &prefix, &fragment)) continue;
-        if (fragment.n + 1 > cap - n) return 0;
-        memcpy(out + n, fragment.p, fragment.n);
-        n += fragment.n;
-        out[n++] = '\n';
+        if (!batch_line(out, cap, &n, fragment)) return 0;
     }
     return n;
 }

@@ -4,6 +4,8 @@ Sessions are keyed by the directory arqan runs in, saved as they happen, and
 browsed through the same popup slash-command completion uses.
 """
 
+import json
+
 
 def sessions_dir(ctx):
     """The per-cwd session directory under $HOME/.local/share."""
@@ -36,6 +38,32 @@ def test_a_turn_is_saved_under_the_data_dir(ctx):
     lines = files[0].read_text().splitlines()
     assert '"role":"user"' in lines[0] and "remember this turn" in lines[0]
     assert '"role":"assistant"' in lines[1] and "sure thing" in lines[1]
+
+
+def test_a_turn_is_saved_round_by_round(ctx):
+    """A tool round is on disk before the next request, not at the turn's end."""
+    ctx.write_file("sample.txt", "kept bytes\n")
+    args = json.dumps({"path": "sample.txt"})
+    ctx.scenario(
+        f"tool=read:{args},tool_rounds=2,final_text=done,first_delay=2"
+    )
+    s = ctx.spawn()
+    s.submit("read it")
+    s.wait_text("kept bytes")
+
+    files = sorted(sessions_dir(ctx).iterdir())
+    assert len(files) == 1, files
+    lines = [json.loads(l) for l in files[0].read_text().splitlines()]
+    assert [l["role"] for l in lines] == [
+        "user", "assistant", "assistant", "tool"
+    ], lines
+    assert lines[2]["name"] == "read", lines[2]
+    assert "kept bytes" in lines[3]["content"], lines[3]
+
+    s.wait_turn_done()
+    done = [json.loads(l) for l in files[0].read_text().splitlines()]
+    assert done[:len(lines)] == lines, done
+    assert done[-1] == {"role": "assistant", "content": "done"}, done[-1]
 
 
 def test_resume_without_sessions_answers_in_the_popup_slot(ctx):

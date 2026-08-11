@@ -264,6 +264,22 @@ def test_patch_preview_highlights_code_but_not_diff_markers(ctx):
     assert cell(s, "42").fg == YELLOW
 
 
+def test_empty_patch_fragments_survive_syntax_batching(ctx):
+    """A patch line that adds nothing has an empty fragment and no bytes."""
+    ctx.write_file("sample.c", "int answer = 1;\n")
+    diff = (
+        "--- a/sample.c\n+++ b/sample.c\n@@ -1 +1,3 @@\n"
+        " int answer = 1;\n+\n+int more = 2;\n"
+    )
+    args = json.dumps({"patch": diff})
+    ctx.scenario(f"tool=patch:{args},final_text=done")
+    s = ctx.spawn()
+    s.submit("patch it")
+    s.wait_turn_done()
+    assert cell(s, "+int more").fg == GREEN
+    assert cell(s, "int more").fg == CYAN
+
+
 def test_source_bearing_tool_calls_are_highlighted(ctx):
     """Write previews and shell commands use their reliable source context."""
     content = "def answer():\n    return 'yes'\n"
