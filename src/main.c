@@ -2303,7 +2303,10 @@ static b8 agent_turn(Agent *ag, Str text) {
         say_conv_full();
         return false;
     }
-    if (ag->echo) render_user_message(text, (u32)conv->n);
+    if (ag->echo) {
+        tui_scroll_to_bottom();
+        render_user_message(text, (u32)conv->n);
+    }
     session_save(ag->sess, conv);
 
     TelEvent te;

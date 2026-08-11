@@ -2699,6 +2699,14 @@ void tui_zone_end(void) {
     g_tui.zone_open = 0;
 }
 
+/* A new turn is the reader asking for what comes next, so the viewport gives
+ * up a scrolled position and follows the newest row again. */
+void tui_scroll_to_bottom(void) {
+    if (!g_tui.scroll_rows) return;
+    g_tui.scroll_rows = 0;
+    repaint();
+}
+
 /* Rows from `off` to the end, which is what a zone's place on screen is
  * measured against: a re-render is free to change everything above it.
  *
@@ -2976,6 +2984,13 @@ static void transcript_put(Str s) {
         wrap_invalidate();   /* every offset in the index just moved */
     }
 
+    /* A viewport the reader moved off the bottom stays on the text it is
+     * showing: the rows this append adds are rows below it, so the distance
+     * from the bottom grows by exactly as many. Pinned to the bottom it
+     * follows the newest row, which is what scrolling back down restores. */
+    size_t cols = g_tui.scroll_rows ? tui_body_cols() : 0;
+    size_t rows_before = cols ? wrap_scan(cols) : 0;
+
     /* Strip control bytes and expand tabs, so wrapping is predictable. */
     for (size_t i = 0; i < s.n && g_tui.transcript_n + 4 < TUI_TRANSCRIPT_CAP; i++) {
         unsigned char c = (unsigned char)s.p[i];
@@ -2990,10 +3005,11 @@ static void transcript_put(Str s) {
         }
         g_tui.trail_nl = c == '\n' ? g_tui.trail_nl + 1 : 0;
     }
-    /* New output pins the viewport back to the newest row, except while a
-     * search is standing on a match: reading back through the conversation is
-     * not something a streaming reply gets to interrupt. */
-    if (!g_tui.find_open) g_tui.scroll_rows = 0;
+    if (cols) {
+        size_t rows_after = wrap_scan(cols);
+        if (rows_after > rows_before)
+            g_tui.scroll_rows += rows_after - rows_before;
+    }
 }
 
 /* One run of content bytes, wherever this run's output is going. */

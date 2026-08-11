@@ -94,7 +94,7 @@ def test_no_scrollbar_when_everything_fits(ctx):
 
 
 def test_new_output_returns_to_the_bottom(ctx):
-    """Streaming while scrolled back snaps the viewport to the newest text."""
+    """Submitting from a scrolled view returns to the newest text."""
     s = ctx.spawn()
     fill_transcript(ctx, s)
     for _ in range(10):
@@ -107,6 +107,47 @@ def test_new_output_returns_to_the_bottom(ctx):
     s.wait_text("fresh output marker")
     s.wait_turn_done()
     assert "fresh output marker" in s.text()
+
+
+def test_streaming_does_not_steal_a_scrolled_view(ctx):
+    """Output arriving below the viewport leaves the reader where they are.
+
+    Every appended run used to pin the viewport back to the newest row, so a
+    streaming reply dragged the reader off the lines they were reading.
+    """
+    ctx.scenario("words=600,paragraphs=8,chunk=4,delay=0.02")
+    s = ctx.spawn()
+    s.submit("write a lot")
+    s.wait_for(lambda t: "\u2503" in s.scrollbar(popup_rows=2),
+               "a scrollable transcript")
+    s.key("pageup").sync()
+
+    top = s.screen.lines()[:5]
+    assert any(line.strip() for line in top), s.text()
+    bar = s.scrollbar(popup_rows=2)
+    # The rows on screen do not move, so growth shows up on the scrollbar.
+    s.wait_for(lambda t: s.scrollbar(popup_rows=2) != bar, "more output below")
+    assert s.screen.lines()[:5] == top, (
+        f"the stream moved the viewport\n{top}\n---\n{s.screen.lines()[:5]}")
+    s.key("ctrl-c")
+    s.wait_turn_done()
+
+
+def test_scrolling_back_down_resumes_following(ctx):
+    """Returning to the bottom sticks there as new output arrives."""
+    s = ctx.spawn()
+    fill_transcript(ctx, s)
+    for _ in range(5):
+        s.key("pageup")
+    s.sync()
+    for _ in range(20):
+        s.key("pagedown")
+    s.sync()
+
+    ctx.scenario("text=tail+marker")
+    s.submit("more please")
+    s.wait_turn_done()
+    assert "tail marker" in s.text(), s.text()
 
 
 def test_scrolled_view_survives_a_resize(ctx):

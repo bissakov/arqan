@@ -1173,6 +1173,10 @@ void tui_pin(u32 id);
 void tui_anchor_zone(u32 id);
 void tui_anchor_view(void);
 void tui_restore_anchor(void);
+/* Follow the newest row again. Output alone never does this: a viewport the
+ * reader scrolled off the bottom holds the rows it is showing, and only a new
+ * turn or scrolling back down returns it. */
+void tui_scroll_to_bottom(void);
 /* Holds frames while the transcript is rebuilt from the conversation, so a
  * replay paints once rather than once per line it lays down. Not nested. */
 void tui_batch_begin(void);
