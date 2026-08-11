@@ -399,12 +399,15 @@ static size_t find_unique(Str hay, Str needle, size_t *count) {
 
 typedef struct {
     char   path[AGENT_MAX_PATH];
-    Str    body;              /* the file as the hunks applied so far leave it */
+    Buf    body;              /* the file as the hunks applied so far leave it */
     size_t added, removed;
     size_t hunk_n;            /* hunks seen, so an error names one per file  */
     b8     create;
     b8     unlink_it;
 } PatchFile;
+
+/* The body as the hunk after this one has to read it. */
+static Str patch_body(const PatchFile *f) { return (Str){ f->body.p, f->body.n }; }
 
 typedef struct {
     PatchFile *file;
@@ -463,8 +466,13 @@ static PatchFile *patch_open(Patch *p, Str oldp, Str newp) {
             patch_fail(p, "%s already exists", f->path);
             return NULL;
         }
-    } else if (!slurp(f->path, p->scratch, &f->body, p->err, p->err_cap)) {
-        return NULL;
+        buf_init(&f->body, p->scratch, 0);
+    } else {
+        Str body;
+        if (!slurp(f->path, p->scratch, &body, p->err, p->err_cap)) return NULL;
+        /* Hunks edit this buffer in place, so the file is copied once per
+         * file rather than once per hunk. */
+        buf_adopt(&f->body, p->scratch, body);
     }
     p->n++;
     return f;
@@ -537,13 +545,9 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str text, size_t *off) {
         if (oldt.n)
             return patch_fail(p, "%s hunk %zu: a new file has no lines to "
                               "remove or keep", f->path, f->hunk_n);
-        Buf b;
-        buf_init(&b, p->scratch, f->body.n + newt.n + 1);
-        buf_puts(&b, f->body);
-        buf_puts(&b, newt);
-        if (!buf_ok(&b))
+        buf_puts(&f->body, newt);
+        if (!buf_ok(&f->body))
             return patch_fail(p, "%s: patch does not fit in memory", f->path);
-        f->body = buf_finish(&b);
         return true;
     }
     if (!oldt.n)
@@ -551,14 +555,15 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str text, size_t *off) {
                           "the surrounding lines as context", f->path, f->hunk_n);
 
     size_t count;
-    size_t at = find_unique(f->body, oldt, &count);
+    Str body = patch_body(f);
+    size_t at = find_unique(body, oldt, &count);
     /* A file whose last line has no newline cannot be matched by a hunk that
      * ends on one, so the same hunk is retried against the end of the file. */
     if (at == (size_t)-1 && !count && oldt.p[oldt.n - 1] == '\n'
-        && (!f->body.n || f->body.p[f->body.n - 1] != '\n')) {
+        && (!body.n || body.p[body.n - 1] != '\n')) {
         Str o2 = { oldt.p, oldt.n - 1 };
-        size_t at2 = find_unique(f->body, o2, &count);
-        if (at2 != (size_t)-1 && at2 + o2.n == f->body.n) {
+        size_t at2 = find_unique(body, o2, &count);
+        if (at2 != (size_t)-1 && at2 + o2.n == body.n) {
             at = at2;
             oldt = o2;
             if (newt.n && newt.p[newt.n - 1] == '\n') newt.n--;
@@ -573,14 +578,14 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str text, size_t *off) {
                           "and patch what it says now", f->path, f->hunk_n);
     }
 
-    Buf b;
-    buf_init(&b, p->scratch, f->body.n + newt.n + 1);
-    buf_put(&b, f->body.p, at);
-    buf_puts(&b, newt);
-    buf_put(&b, f->body.p + at + oldt.n, f->body.n - at - oldt.n);
-    if (!buf_ok(&b))
+    /* Splice in place. `newt` lives in its own scratch buffer, never inside
+     * the body, so the tail moves before the replacement is copied over. */
+    size_t tail = f->body.n - at - oldt.n;
+    if (!buf_reserve(&f->body, at + newt.n + tail))
         return patch_fail(p, "%s: patch does not fit in memory", f->path);
-    f->body = buf_finish(&b);
+    memmove(f->body.p + at + newt.n, f->body.p + at + oldt.n, tail);
+    memcpy(f->body.p + at, newt.p, newt.n);
+    f->body.n = at + newt.n + tail;
     return true;
 }
 

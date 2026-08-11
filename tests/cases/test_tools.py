@@ -533,6 +533,82 @@ def test_a_hunk_sees_what_the_hunk_before_it_left(ctx):
     assert (ctx.work / "chain.txt").read_text() == "three\ntail\n"
 
 
+def test_many_hunks_over_a_large_file_all_land(ctx):
+    """The body is edited in place across hunks: every one must still apply.
+
+    A hunk is located in what the hunks before it left, so an in-place edit
+    has to leave the same bytes a full rebuild would. Sixty hunks spread over
+    a thousand lines, each keyed by a unique line, catch an edit that wrote to
+    a stale offset or lost the tail after a growth.
+    """
+    lines = [f"line {i:04d}" for i in range(1000)]
+    ctx.write_file("wide.txt", "\n".join(lines) + "\n")
+    targets = list(range(5, 1000, 17))
+    hunks = "".join(
+        f"@@ -{i} +{i} @@\n-line {i:04d}\n+LINE {i:04d} patched\n"
+        for i in targets
+    )
+    diff = "--- a/wide.txt\n+++ b/wide.txt\n" + hunks
+    ctx.scenario(patch_call(diff, final_text="all+applied"))
+    s = ctx.spawn()
+    s.submit("patch every one")
+    s.wait_text("all applied")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert not result.startswith("ERROR:"), result
+    assert f"+{len(targets)} -{len(targets)}" in result, result
+    want = list(lines)
+    for i in targets:
+        want[i] = f"LINE {i:04d} patched"
+    assert (ctx.work / "wide.txt").read_text() == "\n".join(want) + "\n"
+
+
+def test_a_hunk_that_grows_the_file_keeps_the_tail(ctx):
+    """Insertions past the buffer's reserve must not truncate what follows."""
+    ctx.write_file("grow.txt", "head\nmiddle\ntail\n")
+    added = "".join(f"+filler {i:03d}\n" for i in range(200))
+    diff = (
+        "--- a/grow.txt\n+++ b/grow.txt\n"
+        "@@ -1,3 +1,203 @@\n head\n-middle\n" + added + " tail\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="grown"))
+    s = ctx.spawn()
+    s.submit("grow it")
+    s.wait_text("grown")
+    s.wait_turn_done()
+
+    body = (ctx.work / "grow.txt").read_text()
+    want = "head\n" + "".join(f"filler {i:03d}\n" for i in range(200)) + "tail\n"
+    assert body == want, body[:200]
+
+
+def test_a_second_turn_still_gets_its_tool_call(ctx):
+    """The mock's round budget is per turn, not per conversation.
+
+    A budget spent conversation-wide made the second scenario in a session
+    answer with plain text, so any case measuring or asserting a tool call
+    after the first one quietly checked a turn that ran no tool at all.
+    """
+    ctx.write_file("one.txt", "first file\n")
+    ctx.write_file("two.txt", "second file\n")
+    ctx.scenario('tool=read:{"path":"one.txt"},final_text=read+one')
+    s = ctx.spawn()
+    s.submit("read one")
+    s.wait_text("read one")
+    s.wait_turn_done()
+
+    ctx.scenario('tool=read:{"path":"two.txt"},final_text=read+two')
+    s.submit("read two")
+    s.wait_text("read two")
+    s.wait_turn_done()
+
+    # the second turn ran its own tool call rather than answering plain text
+    tools = [m["content"] for m in ctx.mock.requests[-1]["messages"]
+             if m.get("role") == "tool"]
+    assert tools == ["first file\n", "second file\n"], tools
+
+
 def test_a_read_header_names_the_page_it_asked_for(ctx):
     """Two reads of one file differ by their range, so the range is on screen."""
     ctx.write_file("big.txt", "\n".join(f"line {i:04d}" for i in range(400)))

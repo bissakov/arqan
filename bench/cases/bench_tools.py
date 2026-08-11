@@ -19,9 +19,8 @@ NEEDLE = "zqneedle"
 def call(b, s, name: str, args: dict, reply: str = "done", timeout: float = 120.0):
     """Run one tool call through a fresh turn, returning what it fed the model.
 
-    The conversation is cleared first: the mock offers a tool only until the
-    round budget of the conversation in front of it is spent, so a second
-    measured call in the same transcript would quietly measure a plain turn.
+    The conversation is cleared first so that each measured call is the cost
+    of the tool and one turn, not of the transcript the calls before it left.
     """
     s.submit("/clear")
     s.settle()

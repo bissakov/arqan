@@ -181,6 +181,13 @@ static b8 buf_grow(Buf *b, size_t need) {
     b->p = np; b->cap = nc;
     return true;
 }
+void buf_adopt(Buf *b, Arena *a, Str s) {
+    b->a = a; b->n = s.n; b->cap = s.n; b->oom = false;
+    /* Casting away const is sound here: the bytes came from `a`, which hands
+     * out writable memory, and Str is the only shape a reader returns them in. */
+    b->p = (char *)s.p;
+}
+b8 buf_reserve(Buf *b, size_t need) { return buf_grow(b, need); }
 void buf_put(Buf *b, const void *p, size_t n) {
     if (n == 0 || !p) return;
     if (n > b->cap - b->n && !buf_grow(b, b->n + n)) return;

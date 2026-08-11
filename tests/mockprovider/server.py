@@ -271,9 +271,9 @@ class _AnthropicHandlerMixin:
 
         messages = body.get("messages") or []
         tool_replies = _anth_tool_replies(messages)
-        emit_tools = bool(scenario.tools) and tool_replies < scenario.tool_rounds * len(
-            scenario.tools
-        )
+        emit_tools = bool(scenario.tools) and _anth_turn_replies(
+            messages
+        ) < scenario.tool_rounds * len(scenario.tools)
 
         if not body.get("stream", True):
             self._anth_message(scenario, messages, tool_replies, emit_tools, model)
@@ -718,9 +718,9 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
 
         messages = body.get("messages") or []
         tool_replies = sum(1 for m in messages if m.get("role") == "tool")
-        emit_tools = bool(scenario.tools) and tool_replies < scenario.tool_rounds * len(
-            scenario.tools
-        )
+        emit_tools = bool(scenario.tools) and _oai_turn_replies(
+            messages
+        ) < scenario.tool_rounds * len(scenario.tools)
 
         if not body.get("stream", True):
             self._completion(scenario, messages, tool_replies, emit_tools, model)
@@ -886,6 +886,48 @@ def _anth_tool_replies(messages) -> int:
         if isinstance(content, list):
             n += sum(1 for b in content if b.get("type") == "tool_result")
     return n
+
+
+def _anth_turn_replies(messages) -> int:
+    """The same count, but only for the turn being answered.
+
+    The round budget is spent per turn: a conversation-wide count would let
+    an earlier turn exhaust it and leave a later one silently answering with
+    plain text where the scenario asked for a tool call. Which text a reply
+    carries still keys off the whole conversation, so a follow-up stays a
+    follow-up after a resume.
+    """
+    n = 0
+    for m in messages[_anth_turn_start(messages):]:
+        content = m.get("content")
+        if isinstance(content, list):
+            n += sum(1 for b in content if b.get("type") == "tool_result")
+    return n
+
+
+def _anth_turn_start(messages) -> int:
+    """Index of the user message that opened the turn being answered."""
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        if m.get("role") != "user":
+            continue
+        content = m.get("content")
+        if isinstance(content, list) and any(
+            b.get("type") == "tool_result" for b in content
+        ):
+            continue          # a round of results, not the user asking
+        return i
+    return 0
+
+
+def _oai_turn_replies(messages) -> int:
+    """Tool results in the turn being answered; see `_anth_turn_replies`."""
+    start = 0
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            start = i
+            break
+    return sum(1 for m in messages[start:] if m.get("role") == "tool")
 
 
 def _split(s: str, n: int) -> list[str]:

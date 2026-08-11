@@ -176,6 +176,13 @@ u64     str_hash64(Str s);
 typedef struct { char *p; size_t n, cap; Arena *a; b8 oom; } Buf;
 void    buf_init(Buf *b, Arena *a, size_t cap);
 b8      buf_ok(const Buf *b);
+/* Wraps bytes already in `a` as a full buffer so a caller that read them can
+ * keep editing them in place. The buffer does not own the bytes: growth
+ * allocates elsewhere in `a` and copies, leaving the originals untouched. */
+void    buf_adopt(Buf *b, Arena *a, Str s);
+/* Makes `need` bytes writable, returning whether they are. Failure latches
+ * the buffer the way a failed write does. */
+b8      buf_reserve(Buf *b, size_t need);
 void    buf_putc(Buf *b, char c);
 void    buf_put(Buf *b, const void *p, size_t n);
 void    buf_puts(Buf *b, Str s);

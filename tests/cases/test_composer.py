@@ -288,6 +288,25 @@ def test_pasted_tab_becomes_spaces(ctx):
     assert s.composer_body(2) == ["if x:", "    pass"], s.composer_lines(2)
 
 
+def test_a_large_paste_arrives_whole_and_in_order(ctx):
+    """Input is read in blocks, so a paste must lose and reorder nothing.
+
+    The reader buffers what the terminal hands it rather than taking one byte
+    per read, and a paste is the only input big enough to cross that buffer
+    many times. Submitting it is what proves the composer holds every byte.
+    """
+    ctx.scenario("text=got+it")
+    lines = [f"line {i:04d} of the pasted block" for i in range(2000)]
+    body = "\n".join(lines)
+    s = ctx.spawn()
+    s.paste(body)
+    s.sync()
+    s.submit()
+    s.wait_turn_done()
+    sent = ctx.mock.requests[-1]["messages"][-1]["content"]
+    assert sent == body, (len(sent), len(body), sent[:80], sent[-80:])
+
+
 def test_up_moves_between_draft_lines(ctx):
     """Up walks the draft's own rows instead of leaving for history."""
     s = ctx.spawn()

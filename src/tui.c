@@ -3141,8 +3141,17 @@ void tui_set_interrupt_flag(volatile sig_atomic_t *flag) {
  * an Esc that turned out to introduce nothing keeps the byte behind it. */
 static i32 g_pushback = -1;
 
+/* What one read(2) took from the terminal but the editor has not consumed.
+ * A paste arrives as one write of many kilobytes, and taking it a byte at a
+ * time costs a syscall per character, so it is read in blocks and served
+ * from here. Every reader goes through input_ready/rbyte, so the buffer is
+ * the only place unconsumed input can sit besides `g_pushback`. */
+static struct { unsigned char b[8192]; size_t n, at; } g_inbuf;
+
+static b8 input_buffered(void) { return g_inbuf.at < g_inbuf.n; }
+
 static b8 input_ready(i32 timeout_ms) {
-    if (g_pushback >= 0) return true;
+    if (g_pushback >= 0 || input_buffered()) return true;
     struct pollfd pfd = { STDIN_FILENO, POLLIN, 0 };
     i32 rc = poll(&pfd, 1, timeout_ms);
     return rc > 0 && (pfd.revents & (POLLIN | POLLHUP)) != 0;
@@ -3150,11 +3159,17 @@ static b8 input_ready(i32 timeout_ms) {
 
 static i32 rbyte(void) {
     if (g_pushback >= 0) { i32 c = g_pushback; g_pushback = -1; return c; }
-    unsigned char c = 0;
-    ssize_t n = read(STDIN_FILENO, &c, 1);
-    if (n < 0 && errno == EINTR) return g_winch ? -3 : -2;
-    if (n <= 0) return -1;
-    return (i32)c;
+    if (!input_buffered()) {
+        /* Blocks exactly where a one-byte read did: the first byte of a
+         * batch. A resize or an interrupt is reported before any byte, so a
+         * refill never hides input that already arrived. */
+        ssize_t n = read(STDIN_FILENO, g_inbuf.b, sizeof g_inbuf.b);
+        if (n < 0 && errno == EINTR) return g_winch ? -3 : -2;
+        if (n <= 0) return -1;
+        g_inbuf.n = (size_t)n;
+        g_inbuf.at = 0;
+    }
+    return (i32)g_inbuf.b[g_inbuf.at++];
 }
 
 /* Continuation byte of an escape sequence. A bare Esc must not park the
@@ -4557,8 +4572,13 @@ void tui_poll_input(void) {
             if (c < 0 && c != -3) { g_tui.input_eof = true; pick_close(); return; }
             if (!pick_feed(c)) pick_close();
         }
-        if (g_winch != 0) repaint();
-        return;
+        /* The screen is closed once it stops taking keys; anything read past
+         * that point is already in hand and belongs to the composer, which
+         * the idle poll would otherwise not come back for until it sleeps. */
+        if (g_pick.active || !input_buffered()) {
+            if (g_winch != 0) repaint();
+            return;
+        }
     }
     b8 dirty = g_winch != 0;
     /* The spinner and its elapsed time move on their own, so an idle poll is
