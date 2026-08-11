@@ -17,6 +17,10 @@
  *
  * Plan mode's prompt is resolved the same way from PLAN.md and expanded
  * against the tools plan mode offers.
+ *
+ * The compaction prompt is neither: it describes the shape of one checkpoint
+ * summary rather than how to work, so it is built in, takes no placeholder
+ * and no AGENTS.md.
  */
 #include "agent.h"
 
@@ -76,6 +80,50 @@ static const char PROMPT_PLAN_BUILTIN[] =
     "conversation, so it stands on its own\n"
     "\n"
     "Current working directory: {cwd}\n";
+
+/* /compact stands or falls on the summary being readable by the session that
+ * continues from it, so the format is stated rather than suggested. */
+static const char PROMPT_COMPACT_BUILTIN[] =
+    "You summarize a conversation. Create a structured context checkpoint "
+    "summary that another assistant will use to continue the work.\n"
+    "\n"
+    "Use this EXACT format:\n"
+    "\n"
+    "## Goal\n"
+    "[What is the user trying to accomplish? Can be multiple items if the "
+    "session covers different tasks.]\n"
+    "\n"
+    "## Constraints & Preferences\n"
+    "- [Any constraints, preferences, or requirements mentioned by user]\n"
+    "- [Or \"(none)\" if none were mentioned]\n"
+    "\n"
+    "## Progress\n"
+    "### Done (if relevant)\n"
+    "- [x] [Completed tasks/changes]\n"
+    "\n"
+    "### In Progress (if relevant)\n"
+    "- [ ] [Current work]\n"
+    "\n"
+    "### Blocked (if relevant)\n"
+    "- [Issues preventing progress, if any]\n"
+    "\n"
+    "## Key Decisions (if relevant)\n"
+    "- **[Decision]**: [Brief rationale]\n"
+    "\n"
+    "## Next Steps (if relevant)\n"
+    "1. [Ordered list of what should happen next]\n"
+    "\n"
+    "## Critical Context (if relevant)\n"
+    "- [Any data, examples, or references needed to continue]\n"
+    "- [Or \"(none)\" if not applicable]\n"
+    "\n"
+    "Keep each section concise. Preserve exact file paths, function names, "
+    "and error messages. Write the summary and nothing else: no preamble, no "
+    "closing remark, and no tool call.\n";
+
+static const char PROMPT_COMPACT_ASK[] =
+    "Summarize the conversation above as a context checkpoint, in the exact "
+    "format you were given.";
 
 /* Empty when `path` does not exist or holds only space. A file past the limit
  * sets `err` and reads nothing, which stops the search rather than falling
@@ -284,4 +332,12 @@ Str prompt_build_plan(const ToolRegistry *tools, Arena *persist,
     return prompt_for(tools, MODE_PLAN, (Str){0}, project, sizeof project,
                       STR("PLAN.md"), PROMPT_PLAN_BUILTIN, persist, scratch,
                       sources, err, err_cap);
+}
+
+Str prompt_compact(void) {
+    return (Str){ PROMPT_COMPACT_BUILTIN, sizeof PROMPT_COMPACT_BUILTIN - 1 };
+}
+
+Str prompt_compact_ask(void) {
+    return (Str){ PROMPT_COMPACT_ASK, sizeof PROMPT_COMPACT_ASK - 1 };
 }

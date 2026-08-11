@@ -61,6 +61,7 @@ static size_t commands_init(void) {
     g_commands[n++] = (TuiCmd){ STR("/clear"), STR("Start a fresh conversation") };
     g_commands[n++] = (TuiCmd){ STR("/resume"), STR("Resume a saved session from this directory") };
     g_commands[n++] = (TuiCmd){ STR("/fork"), STR("Continue in a copy, leaving this session as it is") };
+    g_commands[n++] = (TuiCmd){ STR("/compact"), STR("Summarize this session and continue in a new one") };
     g_commands[n++] = (TuiCmd){ STR("/model"), STR("Pick the model") };
     g_commands[n++] = (TuiCmd){ STR("/provider"), STR("Switch provider, or add one") };
     g_commands[n++] = (TuiCmd){ STR("/mode"), STR("Switch between Build and Plan mode (Shift+Tab)") };
@@ -2130,6 +2131,139 @@ static void run_shell(Agent *ag, Str cmd) {
  * interrupt or a full conversation, which is a one-shot run's exit status. */
 static b8 agent_turn(Agent *ag, Str text);
 
+/* /compact: one request that condenses the conversation into a checkpoint,
+ * then a new session whose first message is that checkpoint.
+ *
+ * The request is made over a copy of the conversation, appended to in a part
+ * of the persistent arena that is rewound either way, so a compaction that
+ * fails, is interrupted or comes back empty leaves the conversation and the
+ * session file it is appending to exactly as they were. Only a summary in
+ * hand starts the new session. */
+static void compact_session(Agent *ag) {
+    Conv *conv = ag->conv;
+    Arena *persist = ag->persist;
+    if (conv->n <= 1) {
+        tui_notice(STR("nothing to compact yet"));
+        return;
+    }
+    if (no_provider(ag->cfg)) {
+        tui_notice(NO_PROVIDER_HINT);
+        return;
+    }
+
+    size_t mark = persist->off;
+    Conv tmp;
+    /* Room for the question, the reply, and whatever calls a model asks for
+     * instead of answering: a full copy would be reported as an error, and
+     * the point of the copy is that it cannot cost the conversation. */
+    if (!conv_clone(&tmp, conv, persist, AGENT_MAX_TOOL_CALLS + 2)) {
+        persist->off = mark;
+        tui_notice(STR("out of memory compacting"));
+        return;
+    }
+    /* Slot 0 is the system prompt of the conversation being summarized, which
+     * describes how to do the work rather than how to describe it. */
+    tmp.role[0] = M_SYSTEM;
+    tmp.text[0] = prompt_compact();
+    tmp.anthropic_thinking[0] = (Str){0};
+    if (conv_add(&tmp, M_USER, prompt_compact_ask()) == CONV_NONE) {
+        persist->off = mark;
+        tui_notice(STR("out of memory compacting"));
+        return;
+    }
+
+    g_got_sigint = 0;
+    tui_set_busy(true);
+    say_busy("compacting");
+    /* The tools stay in the request: a history holding tool calls is only
+     * valid beside the schemas it names. Nothing here runs one. */
+    Provider p = {
+        .cfg = ag->cfg,
+        .tools = ag->tools,
+        .conv = &tmp,
+        .persist = persist,
+        .scratch = ag->scratch,
+        .on_retry = on_retry,
+        .on_idle = on_idle,
+        .idle_fd = tui_input_fd(),
+        .interrupt_flag = &g_got_sigint,
+    };
+    char err[256] = {0};
+    f64 started = agent_now_seconds();
+    arena_reset(ag->scratch);
+    i32 rc = provider_run(&p, err, sizeof err);
+    tui_set_busy(false);
+    tui_activity_end();
+    tui_set_status("ready");
+
+    /* Prose from the reply, whether or not the model also asked for tools. */
+    Str summary = {0};
+    if (rc >= 0) {
+        for (size_t i = tmp.n; i-- > conv->n;) {
+            if (tmp.role[i] != M_ASSISTANT || conv_is_call(&tmp, i)) continue;
+            if (tmp.text[i].n) { summary = str_trim(tmp.text[i]); break; }
+        }
+    }
+
+    TelEvent ce;
+    tel_open(&ce, "compact");
+    tel_int(&ce, "messages", (i64)conv->n);
+    tel_int(&ce, "rc", rc);
+    tel_int(&ce, "ms", (i64)((agent_now_seconds() - started) * 1000.0));
+    tel_shape(&ce, "summary", summary);
+    tel_send(&ce);
+
+    if (g_got_sigint) {
+        g_got_sigint = 0;
+        persist->off = mark;
+        tui_notice(STR("compaction interrupted: this session is unchanged"));
+        return;
+    }
+    if (rc < 0) {
+        persist->off = mark;
+        notice_fmt("could not compact: %s; this session is unchanged", err);
+        return;
+    }
+    if (!summary.n) {
+        persist->off = mark;
+        tui_notice(STR("the model sent no summary: this session is unchanged"));
+        return;
+    }
+
+    /* The checkpoint is a message of the next conversation, so it is built
+     * before that one exists: the scratch arena outlives the rewind that
+     * drops the copy, the reply and the conversation being left behind. */
+    Buf b;
+    buf_init(&b, ag->scratch, summary.n + 256);
+    buf_puts(&b, STR("# Context checkpoint\n\nThe conversation before this "
+                     "point was compacted into the summary below. Continue "
+                     "the work from it.\n\n"));
+    buf_puts(&b, summary);
+    Str built = buf_ok(&b) ? buf_finish(&b) : (Str){0};
+    if (!built.n) {
+        persist->off = mark;
+        tui_notice(STR("out of memory keeping the summary"));
+        return;
+    }
+
+    conv->n = 1;
+    persist->off = ag->mark;
+    Str stored = str_dup(persist, built);
+    if (!stored.p) {
+        tui_notice(STR("out of memory keeping the summary"));
+        return;
+    }
+    session_begin(ag->sess);
+    tui_clear();
+    if (conv_add(conv, M_USER, stored) == CONV_NONE) {
+        say_conv_full();
+        return;
+    }
+    render_user_message(stored, (u32)conv->n);
+    session_save(ag->sess, conv);
+    tui_notice(STR("compacted: a new session continues from the summary"));
+}
+
 /* The conversation that produced the plan is dropped whole and the plan
  * becomes the first message of the next one. It still lives in the scratch
  * arena, which the persistent rewind below does not touch. */
@@ -2522,6 +2656,10 @@ i32 main(i32 argc, char **argv) {
         }
         if (!strcmp(line, "/fork")) {
             fork_session(&sess, &conv);
+            continue;
+        }
+        if (!strcmp(line, "/compact")) {
+            compact_session(&agent);
             continue;
         }
         if (!strcmp(line, "/find")) {

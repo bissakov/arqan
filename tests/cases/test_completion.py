@@ -7,9 +7,9 @@ def test_popup_opens_on_slash(ctx):
     s.type("/").sync()
     text = s.text()
     assert "/clear" in text and "/model" in text and "/provider" in text, text
-    assert "/copy" in text, text
+    assert "/compact" in text, text
     assert "Start a fresh conversation" in text, text
-    assert "Copy the last response to the clipboard" in text, text
+    assert "Summarize this session and continue in a new one" in text, text
     # More commands than rows: the rest are reached by moving the selection.
     assert "/settings" not in text, text
     assert "/exit" not in text, text
@@ -68,7 +68,7 @@ def test_enter_submits_the_highlighted_entry(ctx):
     """Enter runs whatever the popup highlights, not what was typed."""
     s = ctx.spawn()
     s.type("/").sync()
-    s.key(*(["down"] * 13)).sync()        # highlight '/exit', the last entry
+    s.key(*(["down"] * 14)).sync()        # highlight '/exit', the last entry
     s.key("enter")
     assert s.wait_exit() == 0, "Enter should have run the highlighted entry"
 
@@ -115,7 +115,7 @@ def test_ctrl_n_p_move_the_selection(ctx):
     """Ctrl-N / Ctrl-P cycle the popup the same way as the arrows."""
     s = ctx.spawn()
     s.type("/").sync()
-    s.key(*(["ctrl-n"] * 14)).sync()  # one per command: wraps to the first
+    s.key(*(["ctrl-n"] * 15)).sync()  # one per command: wraps to the first
     s.key("tab").sync()
     assert s.composer_text() == "/clear", s.composer_lines()
 
@@ -152,12 +152,12 @@ def test_popup_eats_into_transcript_not_composer(ctx):
     assert s.composer_text() == "/", s.composer_lines()
     # the popup entries sit immediately above the composer padding row
     rows = s.screen.lines()
-    # the popup holds eight entries, so '/settings' and '/exit' wait below
-    assert "/copy" in rows[s.screen.rows - 6], rows[s.screen.rows - 13 :]
-    assert "/rewind" in rows[s.screen.rows - 7], rows[s.screen.rows - 13 :]
-    assert "/mode" in rows[s.screen.rows - 8], rows[s.screen.rows - 13 :]
-    assert "/provider" in rows[s.screen.rows - 9], rows[s.screen.rows - 14 :]
-    assert "/model" in rows[s.screen.rows - 10], rows[s.screen.rows - 14 :]
+    # the popup holds eight entries, so '/copy' onward waits below
+    assert "/rewind" in rows[s.screen.rows - 6], rows[s.screen.rows - 13 :]
+    assert "/mode" in rows[s.screen.rows - 7], rows[s.screen.rows - 13 :]
+    assert "/provider" in rows[s.screen.rows - 8], rows[s.screen.rows - 13 :]
+    assert "/model" in rows[s.screen.rows - 9], rows[s.screen.rows - 14 :]
+    assert "/compact" in rows[s.screen.rows - 10], rows[s.screen.rows - 14 :]
     assert "/fork" in rows[s.screen.rows - 11], rows[s.screen.rows - 14 :]
     assert "/resume" in rows[s.screen.rows - 12], rows[s.screen.rows - 14 :]
     assert "/clear" in rows[s.screen.rows - 13], rows[s.screen.rows - 14 :]

@@ -853,6 +853,13 @@ Str   prompt_build(const ToolRegistry *tools, Str configured, Arena *persist,
 Str   prompt_build_plan(const ToolRegistry *tools, Arena *persist,
                         Arena *scratch, PromptSources *sources, char *err,
                         size_t err_cap);
+/* The compaction instruction: a static document, so it needs no arena. It
+ * stands in for the system prompt of the one request /compact makes, which
+ * asks for a context checkpoint rather than for work. */
+Str   prompt_compact(void);
+/* The user turn that request ends on, so the summary is asked for by a
+ * message rather than only by the system prompt. */
+Str   prompt_compact_ask(void);
 
 /* ---- conversation (SoA) ------------------------------------------------- */
 typedef enum { M_SYSTEM = 0, M_USER, M_ASSISTANT, M_TOOL } MRole;
@@ -898,6 +905,12 @@ size_t  conv_add_shell(Conv *c, Str cmd, Str out);
 b8      conv_is_shell(const Conv *c, size_t i);
 b8      conv_is_call(const Conv *c, size_t i);
 size_t  conv_room(const Conv *c);
+/* A second conversation over the same message storage: `src`'s slots are
+ * copied and the strings they point at are shared, so the copy must not
+ * outlive them. `extra` free slots are left past the copy, for the messages
+ * the caller appends. False when `a` cannot take the arrays, leaving `dst`
+ * with no capacity. */
+b8      conv_clone(Conv *dst, const Conv *src, Arena *a, size_t extra);
 /* The messages array of an OpenAI request. The system prompt is slot 0's
  * message like any other. */
 void    conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg);

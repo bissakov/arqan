@@ -104,8 +104,11 @@ split on whitespace; anything needing quoting belongs in a wrapper script.
 - Ctrl-R (or `/find`) searches the transcript: Enter or Up walks older matches,
   Down newer, Esc closes. The reach is the scrollback's, and Ctrl-E lifts the
   caps on tool output when a match may be hiding under one.
-- `/` opens commands: `/clear`, `/resume`, `/fork`, `/model`, `/provider`,
-  `/mode`, `/settings`, `/help`, and `/exit`.
+- `/` opens commands: `/clear`, `/resume`, `/fork`, `/compact`, `/model`,
+  `/provider`, `/mode`, `/settings`, `/help`, and `/exit`.
+- `/compact` condenses the conversation into a checkpoint summary and starts a
+  new session from it. The session it summarized is left as it is, and a
+  compaction that fails or is interrupted changes nothing.
 - Shift+Tab toggles Build and Plan modes. Plan mode can inspect but cannot
   write or patch.
 - While a turn runs, `/settings`, `/statusline`, `/about` and `/copy` still

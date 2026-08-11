@@ -47,6 +47,27 @@ b8 conv_init(Conv *c, Arena *persist, size_t cap) {
 
 size_t conv_room(const Conv *c) { return c->cap - c->n; }
 
+/* The copy shares `src`'s strings rather than duplicating them: it exists to
+ * be sent once, beside the conversation it was taken from. */
+b8 conv_clone(Conv *dst, const Conv *src, Arena *a, size_t extra) {
+    if (extra > (size_t)-1 - src->n) return false;
+    if (!conv_init(dst, a, src->n + extra)) return false;
+    size_t n = src->n;
+    memcpy(dst->role, src->role, n * sizeof *dst->role);
+    memcpy(dst->text, src->text, n * sizeof *dst->text);
+    memcpy(dst->anthropic_thinking, src->anthropic_thinking,
+           n * sizeof *dst->anthropic_thinking);
+    memcpy(dst->tool_name, src->tool_name, n * sizeof *dst->tool_name);
+    memcpy(dst->tool_call_id, src->tool_call_id, n * sizeof *dst->tool_call_id);
+    memcpy(dst->shell_out, src->shell_out, n * sizeof *dst->shell_out);
+    memcpy(dst->has_tool_call, src->has_tool_call, n * sizeof *dst->has_tool_call);
+    memcpy(dst->expanded, src->expanded, n * sizeof *dst->expanded);
+    memcpy(dst->args_object, src->args_object, n * sizeof *dst->args_object);
+    memcpy(dst->ms, src->ms, n * sizeof *dst->ms);
+    dst->n = n;
+    return true;
+}
+
 /* CONV_NONE when the conversation is full. */
 static size_t conv_push(Conv *c, MRole role, Str text, Str id, Str name,
                         b8 has_call) {
