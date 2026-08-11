@@ -1771,6 +1771,23 @@ size_t tui_text_cells(Str s) {
     return cells;
 }
 
+/* Bytes whose glyphs fit in `cells` columns; a glyph is never split, so a
+ * double-width one straddling the limit is left out. `used` takes the cells
+ * those bytes occupy when it is not null. */
+size_t tui_text_fit(Str s, size_t cells, size_t *used) {
+    size_t b = 0, w = 0;
+    while (b < s.n) {
+        i32 width = 0;
+        size_t step = glyph(s.p + b, s.n - b, &width);
+        size_t add = width > 0 ? (size_t)width : 0;
+        if (w + add > cells) break;
+        b += step ? step : 1;
+        w += add;
+    }
+    if (used) *used = w;
+    return b;
+}
+
 /* Cells taken by the widest name in the whole list rather than in the rows
  * on screen, so scrolling a list moves the selection and nothing else: a
  * description column that shifted under the reader would be the list

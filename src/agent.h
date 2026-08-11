@@ -1225,6 +1225,9 @@ size_t tui_body_cols(void);
 /* Terminal cells occupied by UTF-8 text. Invalid bytes take one cell; control
  * and combining code points take none, matching transcript wrapping. */
 size_t tui_text_cells(Str s);
+/* Bytes of `s` that fit in `cells` columns, never splitting a glyph; `used`
+ * receives the cells they take unless it is null. */
+size_t tui_text_fit(Str s, size_t cells, size_t *used);
 /* False on a pipe or in a one-shot run, where output is text, not a view. */
 b8 tui_is_fullscreen(void);
 /* Syntax overlays exist only in the fullscreen colour presentation. The

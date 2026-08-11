@@ -193,6 +193,92 @@ def test_table_alignment_uses_terminal_cells_for_emoji(ctx):
     assert "✅ Open" in s.text() and "⏳ Pending" in s.text(), s.text()
 
 
+def wide_table_scenario() -> str:
+    return (
+        "text=Lorem+ipsum+|+Dolor+sit+amet+|+Consectetur+adipiscing\\n"
+        "---+|+---+|+---\\n"
+        "src/lorem.c+|+Elit+sed+do+eiusmod+tempor+incididunt+ut+labore"
+        "+et+dolore+magna+aliqua+|+No+wire+format\\n"
+        "src/ipsum.c+|+Quis+nostrud+exercitation+ullamco+laboris+nisi"
+        "+ut+aliquip+ex+ea+commodo+|+Yes\\n"
+    )
+
+
+def table_rows(s):
+    """Screen rows carrying a table border or a table cell."""
+    rows = []
+    for r in range(s.transcript_height()):
+        text = s.screen.row_text(r).rstrip()
+        if text.lstrip().startswith(("\u250c", "\u251c", "\u2514", "\u2502")):
+            rows.append(text)
+    return rows
+
+
+def test_a_wide_table_is_fitted_to_the_transcript(ctx):
+    """Columns shrink and cell text wraps rather than running off the edge."""
+    ctx.scenario(wide_table_scenario())
+    s = ctx.spawn()
+    s.submit("show a wide table")
+    s.wait_text("Yes")
+    s.wait_turn_done()
+    rows = table_rows(s)
+    assert rows, s.text()
+    for row in rows:
+        assert len(row) <= 80, f"{row!r} overflows 80 columns"
+        assert row.endswith(("\u2510", "\u2502", "\u2524", "\u2518")), row
+    text = "\n".join(rows)
+    assert "incididunt" in text and "aliqua" in text, text
+    assert "eiusmod tempor" in text, "words stay whole where they fit"
+    assert len(rows) > 6, "wrapped cells take more rows than their cells"
+
+
+def test_a_narrow_terminal_wraps_table_cells_further(ctx):
+    """The same table keeps its frame when the terminal has fewer columns."""
+    ctx.scenario(wide_table_scenario())
+    s = ctx.spawn(cols=48, rows=40)
+    s.submit("show a wide table")
+    s.wait_text("Yes")
+    s.wait_turn_done()
+    rows = table_rows(s)
+    assert rows, s.text()
+    for row in rows:
+        assert len(row) <= 48, f"{row!r} overflows 48 columns"
+        assert row.endswith(("\u2510", "\u2502", "\u2524", "\u2518")), row
+
+
+def test_a_long_word_is_split_when_no_column_can_hold_it(ctx):
+    """Character wrapping is the fallback a browser falls back to."""
+    ctx.scenario(
+        "text=A+|+B\\n---+|+---\\n"
+        "x+|+" + "z" * 120 + "\\n"
+    )
+    s = ctx.spawn()
+    s.submit("show a table")
+    s.wait_turn_done()
+    rows = [r for r in table_rows(s) if "z" in r]
+    assert len(rows) > 1, s.text()
+    for row in rows:
+        assert len(row) <= 80, f"{row!r} overflows 80 columns"
+    assert sum(r.count("z") for r in rows) == 120, s.text()
+
+
+def test_inline_markup_inside_a_cell_is_styled(ctx):
+    """A cell is Markdown too: markers become styles and cost no columns."""
+    ctx.scenario(
+        "text=File+|+Ship\\n---+|+---\\n"
+        "`src/lorem.c`+|+**Yes**\\n"
+    )
+    s = ctx.spawn()
+    s.submit("show a table")
+    s.wait_text("Yes")
+    s.wait_turn_done()
+    text = s.text()
+    assert "`" not in text and "**" not in text, text
+    assert "\u2502 src/lorem.c \u2502 Yes  \u2502" in text, text
+    assert cell(s, "src/lorem.c").fg == MONO
+    assert cell(s, "Yes").bold
+
+
 def test_table_syntax_inside_a_fence_stays_code(ctx):
     """Pipes and delimiter rows are data while a fenced block owns the line."""
     ctx.scenario("text=```text\\nA+|+B\\n---+|+---\\n1+|+2\\n```")

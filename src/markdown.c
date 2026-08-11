@@ -19,6 +19,11 @@
 #define MD_TABLE_ROWS 64
 #define MD_TABLE_COLS 32
 #define MD_TABLE_BYTES (32u << 10)
+/* A table cell is laid out before it is drawn, so its inline markup is
+ * resolved into styled runs first. A cell past either cap is drawn as
+ * written rather than truncated. */
+#define MD_CELL_MAX 512
+#define MD_CELL_RUNS 32
 #define MD_HL_LINES (YHL_SOURCE_MAX / 2u + 2u)
 
 enum {
@@ -26,6 +31,19 @@ enum {
     MD_BLOCK_LIST
 };
 enum { MD_SPAN_NONE, MD_SPAN_WAIT, MD_SPAN_DONE };
+
+/* One resolved cell: `text` is what it draws, and run `i` styles the bytes
+ * from the previous run's end to `run_end[i]`. `text` points into `buf`
+ * unless the cell overflowed, when it aliases the row and carries no runs. */
+typedef struct {
+    Str    text;
+    size_t run_end[MD_CELL_RUNS];
+    u8     run_style[MD_CELL_RUNS];
+    size_t runs;
+    size_t n;
+    b8     over;
+    char   buf[MD_CELL_MAX];
+} MdCell;
 
 static struct {
     b8     raw;
@@ -53,6 +71,9 @@ static struct {
     size_t table_bytes;
     size_t table_cols;
     u8     table_align[MD_TABLE_COLS];
+    MdCell *cap;                  /* inline output goes here while set */
+    MdCell cell[MD_TABLE_COLS];   /* the row being drawn */
+    MdCell measured;              /* one cell, while widths are taken */
     char   hl_alias[YHL_ALIAS_MAX];
     size_t hl_alias_n;
     char   hl_source[YHL_SOURCE_MAX];
@@ -80,7 +101,10 @@ static b8 md_marker(char c) {
         || c == '<' || c == '!' || c == '\\';
 }
 
+static void md_cell_put(MdCell *c, Str s, TuiStyle style);
+
 static void md_emit(Str s, TuiStyle style) {
+    if (g_md.cap) { md_cell_put(g_md.cap, s, style); return; }
     if (s.n) tui_write_styled(s, style);
 }
 
@@ -591,8 +615,73 @@ static b8 md_table_add(Str line) {
     return true;
 }
 
-static size_t md_cell_width(Str s) {
-    return tui_text_cells(s);
+/* ---- resolved cells ------------------------------------------------------
+ * Capture points the inline renderer at a cell rather than at the transcript,
+ * so a cell is measured and wrapped on the text it draws and markup never
+ * lands on the screen or spends columns. */
+
+static void md_cell_put(MdCell *c, Str s, TuiStyle style) {
+    if (c->over || !s.n) return;
+    if (s.n > MD_CELL_MAX - c->n) { c->over = true; return; }
+    memcpy(c->buf + c->n, s.p, s.n);
+    c->n += s.n;
+    if (c->runs && c->run_style[c->runs - 1] == (u8)style) {
+        c->run_end[c->runs - 1] = c->n;
+        return;
+    }
+    if (c->runs == MD_CELL_RUNS) { c->over = true; return; }
+    c->run_style[c->runs] = (u8)style;
+    c->run_end[c->runs++] = c->n;
+}
+
+/* Resolve `src` into `c`. The streaming state the inline renderer keeps is
+ * saved across this, so a table drawn mid-message leaves it untouched. */
+static void md_cell_build(MdCell *c, Str src) {
+    c->n = 0;
+    c->runs = 0;
+    c->over = false;
+    char pend[MD_PEND_MAX];
+    size_t pend_n = g_md.pend_n;
+    i32 block = g_md.block;
+    char last = g_md.last;
+    if (pend_n) memcpy(pend, g_md.pend, pend_n);
+    g_md.pend_n = 0;
+    g_md.block = MD_BLOCK_PLAIN;
+    g_md.last = 0;
+    g_md.cap = c;
+    for (size_t i = 0; i < src.n && !c->over; i++) {
+        if (g_md.pend_n == MD_PEND_MAX) md_drain(true);
+        g_md.pend[g_md.pend_n++] = src.p[i];
+    }
+    if (!c->over) md_drain(true);
+    g_md.cap = NULL;
+    g_md.pend_n = pend_n;
+    if (pend_n) memcpy(g_md.pend, pend, pend_n);
+    g_md.block = block;
+    g_md.last = last;
+    if (c->over) c->runs = 0;
+    c->text = c->over ? src : (Str){ c->buf, c->n };
+}
+
+static TuiStyle md_cell_base(b8 head) {
+    return head ? TUI_BOLD : g_md.muted ? TUI_QUOTE : TUI_PLAIN;
+}
+
+/* Draw `[a, b)` of a resolved cell, run by run. A header row bolds whatever
+ * the runs left at the base style and keeps the rest as it resolved. */
+static void md_cell_emit(const MdCell *c, size_t a, size_t b, b8 head) {
+    size_t run = 0;
+    while (a < b) {
+        while (run < c->runs && c->run_end[run] <= a) run++;
+        size_t end = run < c->runs && c->run_end[run] < b ? c->run_end[run] : b;
+        TuiStyle style = md_cell_base(head);
+        if (run < c->runs) {
+            TuiStyle got = (TuiStyle)c->run_style[run];
+            if (!head || (got != TUI_PLAIN && got != TUI_QUOTE)) style = got;
+        }
+        md_emit((Str){ c->text.p + a, end - a }, style);
+        a = end;
+    }
 }
 
 static void md_repeat(const char *glyph, size_t bytes, size_t n) {
@@ -621,26 +710,102 @@ static void md_spaces(size_t n, TuiStyle style) {
     }
 }
 
+/* The next visual line of a cell: the bytes to draw, with `advance` bytes
+ * consumed including the whitespace the break eats. Words are kept whole
+ * where one fits, and a word wider than its column is split between
+ * glyphs, which is the only way a narrow column can show it at all. */
+static Str md_wrap_segment(Str s, size_t width, size_t *advance) {
+    size_t fit = tui_text_fit(s, width, NULL);
+    if (fit == s.n) { *advance = s.n; return s; }
+    size_t brk = fit;
+    if (!md_space(s.p[fit])) {
+        size_t last = 0;   /* the last space that fits, 0 for none */
+        for (size_t i = 1; i < fit; i++) if (md_space(s.p[i])) last = i;
+        if (last) brk = last;
+    }
+    if (!brk) {            /* one glyph is already wider than the column */
+        brk = 1;
+        while (brk < s.n && ((u8)s.p[brk] & 0xc0u) == 0x80u) brk++;
+    }
+    size_t adv = brk;
+    while (adv < s.n && md_space(s.p[adv])) adv++;
+    *advance = adv;
+    Str seg = { s.p, brk };
+    while (seg.n && md_space(seg.p[seg.n - 1])) seg.n--;
+    return seg;
+}
+
+/* One row, over as many visual lines as its widest cell wraps onto. */
 static void md_table_line(Str line, const size_t *width, b8 head) {
     Str cells[MD_TABLE_COLS];
     size_t n = md_cells(line, cells, MD_TABLE_COLS);
-    md_emit(STR("\u2502"), TUI_MARKER);
-    for (size_t i = 0; i < g_md.table_cols; i++) {
-        Str cell = i < n ? cells[i] : (Str){0};
-        size_t used = md_cell_width(cell);
-        if (used > width[i]) used = width[i];
-        size_t pad = width[i] - used;
-        size_t left = g_md.table_align[i] == 2 ? pad
-                    : g_md.table_align[i] == 1 ? pad / 2 : 0;
-        size_t right = pad - left;
-        TuiStyle style = head ? TUI_BOLD
-                              : g_md.muted ? TUI_QUOTE : TUI_PLAIN;
-        md_spaces(left + 1, style);
-        md_emit(cell, style);
-        md_spaces(right + 1, style);
+    size_t at[MD_TABLE_COLS] = {0};
+    for (size_t i = 0; i < g_md.table_cols; i++)
+        md_cell_build(&g_md.cell[i], i < n ? cells[i] : (Str){0});
+    TuiStyle style = md_cell_base(head);
+    b8 more;
+    do {
+        more = false;
         md_emit(STR("\u2502"), TUI_MARKER);
+        for (size_t i = 0; i < g_md.table_cols; i++) {
+            const MdCell *c = &g_md.cell[i];
+            size_t start = at[i], took = 0;
+            if (start < c->text.n) {
+                size_t advance = 0;
+                Str seg = md_wrap_segment(str_drop(c->text, start),
+                                          width[i], &advance);
+                took = seg.n;
+                at[i] = start + advance;
+                if (at[i] < c->text.n) more = true;
+            }
+            size_t used = tui_text_cells((Str){ c->text.p + start, took });
+            if (used > width[i]) used = width[i];
+            size_t pad = width[i] - used;
+            size_t left = g_md.table_align[i] == 2 ? pad
+                        : g_md.table_align[i] == 1 ? pad / 2 : 0;
+            md_spaces(left + 1, style);
+            md_cell_emit(c, start, start + took, head);
+            md_spaces(pad - left + 1, style);
+            md_emit(STR("\u2502"), TUI_MARKER);
+        }
+        tui_write(STR("\n"));
+    } while (more);
+}
+
+/* Columns are laid out the way a browser lays a table out: natural widths
+ * while the row fits the transcript, then the widest columns give way one
+ * cell at a time until it does and their text wraps. A terminal too narrow
+ * to hold a cell per column keeps the natural widths, since a table drawn
+ * one glyph wide says less than the wrapped rows do. */
+static void md_table_fit(size_t *width, size_t cols) {
+    size_t body = tui_body_cols();
+    size_t frame = cols * 3 + 1;   /* "| " before every cell, "|" at the end */
+    if (!body || cols > MD_TABLE_COLS || body < frame + cols) return;
+    size_t budget = body - frame, total = 0, widest = 0;
+    for (size_t i = 0; i < cols; i++) {
+        total += width[i];
+        if (width[i] > widest) widest = width[i];
     }
-    tui_write(STR("\n"));
+    if (total <= budget) return;
+    /* The largest cap every column can be clipped to and still fit. */
+    size_t lo = 1, hi = widest;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo + 1) / 2, sum = 0;
+        for (size_t i = 0; i < cols; i++)
+            sum += width[i] < mid ? width[i] : mid;
+        if (sum <= budget) lo = mid; else hi = mid - 1;
+    }
+    b8 clipped[MD_TABLE_COLS] = {0};
+    size_t used = 0;
+    for (size_t i = 0; i < cols; i++) {
+        clipped[i] = width[i] > lo;
+        if (clipped[i]) width[i] = lo;
+        used += width[i];
+    }
+    /* The cap divides unevenly, so the cells it left over go to the clipped
+     * columns and the row reaches the edge. */
+    for (size_t i = 0; i < cols && used < budget; i++)
+        if (clipped[i]) { width[i]++; used++; }
 }
 
 static void md_table_flush(void) {
@@ -652,12 +817,14 @@ static void md_table_flush(void) {
         size_t n = md_cells(line, cells, MD_TABLE_COLS);
         if (n > g_md.table_cols) n = g_md.table_cols;
         for (size_t i = 0; i < n; i++) {
-            size_t w = md_cell_width(cells[i]);
+            md_cell_build(&g_md.measured, cells[i]);
+            size_t w = tui_text_cells(g_md.measured.text);
             if (w > width[i]) width[i] = w;
         }
     }
     for (size_t i = 0; i < g_md.table_cols; i++)
         if (!width[i]) width[i] = 1;
+    md_table_fit(width, g_md.table_cols);
     md_table_border("\u250c", "\u252c", "\u2510", width);
     md_table_line((Str){ g_md.table + g_md.table_off[0],
                          g_md.table_len[0] }, width, true);
