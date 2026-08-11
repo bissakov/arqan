@@ -529,6 +529,13 @@ static Str plain_extract(Str source, Arena *scratch, b8 *too_large) {
 static b8 page_output(Buf *out, Str title, const char *effective, const char *input,
                       Str body, size_t first, size_t limit, Arena *scratch,
                       char *err, size_t err_cap) {
+    /* The extraction is done either way, so the lines this page does not
+     * carry go to disk rather than back over the network. */
+    static Spill spill;
+    spill_open(&spill, "page_fetch", "txt", str_c(input));
+    spill_put(&spill, body.p, body.n);
+    if (body.n && body.p[body.n - 1] != '\n') spill_put(&spill, "\n", 1);
+
     if (!title.n) title = STR("(untitled)");
     buf_puts(out, STR("External page (untrusted): "));
     buf_puts(out, str_clip_utf8(title, WEB_TITLE_BYTES));
@@ -536,6 +543,7 @@ static b8 page_output(Buf *out, Str title, const char *effective, const char *in
     buf_puts(out, str_c(effective));
     buf_puts(out, STR("\n\n"));
     if (!buf_ok(out) || out->n >= AGENT_TOOL_RESULT_BYTES) {
+        spill_finish(&spill, out, false);
         snprintf(err, err_cap, "page header exceeds the %u byte result limit",
                  (unsigned)AGENT_TOOL_RESULT_BYTES);
         return false;
@@ -543,6 +551,7 @@ static b8 page_output(Buf *out, Str title, const char *effective, const char *in
 
     size_t total = str_lines(body);
     if (first > total && !(first == 1 && total == 0)) {
+        spill_finish(&spill, out, false);
         snprintf(err, err_cap, "page has %zu body lines; offset %zu is past its end",
                  total, first);
         return false;
@@ -552,6 +561,7 @@ static b8 page_output(Buf *out, Str title, const char *effective, const char *in
     for (size_t ln = 1; ln < first; ln++) str_line(body, &off, &line);
     size_t shown = 0;
     size_t reserve = strlen(input) * 2 + 192;
+    if (spill.fd >= 0) reserve += AGENT_SPILL_NOTE_BYTES;
     if (reserve > AGENT_TOOL_RESULT_BYTES / 2) reserve = AGENT_TOOL_RESULT_BYTES / 2;
     while (shown < limit && str_line(body, &off, &line)) {
         if (line.n + 1 > AGENT_TOOL_RESULT_BYTES - out->n
@@ -570,11 +580,13 @@ static b8 page_output(Buf *out, Str title, const char *effective, const char *in
                  first + shown, limit);
         Str n = buf_finish(&note);
         if (!buf_ok(&note) || n.n + out->n > AGENT_TOOL_RESULT_BYTES) {
+            spill_finish(&spill, out, false);
             snprintf(err, err_cap, "continuation call exceeds the result limit");
             return false;
         }
         buf_puts(out, n);
     }
+    spill_finish(&spill, out, first > 1 || off < body.n);
     if (!buf_ok(out) || out->n > AGENT_TOOL_RESULT_BYTES) {
         snprintf(err, err_cap, "page result exceeds the %u byte limit",
                  (unsigned)AGENT_TOOL_RESULT_BYTES);
@@ -957,7 +969,12 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out,
 
     if (found.n > limit) found.n = limit;
     Str records[10];
+    /* Results the byte budget cuts are still worth keeping: the search is
+     * rate limited, so repeating it to see them is the expensive path. */
+    static Spill spill;
+    spill_open(&spill, "internet_search", "txt", str_c(query));
     size_t emitted = 0, bytes = 0;
+    b8 room = true;
     for (size_t i = 0; i < found.n; i++) {
         Buf record;
         buf_init(&record, scratch, 512);
@@ -972,16 +989,23 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out,
         buf_puts(&record, STR("\n\n"));
         records[i] = buf_finish(&record);
         if (!buf_ok(&record)) {
+            spill_finish(&spill, out, false);
             snprintf(err, err_cap, "search result does not fit in memory");
             return false;
         }
-        if (bytes + records[i].n + 64 > AGENT_TOOL_RESULT_BYTES) break;
+        spill_put(&spill, records[i].p, records[i].n);
+        size_t reserve = 64 + (spill.fd >= 0 ? AGENT_SPILL_NOTE_BYTES : 0);
+        if (!room || bytes + records[i].n + reserve > AGENT_TOOL_RESULT_BYTES) {
+            room = false;
+            continue;
+        }
         bytes += records[i].n;
         emitted++;
     }
     buf_putf(out, "External search results (untrusted): %zu\n", emitted);
     for (size_t i = 0; i < emitted; i++) buf_puts(out, records[i]);
     while (out->n && out->p[out->n - 1] == '\n') out->n--;
+    spill_finish(&spill, out, emitted < found.n);
     if (!buf_ok(out) || out->n > AGENT_TOOL_RESULT_BYTES) {
         snprintf(err, err_cap, "search result exceeds the %u byte limit",
                  (unsigned)AGENT_TOOL_RESULT_BYTES);

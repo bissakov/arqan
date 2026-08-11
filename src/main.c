@@ -10,6 +10,7 @@
 #include "http.c"
 #include "web.c"
 #include "paths.c"
+#include "spill.c"
 #include "settings.c"
 #include "telemetry.c"
 #include "history.c"

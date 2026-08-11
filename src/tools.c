@@ -289,11 +289,21 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit, Buf *out,
     static char z[AGENT_MAX_COMMAND];
     if (!arg_cstr(cmd, z, sizeof z, "command", err, err_cap)) return false;
 
+    /* Everything the command writes goes to the spill; the page above only
+     * carries the byte range asked for. */
+    static Spill spill;
+    spill_open(&spill, "bash", "log", cmd);
+
     i32 fds[2];
-    if (pipe(fds) != 0) { snprintf(err, err_cap, "pipe failed"); return false; }
+    if (pipe(fds) != 0) {
+        spill_finish(&spill, out, false);
+        snprintf(err, err_cap, "pipe failed");
+        return false;
+    }
     pid_t pid = fork();
     if (pid < 0) {
         close(fds[0]); close(fds[1]);
+        spill_finish(&spill, out, false);
         snprintf(err, err_cap, "fork failed");
         return false;
     }
@@ -321,6 +331,7 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit, Buf *out,
         if (n < 0) { if (errno == EINTR) continue; break; }
         if (n == 0) break;
         size_t bytes = (size_t)n;
+        spill_put(&spill, block, bytes);
         if (total + bytes > first && shown < limit) {
             size_t at = total < first ? first - total : 0;
             size_t take = bytes - at;
@@ -339,6 +350,7 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit, Buf *out,
         buf_putf(out, "[read %zu of %zu output bytes; continue with offset=%zu]\n",
                  shown, total, offset + shown);
     }
+    spill_finish(&spill, out, shown < total);
     i32 status = 0;
     pid_t done;
     while ((done = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {}
@@ -666,13 +678,14 @@ typedef struct {
     b8     single;         /* the root is one file rather than a tree      */
     char   path[AGENT_MAX_PATH];
     size_t path_n;
+    Spill  spill;         /* every record found, page or not                   */
 } Walk;
 
 /* Keep the continuation line inside the same hard result budget. Once a page
  * cannot take a record, later matches belong to the next page too: otherwise
  * the next offset would skip records the model never saw. */
 static b8 walk_has_room(const Walk *w, size_t n) {
-    const size_t reserve = 128;
+    const size_t reserve = w->spill.fd >= 0 ? 128 + AGENT_SPILL_NOTE_BYTES : 128;
     if (w->out->n > AGENT_TOOL_RESULT_BYTES - reserve) return false;
     return n <= AGENT_TOOL_RESULT_BYTES - reserve - w->out->n;
 }
@@ -729,6 +742,11 @@ static void walk_grep_file(Walk *w) {
         ln++;
         if (!line_matches(line, w->pattern, w->ignore_case)) continue;
         w->found++;
+        /* The spill holds the match whole and unclipped, whichever page it
+         * would have landed on. */
+        spill_putf(&w->spill, "%s:%zu: ", walk_shown(w), ln);
+        spill_put(&w->spill, line.p, line.n);
+        spill_put(&w->spill, "\n", 1);
         if (w->found < w->offset) continue;
         if (w->out_limited) { w->skipped++; continue; }
         if (w->shown >= w->max) { w->skipped++; continue; }
@@ -751,6 +769,7 @@ static void walk_file(Walk *w, const char *base) {
     if (!name_matches(w, base)) return;
     if (w->pattern.n) { walk_grep_file(w); return; }
     w->found++;
+    spill_putf(&w->spill, "%s\n", walk_shown(w));
     if (w->found < w->offset) return;
     if (w->out_limited) { w->skipped++; return; }
     if (w->shown >= w->max) { w->skipped++; return; }
@@ -851,6 +870,7 @@ static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep,
 
     static Walk w;
     w = (Walk){0};
+    w.spill.fd = -1;
     w.out = out;
     w.pattern = grep ? json_str(j, STR("pattern")) : (Str){0};
     if (grep && !w.pattern.n) {
@@ -888,6 +908,7 @@ static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep,
     w.names = &names;
     w.file = &file;
 
+    spill_open(&w.spill, grep ? "grep" : "find", "txt", args);
     b8 room = true;
     if (w.single) {
         const char *slash = strrchr(w.path, '/');
@@ -910,6 +931,9 @@ static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep,
                  w.shown, w.found,
                  grep ? "matches" : "files");
     }
+    /* Kept only when the page left something out: a complete answer needs no
+     * file behind it. */
+    spill_finish(&w.spill, out, w.skipped > 0 || !room || w.out_limited);
     if (!buf_ok(out) || out->n > AGENT_TOOL_RESULT_BYTES) {
         snprintf(err, err_cap, "result does not fit in the %u byte limit",
                  (unsigned)AGENT_TOOL_RESULT_BYTES);

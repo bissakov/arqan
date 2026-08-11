@@ -56,7 +56,9 @@ typedef bool     b8;
 #define AGENT_READ_LINES       2000        /* lines one read returns by default  */
 /* Leave enough room under the result cap for a continuation/status line. */
 #define AGENT_READ_BYTES       (AGENT_TOOL_RESULT_BYTES - 256u)
-#define AGENT_SHELL_OUT_BYTES  (AGENT_TOOL_RESULT_BYTES - 256u)
+/* One page of shell output, with room for its notes and a spill line. */
+#define AGENT_SHELL_OUT_BYTES  (AGENT_TOOL_RESULT_BYTES - 256u \
+                                - AGENT_SPILL_NOTE_BYTES)
 #define AGENT_GREP_RESULTS     100         /* matches one grep returns by default*/
 #define AGENT_FIND_RESULTS     200         /* paths one find returns by default  */
 #define AGENT_GREP_LINE        200         /* of a matched line, what is shown   */
@@ -66,6 +68,10 @@ typedef bool     b8;
 #define AGENT_MAX_GREP_FILE    (1u << 20)  /* larger files are not searched      */
 #define AGENT_MAX_PATCH_FILES  32          /* files one patch call may touch     */
 #define AGENT_MAX_PATCH_HUNKS  512         /* hunks one patch call may carry     */
+/* The whole output a paged tool keeps on disk; see spill.c. */
+#define AGENT_SPILL_BYTES      (16u << 20) /* of one spill file, what is kept    */
+#define AGENT_SPILL_PATH_MAX   128         /* longer, and the note costs too much*/
+#define AGENT_SPILL_NOTE_BYTES 256         /* result budget the note reserves    */
 /* A tool result older than this many user turns is replaced on the wire by a
  * line naming what it was; see conv_write_json. */
 #define AGENT_ELIDE_TURNS      2
@@ -727,6 +733,32 @@ typedef struct {
  * Redirects share the protocol, credential and socket-address restrictions.
  * Returns the same status classes as http_post. */
 i32     http_url_get(HttpUrlReq *r);
+
+/* ---- spilled tool output -------------------------------------------------
+ * The full output of a tool whose result is a page, written to
+ * "$TMPDIR/arqan-<tool>-<hash>.<ext>" at mode 0600 so a later call can
+ * narrow it without replaying it. Best effort throughout: every entry point is a
+ * no-op once the spill has failed or was never opened, and the tool answers
+ * as it would without one. No arena: a Spill owns only its file. */
+typedef struct {
+    char   path[AGENT_SPILL_PATH_MAX]; /* empty when there is no file       */
+    i32    fd;                         /* -1 when the spill is not open     */
+    size_t written;                    /* bytes accepted, capped            */
+    size_t buf_n;
+    b8     full;                       /* hit AGENT_SPILL_BYTES             */
+    char   buf[4096];
+} Spill;
+
+/* Names the file after `tool` and a hash of `key`, which is the call the
+ * output belongs to, so repeating a call reuses its own file. */
+void    spill_open(Spill *s, const char *tool, const char *ext, Str key);
+void    spill_put(Spill *s, const char *p, size_t n);
+void    spill_putf(Spill *s, const char *fmt, ...);
+/* Closes the spill. With `keep`, appends one line to `out` naming the file
+ * and roughly how large it is; otherwise, and when nothing was written, the
+ * file is unlinked and `out` is untouched. The note fits in
+ * AGENT_SPILL_NOTE_BYTES, which a caller reserves in its result budget. */
+void    spill_finish(Spill *s, Buf *out, b8 keep);
 
 /* ---- tools (SoA registry) ----------------------------------------------- */
 typedef b8 (*ToolRun)(Str args_json, Arena *scratch, Buf *out,

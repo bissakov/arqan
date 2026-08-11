@@ -479,6 +479,19 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
         if query == "empty":
             self._body(200, "text/html", b"<html><body><div class='no-results'>No results.</div></body></html>")
             return
+        if query == "verbose":
+            # ten results whose snippets together exceed one result page
+            rows = []
+            for i in range(10):
+                url = quote(f"https://example.com/verbose/{i}", safe="")
+                rows.append(
+                    f'<a class="result-link" href="//duckduckgo.com/l/?uddg={url}">'
+                    f"Verbose result {i}</a>"
+                    f'<div class="result-snippet">{"padding " * 120}tail {i}</div>'
+                )
+            self._body(200, "text/html",
+                       ("<html><body>" + "".join(rows) + "</body></html>").encode())
+            return
         one = quote("https://example.com/first?a=1&b=two", safe="")
         duplicate = quote("https://example.com/first?a=1&b=two", safe="")
         two = quote("http://example.org/two", safe="")

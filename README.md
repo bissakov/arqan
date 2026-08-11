@@ -123,6 +123,15 @@ Search requests are spaced at least ten seconds apart. A challenge, HTTP 202,
 403, or 429 pauses further searches in that arqan process for one hour; arqan
 does not retry or attempt to solve service challenges.
 
+A tool result is replayed on every later turn, so each call returns a bounded
+page. When `bash`, `grep`, `find`, `page_fetch`, or `internet_search` leaves
+something out, the whole output is written to
+`$TMPDIR/arqan-<tool>-<hash>.log` (`.txt` for the others) at mode 0600 and the
+result names that file, so the next call narrows it on disk instead of paging
+it all back into the conversation, or fetching and searching again. The name
+hashes the call, so repeating one overwrites its own file; a page that left
+nothing out keeps no file.
+
 ## Prompts and files
 
 Project prompts live in `.arqan/SYSTEM.md`; global prompts live in

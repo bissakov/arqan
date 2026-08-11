@@ -55,6 +55,8 @@ failure. For suspected flakes, use `python3 tests/run.py --repeat 5`.
 - `prompt.c`: system prompt discovery and expansion.
 - `cli.c`: command-line parsing.
 - `tools.c`: registry and built-in tool implementations.
+- `spill.c`: full output of a paged tool, written to a temporary file the
+  result names.
 - `provider.c`: OpenAI/Anthropic request and response handling.
 - `history.c`, `session.c`: local prompt and conversation persistence.
 - `telemetry.c`: anonymized diagnostics. Record session shape only; never pass
@@ -82,6 +84,9 @@ them in a new path.
 - Tool output is replayed to the provider, so it must be bounded and explain
   how to retrieve omitted data. Refuse oversized operation arguments rather
   than silently truncating them.
+- What a page leaves out goes to a spill file the result names, so the next
+  call can narrow it on disk. Spilling is best effort and never changes what
+  a tool answers.
 - Tool availability is registry-enforced, including plan mode and disabled
   tools; prompts must describe the tools actually offered.
 - The agent keeps running tool rounds until completion or interruption; do not
