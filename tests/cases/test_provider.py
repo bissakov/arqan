@@ -4,7 +4,7 @@ import stat
 
 
 def credentials_file(ctx):
-    return ctx.home / ".local" / "state" / "yoke" / "credentials.toml"
+    return ctx.home / ".local" / "state" / "arqan" / "credentials.toml"
 
 
 def store(ctx):
@@ -163,7 +163,7 @@ def test_a_provider_can_be_deleted_from_the_tui(ctx):
     write_provider(ctx, "work", ctx.mock.base_url, key="sk-work")
     write_provider(ctx, "home", ctx.mock.base_url, key="sk-home")
     select_provider(ctx, "work")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.submit("/provider")
     s.wait_status("pick a provider")
     s.key(*(["down"] * 4), "enter")
@@ -182,7 +182,7 @@ def test_deleting_the_active_provider_leaves_no_stale_selection(ctx):
     """The removed current provider is forgotten and cannot receive a turn."""
     write_provider(ctx, "work", ctx.mock.base_url, key="sk-work")
     select_provider(ctx, "work")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.submit("/provider")
     s.wait_status("pick a provider")
     s.key("down", "down", "down", "enter")
@@ -271,7 +271,7 @@ def test_a_stored_provider_configures_the_next_run(ctx):
     write_provider(ctx, "work", ctx.mock.base_url, model="beta", key="sk-work")
     select_provider(ctx, "work")
     ctx.scenario("text=hi")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     assert s.status_field(1) == "beta", s.status_line()
     assert s.status_field(3) == "work", s.status_line()
     s.submit("hello")
@@ -286,7 +286,7 @@ def test_switching_provider_picks_up_its_model_and_key(ctx):
     write_provider(ctx, "home", ctx.mock.base_url, model="beta", key="sk-home")
     select_provider(ctx, "work")
     ctx.scenario("text=hi")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.submit("/provider")
     s.wait_status("pick a provider")
     assert "current" in s.text(), s.text()
@@ -306,7 +306,7 @@ def test_switched_provider_survives_clearing_the_conversation(ctx):
     write_provider(ctx, "home", ctx.mock.base_url, model="beta", key="sk-home")
     select_provider(ctx, "work")
     ctx.scenario("text=configuration+survived")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
 
     s.submit("/provider")
     s.wait_status("pick a provider")
@@ -328,7 +328,7 @@ def test_the_model_picker_writes_to_the_active_provider(ctx):
     write_provider(ctx, "work", ctx.mock.base_url, model="alpha", key="sk-work")
     select_provider(ctx, "work")
     ctx.scenario("models=alpha|beta")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.submit("/model")
     s.wait_status("pick a model")
     s.key("down").sync()
@@ -368,7 +368,7 @@ def test_an_anthropic_provider_configures_the_next_run(ctx):
                    key="sk-ant", api="anthropic")
     select_provider(ctx, "anth")
     ctx.scenario("text=answered")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.submit("hello")
     s.wait_text("answered")
     s.wait_turn_done()
@@ -386,7 +386,7 @@ def test_provider_reasoning_controls_shape_requests(ctx):
         f.write("reasoning_efforts = tiny,careful\nreasoning_effort = careful\n")
     select_provider(ctx, "open")
     ctx.scenario("text=ok")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.submit("hello")
     s.wait_turn_done()
     assert ctx.mock.requests[-1]["reasoning_effort"] == "careful"
@@ -400,7 +400,7 @@ def test_anthropic_effort_enables_visible_adaptive_thinking(ctx):
                 "thinking_budgets = 1024\nthinking_budget = 1024\n")
     select_provider(ctx, "anth")
     ctx.scenario("text=ok")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.submit("hello")
     s.wait_turn_done()
     body = ctx.mock.requests[-1]
@@ -412,7 +412,7 @@ def test_provider_reasoning_controls_are_editable_in_the_tui(ctx):
     """Editing keeps defaults and the key while optional controls may stay Off."""
     write_provider(ctx, "work", ctx.mock.base_url, key="sk-kept", api="openai")
     select_provider(ctx, "work")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.submit("/provider")
     s.wait_status("pick a provider")
     s.key("down", "down", "enter")
@@ -451,7 +451,7 @@ def test_provider_editor_clears_values_and_keeps_a_long_template(ctx):
         f.write("reasoning_efforts = low,high\nreasoning_effort = high\n"
                 f"reasoning_template = {template}\n")
     select_provider(ctx, "work")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.submit("/provider")
     s.wait_status("pick a provider")
     s.key("down", "down", "enter")
@@ -476,7 +476,7 @@ def test_provider_editor_can_clear_the_stored_key(ctx):
     """Clearing a credential is explicit and does not overload an empty answer."""
     write_provider(ctx, "work", ctx.mock.base_url, key="sk-remove", api="openai")
     select_provider(ctx, "work")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.submit("/provider")
     s.wait_status("pick a provider")
     s.key("down", "down", "enter")
@@ -502,7 +502,7 @@ def test_provider_reasoning_template_substitutes_a_number(ctx):
                 "reasoning_template = {\"vendor_budget\":\"$thinking_budget\",\"static\":true}\n")
     select_provider(ctx, "custom")
     ctx.scenario("text=ok")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.submit("hello")
     s.wait_turn_done()
     body = ctx.mock.requests[-1]
@@ -515,7 +515,7 @@ def test_invalid_reasoning_template_never_reaches_the_provider(ctx):
     with ctx.config_file().open("a") as f:
         f.write("reasoning_template = [not an object]\n")
     select_provider(ctx, "bad")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.submit("hello")
     s.wait_text("reasoning template must be a JSON object")
     assert ctx.mock.requests == [], ctx.mock.requests
@@ -527,7 +527,7 @@ def test_reasoning_template_rejects_trailing_garbage(ctx):
     with ctx.config_file().open("a") as f:
         f.write('reasoning_template = {"vendor":1} trailing\n')
     select_provider(ctx, "bad")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.submit("hello")
     s.wait_text("reasoning template must be a JSON object")
     assert ctx.mock.requests == [], ctx.mock.requests
@@ -547,7 +547,7 @@ def test_credentials_readable_by_others_are_refused(ctx):
 
 def test_the_first_run_without_a_key_says_how_to_add_one(ctx):
     """Nothing to talk to: the welcome screen names the command, and waits."""
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.wait_text("+ add a provider")
     assert s.status_kind() == "setup", s.status_line()
     assert "gpt-4o-mini" not in s.status_line(), s.status_line()
@@ -558,7 +558,7 @@ def test_the_first_run_without_a_key_says_how_to_add_one(ctx):
 
 def test_a_message_without_a_provider_is_refused(ctx):
     """A turn with no endpoint is a 401 nobody can act on, so it never runs."""
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.wait_text("+ add a provider")
     s.submit("hello")
     s.wait_text("no provider yet")
@@ -569,7 +569,7 @@ def test_a_message_without_a_provider_is_refused(ctx):
 def test_the_welcome_hint_goes_away_once_a_provider_exists(ctx):
     """The line is a missing endpoint, so naming one retires it."""
     ctx.scenario("models=alpha")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.wait_text("+ add a provider")
     s.submit("/provider")
     add_provider(s, ctx, "work")
@@ -582,7 +582,7 @@ def test_the_welcome_hint_goes_away_once_a_provider_exists(ctx):
 def test_a_configured_endpoint_starts_a_conversation(ctx):
     """A named endpoint that needs no key is a run, not a question."""
     ctx.scenario("text=no+key+needed")
-    s = ctx.spawn(YOKE_API_KEY=None)
+    s = ctx.spawn(ARQAN_API_KEY=None)
     assert "a name for this provider" not in s.text(), s.text()
     s.submit("hello")
     s.wait_text("no key needed")

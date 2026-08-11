@@ -5,8 +5,8 @@ import json
 
 def web_env(ctx):
     return {
-        "YOKE_TEST_WEB_ALLOW_PRIVATE": "1",
-        "YOKE_TEST_WEB_SEARCH_URL": f"{ctx.mock.origin}/web/search?q=",
+        "ARQAN_TEST_WEB_ALLOW_PRIVATE": "1",
+        "ARQAN_TEST_WEB_SEARCH_URL": f"{ctx.mock.origin}/web/search?q=",
     }
 
 
@@ -35,7 +35,7 @@ def test_web_tool_schemas_are_offered_in_build_mode(ctx):
 def test_web_tool_schemas_are_offered_to_anthropic_in_plan_mode(ctx):
     """The same two read-only tools use Anthropic's flat schema shape."""
     ctx.scenario("text=ok")
-    s = ctx.spawn(YOKE_API="anthropic")
+    s = ctx.spawn(ARQAN_API="anthropic")
     s.key("shift-tab")
     s.wait_for(lambda t: s.status_field(2) == "plan", "plan mode")
     s.submit("inspect the web")
@@ -94,7 +94,7 @@ def test_web_search_spaces_repeated_requests(ctx):
     )
     s = ctx.spawn(
         rows=40,
-        YOKE_TEST_WEB_SEARCH_INTERVAL_MS="100",
+        ARQAN_TEST_WEB_SEARCH_INTERVAL_MS="100",
         **web_env(ctx),
     )
     s.submit("search twice")
@@ -274,7 +274,7 @@ def test_web_telemetry_keeps_queries_urls_and_content_out(ctx):
     s.submit("private prompt needle")
     s.wait_turn_done()
 
-    files = list((ctx.home / ".local" / "state" / "yoke" / "telemetry").rglob("*.jsonl"))
+    files = list((ctx.home / ".local" / "state" / "arqan" / "telemetry").rglob("*.jsonl"))
     assert files
     logged = "".join(p.read_text() for p in files)
     for value in (

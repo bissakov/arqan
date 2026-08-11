@@ -5,7 +5,7 @@
  * output never writes through the UI and corrupts the composer. Pipes keep
  * the conventional line-oriented behaviour.
  */
-#include "yoke.h"
+#include "agent.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -36,7 +36,7 @@
 #define TUI_PATH_SLOT 512        /* longest path one of them holds            */
 #define TUI_PATH_DEPTH 12        /* directories a fuzzy match descends through */
 
-_Static_assert(TUI_STATUS_N == YOKE_STATUS_FIELDS,
+_Static_assert(TUI_STATUS_N == AGENT_STATUS_FIELDS,
                "status preference mask must cover every field");
 #define TUI_PATH_SCAN 20000      /* entries one keystroke's walk may look at  */
 #define TUI_IGNORE_PATS 512      /* ignore patterns in force for one listing  */
@@ -44,7 +44,7 @@ _Static_assert(TUI_STATUS_N == YOKE_STATUS_FIELDS,
 #define TUI_PICK_QUERY 64        /* longest search a picker accepts          */
 #define TUI_FIND_QUERY 128       /* longest transcript search a box accepts  */
 #define TUI_FIND_ROW_HITS 64     /* matches one painted row highlights       */
-#define TUI_ASK_MAX YOKE_MAX_REASONING_TEMPLATE
+#define TUI_ASK_MAX AGENT_MAX_REASONING_TEMPLATE
 /* Markdown claims one span per emphasis run, so this counts words of a reply
  * rather than messages. */
 #define TUI_MAX_SPANS 4096
@@ -209,7 +209,7 @@ typedef struct {
     size_t cmd_n;
     const TuiAlias *aliases;
     size_t alias_n;
-    u16 comp_idx[YOKE_MAX_POPUP];      /* matches, as indices into cmds       */
+    u16 comp_idx[AGENT_MAX_POPUP];      /* matches, as indices into cmds       */
     /* The popup also completes a filesystem path: while `path_mode` is set it
      * is offering these entries instead of the command table, listed from the
      * directory the word at the cursor names. */
@@ -304,8 +304,8 @@ typedef struct {
  * them: a session that never fills the scrollback never pays for it. */
 typedef struct {
     char transcript[TUI_TRANSCRIPT_CAP];   /* to g_tui.transcript_n         */
-    char input[YOKE_LINE_BUF];             /* to g_tui.input_n              */
-    char draft[YOKE_LINE_BUF];             /* to g_tui.draft_n              */
+    char input[AGENT_LINE_BUF];             /* to g_tui.input_n              */
+    char draft[AGENT_LINE_BUF];             /* to g_tui.draft_n              */
     char row_text[TUI_SEL_ROWS][TUI_SEL_ROW_BYTES];  /* g_tui.row_text_n[r] */
 } TuiBulk;
 
@@ -600,7 +600,7 @@ static void sel_copy(void) {
     b64_put((const u8 *)g_tui.sel_text, n);
     put_str("\a");
     flush_out();
-    g_tui.copy_notice = yoke_now_seconds() + 2.0;
+    g_tui.copy_notice = agent_now_seconds() + 2.0;
 }
 
 static void sel_clear(void) {
@@ -1484,7 +1484,7 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
         size_t room = body > 2 ? body - 2 : 0;
         style(S_PANEL_BG S_MUTED);
         put_safe_clipped(prefix.p[0] == '!' ? STR("Run a shell command...")
-                                            : STR("Message yoke..."),
+                                            : STR("Message " AGENT_NAME "..."),
                          room, NULL);
     } else if (kind == ROW_ZONE || kind == ROW_ZONE_HOVER) {
         /* The indent belongs to the block, not to the click target: styling
@@ -1871,7 +1871,7 @@ static Str format_elapsed(char *buf, size_t cap, f64 secs) {
 static void update_activity_row(size_t screen_row, size_t screen_col,
                                 size_t screen_cols, size_t body_cols,
                                 b8 force) {
-    f64 now = yoke_now_seconds();
+    f64 now = agent_now_seconds();
     f64 elapsed = now - g_tui.activity_started;
     char secs_buf[24];
     Str secs = format_elapsed(secs_buf, sizeof secs_buf, elapsed);
@@ -1955,14 +1955,13 @@ typedef struct { Str text; b8 art; } WelcomeLine;
 /* -Wpedantic rejects STR()'s compound literal as a static initializer. */
 #define WLINE(lit, is_art) { { (lit), sizeof(lit) - 1 }, (is_art) }
 static const WelcomeLine k_welcome[] = {
-    WLINE("             _",         true),
-    WLINE(" _   _  ___ | | _____",  true),
-    WLINE("| | | |/ _ \\| |/ / _ \\", true),
-    WLINE("| |_| | (_) |   <  __/", true),
-    WLINE(" \\__, |\\___/|_|\\_\\___|", true),
-    WLINE(" |___/",                 true),
+    WLINE("  __ _ _ __ __ _  __ _ _ __",       true),
+    WLINE(" / _` | '__/ _` |/ _` | '_ \\",      true),
+    WLINE("| (_| | | | (_| | (_| | | | |",     true),
+    WLINE(" \\__,_|_|  \\__, |\\__,_|_| |_|",     true),
+    WLINE("              |_|",                 true),
     WLINE("",              false),
-    WLINE("yoke " YOKE_VERSION " · a tiny terminal coding agent", false),
+    WLINE(AGENT_NAME " " AGENT_VERSION " · a tiny terminal coding agent", false),
     WLINE("",              false),
     WLINE("type a message and press Enter to begin",          false),
 };
@@ -2098,7 +2097,7 @@ static b8 g_find_moving;
 
 static void repaint(void) {
     if (!g_tui.fullscreen || g_batch) return;
-    g_tui.last_paint = yoke_now_seconds();
+    g_tui.last_paint = agent_now_seconds();
     /* The count the box shows is carried over the bytes appended since the
      * last frame, so a streaming turn costs the delta rather than a scan. */
     if (g_tui.find_open) find_refresh();
@@ -2350,7 +2349,7 @@ static void repaint(void) {
             b8 off = str_eq(budget, STR("off")) || str_eq(budget, STR("Off"))
                   || str_eq(budget, STR("OFF"));
             if (budget.n && !off) {
-                char thinking[YOKE_MAX_REASONING_LIST + 10];
+                char thinking[AGENT_MAX_REASONING_LIST + 10];
                 i32 n = snprintf(thinking, sizeof thinking, "thinking %.*s",
                                  (i32)budget.n, budget.p);
                 if (n > 0)
@@ -2435,11 +2434,11 @@ void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
         char banner[512];
         i32 n = setup
               ? snprintf(banner, sizeof banner,
-                         "yoke %s · setup tools=%zu\n",
-                         YOKE_VERSION, tool_count)
+                         AGENT_NAME " %s · setup tools=%zu\n",
+                         AGENT_VERSION, tool_count)
               : snprintf(banner, sizeof banner,
-                         "yoke %s · model=%.*s base=%.*s tools=%zu\n",
-                         YOKE_VERSION, (i32)model.n, model.p,
+                         AGENT_NAME " %s · model=%.*s base=%.*s tools=%zu\n",
+                         AGENT_VERSION, (i32)model.n, model.p,
                          (i32)base_url.n, base_url.p, tool_count);
         if (n > 0) put_raw(banner, (size_t)n < sizeof banner
                                    ? (size_t)n : sizeof banner - 1);
@@ -2473,7 +2472,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
 
     g_tui.raw = true;
     g_tui.fullscreen = true;
-    yoke_log_set_sink(tui_log_sink, NULL);
+    agent_log_set_sink(tui_log_sink, NULL);
     /* The composer is always live: it owns the cursor for the whole session. */
     g_tui.editing = true;
     /* 1003 reports motion with no button held, which is what a hovered click
@@ -2493,7 +2492,7 @@ void tui_stop(void) {
         flush_out();
     }
     if (!g_tui.raw) return;
-    yoke_log_set_sink(NULL, NULL);
+    agent_log_set_sink(NULL, NULL);
     if (g_tui.fullscreen) {
         put_str("\033[?2004l\033[?1006l\033[?1003l\033[?25h\033[?7h"
                 "\033[?1049l");
@@ -2530,8 +2529,8 @@ void tui_activity(Str label) {
     if (g_tui.activity_n == n && !memcmp(g_tui.activity, label.p, n)) return;
     /* Each operation is timed from its own start; the wait it belongs to
      * keeps the clock it opened with. */
-    if (!g_tui.activity_n) g_tui.activity_turn = yoke_now_seconds();
-    g_tui.activity_started = yoke_now_seconds();
+    if (!g_tui.activity_n) g_tui.activity_turn = agent_now_seconds();
+    g_tui.activity_started = agent_now_seconds();
     memcpy(g_tui.activity, label.p, n);
     g_tui.activity_n = n;
     repaint();
@@ -2614,7 +2613,7 @@ b8 tui_copy(Str text) {
     b64_put((const u8 *)text.p, text.n);
     put_str("\a");
     flush_out();
-    g_tui.copy_notice = yoke_now_seconds() + 2.0;
+    g_tui.copy_notice = agent_now_seconds() + 2.0;
     repaint();
     return true;
 }
@@ -3020,7 +3019,7 @@ void tui_write(Str s) {
     if (!g_tui.fullscreen) { flush_out(); return; }
     /* SSE delivers many tiny deltas, and 15 Hz is plenty for readable text.
      * A newline or a status change still paints at once. */
-    f64 now = yoke_now_seconds();
+    f64 now = agent_now_seconds();
     b8 has_newline = memchr(s.p, '\n', s.n) != NULL;
     if (g_winch || has_newline || now - g_tui.last_paint >= 1.0 / 15.0)
         repaint();
@@ -3416,7 +3415,7 @@ static void ignore_load(const char *path, size_t base_n) {
 /* The ignore files of one directory, in force from it downward. */
 static void ignore_push(const char *dir, size_t n) {
     static const char *names[] = { ".gitignore", ".ignore" };
-    char path[YOKE_MAX_PATH];
+    char path[AGENT_MAX_PATH];
     if (n + 12 >= sizeof path || n > UINT16_MAX) return;
     memcpy(path, dir, n);
     for (size_t k = 0; k < sizeof names / sizeof names[0]; k++) {
@@ -3471,7 +3470,7 @@ static void path_walk(char *path, size_t n, size_t root_n, Str q, u16 depth,
         (*budget)--;
         if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
         Str name = str_c(e->d_name);
-        if (n + name.n + 2 >= YOKE_MAX_PATH) continue;
+        if (n + name.n + 2 >= AGENT_MAX_PATH) continue;
         memcpy(path + n, name.p, name.n);
         size_t end = n + name.n;
         path[end] = '\0';
@@ -3519,7 +3518,7 @@ static void path_refresh(Str prefix, Str keep) {
         if (prefix.p[i] == '/') { cut = i + 1; break; }
     Str dir = { prefix.p, cut };
     Str base = { prefix.p + cut, prefix.n - cut };
-    char path[YOKE_MAX_PATH];
+    char path[AGENT_MAX_PATH];
     if (dir.n + 1 >= sizeof path) return;
     memcpy(path, dir.p, dir.n);
     path[dir.n] = '\0';
@@ -3568,7 +3567,7 @@ static b8 path_prefix(Str *out) {
 static void completion_refresh(void) {
     /* The selected path is copied out rather than aliased: the rebuild it
      * survives is what overwrites the buffer it lives in. */
-    char keep[YOKE_MAX_PATH];
+    char keep[AGENT_MAX_PATH];
     size_t keep_n = 0;
     size_t previous = SIZE_MAX;
     if (g_tui.comp_n) {
@@ -3594,7 +3593,7 @@ static void completion_refresh(void) {
     for (size_t i = 0; i < in.n; i++)
         if (in.p[i] == ' ' || in.p[i] == '\t' || in.p[i] == '\n') return;
     size_t exact = SIZE_MAX;
-    for (size_t i = 0; i < g_tui.cmd_n && g_tui.comp_n < YOKE_MAX_COMMANDS; i++) {
+    for (size_t i = 0; i < g_tui.cmd_n && g_tui.comp_n < AGENT_MAX_COMMANDS; i++) {
         if (!str_starts_ci(g_tui.cmds[i].name, in)) continue;
         /* Narrowing the list keeps the highlight on the same command. */
         if (i == previous) g_tui.comp_sel = g_tui.comp_n;
@@ -3603,7 +3602,7 @@ static void completion_refresh(void) {
     }
     /* An alias is a way in, so what it matches is the command it stands for:
      * the row is that command and appending it twice would list it twice. */
-    for (size_t a = 0; a < g_tui.alias_n && g_tui.comp_n < YOKE_MAX_COMMANDS;
+    for (size_t a = 0; a < g_tui.alias_n && g_tui.comp_n < AGENT_MAX_COMMANDS;
          a++) {
         if (!str_starts_ci(g_tui.aliases[a].alias, in)) continue;
         size_t cmd = SIZE_MAX;
@@ -3707,7 +3706,7 @@ void tui_set_history(History *h) {
 }
 
 static void composer_load(char *buf, size_t *n, size_t *cur, Str s) {
-    size_t take = s.n < YOKE_LINE_BUF - 1 ? s.n : YOKE_LINE_BUF - 1;
+    size_t take = s.n < AGENT_LINE_BUF - 1 ? s.n : AGENT_LINE_BUF - 1;
     if (take) memcpy(buf, s.p, take);
     buf[take] = '\0';
     *n = take;
@@ -3771,7 +3770,7 @@ void tui_set_input(Str s) {
 
 void tui_set_commands(const TuiCmd *cmds, size_t n) {
     g_tui.cmds = cmds;
-    g_tui.cmd_n = n < YOKE_MAX_COMMANDS ? n : YOKE_MAX_COMMANDS;
+    g_tui.cmd_n = n < AGENT_MAX_COMMANDS ? n : AGENT_MAX_COMMANDS;
 }
 
 void tui_set_aliases(const TuiAlias *aliases, size_t n) {
@@ -3785,7 +3784,7 @@ void tui_set_aliases(const TuiAlias *aliases, size_t n) {
  * reader is recalling rather than names they know. */
 static void pick_filter(Str query, b8 fuzzy) {
     g_tui.comp_n = 0;
-    for (size_t i = 0; i < g_tui.cmd_n && g_tui.comp_n < YOKE_MAX_POPUP; i++)
+    for (size_t i = 0; i < g_tui.cmd_n && g_tui.comp_n < AGENT_MAX_POPUP; i++)
         if (fuzzy ? str_fuzzy_ci(g_tui.cmds[i].name, query)
                   : str_contains_ci(g_tui.cmds[i].name, query))
             g_tui.comp_idx[g_tui.comp_n++] = (u16)i;
@@ -3857,7 +3856,7 @@ static void pick_settings_act(const TuiSettings *set, Str query, i32 delta) {
     set->act(set->ud, row, delta);
     size_t n = set->build(set->ud);
     if (n > set->max) n = set->max;
-    if (n > YOKE_MAX_POPUP) n = YOKE_MAX_POPUP;
+    if (n > AGENT_MAX_POPUP) n = AGENT_MAX_POPUP;
     if (!n) return;   /* nothing left to select; the rows on screen stand */
     g_tui.cmd_n = n;
     pick_reselect(query, true, row < n ? row : n - 1);
@@ -3904,7 +3903,7 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
      * so anything else is refused. */
     if (g_pick.active && modal && !g_pick.modal) pick_close();
     if (g_pick.active) return false;
-    if (n > YOKE_MAX_POPUP) n = YOKE_MAX_POPUP;
+    if (n > AGENT_MAX_POPUP) n = AGENT_MAX_POPUP;
 
     memset(&g_pick, 0, sizeof g_pick);
     g_pick.active = true;
@@ -4126,7 +4125,7 @@ static b8 ask_impl(Str question, b8 secret, char *out, size_t cap,
         if (initial_n == cap || initial_n > limit) return false;
     }
 
-    char saved_input[YOKE_LINE_BUF];
+    char saved_input[AGENT_LINE_BUF];
     size_t saved_n = g_tui.input_n, saved_cur = g_tui.input_cur;
     char saved_notice[sizeof g_tui.notice];
     size_t saved_notice_n = g_tui.notice_n;
@@ -4565,7 +4564,7 @@ void tui_poll_input(void) {
     /* The spinner and its elapsed time move on their own, so an idle poll is
      * what advances them. */
     if (g_tui.activity_n
-        && yoke_now_seconds() - g_tui.last_paint >= 1.0 / 10.0)
+        && agent_now_seconds() - g_tui.last_paint >= 1.0 / 10.0)
         dirty = true;
     while (!g_tui.input_eof && input_ready(0)) {
         i32 c = rbyte();

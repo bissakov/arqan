@@ -3,7 +3,7 @@
  * A stream accumulates one line in the caller's arena and emits it to
  * on_line; a single reply accumulates whole into the caller's Buf.
  */
-#include "yoke.h"
+#include "agent.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -55,7 +55,7 @@ static b8 dispatch_line(Ctx *c, const char *p, size_t n) {
 static size_t write_cb(char *p, size_t sz, size_t n, void *ud) {
     Ctx *c = (Ctx *)ud;
     size_t total = sz * n;
-    f64 now = yoke_now_seconds();
+    f64 now = agent_now_seconds();
     if (c->last_write > 0 && now - c->last_write > c->stall)
         c->stall = now - c->last_write;
     c->last_write = now;
@@ -187,7 +187,7 @@ static struct curl_slist *auth_header(struct curl_slist *hdrs,
                                            : "Authorization: Bearer %s";
     i32 an = snprintf(auth, sizeof auth, fmt, api_key);
     if (an > 0 && (size_t)an < sizeof auth) return curl_slist_append(hdrs, auth);
-    yoke_log(YOKE_LOG_WARN, "api key too long; sending no key header");
+    agent_log(AGENT_LOG_WARN, "api key too long; sending no key header");
     return hdrs;
 }
 
@@ -223,7 +223,7 @@ static i64 curl_ms(CURL *curl, CURLINFO info) {
     return (i64)(us / 1000);
 }
 
-/* curl's own timings and counters, which nothing else in yoke can reach. The
+/* curl's own timings and counters, which nothing else in arqan can reach. The
  * endpoint is a hash and a class rather than a URL, since a private host
  * names its owner the way a path does. */
 static void http_record(const char *method, const char *path, const char *url,
@@ -279,11 +279,11 @@ i32 http_get(const char *base_url, const char *path, const char *api_key,
              ApiKind api, Buf *out) {
     char url[2048];
     if (!build_url(url, sizeof url, base_url, path)) {
-        yoke_log(YOKE_LOG_ERROR, "base_url is empty or too long");
+        agent_log(AGENT_LOG_ERROR, "base_url is empty or too long");
         return 1;
     }
     CURL *curl = curl_easy_init();
-    if (!curl) { yoke_log(YOKE_LOG_ERROR, "curl init failed"); return 1; }
+    if (!curl) { agent_log(AGENT_LOG_ERROR, "curl init failed"); return 1; }
 
     struct curl_slist *hdrs = curl_slist_append(NULL, "Accept: application/json");
     hdrs = auth_header(hdrs, api_key, api);
@@ -306,7 +306,7 @@ i32 http_get(const char *base_url, const char *path, const char *api_key,
     curl_easy_cleanup(curl);
 
     if (rc != CURLE_OK) {
-        yoke_log(YOKE_LOG_ERROR, "curl: %s", curl_easy_strerror(rc));
+        agent_log(AGENT_LOG_ERROR, "curl: %s", curl_easy_strerror(rc));
         return 2;
     }
     if (http_code < 200 || http_code >= 300) return -(i32)http_code;
@@ -318,7 +318,7 @@ static b8 http_url_input_ok(const char *url, char *err, size_t err_cap) {
         snprintf(err, err_cap, "URL is empty");
         return false;
     }
-    if (strlen(url) >= YOKE_WEB_URL_BYTES) {
+    if (strlen(url) >= AGENT_WEB_URL_BYTES) {
         snprintf(err, err_cap, "URL is too long");
         return false;
     }
@@ -499,17 +499,17 @@ i32 http_url_get(HttpUrlReq *r) {
 
 i32 http_post(const HttpReq *r) {
     if (r->body_out == NULL && !r->line_arena) {
-        yoke_log(YOKE_LOG_ERROR, "streaming request without a line arena");
+        agent_log(AGENT_LOG_ERROR, "streaming request without a line arena");
         return 1;
     }
     CURL *curl = curl_easy_init();
-    if (!curl) { yoke_log(YOKE_LOG_ERROR, "curl init failed"); return 1; }
+    if (!curl) { agent_log(AGENT_LOG_ERROR, "curl init failed"); return 1; }
 
     const char *path = api_post_path(r->api);
     char url[2048];
     if (!build_url(url, sizeof url, r->base_url, path)) {
         curl_easy_cleanup(curl);
-        yoke_log(YOKE_LOG_ERROR, "base_url is empty or too long");
+        agent_log(AGENT_LOG_ERROR, "base_url is empty or too long");
         return 1;
     }
 
@@ -544,7 +544,7 @@ i32 http_post(const HttpReq *r) {
     if (!multi) {
         curl_slist_free_all(hdrs);
         curl_easy_cleanup(curl);
-        yoke_log(YOKE_LOG_ERROR, "curl multi init failed");
+        agent_log(AGENT_LOG_ERROR, "curl multi init failed");
         return 1;
     }
     curl_multi_add_handle(multi, curl);
@@ -564,7 +564,7 @@ i32 http_post(const HttpReq *r) {
             ctx.polls++;
         }
         if (mc != CURLM_OK) {
-            yoke_log(YOKE_LOG_ERROR, "curl multi: %s", curl_multi_strerror(mc));
+            agent_log(AGENT_LOG_ERROR, "curl multi: %s", curl_multi_strerror(mc));
             rc = CURLE_RECV_ERROR;
             break;
         }
@@ -598,13 +598,13 @@ i32 http_post(const HttpReq *r) {
 
     if (interrupted) return 3;
     if (ctx.oom) {
-        yoke_log(YOKE_LOG_ERROR, "an event did not fit in memory");
+        agent_log(AGENT_LOG_ERROR, "an event did not fit in memory");
         if (r->fail_out && r->fail_cap)
             snprintf(r->fail_out, r->fail_cap, "an event did not fit in memory");
         return 2;
     }
     if (rc != CURLE_OK) {
-        yoke_log(YOKE_LOG_ERROR, "curl: %s", curl_easy_strerror(rc));
+        agent_log(AGENT_LOG_ERROR, "curl: %s", curl_easy_strerror(rc));
         if (r->fail_out && r->fail_cap)
             snprintf(r->fail_out, r->fail_cap, "%s", curl_easy_strerror(rc));
         return 2;

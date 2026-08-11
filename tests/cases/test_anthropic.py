@@ -9,7 +9,7 @@ import json
 
 def anth(ctx, **env):
     """A session whose endpoint speaks the Anthropic API."""
-    return ctx.spawn(YOKE_API="anthropic", **env)
+    return ctx.spawn(ARQAN_API="anthropic", **env)
 
 
 def test_a_reply_streams_from_content_blocks(ctx):

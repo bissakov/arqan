@@ -155,7 +155,7 @@ def test_reasoning_rows_do_not_shift_tool_toggle_ids(ctx):
     with ctx.config_file().open("a") as f:
         f.write("reasoning_efforts = low,high\nreasoning_effort = high\n")
     select_provider(ctx, "work")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.open_settings().settings_select("bash")
     s.key("space").sync()
     assert "[ ] bash" in s.text(), s.text()
@@ -168,7 +168,7 @@ def test_a_reasoning_row_lists_off_and_every_configured_effort(ctx):
     with ctx.config_file().open("a") as f:
         f.write("reasoning_efforts = low,high\nreasoning_effort = high\n")
     select_provider(ctx, "work")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.open_settings().settings_select("Reasoning effort")
     row = s.popup_selected()
     assert "Off" in row and "low" in row and "high" in row, row
@@ -219,11 +219,11 @@ def test_the_mode_row_switches_mode(ctx):
 
 def test_show_instructions_replays_sources_without_changing_the_request(ctx):
     """Instruction blocks are presentation-only copies of each source."""
-    ctx.write_file(".yoke/SYSTEM.md", "BUILD {cwd}\n{tools}")
-    ctx.write_file(".yoke/PLAN.md", "PLAN {cwd}\n{tools}")
+    ctx.write_file(".arqan/SYSTEM.md", "BUILD {cwd}\n{tools}")
+    ctx.write_file(".arqan/PLAN.md", "PLAN {cwd}\n{tools}")
     ctx.write_file("AGENTS.md", "ROOT AGENT\n")
     ctx.write_file("src/AGENTS.md", "SRC AGENT\n")
-    s = ctx.spawn(cwd=str(ctx.work / "src"), YOKE_SYSTEM_PROMPT=None)
+    s = ctx.spawn(cwd=str(ctx.work / "src"), ARQAN_SYSTEM_PROMPT=None)
 
     s.open_settings().settings_select("Show instructions")
     assert "[ ] Show instructions" in s.popup_selected(), s.text()
@@ -237,7 +237,7 @@ def test_show_instructions_replays_sources_without_changing_the_request(ctx):
     s.key(*(["pageup"] * 10)).sync()
     text = s.text()
     assert "Instructions · Build" in text, text
-    assert "Project prompt" in text and ".yoke/SYSTEM.md" in text, text
+    assert "Project prompt" in text and ".arqan/SYSTEM.md" in text, text
     assert "BUILD " in text, text
 
     s.settings_act("Mode").key("esc")
@@ -394,7 +394,7 @@ def test_state_precedence_is_below_environment_and_cli(ctx):
     ctx.scenario("text=precedence")
     s = ctx.spawn(
         args=["--max-tokens", "8192", "--disable-tools", "bash"],
-        YOKE_STREAM="true", YOKE_MODE="build", YOKE_MAX_TOKENS="4096",
+        ARQAN_STREAM="true", ARQAN_MODE="build", ARQAN_MAX_TOKENS="4096",
     )
     s.submit("verify")
     s.wait_turn_done()
@@ -407,7 +407,7 @@ def test_state_precedence_is_below_environment_and_cli(ctx):
 
 
 def test_persistence_failure_is_reported_but_the_change_applies(ctx):
-    s = ctx.spawn(HOME="/proc/yoke-unwritable", XDG_STATE_HOME=None)
+    s = ctx.spawn(HOME="/proc/arqan-unwritable", XDG_STATE_HOME=None)
     s.open_settings().settings_select("Stream replies")
     s.key("space").sync()
     s.wait_text("setting changed but was not remembered")

@@ -53,7 +53,7 @@ def test_welcome_art_highlights_in_one_colour(ctx):
     glyphs start.
     """
     s = ctx.spawn()
-    row = row_of(s, "_   _  ___ | | ___")   # spans padding on the left, art on the right
+    row = row_of(s, "(_| | | | (_| |")   # spans padding on the left, art on the right
     s.mouse("down", row, 10)
     s.mouse("drag", row, 45).sync()
     attrs = [s.screen.attr_at(row - 1, c) for c in range(9, 45)]

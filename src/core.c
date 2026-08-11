@@ -1,5 +1,5 @@
 /* core.c: arena, strings, buffers, logging, time. */
-#include "yoke.h"
+#include "agent.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,12 +23,12 @@ void *arena_alloc(Arena *a, size_t n, size_t align) {
     size_t mask = align - 1;
     size_t pad = (align - (a->off & mask)) & mask;
     if (pad > a->cap - a->off) {
-        yoke_log(YOKE_LOG_ERROR, "arena OOM: need %zu, have %zu", n, a->cap - a->off);
+        agent_log(AGENT_LOG_ERROR, "arena OOM: need %zu, have %zu", n, a->cap - a->off);
         return NULL;
     }
     size_t p = a->off + pad;
     if (n > a->cap - p) {
-        yoke_log(YOKE_LOG_ERROR, "arena OOM: need %zu, have %zu", n, a->cap - p);
+        agent_log(AGENT_LOG_ERROR, "arena OOM: need %zu, have %zu", n, a->cap - p);
         return NULL;
     }
     a->off = p + n;
@@ -37,7 +37,7 @@ void *arena_alloc(Arena *a, size_t n, size_t align) {
 
 void *arena_alloc_array(Arena *a, size_t count, size_t size, size_t align) {
     if (size && count > (size_t)-1 / size) {
-        yoke_log(YOKE_LOG_ERROR, "arena overflow: %zu x %zu", count, size);
+        agent_log(AGENT_LOG_ERROR, "arena overflow: %zu x %zu", count, size);
         return NULL;
     }
     return arena_alloc(a, count * size, align);
@@ -176,7 +176,7 @@ static b8 buf_grow(Buf *b, size_t need) {
         nc *= 2;
     }
     char *np = (char *)arena_alloc(b->a, nc, 1);
-    if (!np) { b->oom = true; yoke_log(YOKE_LOG_ERROR, "buf OOM"); return false; }
+    if (!np) { b->oom = true; agent_log(AGENT_LOG_ERROR, "buf OOM"); return false; }
     if (b->n) memcpy(np, b->p, b->n);
     b->p = np; b->cap = nc;
     return true;
@@ -240,15 +240,15 @@ Str buf_finish(Buf *b) {
 }
 
 /* ---- logging ------------------------------------------------------------ */
-static i32 g_level = YOKE_LOG_INFO;
-static YokeLogSink g_log_sink;
+static i32 g_level = AGENT_LOG_INFO;
+static AgentLogSink g_log_sink;
 static void *g_log_ud;
-void yoke_log_set_level(i32 level) { g_level = level; }
-void yoke_log_set_sink(YokeLogSink sink, void *ud) { g_log_sink = sink; g_log_ud = ud; }
-void yoke_log(i32 level, const char *fmt, ...) {
+void agent_log_set_level(i32 level) { g_level = level; }
+void agent_log_set_sink(AgentLogSink sink, void *ud) { g_log_sink = sink; g_log_ud = ud; }
+void agent_log(i32 level, const char *fmt, ...) {
     if (level < g_level) return;
     static const char *tags[] = {"DBG","INF","WRN","ERR"};
-    if (level < YOKE_LOG_DEBUG || level > YOKE_LOG_ERROR) level = YOKE_LOG_ERROR;
+    if (level < AGENT_LOG_DEBUG || level > AGENT_LOG_ERROR) level = AGENT_LOG_ERROR;
     char msg[512];
     va_list ap; va_start(ap, fmt);
     i32 w = vsnprintf(msg, sizeof msg, fmt, ap);
@@ -256,11 +256,11 @@ void yoke_log(i32 level, const char *fmt, ...) {
     size_t n = w > 0 ? ((size_t)w < sizeof msg ? (size_t)w : sizeof msg - 1) : 0;
     telemetry_log(level, (Str){ msg, n });
     if (g_log_sink) { g_log_sink(level, (Str){ msg, n }, g_log_ud); return; }
-    fprintf(stderr, "[yoke %s] %.*s\n", tags[level], (i32)n, msg);
+    fprintf(stderr, "[" AGENT_NAME " %s] %.*s\n", tags[level], (i32)n, msg);
 }
 
 /* ---- time --------------------------------------------------------------- */
-f64 yoke_now_seconds(void) {
+f64 agent_now_seconds(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (f64)ts.tv_sec + (f64)ts.tv_nsec * 1e-9;

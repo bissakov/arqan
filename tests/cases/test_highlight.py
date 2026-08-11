@@ -10,7 +10,7 @@ import time
 from tests.context import ROOT
 
 
-HELPER = ROOT / "bin" / "yoke-highlight"
+HELPER = ROOT / "bin" / "arqan-highlight"
 MAGIC = b"YHL1"
 REQ = struct.Struct("<4sIB3xII")
 RESP = struct.Struct("<4sIB3xI")
@@ -62,7 +62,7 @@ def test_helper_diagnostics_are_stable(ctx):
     """The private diagnostic commands expose only version and language names."""
     version = subprocess.run([HELPER, "--version"], capture_output=True, text=True)
     assert version.returncode == 0
-    assert version.stdout == "yoke-highlight 1 (tree-sitter 0.26.11)\n"
+    assert version.stdout == "arqan-highlight 1 (tree-sitter 0.26.11)\n"
     listed = subprocess.run(
         [HELPER, "--list-languages"], capture_output=True, text=True
     )
@@ -229,7 +229,7 @@ def test_raw_mode_disables_tool_syntax_highlighting(ctx):
     """The raw display switch governs tool syntax as well as Markdown."""
     ctx.write_file("sample.c", "int answer = 42;\n")
     ctx.scenario('tool=read:{"path":"sample.c"},final_text=done')
-    s = ctx.spawn(YOKE_RAW_MARKDOWN="true")
+    s = ctx.spawn(ARQAN_RAW_MARKDOWN="true")
     s.submit("read it")
     s.wait_turn_done()
     assert cell(s, "int answer").fg == TEXT
@@ -321,7 +321,7 @@ def test_untyped_grep_and_shell_like_source_stay_plain(ctx):
 def test_missing_helper_is_a_silent_fallback(ctx):
     """A missing override preserves the transcript and emits no warning row."""
     ctx.scenario("text=```c\nint+n+=+1;\n```")
-    s = ctx.spawn(YOKE_HIGHLIGHTER=ctx.work / "missing-helper")
+    s = ctx.spawn(ARQAN_HIGHLIGHTER=ctx.work / "missing-helper")
     s.submit("show it")
     s.wait_turn_done()
     assert cell(s, "int n").fg == TEXT
@@ -343,7 +343,7 @@ def test_malformed_and_hanging_helpers_fall_back_silently(ctx):
     )
     invalid.chmod(0o755)
     ctx.scenario("text=```c\nint+n+=+1;\n```")
-    s = ctx.spawn(YOKE_HIGHLIGHTER=invalid)
+    s = ctx.spawn(ARQAN_HIGHLIGHTER=invalid)
     s.submit("invalid")
     s.wait_turn_done()
     assert cell(s, "int n").fg == TEXT
@@ -355,7 +355,7 @@ def test_malformed_and_hanging_helpers_fall_back_silently(ctx):
     )
     hanging.chmod(0o755)
     before = time.monotonic()
-    s2 = ctx.spawn(YOKE_HIGHLIGHTER=hanging)
+    s2 = ctx.spawn(ARQAN_HIGHLIGHTER=hanging)
     s2.submit("hanging")
     s2.wait_turn_done()
     assert time.monotonic() - before < 3

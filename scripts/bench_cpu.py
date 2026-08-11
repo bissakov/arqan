@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure yoke's CPU cost against wall time for a long streamed turn.
+"""Measure arqan's CPU cost against wall time for a long streamed turn.
 
 Drives a real pty session through the mock provider and reads the child's
 utime/stime from /proc, so the number is the agent's own cycles rather than

@@ -19,8 +19,8 @@
 |  › postgres          recommended · a server
 |    + something else  Answer in your own words
 |
-|  › Message yoke...
+|  › Message arqan...
 |
 |
-|  ● pick an answer · mock-model · plan · local · ~/work · 627
+|  ● pick an answer · mock-model · plan · local · ~/work · 628
 --- cursor row=21 col=5 visible=yes ---

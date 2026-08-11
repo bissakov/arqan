@@ -100,7 +100,7 @@ def test_multiline_prompt_round_trips(ctx):
     s.submit("/exit")
     s.wait_exit()
 
-    hist = ctx.home / ".local/state/yoke/history"
+    hist = ctx.home / ".local/state/arqan/history"
     assert hist.read_text().splitlines()[0] == "line one\\nline two"
 
     s2 = ctx.spawn()
@@ -111,7 +111,7 @@ def test_multiline_prompt_round_trips(ctx):
 
 def test_oversized_file_is_trimmed_to_the_newest(ctx):
     """A file longer than the ring keeps its newest entries and is rewritten."""
-    hist = ctx.home / ".local/state/yoke/history"
+    hist = ctx.home / ".local/state/arqan/history"
     hist.parent.mkdir(parents=True)
     hist.write_text("".join(f"prompt {i}\n" for i in range(600)))
 

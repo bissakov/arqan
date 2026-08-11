@@ -2,7 +2,7 @@
 
 # A fragment of the ASCII-art logo the welcome screen paints; nothing else
 # on any frame contains it.
-WELCOME_ART = "| |_| | (_) |   <  __/"
+WELCOME_ART = "| (_| | | | (_| | (_| | | | |"
 WELCOME_HINT = "type a message and press Enter to begin"
 
 
@@ -30,7 +30,7 @@ def test_placeholder_and_prompt(ctx):
     composer = s.composer_rows()
     assert len(composer) == 1, composer
     assert composer[0].strip().startswith("\u203a"), composer
-    assert "Message yoke" in composer[0], composer
+    assert "Message arqan" in composer[0], composer
 
 
 def test_alt_screen_and_modes(ctx):
@@ -110,15 +110,15 @@ def test_resize_repaints(ctx):
 
 def test_no_api_key_warns_without_tty(ctx):
     """The non-tty banner reports a missing key instead of silently failing."""
-    out = ctx.run_piped("/exit\n", YOKE_API_KEY=None)
+    out = ctx.run_piped("/exit\n", ARQAN_API_KEY=None)
     assert "no API key" in out.stdout, out.stdout
 
 
 def test_piped_banner(ctx):
-    """Without a tty, yoke stays line-oriented and prints a banner."""
+    """Without a tty, arqan stays line-oriented and prints a banner."""
     out = ctx.run_piped("/exit\n")
     assert out.returncode == 0, out
-    assert "yoke 0.1.0" in out.stdout, out.stdout
+    assert "arqan 0.1.0" in out.stdout, out.stdout
     assert "model=mock-model" in out.stdout, out.stdout
     assert "tools=" in out.stdout, out.stdout
     assert "\x1b[?1049h" not in out.stdout, "must not touch the alternate screen"
@@ -126,21 +126,21 @@ def test_piped_banner(ctx):
 
 def test_unconfigured_piped_banner_says_setup_without_fake_endpoint(ctx):
     out = ctx.run_piped(
-        "/exit\n", YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None
+        "/exit\n", ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None
     )
     assert "setup" in out.stdout, out.stdout
     assert "model=" not in out.stdout and "base=" not in out.stdout, out.stdout
 
 
 def test_config_file_is_read(ctx):
-    """Values in $XDG_CONFIG_HOME/yoke/config are picked up when env is unset."""
+    """Values in $XDG_CONFIG_HOME/arqan/config are picked up when env is unset."""
     ctx.write_config(f"model=from-config\nbase_url={ctx.mock.base_url}\n")
-    s = ctx.spawn(YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_MODEL=None)
     assert "from-config" in s.status_line(), s.status_line()
 
 
 def test_env_beats_config_file(ctx):
-    """YOKE_MODEL wins over the config file."""
+    """ARQAN_MODEL wins over the config file."""
     ctx.write_config("model=from-config\n")
-    s = ctx.spawn(YOKE_MODEL="from-env")
+    s = ctx.spawn(ARQAN_MODEL="from-env")
     assert "from-env" in s.status_line(), s.status_line()

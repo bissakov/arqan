@@ -1,7 +1,7 @@
-"""The settings files: a global config, a project config, and yoke's state.
+"""The settings files: a global config, a project config, and arqan's state.
 
 Settings are one table read from several files. The global config is the
-user's document, a project's `.yoke/config.toml` overrides it for the tree it
+user's document, a project's `.arqan/config.toml` overrides it for the tree it
 sits in, and the state file is what the UI remembers. Providers are sections
 of the config files rather than a store of their own, so a write by the UI has
 to leave the rest of the document exactly as its owner wrote it.
@@ -18,7 +18,7 @@ model = "alpha"
 
 
 def state_dir(ctx):
-    return ctx.home / ".local" / "state" / "yoke"
+    return ctx.home / ".local" / "state" / "arqan"
 
 
 def select_provider(ctx, name):
@@ -32,7 +32,7 @@ def test_a_hand_written_provider_section_configures_the_run(ctx):
     ctx.write_config(CONFIG.format(url=ctx.mock.base_url))
     select_provider(ctx, "work")
     ctx.scenario("text=hi")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     assert s.status_field(1) == "alpha", s.status_line()
     assert s.status_field(3) == "work", s.status_line()
     s.submit("hello")
@@ -47,7 +47,7 @@ def test_writing_a_provider_keeps_the_rest_of_the_config(ctx):
             "max_tokens = 1234", "max_tokens = 1234\nunknown_key = 1"))
     select_provider(ctx, "work")
     ctx.scenario("models=alpha|beta")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.submit("/model")
     s.wait_status("pick a model")
     s.key("down").sync()
@@ -63,16 +63,16 @@ def test_writing_a_provider_keeps_the_rest_of_the_config(ctx):
     assert settings["providers.work"]["base_url"] == ctx.mock.base_url, settings
 
 
-def test_what_yoke_writes_is_toml(ctx):
-    """The format is a TOML subset, so what yoke writes a TOML reader parses.
+def test_what_arqan_writes_is_toml(ctx):
+    """The format is a TOML subset, so what arqan writes a TOML reader parses.
 
     A string is quoted and a number is bare; anything else would be a file
-    yoke could read back and an editor could not.
+    arqan could read back and an editor could not.
     """
     ctx.write_config(CONFIG.format(url=ctx.mock.base_url))
     select_provider(ctx, "work")
     ctx.scenario("models=alpha|beta")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.submit("/model")
     s.wait_status("pick a model")
     s.key("down").sync()
@@ -94,15 +94,15 @@ def test_a_quoted_value_keeps_what_is_inside_it(ctx):
         f'model = "spaced model"   # the one this project uses\n'
         f'base_url = "{ctx.mock.base_url}"\n'
     )
-    s = ctx.spawn(YOKE_MODEL=None, YOKE_BASE_URL=None)
+    s = ctx.spawn(ARQAN_MODEL=None, ARQAN_BASE_URL=None)
     assert s.status_field(1) == "spaced model", s.status_line()
 
 
 def test_a_provider_in_the_config_dirs_is_offered(ctx):
     """The system config is searched for providers as it is for keys."""
     etc = ctx.tmp / "etc"
-    (etc / "yoke").mkdir(parents=True)
-    (etc / "yoke" / "config.toml").write_text(
+    (etc / "arqan").mkdir(parents=True)
+    (etc / "arqan" / "config.toml").write_text(
         f'[providers.sitewide]\nbase_url = "{ctx.mock.base_url}"\n'
     )
     s = ctx.spawn(XDG_CONFIG_DIRS=str(etc))
@@ -115,7 +115,7 @@ def test_a_provider_in_the_config_dirs_is_offered(ctx):
 def test_every_remembered_choice_lands_in_one_state_file(ctx):
     """Model, provider and telemetry share the state file and own no others."""
     ctx.scenario("models=alpha|beta")
-    s = ctx.spawn(YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_MODEL=None)
     s.settings_toggle("Telemetry")
     s.submit("/model")
     s.wait_status("pick a model")
@@ -133,11 +133,11 @@ def test_every_remembered_choice_lands_in_one_state_file(ctx):
 # ---- project settings ------------------------------------------------------
 
 def test_a_project_config_overrides_the_global_one(ctx):
-    """`.yoke/config.toml` is the more local statement, so it is the answer."""
+    """`.arqan/config.toml` is the more local statement, so it is the answer."""
     ctx.write_config("max_tokens = 1000\nmodel = \"global-model\"\n")
     ctx.write_project_config("max_tokens = 2000\n")
     ctx.scenario("text=ok")
-    s = ctx.spawn(YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_MODEL=None)
     assert s.status_field(1) == "global-model", s.status_line()
     s.submit("hello")
     s.wait_turn_done()
@@ -161,7 +161,7 @@ def test_a_project_config_may_not_carry_an_api_key(ctx):
     """It arrives with a clone, so it does not get to authenticate anyone."""
     ctx.write_project_config('api_key = "sk-from-the-repo"\n')
     ctx.scenario("text=ok")
-    out = ctx.run_cli("-p", "hello", YOKE_API_KEY=None)
+    out = ctx.run_cli("-p", "hello", ARQAN_API_KEY=None)
     assert "api_key" in out.stderr, out.stderr
     assert "may not set it" in out.stderr, out.stderr
     assert ctx.mock.auth[-1] != "Bearer sk-from-the-repo", ctx.mock.auth
@@ -175,7 +175,7 @@ def test_a_project_config_may_define_a_provider(ctx):
         f'model = "repo-model"\n'
     )
     ctx.scenario("text=ok")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     assert s.status_field(1) == "repo-model", s.status_line()
     s.submit("hello")
     s.wait_turn_done()
@@ -205,5 +205,5 @@ def test_a_value_outside_its_bounds_falls_through(ctx):
 def test_a_provider_naming_nothing_is_not_a_selection(ctx):
     """A name with no section behind it leaves the run asking for one."""
     ctx.write_config('provider = "ghost"\n')
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.wait_text("no provider yet")

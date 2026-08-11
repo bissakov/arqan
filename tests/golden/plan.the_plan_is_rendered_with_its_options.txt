@@ -19,7 +19,7 @@
 |    Yes, but from a new session  Start over with the plan as the only context
 |    No                           Keep planning; say what to change
 |
-|  › Message yoke...
+|  › Message arqan...
 |
 |
 |  ● continue? · mock-model · plan · local · ~/work · 604

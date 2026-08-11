@@ -4,7 +4,7 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 SOURCES="$ROOT/scripts/tree-sitter-sources.tsv"
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/yoke-tree-sitter.XXXXXX")
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/arqan-tree-sitter.XXXXXX")
 OLD="$ROOT/vendor/tree-sitter"
 BACKUP="$WORK/old-vendor"
 COMMITTED=false

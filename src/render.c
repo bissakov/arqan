@@ -4,7 +4,7 @@
  * printed, so each gets a header naming what it does to what, a preview of
  * the input it carries, and a result summarised by its own shape.
  */
-#include "yoke.h"
+#include "agent.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -586,7 +586,7 @@ void render_tool_result(Str name, Str args, Str result, Arena *scratch,
     hl.n = 0;
     b8 source_code = false;
     b8 grep = str_eq(name, STR("grep"));
-    char grep_source[YOKE_TOOL_RESULT_BYTES];
+    char grep_source[AGENT_TOOL_RESULT_BYTES];
     Str syntax_source = result;
     if (str_eq(name, STR("read")) && path.n) {
         source_code = true;

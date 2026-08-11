@@ -59,7 +59,7 @@ def test_help_starts_with_a_user_message_and_waits(ctx):
     messages = ctx.mock.requests[-1]["messages"]
     assert [m["role"] for m in messages] == ["system", "user", "user"], messages
     help_text = messages[1]["content"]
-    assert help_text.startswith("# yoke help context\n"), help_text
+    assert help_text.startswith("# arqan help context\n"), help_text
     for expected in (
         "## Effective configuration",
         "verbose tool output: on",

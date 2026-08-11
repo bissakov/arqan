@@ -3,7 +3,7 @@
 import signal
 
 
-RETRY = {"YOKE_RETRIES": 3, "YOKE_RETRY_DELAY_MS": 10}
+RETRY = {"ARQAN_RETRIES": 3, "ARQAN_RETRY_DELAY_MS": 10}
 
 
 def test_transient_failure_is_retried(ctx):
@@ -59,7 +59,7 @@ def test_dropped_connection_is_retried(ctx):
 def test_retries_are_exhausted(ctx):
     """Past the last attempt the turn ends on the error and the UI stays usable."""
     ctx.scenario("fail_times=9")
-    s = ctx.spawn(YOKE_RETRIES=2, YOKE_RETRY_DELAY_MS=10)
+    s = ctx.spawn(ARQAN_RETRIES=2, ARQAN_RETRY_DELAY_MS=10)
     s.submit("say hi")
     s.wait_text("[provider error: HTTP 503]")
     s.wait_turn_done()
@@ -87,7 +87,7 @@ def test_partial_stream_is_not_retried(ctx):
 def test_retry_wait_is_interruptible(ctx):
     """Ctrl-C during the backoff ends the turn instead of waiting it out."""
     ctx.scenario("fail_times=9")
-    s = ctx.spawn(YOKE_RETRIES=3, YOKE_RETRY_DELAY_MS=5000)
+    s = ctx.spawn(ARQAN_RETRIES=3, ARQAN_RETRY_DELAY_MS=5000)
     s.submit("say hi")
     s.wait_text("; retrying in 5.0s")
     s.signal(signal.SIGINT)

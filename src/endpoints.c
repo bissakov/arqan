@@ -15,16 +15,16 @@
  *   api = "openai"
  *
  * The key is not there. It lives under the same section name in
- * $XDG_STATE_HOME/yoke/credentials.toml at mode 0600, so the file a dotfile
+ * $XDG_STATE_HOME/arqan/credentials.toml at mode 0600, so the file a dotfile
  * repository carries holds no secret, and a credentials file anyone else can
  * read is refused rather than loaded. That file may also say `key_source`
  * instead, naming an external store to ask (see secrets.c); asking one means
  * running a program, so the directive is honoured only from there. A config
  * section that names `key`, `key_source` or `key_command` is ignored with a
- * warning: a shared file must not be able to choose what yoke executes.
+ * warning: a shared file must not be able to choose what arqan executes.
  * The active endpoint is named by the `provider` setting (see config.c).
  */
-#include "yoke.h"
+#include "agent.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -43,7 +43,7 @@ Str api_name(ApiKind k) {
 /* A name that is a TOML bare key, so "[providers.<name>]" stays a header a
  * TOML reader and this one agree on. */
 b8 endpoint_name_ok(Str name) {
-    if (!name.n || name.n > YOKE_MAX_ENDPOINT_NAME) return false;
+    if (!name.n || name.n > AGENT_MAX_ENDPOINT_NAME) return false;
     for (size_t i = 0; i < name.n; i++) {
         char c = name.p[i];
         b8 ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
@@ -70,13 +70,13 @@ static Str endpoint_field(const Settings *s, Str section, Str key, size_t max) {
 
 /* Provider capabilities are deliberately data, not a built-in ladder. */
 static b8 endpoint_list_ok(Str list, b8 budgets) {
-    if (list.n > YOKE_MAX_REASONING_LIST) return false;
+    if (list.n > AGENT_MAX_REASONING_LIST) return false;
     size_t off = 0, count = 0;
     while (off < list.n) {
         size_t end = off;
         while (end < list.n && list.p[end] != ',') end++;
         Str item = str_trim((Str){ list.p + off, end - off });
-        if (!item.n || ++count > YOKE_MAX_ENDPOINTS) return false;
+        if (!item.n || ++count > AGENT_MAX_ENDPOINTS) return false;
         if (budgets) {
             b8 ok = false; i64 n = str_int(item, &ok);
             if (!ok || n <= 0) return false;
@@ -107,14 +107,14 @@ static b8 endpoint_selected_ok(Str list, Str selected) {
 }
 
 /* Said rather than obeyed: a shared config file naming a key store would be a
- * way to choose what yoke runs, so the line is reported and dropped. */
+ * way to choose what arqan runs, so the line is reported and dropped. */
 static void endpoint_warn_credential_keys(const Settings *s, Str section,
                                           Str name) {
     const Str keys[3] = { STR("key"), STR("key_source"),
                           STR("key_command") };
     for (size_t i = 0; i < 3; i++) {
         if (!settings_get(s, section, keys[i]).n) continue;
-        yoke_log(YOKE_LOG_WARN,
+        agent_log(AGENT_LOG_WARN,
                  "ignoring %.*s in the config file for provider %.*s: "
                  "it belongs in the credentials file",
                  (i32)keys[i].n, keys[i].p, (i32)name.n, name.p);
@@ -122,36 +122,36 @@ static void endpoint_warn_credential_keys(const Settings *s, Str section,
 }
 
 static void endpoints_collect(Endpoints *e, const Settings *s, Arena *a) {
-    Str sections[YOKE_MAX_ENDPOINTS];
+    Str sections[AGENT_MAX_ENDPOINTS];
     size_t n = settings_sections(s, ENDPOINT_SECTION, sections,
-                                 YOKE_MAX_ENDPOINTS);
+                                 AGENT_MAX_ENDPOINTS);
     for (size_t i = 0; i < n; i++) {
         Str name = str_trim(str_drop(sections[i], ENDPOINT_SECTION.n));
         if (!endpoint_name_ok(name)) continue;
         endpoint_warn_credential_keys(s, sections[i], name);
-        Str url = endpoint_field(s, sections[i], STR("base_url"), YOKE_MAX_URL);
+        Str url = endpoint_field(s, sections[i], STR("base_url"), AGENT_MAX_URL);
         if (!url.n) continue;
         Str model = endpoint_field(s, sections[i], STR("model"),
-                                   YOKE_MAX_MODEL_NAME);
+                                   AGENT_MAX_MODEL_NAME);
         ApiKind api = api_from_str(settings_get(s, sections[i], STR("api")));
-        Str efforts = endpoint_field(s, sections[i], STR("reasoning_efforts"), YOKE_MAX_REASONING_LIST);
-        Str budgets = endpoint_field(s, sections[i], STR("thinking_budgets"), YOKE_MAX_REASONING_LIST);
-        Str effort = endpoint_field(s, sections[i], STR("reasoning_effort"), YOKE_MAX_REASONING_LIST);
-        Str budget = endpoint_field(s, sections[i], STR("thinking_budget"), YOKE_MAX_REASONING_LIST);
-        Str templ = endpoint_field(s, sections[i], STR("reasoning_template"), YOKE_MAX_REASONING_TEMPLATE);
+        Str efforts = endpoint_field(s, sections[i], STR("reasoning_efforts"), AGENT_MAX_REASONING_LIST);
+        Str budgets = endpoint_field(s, sections[i], STR("thinking_budgets"), AGENT_MAX_REASONING_LIST);
+        Str effort = endpoint_field(s, sections[i], STR("reasoning_effort"), AGENT_MAX_REASONING_LIST);
+        Str budget = endpoint_field(s, sections[i], STR("thinking_budget"), AGENT_MAX_REASONING_LIST);
+        Str templ = endpoint_field(s, sections[i], STR("reasoning_template"), AGENT_MAX_REASONING_TEMPLATE);
         endpoints_put(e, name, url, model, api, efforts, budgets, effort, budget, templ, a);
     }
 }
 
 size_t endpoints_load(Endpoints *e, Arena *a) {
     memset(e, 0, sizeof *e);
-    Str files[YOKE_MAX_CONFIG_FILES + YOKE_MAX_PROJECT_FILES];
-    size_t n = paths_config_files(YOKE_CONFIG_NAME, a, files,
-                                  YOKE_MAX_CONFIG_FILES);
+    Str files[AGENT_MAX_CONFIG_FILES + AGENT_MAX_PROJECT_FILES];
+    size_t n = paths_config_files(AGENT_CONFIG_NAME, a, files,
+                                  AGENT_MAX_CONFIG_FILES);
     /* A project may name endpoints too, and its files sit above the global
      * ones for the same reason its settings do. */
-    n += paths_project_files(YOKE_CONFIG_NAME, a, files + n,
-                             YOKE_MAX_PROJECT_FILES);
+    n += paths_project_files(AGENT_CONFIG_NAME, a, files + n,
+                             AGENT_MAX_PROJECT_FILES);
     /* Lowest precedence first, so a user's entry replaces a system one of the
      * same name the way a config key does. */
     for (size_t i = 0; i < n; i++) {
@@ -171,15 +171,15 @@ b8 endpoints_put(Endpoints *e, Str name, Str base_url, Str model, ApiKind api,
                  Str efforts, Str budgets, Str effort, Str budget, Str templ,
                  Arena *a) {
     if (!endpoint_name_ok(name)) return false;
-    if (!base_url.n || base_url.n > YOKE_MAX_URL) return false;
-    if (model.n > YOKE_MAX_MODEL_NAME) return false;
+    if (!base_url.n || base_url.n > AGENT_MAX_URL) return false;
+    if (model.n > AGENT_MAX_MODEL_NAME) return false;
     if (!endpoint_list_ok(efforts, false) || !endpoint_list_ok(budgets, true)
         || !endpoint_selected_ok(efforts, effort)
         || !endpoint_selected_ok(budgets, budget)
-        || templ.n > YOKE_MAX_REASONING_TEMPLATE) return false;
+        || templ.n > AGENT_MAX_REASONING_TEMPLATE) return false;
     size_t i = endpoints_find(e, name);
     if (i == ENDPOINT_NONE) {
-        if (e->n >= YOKE_MAX_ENDPOINTS) return false;
+        if (e->n >= AGENT_MAX_ENDPOINTS) return false;
         i = e->n;
         Str dup = str_dup(a, name);
         if (!dup.p) return false;
@@ -213,8 +213,8 @@ b8 endpoints_save_one(Str name, Str base_url, Str model, ApiKind api,
                       Str efforts, Str budgets, Str effort, Str budget,
                       Str templ, Arena *scratch) {
     size_t mark = scratch->off;
-    Str dir  = paths_dir(YOKE_DIR_CONFIG, scratch);
-    Str path = paths_file(YOKE_DIR_CONFIG, YOKE_CONFIG_NAME, scratch);
+    Str dir  = paths_dir(AGENT_DIR_CONFIG, scratch);
+    Str path = paths_file(AGENT_DIR_CONFIG, AGENT_CONFIG_NAME, scratch);
     Str section = endpoint_section(name, scratch);
     if (!dir.n || !path.n || !section.n || !paths_ensure_dir(dir)) {
         scratch->off = mark;
@@ -247,7 +247,7 @@ b8 endpoints_remember_model(Str name, Str model, Arena *scratch) {
 static b8 creds_open(Settings *s, Arena *a, Str *path_out,
                      char *err, size_t err_cap) {
     s->n = 0;
-    Str path = paths_file(YOKE_DIR_STATE, YOKE_CREDENTIALS_NAME, a);
+    Str path = paths_file(AGENT_DIR_STATE, AGENT_CREDENTIALS_NAME, a);
     if (path_out) *path_out = path;
     if (!path.n) return false;
     struct stat st;
@@ -301,7 +301,7 @@ Str endpoints_key(Str name, Arena *out, Arena *scratch,
         if (src_err[0]) {
             if (err) snprintf(err, err_cap, "%s", src_err);
         } else if (src == SECRET_STORED) {
-            Str v = endpoint_field(&s, section, STR("key"), YOKE_MAX_API_KEY);
+            Str v = endpoint_field(&s, section, STR("key"), AGENT_MAX_API_KEY);
             if (v.n) key = str_dup(out, v);
         } else {
             Str cmd = settings_get(&s, section, STR("key_command"));
@@ -317,7 +317,7 @@ Str endpoints_key(Str name, Arena *out, Arena *scratch,
 
 b8 endpoints_set_key(Str name, Str key, SecretSource src, Arena *scratch,
                      char *err, size_t err_cap) {
-    if (!name.n || key.n > YOKE_MAX_API_KEY) return false;
+    if (!name.n || key.n > AGENT_MAX_API_KEY) return false;
     if (src == SECRET_COMMAND) {
         if (err) snprintf(err, err_cap, "a key_command provider is filled in "
                           "with its own tool");
@@ -327,7 +327,7 @@ b8 endpoints_set_key(Str name, Str key, SecretSource src, Arena *scratch,
     Settings s;
     Str path = {0};
     Str section = endpoint_section(name, scratch);
-    Str dir = paths_dir(YOKE_DIR_STATE, scratch);
+    Str dir = paths_dir(AGENT_DIR_STATE, scratch);
     b8 ok = section.n && creds_open(&s, scratch, &path, err, err_cap)
          && path.n && dir.n && paths_ensure_dir(dir);
 
@@ -360,7 +360,7 @@ b8 endpoints_delete(Str name, Arena *scratch, char *err, size_t err_cap) {
     size_t mark = scratch->off;
     Settings credentials;
     Str credential_path = {0};
-    Str config_path = paths_file(YOKE_DIR_CONFIG, YOKE_CONFIG_NAME, scratch);
+    Str config_path = paths_file(AGENT_DIR_CONFIG, AGENT_CONFIG_NAME, scratch);
     Str section = endpoint_section(name, scratch);
     if (!config_path.n || !section.n
         || !creds_open(&credentials, scratch, &credential_path, err, err_cap)) {

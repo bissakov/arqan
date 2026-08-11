@@ -1,13 +1,13 @@
 """Persistent sessions and the /resume picker.
 
-Sessions are keyed by the directory yoke runs in, saved as they happen, and
+Sessions are keyed by the directory arqan runs in, saved as they happen, and
 browsed through the same popup slash-command completion uses.
 """
 
 
 def sessions_dir(ctx):
     """The per-cwd session directory under $HOME/.local/share."""
-    root = ctx.home / ".local" / "share" / "yoke" / "sessions"
+    root = ctx.home / ".local" / "share" / "arqan" / "sessions"
     dirs = [p for p in root.iterdir() if p.is_dir()] if root.exists() else []
     assert len(dirs) == 1, sorted(p.name for p in dirs)
     return dirs[0]
@@ -26,7 +26,7 @@ def record(ctx, prompt: str, reply: str):
 
 
 def test_a_turn_is_saved_under_the_data_dir(ctx):
-    """The conversation lands in $XDG_DATA_HOME/yoke/sessions/<cwd>/."""
+    """The conversation lands in $XDG_DATA_HOME/arqan/sessions/<cwd>/."""
     record(ctx, "remember this turn", "sure thing")
 
     d = sessions_dir(ctx)
@@ -53,10 +53,10 @@ def test_resume_without_sessions_answers_in_the_popup_slot(ctx):
 def test_resume_without_sessions_keeps_the_welcome_screen(ctx):
     """A command that opens nothing leaves the view exactly as it was."""
     s = ctx.spawn()
-    assert "| |_| | (_) |" in s.text(), "the welcome art starts on screen"
+    assert "| (_| | | | (_| |" in s.text(), "the welcome art starts on screen"
     s.submit("/resume")
     s.wait_text("no saved sessions in this directory")
-    assert "| |_| | (_) |" in s.text(), s.text()
+    assert "| (_| | | | (_| |" in s.text(), s.text()
 
 
 def test_the_notice_survives_typing_and_goes_on_the_next_command(ctx):
@@ -114,17 +114,17 @@ def test_a_notice_stacks_above_the_popup(ctx):
 
 def test_resume_lists_and_replays_a_session(ctx):
     """A saved session is offered by timestamp and replayed into the view."""
-    record(ctx, "what is yoke", "a tiny agent")
+    record(ctx, "what is arqan", "a tiny agent")
 
     s = ctx.spawn()
-    assert "what is yoke" not in s.text(), "a new session starts empty"
+    assert "what is arqan" not in s.text(), "a new session starts empty"
     s.submit("/resume")
     s.wait_status("pick a session")
-    assert "what is yoke" in s.text(), "the entry previews its first prompt"
+    assert "what is arqan" in s.text(), "the entry previews its first prompt"
 
     s.key("enter")
     s.wait_text("a tiny agent")
-    s.wait_for(lambda t: t.contains("what is yoke"), "the prompt to be replayed")
+    s.wait_for(lambda t: t.contains("what is arqan"), "the prompt to be replayed")
     assert s.status_kind() == "ready", s.status_line()
 
 
@@ -306,7 +306,7 @@ def test_fork_without_a_conversation_answers_in_the_popup_slot(ctx):
     s.submit("/fork")
     s.wait_text("nothing to fork yet")
     assert s.status_kind() == "ready", s.status_line()
-    root = ctx.home / ".local" / "share" / "yoke" / "sessions"
+    root = ctx.home / ".local" / "share" / "arqan" / "sessions"
     assert not root.exists() or not list(root.iterdir()), "no file is started"
 
 

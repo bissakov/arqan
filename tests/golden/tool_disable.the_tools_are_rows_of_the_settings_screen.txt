@@ -19,7 +19,7 @@
 |    [x] patch                Change files with a diff
 |  › [x] write                Write a file whole
 |
-|  › Message yoke...
+|  › Message arqan...
 |
 |
 |  ● settings · mock-model · build · local · ~/work · -

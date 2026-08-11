@@ -1,4 +1,4 @@
-/* yoke-highlight: bounded Tree-sitter highlighting companion. */
+/* arqan-highlight: bounded Tree-sitter highlighting companion. */
 #define _POSIX_C_SOURCE 200809L
 
 #include "highlight_protocol.h"
@@ -337,7 +337,7 @@ static int serve(void) {
 
 int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "--version") == 0) {
-        puts("yoke-highlight 1 (tree-sitter 0.26.11)");
+        puts("arqan-highlight 1 (tree-sitter 0.26.11)");
         return 0;
     }
     if (argc == 2 && strcmp(argv[1], "--list-languages") == 0) {
@@ -345,11 +345,11 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (argc > 1 && !(argc == 2 && strcmp(argv[1], "--self-test") == 0)) {
-        fprintf(stderr, "usage: yoke-highlight [--version|--list-languages]\n");
+        fprintf(stderr, "usage: arqan-highlight [--version|--list-languages]\n");
         return 2;
     }
     if (!queries_init()) {
-        fputs("yoke-highlight: bundled grammar/query validation failed\n", stderr);
+        fputs("arqan-highlight: bundled grammar/query validation failed\n", stderr);
         queries_delete();
         return 1;
     }

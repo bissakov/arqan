@@ -249,8 +249,8 @@ def test_a_setting_that_replays_keeps_the_scrolled_view(ctx):
 
 def test_show_instructions_keeps_the_scrolled_view(ctx):
     """Rows appearing above the viewport move with it, not under it."""
-    ctx.write_file(".yoke/SYSTEM.md", "BUILD PROMPT\nline two\nline three\n")
-    s = ctx.spawn(YOKE_SYSTEM_PROMPT=None)
+    ctx.write_file(".arqan/SYSTEM.md", "BUILD PROMPT\nline two\nline three\n")
+    s = ctx.spawn(ARQAN_SYSTEM_PROMPT=None)
     for i in range(4):
         ctx.scenario(f"words=120,paragraphs=2,chunk=16,seed={i}")
         s.submit(f"question number {i}")

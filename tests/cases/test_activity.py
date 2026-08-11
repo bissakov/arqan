@@ -50,10 +50,10 @@ def test_spinner_leaves_the_composer_where_it_was(ctx):
     s = ctx.spawn()
     s.submit("hi")
     s.wait_activity("thinking")
-    composed = [i for i in range(s.term.rows) if "Message yoke..." in s.row(i)]
+    composed = [i for i in range(s.term.rows) if "Message arqan..." in s.row(i)]
     assert len(composed) == 1, s.text()
     s.wait_turn_done()
-    assert [i for i in range(s.term.rows) if "Message yoke..." in s.row(i)] \
+    assert [i for i in range(s.term.rows) if "Message arqan..." in s.row(i)] \
         == composed, s.text()
 
 

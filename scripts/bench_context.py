@@ -57,14 +57,14 @@ def paragraph(rng: random.Random, words: int, vocab) -> str:
 
 
 def plant_session(ctx, name: str, tokens: int, tag: str, turns: int = 40) -> Path:
-    """Write a session file of roughly `tokens` tokens, as yoke would.
+    """Write a session file of roughly `tokens` tokens, as arqan would.
 
     `tag` is salted through the text so a resumed screen says which session
     is on it: the benchmark is worthless if a resume quietly does nothing.
     """
-    d = ctx.home / ".local" / "share" / "yoke" / "sessions"
+    d = ctx.home / ".local" / "share" / "arqan" / "sessions"
     d.mkdir(parents=True, exist_ok=True)
-    # yoke slugs the cwd; reuse whatever directory it already made, or make
+    # arqan slugs the cwd; reuse whatever directory it already made, or make
     # the slug the same way so /resume finds the file.
     subs = [p for p in d.iterdir() if p.is_dir()]
     if subs:
@@ -121,7 +121,7 @@ def main() -> int:
     ctx = Ctx(case="benchctx")
     try:
         ctx.scenario("text=ok")
-        # A first real turn creates the session directory with yoke's own slug.
+        # A first real turn creates the session directory with arqan's own slug.
         s = ctx.spawn()
         s.submit("seed")
         s.wait_turn_done()

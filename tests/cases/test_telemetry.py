@@ -4,7 +4,7 @@ import json
 
 
 def log_dir(ctx, state=None):
-    return (state or ctx.home / ".local" / "state") / "yoke" / "telemetry"
+    return (state or ctx.home / ".local" / "state") / "arqan" / "telemetry"
 
 
 def log_files(ctx, state=None):
@@ -163,7 +163,7 @@ def test_the_record_lands_in_the_state_dir(ctx):
     s.submit("/exit")
     s.wait_exit()
 
-    settings = ctx.settings(state / "yoke" / "state.toml")
+    settings = ctx.settings(state / "arqan" / "state.toml")
     assert settings[""]["telemetry"] == "true", settings
     assert len(log_files(ctx, state)) == 1, log_dir(ctx, state)
     assert not log_files(ctx), "the default must stay unused"
@@ -334,7 +334,7 @@ def test_the_record_is_named_after_the_session_file(ctx):
     s.wait_exit()
 
     sessions = sorted(
-        (ctx.home / ".local" / "share" / "yoke" / "sessions").rglob("*.jsonl")
+        (ctx.home / ".local" / "share" / "arqan" / "sessions").rglob("*.jsonl")
     )
     assert len(sessions) == 1, sessions
     record = log_files(ctx)[0]
@@ -370,7 +370,7 @@ def test_resuming_continues_the_record_it_reopened(ctx):
     # of the file has to see where one run ended and the next began.
     assert [e["ev"] for e in lines].count("session") == 2, lines
     assert [e["ev"] for e in lines].count("turn_start") == 2, lines
-    # Opening yoke and resuming leaves that record and nothing beside it.
+    # Opening arqan and resuming leaves that record and nothing beside it.
     assert log_files(ctx) == [record], log_files(ctx)
 
 

@@ -1,9 +1,9 @@
-/* main.c: yoke entry point. Unity build: includes every module as one TU. */
+/* main.c: arqan entry point. Unity build: includes every module as one TU. */
 #define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE 1
 
-#include "yoke.h"
+#include "agent.h"
 
 #include "core.c"
 #include "json.c"
@@ -42,16 +42,16 @@ static volatile sig_atomic_t g_got_sigint = 0;
 static void on_sigint(i32 sig) { (void)sig; g_got_sigint = 1; }
 
 /* Static backing storage: no malloc anywhere in our code. */
-static alignas(64) u8 g_persist[YOKE_PERSIST_BYTES];
-static alignas(64) u8 g_scratch[YOKE_ARENA_BYTES];
+static alignas(64) u8 g_persist[AGENT_PERSIST_BYTES];
+static alignas(64) u8 g_scratch[AGENT_ARENA_BYTES];
 /* The rows of whichever modal screen is open. Only one is ever open, and its
  * rows have to survive an action that resets the scratch arena to rerender
  * the transcript under them. */
-static alignas(64) u8 g_screen[YOKE_SCREEN_BYTES];
+static alignas(64) u8 g_screen[AGENT_SCREEN_BYTES];
 
 /* Handled below in the prompt loop; the TUI reads this to drive the
  * composer's completion popup. */
-static TuiCmd g_commands[YOKE_MAX_COMMANDS];
+static TuiCmd g_commands[AGENT_MAX_COMMANDS];
 
 static size_t g_command_n;
 
@@ -66,11 +66,11 @@ static size_t commands_init(void) {
     g_commands[n++] = (TuiCmd){ STR("/rewind"), STR("Go back to an earlier message and edit it") };
     g_commands[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
     g_commands[n++] = (TuiCmd){ STR("/find"), STR("Search the transcript (Ctrl-R)") };
-    g_commands[n++] = (TuiCmd){ STR("/settings"), STR("Change how yoke behaves") };
+    g_commands[n++] = (TuiCmd){ STR("/settings"), STR("Change how " AGENT_NAME " behaves") };
     g_commands[n++] = (TuiCmd){ STR("/statusline"), STR("Choose what the status line shows") };
-    g_commands[n++] = (TuiCmd){ STR("/about"), STR("About yoke and its contributors") };
-    g_commands[n++] = (TuiCmd){ STR("/help"), STR("Start a conversation about using yoke") };
-    g_commands[n++] = (TuiCmd){ STR("/exit"), STR("Quit yoke") };
+    g_commands[n++] = (TuiCmd){ STR("/about"), STR("About " AGENT_NAME " and its contributors") };
+    g_commands[n++] = (TuiCmd){ STR("/help"), STR("Start a conversation about using " AGENT_NAME) };
+    g_commands[n++] = (TuiCmd){ STR("/exit"), STR("Quit " AGENT_NAME) };
     g_command_n = n;
     return n;
 }
@@ -88,9 +88,9 @@ static const TuiAlias k_aliases[] = {
 #define INFO_ROW(name, desc) \
     { { (name), sizeof(name) - 1 }, { (desc), sizeof(desc) - 1 } }
 static const TuiCmd k_about[] = {
-    INFO_ROW("yoke " YOKE_VERSION, "A tiny C17 terminal coding agent"),
+    INFO_ROW(AGENT_NAME " " AGENT_VERSION, "A tiny C17 terminal coding agent"),
     INFO_ROW("Created by", "Alikhan Bissakov"),
-    INFO_ROW("Source", "github.com/bissakov/yoke"),
+    INFO_ROW("Source", "github.com/bissakov/" AGENT_NAME),
     INFO_ROW("Built with", "C17, libc, libcurl and Lexbor"),
     INFO_ROW("Inspired by", "Claude Code, Codex, OpenCode and Pi"),
 };
@@ -121,7 +121,7 @@ static b8 g_one_shot;
 static void one_shot_diag(const char *kind, Str name, Str text) {
     if (!g_one_shot) return;
     Str head = str_clip_utf8(text, 2048);
-    fprintf(stderr, "yoke: %s", kind);
+    fprintf(stderr, AGENT_NAME ": %s", kind);
     if (name.n) fprintf(stderr, " %.*s", (i32)name.n, name.p);
     if (head.n) fprintf(stderr, ": %.*s", (i32)head.n, head.p);
     if (head.n < text.n)
@@ -235,7 +235,7 @@ static Str mode_name(AgentMode m) {
 static void telemetry_session(const Config *cfg, const ToolRegistry *tools) {
     TelEvent e;
     tel_open(&e, "session");
-    tel_str(&e, "version", STR(YOKE_VERSION));
+    tel_str(&e, "version", STR(AGENT_VERSION));
     tel_str(&e, "model", cfg->model);
     tel_str(&e, "provider", cfg->provider);
     tel_str(&e, "mode", mode_name(cfg->mode));
@@ -249,7 +249,7 @@ static void telemetry_session(const Config *cfg, const ToolRegistry *tools) {
     tel_bool(&e, "has_key", cfg->api_key.p != NULL);
     tel_int(&e, "cols", (i64)tui_body_cols());
     tel_bool(&e, "fullscreen", tui_is_fullscreen());
-    char cwd[YOKE_MAX_PATH];
+    char cwd[AGENT_MAX_PATH];
     if (getcwd(cwd, sizeof cwd)) tel_hash_field(&e, "cwd", str_c(cwd));
     tel_send(&e);
 }
@@ -338,7 +338,7 @@ static b8 add_result(Agent *ag, size_t call, Str name, Str result, u32 ms) {
  * whose work was never timed, so a run too fast to measure still reads as one
  * that was. */
 static u32 elapsed_ms(f64 started) {
-    f64 ms = (yoke_now_seconds() - started) * 1000.0;
+    f64 ms = (agent_now_seconds() - started) * 1000.0;
     if (ms < 1.0) return 1;
     return ms > (f64)UINT32_MAX ? UINT32_MAX : (u32)ms;
 }
@@ -351,7 +351,7 @@ static Str ask_user_answer(Agent *ag, Str args) {
     Str question = json_str(j, STR("question"));
     const JVal *opts = j ? json_get(j, STR("options")) : NULL;
     size_t n = opts && opts->type == J_ARR ? opts->u.arr.n : 0;
-    if (n > YOKE_MAX_POPUP - 1) n = YOKE_MAX_POPUP - 1;
+    if (n > AGENT_MAX_POPUP - 1) n = AGENT_MAX_POPUP - 1;
 
     if (!g_one_shot) render_question(question);
 
@@ -463,7 +463,7 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         if (!g_one_shot)
             render_tool_call(name, args, ag->scratch, (u32)(i + 1),
                              conv->expanded[i]);
-        f64 started = yoke_now_seconds();
+        f64 started = agent_now_seconds();
         b8 ok = tools_run(ag->tools, tool, args, ag->scratch, &out, err,
                           sizeof err);
         if (!ok) buf_error(&out, err, "tool failed");
@@ -618,13 +618,13 @@ static const char *help_toggle(b8 on) { return on ? "on" : "off"; }
  * diagnostic on one line. No file content is read here. */
 static void help_path(Buf *b, const char *label, Str path) {
     buf_putf(b, "- %s: ", label);
-    if (!path.n || path.n >= YOKE_MAX_PATH) {
+    if (!path.n || path.n >= AGENT_MAX_PATH) {
         buf_puts(b, STR("unresolved\n"));
         return;
     }
     buf_json_str(b, path);
 
-    char z[YOKE_MAX_PATH];
+    char z[AGENT_MAX_PATH];
     memcpy(z, path.p, path.n);
     z[path.n] = '\0';
     struct stat st;
@@ -645,8 +645,8 @@ static void help_path(Buf *b, const char *label, Str path) {
 
 static void help_path_candidates(Buf *b, Arena *a, Str name,
                                  const char *label) {
-    Str paths[YOKE_MAX_CONFIG_FILES];
-    size_t n = paths_config_files(name, a, paths, YOKE_MAX_CONFIG_FILES);
+    Str paths[AGENT_MAX_CONFIG_FILES];
+    size_t n = paths_config_files(name, a, paths, AGENT_MAX_CONFIG_FILES);
     for (size_t i = 0; i < n; i++) help_path(b, label, paths[i]);
 }
 
@@ -655,12 +655,13 @@ static void help_path_candidates(Buf *b, Arena *a, Str name,
  * summarized by the effective prompt source instead of flooding the report. */
 static void help_project_paths(Buf *b, Str cwd) {
     static const char *const suffixes[] = {
-        "/.yoke/config.toml", "/.yoke/SYSTEM.md", "/.yoke/PLAN.md",
+        "/." AGENT_NAME "/config.toml", "/." AGENT_NAME "/SYSTEM.md",
+        "/." AGENT_NAME "/PLAN.md",
         "/AGENTS.md",
         "/.gitignore", "/.ignore",
     };
-    if (!cwd.n || cwd.n >= YOKE_MAX_PATH || cwd.p[0] != '/') return;
-    char dir[YOKE_MAX_PATH], full[YOKE_MAX_PATH];
+    if (!cwd.n || cwd.n >= AGENT_MAX_PATH || cwd.p[0] != '/') return;
+    char dir[AGENT_MAX_PATH], full[AGENT_MAX_PATH];
     memcpy(dir, cwd.p, cwd.n);
     size_t n = cwd.n;
     while (n > 1 && dir[n - 1] == '/') n--;
@@ -700,10 +701,11 @@ static Str help_build(Agent *ag) {
     Buf b;
     buf_init(&b, a, 16384);
     buf_puts(&b, STR(
-        "# yoke help context\n\n"
-        "I am using yoke " YOKE_VERSION ", a C17 terminal coding agent. "
+        "# " AGENT_NAME " help context\n\n"
+        "I am using " AGENT_NAME " " AGENT_VERSION ", a C17 terminal coding agent. "
         "This is a live snapshot generated by /help. Help me understand, "
-        "configure, or troubleshoot yoke using this context. Never reveal "
+        "configure, or troubleshoot " AGENT_NAME " using this context. Never "
+        "reveal "
         "or request API key values.\n\n"
         "## Effective configuration\n"));
     buf_putf(&b, "- mode: %s\n", cfg->mode == MODE_PLAN ? "plan" : "build");
@@ -776,7 +778,7 @@ static Str help_build(Agent *ag) {
     if (!endpoints.n) buf_puts(&b, STR("- none\n"));
     for (size_t i = 0; i < endpoints.n; i++) {
         size_t mark = a->off;
-        char key_err[YOKE_MAX_PATH + 96] = {0};
+        char key_err[AGENT_MAX_PATH + 96] = {0};
         Str key = endpoints_key(endpoints.name[i], a, a, key_err,
                                 sizeof key_err);
         b8 has_key = key.n != 0;
@@ -817,27 +819,27 @@ static Str help_build(Agent *ag) {
     help_prompt_sources(&b, "Plan", &cfg->plan_sources);
 
     buf_puts(&b, STR("\n## Resolved paths\n"));
-    char cwd_buf[YOKE_MAX_PATH];
+    char cwd_buf[AGENT_MAX_PATH];
     Str cwd = getcwd(cwd_buf, sizeof cwd_buf) ? str_c(cwd_buf) : (Str){0};
     help_path(&b, "working directory", cwd);
-    help_path(&b, "user config directory", paths_dir(YOKE_DIR_CONFIG, a));
-    help_path_candidates(&b, a, YOKE_CONFIG_NAME, "config candidate");
+    help_path(&b, "user config directory", paths_dir(AGENT_DIR_CONFIG, a));
+    help_path_candidates(&b, a, AGENT_CONFIG_NAME, "config candidate");
     {
-        Str project[YOKE_MAX_PROJECT_FILES];
-        size_t pn = paths_project_files(YOKE_CONFIG_NAME, a, project,
-                                        YOKE_MAX_PROJECT_FILES);
+        Str project[AGENT_MAX_PROJECT_FILES];
+        size_t pn = paths_project_files(AGENT_CONFIG_NAME, a, project,
+                                        AGENT_MAX_PROJECT_FILES);
         for (size_t i = 0; i < pn; i++)
             help_path(&b, "project config", project[i]);
     }
     help_path_candidates(&b, a, STR("SYSTEM.md"), "global Build prompt candidate");
     help_path_candidates(&b, a, STR("PLAN.md"), "global Plan prompt candidate");
-    help_path(&b, "state directory", paths_dir(YOKE_DIR_STATE, a));
-    help_path(&b, "state file", paths_file(YOKE_DIR_STATE, YOKE_STATE_NAME, a));
+    help_path(&b, "state directory", paths_dir(AGENT_DIR_STATE, a));
+    help_path(&b, "state file", paths_file(AGENT_DIR_STATE, AGENT_STATE_NAME, a));
     help_path(&b, "credentials file",
-              paths_file(YOKE_DIR_STATE, YOKE_CREDENTIALS_NAME, a));
-    help_path(&b, "prompt history", paths_file(YOKE_DIR_STATE, STR("history"), a));
-    help_path(&b, "telemetry root", paths_file(YOKE_DIR_STATE, STR("telemetry"), a));
-    help_path(&b, "data directory", paths_dir(YOKE_DIR_DATA, a));
+              paths_file(AGENT_DIR_STATE, AGENT_CREDENTIALS_NAME, a));
+    help_path(&b, "prompt history", paths_file(AGENT_DIR_STATE, STR("history"), a));
+    help_path(&b, "telemetry root", paths_file(AGENT_DIR_STATE, STR("telemetry"), a));
+    help_path(&b, "data directory", paths_dir(AGENT_DIR_DATA, a));
     help_path(&b, "session directory", ag->sess->dir);
     if (ag->sess->path.n) {
         buf_puts(&b, STR("- current session file: "));
@@ -891,7 +893,7 @@ static void resume_session(Agent *ag) {
     size_t session_mark = ag->mark;
     arena_reset(scratch);
     SessionList list;
-    size_t n = session_list(sess, scratch, &list, YOKE_MAX_SESSIONS);
+    size_t n = session_list(sess, scratch, &list, AGENT_MAX_SESSIONS);
     if (!n) {
         tui_notice(STR("no saved sessions in this directory"));
         return;
@@ -962,7 +964,7 @@ static void rewind_conversation(Agent *ag) {
     /* A conversation can hold more turns than the popup does, and going back
      * a hundred of them is a session to resume rather than a message to
      * edit, so the oldest go. */
-    size_t skip = count > YOKE_MAX_POPUP ? count - YOKE_MAX_POPUP : 0;
+    size_t skip = count > AGENT_MAX_POPUP ? count - AGENT_MAX_POPUP : 0;
     size_t cap = count - skip;
     size_t *at = arena_new(scratch, size_t, cap);
     TuiCmd *items = arena_new(scratch, TuiCmd, cap);
@@ -1051,7 +1053,7 @@ static b8 command_offered(Str name) {
     return false;
 }
 
-/* Only the commands yoke offers are named: a line it does not know is the
+/* Only the commands arqan offers are named: a line it does not know is the
  * user's text, not ours. */
 static void telemetry_command(Str line) {
     Str word = line;
@@ -1072,7 +1074,7 @@ static b8 manual_model(Arena *scratch, const char *why, Str *out) {
         snprintf(question, sizeof question, "%s; enter a model manually", why);
     else
         snprintf(question, sizeof question, "model id (not verified)");
-    char model[YOKE_MAX_MODEL_NAME + 1];
+    char model[AGENT_MAX_MODEL_NAME + 1];
     if (!tui_ask(str_c(question), false, model, sizeof model)) return false;
     Str saved = str_dup(scratch, str_c(model));
     if (!saved.p) {
@@ -1087,14 +1089,14 @@ static b8 pick_model(const Config *cfg, Arena *scratch, Str *out,
                      b8 *verified) {
     *verified = false;
     tui_set_status("loading models");
-    Str *names = arena_new(scratch, Str, YOKE_MAX_MODELS);
+    Str *names = arena_new(scratch, Str, AGENT_MAX_MODELS);
     if (!names) {
         tui_set_status("ready");
         tui_notice(STR("out of memory listing models"));
         return false;
     }
     char err[128] = {0};
-    size_t n = provider_models(cfg, scratch, names, YOKE_MAX_MODELS,
+    size_t n = provider_models(cfg, scratch, names, AGENT_MAX_MODELS,
                               err, sizeof err);
     tui_set_status("ready");
     if (!n) {
@@ -1184,14 +1186,14 @@ static void provider_chosen(const Config *cfg, Arena *scratch) {
 
 /* Where the key is kept. The file is offered first because it always works:
  * a keyring needs its daemon and its helper installed, and a run with no
- * session bus has neither. Only the stores yoke can write to are listed;
+ * session bus has neither. Only the stores arqan can write to are listed;
  * `command` is deliberately absent, since a provider that runs a program of
  * the user's choosing is set up by editing the credentials file. */
 static b8 pick_key_source(SecretSource *out) {
     const TuiCmd stores[] = {
-        { STR("Credentials file"), STR("$XDG_STATE_HOME/yoke/credentials.toml, mode 0600") },
+        { STR("Credentials file"), STR("$XDG_STATE_HOME/" AGENT_NAME "/credentials.toml, mode 0600") },
         { STR("System keyring"),   STR("Secret Service, through secret-tool") },
-        { STR("Password store"),   STR("pass, under yoke/<provider>") },
+        { STR("Password store"),   STR("pass, under " AGENT_NAME "/<provider>") },
     };
     size_t pick = *out == SECRET_SERVICE ? 1 : *out == SECRET_PASS ? 2 : 0;
     if (!tui_pick(STR("where should the key be kept"), stores, 3,
@@ -1224,14 +1226,14 @@ static b8 pick_api(ApiKind *out) {
  * until it succeeds. Returns false when the form was cancelled or refused. */
 static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
     arena_reset(scratch);
-    char name[YOKE_MAX_ENDPOINT_NAME + 1];
-    char url[YOKE_MAX_URL + 1];
-    char key[YOKE_MAX_API_KEY + 1];
-    char efforts[YOKE_MAX_REASONING_LIST + 1] = {0};
-    char budgets[YOKE_MAX_REASONING_LIST + 1] = {0};
-    char effort[YOKE_MAX_REASONING_LIST + 1] = {0};
-    char budget[YOKE_MAX_REASONING_LIST + 1] = {0};
-    char templ[YOKE_MAX_REASONING_TEMPLATE + 1] = {0};
+    char name[AGENT_MAX_ENDPOINT_NAME + 1];
+    char url[AGENT_MAX_URL + 1];
+    char key[AGENT_MAX_API_KEY + 1];
+    char efforts[AGENT_MAX_REASONING_LIST + 1] = {0};
+    char budgets[AGENT_MAX_REASONING_LIST + 1] = {0};
+    char effort[AGENT_MAX_REASONING_LIST + 1] = {0};
+    char budget[AGENT_MAX_REASONING_LIST + 1] = {0};
+    char templ[AGENT_MAX_REASONING_TEMPLATE + 1] = {0};
     if (!tui_ask(STR("a name for this provider"), false, name, sizeof name))
         return false;
     /* The name becomes a TOML header, so it is a bare key or nothing. */
@@ -1246,8 +1248,8 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
         notice_fmt("a provider named %s already exists", name);
         return false;
     }
-    if (eps.n >= YOKE_MAX_ENDPOINTS) {
-        notice_fmt("no room for another provider (%d)", YOKE_MAX_ENDPOINTS);
+    if (eps.n >= AGENT_MAX_ENDPOINTS) {
+        notice_fmt("no room for another provider (%d)", AGENT_MAX_ENDPOINTS);
         return false;
     }
     ApiKind api = API_OPENAI;
@@ -1286,7 +1288,7 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
     b8 verified = false;
     if (!pick_model(&probe, scratch, &model, &verified)) return false;
 
-    char err[YOKE_MAX_PATH + 64] = {0};
+    char err[AGENT_MAX_PATH + 64] = {0};
     if (!endpoints_put(&eps, str_c(name), str_c(url), model, api,
                        str_c(efforts), str_c(budgets), str_c(effort),
                        str_c(budget), str_c(templ), scratch)
@@ -1326,10 +1328,10 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
  * credentials store, so it must never contain a secret. */
 static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
                         Arena *persist, Arena *scratch) {
-    char url[YOKE_MAX_URL + 1], model[YOKE_MAX_MODEL_NAME + 1];
-    char efforts[YOKE_MAX_REASONING_LIST + 1], budgets[YOKE_MAX_REASONING_LIST + 1];
-    char effort[YOKE_MAX_REASONING_LIST + 1], budget[YOKE_MAX_REASONING_LIST + 1];
-    char templ[YOKE_MAX_REASONING_TEMPLATE + 1], key[YOKE_MAX_API_KEY + 1];
+    char url[AGENT_MAX_URL + 1], model[AGENT_MAX_MODEL_NAME + 1];
+    char efforts[AGENT_MAX_REASONING_LIST + 1], budgets[AGENT_MAX_REASONING_LIST + 1];
+    char effort[AGENT_MAX_REASONING_LIST + 1], budget[AGENT_MAX_REASONING_LIST + 1];
+    char templ[AGENT_MAX_REASONING_TEMPLATE + 1], key[AGENT_MAX_API_KEY + 1];
     snprintf(url, sizeof url, "%.*s", (i32)eps->base_url[i].n, eps->base_url[i].p);
     snprintf(model, sizeof model, "%.*s", (i32)eps->model[i].n, eps->model[i].p);
     snprintf(efforts, sizeof efforts, "%.*s", (i32)eps->reasoning_efforts[i].n, eps->reasoning_efforts[i].p);
@@ -1376,9 +1378,9 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
             || !pick_key_source(&key_source)))
         return false;
     if (key_action == KEY_MOVE && !pick_key_source(&key_source)) return false;
-    char err[YOKE_MAX_PATH + 64] = {0};
+    char err[AGENT_MAX_PATH + 64] = {0};
     Str saved_key = {0};
-    /* Moving reads the key yoke already holds rather than asking for it
+    /* Moving reads the key arqan already holds rather than asking for it
      * again: requiring the value is what keeps keys in the file. */
     if (key_action == KEY_KEEP || key_action == KEY_MOVE) {
         saved_key = endpoints_key(eps->name[i], persist, scratch,
@@ -1401,9 +1403,9 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
     if (changed_connection) {
         Config probe = *cfg; probe.base_url = str_c(url); probe.api = api;
         probe.api_key = saved_key;
-        Str listed[YOKE_MAX_MODELS]; char model_err[160] = {0};
+        Str listed[AGENT_MAX_MODELS]; char model_err[160] = {0};
         size_t listed_n = provider_models(&probe, scratch, listed,
-                                          YOKE_MAX_MODELS, model_err,
+                                          AGENT_MAX_MODELS, model_err,
                                           sizeof model_err);
         verified = false;
         for (size_t j = 0; j < listed_n; j++)
@@ -1453,7 +1455,7 @@ static b8 delete_endpoint(Config *cfg, const Endpoints *eps, size_t i,
 
     Str name = eps->name[i];
     b8 active = str_eq(name, cfg->provider);
-    char err[YOKE_MAX_PATH + 64] = {0};
+    char err[AGENT_MAX_PATH + 64] = {0};
     if (!endpoints_delete(name, scratch, err, sizeof err)) {
         tui_notice(str_c(err[0] ? err : "could not delete the provider"));
         return false;
@@ -1535,7 +1537,7 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
             delete_endpoint(cfg, &eps, del, scratch);
         return;
     }
-    char err[YOKE_MAX_PATH + 64] = {0};
+    char err[AGENT_MAX_PATH + 64] = {0};
     Str key = endpoints_key(eps.name[pick], persist, scratch, err, sizeof err);
     if (err[0]) {
         tui_notice(str_c(err));
@@ -1573,7 +1575,7 @@ enum {
     SET_SHOW_INSTRUCTIONS, SET_TOOL, SET_WRAP, SET_MODE, SET_MAX_TOKENS,
     SET_EFFORT, SET_BUDGET
 };
-#define SET_MAX_ROWS (16 + YOKE_MAX_TOOLS)
+#define SET_MAX_ROWS (16 + AGENT_MAX_TOOLS)
 
 /* "[x] label" for a toggle and the same column for a value row, so the two
  * kinds read as one list. A row that lost its checkbox to a full arena is
@@ -2058,7 +2060,7 @@ static b8 on_busy_command(Str line, void *ud) {
         ran = tui_settings_open(STR("status line"),
                                 statusline_screen(ag->scratch));
     else if (str_eq(name, STR("/about")))
-        ran = tui_info_open(STR("about yoke"), k_about, ABOUT_N);
+        ran = tui_info_open(STR("about " AGENT_NAME), k_about, ABOUT_N);
     else if (str_eq(name, STR("/copy"))) {
         copy_last_reply(ag->conv);
         ran = true;
@@ -2093,7 +2095,7 @@ static void run_shell(Agent *ag, Str cmd) {
     }
     say_busy("running shell");
     render_shell_call(stored, (u32)(slot + 1), false);
-    f64 started = yoke_now_seconds();
+    f64 started = agent_now_seconds();
     Buf out; buf_init(&out, ag->scratch, 4096);
     char err[256] = {0};
     if (!shell_capture(cmd, &out, err, sizeof err))
@@ -2172,7 +2174,7 @@ static b8 agent_turn(Agent *ag, Str text) {
     tel_int(&te, "messages", (i64)conv->n);
     tel_str(&te, "mode", mode_name(ag->cfg->mode));
     tel_send(&te);
-    f64 turn_started = yoke_now_seconds();
+    f64 turn_started = agent_now_seconds();
     i32 rounds = 0;
 
     /* The composer stays editable throughout; only submitting waits. */
@@ -2237,7 +2239,7 @@ static b8 agent_turn(Agent *ag, Str text) {
             break;
         }
         if (rc < 0) {
-            /* `err` is formatted by yoke itself: a status or a limit, never
+            /* `err` is formatted by arqan itself: a status or a limit, never
              * anything from the conversation. */
             TelEvent ee;
             tel_open(&ee, "error");
@@ -2277,7 +2279,7 @@ static b8 agent_turn(Agent *ag, Str text) {
     tel_open(&te, "turn_end");
     tel_bool(&te, "ok", ok);
     tel_int(&te, "rounds", rounds);
-    tel_int(&te, "ms", (i64)((yoke_now_seconds() - turn_started) * 1000.0));
+    tel_int(&te, "ms", (i64)((agent_now_seconds() - turn_started) * 1000.0));
     tel_int(&te, "messages", (i64)conv->n);
     /* The budget a long session runs down; nothing on screen says where the
      * arenas stand. */
@@ -2322,7 +2324,7 @@ i32 main(i32 argc, char **argv) {
         case CLI_RUN:   break;
     }
     if (opts.have_prompt && !opts.prompt.n) {
-        fprintf(stderr, "yoke: the prompt is empty\n");
+        fprintf(stderr, AGENT_NAME ": the prompt is empty\n");
         return 2;
     }
 
@@ -2347,15 +2349,15 @@ i32 main(i32 argc, char **argv) {
     if (cfg.disable_tools.n &&
         !tools_disable_list(&tools, cfg.disable_tools, tools_err,
                             sizeof tools_err)) {
-        fprintf(stderr, "yoke: %s\n", tools_err);
+        fprintf(stderr, AGENT_NAME ": %s\n", tools_err);
         return 2;
     }
-    char prompt_err[YOKE_MAX_PATH + 128] = {0};
+    char prompt_err[AGENT_MAX_PATH + 128] = {0};
     cfg.system_prompt = prompt_build(&tools, cfg.system_prompt, &persist,
                                      &scratch, &cfg.system_sources, prompt_err,
                                      sizeof prompt_err);
     if (!cfg.system_prompt.n) {
-        fprintf(stderr, "yoke: %s\n", prompt_err);
+        fprintf(stderr, AGENT_NAME ": %s\n", prompt_err);
         return 2;
     }
     arena_reset(&scratch);
@@ -2365,7 +2367,7 @@ i32 main(i32 argc, char **argv) {
                                         &cfg.plan_sources, prompt_err,
                                         sizeof prompt_err);
     if (!cfg.plan_prompt.n) {
-        fprintf(stderr, "yoke: %s\n", prompt_err);
+        fprintf(stderr, AGENT_NAME ": %s\n", prompt_err);
         return 2;
     }
     arena_reset(&scratch);
@@ -2375,19 +2377,19 @@ i32 main(i32 argc, char **argv) {
      * only the on-disk copy is lost. */
     History hist = {0};
     Arena hist_arena = {0};
-    void *hist_mem = arena_alloc(&persist, YOKE_HISTORY_BYTES, 64);
+    void *hist_mem = arena_alloc(&persist, AGENT_HISTORY_BYTES, 64);
     if (hist_mem) {
-        arena_init(&hist_arena, hist_mem, YOKE_HISTORY_BYTES);
-        if (history_init(&hist, &hist_arena, YOKE_MAX_HISTORY))
+        arena_init(&hist_arena, hist_mem, AGENT_HISTORY_BYTES);
+        if (history_init(&hist, &hist_arena, AGENT_MAX_HISTORY))
             history_load(&hist,
-                         paths_file(YOKE_DIR_STATE, STR("history"), &persist),
+                         paths_file(AGENT_DIR_STATE, STR("history"), &persist),
                          &scratch);
     }
     arena_reset(&scratch);
 
     Conv conv;
     if (!conv_init(&conv, &persist, cfg.max_messages)) {
-        fprintf(stderr, "yoke: cannot reserve %zu conversation slots\n",
+        fprintf(stderr, AGENT_NAME ": cannot reserve %zu conversation slots\n",
                 cfg.max_messages);
         return 1;
     }
@@ -2454,7 +2456,8 @@ i32 main(i32 argc, char **argv) {
     if (opts.have_prompt) {
         if (no_provider(&cfg)) {
             tui_stop();
-            fprintf(stderr, "yoke: no provider configured; run yoke without "
+            fprintf(stderr, AGENT_NAME ": no provider configured; run " AGENT_NAME
+                            " without "
                             "-p and use /provider to add one\n");
             return 1;
         }
@@ -2471,7 +2474,7 @@ i32 main(i32 argc, char **argv) {
 
     /* Static, not automatic: a megabyte of stack for a line the composer
      * already holds is a frame that turns a deep call into a crash. */
-    static char line[YOKE_LINE_BUF];
+    static char line[AGENT_LINE_BUF];
     for (;;) {
         size_t ln = 0;
         if (!tui_readline("> ", line, sizeof line, &ln)) break;
@@ -2535,7 +2538,7 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
         if (!strcmp(line, "/about")) {
-            tui_info(STR("about yoke"), k_about, ABOUT_N);
+            tui_info(STR("about " AGENT_NAME), k_about, ABOUT_N);
             continue;
         }
         if (!strcmp(line, "/help")) {

@@ -19,7 +19,7 @@
 |    [x] read                 Read a page of a file
 |    [x] grep                 Search file contents
 |
-|  › Message yoke...
+|  › Message arqan...
 |
 |
 |  ● settings · mock-model · build · local · ~/work · -

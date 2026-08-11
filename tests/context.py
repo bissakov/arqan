@@ -2,7 +2,7 @@
 
 Every test gets a fresh temp directory, a fresh mock server on an ephemeral
 port and a fresh request log, so tests never observe each other. The
-environment handed to `yoke` is scrubbed down to a fixed set of variables. The
+environment handed to `arqan` is scrubbed down to a fixed set of variables. The
 status line renders the cwd and the model name, so anything leaking in from
 the developer's shell would show up in a golden file.
 """
@@ -22,7 +22,7 @@ from .harness.session import QUIET
 from .mockprovider import MockProvider, Scenario
 
 ROOT = Path(__file__).resolve().parent.parent
-BIN = ROOT / os.environ.get("YOKE_TEST_BIN", "bin/yoke")
+BIN = ROOT / os.environ.get("ARQAN_TEST_BIN", "bin/arqan")
 GOLDEN = Path(__file__).resolve().parent / "golden"
 
 # Enough room for the status line's model · provider · cwd · tokens groups.
@@ -69,7 +69,7 @@ class Ctx:
         self.case = case
         self.update = update
         self.keep = keep
-        self.tmp = Path(tempfile.mkdtemp(prefix="yoke-test-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="arqan-test-"))
         # realpath: getcwd(3) resolves symlinks, and the status line shows it
         self.tmp = Path(os.path.realpath(self.tmp))
         self.home = self.tmp / "home"
@@ -110,17 +110,17 @@ class Ctx:
         return p
 
     def write_project_config(self, content: str, at: Path | None = None) -> Path:
-        """A project's own settings, in <dir>/.yoke/config.toml."""
-        p = (at or self.work) / ".yoke" / "config.toml"
+        """A project's own settings, in <dir>/.arqan/config.toml."""
+        p = (at or self.work) / ".arqan" / "config.toml"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
         return p
 
     def config_file(self) -> Path:
-        return self.xdg / "yoke" / "config.toml"
+        return self.xdg / "arqan" / "config.toml"
 
     def state_file(self) -> Path:
-        return self.home / ".local" / "state" / "yoke" / "state.toml"
+        return self.home / ".local" / "state" / "arqan" / "state.toml"
 
     def settings(self, path: Path) -> dict:
         """A settings file as {section: {key: value}}; "" is its head."""
@@ -144,13 +144,13 @@ class Ctx:
             # Colour stays on: the UI encodes the turn state in the status
             # bullet's colour and nowhere in text, so tests need the attribute
             # grid. Golden snapshots only record glyphs, so they are unaffected.
-            "YOKE_BASE_URL": self.mock.base_url,
-            "YOKE_API_KEY": "test-key",
-            "YOKE_MODEL": "mock-model",
-            "YOKE_SYSTEM_PROMPT": "You are a test fixture.",
+            "ARQAN_BASE_URL": self.mock.base_url,
+            "ARQAN_API_KEY": "test-key",
+            "ARQAN_MODEL": "mock-model",
+            "ARQAN_SYSTEM_PROMPT": "You are a test fixture.",
             # A failing request is an answer here, not weather: a case that
             # wants the retry loop asks for it and pins its backoff.
-            "YOKE_RETRIES": "0",
+            "ARQAN_RETRIES": "0",
         }
         for k, v in overrides.items():
             if v is None:
@@ -169,7 +169,7 @@ class Ctx:
         args: list[str] | None = None,
         **env_overrides,
     ) -> Session:
-        """Start `yoke` on a pty and wait for the first frame."""
+        """Start `arqan` on a pty and wait for the first frame."""
         s = Session(
             [str(BIN), *(args or [])],
             env=self.env(**env_overrides),
@@ -185,7 +185,7 @@ class Ctx:
             # The placeholder is the one piece of chrome that is always there
             # and never depends on the configured model or provider.
             s.wait_for(
-                lambda t: t.contains("Message yoke") or t.contains("\u203a "),
+                lambda t: t.contains("Message arqan") or t.contains("\u203a "),
                 "first frame",
             )
             s.settle()
@@ -193,7 +193,7 @@ class Ctx:
 
     def run_cli(self, *args: str, stdin_text: str = "", timeout: float = 15.0,
                 **env_overrides):
-        """Run `yoke` with arguments and pipes, for the non-interactive paths."""
+        """Run `arqan` with arguments and pipes, for the non-interactive paths."""
         return subprocess.run(
             [str(BIN), *args],
             input=stdin_text,
@@ -205,7 +205,7 @@ class Ctx:
         )
 
     def run_piped(self, stdin_text: str, timeout: float = 15.0, **env_overrides):
-        """Run `yoke` with pipes instead of a tty (the line-oriented path)."""
+        """Run `arqan` with pipes instead of a tty (the line-oriented path)."""
         return subprocess.run(
             [str(BIN)],
             input=stdin_text,

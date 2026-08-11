@@ -53,7 +53,7 @@ def test_tab_accepts_selection(ctx):
     s.type("/e").sync()
     s.key("tab").sync()
     assert s.composer_text() == "/exit", s.composer_lines()
-    assert "Quit yoke" not in s.text(), "popup should be gone after accepting"
+    assert "Quit arqan" not in s.text(), "popup should be gone after accepting"
 
 
 def test_enter_accepts_and_submits(ctx):
@@ -97,7 +97,7 @@ def test_tab_on_exact_match_just_closes_the_popup(ctx):
     s.type("/exit").sync()
     s.key("tab").sync()
     assert s.composer_text() == "/exit", s.composer_lines()
-    assert "Quit yoke" not in s.text(), "popup should be closed"
+    assert "Quit arqan" not in s.text(), "popup should be closed"
     assert s.proc.poll() is None, "Tab must not submit"
 
 
@@ -179,7 +179,7 @@ def test_alias_finds_the_command(ctx):
     s = ctx.spawn()
     s.type("/qu").sync()
     text = s.text()
-    assert "/exit" in text and "Quit yoke" in text, text
+    assert "/exit" in text and "Quit arqan" in text, text
     assert "/quit" not in text, "the alias is a way in, not a row of its own"
 
 

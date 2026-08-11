@@ -1,8 +1,8 @@
-/* config.c: every setting yoke has, in one table, resolved once.
+/* config.c: every setting arqan has, in one table, resolved once.
  *
  * A setting is a row of k_conf: the name it has in a file, its type, its
  * bounds and whether a project file may set it. That name is also its
- * environment variable, upper-cased under YOKE_, and the name the state file
+ * environment variable, upper-cased under ARQAN_, and the name the state file
  * remembers it by, so a new setting is a row rather than a branch in each of
  * five readers.
  *
@@ -12,15 +12,15 @@
  * is reported and dropped rather than clamped: a mistyped line should fall
  * through to the value below it, not shadow it with something nobody wrote.
  *
- * A project's .yoke/config.toml arrives with a `git clone`, so it is not
- * trusted with anything that names a secret or chooses what yoke runs:
+ * A project's .arqan/config.toml arrives with a `git clone`, so it is not
+ * trusted with anything that names a secret or chooses what arqan runs:
  * `api_key` is refused there, and the key directives are refused in every
  * config file (see endpoints.c and secrets.c).
  *
  * The system prompt is not a row here: it is a document, so it lives in
- * SYSTEM.md (see prompt.c). Only YOKE_SYSTEM_PROMPT and --system set it.
+ * SYSTEM.md (see prompt.c). Only ARQAN_SYSTEM_PROMPT and --system set it.
  */
-#include "yoke.h"
+#include "agent.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,44 +36,44 @@ typedef struct {
     ConfType    type;
     i64         lo, hi;    /* CV_NUM: the range, refused outside          */
     size_t      max_len;   /* CV_STR: longer is refused, never truncated  */
-    b8          project;   /* may a project's .yoke/config.toml set it    */
+    b8          project;   /* may a project's .arqan/config.toml set it    */
 } ConfSpec;
 
 #define CONF_TEXT2(x) #x
 #define CONF_TEXT(x)  CONF_TEXT2(x)
 /* The status field mask has one bit per field, so its default is all of
  * them; a literal is needed because the table's defaults are text. */
-_Static_assert(YOKE_STATUS_FIELDS == 9, "the status_fields default is 511");
+_Static_assert(AGENT_STATUS_FIELDS == 9, "the status_fields default is 511");
 
 static const ConfSpec k_conf[CONF_N] = {
     [CONF_PROVIDER] = { "provider", "", NULL, CV_STR, 0, 0,
-                        YOKE_MAX_ENDPOINT_NAME, true },
+                        AGENT_MAX_ENDPOINT_NAME, true },
     [CONF_BASE_URL] = { "base_url", "", NULL, CV_STR, 0, 0,
-                        YOKE_MAX_URL, true },
+                        AGENT_MAX_URL, true },
     [CONF_MODEL]    = { "model", "", NULL, CV_STR, 0, 0,
-                        YOKE_MAX_MODEL_NAME, true },
+                        AGENT_MAX_MODEL_NAME, true },
     [CONF_API]      = { "api", "openai", "openai,anthropic", CV_ENUM,
                         0, 0, 0, true },
     /* Never from a project file: a repository must not be able to hand a
      * key to the endpoint it also names. */
     [CONF_API_KEY]  = { "api_key", "", NULL, CV_STR, 0, 0,
-                        YOKE_MAX_API_KEY, false },
-    [CONF_MAX_TOKENS]     = { "max_tokens", CONF_TEXT(YOKE_MAX_TOKENS), NULL,
+                        AGENT_MAX_API_KEY, false },
+    [CONF_MAX_TOKENS]     = { "max_tokens", CONF_TEXT(AGENT_MAX_TOKENS), NULL,
                               CV_NUM, 1, 1 << 20, 0, true },
-    [CONF_MAX_MESSAGES]   = { "max_messages", CONF_TEXT(YOKE_MAX_MESSAGES),
+    [CONF_MAX_MESSAGES]   = { "max_messages", CONF_TEXT(AGENT_MAX_MESSAGES),
                               NULL, CV_NUM, 8, 1 << 20, 0, true },
     [CONF_STREAM]         = { "stream", "true", NULL, CV_BOOL, 0, 0, 0, true },
     [CONF_MODE]           = { "mode", "build", "build,plan", CV_ENUM,
                               0, 0, 0, true },
-    [CONF_RETRIES]        = { "retries", CONF_TEXT(YOKE_RETRIES), NULL,
+    [CONF_RETRIES]        = { "retries", CONF_TEXT(AGENT_RETRIES), NULL,
                               CV_NUM, 0, 16, 0, true },
-    [CONF_RETRY_DELAY_MS] = { "retry_delay_ms", CONF_TEXT(YOKE_RETRY_DELAY_MS),
-                              NULL, CV_NUM, 0, YOKE_MAX_RETRY_DELAY_MS, 0,
+    [CONF_RETRY_DELAY_MS] = { "retry_delay_ms", CONF_TEXT(AGENT_RETRY_DELAY_MS),
+                              NULL, CV_NUM, 0, AGENT_MAX_RETRY_DELAY_MS, 0,
                               true },
     /* "none" rather than an empty value: an empty value removes the key,
      * which would read as "nothing was ever chosen" on the next run. */
     [CONF_DISABLE_TOOLS]  = { "disable_tools", "", NULL, CV_STR, 0, 0,
-                              YOKE_MAX_TOOL_LIST, true },
+                              AGENT_MAX_TOOL_LIST, true },
     [CONF_VERBOSE_TOOLS]  = { "verbose_tools", "false", NULL, CV_BOOL,
                               0, 0, 0, true },
     [CONF_RAW_MARKDOWN]   = { "raw_markdown", "false", NULL, CV_BOOL,
@@ -160,12 +160,12 @@ static void conf_take(Conf *c, ConfKey k, Str v, ConfOrigin o, Str where,
                       Arena *persist) {
     const ConfSpec *sp = &k_conf[k];
     if (o == CONF_FROM_PROJECT && !sp->project) {
-        yoke_log(YOKE_LOG_WARN, "ignoring %s in %.*s: a project file may not "
+        agent_log(AGENT_LOG_WARN, "ignoring %s in %.*s: a project file may not "
                  "set it", sp->name, (i32)where.n, where.p);
         return;
     }
     if (!conf_value_ok(k, v)) {
-        yoke_log(YOKE_LOG_WARN, "ignoring %s in %.*s: %.*s is not a value it "
+        agent_log(AGENT_LOG_WARN, "ignoring %s in %.*s: %.*s is not a value it "
                  "takes", sp->name, (i32)where.n, where.p, (i32)v.n, v.p);
         return;
     }
@@ -188,11 +188,11 @@ static void conf_apply_settings(Conf *c, const Settings *s, ConfOrigin o,
         for (ConfKey j = 0; j < CONF_N; j++)
             if (str_eq(s->key[i], str_c(k_conf[j].name))) { k = j; break; }
         if (k == CONF_N) {
-            /* The state file is yoke's own and may carry a key this build no
+            /* The state file is arqan's own and may carry a key this build no
              * longer has; a config file is the user's and a typo in it is
              * worth saying out loud. */
             if (o != CONF_FROM_STATE)
-                yoke_log(YOKE_LOG_WARN, "unknown setting %.*s in %.*s",
+                agent_log(AGENT_LOG_WARN, "unknown setting %.*s in %.*s",
                          (i32)s->key[i].n, s->key[i].p,
                          (i32)where.n, where.p);
             continue;
@@ -210,11 +210,12 @@ static void conf_apply_file(Conf *c, Str path, ConfOrigin o, Arena *persist,
     scratch->off = mark;
 }
 
-/* YOKE_<NAME>, built from the key's own name so the two cannot drift. */
+/* AGENT_ENV_PREFIX<NAME>, built from the key's own name so the two cannot
+ * drift. */
 static void conf_apply_env(Conf *c, Arena *persist) {
     for (ConfKey k = 0; k < CONF_N; k++) {
-        char name[64] = "YOKE_";
-        size_t n = 5, len = strlen(k_conf[k].name);
+        char name[64] = AGENT_ENV_PREFIX;
+        size_t n = sizeof(AGENT_ENV_PREFIX) - 1, len = strlen(k_conf[k].name);
         if (len + n >= sizeof name) continue;
         for (size_t i = 0; i < len; i++) {
             char ch = k_conf[k].name[i];
@@ -240,7 +241,7 @@ static void conf_apply_endpoint(Conf *c, Arena *persist, Arena *scratch) {
     endpoints_load(&e, scratch);
     size_t i = endpoints_find(&e, name);
     if (i == ENDPOINT_NONE) {
-        yoke_log(YOKE_LOG_WARN, "no provider named %.*s is configured",
+        agent_log(AGENT_LOG_WARN, "no provider named %.*s is configured",
                  (i32)name.n, name.p);
         c->val[CONF_PROVIDER] = (Str){0};
         scratch->off = mark;
@@ -263,9 +264,9 @@ static void conf_apply_endpoint(Conf *c, Arena *persist, Arena *scratch) {
     scratch->off = mark;
 
     /* The key is kept apart from the settings, in the credentials file. */
-    char err[YOKE_MAX_PATH + 96] = {0};
+    char err[AGENT_MAX_PATH + 96] = {0};
     Str key = endpoints_key(name, persist, scratch, err, sizeof err);
-    if (err[0]) yoke_log(YOKE_LOG_WARN, "%s", err);
+    if (err[0]) agent_log(AGENT_LOG_WARN, "%s", err);
     if (key.n)
         conf_take(c, CONF_API_KEY, key, CONF_FROM_ENDPOINT, where, persist);
 }
@@ -277,22 +278,22 @@ void conf_resolve(Conf *c, Arena *persist, Arena *scratch) {
                   STR("the defaults"), persist);
 
     size_t mark = scratch->off;
-    Str user = paths_file(YOKE_DIR_CONFIG, YOKE_CONFIG_NAME, scratch);
-    Str files[YOKE_MAX_CONFIG_FILES];
-    size_t n = paths_config_files(YOKE_CONFIG_NAME, scratch, files,
-                                  YOKE_MAX_CONFIG_FILES);
+    Str user = paths_file(AGENT_DIR_CONFIG, AGENT_CONFIG_NAME, scratch);
+    Str files[AGENT_MAX_CONFIG_FILES];
+    size_t n = paths_config_files(AGENT_CONFIG_NAME, scratch, files,
+                                  AGENT_MAX_CONFIG_FILES);
     for (size_t i = 0; i < n; i++)
         conf_apply_file(c, files[i], str_eq(files[i], user) ? CONF_FROM_USER
                                                             : CONF_FROM_SYSTEM,
                         persist, scratch);
 
-    Str project[YOKE_MAX_PROJECT_FILES];
-    n = paths_project_files(YOKE_CONFIG_NAME, scratch, project,
-                            YOKE_MAX_PROJECT_FILES);
+    Str project[AGENT_MAX_PROJECT_FILES];
+    n = paths_project_files(AGENT_CONFIG_NAME, scratch, project,
+                            AGENT_MAX_PROJECT_FILES);
     for (size_t i = 0; i < n; i++)
         conf_apply_file(c, project[i], CONF_FROM_PROJECT, persist, scratch);
 
-    Str state = paths_file(YOKE_DIR_STATE, YOKE_STATE_NAME, scratch);
+    Str state = paths_file(AGENT_DIR_STATE, AGENT_STATE_NAME, scratch);
     if (state.n) conf_apply_file(c, state, CONF_FROM_STATE, persist, scratch);
     scratch->off = mark;
 
@@ -335,7 +336,7 @@ static Str config_owned(char *dst, size_t cap, Str src) {
 }
 
 b8 config_set_model(Config *c, Str model) {
-    if (!model.n || model.n > YOKE_MAX_MODEL_NAME) return false;
+    if (!model.n || model.n > AGENT_MAX_MODEL_NAME) return false;
     Str saved = config_owned(c->owned_model, sizeof c->owned_model, model);
     if (!saved.p) return false;
     c->model = saved;
@@ -345,14 +346,14 @@ b8 config_set_model(Config *c, Str model) {
 b8 config_set_endpoint(Config *c, Str name, Str base_url, Str model,
                        ApiKind api, Str key, Str efforts, Str budgets,
                        Str effort, Str budget, Str templ) {
-    if (!name.n || name.n > YOKE_MAX_ENDPOINT_NAME
-        || !base_url.n || base_url.n > YOKE_MAX_URL
-        || model.n > YOKE_MAX_MODEL_NAME || key.n > YOKE_MAX_API_KEY
-        || efforts.n > YOKE_MAX_REASONING_LIST
-        || budgets.n > YOKE_MAX_REASONING_LIST
-        || effort.n > YOKE_MAX_REASONING_LIST
-        || budget.n > YOKE_MAX_REASONING_LIST
-        || templ.n > YOKE_MAX_REASONING_TEMPLATE)
+    if (!name.n || name.n > AGENT_MAX_ENDPOINT_NAME
+        || !base_url.n || base_url.n > AGENT_MAX_URL
+        || model.n > AGENT_MAX_MODEL_NAME || key.n > AGENT_MAX_API_KEY
+        || efforts.n > AGENT_MAX_REASONING_LIST
+        || budgets.n > AGENT_MAX_REASONING_LIST
+        || effort.n > AGENT_MAX_REASONING_LIST
+        || budget.n > AGENT_MAX_REASONING_LIST
+        || templ.n > AGENT_MAX_REASONING_TEMPLATE)
         return false;
 
     Str saved_name = config_owned(c->owned_provider,
@@ -435,7 +436,7 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
 
     /* A prompt is a document rather than a setting, so it has no row in the
      * table; the variable and --system are the only ways to pass one. */
-    const char *sys = getenv("YOKE_SYSTEM_PROMPT");
+    const char *sys = getenv(AGENT_ENV_PREFIX "SYSTEM_PROMPT");
     if (sys && *sys) c->system_prompt = str_dup(persist, str_c(sys));
 
     /* A placeholder rather than a destination: a run that named no endpoint

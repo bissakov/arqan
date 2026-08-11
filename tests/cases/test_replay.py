@@ -11,7 +11,7 @@ import json
 
 
 def sessions_dir(ctx):
-    root = ctx.home / ".local" / "share" / "yoke" / "sessions"
+    root = ctx.home / ".local" / "share" / "arqan" / "sessions"
     dirs = [p for p in root.iterdir() if p.is_dir()] if root.exists() else []
     assert len(dirs) == 1, sorted(p.name for p in dirs)
     return dirs[0]

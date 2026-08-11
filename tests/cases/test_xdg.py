@@ -1,13 +1,13 @@
 """XDG Base Directory compliance: where settings and state land.
 
 Settings come from the config dirs, prompt history lives in the state dir and
-saved sessions in the data dir, so nothing yoke owns is written straight into
+saved sessions in the data dir, so nothing arqan owns is written straight into
 $HOME.
 """
 
 
 def test_sessions_land_in_the_data_dir(ctx):
-    """A conversation is saved under $XDG_DATA_HOME/yoke/sessions/<cwd>/."""
+    """A conversation is saved under $XDG_DATA_HOME/arqan/sessions/<cwd>/."""
     data = ctx.tmp / "data"
     ctx.scenario("text=ok")
     s = ctx.spawn(XDG_DATA_HOME=str(data))
@@ -16,14 +16,14 @@ def test_sessions_land_in_the_data_dir(ctx):
     s.submit("/exit")
     s.wait_exit()
 
-    files = sorted((data / "yoke" / "sessions").rglob("*.jsonl"))
+    files = sorted((data / "arqan" / "sessions").rglob("*.jsonl"))
     assert len(files) == 1, sorted(p.name for p in (data).rglob("*"))
     assert "save me" in files[0].read_text()
     assert not (ctx.home / ".local" / "share").exists(), "the default must stay unused"
 
 
 def test_history_lands_in_the_state_dir(ctx):
-    """A submitted prompt is mirrored to $HOME/.local/state/yoke/history."""
+    """A submitted prompt is mirrored to $HOME/.local/state/arqan/history."""
     ctx.scenario("text=ok")
     s = ctx.spawn()
     s.submit("remember me")
@@ -31,7 +31,7 @@ def test_history_lands_in_the_state_dir(ctx):
     s.submit("/exit")
     s.wait_exit()
 
-    hist = ctx.home / ".local" / "state" / "yoke" / "history"
+    hist = ctx.home / ".local" / "state" / "arqan" / "history"
     assert hist.exists(), sorted(p.name for p in ctx.home.rglob("*"))
     assert hist.read_text().splitlines() == ["remember me", "/exit"]
 
@@ -61,7 +61,7 @@ def test_state_home_env_is_honoured(ctx):
     s.submit("/exit")
     s.wait_exit()
 
-    assert (state / "yoke" / "history").read_text() == "into the state dir\n/exit\n"
+    assert (state / "arqan" / "history").read_text() == "into the state dir\n/exit\n"
     # sessions still default under ~/.local/share; only the state dir moved
     assert not (ctx.home / ".local" / "state").exists(), "the default must stay unused"
 
@@ -75,12 +75,12 @@ def test_relative_state_home_is_ignored(ctx):
     s.submit("/exit")
     s.wait_exit()
 
-    assert (ctx.home / ".local/state/yoke/history").exists()
+    assert (ctx.home / ".local/state/arqan/history").exists()
     assert not (ctx.work / "relative").exists(), "must not write a relative dir"
 
 
 def test_created_dirs_are_private(ctx):
-    """Directories yoke creates are 0700, as the spec requires."""
+    """Directories arqan creates are 0700, as the spec requires."""
     ctx.scenario("text=ok")
     s = ctx.spawn()
     s.submit("private")
@@ -88,28 +88,28 @@ def test_created_dirs_are_private(ctx):
     s.submit("/exit")
     s.wait_exit()
 
-    d = ctx.home / ".local" / "state" / "yoke"
+    d = ctx.home / ".local" / "state" / "arqan"
     assert d.stat().st_mode & 0o777 == 0o700, oct(d.stat().st_mode)
 
 
 def test_config_dirs_are_searched(ctx):
     """A config under XDG_CONFIG_DIRS is picked up when the user has none."""
     etc = ctx.tmp / "etc"
-    (etc / "yoke").mkdir(parents=True)
-    (etc / "yoke" / "config.toml").write_text("model = system-model\n")
+    (etc / "arqan").mkdir(parents=True)
+    (etc / "arqan" / "config.toml").write_text("model = system-model\n")
 
-    s = ctx.spawn(XDG_CONFIG_DIRS=str(etc), YOKE_MODEL=None)
+    s = ctx.spawn(XDG_CONFIG_DIRS=str(etc), ARQAN_MODEL=None)
     assert "system-model" in s.status_line(), s.status_line()
 
 
 def test_config_home_beats_config_dirs(ctx):
     """XDG_CONFIG_HOME has the higher precedence of the two."""
     etc = ctx.tmp / "etc"
-    (etc / "yoke").mkdir(parents=True)
-    (etc / "yoke" / "config.toml").write_text("model = system-model\n")
+    (etc / "arqan").mkdir(parents=True)
+    (etc / "arqan" / "config.toml").write_text("model = system-model\n")
     ctx.write_config("model = user-model\n")
 
-    s = ctx.spawn(XDG_CONFIG_DIRS=str(etc), YOKE_MODEL=None)
+    s = ctx.spawn(XDG_CONFIG_DIRS=str(etc), ARQAN_MODEL=None)
     status = s.status_line()
     assert "user-model" in status and "system-model" not in status, status
 
@@ -117,8 +117,8 @@ def test_config_home_beats_config_dirs(ctx):
 def test_env_beats_every_config_file(ctx):
     """The environment still wins over both config layers."""
     etc = ctx.tmp / "etc"
-    (etc / "yoke").mkdir(parents=True)
-    (etc / "yoke" / "config.toml").write_text("model = system-model\n")
+    (etc / "arqan").mkdir(parents=True)
+    (etc / "arqan" / "config.toml").write_text("model = system-model\n")
     ctx.write_config("model = user-model\n")
 
     s = ctx.spawn(XDG_CONFIG_DIRS=str(etc))

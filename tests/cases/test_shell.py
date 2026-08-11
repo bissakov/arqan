@@ -80,7 +80,7 @@ def test_a_run_survives_a_rerender(ctx):
     text = s.text()
     assert "\u25c6  shell echo still-here" in text, text
     assert "still-here" in text, text
-    assert "| |_| | (_) |" not in text, "the welcome screen is not the answer"
+    assert "| (_| | | | (_| |" not in text, "the welcome screen is not the answer"
 
     s.settings_toggle("Display raw")
     assert "\u25c6  shell echo still-here" in s.text(), s.text()
@@ -94,7 +94,7 @@ def test_a_run_is_saved_and_resumes(ctx):
     s.submit("/exit")
     s.wait_exit()
 
-    root = ctx.home / ".local" / "share" / "yoke" / "sessions"
+    root = ctx.home / ".local" / "share" / "arqan" / "sessions"
     files = [f for d in root.iterdir() for f in d.iterdir()]
     assert len(files) == 1, files
     line = files[0].read_text().splitlines()[0]

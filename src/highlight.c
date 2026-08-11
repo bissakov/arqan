@@ -1,5 +1,5 @@
-/* highlight.c: bounded client for the optional yoke-highlight companion. */
-#include "yoke.h"
+/* highlight.c: bounded client for the optional arqan-highlight companion. */
+#include "agent.h"
 #include "highlight_protocol.h"
 
 #include <errno.h>
@@ -16,7 +16,7 @@
 #define YHL_POLL_MS 25
 
 typedef struct {
-    char path[YOKE_MAX_PATH];
+    char path[AGENT_MAX_PATH];
     b8 path_only;
     b8 disabled;
     pid_t pid;
@@ -48,14 +48,14 @@ static b8 copy_path(char *dst, size_t cap, const char *src) {
 void highlight_init(const char *argv0) {
     g_hl = (HighlightClient){ .pid = -1, .in_fd = -1, .out_fd = -1,
                               .next_id = 1 };
-    const char *override = getenv("YOKE_HIGHLIGHTER");
+    const char *override = getenv(AGENT_ENV_PREFIX "HIGHLIGHTER");
     if (override && *override) {
         if (!copy_path(g_hl.path, sizeof g_hl.path, override)) g_hl.disabled = true;
         else g_hl.path_only = true;
         return;
     }
 
-    char resolved[YOKE_MAX_PATH];
+    char resolved[AGENT_MAX_PATH];
     const char *exe = NULL;
     if (argv0 && strchr(argv0, '/')) {
         exe = realpath(argv0, resolved);
@@ -72,7 +72,7 @@ void highlight_init(const char *argv0) {
                   : snprintf(resolved, sizeof resolved, "./%s", argv0);
             if (n > 0 && (size_t)n < sizeof resolved
                 && access(resolved, X_OK) == 0) {
-                char found[YOKE_MAX_PATH];
+                char found[AGENT_MAX_PATH];
                 memcpy(found, resolved, (size_t)n + 1);
                 exe = realpath(found, resolved);
             }
@@ -84,7 +84,7 @@ void highlight_init(const char *argv0) {
         char *slash = strrchr(resolved, '/');
         if (slash) {
             size_t dir_n = (size_t)(slash - resolved) + 1;
-            static const char helper[] = "yoke-highlight";
+            static const char helper[] = AGENT_NAME "-highlight";
             if (dir_n + sizeof helper <= sizeof g_hl.path) {
                 memcpy(g_hl.path, resolved, dir_n);
                 memcpy(g_hl.path + dir_n, helper, sizeof helper);
@@ -95,7 +95,7 @@ void highlight_init(const char *argv0) {
             }
         }
     }
-    copy_path(g_hl.path, sizeof g_hl.path, "yoke-highlight");
+    copy_path(g_hl.path, sizeof g_hl.path, AGENT_NAME "-highlight");
 }
 
 static void close_fd(i32 *fd) {
@@ -164,7 +164,7 @@ static b8 highlight_start(void) {
 static b8 io_all(i32 fd, i16 events, u8 *p, size_t n, f64 deadline) {
     size_t off = 0;
     while (off < n) {
-        f64 left = deadline - yoke_now_seconds();
+        f64 left = deadline - agent_now_seconds();
         if (left <= 0) return false;
         i32 ms = (i32)(left * 1000.0);
         if (ms > YHL_POLL_MS) ms = YHL_POLL_MS;
@@ -203,7 +203,7 @@ b8 highlight_request(YhlHintKind kind, Str hint, Str source,
     header[8] = (u8)kind;
     put_u32(header + 12, (u32)hint.n);
     put_u32(header + 16, (u32)source.n);
-    f64 deadline = yoke_now_seconds() + (f64)YHL_TIMEOUT_MS / 1000.0;
+    f64 deadline = agent_now_seconds() + (f64)YHL_TIMEOUT_MS / 1000.0;
 
     struct sigaction oldpipe, ignore = {0};
     ignore.sa_handler = SIG_IGN;

@@ -12,13 +12,13 @@ SANFLAGS := -fsanitize=address,undefined -fno-sanitize-recover=all \
             -fno-omit-frame-pointer -g
 
 SRC     := src/main.c
-OBJ     := build/yoke.o
+OBJ     := build/arqan.o
 LEXBOR_OBJ := build/vendor/lexbor.o
-BIN     := bin/yoke
-TEST_OBJ := build/yoke-test.o
-TEST_BIN := bin/yoke-test
-HL_BIN  := bin/yoke-highlight
-HL_OWN  := build/highlight/yoke-highlight.o build/highlight/queries.o
+BIN     := bin/arqan
+TEST_OBJ := build/arqan-test.o
+TEST_BIN := bin/arqan-test
+HL_BIN  := bin/arqan-highlight
+HL_OWN  := build/highlight/arqan-highlight.o build/highlight/queries.o
 HL_LANG := c cpp rust go python javascript typescript tsx bash json toml yaml
 HL_PARSE := $(addprefix build/highlight/,$(addsuffix -parser.o,$(HL_LANG)))
 HL_SCAN_LANG := cpp rust python javascript typescript tsx bash toml yaml
@@ -51,7 +51,7 @@ $(LEXBOR_OBJ): vendor/lexbor/bridge.c vendor/lexbor/bridge.h \
 
 $(TEST_OBJ): $(SRC) $(wildcard src/*.c) $(wildcard src/*.h)
 	@mkdir -p build
-	$(CC) $(CFLAGS) -DYOKE_TESTING -c $(SRC) -o $@
+	$(CC) $(CFLAGS) -DAGENT_TESTING -c $(SRC) -o $@
 
 $(TEST_BIN): $(TEST_OBJ) $(LEXBOR_OBJ)
 	@mkdir -p bin
@@ -62,7 +62,7 @@ $(HL_BIN): $(HL_OBJ)
 	$(CC) $(HL_OBJ) -o $@ $(LDFLAGS)
 	./$@ --self-test
 
-build/highlight/yoke-highlight.o: highlight/yoke-highlight.c \
+build/highlight/arqan-highlight.o: highlight/arqan-highlight.c \
                                   highlight/queries.h src/highlight_protocol.h
 	@mkdir -p build/highlight
 	$(CC) $(CFLAGS) $(HL_CPPFLAGS) -c $< -o $@
@@ -99,12 +99,12 @@ run: $(BIN)
 	./$(BIN)
 
 test: all $(TEST_BIN)
-	YOKE_TEST_BIN=$(TEST_BIN) $(PYTHON) tests/run.py $(T)
+	ARQAN_TEST_BIN=$(TEST_BIN) $(PYTHON) tests/run.py $(T)
 
 test-update: all $(TEST_BIN)
-	YOKE_TEST_BIN=$(TEST_BIN) $(PYTHON) tests/run.py --update $(T)
+	ARQAN_TEST_BIN=$(TEST_BIN) $(PYTHON) tests/run.py --update $(T)
 
-# Rebuilds bin/yoke instrumented, runs the suite, then leaves it instrumented:
+# Rebuilds bin/arqan instrumented, runs the suite, then leaves it instrumented:
 # `make` puts the normal binary back.
 test-asan:
 	$(MAKE) clean
@@ -112,7 +112,7 @@ test-asan:
 	    CFLAGS='$(filter-out -flto -D_FORTIFY_SOURCE=2,$(CFLAGS)) $(SANFLAGS)' \
 	    LDFLAGS='$(filter-out -flto,$(LDFLAGS)) $(SANFLAGS)' \
 	    VENDOR_CFLAGS='$(VENDOR_CFLAGS) $(SANFLAGS)'
-	ASAN_OPTIONS=detect_leaks=0 YOKE_TEST_BIN=$(TEST_BIN) \
+	ASAN_OPTIONS=detect_leaks=0 ARQAN_TEST_BIN=$(TEST_BIN) \
 	    $(PYTHON) tests/run.py $(T)
 
 mock:

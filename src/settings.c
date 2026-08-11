@@ -1,17 +1,17 @@
-/* settings.c: the file format every setting yoke owns is written in.
+/* settings.c: the file format every setting arqan owns is written in.
  *
  * A subset of TOML: a file is a list of "key = value" lines, optionally
  * grouped under a "[section]" header; a line whose first non-blank byte is
  * '#' is a comment, and so is a '#' after a value. A value may be quoted or
  * bare. Reading accepts both, since a hand-written file is a document; a
- * write quotes anything that is not an integer or a boolean, so what yoke
+ * write quotes anything that is not an integer or a boolean, so what arqan
  * produces parses as TOML and an editor highlights it.
  *
  * The same syntax serves the three files a user may look at:
- *   $XDG_CONFIG_HOME/yoke/config.toml      theirs to edit, providers included
- *   $cwd/.yoke/config.toml                 the project's, checked in with it
- *   $XDG_STATE_HOME/yoke/state.toml        what the UI last chose
- *   $XDG_STATE_HOME/yoke/credentials.toml  the keys alone, mode 0600
+ *   $XDG_CONFIG_HOME/arqan/config.toml      theirs to edit, providers included
+ *   $cwd/.arqan/config.toml                 the project's, checked in with it
+ *   $XDG_STATE_HOME/arqan/state.toml        what the UI last chose
+ *   $XDG_STATE_HOME/arqan/credentials.toml  the keys alone, mode 0600
  *
  * Reads parse a whole file into a Settings table pointing into the arena copy
  * of its bytes; a quoted value is unescaped in place in that copy. A write is
@@ -21,7 +21,7 @@
  * is written to a temporary file and renamed, so an interrupted write leaves
  * the previous file rather than half a line.
  */
-#include "yoke.h"
+#include "agent.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -119,7 +119,7 @@ static void setting_put_kv(Buf *b, Str key, Str val) {
 }
 
 /* Empty for a file that is missing, unreadable or past `max`: a settings file
- * yoke cannot read is one it has no keys from, whichever it was. */
+ * arqan cannot read is one it has no keys from, whichever it was. */
 static Str settings_src(Str path, Arena *a, size_t max) {
     Str src = {0};
     if (path.n) file_read(a, path.p, max, 0, &src, NULL);
@@ -127,7 +127,7 @@ static Str settings_src(Str path, Arena *a, size_t max) {
 }
 
 b8 settings_write(Str path, Str data, u32 mode) {
-    char tmp[YOKE_MAX_PATH];
+    char tmp[AGENT_MAX_PATH];
     i32 n = snprintf(tmp, sizeof tmp, "%.*s.tmp", (i32)path.n, path.p);
     if (n <= 0 || (size_t)n >= sizeof tmp) return false;
     i32 fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, (mode_t)mode);
@@ -154,7 +154,7 @@ static size_t settings_parse(Settings *s, Str src) {
         if (sec.n) { section = sec; continue; }
         Str k, v;
         if (!setting_kv(line, &k, &v)) continue;
-        if (s->n >= YOKE_MAX_SETTINGS) break;
+        if (s->n >= AGENT_MAX_SETTINGS) break;
         s->section[s->n] = section;
         s->key[s->n] = k;
         s->val[s->n] = v;
@@ -165,7 +165,7 @@ static size_t settings_parse(Settings *s, Str src) {
 
 b8 settings_load(Settings *s, Str path, Arena *a) {
     s->n = 0;
-    Str src = settings_src(path, a, YOKE_MAX_SETTINGS_BYTES);
+    Str src = settings_src(path, a, AGENT_MAX_SETTINGS_BYTES);
     if (!src.n) return false;
     settings_parse(s, src);
     return true;
@@ -202,10 +202,10 @@ static b8 in_section(Str *cur, Str line, Str want) {
 
 b8 settings_set(Str path, Str section, const Str *keys, const Str *vals,
                 size_t n, u32 mode, Arena *scratch) {
-    if (!path.n || n == 0 || n > YOKE_MAX_SET_KEYS) return false;
+    if (!path.n || n == 0 || n > AGENT_MAX_SET_KEYS) return false;
     size_t mark = scratch->off;
-    Str src = settings_src(path, scratch, YOKE_MAX_SETTINGS_BYTES);
-    b8 done[YOKE_MAX_SET_KEYS] = {0};
+    Str src = settings_src(path, scratch, AGENT_MAX_SETTINGS_BYTES);
+    b8 done[AGENT_MAX_SET_KEYS] = {0};
 
     /* An existing file keeps the mode its owner gave it; `mode` is what a new
      * one is created with. A credentials file others can read is refused
@@ -293,7 +293,7 @@ b8 settings_remove_section(Str path, Str section, Arena *scratch) {
         scratch->off = mark;
         return errno == ENOENT;
     }
-    Str src = settings_src(path, scratch, YOKE_MAX_SETTINGS_BYTES);
+    Str src = settings_src(path, scratch, AGENT_MAX_SETTINGS_BYTES);
     if (!src.p) { scratch->off = mark; return false; }
 
     Buf out;
@@ -320,13 +320,13 @@ b8 settings_remove_section(Str path, Str section, Arena *scratch) {
 
 /* ---- the state file ------------------------------------------------------
  * What the UI last chose, keyed by the same names the config files use, so a
- * remembered choice reads back through one table. It is yoke's memory rather
+ * remembered choice reads back through one table. It is arqan's memory rather
  * than the user's file, which is why it is not the config file: a document
  * a person edits should not be rewritten behind them by a toggle.
  */
 b8 state_set(Str key, Str val, Arena *scratch) {
-    Str dir = paths_dir(YOKE_DIR_STATE, scratch);
-    Str path = paths_file(YOKE_DIR_STATE, YOKE_STATE_NAME, scratch);
+    Str dir = paths_dir(AGENT_DIR_STATE, scratch);
+    Str path = paths_file(AGENT_DIR_STATE, AGENT_STATE_NAME, scratch);
     if (!dir.n || !path.n || !paths_ensure_dir(dir)) return false;
     return settings_set_one(path, (Str){0}, key, val, 0600, scratch);
 }

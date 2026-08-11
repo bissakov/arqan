@@ -1,8 +1,8 @@
 #include "lexbor.c"
 #include "bridge.h"
 
-YokeHtmlDoc *
-yoke_html_parse(const char *html, size_t len)
+AgentHtmlDoc *
+agent_html_parse(const char *html, size_t len)
 {
     lxb_html_document_t *doc = lxb_html_document_create();
     if (doc == NULL) {
@@ -14,59 +14,59 @@ yoke_html_parse(const char *html, size_t len)
         lxb_html_document_destroy(doc);
         return NULL;
     }
-    return (YokeHtmlDoc *) doc;
+    return (AgentHtmlDoc *) doc;
 }
 
 void
-yoke_html_destroy(YokeHtmlDoc *doc)
+agent_html_destroy(AgentHtmlDoc *doc)
 {
     if (doc != NULL) {
         lxb_html_document_destroy((lxb_html_document_t *) doc);
     }
 }
 
-YokeHtmlNode *
-yoke_html_root(YokeHtmlDoc *doc)
+AgentHtmlNode *
+agent_html_root(AgentHtmlDoc *doc)
 {
-    return (YokeHtmlNode *) lxb_dom_interface_node((lxb_html_document_t *) doc);
+    return (AgentHtmlNode *) lxb_dom_interface_node((lxb_html_document_t *) doc);
 }
 
-YokeHtmlNode *
-yoke_html_body(YokeHtmlDoc *doc)
+AgentHtmlNode *
+agent_html_body(AgentHtmlDoc *doc)
 {
     lxb_html_body_element_t *body =
         lxb_html_document_body_element((lxb_html_document_t *) doc);
-    return (YokeHtmlNode *) lxb_dom_interface_node(body);
+    return (AgentHtmlNode *) lxb_dom_interface_node(body);
 }
 
-YokeHtmlNode *
-yoke_html_first_child(YokeHtmlNode *node)
+AgentHtmlNode *
+agent_html_first_child(AgentHtmlNode *node)
 {
-    return (YokeHtmlNode *) lxb_dom_node_first_child((lxb_dom_node_t *) node);
+    return (AgentHtmlNode *) lxb_dom_node_first_child((lxb_dom_node_t *) node);
 }
 
-YokeHtmlNode *
-yoke_html_next(YokeHtmlNode *node)
+AgentHtmlNode *
+agent_html_next(AgentHtmlNode *node)
 {
-    return (YokeHtmlNode *) lxb_dom_node_next((lxb_dom_node_t *) node);
+    return (AgentHtmlNode *) lxb_dom_node_next((lxb_dom_node_t *) node);
 }
 
-YokeHtmlNode *
-yoke_html_parent(YokeHtmlNode *node)
+AgentHtmlNode *
+agent_html_parent(AgentHtmlNode *node)
 {
-    return (YokeHtmlNode *) lxb_dom_node_parent((lxb_dom_node_t *) node);
+    return (AgentHtmlNode *) lxb_dom_node_parent((lxb_dom_node_t *) node);
 }
 
 int
-yoke_html_type(YokeHtmlNode *node)
+agent_html_type(AgentHtmlNode *node)
 {
     return (int) lxb_dom_node_type((lxb_dom_node_t *) node);
 }
 
 const char *
-yoke_html_tag(YokeHtmlNode *node, size_t *len)
+agent_html_tag(AgentHtmlNode *node, size_t *len)
 {
-    if (yoke_html_type(node) != YOKE_HTML_ELEMENT) {
+    if (agent_html_type(node) != AGENT_HTML_ELEMENT) {
         if (len != NULL) {
             *len = 0;
         }
@@ -77,10 +77,10 @@ yoke_html_tag(YokeHtmlNode *node, size_t *len)
 }
 
 const char *
-yoke_html_text(YokeHtmlNode *node, size_t *len)
+agent_html_text(AgentHtmlNode *node, size_t *len)
 {
-    int type = yoke_html_type(node);
-    if (type != YOKE_HTML_TEXT && type != YOKE_HTML_CDATA) {
+    int type = agent_html_type(node);
+    if (type != AGENT_HTML_TEXT && type != AGENT_HTML_CDATA) {
         if (len != NULL) {
             *len = 0;
         }
@@ -95,10 +95,10 @@ yoke_html_text(YokeHtmlNode *node, size_t *len)
 }
 
 const char *
-yoke_html_attr(YokeHtmlNode *node, const char *name, size_t name_len,
+agent_html_attr(AgentHtmlNode *node, const char *name, size_t name_len,
                size_t *len)
 {
-    if (yoke_html_type(node) != YOKE_HTML_ELEMENT) {
+    if (agent_html_type(node) != AGENT_HTML_ELEMENT) {
         if (len != NULL) {
             *len = 0;
         }

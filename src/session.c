@@ -1,11 +1,11 @@
 /* session.c: persistent conversations, one set per working directory.
  *
  * A session is the conversation as it happened: a JSON object per line in
- * $XDG_DATA_HOME/yoke/sessions/<cwd>/<timestamp>.jsonl, appended as messages
+ * $XDG_DATA_HOME/arqan/sessions/<cwd>/<timestamp>.jsonl, appended as messages
  * are produced rather than flushed at exit, because the session worth resuming
  * is often the one that ended badly.
  *
- * Sessions are keyed by the directory yoke was launched in, because that is
+ * Sessions are keyed by the directory arqan was launched in, because that is
  * the unit of work: browsing them from ~/src/foo must not surface what was
  * said in ~/src/bar. The key is the absolute cwd, percent-encoded so it is
  * one path component and still readable, with a hash appended when the
@@ -15,7 +15,7 @@
  * session arena, and the file the next message appends to has to survive
  * that.
  */
-#include "yoke.h"
+#include "agent.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -70,9 +70,9 @@ static size_t sess_slug(char *out, size_t cap, Str path) {
  * for the length of the call; the result is copied into the struct. */
 b8 session_init(Session *s, Arena *scratch) {
     memset(s, 0, sizeof *s);
-    Str base = paths_dir(YOKE_DIR_DATA, scratch);
+    Str base = paths_dir(AGENT_DIR_DATA, scratch);
     if (!base.n) return false;
-    char cwd[YOKE_MAX_PATH];
+    char cwd[AGENT_MAX_PATH];
     if (!getcwd(cwd, sizeof cwd)) return false;
     char slug[SESSION_SLUG_MAX + 32];
     size_t slug_n = sess_slug(slug, sizeof slug, str_c(cwd));
@@ -130,7 +130,7 @@ b8 session_begin(Session *s) {
                           tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
                           tm.tm_hour, tm.tm_min, tm.tm_sec);
         if (fn <= 0) return false;
-        char path[YOKE_MAX_PATH];
+        char path[AGENT_MAX_PATH];
         i32 pn = snprintf(path, sizeof path, "%.*s/%s",
                           (i32)s->dir.n, s->dir.p, file);
         if (pn <= 0 || (size_t)pn >= sizeof path) return false;
@@ -224,7 +224,7 @@ b8 session_fork(Session *s, const Conv *c) {
 static Str sess_preview(Arena *a, const char *path) {
     size_t mark = a->off;
     Str src = {0};
-    file_read(a, path, YOKE_MAX_SESSION_BYTES, SESSION_PREVIEW_READ, &src,
+    file_read(a, path, AGENT_MAX_SESSION_BYTES, SESSION_PREVIEW_READ, &src,
               NULL);
     Str out = {0};
     size_t start = 0;
@@ -261,9 +261,9 @@ static Str sess_preview(Arena *a, const char *path) {
 size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max) {
     memset(out, 0, sizeof *out);
     if (!s->dir.n || !max) return 0;
-    if (max > YOKE_MAX_SESSIONS) max = YOKE_MAX_SESSIONS;
+    if (max > AGENT_MAX_SESSIONS) max = AGENT_MAX_SESSIONS;
 
-    char names[YOKE_MAX_SESSIONS][64];
+    char names[AGENT_MAX_SESSIONS][64];
     size_t n = 0;
     DIR *d = opendir(s->dir.p);
     if (!d) return 0;
@@ -311,7 +311,7 @@ size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max) {
  * before anything is thrown away. */
 Str session_read(Str path, Arena *scratch) {
     Str src = {0};
-    if (path.n) file_read(scratch, path.p, YOKE_MAX_SESSION_BYTES, 0, &src,
+    if (path.n) file_read(scratch, path.p, AGENT_MAX_SESSION_BYTES, 0, &src,
                           NULL);
     return src;
 }

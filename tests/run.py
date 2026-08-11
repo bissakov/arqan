@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test runner for the yoke TUI suite.
+"""Test runner for the arqan TUI suite.
 
     python3 tests/run.py                 # failures and one final summary
     python3 tests/run.py -k composer     # run matching cases
@@ -15,7 +15,7 @@ outside `--update` and written per case.
 
 No third-party dependencies: discovery, isolation and reporting are all here
 so `make test` works on a bare checkout with nothing but Python 3 and a built
-`bin/yoke`.
+`bin/arqan`.
 """
 
 from __future__ import annotations
@@ -79,7 +79,7 @@ def load_cases():
     """Import every tests/cases/test_*.py and collect its test_* callables."""
     found = []
     for path in sorted(CASES_DIR.glob("test_*.py")):
-        spec = importlib.util.spec_from_file_location(f"yokecases.{path.stem}", path)
+        spec = importlib.util.spec_from_file_location(f"arqancases.{path.stem}", path)
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)

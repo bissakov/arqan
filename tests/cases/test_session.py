@@ -54,10 +54,10 @@ def test_clear_restores_the_welcome_screen(ctx):
     s = ctx.spawn()
     s.submit("hello")
     s.wait_turn_done()
-    assert "| |_| | (_) |" not in s.text()
+    assert "| (_| | | | (_| |" not in s.text()
 
     s.submit("/clear")
-    s.wait_text("| |_| | (_) |")
+    s.wait_text("| (_| | | | (_| |")
 
 
 def test_clear_command_resets_the_conversation(ctx):

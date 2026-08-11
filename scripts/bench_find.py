@@ -79,7 +79,7 @@ def plant_session(ctx, name: str, tokens: int, turns: int = 40) -> tuple[Path, i
     the whole transcript to count them, and so that the newest and oldest both
     have one.
     """
-    d = ctx.home / ".local" / "share" / "yoke" / "sessions"
+    d = ctx.home / ".local" / "share" / "arqan" / "sessions"
     d.mkdir(parents=True, exist_ok=True)
     subs = [p for p in d.iterdir() if p.is_dir()]
     target = subs[0] if subs else d / str(ctx.work).replace("/", "%2f")

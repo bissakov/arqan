@@ -1,11 +1,11 @@
 /* history.c: persistent prompt history.
  *
- * Entries live in $XDG_STATE_HOME/yoke/history, one per line, with backslash
+ * Entries live in $XDG_STATE_HOME/arqan/history, one per line, with backslash
  * escapes for the breaks a multi-line prompt carries. They are appended as
  * they are submitted rather than flushed at exit: a session that ends in a
  * crash is exactly the one whose prompt is worth recalling.
  */
-#include "yoke.h"
+#include "agent.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -91,7 +91,7 @@ void history_load(History *h, Str path, Arena *scratch) {
     i64 sz = ftell(f);
     fseek(f, 0, SEEK_SET);
     /* Bounded like any other outside input. */
-    char *buf = sz > 0 && sz <= (i64)YOKE_MAX_HISTORY_BYTES
+    char *buf = sz > 0 && sz <= (i64)AGENT_MAX_HISTORY_BYTES
               ? arena_new(scratch, char, (size_t)sz + 1) : NULL;
     if (!buf) { fclose(f); return; }
     size_t rd = fread(buf, 1, (size_t)sz, f);
@@ -106,7 +106,7 @@ void history_load(History *h, Str path, Arena *scratch) {
         start = i + 1;
         if (!raw.n) continue;
         Str line = hist_unescape(scratch, raw);
-        if (!line.n || line.n > YOKE_MAX_HISTORY_LINE) continue;
+        if (!line.n || line.n > AGENT_MAX_HISTORY_LINE) continue;
         Str kept = hist_store(h, line);
         if (kept.n) hist_push(h, kept);
     }
@@ -128,7 +128,7 @@ void history_rewrite(const History *h) {
 void history_add(History *h, Str line) {
     if (!h->cap) return;
     Str t = str_trim(line);
-    if (!t.n || t.n > YOKE_MAX_HISTORY_LINE) { h->cursor = h->n; return; }
+    if (!t.n || t.n > AGENT_MAX_HISTORY_LINE) { h->cursor = h->n; return; }
     b8 dup = h->n && str_eq(h->entry[h->n - 1], t);
     Str kept = dup ? h->entry[h->n - 1] : hist_store(h, t);
     if (!kept.n) { h->cursor = h->n; return; }

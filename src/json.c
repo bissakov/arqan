@@ -3,7 +3,7 @@
  * DOM lives entirely in the scratch arena. Objects are a singly linked list of
  * members (ordered). Arrays are contiguous JVal arrays.
  */
-#include "yoke.h"
+#include "agent.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -223,7 +223,7 @@ static JVal *parse_value(JParser *p) {
     if (c == '{' || c == '[') {
         /* Nesting is recursion, and the depth comes from whatever the provider
          * sends: without this cap a stream of "[[[[[..." is a stack overflow. */
-        if (p->depth >= YOKE_MAX_JSON_DEPTH) return NULL;
+        if (p->depth >= AGENT_MAX_JSON_DEPTH) return NULL;
         p->depth++;
         JVal *v = c == '{' ? parse_object(p) : parse_array(p);
         p->depth--;

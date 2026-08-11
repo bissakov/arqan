@@ -1,13 +1,13 @@
 ## Project
 
-`yoke` is a C17 terminal coding agent for OpenAI-compatible Chat Completions
+`arqan` is a C17 terminal coding agent for OpenAI-compatible Chat Completions
 and Anthropic Messages APIs. It streams SSE responses and exposes built-in
 read, write, bash, patch, grep, and find tools.
 
 ## Build and test
 
 ```sh
-make            # build bin/yoke
+make            # build bin/arqan
 make run        # build and run
 make test       # end-to-end TUI suite
 make test-asan  # ASan + UBSan suite
@@ -24,8 +24,14 @@ failure. For suspected flakes, use `python3 tests/run.py --repeat 5`.
 
 - This is a unity build: `src/main.c` includes every `.c` file and the Makefile
   compiles one translation unit. Add new modules to `main.c`, not the Makefile.
-- `src/yoke.h` is the sole cross-module header. Put shared types and function
+- `src/agent.h` is the sole cross-module header. Put shared types and function
   declarations there.
+- Two names, kept apart. Code, macros and file names use the neutral internal
+  prefix `agent`/`agent_`/`AGENT_`/`Agent`; anything a user sees (the binary,
+  `ARQAN_*` environment variables, XDG and `.arqan` directories, help text,
+  docs) uses the product name through `AGENT_NAME` and `AGENT_ENV_PREFIX`.
+  Never write the product name as a bare literal where those macros reach, and
+  rename with `python3 scripts/rename.py` rather than by hand.
 - No application `malloc` or `free`. Use the startup arenas: `persist` for
   session-lifetime data and `scratch` for temporary turn data.
 - Allocation failure is normal. Check `arena_alloc`, `buf_ok`, and collection
@@ -41,7 +47,7 @@ failure. For suspected flakes, use `python3 tests/run.py --repeat 5`.
 - `core.c`: arenas, strings/buffers, logging, time, file reads.
 - `json.c`: arena-backed JSON parser and serializer.
 - `http.c`: libcurl requests, streaming SSE, idle polling.
-- `paths.c`: XDG paths and the `.yoke` project directory chain.
+- `paths.c`: XDG paths and the `.arqan` project directory chain.
 - `settings.c`: the TOML-subset file format, upserts, state writes.
 - `config.c`: the settings table, source precedence, `Config` and
   `UiPrefs`. A new setting is a row of `k_conf`, not a new reader.
@@ -57,15 +63,15 @@ failure. For suspected flakes, use `python3 tests/run.py --repeat 5`.
 - `tui.c`, `markdown.c`, `render.c`: terminal UI and transcript rendering.
 - `main.c`: command handling and the provider/tool loop.
 
-Read `yoke.h` and the relevant module before changing behaviour. Preserve the
+Read `agent.h` and the relevant module before changing behaviour. Preserve the
 existing ownership, bounds, and rendering conventions rather than duplicating
 them in a new path.
 
 ## Important behaviour
 
 - Settings resolve through one table in `config.c`: defaults, the XDG config
-  files, `$cwd/.yoke/config.toml` and the directories above it, the state
-  file, the active provider, `YOKE_<NAME>`, then CLI options. A project
+  files, `$cwd/.arqan/config.toml` and the directories above it, the state
+  file, the active provider, `ARQAN_<NAME>`, then CLI options. A project
   file is untrusted input: it may not set `api_key` or any key-store
   directive. A refused value is reported and dropped, never clamped.
 - Keys managed by `/provider` live in the credentials file at mode 0600;

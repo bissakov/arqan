@@ -2,14 +2,14 @@
 |
 |
 |
-|                                          _
-|                              _   _  ___ | | _____
-|                             | | | |/ _ \| |/ / _ \
-|                             | |_| | (_) |   <  __/
-|                              \__, |\___/|_|\_\___|
-|                              |___/
 |
-|                   yoke 0.1.0 · a tiny terminal coding agent
+|                           __ _ _ __ __ _  __ _ _ __
+|                          / _` | '__/ _` |/ _` | '_ \
+|                         | (_| | | | (_| | (_| | | | |
+|                          \__,_|_|  \__, |\__,_|_| |_|
+|                                       |_|
+|
+|                   arqan 0.1.0 · a tiny terminal coding agent
 |
 |                    type a message and press Enter to begin
 |
@@ -19,7 +19,7 @@
 |    gamma
 |    + enter a model manually  Use an id not verified by /models
 |
-|  › Message yoke...
+|  › Message arqan...
 |
 |
 |  ● pick a model · beta · build · local · ~/work · -

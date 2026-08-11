@@ -47,12 +47,12 @@ def test_copy_skips_tool_calls(ctx):
 def test_copy_without_a_reply_answers_in_the_popup_slot(ctx):
     """Nothing said yet leaves the view as it was and says so above the composer."""
     s = ctx.spawn()
-    assert "| |_| | (_) |" in s.text(), "the welcome art starts on screen"
+    assert "| (_| | | | (_| |" in s.text(), "the welcome art starts on screen"
     s.submit("/copy")
     s.wait_text("no response to copy")
     rows = s.screen.lines()
     assert "no response to copy" in rows[s.screen.rows - 6], rows[s.screen.rows - 8 :]
-    assert "| |_| | (_) |" in s.text(), s.text()
+    assert "| (_| | | | (_| |" in s.text(), s.text()
     assert s.screen.clipboard is None or s.screen.clipboard == "", (
         repr(s.screen.clipboard)
     )

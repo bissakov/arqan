@@ -1,6 +1,6 @@
 """A dummy provider, OpenAI-compatible and Anthropic-compatible.
 
-Speaks just enough of both APIs for `yoke`: `POST /v1/chat/completions` with
+Speaks just enough of both APIs for `arqan`: `POST /v1/chat/completions` with
 `stream: true`, SSE deltas, tool calls, `stream_options.include_usage` and
 `[DONE]`, and `POST /v1/messages` with the content-block events the Anthropic
 API streams. One scenario drives either, so a case says what comes back and
@@ -13,14 +13,14 @@ Two ways to pick a scenario:
 
   * server default: `MockProvider(scenario="words=40,chunk=5")`, used by the
     test harness so the status line keeps a clean model name;
-  * the model name itself: `YOKE_MODEL=lorem:words=40,delay=0.02`, which makes
+  * the model name itself: `ARQAN_MODEL=lorem:words=40,delay=0.02`, which makes
     the server useful standalone with no test code in the loop.
 
 Standalone:
 
     python3 -m tests.mockprovider.server --port 8080 --scenario words=80
 
-    YOKE_BASE_URL=http://127.0.0.1:8080/v1 YOKE_API_KEY=x YOKE_MODEL=mock ./bin/yoke
+    ARQAN_BASE_URL=http://127.0.0.1:8080/v1 ARQAN_API_KEY=x ARQAN_MODEL=mock ./bin/arqan
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ class Scenario:
         self.cache_read_tokens: int = int(kw.get("cache_read", 0))
         self.usage: bool = _truthy(kw.get("usage", True))
         # Some providers report usage on an early event rather than the last;
-        # when set, yoke hears it before any reasoning or content, which is
+        # when set, arqan hears it before any reasoning or content, which is
         # what an interrupt after that cannot take back.
         self.usage_first: bool = _truthy(kw.get("usage_first", "0"))
         # A broken but common SSE server sends [DONE] and keeps an unframed
@@ -249,7 +249,7 @@ class _AnthropicHandlerMixin:
 
     def _anth_sse(self, kind: str, obj) -> bool:
         """An event carries its type twice: in the event line and in the data,
-        which is the one yoke reads."""
+        which is the one arqan reads."""
         try:
             payload = json.dumps(dict(obj, type=kind)).encode()
             self.wfile.write(b"event: " + kind.encode() + b"\n")
@@ -858,7 +858,7 @@ class _Server(ThreadingHTTPServer):
 
 
 class MockProvider:
-    """Owns the background server; `base_url` plugs straight into YOKE_BASE_URL."""
+    """Owns the background server; `base_url` plugs straight into ARQAN_BASE_URL."""
 
     def __init__(self, scenario: str | Scenario | None = None, host="127.0.0.1", port=0):
         self.httpd = _Server((host, port), _Handler)
@@ -996,7 +996,7 @@ def main(argv=None):
     mock.httpd.verbose = args.verbose  # type: ignore[attr-defined]
     print(f"mock provider on {mock.base_url}  scenario: {args.scenario}")
     print(
-        f"  YOKE_BASE_URL={mock.base_url} YOKE_API_KEY=test YOKE_MODEL=mock ./bin/yoke"
+        f"  ARQAN_BASE_URL={mock.base_url} ARQAN_API_KEY=test ARQAN_MODEL=mock ./bin/arqan"
     )
     mock.start()
     try:

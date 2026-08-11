@@ -109,14 +109,14 @@ def test_status_fields_use_single_spacing(ctx):
 
 def test_log_output_becomes_a_transcript_notice(ctx):
     """Diagnostics go into the transcript, never raw onto the frame."""
-    s = ctx.spawn(YOKE_BASE_URL="http://127.0.0.1:1/v1")
+    s = ctx.spawn(ARQAN_BASE_URL="http://127.0.0.1:1/v1")
     s.submit("nobody is listening")
     s.wait_text("[provider error:")
     s.wait_turn_done()
 
     text = s.text()
     assert "[error: curl:" in text, text
-    assert "[yoke ERR]" not in text, "raw stderr must not reach the screen"
+    assert "[arqan ERR]" not in text, "raw stderr must not reach the screen"
     # the frame is still intact: chrome in its usual places
     assert s.PLACEHOLDER in text
     assert "ready" in s.status_line()
@@ -158,8 +158,8 @@ def test_status_names_active_reasoning_controls(ctx):
     state = ctx.state_file()
     state.parent.mkdir(parents=True, exist_ok=True)
     state.write_text("provider = local-chatgpt\n")
-    s = ctx.spawn(cols=160, YOKE_BASE_URL=None, YOKE_API_KEY=None,
-                  YOKE_MODEL=None)
+    s = ctx.spawn(cols=160, ARQAN_BASE_URL=None, ARQAN_API_KEY=None,
+                  ARQAN_MODEL=None)
     fields = [s.status_field(i) for i in range(8)]
     assert fields[:6] == [
         "ready", "gpt-5.6-terra", "xhigh", "thinking 1024", "build",

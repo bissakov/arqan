@@ -45,7 +45,7 @@ def test_deeply_nested_arguments_are_rejected(ctx):
     ctx.scenario(f"tool=read:{args},final_text=still+here")
     s = ctx.spawn()
     s.submit("send me something deep")
-    # The point of the case is that yoke is still alive to answer at all.
+    # The point of the case is that arqan is still alive to answer at all.
     s.wait_text("still here")
     s.wait_turn_done()
 
@@ -82,7 +82,7 @@ def test_many_tool_calls_in_one_turn(ctx):
 def test_full_conversation_is_reported_and_recoverable(ctx):
     """A conversation at capacity says so instead of writing past its arrays."""
     ctx.scenario("text=ok")
-    s = ctx.spawn(YOKE_MAX_MESSAGES=8)
+    s = ctx.spawn(ARQAN_MAX_MESSAGES=8)
 
     # system + (user, assistant) per turn: the fourth user message is the one
     # that leaves no room for a reply.
@@ -117,7 +117,7 @@ def test_surrogate_pair_escapes_decode_to_one_glyph(ctx):
 def test_turn_runs_without_an_api_key(ctx):
     """No key configured means no Authorization header, not a formatted NULL."""
     ctx.scenario("text=no+key+needed")
-    s = ctx.spawn(YOKE_API_KEY=None)
+    s = ctx.spawn(ARQAN_API_KEY=None)
     s.submit("hello")
     s.wait_text("no key needed")
     s.wait_turn_done()

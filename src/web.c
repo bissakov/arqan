@@ -1,5 +1,5 @@
 /* web.c: bounded public web search and readable page extraction. */
-#include "yoke.h"
+#include "agent.h"
 #include "../vendor/lexbor/bridge.h"
 
 #include <ctype.h>
@@ -31,15 +31,15 @@ void web_set_idle(void (*fn)(void *ud), void *ud, i32 idle_fd,
 }
 
 static i32 search_interval_ms(void) {
-#ifdef YOKE_TESTING
-    const char *value = getenv("YOKE_TEST_WEB_SEARCH_INTERVAL_MS");
+#ifdef AGENT_TESTING
+    const char *value = getenv(AGENT_ENV_PREFIX "TEST_WEB_SEARCH_INTERVAL_MS");
     if (value && *value) {
         b8 ok = false;
         i64 ms = str_int(str_c(value), &ok);
-        if (ok && ms >= 0 && ms <= YOKE_WEB_SEARCH_INTERVAL_MS) return (i32)ms;
+        if (ok && ms >= 0 && ms <= AGENT_WEB_SEARCH_INTERVAL_MS) return (i32)ms;
     }
 #endif
-    return YOKE_WEB_SEARCH_INTERVAL_MS;
+    return AGENT_WEB_SEARCH_INTERVAL_MS;
 }
 
 /* Search pacing shares the transfer's idle hook so waiting remains
@@ -49,7 +49,7 @@ static b8 search_wait_until(f64 until) {
     for (;;) {
         if (g_web_hooks.interrupt_flag && *g_web_hooks.interrupt_flag)
             return false;
-        f64 left = until - yoke_now_seconds();
+        f64 left = until - agent_now_seconds();
         if (left <= 0) return true;
         if (g_web_hooks.idle) g_web_hooks.idle(g_web_hooks.idle_ud);
         i32 ms = left * 1000.0 < (f64)SLICE_MS
@@ -60,7 +60,7 @@ static b8 search_wait_until(f64 until) {
 }
 
 static b8 search_admit(char *err, size_t err_cap) {
-    f64 now = yoke_now_seconds();
+    f64 now = agent_now_seconds();
     if (g_search_paused_until > now) {
         i64 seconds = (i64)(g_search_paused_until - now) + 1;
         snprintf(err, err_cap, "searches paused for %llds after a challenge or "
@@ -74,12 +74,12 @@ static b8 search_admit(char *err, size_t err_cap) {
             return false;
         }
     }
-    g_search_last_start = yoke_now_seconds();
+    g_search_last_start = agent_now_seconds();
     return true;
 }
 
 static void search_pause(void) {
-    f64 until = yoke_now_seconds() + (f64)YOKE_WEB_SEARCH_PAUSE_MS / 1000.0;
+    f64 until = agent_now_seconds() + (f64)AGENT_WEB_SEARCH_PAUSE_MS / 1000.0;
     if (until > g_search_paused_until) g_search_paused_until = until;
 }
 
@@ -134,8 +134,8 @@ static JVal *web_args(Str args, Arena *scratch, char *err, size_t err_cap) {
 }
 
 static b8 web_public_only(void) {
-#ifdef YOKE_TESTING
-    const char *allow = getenv("YOKE_TEST_WEB_ALLOW_PRIVATE");
+#ifdef AGENT_TESTING
+    const char *allow = getenv(AGENT_ENV_PREFIX "TEST_WEB_ALLOW_PRIVATE");
     if (allow && !strcmp(allow, "1")) return false;
 #endif
     return true;
@@ -147,7 +147,7 @@ static i32 web_request(const char *url, const char *operation, Buf *body,
         .url = url,
         .operation = operation,
         .out = body,
-        .max_bytes = YOKE_WEB_BODY_BYTES,
+        .max_bytes = AGENT_WEB_BODY_BYTES,
         .connect_timeout_ms = 5000,
         .timeout_ms = 20000,
         .max_redirects = 5,
@@ -160,14 +160,14 @@ static i32 web_request(const char *url, const char *operation, Buf *body,
     return http_url_get(req);
 }
 
-static b8 tag_is(YokeHtmlNode *node, const char *name) {
+static b8 tag_is(AgentHtmlNode *node, const char *name) {
     size_t n = 0;
-    const char *tag = yoke_html_tag(node, &n);
+    const char *tag = agent_html_tag(node, &n);
     size_t want = strlen(name);
     return tag && n == want && !memcmp(tag, name, n);
 }
 
-static b8 ignored_tag(YokeHtmlNode *node) {
+static b8 ignored_tag(AgentHtmlNode *node) {
     static const char *const ignored[] = {
         "script", "style", "noscript", "template", "svg", "canvas",
         "iframe", "form", "button", "nav", "footer", "aside",
@@ -177,18 +177,18 @@ static b8 ignored_tag(YokeHtmlNode *node) {
     return false;
 }
 
-typedef b8 (*HtmlEnter)(YokeHtmlNode *node, void *ud);
-typedef void (*HtmlLeave)(YokeHtmlNode *node, void *ud);
+typedef b8 (*HtmlEnter)(AgentHtmlNode *node, void *ud);
+typedef void (*HtmlLeave)(AgentHtmlNode *node, void *ud);
 
-static void html_walk(YokeHtmlNode *root, HtmlEnter enter, HtmlLeave leave,
+static void html_walk(AgentHtmlNode *root, HtmlEnter enter, HtmlLeave leave,
                       void *ud) {
     if (!root) return;
-    YokeHtmlNode *node = root;
+    AgentHtmlNode *node = root;
     b8 entering = true;
     for (;;) {
         if (entering) {
             b8 descend = !enter || enter(node, ud);
-            YokeHtmlNode *child = descend ? yoke_html_first_child(node) : NULL;
+            AgentHtmlNode *child = descend ? agent_html_first_child(node) : NULL;
             if (child) {
                 node = child;
                 continue;
@@ -196,12 +196,12 @@ static void html_walk(YokeHtmlNode *root, HtmlEnter enter, HtmlLeave leave,
         }
         if (leave) leave(node, ud);
         if (node == root) break;
-        YokeHtmlNode *next = yoke_html_next(node);
+        AgentHtmlNode *next = agent_html_next(node);
         if (next) {
             node = next;
             entering = true;
         } else {
-            node = yoke_html_parent(node);
+            node = agent_html_parent(node);
             entering = false;
         }
     }
@@ -290,16 +290,16 @@ typedef struct {
     Normal norm;
 } VisibleCtx;
 
-static b8 visible_enter(YokeHtmlNode *node, void *ud) {
+static b8 visible_enter(AgentHtmlNode *node, void *ud) {
     VisibleCtx *v = (VisibleCtx *)ud;
     if (ignored_tag(node)) return false;
     size_t n = 0;
-    const char *text = yoke_html_text(node, &n);
+    const char *text = agent_html_text(node, &n);
     if (text) normal_words(&v->norm, (Str){text, n}, false);
     return true;
 }
 
-static Str visible_text(YokeHtmlNode *node, Arena *scratch, size_t max,
+static Str visible_text(AgentHtmlNode *node, Arena *scratch, size_t max,
                         b8 *too_large) {
     Buf b;
     buf_init(&b, scratch, max < 256 ? max + 1 : 256);
@@ -315,17 +315,17 @@ typedef struct {
     size_t chars;
 } CountCtx;
 
-static b8 count_enter(YokeHtmlNode *node, void *ud) {
+static b8 count_enter(AgentHtmlNode *node, void *ud) {
     CountCtx *c = (CountCtx *)ud;
     if (ignored_tag(node)) return false;
     size_t n = 0;
-    const char *text = yoke_html_text(node, &n);
+    const char *text = agent_html_text(node, &n);
     for (size_t i = 0; text && i < n && c->chars < 200; i++)
         if (!isspace((u8)text[i]) || (i && !isspace((u8)text[i - 1]))) c->chars++;
     return c->chars < 200;
 }
 
-static b8 qualifying_text(YokeHtmlNode *node) {
+static b8 qualifying_text(AgentHtmlNode *node) {
     CountCtx c = {0};
     html_walk(node, count_enter, NULL, &c);
     return c.chars >= 200;
@@ -334,10 +334,10 @@ static b8 qualifying_text(YokeHtmlNode *node) {
 typedef struct {
     const char *tag;
     b8 qualify;
-    YokeHtmlNode *found;
+    AgentHtmlNode *found;
 } FindCtx;
 
-static b8 find_enter(YokeHtmlNode *node, void *ud) {
+static b8 find_enter(AgentHtmlNode *node, void *ud) {
     FindCtx *f = (FindCtx *)ud;
     if (ignored_tag(node)) return false;
     if (!f->found && tag_is(node, f->tag)
@@ -345,7 +345,7 @@ static b8 find_enter(YokeHtmlNode *node, void *ud) {
     return f->found == NULL;
 }
 
-static YokeHtmlNode *find_tag(YokeHtmlNode *root, const char *tag, b8 qualify) {
+static AgentHtmlNode *find_tag(AgentHtmlNode *root, const char *tag, b8 qualify) {
     FindCtx f = {tag, qualify, NULL};
     html_walk(root, find_enter, NULL, &f);
     return f.found;
@@ -369,10 +369,10 @@ static b8 http_url_ok(const char *url) {
     return ok;
 }
 
-static b8 resolve_url(const char *base, Str ref, char out[YOKE_WEB_URL_BYTES]) {
-    if (!ref.n || ref.n >= YOKE_WEB_URL_BYTES || memchr(ref.p, '\0', ref.n))
+static b8 resolve_url(const char *base, Str ref, char out[AGENT_WEB_URL_BYTES]) {
+    if (!ref.n || ref.n >= AGENT_WEB_URL_BYTES || memchr(ref.p, '\0', ref.n))
         return false;
-    char z[YOKE_WEB_URL_BYTES];
+    char z[AGENT_WEB_URL_BYTES];
     memcpy(z, ref.p, ref.n);
     z[ref.n] = '\0';
     CURLU *u = curl_url();
@@ -381,7 +381,7 @@ static b8 resolve_url(const char *base, Str ref, char out[YOKE_WEB_URL_BYTES]) {
     if (rc == CURLUE_OK) rc = curl_url_set(u, CURLUPART_URL, z, 0);
     char *url = NULL;
     if (rc == CURLUE_OK) rc = curl_url_get(u, CURLUPART_URL, &url, 0);
-    b8 ok = rc == CURLUE_OK && url && strlen(url) < YOKE_WEB_URL_BYTES
+    b8 ok = rc == CURLUE_OK && url && strlen(url) < AGENT_WEB_URL_BYTES
          && http_url_ok(url);
     if (ok) memcpy(out, url, strlen(url) + 1);
     curl_free(url);
@@ -395,9 +395,9 @@ typedef struct {
     size_t pre_depth;
 } ExtractCtx;
 
-static b8 heading_level(YokeHtmlNode *node, size_t *level) {
+static b8 heading_level(AgentHtmlNode *node, size_t *level) {
     size_t n = 0;
-    const char *tag = yoke_html_tag(node, &n);
+    const char *tag = agent_html_tag(node, &n);
     if (tag && n == 2 && tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6') {
         *level = (size_t)(tag[1] - '0');
         return true;
@@ -405,11 +405,11 @@ static b8 heading_level(YokeHtmlNode *node, size_t *level) {
     return false;
 }
 
-static b8 extract_enter(YokeHtmlNode *node, void *ud) {
+static b8 extract_enter(AgentHtmlNode *node, void *ud) {
     ExtractCtx *x = (ExtractCtx *)ud;
     if (ignored_tag(node)) return false;
     size_t tn = 0;
-    const char *text = yoke_html_text(node, &tn);
+    const char *text = agent_html_text(node, &tn);
     if (text) {
         normal_words(&x->norm, (Str){text, tn}, x->pre_depth != 0);
         return true;
@@ -444,7 +444,7 @@ static b8 extract_enter(YokeHtmlNode *node, void *ud) {
     return true;
 }
 
-static void extract_leave(YokeHtmlNode *node, void *ud) {
+static void extract_leave(AgentHtmlNode *node, void *ud) {
     ExtractCtx *x = (ExtractCtx *)ud;
     if (ignored_tag(node)) return;
     size_t level = 0;
@@ -463,8 +463,8 @@ static void extract_leave(YokeHtmlNode *node, void *ud) {
         normal_put(&x->norm, "`", 1);
     } else if (tag_is(node, "a")) {
         size_t n = 0;
-        const char *href = yoke_html_attr(node, "href", 4, &n);
-        char resolved[YOKE_WEB_URL_BYTES];
+        const char *href = agent_html_attr(node, "href", 4, &n);
+        char resolved[AGENT_WEB_URL_BYTES];
         if (href && resolve_url(x->base, (Str){href, n}, resolved)) {
             normal_put(&x->norm, " (", 2);
             normal_put(&x->norm, resolved, strlen(resolved));
@@ -473,29 +473,29 @@ static void extract_leave(YokeHtmlNode *node, void *ud) {
     }
 }
 
-static Str html_extract(YokeHtmlDoc *doc, const char *effective, Arena *scratch,
-                        Str *title, char base[YOKE_WEB_URL_BYTES],
+static Str html_extract(AgentHtmlDoc *doc, const char *effective, Arena *scratch,
+                        Str *title, char base[AGENT_WEB_URL_BYTES],
                         b8 *too_large) {
-    YokeHtmlNode *root = yoke_html_root(doc);
-    YokeHtmlNode *title_node = find_tag(root, "title", false);
+    AgentHtmlNode *root = agent_html_root(doc);
+    AgentHtmlNode *title_node = find_tag(root, "title", false);
     b8 title_large = false;
     *title = title_node ? visible_text(title_node, scratch, WEB_TITLE_BYTES,
                                       &title_large) : (Str){0};
     (void)title_large;
 
     memcpy(base, effective, strlen(effective) + 1);
-    YokeHtmlNode *base_node = find_tag(root, "base", false);
+    AgentHtmlNode *base_node = find_tag(root, "base", false);
     if (base_node) {
         size_t n = 0;
-        const char *href = yoke_html_attr(base_node, "href", 4, &n);
-        char resolved[YOKE_WEB_URL_BYTES];
+        const char *href = agent_html_attr(base_node, "href", 4, &n);
+        char resolved[AGENT_WEB_URL_BYTES];
         if (href && resolve_url(effective, (Str){href, n}, resolved))
             memcpy(base, resolved, strlen(resolved) + 1);
     }
 
-    YokeHtmlNode *selected = find_tag(root, "main", true);
+    AgentHtmlNode *selected = find_tag(root, "main", true);
     if (!selected) selected = find_tag(root, "article", true);
-    if (!selected) selected = yoke_html_body(doc);
+    if (!selected) selected = agent_html_body(doc);
     if (!selected) selected = root;
     Buf b;
     buf_init(&b, scratch, 8192);
@@ -535,9 +535,9 @@ static b8 page_output(Buf *out, Str title, const char *effective, const char *in
     buf_puts(out, STR("\nFinal URL: "));
     buf_puts(out, str_c(effective));
     buf_puts(out, STR("\n\n"));
-    if (!buf_ok(out) || out->n >= YOKE_TOOL_RESULT_BYTES) {
+    if (!buf_ok(out) || out->n >= AGENT_TOOL_RESULT_BYTES) {
         snprintf(err, err_cap, "page header exceeds the %u byte result limit",
-                 (unsigned)YOKE_TOOL_RESULT_BYTES);
+                 (unsigned)AGENT_TOOL_RESULT_BYTES);
         return false;
     }
 
@@ -552,10 +552,10 @@ static b8 page_output(Buf *out, Str title, const char *effective, const char *in
     for (size_t ln = 1; ln < first; ln++) str_line(body, &off, &line);
     size_t shown = 0;
     size_t reserve = strlen(input) * 2 + 192;
-    if (reserve > YOKE_TOOL_RESULT_BYTES / 2) reserve = YOKE_TOOL_RESULT_BYTES / 2;
+    if (reserve > AGENT_TOOL_RESULT_BYTES / 2) reserve = AGENT_TOOL_RESULT_BYTES / 2;
     while (shown < limit && str_line(body, &off, &line)) {
-        if (line.n + 1 > YOKE_TOOL_RESULT_BYTES - out->n
-            || out->n + line.n + 1 + reserve > YOKE_TOOL_RESULT_BYTES)
+        if (line.n + 1 > AGENT_TOOL_RESULT_BYTES - out->n
+            || out->n + line.n + 1 + reserve > AGENT_TOOL_RESULT_BYTES)
             break;
         buf_puts(out, line);
         buf_putc(out, '\n');
@@ -569,21 +569,21 @@ static b8 page_output(Buf *out, Str title, const char *effective, const char *in
         buf_putf(&note, ",\"offset\":%zu,\"limit\":%zu}]",
                  first + shown, limit);
         Str n = buf_finish(&note);
-        if (!buf_ok(&note) || n.n + out->n > YOKE_TOOL_RESULT_BYTES) {
+        if (!buf_ok(&note) || n.n + out->n > AGENT_TOOL_RESULT_BYTES) {
             snprintf(err, err_cap, "continuation call exceeds the result limit");
             return false;
         }
         buf_puts(out, n);
     }
-    if (!buf_ok(out) || out->n > YOKE_TOOL_RESULT_BYTES) {
+    if (!buf_ok(out) || out->n > AGENT_TOOL_RESULT_BYTES) {
         snprintf(err, err_cap, "page result exceeds the %u byte limit",
-                 (unsigned)YOKE_TOOL_RESULT_BYTES);
+                 (unsigned)AGENT_TOOL_RESULT_BYTES);
         return false;
     }
     return true;
 }
 
-static void media_type(char type[YOKE_WEB_TYPE_BYTES]) {
+static void media_type(char type[AGENT_WEB_TYPE_BYTES]) {
     char *semi = strchr(type, ';');
     if (semi) *semi = '\0';
     size_t n = strlen(type);
@@ -603,7 +603,7 @@ b8 page_fetch_run(Str args, Arena *scratch, Buf *out,
                   char *err, size_t err_cap) {
     JVal *j = web_args(args, scratch, err, err_cap);
     if (!j) return false;
-    char url[YOKE_WEB_URL_BYTES];
+    char url[AGENT_WEB_URL_BYTES];
     if (!web_arg_cstr(json_str(j, STR("url")), url, sizeof url, "URL",
                       err, err_cap)) return false;
     if (!http_url_ok(url)) {
@@ -613,7 +613,7 @@ b8 page_fetch_run(Str args, Arena *scratch, Buf *out,
     }
     size_t first, limit;
     if (!web_arg_count(j, STR("offset"), 1, 1u << 30, &first, err, err_cap)
-        || !web_arg_count(j, STR("limit"), YOKE_READ_LINES, YOKE_READ_LINES,
+        || !web_arg_count(j, STR("limit"), AGENT_READ_LINES, AGENT_READ_LINES,
                           &limit, err, err_cap)) return false;
 
     Buf source;
@@ -638,14 +638,14 @@ b8 page_fetch_run(Str args, Arena *scratch, Buf *out,
     b8 too_large = false;
     if (!strcmp(req.content_type, "text/html")
         || !strcmp(req.content_type, "application/xhtml+xml")) {
-        YokeHtmlDoc *doc = yoke_html_parse(raw.p, raw.n);
+        AgentHtmlDoc *doc = agent_html_parse(raw.p, raw.n);
         if (!doc) {
             snprintf(err, err_cap, "HTML parsing failed");
             return false;
         }
-        char base[YOKE_WEB_URL_BYTES];
+        char base[AGENT_WEB_URL_BYTES];
         body = html_extract(doc, effective, scratch, &title, base, &too_large);
-        yoke_html_destroy(doc);
+        agent_html_destroy(doc);
     } else if (!strncmp(req.content_type, "text/", 5)
                || !strcmp(req.content_type, "application/json")
                || !strcmp(req.content_type, "application/xml")
@@ -665,9 +665,9 @@ b8 page_fetch_run(Str args, Arena *scratch, Buf *out,
                        err, err_cap);
 }
 
-static b8 class_has(YokeHtmlNode *node, const char *want) {
+static b8 class_has(AgentHtmlNode *node, const char *want) {
     size_t n = 0;
-    const char *value = yoke_html_attr(node, "class", 5, &n);
+    const char *value = agent_html_attr(node, "class", 5, &n);
     size_t wn = strlen(want), off = 0;
     while (value && off < n) {
         while (off < n && isspace((u8)value[off])) off++;
@@ -729,7 +729,7 @@ static Str result_url(Str href, Arena *scratch, b8 *ok) {
                 if (str_eq(key, STR("uddg"))) {
                     Str decoded = percent_decode((Str){href.p + val, off - val},
                                                  scratch, ok);
-                    if (*ok && decoded.n < YOKE_WEB_URL_BYTES
+                    if (*ok && decoded.n < AGENT_WEB_URL_BYTES
                         && http_url_ok(decoded.p)) return decoded;
                     *ok = false;
                     return (Str){0};
@@ -738,7 +738,7 @@ static Str result_url(Str href, Arena *scratch, b8 *ok) {
             if (off < href.n) off++;
         }
     }
-    if (href.n >= YOKE_WEB_URL_BYTES) return (Str){0};
+    if (href.n >= AGENT_WEB_URL_BYTES) return (Str){0};
     Str copy = str_dup(scratch, href);
     if (copy.p && http_url_ok(copy.p)) *ok = true;
     return *ok ? copy : (Str){0};
@@ -773,7 +773,7 @@ typedef struct {
     b8 explicit_empty;
 } SearchCtx;
 
-static b8 search_enter(YokeHtmlNode *node, void *ud) {
+static b8 search_enter(AgentHtmlNode *node, void *ud) {
     SearchCtx *s = (SearchCtx *)ud;
     if (class_has(node, "challenge-form") || class_has(node, "anomaly-modal"))
         s->challenge = true;
@@ -782,7 +782,7 @@ static b8 search_enter(YokeHtmlNode *node, void *ud) {
         s->layout_links++;
         s->current = SIZE_MAX;
         size_t hn = 0;
-        const char *href = yoke_html_attr(node, "href", 4, &hn);
+        const char *href = agent_html_attr(node, "href", 4, &hn);
         b8 ok = false, large = false;
         Str url = href ? result_url((Str){href, hn}, s->scratch, &ok) : (Str){0};
         Str title = visible_text(node, s->scratch, WEB_TITLE_BYTES, &large);
@@ -817,8 +817,8 @@ static b8 encode_query(Str query, Buf *url) {
 }
 
 static const char *search_prefix(void) {
-#ifdef YOKE_TESTING
-    const char *override = getenv("YOKE_TEST_WEB_SEARCH_URL");
+#ifdef AGENT_TESTING
+    const char *override = getenv(AGENT_ENV_PREFIX "TEST_WEB_SEARCH_URL");
     if (override && *override) return override;
 #endif
     return "https://lite.duckduckgo.com/lite/?q=";
@@ -828,7 +828,7 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out,
                        char *err, size_t err_cap) {
     JVal *j = web_args(args, scratch, err, err_cap);
     if (!j) return false;
-    char query[YOKE_WEB_QUERY_BYTES];
+    char query[AGENT_WEB_QUERY_BYTES];
     if (!web_arg_cstr(json_str(j, STR("query")), query, sizeof query, "query",
                       err, err_cap)) return false;
     size_t limit;
@@ -842,7 +842,7 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out,
         return false;
     }
     Str request_url = buf_finish(&url);
-    if (!buf_ok(&url) || request_url.n >= YOKE_WEB_URL_BYTES) {
+    if (!buf_ok(&url) || request_url.n >= AGENT_WEB_URL_BYTES) {
         snprintf(err, err_cap, "encoded search URL is too long");
         return false;
     }
@@ -871,14 +871,14 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out,
         snprintf(err, err_cap, "search response does not fit in memory");
         return false;
     }
-    YokeHtmlDoc *doc = yoke_html_parse(raw.p, raw.n);
+    AgentHtmlDoc *doc = agent_html_parse(raw.p, raw.n);
     if (!doc) {
         snprintf(err, err_cap, "search HTML parsing failed");
         return false;
     }
     SearchCtx found = {.scratch = scratch, .current = SIZE_MAX};
-    html_walk(yoke_html_root(doc), search_enter, NULL, &found);
-    yoke_html_destroy(doc);
+    html_walk(agent_html_root(doc), search_enter, NULL, &found);
+    agent_html_destroy(doc);
     if (found.challenge || contains_ci(raw, "verify you are human")) {
         search_pause();
         snprintf(err, err_cap,
@@ -916,16 +916,16 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out,
             snprintf(err, err_cap, "search result does not fit in memory");
             return false;
         }
-        if (bytes + records[i].n + 64 > YOKE_TOOL_RESULT_BYTES) break;
+        if (bytes + records[i].n + 64 > AGENT_TOOL_RESULT_BYTES) break;
         bytes += records[i].n;
         emitted++;
     }
     buf_putf(out, "External search results (untrusted): %zu\n", emitted);
     for (size_t i = 0; i < emitted; i++) buf_puts(out, records[i]);
     while (out->n && out->p[out->n - 1] == '\n') out->n--;
-    if (!buf_ok(out) || out->n > YOKE_TOOL_RESULT_BYTES) {
+    if (!buf_ok(out) || out->n > AGENT_TOOL_RESULT_BYTES) {
         snprintf(err, err_cap, "search result exceeds the %u byte limit",
-                 (unsigned)YOKE_TOOL_RESULT_BYTES);
+                 (unsigned)AGENT_TOOL_RESULT_BYTES);
         return false;
     }
     return true;

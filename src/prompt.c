@@ -1,10 +1,10 @@
 /* prompt.c: the system prompt, as a template with placeholders.
  *
  * A prompt is a document, so it comes from one place at a time rather than
- * from layers: --system or YOKE_SYSTEM_PROMPT, else the project's
- * .yoke/SYSTEM.md found by walking up from the working directory, else the
- * global $XDG_CONFIG_HOME/yoke/SYSTEM.md, else the built-in template. One
- * past YOKE_MAX_PROMPT_FILE is refused rather than truncated.
+ * from layers: --system or ARQAN_SYSTEM_PROMPT, else the project's
+ * .arqan/SYSTEM.md found by walking up from the working directory, else the
+ * global $XDG_CONFIG_HOME/arqan/SYSTEM.md, else the built-in template. One
+ * past AGENT_MAX_PROMPT_FILE is refused rather than truncated.
  *
  * Whichever wins is expanded before it is sent, so a prompt written months
  * ago still describes the tools that exist today. An unknown "{name}" is left
@@ -18,7 +18,7 @@
  * Plan mode's prompt is resolved the same way from PLAN.md and expanded
  * against the tools plan mode offers.
  */
-#include "yoke.h"
+#include "agent.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -81,25 +81,25 @@ static const char PROMPT_PLAN_BUILTIN[] =
  * sets `err` and reads nothing, which stops the search rather than falling
  * through to a prompt the user did not ask for. */
 static Str prompt_read(Str path, Arena *a, char *err, size_t err_cap) {
-    if (!path.n || path.n >= YOKE_MAX_PATH) return (Str){0};
+    if (!path.n || path.n >= AGENT_MAX_PATH) return (Str){0};
     Str body = {0};
     u64 size = 0;
-    if (file_read(a, path.p, YOKE_MAX_PROMPT_FILE, 0, &body, &size)
+    if (file_read(a, path.p, AGENT_MAX_PROMPT_FILE, 0, &body, &size)
         == FILE_TOO_LARGE)
         snprintf(err, err_cap,
                  "%.*s is %llu bytes, over the %d byte system prompt limit",
                  (int)path.n, path.p, (unsigned long long)size,
-                 (int)YOKE_MAX_PROMPT_FILE);
+                 (int)AGENT_MAX_PROMPT_FILE);
     return str_trim(body);
 }
 
 /* The prompt of the nearest ancestor of `dir` that has one, `suffix` carrying
- * its own leading separator ("/.yoke/SYSTEM.md"). As git does it, the project
- * root is wherever the marker is rather than where yoke started. */
+ * its own leading separator ("/.arqan/SYSTEM.md"). As git does it, the project
+ * root is wherever the marker is rather than where arqan started. */
 static Str prompt_project(Str dir, const char *suffix, size_t suffix_size,
                           Arena *scratch, Str *path_out, char *err,
                           size_t err_cap) {
-    char path[YOKE_MAX_PATH];
+    char path[AGENT_MAX_PATH];
     size_t n = dir.n;
     if (!n || dir.p[0] != '/' || n + suffix_size > sizeof path)
         return (Str){0};
@@ -126,9 +126,9 @@ static Str prompt_project(Str dir, const char *suffix, size_t suffix_size,
 /* The highest precedence `name` in the config dirs. */
 static Str prompt_global(Str name, Arena *scratch, Str *path_out, char *err,
                          size_t err_cap) {
-    Str cand[YOKE_MAX_CONFIG_FILES];
+    Str cand[AGENT_MAX_CONFIG_FILES];
     size_t n = paths_config_files(name, scratch, cand,
-                                  YOKE_MAX_CONFIG_FILES);
+                                  AGENT_MAX_CONFIG_FILES);
     for (size_t i = n; i > 0; i--) {
         Str body = prompt_read(cand[i - 1], scratch, err, err_cap);
         if (body.n || *err) {
@@ -140,12 +140,12 @@ static Str prompt_global(Str name, Arena *scratch, Str *path_out, char *err,
 }
 
 /* Every AGENTS.md at or above `dir`, nearest first. Past
- * YOKE_MAX_AGENTS_FILES the outermost are dropped, since the nearest
+ * AGENT_MAX_AGENTS_FILES the outermost are dropped, since the nearest
  * describes the code being worked on. */
 static size_t prompt_agents(Str dir, Arena *scratch, Str *body, Str *path_out,
                             size_t cap, char *err, size_t err_cap) {
     static const char suffix[] = "/AGENTS.md";
-    char path[YOKE_MAX_PATH];
+    char path[AGENT_MAX_PATH];
     size_t n = dir.n, found = 0;
     if (!n || dir.p[0] != '/' || n + sizeof suffix > sizeof path) return 0;
     memcpy(path, dir.p, n);
@@ -201,7 +201,7 @@ static Str prompt_for(const ToolRegistry *tools, AgentMode mode, Str configured,
                       const char *project, size_t project_size, Str global,
                       const char *builtin, Arena *persist, Arena *scratch,
                       PromptSources *sources, char *err, size_t err_cap) {
-    char cwd_buf[YOKE_MAX_PATH];
+    char cwd_buf[AGENT_MAX_PATH];
     Str cwd = getcwd(cwd_buf, sizeof cwd_buf) ? str_c(cwd_buf) : (Str){0};
 
     if (err_cap) err[0] = '\0';
@@ -222,9 +222,9 @@ static Str prompt_for(const ToolRegistry *tools, AgentMode mode, Str configured,
         primary_label = STR("Built-in prompt");
     }
 
-    Str agents[YOKE_MAX_AGENTS_FILES], agent_paths[YOKE_MAX_AGENTS_FILES];
+    Str agents[AGENT_MAX_AGENTS_FILES], agent_paths[AGENT_MAX_AGENTS_FILES];
     size_t n_agents = prompt_agents(cwd, scratch, agents, agent_paths,
-                                    YOKE_MAX_AGENTS_FILES, err, err_cap);
+                                    AGENT_MAX_AGENTS_FILES, err, err_cap);
     if (*err) return (Str){0};
 
     size_t extra = 1024;
@@ -271,7 +271,7 @@ static Str prompt_for(const ToolRegistry *tools, AgentMode mode, Str configured,
 Str prompt_build(const ToolRegistry *tools, Str configured, Arena *persist,
                  Arena *scratch, PromptSources *sources, char *err,
                  size_t err_cap) {
-    static const char project[] = "/.yoke/SYSTEM.md";
+    static const char project[] = "/." AGENT_NAME "/SYSTEM.md";
     return prompt_for(tools, MODE_BUILD, configured, project, sizeof project,
                       STR("SYSTEM.md"), PROMPT_BUILTIN, persist, scratch,
                       sources, err, err_cap);
@@ -280,7 +280,7 @@ Str prompt_build(const ToolRegistry *tools, Str configured, Arena *persist,
 Str prompt_build_plan(const ToolRegistry *tools, Arena *persist,
                       Arena *scratch, PromptSources *sources, char *err,
                       size_t err_cap) {
-    static const char project[] = "/.yoke/PLAN.md";
+    static const char project[] = "/." AGENT_NAME "/PLAN.md";
     return prompt_for(tools, MODE_PLAN, (Str){0}, project, sizeof project,
                       STR("PLAN.md"), PROMPT_PLAN_BUILTIN, persist, scratch,
                       sources, err, err_cap);

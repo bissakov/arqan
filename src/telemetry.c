@@ -3,13 +3,13 @@
  * Off until /telemetry turns it on, which is remembered as the state file's
  * `telemetry` key so a later run records without being asked again. Events
  * are JSON objects, one per line, appended to the file of the conversation
- * they belong to: $XDG_STATE_HOME/yoke/telemetry/<cwd>/<timestamp>.jsonl,
+ * they belong to: $XDG_STATE_HOME/arqan/telemetry/<cwd>/<timestamp>.jsonl,
  * named after the session file under $XDG_DATA_HOME and rebound whenever the
  * session is, so /clear starts a record as it starts a conversation and
  * /resume appends to the record of the one it reopened. What is recorded
  * before a conversation exists (a startup, a /provider, the /resume that
  * picks one) waits in memory for the file the session that follows names, so
- * opening yoke and resuming leaves the record of that conversation and
+ * opening arqan and resuming leaves the record of that conversation and
  * nothing beside it. A run that ends with lines still waiting writes them to
  * a record named after the run. Every file opens with a session event, so
  * each is read on its own.
@@ -17,7 +17,7 @@
  * The file holds the shape of a session and none of its content: a message is
  * a byte and a line count, a tool call is its name and the keys of its
  * arguments, a reply is its size and its token counts. The strings that do
- * land there are the ones yoke formats itself (a tool name, a model id, a log
+ * land there are the ones arqan formats itself (a tool name, a model id, a log
  * line), so the record says what happened without saying what was said. The
  * working directory is a hash for the same reason: two runs can be told apart
  * without naming the project either of them was in.
@@ -26,7 +26,7 @@
  * interrupted run leaves whole lines behind and a recorder that cannot write
  * costs the session nothing.
  */
-#include "yoke.h"
+#include "agent.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -40,9 +40,9 @@
 static struct {
     b8   on;
     b8   ready;              /* the root below resolved                     */
-    char root_buf[YOKE_MAX_PATH];  /* .../yoke/telemetry                    */
-    char dir_buf[YOKE_MAX_PATH];   /* the current file's directory          */
-    char path_buf[YOKE_MAX_PATH];  /* the current file                      */
+    char root_buf[AGENT_MAX_PATH];  /* .../arqan/telemetry                    */
+    char dir_buf[AGENT_MAX_PATH];   /* the current file's directory          */
+    char path_buf[AGENT_MAX_PATH];  /* the current file                      */
     char slug_buf[256];      /* the session directory's last component      */
     char stem_buf[64];       /* the session file without its extension      */
     char run_stem[40];       /* the name a session that has none falls to   */
@@ -102,7 +102,7 @@ static void tel_attach(const char *dir, size_t dn, const char *path, size_t pn) 
 
 /* Where waiting lines go when no conversation ever claims them. */
 static void tel_attach_run(void) {
-    char path[YOKE_MAX_PATH];
+    char path[AGENT_MAX_PATH];
     i32 pn = snprintf(path, sizeof path, "%s/%s.jsonl", g_tel.root_buf,
                       g_tel.run_stem);
     if (pn <= 0 || (size_t)pn >= sizeof path) return;
@@ -130,7 +130,7 @@ void telemetry_bind(Str session_path) {
     memcpy(g_tel.slug_buf, slug.p, slug.n);
     g_tel.slug_buf[slug.n] = '\0';
 
-    char d[YOKE_MAX_PATH], path[YOKE_MAX_PATH];
+    char d[AGENT_MAX_PATH], path[AGENT_MAX_PATH];
     i32 dn = slug.n ? snprintf(d, sizeof d, "%s/%s", g_tel.root_buf,
                                g_tel.slug_buf)
                     : snprintf(d, sizeof d, "%s", g_tel.root_buf);
@@ -181,10 +181,10 @@ Str telemetry_file(void) {
 }
 
 void telemetry_init(Arena *scratch, b8 on) {
-    g_tel.t0 = yoke_now_seconds();
+    g_tel.t0 = agent_now_seconds();
     size_t mark = scratch->off;
     g_tel.ready = tel_keep(g_tel.root_buf, sizeof g_tel.root_buf,
-                           paths_file(YOKE_DIR_STATE, STR("telemetry"), scratch));
+                           paths_file(AGENT_DIR_STATE, STR("telemetry"), scratch));
     scratch->off = mark;
     if (!g_tel.ready) return;
 
@@ -248,7 +248,7 @@ void tel_open(TelEvent *e, const char *ev) {
         g_tel.header(g_tel.header_ud);
     }
     char head[96];
-    u64 ms = (u64)((yoke_now_seconds() - g_tel.t0) * 1000.0);
+    u64 ms = (u64)((agent_now_seconds() - g_tel.t0) * 1000.0);
     /* The run id names the file, so a line carries only its place in it. */
     i32 n = snprintf(head, sizeof head, "{\"t\":%llu,\"seq\":%llu,\"ev\":\"%s\"",
                      (unsigned long long)ms,
@@ -350,7 +350,7 @@ void tel_send(TelEvent *e) {
 void telemetry_log(i32 level, Str msg) {
     static const char *tags[] = { "debug", "info", "warn", "error" };
     if (!telemetry_on()) return;
-    if (level < YOKE_LOG_DEBUG || level > YOKE_LOG_ERROR) level = YOKE_LOG_ERROR;
+    if (level < AGENT_LOG_DEBUG || level > AGENT_LOG_ERROR) level = AGENT_LOG_ERROR;
     TelEvent e;
     tel_open(&e, "log");
     tel_str(&e, "level", str_c(tags[level]));

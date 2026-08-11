@@ -7,7 +7,7 @@ def test_help_exits_cleanly(ctx):
     """--help prints the usage on stdout and exits 0 without starting the UI."""
     out = ctx.run_cli("--help")
     assert out.returncode == 0, out
-    assert out.stdout.startswith("usage: yoke"), out.stdout
+    assert out.stdout.startswith("usage: arqan"), out.stdout
     assert "--model" in out.stdout, out.stdout
     assert "\x1b[" not in out.stdout, "help is not a UI"
 
@@ -21,7 +21,7 @@ def test_version(ctx):
     """--version and -v print the version and nothing else."""
     out = ctx.run_cli("--version")
     assert out.returncode == 0, out
-    assert out.stdout == "yoke 0.1.0\n", out.stdout
+    assert out.stdout == "arqan 0.1.0\n", out.stdout
     assert ctx.run_cli("-v").stdout == out.stdout
 
 
@@ -49,7 +49,7 @@ def test_bad_max_tokens_is_refused(ctx):
 
 
 def test_model_flag_beats_environment(ctx):
-    """-m outranks YOKE_MODEL: it is the more local statement."""
+    """-m outranks ARQAN_MODEL: it is the more local statement."""
     s = ctx.spawn(args=["-m", "flag-model"])
     assert "flag-model" in s.status_line(), s.status_line()
 
@@ -86,7 +86,7 @@ def test_prompt_flag_runs_one_turn(ctx):
     out = ctx.run_cli("-p", "say it")
     assert out.returncode == 0, out
     assert out.stdout == "one shot reply\n", out.stdout
-    assert "yoke 0.1.0" not in out.stdout, "the banner is UI, not output"
+    assert "arqan 0.1.0" not in out.stdout, "the banner is UI, not output"
     assert "say it" not in out.stdout, "the prompt is the input, not the output"
     assert "hi" not in out.stdout
     body = json.dumps(ctx.mock.requests[-1])
@@ -141,7 +141,7 @@ def test_prompt_stays_plain_on_a_tty(ctx):
     s.wait_text("tty oneshot")
     assert s.wait_exit() == 0
     assert not s.screen.alt_active, "one-shot output must not claim the UI"
-    assert "Message yoke" not in s.text(), s.text()
+    assert "Message arqan" not in s.text(), s.text()
 
 
 def test_prompt_runs_tools(ctx):
@@ -190,7 +190,7 @@ def test_api_flag_picks_the_wire_format(ctx):
 def test_api_flag_outranks_the_environment(ctx):
     """A flag is the most local statement, here about which API answers."""
     ctx.scenario("text=openai+after+all")
-    out = ctx.run_cli("--api", "openai", "-p", "hello", YOKE_API="anthropic")
+    out = ctx.run_cli("--api", "openai", "-p", "hello", ARQAN_API="anthropic")
     assert out.returncode == 0, out
     assert "openai after all" in out.stdout, out.stdout
     assert ctx.mock.auth[-1] == "Bearer test-key", ctx.mock.auth

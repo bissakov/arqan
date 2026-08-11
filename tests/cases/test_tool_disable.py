@@ -109,7 +109,7 @@ def test_the_flag_disables_a_list(ctx):
 def test_the_flag_keeps_them_out_of_the_prompt(ctx):
     """The listing the model reads describes the tools it actually has."""
     ctx.scenario("text=fine")
-    s = ctx.spawn(args=["--disable-tools", "bash"], YOKE_SYSTEM_PROMPT=None)
+    s = ctx.spawn(args=["--disable-tools", "bash"], ARQAN_SYSTEM_PROMPT=None)
     s.submit("say something")
     s.wait_turn_done()
 
@@ -146,10 +146,10 @@ def test_the_config_key_disables_tools(ctx):
 
 
 def test_the_environment_beats_the_config_file(ctx):
-    """YOKE_DISABLE_TOOLS is per invocation, so it replaces the file's list."""
+    """ARQAN_DISABLE_TOOLS is per invocation, so it replaces the file's list."""
     ctx.write_config("disable_tools = read\n")
     ctx.scenario("text=fine")
-    s = ctx.spawn(YOKE_DISABLE_TOOLS="bash")
+    s = ctx.spawn(ARQAN_DISABLE_TOOLS="bash")
     s.submit("say something")
     s.wait_turn_done()
 

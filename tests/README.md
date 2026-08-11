@@ -1,6 +1,6 @@
 # Tests
 
-End-to-end tests run `bin/yoke` in a pseudo-terminal against a local mock
+End-to-end tests run `bin/arqan` in a pseudo-terminal against a local mock
 provider. They assert on an emulated terminal screen, not escape sequences.
 Python 3 is the only test dependency.
 
@@ -62,5 +62,5 @@ Run the mock provider manually without an API key:
 
 ```sh
 make mock MOCK_ARGS="--port 8080 --scenario words=80,chunk=2,delay=0.05"
-YOKE_BASE_URL=http://127.0.0.1:8080/v1 YOKE_API_KEY=x YOKE_MODEL=mock ./bin/yoke
+ARQAN_BASE_URL=http://127.0.0.1:8080/v1 ARQAN_API_KEY=x ARQAN_MODEL=mock ./bin/arqan
 ```

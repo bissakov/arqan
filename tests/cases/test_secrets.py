@@ -1,6 +1,6 @@
-"""External key stores: a provider whose key yoke asks for rather than keeps.
+"""External key stores: a provider whose key arqan asks for rather than keeps.
 
-The helpers are stubs on PATH, so these cases exercise yoke's side of the
+The helpers are stubs on PATH, so these cases exercise arqan's side of the
 contract without needing a session bus, a keyring daemon or a GPG key.
 """
 
@@ -48,7 +48,7 @@ if op == "store":
     # --label <text> precedes the attribute pairs.
     attrs = dict(zip(rest[2::2], rest[3::2]))
 account = attrs.get("account", "")
-if attrs.get("service") != "yoke" or not account:
+if attrs.get("service") != "arqan" or not account:
     sys.exit(2)
 
 lines = STORE.read_text().splitlines() if STORE.exists() else []
@@ -94,14 +94,14 @@ def write_endpoint(ctx, name, ctx_url, model="mock-model"):
 def start_with(ctx, name, **env):
     """Spawn against a stored provider, with nothing supplied by the env."""
     select_provider(ctx, name)
-    return ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None,
+    return ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None,
                      **with_path(ctx, **env))
 
 
 # ---- reading ---------------------------------------------------------------
 
 def test_a_key_from_the_system_keyring_reaches_the_provider(ctx):
-    """key_source names a store; the key itself is nowhere in yoke's files."""
+    """key_source names a store; the key itself is nowhere in arqan's files."""
     seed_keyring(ctx, "work", "sk-from-keyring")
     write_endpoint(ctx, "work", ctx.mock.base_url)
     write_credentials(ctx, "[providers.work]\nkey_source = secret-service\n")
@@ -143,7 +143,7 @@ def test_a_missing_helper_is_reported_not_silently_ignored(ctx):
     # Only the empty stub directory: a secret-tool the developer happens to
     # have installed would answer, and this case is about one that is absent.
     select_provider(ctx, "work")
-    s = ctx.spawn(YOKE_BASE_URL=None, YOKE_API_KEY=None, YOKE_MODEL=None,
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None,
                   PATH=str(fake_bin(ctx)))
     s.submit("/provider")
     s.wait_status("pick a provider")
@@ -253,8 +253,8 @@ def test_choosing_the_keyring_writes_no_key_to_disk(ctx):
 def test_a_provider_name_that_is_not_a_bare_key_is_not_a_provider(ctx):
     """A name lands in a "[providers.<name>]" header, so it is a TOML key.
 
-    A section a TOML reader would reject is not an endpoint yoke will use: it
-    would mean the file yoke writes and the file an editor parses disagree.
+    A section a TOML reader would reject is not an endpoint arqan will use: it
+    would mean the file arqan writes and the file an editor parses disagree.
     The keyring holds a key for the name either way, and it stays unused.
     """
     seed_keyring(ctx, "Local Claude", "sk-spaced")
@@ -281,7 +281,7 @@ def test_a_provider_name_that_could_become_an_option_is_refused(ctx):
 def test_an_existing_key_can_move_stores_without_being_retyped(ctx):
     """Moving a key must not require the user to have it to hand.
 
-    yoke can already read the key it holds, so asking for it again is busy
+    arqan can already read the key it holds, so asking for it again is busy
     work that pushes people to leave it in the file.
     """
     install_secret_tool(ctx)

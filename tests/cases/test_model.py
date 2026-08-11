@@ -9,7 +9,7 @@ def open_picker(ctx, s):
 def test_picker_lists_the_provider_models(ctx):
     """A short list is the plain popup, with the live model marked."""
     ctx.scenario("models=alpha|beta|gamma")
-    s = ctx.spawn(YOKE_MODEL="beta")
+    s = ctx.spawn(ARQAN_MODEL="beta")
     open_picker(ctx, s)
     text = s.text()
     assert "alpha" in text and "beta" in text and "gamma" in text, text
@@ -22,7 +22,7 @@ def test_picker_lists_the_provider_models(ctx):
 def test_choosing_switches_the_model(ctx):
     """Enter on an entry retitles the status line and answers in the popup slot."""
     ctx.scenario("models=alpha|beta|gamma")
-    s = ctx.spawn(YOKE_MODEL="alpha")
+    s = ctx.spawn(ARQAN_MODEL="alpha")
     open_picker(ctx, s)
     s.key("down").sync()
     s.key("enter")
@@ -34,7 +34,7 @@ def test_choosing_switches_the_model(ctx):
 def test_the_chosen_model_is_used_for_the_next_turn(ctx):
     """The request body carries the picked model, not the configured one."""
     ctx.scenario("models=alpha|beta|gamma,text=done")
-    s = ctx.spawn(YOKE_MODEL="alpha")
+    s = ctx.spawn(ARQAN_MODEL="alpha")
     open_picker(ctx, s)
     s.key("down").sync()
     s.key("enter")
@@ -47,7 +47,7 @@ def test_the_chosen_model_is_used_for_the_next_turn(ctx):
 def test_esc_cancels_the_picker(ctx):
     """Cancelling leaves the model alone."""
     ctx.scenario("models=alpha|beta|gamma")
-    s = ctx.spawn(YOKE_MODEL="alpha")
+    s = ctx.spawn(ARQAN_MODEL="alpha")
     open_picker(ctx, s)
     s.key("esc")
     s.wait_status("ready")
@@ -114,7 +114,7 @@ def test_search_keystrokes_never_reach_the_composer(ctx):
 def test_the_choice_is_remembered_across_runs(ctx):
     """The pick lands in the state dir and comes back on the next launch."""
     ctx.scenario("models=alpha|beta|gamma")
-    s = ctx.spawn(YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_MODEL=None)
     open_picker(ctx, s)
     s.key("down").sync()
     s.key("enter")
@@ -124,14 +124,14 @@ def test_the_choice_is_remembered_across_runs(ctx):
 
     assert ctx.state().get("model") == "beta", ctx.state()
 
-    again = ctx.spawn(YOKE_MODEL=None)
+    again = ctx.spawn(ARQAN_MODEL=None)
     assert again.status_field(1) == "beta", again.status_line()
 
 
 def test_the_environment_still_wins_over_the_remembered_model(ctx):
-    """YOKE_MODEL is a per-invocation override, so it outranks the state file."""
+    """ARQAN_MODEL is a per-invocation override, so it outranks the state file."""
     ctx.scenario("models=alpha|beta|gamma")
-    s = ctx.spawn(YOKE_MODEL=None)
+    s = ctx.spawn(ARQAN_MODEL=None)
     open_picker(ctx, s)
     s.key("down").sync()
     s.key("enter")
@@ -139,7 +139,7 @@ def test_the_environment_still_wins_over_the_remembered_model(ctx):
     s.submit("/exit")
     s.wait_exit()
 
-    again = ctx.spawn(YOKE_MODEL="gamma")
+    again = ctx.spawn(ARQAN_MODEL="gamma")
     assert again.status_field(1) == "gamma", again.status_line()
 
 
@@ -157,7 +157,7 @@ def test_an_unreachable_models_endpoint_answers_in_the_popup_slot(ctx):
 
 def test_manual_entry_is_offered_after_a_successful_list(ctx):
     ctx.scenario("models=alpha|beta")
-    s = ctx.spawn(YOKE_MODEL="alpha")
+    s = ctx.spawn(ARQAN_MODEL="alpha")
     open_picker(ctx, s)
     s.key("down", "down", "enter")
     s.wait_text("model id (not verified)")
@@ -169,7 +169,7 @@ def test_manual_entry_is_offered_after_a_successful_list(ctx):
 
 def test_cancelling_manual_fallback_keeps_the_model(ctx):
     ctx.scenario("models_status=500")
-    s = ctx.spawn(YOKE_MODEL="alpha")
+    s = ctx.spawn(ARQAN_MODEL="alpha")
     s.submit("/model")
     s.wait_text("enter a model manually")
     s.key("esc")
@@ -179,7 +179,7 @@ def test_cancelling_manual_fallback_keeps_the_model(ctx):
 
 def test_an_empty_models_list_opens_manual_entry(ctx):
     ctx.scenario("models_empty=1")
-    s = ctx.spawn(YOKE_MODEL="alpha")
+    s = ctx.spawn(ARQAN_MODEL="alpha")
     s.submit("/model")
     s.wait_text("the provider listed no models; enter a model manually")
     s.type("manual-after-empty").sync()

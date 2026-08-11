@@ -1,13 +1,13 @@
 /* secrets.c: where an endpoint's API key comes from.
  *
- * A key may be kept in yoke's own credentials file, or left to an external
- * store that yoke only asks. The second kind is named by a `key_source` line
+ * A key may be kept in arqan's own credentials file, or left to an external
+ * store that arqan only asks. The second kind is named by a `key_source` line
  * in the credentials file:
  *
  *   [providers.openai]
  *   key_source = "secret-service"
  *
- * and yoke builds the helper's argv itself from the table below, so the file
+ * and arqan builds the helper's argv itself from the table below, so the file
  * carries a keyword rather than a command. `key_source = command` is the
  * escape hatch for stores with no entry here; only then is `key_command`
  * read, and it is split on whitespace and exec'd directly.
@@ -16,11 +16,11 @@
  * the config file:
  *
  *   - A source directive is a request to execute a program, so it lives only
- *     in $XDG_STATE_HOME/yoke/credentials.toml, which is mode 0600, machine-local
+ *     in $XDG_STATE_HOME/arqan/credentials.toml, which is mode 0600, machine-local
  *     and never carried by a dotfile repository. The config file stays inert
  *     data that is safe to commit and share; endpoints.c warns when a config
  *     section names one of these keys and ignores it.
- *   - No shell. The helper is exec'd through execvp with an argv yoke built,
+ *   - No shell. The helper is exec'd through execvp with an argv arqan built,
  *     so a value in either file cannot become a pipeline, a substitution or
  *     a glob. The account name is restricted to a portable character set so
  *     it cannot turn into an option either.
@@ -30,7 +30,7 @@
  * of stdout is the key, and a helper that hangs on a locked collection is
  * killed at the deadline rather than stalling the single-threaded UI.
  */
-#include "yoke.h"
+#include "agent.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -42,19 +42,19 @@
 #include <unistd.h>
 
 #define SECRET_POLL_MS   50
-#define SECRET_SERVICE_ID "yoke"
+#define SECRET_SERVICE_ID AGENT_NAME
 
 typedef enum { SECRET_OP_LOOKUP, SECRET_OP_STORE, SECRET_OP_ERASE } SecretOp;
 
 /* argv plus the storage the built strings point into, so a command lives on
  * one frame and needs no arena. */
 typedef struct {
-    const char *argv[YOKE_MAX_SECRET_ARGV + 1];
+    const char *argv[AGENT_MAX_SECRET_ARGV + 1];
     size_t n;
-    char account[YOKE_MAX_ENDPOINT_NAME + 1];
-    char path[YOKE_MAX_ENDPOINT_NAME + 8];    /* "yoke/<account>"  */
-    char label[YOKE_MAX_ENDPOINT_NAME + 16];  /* "yoke: <account>" */
-    char words[YOKE_MAX_SECRET_CMD + 1];      /* key_command, split in place */
+    char account[AGENT_MAX_ENDPOINT_NAME + 1];
+    char path[AGENT_MAX_ENDPOINT_NAME + 8];    /* "arqan/<account>"  */
+    char label[AGENT_MAX_ENDPOINT_NAME + 16];  /* "arqan: <account>" */
+    char words[AGENT_MAX_SECRET_CMD + 1];      /* key_command, split in place */
 } SecretCmd;
 
 /* Indexed by SecretSource, which is what the credentials file reads and
@@ -82,7 +82,7 @@ Str secret_source_name(SecretSource src) {
 b8 secret_source_external(SecretSource src) { return src != SECRET_STORED; }
 
 /* keychain and command are lookup-only: security(1) takes the secret on argv
- * rather than stdin, and a user's own command is not yoke's to write to. */
+ * rather than stdin, and a user's own command is not arqan's to write to. */
 b8 secret_source_can_store(SecretSource src) {
     return src == SECRET_STORED || src == SECRET_SERVICE || src == SECRET_PASS;
 }
@@ -93,7 +93,7 @@ b8 secret_source_can_store(SecretSource src) {
  * would change which question is asked: a leading '-' reads as an option, and
  * '/' or a leading '.' walks the tree that `pass` keys entries by. */
 static b8 secret_account_ok(Str name) {
-    if (!name.n || name.n > YOKE_MAX_ENDPOINT_NAME) return false;
+    if (!name.n || name.n > AGENT_MAX_ENDPOINT_NAME) return false;
     if (name.p[0] == '-' || name.p[0] == '.') return false;
     for (size_t i = 0; i < name.n; i++) {
         u8 c = (u8)name.p[i];
@@ -103,7 +103,7 @@ static b8 secret_account_ok(Str name) {
 }
 
 static void secret_arg(SecretCmd *c, const char *z) {
-    if (c->n < YOKE_MAX_SECRET_ARGV) c->argv[c->n++] = z;
+    if (c->n < AGENT_MAX_SECRET_ARGV) c->argv[c->n++] = z;
 }
 
 /* The fixed argv table. Nothing outside this function decides what runs for a
@@ -160,9 +160,9 @@ static b8 secret_split(SecretCmd *c, Str command, char *err, size_t err_cap) {
     memset(c, 0, sizeof *c);
     Str s = str_trim(command);
     if (!s.n) { snprintf(err, err_cap, "key_command is empty"); return false; }
-    if (s.n > YOKE_MAX_SECRET_CMD) {
+    if (s.n > AGENT_MAX_SECRET_CMD) {
         snprintf(err, err_cap, "key_command is longer than %d bytes",
-                 YOKE_MAX_SECRET_CMD);
+                 AGENT_MAX_SECRET_CMD);
         return false;
     }
     if (memchr(s.p, '\0', s.n)) {
@@ -175,9 +175,9 @@ static b8 secret_split(SecretCmd *c, Str command, char *err, size_t err_cap) {
         while (i < s.n && (c->words[i] == ' ' || c->words[i] == '\t'))
             c->words[i++] = '\0';
         if (i >= s.n) break;
-        if (c->n >= YOKE_MAX_SECRET_ARGV) {
+        if (c->n >= AGENT_MAX_SECRET_ARGV) {
             snprintf(err, err_cap, "key_command has more than %d words",
-                     YOKE_MAX_SECRET_ARGV);
+                     AGENT_MAX_SECRET_ARGV);
             return false;
         }
         c->argv[c->n++] = c->words + i;
@@ -191,7 +191,7 @@ static b8 secret_split(SecretCmd *c, Str command, char *err, size_t err_cap) {
  * freeze the frame. Returns 1 ready, 0 timed out, -1 failed. */
 static i32 secret_wait(i32 fd, i16 events, f64 deadline) {
     for (;;) {
-        f64 left = deadline - yoke_now_seconds();
+        f64 left = deadline - agent_now_seconds();
         if (left <= 0) return 0;
         i32 ms = (i32)(left * 1000.0);
         if (ms > SECRET_POLL_MS) ms = SECRET_POLL_MS;
@@ -249,7 +249,7 @@ static b8 secret_exec(const SecretCmd *c, Str input, char *out, size_t out_cap,
     close(out_fds[1]);
     if (in_fds[0] >= 0) close(in_fds[0]);
 
-    f64 deadline = yoke_now_seconds() + (f64)YOKE_SECRET_TIMEOUT_MS / 1000.0;
+    f64 deadline = agent_now_seconds() + (f64)AGENT_SECRET_TIMEOUT_MS / 1000.0;
     b8 ok = true, timed_out = false;
 
     /* A helper that never reads its stdin would block the write forever, so
@@ -301,13 +301,13 @@ static b8 secret_exec(const SecretCmd *c, Str input, char *out, size_t out_cap,
 
     if (timed_out) {
         snprintf(err, err_cap, "%s did not answer within %d seconds",
-                 c->argv[0], YOKE_SECRET_TIMEOUT_MS / 1000);
+                 c->argv[0], AGENT_SECRET_TIMEOUT_MS / 1000);
         return false;
     }
     if (!ok) { snprintf(err, err_cap, "%s could not be read", c->argv[0]); return false; }
     if (overflow) {
         snprintf(err, err_cap, "%s returned more than %d bytes",
-                 c->argv[0], YOKE_MAX_API_KEY);
+                 c->argv[0], AGENT_MAX_API_KEY);
         return false;
     }
     if (WIFSIGNALED(status)) {
@@ -335,9 +335,9 @@ static b8 secret_first_line(char *buf, size_t n, Str *out, char *err,
     while (end < n && buf[end] != '\n') end++;
     Str line = str_trim((Str){ buf, end });
     if (!line.n) { snprintf(err, err_cap, "the key store returned nothing"); return false; }
-    if (line.n > YOKE_MAX_API_KEY) {
+    if (line.n > AGENT_MAX_API_KEY) {
         snprintf(err, err_cap, "the stored key is longer than %d bytes",
-                 YOKE_MAX_API_KEY);
+                 AGENT_MAX_API_KEY);
         return false;
     }
     for (size_t i = 0; i < line.n; i++) {
@@ -360,7 +360,7 @@ Str secret_lookup(SecretSource src, Str account, Str command, Arena *out,
     } else if (!secret_build(&c, src, SECRET_OP_LOOKUP, account, err, err_cap)) {
         return (Str){0};
     }
-    char buf[YOKE_MAX_API_KEY + 1];
+    char buf[AGENT_MAX_API_KEY + 1];
     size_t n = 0;
     if (!secret_exec(&c, (Str){0}, buf, sizeof buf, &n, err, err_cap))
         return (Str){0};
@@ -378,11 +378,11 @@ b8 secret_store(SecretSource src, Str account, Str key, char *err,
     if (err_cap) err[0] = '\0';
     if (!secret_source_can_store(src)) {
         snprintf(err, err_cap, "%.*s keys are stored with its own tool, "
-                 "not by yoke", (i32)secret_source_name(src).n,
+                 "not by arqan", (i32)secret_source_name(src).n,
                  secret_source_name(src).p);
         return false;
     }
-    if (key.n > YOKE_MAX_API_KEY) return false;
+    if (key.n > AGENT_MAX_API_KEY) return false;
     SecretCmd c;
     if (!secret_build(&c, src, SECRET_OP_STORE, account, err, err_cap))
         return false;

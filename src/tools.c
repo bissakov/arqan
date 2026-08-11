@@ -3,7 +3,7 @@
  * A ToolRun receives raw JSON args, a scratch arena the agent loop resets per
  * turn, an output Buf and an error buffer.
  */
-#include "yoke.h"
+#include "agent.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -49,12 +49,12 @@ static b8 arg_cstr(Str s, char *z, size_t cap, const char *what,
 static b8 slurp(const char *z, Arena *scratch, Str *out,
                 char *err, size_t err_cap) {
     u64 size = 0;
-    switch (file_read(scratch, z, YOKE_MAX_FILE_BYTES, 0, out, &size)) {
+    switch (file_read(scratch, z, AGENT_MAX_FILE_BYTES, 0, out, &size)) {
         case FILE_OK: return true;
         case FILE_TOO_LARGE:
             snprintf(err, err_cap, "%s is too large: %llu bytes, limit %u",
                      z, (unsigned long long)size,
-                     (unsigned)YOKE_MAX_FILE_BYTES);
+                     (unsigned)AGENT_MAX_FILE_BYTES);
             break;
         case FILE_NOT_REGULAR:
             snprintf(err, err_cap, "%s is not a regular file", z);
@@ -106,18 +106,18 @@ static b8 arg_page_limit(const JVal *j, size_t dflt, size_t max, size_t *out,
 
 /* ---- read ----
  * A page of a file rather than the file, since a whole one is charged to
- * every later turn: the default stops at YOKE_READ_LINES or YOKE_READ_BYTES
+ * every later turn: the default stops at AGENT_READ_LINES or AGENT_READ_BYTES
  * and says which call continues from there. */
 static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
     JVal *j = tool_args(args, scratch, err, err_cap);
     if (!j) return false;
-    char z[YOKE_MAX_PATH];
+    char z[AGENT_MAX_PATH];
     if (!arg_cstr(json_str(j, STR("path")), z, sizeof z, "path", err, err_cap))
         return false;
     size_t first, limit;
-    if (!arg_count(j, STR("offset"), 1, YOKE_MAX_FILE_BYTES, &first, err, err_cap))
+    if (!arg_count(j, STR("offset"), 1, AGENT_MAX_FILE_BYTES, &first, err, err_cap))
         return false;
-    if (!arg_count(j, STR("limit"), YOKE_READ_LINES, YOKE_READ_LINES,
+    if (!arg_count(j, STR("limit"), AGENT_READ_LINES, AGENT_READ_LINES,
                    &limit, err, err_cap))
         return false;
 
@@ -135,7 +135,7 @@ static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
     }
 
     size_t start = off, shown = 0;
-    while (shown < limit && off - start < YOKE_READ_BYTES
+    while (shown < limit && off - start < AGENT_READ_BYTES
            && str_line(body, &off, &line))
         shown++;
 
@@ -143,11 +143,11 @@ static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
      * next call resumes on a line boundary. A single line past the cap has no
      * boundary to fall back on and is cut at a UTF-8 lead byte. */
     b8 cut_mid_line = false;
-    if (off - start > YOKE_READ_BYTES) {
-        size_t end = start + YOKE_READ_BYTES;
+    if (off - start > AGENT_READ_BYTES) {
+        size_t end = start + AGENT_READ_BYTES;
         while (end > start && body.p[end - 1] != '\n') end--;
         if (end == start) {
-            end = start + YOKE_READ_BYTES;
+            end = start + AGENT_READ_BYTES;
             while (end > start && ((u8)body.p[end] & 0xc0) == 0x80) end--;
             cut_mid_line = true;
         }
@@ -158,7 +158,7 @@ static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
 
     if (cut_mid_line) {
         buf_putf(out, "\n[clipped: line %zu is longer than %u bytes]",
-                 first, (unsigned)YOKE_READ_BYTES);
+                 first, (unsigned)AGENT_READ_BYTES);
     } else if (off < body.n) {
         size_t rest = str_lines(str_drop(body, off));
         buf_putf(out, "\n[read %zu of %zu lines; continue with offset=%zu]",
@@ -173,7 +173,7 @@ static b8 tool_write(Str args, Arena *scratch, Buf *out, char *err, size_t err_c
     JVal *j = tool_args(args, scratch, err, err_cap);
     if (!j) return false;
     Str content = json_str(j, STR("content"));
-    char z[YOKE_MAX_PATH];
+    char z[AGENT_MAX_PATH];
     if (!arg_cstr(json_str(j, STR("path")), z, sizeof z, "path", err, err_cap))
         return false;
     if (!content.p) { snprintf(err, err_cap, "missing content"); return false; }
@@ -224,7 +224,7 @@ void shell_set_idle(void (*fn)(void *ud), void *ud) {
 b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
     /* A truncated shell line is a different program, so anything over the
      * limit is refused rather than clamped. */
-    static char z[YOKE_MAX_COMMAND];
+    static char z[AGENT_MAX_COMMAND];
     if (!arg_cstr(cmd, z, sizeof z, "command", err, err_cap)) return false;
 
     i32 fds[2];
@@ -249,7 +249,7 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
     /* The tail is kept because a command that fails says why on its last
      * lines. The child is drained to the end either way, since closing the
      * pipe early would kill it with SIGPIPE mid-run. */
-    static char ring[YOKE_SHELL_OUT_BYTES];
+    static char ring[AGENT_SHELL_OUT_BYTES];
     size_t head = 0, len = 0, total = 0;
     char block[4096];
     struct pollfd pfd = { fds[0], POLLIN, 0 };
@@ -286,7 +286,7 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
 
 static b8 shell_capture_page(Str cmd, size_t offset, size_t limit, Buf *out,
                              char *err, size_t err_cap) {
-    static char z[YOKE_MAX_COMMAND];
+    static char z[AGENT_MAX_COMMAND];
     if (!arg_cstr(cmd, z, sizeof z, "command", err, err_cap)) return false;
 
     i32 fds[2];
@@ -345,7 +345,7 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit, Buf *out,
     if (done < 0) buf_puts(out, STR("\n[exit unknown]"));
     else if (WIFSIGNALED(status)) buf_putf(out, "\n[killed by signal %d]", WTERMSIG(status));
     else buf_putf(out, "\n[exit %d]", WIFEXITED(status) ? WEXITSTATUS(status) : -1);
-    return buf_ok(out) && out->n <= YOKE_TOOL_RESULT_BYTES;
+    return buf_ok(out) && out->n <= AGENT_TOOL_RESULT_BYTES;
 }
 
 static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
@@ -353,8 +353,8 @@ static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
     if (!j) return false;
     size_t offset, limit;
     if (!arg_count(j, STR("offset"), 1, 1u << 30, &offset, err, err_cap) ||
-        !arg_count(j, STR("limit"), YOKE_SHELL_OUT_BYTES,
-                   YOKE_SHELL_OUT_BYTES, &limit, err, err_cap)) return false;
+        !arg_count(j, STR("limit"), AGENT_SHELL_OUT_BYTES,
+                   AGENT_SHELL_OUT_BYTES, &limit, err, err_cap)) return false;
     return shell_capture_page(json_str(j, STR("command")), offset, limit,
                               out, err, err_cap);
 }
@@ -386,7 +386,7 @@ static size_t find_unique(Str hay, Str needle, size_t *count) {
 }
 
 typedef struct {
-    char   path[YOKE_MAX_PATH];
+    char   path[AGENT_MAX_PATH];
     Str    body;              /* the file as the hunks applied so far leave it */
     size_t added, removed;
     size_t hunk_n;            /* hunks seen, so an error names one per file  */
@@ -427,8 +427,8 @@ static b8 patch_fail(Patch *p, const char *fmt, ...) {
 static PatchFile *patch_open(Patch *p, Str oldp, Str newp) {
     b8 create = str_eq(oldp, STR("/dev/null"));
     b8 gone = str_eq(newp, STR("/dev/null"));
-    if (p->n >= YOKE_MAX_PATCH_FILES) {
-        patch_fail(p, "patch touches more than %u files", YOKE_MAX_PATCH_FILES);
+    if (p->n >= AGENT_MAX_PATCH_FILES) {
+        patch_fail(p, "patch touches more than %u files", AGENT_MAX_PATCH_FILES);
         return NULL;
     }
     PatchFile *f = &p->file[p->n];
@@ -497,9 +497,9 @@ static size_t hunk_scan(Str text, size_t off, Buf *o, Buf *n, PatchFile *f) {
 /* The one place a hunk meets the file: its context and removed lines are the
  * text to find, its context and added lines what replaces it. */
 static b8 patch_hunk(Patch *p, PatchFile *f, Str text, size_t *off) {
-    if (++p->hunks > YOKE_MAX_PATCH_HUNKS)
+    if (++p->hunks > AGENT_MAX_PATCH_HUNKS)
         return patch_fail(p, "patch carries more than %u hunks",
-                          YOKE_MAX_PATCH_HUNKS);
+                          AGENT_MAX_PATCH_HUNKS);
     f->hunk_n++;
 
     /* A deleted file's hunk describes what goes away, which the delete says
@@ -600,8 +600,8 @@ static b8 patch_parse(Patch *p, Str text) {
 /* Renamed over the file it replaces, so an interrupted write leaves the
  * previous one rather than half of this. */
 static b8 patch_write(Patch *p, const PatchFile *f) {
-    char tmp[YOKE_MAX_PATH];
-    i32 len = snprintf(tmp, sizeof tmp, "%s.yoke-tmp", f->path);
+    char tmp[AGENT_MAX_PATH];
+    i32 len = snprintf(tmp, sizeof tmp, "%s." AGENT_NAME "-tmp", f->path);
     if (len < 0 || (size_t)len >= sizeof tmp)
         return patch_fail(p, "%s: path too long to write", f->path);
 
@@ -625,7 +625,7 @@ static b8 tool_patch(Str args, Arena *scratch, Buf *out, char *err, size_t err_c
     if (!text.n) { snprintf(err, err_cap, "missing patch"); return false; }
 
     Patch p = { NULL, 0, 0, scratch, err, err_cap };
-    p.file = arena_new(scratch, PatchFile, YOKE_MAX_PATCH_FILES);
+    p.file = arena_new(scratch, PatchFile, AGENT_MAX_PATCH_FILES);
     if (!p.file) { snprintf(err, err_cap, "out of memory"); return false; }
     if (!patch_parse(&p, text)) return false;
 
@@ -664,7 +664,7 @@ typedef struct {
     b8     out_limited;   /* page hit the byte budget before its record limit  */
     b8     ignore_case;
     b8     single;         /* the root is one file rather than a tree      */
-    char   path[YOKE_MAX_PATH];
+    char   path[AGENT_MAX_PATH];
     size_t path_n;
 } Walk;
 
@@ -673,8 +673,8 @@ typedef struct {
  * the next offset would skip records the model never saw. */
 static b8 walk_has_room(const Walk *w, size_t n) {
     const size_t reserve = 128;
-    if (w->out->n > YOKE_TOOL_RESULT_BYTES - reserve) return false;
-    return n <= YOKE_TOOL_RESULT_BYTES - reserve - w->out->n;
+    if (w->out->n > AGENT_TOOL_RESULT_BYTES - reserve) return false;
+    return n <= AGENT_TOOL_RESULT_BYTES - reserve - w->out->n;
 }
 
 static b8 mem_eq_ci(const char *a, const char *b, size_t n) {
@@ -715,7 +715,7 @@ static b8 name_matches(const Walk *w, const char *base) {
 static void walk_grep_file(Walk *w) {
     arena_reset(w->file);
     Str body;
-    if (file_read(w->file, w->path, YOKE_MAX_GREP_FILE, 0, &body, NULL)
+    if (file_read(w->file, w->path, AGENT_MAX_GREP_FILE, 0, &body, NULL)
         != FILE_OK)
         return;
     /* A nul byte says the file is not text, and a binary "match" is a line of
@@ -733,7 +733,7 @@ static void walk_grep_file(Walk *w) {
         if (w->out_limited) { w->skipped++; continue; }
         if (w->shown >= w->max) { w->skipped++; continue; }
         Str trimmed = str_trim(line);
-        Str clipped = str_clip_utf8(trimmed, YOKE_GREP_LINE);
+        Str clipped = str_clip_utf8(trimmed, AGENT_GREP_LINE);
         size_t need = strlen(walk_shown(w)) + 24 + clipped.n + 5;
         if (!walk_has_room(w, need)) {
             w->skipped++; w->out_limited = true; continue;
@@ -772,15 +772,15 @@ static b8 walk_enter(Walk *w, const char *name, size_t n) {
 }
 
 static b8 walk_dir(Walk *w, i32 depth) {
-    if (depth > YOKE_WALK_DEPTH) return true;
+    if (depth > AGENT_WALK_DEPTH) return true;
     DIR *d = opendir(w->path);
     if (!d) return true;
 
     size_t mark = w->names->off;
-    Str *ent = arena_new(w->names, Str, YOKE_WALK_ENTRIES);
+    Str *ent = arena_new(w->names, Str, AGENT_WALK_ENTRIES);
     size_t n = 0;
     struct dirent *de;
-    while (ent && n < YOKE_WALK_ENTRIES && (de = readdir(d))) {
+    while (ent && n < AGENT_WALK_ENTRIES && (de = readdir(d))) {
         /* .git alone would be most of the walk. */
         if (de->d_name[0] == '.') continue;
         Str name = str_dup(w->names, str_c(de->d_name));
@@ -819,7 +819,7 @@ static b8 walk_dir(Walk *w, i32 depth) {
 
 /* The root a search starts from, refused when it leaves nothing to search. */
 static b8 walk_start(Walk *w, Str root, char *err, size_t err_cap) {
-    char rel[YOKE_MAX_PATH];
+    char rel[AGENT_MAX_PATH];
     if (!root.n) root = STR(".");
     if (!arg_cstr(root, rel, sizeof rel, "path", err, err_cap)) return false;
     i32 len = snprintf(w->path, sizeof w->path, "%s", rel);
@@ -859,7 +859,7 @@ static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep,
     }
     w.ignore_case = json_bool(j, STR("ignore_case"));
 
-    char glob[YOKE_MAX_PATH];
+    char glob[AGENT_MAX_PATH];
     Str g = json_str(j, grep ? STR("glob") : STR("name"));
     if (g.n) {
         if (!arg_cstr(g, glob, sizeof glob, "glob", err, err_cap)) return false;
@@ -870,8 +870,8 @@ static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep,
     }
 
     if (!arg_page_limit(j,
-                   grep ? YOKE_GREP_RESULTS : YOKE_FIND_RESULTS,
-                   grep ? YOKE_GREP_RESULTS : YOKE_FIND_RESULTS,
+                   grep ? AGENT_GREP_RESULTS : AGENT_FIND_RESULTS,
+                   grep ? AGENT_GREP_RESULTS : AGENT_FIND_RESULTS,
                    &w.max, err, err_cap))
         return false;
     if (!arg_count(j, STR("offset"), 1, 1u << 30, &w.offset, err, err_cap))
@@ -880,11 +880,11 @@ static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep,
 
     /* Carved once and never rewound past, since `out` keeps growing in
      * `scratch` above them for as long as the walk finds something. */
-    void *mem = arena_alloc(scratch, YOKE_WALK_BYTES + YOKE_MAX_GREP_FILE + 1, 16);
+    void *mem = arena_alloc(scratch, AGENT_WALK_BYTES + AGENT_MAX_GREP_FILE + 1, 16);
     if (!mem) { snprintf(err, err_cap, "out of memory"); return false; }
     Arena names, file;
-    arena_init(&names, mem, YOKE_WALK_BYTES);
-    arena_init(&file, (char *)mem + YOKE_WALK_BYTES, YOKE_MAX_GREP_FILE + 1);
+    arena_init(&names, mem, AGENT_WALK_BYTES);
+    arena_init(&file, (char *)mem + AGENT_WALK_BYTES, AGENT_MAX_GREP_FILE + 1);
     w.names = &names;
     w.file = &file;
 
@@ -910,9 +910,9 @@ static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep,
                  w.shown, w.found,
                  grep ? "matches" : "files");
     }
-    if (!buf_ok(out) || out->n > YOKE_TOOL_RESULT_BYTES) {
+    if (!buf_ok(out) || out->n > AGENT_TOOL_RESULT_BYTES) {
         snprintf(err, err_cap, "result does not fit in the %u byte limit",
-                 (unsigned)YOKE_TOOL_RESULT_BYTES);
+                 (unsigned)AGENT_TOOL_RESULT_BYTES);
         return false;
     }
     return true;
@@ -986,13 +986,13 @@ b8 tools_disable_list(ToolRegistry *r, Str names, char *err, size_t err_cap) {
 }
 
 void tools_init(ToolRegistry *r, Arena *persist) {
-    r->name   = arena_new(persist, Str, YOKE_MAX_TOOLS);
-    r->desc   = arena_new(persist, Str, YOKE_MAX_TOOLS);
-    r->brief  = arena_new(persist, Str, YOKE_MAX_TOOLS);
-    r->schema = arena_new(persist, Str, YOKE_MAX_TOOLS);
-    r->run    = arena_new(persist, ToolRun, YOKE_MAX_TOOLS);
-    r->modes  = arena_new(persist, u8, YOKE_MAX_TOOLS);
-    r->off    = arena_new(persist, b8, YOKE_MAX_TOOLS);
+    r->name   = arena_new(persist, Str, AGENT_MAX_TOOLS);
+    r->desc   = arena_new(persist, Str, AGENT_MAX_TOOLS);
+    r->brief  = arena_new(persist, Str, AGENT_MAX_TOOLS);
+    r->schema = arena_new(persist, Str, AGENT_MAX_TOOLS);
+    r->run    = arena_new(persist, ToolRun, AGENT_MAX_TOOLS);
+    r->modes  = arena_new(persist, u8, AGENT_MAX_TOOLS);
+    r->off    = arena_new(persist, b8, AGENT_MAX_TOOLS);
     r->n = 0;
     if (!r->name || !r->desc || !r->brief || !r->schema || !r->run ||
         !r->modes || !r->off) {
@@ -1000,7 +1000,7 @@ void tools_init(ToolRegistry *r, Arena *persist) {
         return;
     }
 #define ADD(nm, dsc, brf, md, sch, fn) do { \
-    if (r->n >= YOKE_MAX_TOOLS) break; \
+    if (r->n >= AGENT_MAX_TOOLS) break; \
     r->name[r->n] = STR(nm); \
     r->desc[r->n] = STR(dsc); \
     r->brief[r->n] = STR(brf); \
@@ -1122,9 +1122,9 @@ b8 tools_run(const ToolRegistry *r, size_t id, Str args, Arena *scratch,
         return false;
     }
     b8 ok = r->run[id](args, scratch, out, err, err_cap);
-    if (ok && out->n > YOKE_TOOL_RESULT_BYTES) {
+    if (ok && out->n > AGENT_TOOL_RESULT_BYTES) {
         snprintf(err, err_cap, "result exceeds the %u byte limit",
-                 (unsigned)YOKE_TOOL_RESULT_BYTES);
+                 (unsigned)AGENT_TOOL_RESULT_BYTES);
         return false;
     }
     return ok;

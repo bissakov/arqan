@@ -1,6 +1,6 @@
-/* yoke.h: umbrella header. Every module includes this. */
-#ifndef YOKE_H
-#define YOKE_H
+/* agent.h: umbrella header. Every module includes this. */
+#ifndef AGENT_H
+#define AGENT_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -23,102 +23,108 @@ typedef float    f32;
 typedef double   f64;
 typedef bool     b8;
 
-#define YOKE_VERSION "0.1.0"
+#define AGENT_VERSION "0.1.0"
+/* The user-facing name: the binary, the XDG directories, the project
+ * directory and the environment prefix all derive from it. Internal
+ * identifiers keep the AGENT_ prefix, so a rename touches this line and
+ * scripts/rename.py handles the rest. */
+#define AGENT_NAME       "arqan"
+#define AGENT_ENV_PREFIX "ARQAN_"
 
 /* ---- capacities (compile-time, no growth) ------------------------------- */
 /* Both arenas are static storage, so this is address space rather than
  * startup cost, sized an order of magnitude above the per-turn peak. */
-#define YOKE_ARENA_BYTES      (1u << 27)  /* 128 MiB scratch arena            */
-#define YOKE_PERSIST_BYTES    (1u << 26)  /* 64  MiB persistent arena         */
+#define AGENT_ARENA_BYTES      (1u << 27)  /* 128 MiB scratch arena            */
+#define AGENT_PERSIST_BYTES    (1u << 26)  /* 64  MiB persistent arena         */
 /* The rows of a modal screen, which outlive an action that rerenders the
  * transcript from the scratch arena; see choose_settings. */
-#define YOKE_SCREEN_BYTES     (1u << 15)  /* 32  KiB modal screen arena       */
-#define YOKE_MAX_MESSAGES     4096        /* default; see Config.max_messages   */
+#define AGENT_SCREEN_BYTES     (1u << 15)  /* 32  KiB modal screen arena       */
+#define AGENT_MAX_MESSAGES     4096        /* default; see Config.max_messages   */
 /* A reply that reaches this stops mid-sentence, so the default is above what
  * a long answer or a large patch needs rather than at a provider's minimum. */
-#define YOKE_MAX_TOKENS       32768       /* default; see Config.max_tokens    */
-#define YOKE_MAX_TOOLS        64
-#define YOKE_MAX_TOOL_CALLS   1024        /* per turn                          */
-#define YOKE_MAX_TOOL_ARGS    8
-#define YOKE_MAX_JSON_DEPTH   64          /* nesting a provider may hand us    */
-#define YOKE_MAX_PATH         4096        /* longest path a tool will accept   */
-#define YOKE_MAX_COMMAND      (1u << 16)  /* longest shell command             */
-#define YOKE_MAX_FILE_BYTES   (16u << 20) /* largest file a tool will read     */
+#define AGENT_MAX_TOKENS       32768       /* default; see Config.max_tokens    */
+#define AGENT_MAX_TOOLS        64
+#define AGENT_MAX_TOOL_CALLS   1024        /* per turn                          */
+#define AGENT_MAX_TOOL_ARGS    8
+#define AGENT_MAX_JSON_DEPTH   64          /* nesting a provider may hand us    */
+#define AGENT_MAX_PATH         4096        /* longest path a tool will accept   */
+#define AGENT_MAX_COMMAND      (1u << 16)  /* longest shell command             */
+#define AGENT_MAX_FILE_BYTES   (16u << 20) /* largest file a tool will read     */
 /* A tool result is replayed on every later turn, so each cap below makes one
  * call a page rather than a file; the call says where to continue. */
-#define YOKE_TOOL_RESULT_BYTES (8u << 10) /* hard cap, including paging notes   */
-#define YOKE_READ_LINES       2000        /* lines one read returns by default  */
+#define AGENT_TOOL_RESULT_BYTES (8u << 10) /* hard cap, including paging notes   */
+#define AGENT_READ_LINES       2000        /* lines one read returns by default  */
 /* Leave enough room under the result cap for a continuation/status line. */
-#define YOKE_READ_BYTES       (YOKE_TOOL_RESULT_BYTES - 256u)
-#define YOKE_SHELL_OUT_BYTES  (YOKE_TOOL_RESULT_BYTES - 256u)
-#define YOKE_GREP_RESULTS     100         /* matches one grep returns by default*/
-#define YOKE_FIND_RESULTS     200         /* paths one find returns by default  */
-#define YOKE_GREP_LINE        200         /* of a matched line, what is shown   */
-#define YOKE_WALK_DEPTH       32          /* directories a walk descends        */
-#define YOKE_WALK_ENTRIES     4096        /* names one directory level holds    */
-#define YOKE_WALK_BYTES       (4u << 20)  /* scratch a walk carves for names    */
-#define YOKE_MAX_GREP_FILE    (1u << 20)  /* larger files are not searched      */
-#define YOKE_MAX_PATCH_FILES  32          /* files one patch call may touch     */
-#define YOKE_MAX_PATCH_HUNKS  512         /* hunks one patch call may carry     */
+#define AGENT_READ_BYTES       (AGENT_TOOL_RESULT_BYTES - 256u)
+#define AGENT_SHELL_OUT_BYTES  (AGENT_TOOL_RESULT_BYTES - 256u)
+#define AGENT_GREP_RESULTS     100         /* matches one grep returns by default*/
+#define AGENT_FIND_RESULTS     200         /* paths one find returns by default  */
+#define AGENT_GREP_LINE        200         /* of a matched line, what is shown   */
+#define AGENT_WALK_DEPTH       32          /* directories a walk descends        */
+#define AGENT_WALK_ENTRIES     4096        /* names one directory level holds    */
+#define AGENT_WALK_BYTES       (4u << 20)  /* scratch a walk carves for names    */
+#define AGENT_MAX_GREP_FILE    (1u << 20)  /* larger files are not searched      */
+#define AGENT_MAX_PATCH_FILES  32          /* files one patch call may touch     */
+#define AGENT_MAX_PATCH_HUNKS  512         /* hunks one patch call may carry     */
 /* A tool result older than this many user turns is replaced on the wire by a
  * line naming what it was; see conv_write_json. */
-#define YOKE_ELIDE_TURNS      2
-#define YOKE_ELIDE_BYTES      512         /* under this, saying so costs more   */
+#define AGENT_ELIDE_TURNS      2
+#define AGENT_ELIDE_BYTES      512         /* under this, saying so costs more   */
 /* The delay doubles per attempt from Config.retry_delay_ms and stops here. */
-#define YOKE_RETRIES          3           /* extra attempts a turn is allowed  */
-#define YOKE_RETRY_DELAY_MS   500         /* wait before the first of them     */
-#define YOKE_MAX_RETRY_DELAY_MS 8000
-#define YOKE_MAX_COMMANDS     32          /* slash commands offered by the TUI */
-#define YOKE_LINE_BUF         (1u << 20)  /* 1 MiB input line buffer          */
-#define YOKE_RESP_BUF         (1u << 22)  /* 4 MiB response accumulation      */
-#define YOKE_MAX_HISTORY      500         /* recallable prompts kept on disk   */
-#define YOKE_HISTORY_BYTES    (1u << 20)  /* entry storage carved from persist */
-#define YOKE_MAX_HISTORY_LINE (1u << 16)  /* longest prompt worth remembering  */
-#define YOKE_MAX_HISTORY_BYTES (8u << 20) /* largest history file we will read */
-#define YOKE_MAX_CONFIG_FILES 8           /* XDG config candidates we consider */
-#define YOKE_MAX_PROJECT_FILES 8          /* .yoke/config.toml files we collect */
-#define YOKE_MAX_SETTINGS     512         /* key lines one settings file holds */
-#define YOKE_MAX_SETTINGS_BYTES (1u << 20)/* largest settings file we will read */
-#define YOKE_MAX_SET_KEYS     8           /* keys one settings_set writes      */
-#define YOKE_MAX_TOOL_LIST    256         /* longest disable_tools value       */
+#define AGENT_RETRIES          3           /* extra attempts a turn is allowed  */
+#define AGENT_RETRY_DELAY_MS   500         /* wait before the first of them     */
+#define AGENT_MAX_RETRY_DELAY_MS 8000
+#define AGENT_MAX_COMMANDS     32          /* slash commands offered by the TUI */
+#define AGENT_LINE_BUF         (1u << 20)  /* 1 MiB input line buffer          */
+#define AGENT_RESP_BUF         (1u << 22)  /* 4 MiB response accumulation      */
+#define AGENT_MAX_HISTORY      500         /* recallable prompts kept on disk   */
+#define AGENT_HISTORY_BYTES    (1u << 20)  /* entry storage carved from persist */
+#define AGENT_MAX_HISTORY_LINE (1u << 16)  /* longest prompt worth remembering  */
+#define AGENT_MAX_HISTORY_BYTES (8u << 20) /* largest history file we will read */
+#define AGENT_MAX_CONFIG_FILES 8           /* XDG config candidates we consider */
+#define AGENT_MAX_PROJECT_FILES 8          /* .arqan/config.toml files we collect */
+#define AGENT_MAX_SETTINGS     512         /* key lines one settings file holds */
+#define AGENT_MAX_SETTINGS_BYTES (1u << 20)/* largest settings file we will read */
+#define AGENT_MAX_SET_KEYS     8           /* keys one settings_set writes      */
+#define AGENT_MAX_TOOL_LIST    256         /* longest disable_tools value       */
 /* The three files settings live in. One format, three audiences: the config
  * is the user's document, the state is what the UI remembers, and the
  * credentials file holds keys alone at mode 0600. */
-#define YOKE_CONFIG_NAME      STR("config.toml")
-#define YOKE_STATE_NAME       STR("state.toml")
-#define YOKE_CREDENTIALS_NAME STR("credentials.toml")
-/* A project's own settings, beside its .yoke/SYSTEM.md. */
-#define YOKE_PROJECT_DIR      STR(".yoke")
-/* Past this yoke refuses to start rather than send a truncated prompt. */
-#define YOKE_MAX_PROMPT_FILE  (1u << 16)
-#define YOKE_MAX_AGENTS_FILES 8           /* AGENTS.md chain depth we collect  */
-#define YOKE_MAX_SESSIONS     64          /* saved sessions the picker offers  */
-#define YOKE_MAX_SESSION_BYTES (32u << 20)/* largest session file we will read */
+#define AGENT_CONFIG_NAME      STR("config.toml")
+#define AGENT_STATE_NAME       STR("state.toml")
+#define AGENT_CREDENTIALS_NAME STR("credentials.toml")
+/* A project's own settings, beside its .<name>/SYSTEM.md. */
+#define AGENT_PROJECT_DIR      STR("." AGENT_NAME)
+/* Past this arqan refuses to start rather than send a truncated prompt. */
+#define AGENT_MAX_PROMPT_FILE  (1u << 16)
+#define AGENT_MAX_AGENTS_FILES 8           /* AGENTS.md chain depth we collect  */
+#define AGENT_MAX_SESSIONS     64          /* saved sessions the picker offers  */
+#define AGENT_MAX_SESSION_BYTES (32u << 20)/* largest session file we will read */
 /* A popup shows a handful of rows at a time, so this bounds what it can hold
  * and scroll or search through, not what it can show: a provider that serves
  * hundreds of models is the reason it is not the row count. */
-#define YOKE_MAX_POPUP        4096        /* entries the popup can hold        */
-#define YOKE_MAX_MODELS       YOKE_MAX_POPUP /* models the /model picker offers */
-#define YOKE_MAX_ENDPOINTS    32          /* providers /provider can hold      */
-#define YOKE_MAX_ENDPOINT_NAME 64
-#define YOKE_MAX_URL          512
-#define YOKE_MAX_MODEL_NAME   128
-#define YOKE_MAX_API_KEY      512
-#define YOKE_MAX_SECRET_ARGV  16          /* words a key helper argv may hold  */
-#define YOKE_MAX_SECRET_CMD   512         /* longest key_command line          */
+#define AGENT_MAX_POPUP        4096        /* entries the popup can hold        */
+#define AGENT_MAX_MODELS       AGENT_MAX_POPUP /* models the /model picker offers */
+#define AGENT_MAX_ENDPOINTS    32          /* providers /provider can hold      */
+#define AGENT_MAX_ENDPOINT_NAME 64
+#define AGENT_MAX_URL          512
+#define AGENT_MAX_MODEL_NAME   128
+#define AGENT_MAX_API_KEY      512
+#define AGENT_MAX_SECRET_ARGV  16          /* words a key helper argv may hold  */
+#define AGENT_MAX_SECRET_CMD   512         /* longest key_command line          */
 /* A locked keyring may prompt through its own agent; past this the helper is
  * killed, since a wait with no end would take the UI with it. */
-#define YOKE_SECRET_TIMEOUT_MS 15000
-#define YOKE_MAX_REASONING_LIST 1024
-#define YOKE_MAX_REASONING_TEMPLATE (16u << 10)
-#define YOKE_MAX_MODEL_BYTES  (1u << 20)  /* largest /models reply we will read */
-#define YOKE_WEB_BODY_BYTES   (2u << 20)  /* decompressed page source limit      */
-#define YOKE_WEB_URL_BYTES    4096        /* URL bytes plus its terminating nul  */
-#define YOKE_WEB_QUERY_BYTES  1025        /* search query plus its terminating nul*/
-#define YOKE_WEB_TYPE_BYTES   128         /* normalized response media type      */
-#define YOKE_WEB_SEARCH_INTERVAL_MS 10000 /* minimum spacing between searches     */
-#define YOKE_WEB_SEARCH_PAUSE_MS 3600000  /* quarantine after service refusal      */
-#define YOKE_STATUS_FIELDS    9
+#define AGENT_SECRET_TIMEOUT_MS 15000
+#define AGENT_MAX_REASONING_LIST 1024
+#define AGENT_MAX_REASONING_TEMPLATE (16u << 10)
+#define AGENT_MAX_MODEL_BYTES  (1u << 20)  /* largest /models reply we will read */
+#define AGENT_WEB_BODY_BYTES   (2u << 20)  /* decompressed page source limit      */
+#define AGENT_WEB_URL_BYTES    4096        /* URL bytes plus its terminating nul  */
+#define AGENT_WEB_QUERY_BYTES  1025        /* search query plus its terminating nul*/
+#define AGENT_WEB_TYPE_BYTES   128         /* normalized response media type      */
+#define AGENT_WEB_SEARCH_INTERVAL_MS 10000 /* minimum spacing between searches     */
+#define AGENT_WEB_SEARCH_PAUSE_MS 3600000  /* quarantine after service refusal      */
+#define AGENT_STATUS_FIELDS    9
 
 /* ---- arenas ------------------------------------------------------------- */
 typedef struct {
@@ -174,7 +180,7 @@ void    buf_json_chars(Buf *b, Str s);
 Str     buf_finish(Buf *b);                    /* nul-terminates            */
 
 /* ---- files ---------------------------------------------------------------
- * The one reader every file yoke owns goes through, so a size that comes from
+ * The one reader every file arqan owns goes through, so a size that comes from
  * the filesystem is checked in one place rather than at each caller.
  */
 typedef enum {
@@ -191,23 +197,23 @@ FileStatus file_read(Arena *a, const char *path, size_t max, size_t head,
                      Str *out, u64 *size_out);
 
 /* ---- logging ------------------------------------------------------------ */
-enum { YOKE_LOG_DEBUG, YOKE_LOG_INFO, YOKE_LOG_WARN, YOKE_LOG_ERROR };
-void    yoke_log(i32 level, const char *fmt, ...) __attribute__((format(printf,2,3)));
-void    yoke_log_set_level(i32 level);
+enum { AGENT_LOG_DEBUG, AGENT_LOG_INFO, AGENT_LOG_WARN, AGENT_LOG_ERROR };
+void    agent_log(i32 level, const char *fmt, ...) __attribute__((format(printf,2,3)));
+void    agent_log_set_level(i32 level);
 /* Raw stderr would paint over the frame, so the TUI redirects log lines into
  * the transcript while it is up. NULL restores plain stderr. */
-typedef void (*YokeLogSink)(i32 level, Str msg, void *ud);
-void    yoke_log_set_sink(YokeLogSink sink, void *ud);
+typedef void (*AgentLogSink)(i32 level, Str msg, void *ud);
+void    agent_log_set_sink(AgentLogSink sink, void *ud);
 
 /* ---- telemetry -----------------------------------------------------------
  * An anonymized record of a session, appended as JSON lines to that
- * conversation's own $XDG_STATE_HOME/yoke/telemetry/<cwd>/<timestamp>.jsonl
+ * conversation's own $XDG_STATE_HOME/arqan/telemetry/<cwd>/<timestamp>.jsonl
  * while /telemetry is on: the file is named after the session file and is
  * rebound with it, so /clear starts a record and /resume continues one.
  *
  * The record is the shape of a session, never its content: a message is a
  * byte and a line count, a tool call is its name and the keys of its
- * arguments, the working directory is a hash. A string field is for text yoke
+ * arguments, the working directory is a hash. A string field is for text arqan
  * formats itself; user and model text goes through tel_shape, which keeps no
  * bytes of it. With telemetry off every call below is a no-op.
  */
@@ -236,8 +242,8 @@ void telemetry_set_header(TelHeader fn, void *ud);
 b8   telemetry_set(b8 on, Arena *scratch);
 /* The file being recorded to. Empty when no state directory resolves. */
 Str  telemetry_file(void);
-/* Mirror of a yoke_log line, so the diagnostics sit beside the events they
- * explain. Called by yoke_log. */
+/* Mirror of a agent_log line, so the diagnostics sit beside the events they
+ * explain. Called by agent_log. */
 void telemetry_log(i32 level, Str msg);
 
 void tel_open(TelEvent *e, const char *ev);
@@ -258,7 +264,7 @@ void tel_hash_field(TelEvent *e, const char *key, Str v);
 void tel_send(TelEvent *e);
 
 /* ---- time --------------------------------------------------------------- */
-f64  yoke_now_seconds(void);   /* monotonic                                */
+f64  agent_now_seconds(void);   /* monotonic                                */
 
 /* ---- JSON --------------------------------------------------------------- */
 typedef enum { J_NULL, J_BOOL, J_NUM, J_STR, J_ARR, J_OBJ } JType;
@@ -289,27 +295,27 @@ Str    json_str(const JVal *obj, Str key);
 b8     json_bool(const JVal *obj, Str key);
 
 /* ---- XDG base directories ------------------------------------------------
- * Every file yoke owns is resolved here; none sits directly in $HOME. A
+ * Every file arqan owns is resolved here; none sits directly in $HOME. A
  * relative XDG_* value is invalid and ignored, as the spec requires.
  */
-typedef enum { YOKE_DIR_CONFIG, YOKE_DIR_DATA, YOKE_DIR_STATE, YOKE_DIR_CACHE } YokeDir;
+typedef enum { AGENT_DIR_CONFIG, AGENT_DIR_DATA, AGENT_DIR_STATE, AGENT_DIR_CACHE } AgentDir;
 
-/* Absolute "<base>/yoke" path, empty when no base resolves. */
-Str    paths_dir(YokeDir kind, Arena *a);
-Str    paths_file(YokeDir kind, Str name, Arena *a);
+/* Absolute "<base>/arqan" path, empty when no base resolves. */
+Str    paths_dir(AgentDir kind, Arena *a);
+Str    paths_file(AgentDir kind, Str name, Arena *a);
 b8     paths_ensure_dir(Str dir);    /* mkdir -p, mode 0700                  */
 /* Candidates for a global config file, lowest precedence first: each
  * XDG_CONFIG_DIRS entry, then XDG_CONFIG_HOME. */
 size_t paths_config_files(Str name, Arena *a, Str *out, size_t max);
-/* "<dir>/.yoke/<name>" for the working directory and every directory above
+/* "<dir>/.arqan/<name>" for the working directory and every directory above
  * it, outermost first, so the nearest file is applied last and wins. Only
  * files that exist are returned. */
 size_t paths_project_files(Str name, Arena *a, Str *out, size_t max);
-/* "$cwd/.yoke", where a project keeps its own settings and prompts. */
+/* "$cwd/.arqan", where a project keeps its own settings and prompts. */
 Str    paths_project_dir(Arena *a);
 
 /* ---- settings files ------------------------------------------------------
- * One syntax for every setting yoke owns, a subset of TOML: "key = value"
+ * One syntax for every setting arqan owns, a subset of TOML: "key = value"
  * lines grouped under optional "[section]" headers, with '#' comments. A
  * value may be quoted or bare; reading accepts both and writing quotes
  * anything that is not an integer or a boolean, so the result parses as TOML
@@ -320,13 +326,13 @@ Str    paths_project_dir(Arena *a);
  * that copy.
  */
 typedef struct {
-    Str    section[YOKE_MAX_SETTINGS];   /* empty above the first header    */
-    Str    key[YOKE_MAX_SETTINGS];
-    Str    val[YOKE_MAX_SETTINGS];
+    Str    section[AGENT_MAX_SETTINGS];   /* empty above the first header    */
+    Str    key[AGENT_MAX_SETTINGS];
+    Str    val[AGENT_MAX_SETTINGS];
     size_t n;
 } Settings;
 
-/* False when the file is missing, empty or past YOKE_MAX_SETTINGS_BYTES. */
+/* False when the file is missing, empty or past AGENT_MAX_SETTINGS_BYTES. */
 b8     settings_load(Settings *s, Str path, Arena *a);
 /* Empty when the key is unset; a key repeated in one file reads as the last
  * assignment wins. */
@@ -350,13 +356,13 @@ b8     settings_remove_section(Str path, Str section, Arena *scratch);
  * since a settings file is a document its owner edits. */
 b8     settings_write(Str path, Str data, u32 mode);
 
-/* $XDG_STATE_HOME/yoke/state.toml: the choices the UI remembers between runs.
+/* $XDG_STATE_HOME/arqan/state.toml: the choices the UI remembers between runs.
  * Keys are the configuration keys of config.c, so what the UI writes reads
  * back through the same table the config files feed. */
 b8     state_set(Str key, Str val, Arena *scratch);
 
 /* ---- prompt history ------------------------------------------------------
- * A ring of past prompts, mirrored to $XDG_STATE_HOME/yoke/history as they
+ * A ring of past prompts, mirrored to $XDG_STATE_HOME/arqan/history as they
  * are submitted. `cursor` is the browse position; cursor == n is the live
  * draft the composer restores on the way back down.
  *
@@ -398,12 +404,12 @@ ApiKind api_from_str(Str s);
 Str     api_name(ApiKind k);
 
 /* ---- secrets -------------------------------------------------------------
- * Where an endpoint's key comes from. SECRET_STORED is yoke's own
- * credentials file; the rest name an external store that yoke asks through a
+ * Where an endpoint's key comes from. SECRET_STORED is arqan's own
+ * credentials file; the rest name an external store that arqan asks through a
  * helper program, so no plaintext key is written anywhere.
  *
  * The directive naming a source is executable content, so it is read only
- * from $XDG_STATE_HOME/yoke/credentials.toml at mode 0600, never from the config
+ * from $XDG_STATE_HOME/arqan/credentials.toml at mode 0600, never from the config
  * file a dotfile repository carries. Helpers run through execvp with an argv
  * built here, never through a shell. See secrets.c.
  */
@@ -421,13 +427,13 @@ typedef enum {
 SecretSource secret_source_from_str(Str s, b8 *known);
 Str          secret_source_name(SecretSource src);
 b8           secret_source_external(SecretSource src);
-/* False for the sources yoke can read but not write, which must be filled in
+/* False for the sources arqan can read but not write, which must be filled in
  * with their own tool. */
 b8           secret_source_can_store(SecretSource src);
 
 /* The key `account` holds in `src`, allocated in `out`. Empty with `err` set
  * when the helper is missing, fails, answers with more than one line or does
- * not answer before YOKE_SECRET_TIMEOUT_MS. `command` is read only for
+ * not answer before AGENT_SECRET_TIMEOUT_MS. `command` is read only for
  * SECRET_COMMAND. No message ever quotes the key. */
 Str secret_lookup(SecretSource src, Str account, Str command, Arena *out,
                   char *err, size_t err_cap);
@@ -440,21 +446,21 @@ b8  secret_erase(SecretSource src, Str account, char *err, size_t err_cap);
  * The providers /provider creates and switches between: a name, a base URL,
  * the API that URL speaks and the model last used against it. Each is a
  * "[providers.<name>]" section of a config file, and its key alone lives
- * under the same section of $XDG_STATE_HOME/yoke/credentials.toml, so a
+ * under the same section of $XDG_STATE_HOME/arqan/credentials.toml, so a
  * shared configuration cannot carry a secret; the `provider` setting names
  * the active one. An oversized field is dropped on load rather than
  * truncated, since a cut URL names a different service.
  */
 typedef struct {
-    Str     name[YOKE_MAX_ENDPOINTS];
-    Str     base_url[YOKE_MAX_ENDPOINTS];
-    Str     model[YOKE_MAX_ENDPOINTS];   /* empty when none was chosen yet  */
-    Str     reasoning_efforts[YOKE_MAX_ENDPOINTS];
-    Str     thinking_budgets[YOKE_MAX_ENDPOINTS];
-    Str     reasoning_effort[YOKE_MAX_ENDPOINTS];
-    Str     thinking_budget[YOKE_MAX_ENDPOINTS];
-    Str     reasoning_template[YOKE_MAX_ENDPOINTS];
-    ApiKind api[YOKE_MAX_ENDPOINTS];
+    Str     name[AGENT_MAX_ENDPOINTS];
+    Str     base_url[AGENT_MAX_ENDPOINTS];
+    Str     model[AGENT_MAX_ENDPOINTS];   /* empty when none was chosen yet  */
+    Str     reasoning_efforts[AGENT_MAX_ENDPOINTS];
+    Str     thinking_budgets[AGENT_MAX_ENDPOINTS];
+    Str     reasoning_effort[AGENT_MAX_ENDPOINTS];
+    Str     thinking_budget[AGENT_MAX_ENDPOINTS];
+    Str     reasoning_template[AGENT_MAX_ENDPOINTS];
+    ApiKind api[AGENT_MAX_ENDPOINTS];
     size_t  n;
 } Endpoints;
 
@@ -464,7 +470,7 @@ typedef struct {
 size_t endpoints_load(Endpoints *e, Arena *a);
 size_t endpoints_find(const Endpoints *e, Str name);
 /* A name that is a TOML bare key, which is what "[providers.<name>]" needs
- * to stay a header a TOML reader and yoke agree on. */
+ * to stay a header a TOML reader and arqan agree on. */
 b8     endpoint_name_ok(Str name);
 /* False when the store is full or a field is past its cap. */
 b8     endpoints_put(Endpoints *e, Str name, Str base_url, Str model,
@@ -506,24 +512,24 @@ typedef enum { MODE_BUILD = 0, MODE_PLAN } AgentMode;
  * through Conv or a provider request. */
 typedef struct {
     Str primary, primary_label, primary_path;
-    Str agents[YOKE_MAX_AGENTS_FILES];
-    Str agent_paths[YOKE_MAX_AGENTS_FILES];
+    Str agents[AGENT_MAX_AGENTS_FILES];
+    Str agent_paths[AGENT_MAX_AGENTS_FILES];
     size_t n_agents;
 } PromptSources;
 
 /* ---- configuration keys --------------------------------------------------
- * Every setting yoke has is a row of one table in config.c: its name in a
+ * Every setting arqan has is a row of one table in config.c: its name in a
  * file, its type, its bounds and whether a project may set it. The name is
- * also its environment variable, upper-cased under YOKE_.
+ * also its environment variable, upper-cased under ARQAN_.
  *
  * Sources, lowest precedence first. See conf_resolve.
  *   defaults
- *   $XDG_CONFIG_DIRS/yoke/config.toml   site-wide
- *   $XDG_CONFIG_HOME/yoke/config.toml   the user's; what /provider writes
- *   <dir>/.yoke/config.toml             the project's, nearest last
- *   $XDG_STATE_HOME/yoke/state.toml     what the UI last chose
+ *   $XDG_CONFIG_DIRS/arqan/config.toml   site-wide
+ *   $XDG_CONFIG_HOME/arqan/config.toml   the user's; what /provider writes
+ *   <dir>/.arqan/config.toml             the project's, nearest last
+ *   $XDG_STATE_HOME/arqan/state.toml     what the UI last chose
  *   [providers.<name>]                  the active provider's own settings
- *   YOKE_<NAME>                         per invocation
+ *   ARQAN_<NAME>                         per invocation
  *   command-line options                applied to Config by cli_apply
  */
 typedef enum {
@@ -595,7 +601,7 @@ typedef struct {
     /* A run with neither this nor a key has nothing to talk to, and asks for
      * a provider instead of starting a conversation. */
     b8  base_url_set;
-    Str system_prompt; /* Only --system and YOKE_SYSTEM_PROMPT set this. */
+    Str system_prompt; /* Only --system and ARQAN_SYSTEM_PROMPT set this. */
     Str plan_prompt;   /* Plan mode's; built at startup, never configured. */
     PromptSources system_sources, plan_sources;
     AgentMode mode;
@@ -613,21 +619,21 @@ typedef struct {
     Str disable_tools;
     /* Commands may replace these fields after the conversation rewind mark.
      * Their owned copies live here so /clear cannot reclaim them. */
-    char owned_base_url[YOKE_MAX_URL + 1];
-    char owned_model[YOKE_MAX_MODEL_NAME + 1];
-    char owned_api_key[YOKE_MAX_API_KEY + 1];
-    char owned_provider[YOKE_MAX_ENDPOINT_NAME + 1];
-    char owned_reasoning_efforts[YOKE_MAX_REASONING_LIST + 1];
-    char owned_thinking_budgets[YOKE_MAX_REASONING_LIST + 1];
-    char owned_reasoning_effort[YOKE_MAX_REASONING_LIST + 1];
-    char owned_thinking_budget[YOKE_MAX_REASONING_LIST + 1];
-    char owned_reasoning_template[YOKE_MAX_REASONING_TEMPLATE + 1];
+    char owned_base_url[AGENT_MAX_URL + 1];
+    char owned_model[AGENT_MAX_MODEL_NAME + 1];
+    char owned_api_key[AGENT_MAX_API_KEY + 1];
+    char owned_provider[AGENT_MAX_ENDPOINT_NAME + 1];
+    char owned_reasoning_efforts[AGENT_MAX_REASONING_LIST + 1];
+    char owned_thinking_budgets[AGENT_MAX_REASONING_LIST + 1];
+    char owned_reasoning_effort[AGENT_MAX_REASONING_LIST + 1];
+    char owned_thinking_budget[AGENT_MAX_REASONING_LIST + 1];
+    char owned_reasoning_template[AGENT_MAX_REASONING_TEMPLATE + 1];
 } Config;
 
 /* Fills `c` from resolved settings. `persist` holds what it copies. */
 b8    config_load(Config *c, const Conf *conf, Arena *persist);
 /* Writes the state file's `model` key, which conf_resolve applies above the
- * config files and below YOKE_MODEL. */
+ * config files and below ARQAN_MODEL. */
 b8    config_remember_model(Str model, Arena *scratch);
 /* Runtime choices are copied into Config itself and survive /clear. */
 b8    config_set_model(Config *c, Str model);
@@ -710,8 +716,8 @@ typedef struct {
     void (*on_idle)(void *ud);
     void *idle_ud;
 
-    char effective_url[YOKE_WEB_URL_BYTES];
-    char content_type[YOKE_WEB_TYPE_BYTES];
+    char effective_url[AGENT_WEB_URL_BYTES];
+    char content_type[AGENT_WEB_TYPE_BYTES];
     char failure[256];
     i64 status;
 } HttpUrlReq;
@@ -734,15 +740,15 @@ typedef b8 (*ToolRun)(Str args_json, Arena *scratch, Buf *out,
 #define TOOL_FIXED    4u
 
 typedef struct {
-    Str     *name;        /* [YOKE_MAX_TOOLS]                               */
-    Str     *desc;        /* [YOKE_MAX_TOOLS] what the model is told         */
+    Str     *name;        /* [AGENT_MAX_TOOLS]                               */
+    Str     *desc;        /* [AGENT_MAX_TOOLS] what the model is told         */
     /* What a row of the settings screen says: one line that fits beside the
      * name, since the model's description is written for a model. */
-    Str     *brief;       /* [YOKE_MAX_TOOLS]                               */
-    Str     *schema;      /* [YOKE_MAX_TOOLS] JSON schema fragment (object) */
-    ToolRun *run;         /* [YOKE_MAX_TOOLS]                               */
-    u8      *modes;       /* [YOKE_MAX_TOOLS] TOOL_IN_* bits                */
-    b8      *off;         /* [YOKE_MAX_TOOLS] turned off by the user        */
+    Str     *brief;       /* [AGENT_MAX_TOOLS]                               */
+    Str     *schema;      /* [AGENT_MAX_TOOLS] JSON schema fragment (object) */
+    ToolRun *run;         /* [AGENT_MAX_TOOLS]                               */
+    u8      *modes;       /* [AGENT_MAX_TOOLS] TOOL_IN_* bits                */
+    b8      *off;         /* [AGENT_MAX_TOOLS] turned off by the user        */
     size_t   n;
 } ToolRegistry;
 
@@ -780,9 +786,9 @@ b8          page_fetch_run(Str args, Arena *scratch, Buf *out,
                            char *err, size_t err_cap);
 /* Run `cmd` through the shell, appending its output to `out` followed by a
  * bracketed status line ("[exit 0]") that render.c reads back. Only the last
- * YOKE_SHELL_OUT_BYTES are kept, behind a line saying how much was dropped.
+ * AGENT_SHELL_OUT_BYTES are kept, behind a line saying how much was dropped.
  * False with `err` filled in when the command is longer than
- * YOKE_MAX_COMMAND or the shell could not be started; a command is never
+ * AGENT_MAX_COMMAND or the shell could not be started; a command is never
  * clamped to fit, since a truncated one is a different program. */
 b8          shell_capture(Str cmd, Buf *out, char *err, size_t err_cap);
 /* Pumped while a command runs, so a slow one keeps the UI live the way an
@@ -791,10 +797,10 @@ void        shell_set_idle(void (*fn)(void *ud), void *ud);
 
 /* ---- prompt ------------------------------------------------------------- */
 /* The system prompt, placeholders expanded. `configured` is what --system or
- * YOKE_SYSTEM_PROMPT set, unset to take .yoke/SYSTEM.md, the global
+ * ARQAN_SYSTEM_PROMPT set, unset to take .arqan/SYSTEM.md, the global
  * SYSTEM.md or the built-in template, in that order. Returned in `persist`,
  * falling back to the unexpanded template when it cannot take the result.
- * Empty with `err` set when a SYSTEM.md is larger than YOKE_MAX_PROMPT_FILE.
+ * Empty with `err` set when a SYSTEM.md is larger than AGENT_MAX_PROMPT_FILE.
  *
  * Every AGENTS.md from the working directory up to the root is appended to
  * whichever prompt won, outermost first and verbatim: it is a document about
@@ -802,7 +808,7 @@ void        shell_set_idle(void (*fn)(void *ud), void *ud);
 Str   prompt_build(const ToolRegistry *tools, Str configured, Arena *persist,
                    Arena *scratch, PromptSources *sources, char *err,
                    size_t err_cap);
-/* The plan-mode prompt, resolved the same way from .yoke/PLAN.md, the global
+/* The plan-mode prompt, resolved the same way from .arqan/PLAN.md, the global
  * PLAN.md or the built-in template, with {tools} listing only what plan mode
  * offers. Nothing configures it: --system describes Build mode. */
 Str   prompt_build_plan(const ToolRegistry *tools, Arena *persist,
@@ -858,16 +864,16 @@ void    conv_write_json_anthropic(Buf *b, const Conv *c);
 
 /* ---- sessions ------------------------------------------------------------
  * The conversation as it happened, one JSON object per line under
- * $XDG_DATA_HOME/yoke/sessions/<cwd>/<timestamp>.jsonl, keyed by the
- * directory yoke was launched in so browsing from one project never surfaces
+ * $XDG_DATA_HOME/arqan/sessions/<cwd>/<timestamp>.jsonl, keyed by the
+ * directory arqan was launched in so browsing from one project never surfaces
  * another's.
  *
  * Paths live in the struct instead of an arena because /clear rewinds the
  * session arena and the file the next message appends to has to outlive it.
  */
 typedef struct {
-    char   dir_buf[YOKE_MAX_PATH];
-    char   path_buf[YOKE_MAX_PATH];
+    char   dir_buf[AGENT_MAX_PATH];
+    char   path_buf[AGENT_MAX_PATH];
     char   name_buf[32];
     Str    dir;      /* per-cwd directory; empty when no XDG base resolves  */
     Str    path;     /* live session file; empty disables persistence       */
@@ -920,7 +926,7 @@ typedef struct {
      * the status line even when the turn is interrupted before it ends. */
     void (*on_usage)(size_t total, void *ud);
     /* A request that produced nothing is about to be sent again. `attempt`
-     * is 1-based over `attempts`, and `reason` is yoke's own wording: an
+     * is 1-based over `attempts`, and `reason` is arqan's own wording: an
      * HTTP status or curl's catalogue string, never a URL. */
     void (*on_retry)(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
                      void *ud);
@@ -1238,4 +1244,4 @@ void render_question(Str question);
 void render_set_verbose(b8 on);
 b8   render_verbose(void);
 
-#endif /* YOKE_H */
+#endif /* AGENT_H */

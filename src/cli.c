@@ -7,13 +7,13 @@
  * Values attach either way, "--model=m", "--model m", "-mm" and "-m m" all
  * name the same thing, and "--" ends the options.
  */
-#include "yoke.h"
+#include "agent.h"
 
 #include <stdio.h>
 #include <string.h>
 
 static const char g_usage[] =
-    "usage: yoke [options] [prompt]\n"
+    "usage: " AGENT_NAME " [options] [prompt]\n"
     "\n"
     "A tiny terminal coding agent.\n"
     "\n"
@@ -31,18 +31,21 @@ static const char g_usage[] =
     "  -h, --help          print help\n"
     "  -v, --version       print version\n"
     "\n"
-    "environment: every setting is YOKE_<NAME>, e.g. YOKE_BASE_URL,\n"
-    "YOKE_MODEL, YOKE_API_KEY, YOKE_API, YOKE_MAX_TOKENS, YOKE_STREAM,\n"
-    "YOKE_MODE, YOKE_DISABLE_TOOLS, plus YOKE_SYSTEM_PROMPT.\n"
-    "Config: $XDG_CONFIG_HOME/yoke/config.toml, overridden by\n"
-    "$PWD/.yoke/config.toml.\n"
-    "Without any of them, yoke asks for a provider; /provider adds and "
+    "environment: every setting is " AGENT_ENV_PREFIX "<NAME>, e.g. "
+    AGENT_ENV_PREFIX "BASE_URL,\n" AGENT_ENV_PREFIX "MODEL, "
+    AGENT_ENV_PREFIX "API_KEY, " AGENT_ENV_PREFIX "API, "
+    AGENT_ENV_PREFIX "MAX_TOKENS, " AGENT_ENV_PREFIX "STREAM,\n"
+    AGENT_ENV_PREFIX "MODE, " AGENT_ENV_PREFIX "DISABLE_TOOLS, plus "
+    AGENT_ENV_PREFIX "SYSTEM_PROMPT.\n"
+    "Config: $XDG_CONFIG_HOME/" AGENT_NAME "/config.toml, overridden by\n"
+    "$PWD/." AGENT_NAME "/config.toml.\n"
+    "Without any of them, " AGENT_NAME " asks for a provider; /provider adds and "
     "switches later.\n";
 
 static void cli_bad(const char *fmt, const char *arg) {
-    fprintf(stderr, "yoke: ");
+    fprintf(stderr, AGENT_NAME ": ");
     fprintf(stderr, fmt, arg);
-    fprintf(stderr, "\nTry 'yoke --help'.\n");
+    fprintf(stderr, "\nTry '" AGENT_NAME " --help'.\n");
 }
 
 /* One option and the argv slot its value may come from. `attached` is the
@@ -75,7 +78,7 @@ static b8 cli_option(CliArg *a, char c, const char *lng, b8 *done) {
     CliOpts *o = a->o;
 #define OPT(sc, ln) (c == (sc) || (lng && !strcmp(lng, (ln))))
     if (OPT('h', "help")) { fputs(g_usage, stdout); *done = true; return true; }
-    if (OPT('v', "version")) { printf("yoke %s\n", YOKE_VERSION); *done = true; return true; }
+    if (OPT('v', "version")) { printf(AGENT_NAME " %s\n", AGENT_VERSION); *done = true; return true; }
     if (OPT('p', "prompt")) { o->have_prompt = true; return cli_value(a, &o->prompt); }
     if (OPT('m', "model")) return cli_value(a, &o->model);
     if (OPT('u', "base-url")) return cli_value(a, &o->base_url);

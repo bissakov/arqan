@@ -11,7 +11,7 @@
  * nowhere else: both are read into the same slots and pushed through the same
  * callbacks, so nothing above this file knows which one answered.
  */
-#include "yoke.h"
+#include "agent.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -110,17 +110,17 @@ static Str conv_call_name(const Conv *c, size_t result) {
 }
 
 /* A tool result is charged again on every later turn, so one older than
- * YOKE_ELIDE_TURNS user turns goes out as a line naming what it was: a file
+ * AGENT_ELIDE_TURNS user turns goes out as a line naming what it was: a file
  * read four turns ago is either reflected in the work or worth reading again.
  * The transcript keeps the text either way. */
 static void write_tool_result(Buf *b, const Conv *c, size_t i, size_t recent) {
-    if (i < recent && c->text[i].n > YOKE_ELIDE_BYTES) {
+    if (i < recent && c->text[i].n > AGENT_ELIDE_BYTES) {
         Str name = conv_call_name(c, i);
         buf_puts(b, STR("\"["));
         buf_json_chars(b, name);
         buf_putf(b, " result elided after %u turns: %zu bytes. "
                  "Call it again if you still need it.]\"",
-                 (unsigned)YOKE_ELIDE_TURNS, c->text[i].n);
+                 (unsigned)AGENT_ELIDE_TURNS, c->text[i].n);
     } else {
         buf_json_str(b, c->text[i]);
     }
@@ -130,7 +130,7 @@ static void write_tool_result(Buf *b, const Conv *c, size_t i, size_t recent) {
  * the carrier slots consumed here and skipped in the main loop. */
 void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
     (void)reg;
-    size_t recent = conv_recent_start(c, YOKE_ELIDE_TURNS);
+    size_t recent = conv_recent_start(c, AGENT_ELIDE_TURNS);
     buf_putc(b, '[');
     for (size_t i = 0; i < c->n; i++) {
         if (i) buf_putc(b, ',');
@@ -271,7 +271,7 @@ static void anth_write_block(Buf *b, const Conv *c, size_t i, size_t recent,
 }
 
 void conv_write_json_anthropic(Buf *b, const Conv *c) {
-    size_t recent = conv_recent_start(c, YOKE_ELIDE_TURNS);
+    size_t recent = conv_recent_start(c, AGENT_ELIDE_TURNS);
     size_t cache_at = CONV_NONE;
     for (size_t j = c->n; j-- > 0;) {
         if ((c->role[j] == M_USER || c->role[j] == M_TOOL)
@@ -309,10 +309,10 @@ typedef struct {
      * turn's scratch use follows the size of the reply rather than the number
      * of events. */
     Arena  ev;
-    Str  id[YOKE_MAX_TOOL_CALLS];
-    Str  name[YOKE_MAX_TOOL_CALLS];
-    Buf  args[YOKE_MAX_TOOL_CALLS];
-    b8   used[YOKE_MAX_TOOL_CALLS];
+    Str  id[AGENT_MAX_TOOL_CALLS];
+    Str  name[AGENT_MAX_TOOL_CALLS];
+    Buf  args[AGENT_MAX_TOOL_CALLS];
+    b8   used[AGENT_MAX_TOOL_CALLS];
     i32  count;
     i32  dropped;      /* calls past the per-turn cap */
     Buf  text;
@@ -331,12 +331,12 @@ typedef struct {
     i32  open_slot;
     i32  blocks;        /* tool_use blocks seen, which is the next slot   */
     size_t events;       /* SSE data lines parsed, for telemetry           */
-    size_t bad_events;   /* data lines that were not JSON yoke could read   */
+    size_t bad_events;   /* data lines that were not JSON arqan could read   */
     size_t reason_bytes; /* thinking trace streamed, which Conv never keeps */
 } StreamState;
 
 static i32 slot(StreamState *s, i32 idx) {
-    if (idx < 0 || idx >= YOKE_MAX_TOOL_CALLS) { s->dropped++; return -1; }
+    if (idx < 0 || idx >= AGENT_MAX_TOOL_CALLS) { s->dropped++; return -1; }
     if (!s->used[idx]) {
         s->used[idx] = true;
         buf_init(&s->args[idx], s->scratch, 256);
@@ -437,7 +437,7 @@ static void openai_event(Provider *p, StreamState *s, const JVal *ev) {
             /* A non-numeric "index" would read the union as a double, so
              * anything but a number is the first call. */
             i32 idx = idxv && idxv->type == J_NUM && idxv->u.n >= 0
-                   && idxv->u.n < (f64)YOKE_MAX_TOOL_CALLS
+                   && idxv->u.n < (f64)AGENT_MAX_TOOL_CALLS
                     ? (i32)idxv->u.n : 0;
             take_call(p, s, tc, idx);
         }
@@ -686,7 +686,7 @@ static b8 read_message_anth(Provider *p, StreamState *s, Str raw,
 size_t provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
                        char *err, size_t err_cap) {
     if (!out || !max) return 0;
-    Buf body; buf_init(&body, scratch, YOKE_MAX_MODEL_BYTES);
+    Buf body; buf_init(&body, scratch, AGENT_MAX_MODEL_BYTES);
     i32 rc = http_get(cfg->base_url.p, "/models", cfg->api_key.p, cfg->api,
                       &body);
     if (rc != 0) {
@@ -695,7 +695,7 @@ size_t provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
         return 0;
     }
     Str raw = buf_finish(&body);
-    if (!buf_ok(&body) || raw.n > YOKE_MAX_MODEL_BYTES) {
+    if (!buf_ok(&body) || raw.n > AGENT_MAX_MODEL_BYTES) {
         snprintf(err, err_cap, "models: reply too large");
         return 0;
     }
@@ -738,8 +738,8 @@ static b8 stream_untouched(const StreamState *s, const Provider *p) {
 /* Doubling from the configured base; attempt 1 waits the base. */
 static i32 backoff_ms(i32 base, i32 attempt) {
     i64 ms = base;
-    for (i32 i = 1; i < attempt && ms < YOKE_MAX_RETRY_DELAY_MS; i++) ms *= 2;
-    return ms > YOKE_MAX_RETRY_DELAY_MS ? YOKE_MAX_RETRY_DELAY_MS : (i32)ms;
+    for (i32 i = 1; i < attempt && ms < AGENT_MAX_RETRY_DELAY_MS; i++) ms *= 2;
+    return ms > AGENT_MAX_RETRY_DELAY_MS ? AGENT_MAX_RETRY_DELAY_MS : (i32)ms;
 }
 
 /* Sliced so the caller's idle hook keeps the composer painting and an
@@ -927,7 +927,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     r.fail_out = fail;
     r.fail_cap = sizeof fail;
 
-    f64 started = yoke_now_seconds();
+    f64 started = agent_now_seconds();
     i32 attempts = p->cfg->retries > 0 ? p->cfg->retries + 1 : 1;
     i32 attempt = 1;
     i32 rc;
@@ -995,7 +995,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     tel_int(&tev, "messages", (i64)p->conv->n);
     tel_int(&tev, "body_bytes", (i64)bstr.n);
     tel_int(&tev, "tools", (i64)(p->tools ? p->tools->n : 0));
-    tel_int(&tev, "ms", (i64)((yoke_now_seconds() - started) * 1000.0));
+    tel_int(&tev, "ms", (i64)((agent_now_seconds() - started) * 1000.0));
     tel_int(&tev, "rc", rc);
     tel_int(&tev, "attempts", attempt);
     tel_str(&tev, "api", api_name(p->cfg->api));
@@ -1027,13 +1027,13 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     }
 
     if (s->dropped)
-        yoke_log(YOKE_LOG_WARN, "dropped %d tool call(s) past the per-turn cap of %d",
-                 s->dropped, (i32)YOKE_MAX_TOOL_CALLS);
+        agent_log(AGENT_LOG_WARN, "dropped %d tool call(s) past the per-turn cap of %d",
+                 s->dropped, (i32)AGENT_MAX_TOOL_CALLS);
     /* A turn that said nothing because every event was unreadable is an error
      * rather than an empty reply, which would otherwise reach the transcript
      * as silence. */
     if (s->bad_events && !s->text.n && !s->count && !s->reason_bytes) {
-        snprintf(err, err_cap, "the provider sent %zu event(s) yoke could not "
+        snprintf(err, err_cap, "the provider sent %zu event(s) arqan could not "
                  "read", s->bad_events);
         return -1;
     }
