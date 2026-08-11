@@ -40,6 +40,31 @@ def test_compact_asks_for_a_checkpoint_over_the_whole_conversation(ctx):
     assert "context checkpoint" in req[-1]["content"], req[-1]
 
 
+def test_compaction_prompt_ships_headings_not_authoring_notes(ctx):
+    """The optional sections are described by a rule, not by "(if relevant)"."""
+    s = one_turn(ctx)
+
+    ctx.scenario("text=##+Goal\\nShip+the+cat")
+    s.submit("/compact")
+    s.wait_text("compacted: a new session continues")
+
+    prompt = ctx.mock.requests[-1]["messages"][0]["content"]
+    assert "(if relevant)" not in prompt, prompt
+    for heading in (
+        "## Goal",
+        "## Constraints & Preferences",
+        "### Done",
+        "### In Progress",
+        "### Blocked",
+        "## Key Decisions",
+        "## Next Steps",
+        "## Critical Context",
+    ):
+        assert f"{heading}\n" in prompt, (heading, prompt)
+    assert "is optional" in prompt, prompt
+    assert "leave it out entirely, heading included" in prompt, prompt
+
+
 def test_compaction_starts_a_new_session_holding_the_summary(ctx):
     """The summary is the first message of the conversation that follows."""
     s = one_turn(ctx)

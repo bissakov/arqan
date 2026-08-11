@@ -82,7 +82,9 @@ static const char PROMPT_PLAN_BUILTIN[] =
     "Current working directory: {cwd}\n";
 
 /* /compact stands or falls on the summary being readable by the session that
- * continues from it, so the format is stated rather than suggested. */
+ * continues from it, so the format is stated rather than suggested. A section
+ * with nothing to record is dropped whole: an empty heading reads to the next
+ * session as a question that was asked and left unanswered. */
 static const char PROMPT_COMPACT_BUILTIN[] =
     "You summarize a conversation. Create a structured context checkpoint "
     "summary that another assistant will use to continue the work.\n"
@@ -98,24 +100,30 @@ static const char PROMPT_COMPACT_BUILTIN[] =
     "- [Or \"(none)\" if none were mentioned]\n"
     "\n"
     "## Progress\n"
-    "### Done (if relevant)\n"
+    "### Done\n"
     "- [x] [Completed tasks/changes]\n"
     "\n"
-    "### In Progress (if relevant)\n"
+    "### In Progress\n"
     "- [ ] [Current work]\n"
     "\n"
-    "### Blocked (if relevant)\n"
-    "- [Issues preventing progress, if any]\n"
+    "### Blocked\n"
+    "- [Issues preventing progress]\n"
     "\n"
-    "## Key Decisions (if relevant)\n"
+    "## Key Decisions\n"
     "- **[Decision]**: [Brief rationale]\n"
     "\n"
-    "## Next Steps (if relevant)\n"
+    "## Next Steps\n"
     "1. [Ordered list of what should happen next]\n"
     "\n"
-    "## Critical Context (if relevant)\n"
+    "## Critical Context\n"
     "- [Any data, examples, or references needed to continue]\n"
-    "- [Or \"(none)\" if not applicable]\n"
+    "\n"
+    "Always write the Goal and Constraints & Preferences sections. Every "
+    "other section and subsection is optional: write one only when this "
+    "session has something to record under it, and otherwise leave it out "
+    "entirely, heading included. Never write a heading with a placeholder, "
+    "\"(none)\" or \"n/a\" under it. Keep whichever sections you write in the "
+    "order above.\n"
     "\n"
     "Keep each section concise. Preserve exact file paths, function names, "
     "and error messages. Write the summary and nothing else: no preamble, no "
