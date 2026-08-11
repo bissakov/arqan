@@ -203,3 +203,18 @@ def test_the_shell_run_is_a_text_block(ctx):
     text = first["content"][0]["text"]
     assert text.startswith("!echo hello-from-shell"), text
     assert "hello-from-shell" in text, text
+
+
+def test_malformed_tool_arguments_keep_the_request_valid(ctx):
+    """A call whose arguments are not JSON must not corrupt every later body."""
+    bad = '{"path":"notes.txt",,"limit":3}'
+    ctx.scenario("tool=read:" + bad + ",final_text=recovered")
+    s = anth(ctx)
+    s.submit("read the notes")
+    s.wait_text("recovered")
+    s.wait_turn_done()
+    messages = ctx.mock.requests[-1]["messages"]
+    use = next(b for b in messages[1]["content"] if b["type"] == "tool_use")
+    assert use["input"] == {"invalid_arguments": bad}, use
+    assert any("bad args json" in r for r in ctx.mock.tool_results()), \
+        ctx.mock.tool_results()

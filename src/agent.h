@@ -859,8 +859,9 @@ void    conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg);
 /* The same conversation as Anthropic messages: content blocks rather than
  * flat text, preserved thinking blocks before their assistant content, tool
  * results carried by the user, and consecutive slots of one role merged into
- * a single message. The system prompt is written by the caller and skipped. */
-void    conv_write_json_anthropic(Buf *b, const Conv *c);
+ * a single message. The system prompt is written by the caller and skipped.
+ * `scratch` holds the parse used to validate stored tool-call arguments. */
+void    conv_write_json_anthropic(Buf *b, Arena *scratch, const Conv *c);
 
 /* ---- sessions ------------------------------------------------------------
  * The conversation as it happened, one JSON object per line under

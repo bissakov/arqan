@@ -229,8 +229,23 @@ static void anth_write_cache(Buf *b, b8 cache) {
         buf_puts(b, STR(",\"cache_control\":{\"type\":\"ephemeral\"}"));
 }
 
-static void anth_write_block(Buf *b, const Conv *c, size_t i, size_t recent,
-                             b8 cache) {
+/* The arguments as the model wrote them, when they are an object. A model can
+ * emit malformed JSON, and the local call then fails with a tool_result that
+ * says so; splicing that text into "input" would instead make every later
+ * request of the session unparseable, so it goes out as a string the model
+ * can see it wrote. */
+static void anth_write_input(Buf *b, Arena *scratch, Str raw) {
+    Str args = str_trim(raw);
+    if (!args.n) { buf_puts(b, STR("{}")); return; }
+    JVal *v = json_parse(scratch, args);
+    if (v && v->type == J_OBJ) { buf_put(b, args.p, args.n); return; }
+    buf_puts(b, STR("{\"invalid_arguments\":"));
+    buf_json_str(b, args);
+    buf_putc(b, '}');
+}
+
+static void anth_write_block(Buf *b, Arena *scratch, const Conv *c, size_t i,
+                             size_t recent, b8 cache) {
     if (conv_is_shell(c, i)) {
         buf_puts(b, STR("{\"type\":\"text\",\"text\":\"!"));
         buf_json_chars(b, c->text[i]);
@@ -256,11 +271,7 @@ static void anth_write_block(Buf *b, const Conv *c, size_t i, size_t recent,
         buf_puts(b, STR(",\"name\":"));
         buf_json_str(b, c->tool_name[i]);
         buf_puts(b, STR(",\"input\":"));
-        /* The arguments as the model wrote them. A call that carried none is
-         * still an object here, since the field is not optional. */
-        Str args = str_trim(c->text[i]);
-        if (args.n && args.p[0] == '{') buf_put(b, args.p, args.n);
-        else buf_puts(b, STR("{}"));
+        anth_write_input(b, scratch, c->text[i]);
         buf_putc(b, '}');
         return;
     }
@@ -270,7 +281,7 @@ static void anth_write_block(Buf *b, const Conv *c, size_t i, size_t recent,
     buf_putc(b, '}');
 }
 
-void conv_write_json_anthropic(Buf *b, const Conv *c) {
+void conv_write_json_anthropic(Buf *b, Arena *scratch, const Conv *c) {
     size_t recent = conv_recent_start(c, AGENT_ELIDE_TURNS);
     size_t cache_at = CONV_NONE;
     for (size_t j = c->n; j-- > 0;) {
@@ -295,7 +306,7 @@ void conv_write_json_anthropic(Buf *b, const Conv *c) {
             if (!anth_has_plain_block(c, i)) continue;
             if (!first_block) buf_putc(b, ',');
             first_block = false;
-            anth_write_block(b, c, i, recent, i == cache_at);
+            anth_write_block(b, scratch, c, i, recent, i == cache_at);
         }
         buf_puts(b, STR("]}"));
     }
@@ -818,7 +829,7 @@ static b8 build_request(Buf *b, const Provider *p, char *err, size_t err_cap) {
         }
     }
     buf_puts(b, STR(",\"messages\":"));
-    if (anth) conv_write_json_anthropic(b, p->conv);
+    if (anth) conv_write_json_anthropic(b, p->scratch, p->conv);
     else conv_write_json(b, p->conv, p->tools);
     if (p->tools && p->tools->n) {
         buf_puts(b, STR(",\"tools\":"));
