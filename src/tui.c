@@ -2451,6 +2451,9 @@ static void tui_log_sink(i32 level, Str msg, void *ud) {
     tui_printf("\n[%s: %.*s]\n", tags[level], (i32)msg.n, msg.p);
 }
 
+/* The one thing the compiler cannot see; defined with the tables below. */
+static void keys_selfcheck(void);
+
 void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
                size_t tool_count, b8 show_ignored, b8 justify,
                u64 status_fields, AgentMode mode, b8 plain) {
@@ -2458,6 +2461,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
     /* The control block alone: g_bulk is addressed through the counters this
      * clears, so its bytes are already unreachable. */
     memset(&g_tui, 0, sizeof g_tui);
+    keys_selfcheck();
     for (size_t i = 0; i < TUI_STATUS_N; i++)
         g_tui.status_visible[i] = (status_fields & ((u64)1 << i)) != 0;
     g_tui.find_cur = SIZE_MAX;
@@ -3282,6 +3286,43 @@ enum {
 /* Coordinates of the mouse key just returned by read_escape (1-based). */
 static i32 g_mouse_row, g_mouse_col;
 
+/* ---- keybindings ---------------------------------------------------------
+ * Every key the UI answers is a row of one context's table. A context is one
+ * layer of the input chain: the search box, an open screen, the composer, and
+ * the line editor the composer and a question share.
+ *
+ * A key is bound at most once per context, and the compiler enforces it: the
+ * tables expand into a `switch`, so a second row for the same key in one
+ * table is a duplicate case value and the build fails naming both sites.
+ * Where one key means two things, the choice is a branch inside its single
+ * row and turns on state; it is never a second binding placed earlier in a
+ * chain, which is what used to make the loser silent dead code.
+ *
+ * Contexts are layered, and the outer one is tried first: the composer's
+ * table runs before the shared editor's, so a key in both is an override and
+ * not a duplicate. Only one context owns the keyboard at a time, so the same
+ * byte meaning different things in two of them is intended, and the page
+ * `/keys` renders it under both.
+ *
+ * A row is `X(key, label, help, body)`. `key` is a byte or a KEY_ code,
+ * `body` the statements that run, and `label` names the key on the page; an
+ * empty label hides the row, which is how an alias nobody types (Ctrl-J for
+ * Enter, Ctrl-H for Backspace) stays bound without a line of its own.
+ *
+ * KEY_PASTE is deliberately unbound. read_escape consumes the bracketed
+ * paste markers and sets `g_tui.pasting` as it goes, so every context reads
+ * the same paste state without binding the key itself.
+ */
+
+/* The two expansions of a table: the dispatch, and the page that lists it. */
+#define KEY_CASE(key, label, help, ...) case key: { __VA_ARGS__ } break;
+#define KEY_DOC(key, label, help, ...)  { label, help },
+
+/* One listed binding. `key` is empty for a row the page hides. */
+typedef struct { const char *key; const char *help; } KeyRow;
+/* One layer of the input chain, as the page groups it. */
+typedef struct { const char *name; const KeyRow *rows; size_t n; } KeyContext;
+
 static i32 read_escape(void) {
     i32 first = rbyte_soon();
     if (first < 0) return KEY_NONE;
@@ -4036,6 +4077,89 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
     return true;
 }
 
+/* The list narrowed to what the query now says, and the box that shows it. */
+static b8 pick_requery(void) {
+    b8 settings = g_pick.kind == PICK_SETTINGS;
+    Str query = { g_pick.query, g_pick.query_n };
+    pick_filter(query, settings);
+    pick_search_row(query, settings);
+    return true;
+}
+
+/* Anything the screen does not bind is a query, on a screen that offers
+ * search, and nothing at all on one that does not. */
+static b8 pick_typed(i32 c) {
+    if (!g_pick.search) { repaint(); return true; }
+    b8 printable = (c >= 0x20 && c < 0x7f) || c >= 0x80;
+    if (!printable || g_pick.query_n + 1 >= sizeof g_pick.query) return true;
+    g_pick.query[g_pick.query_n++] = (char)c;
+    return pick_requery();
+}
+
+static b8 pick_erase(void) {
+    if (!g_pick.search) { repaint(); return true; }
+    if (g_pick.query_n)
+        g_pick.query_n = prev_glyph(g_pick.query, g_pick.query_n);
+    return pick_requery();
+}
+
+static b8 pick_clear(void) {
+    if (!g_pick.search) { repaint(); return true; }
+    g_pick.query_n = 0;
+    return pick_requery();
+}
+
+/* Move the selected settings row, forward for a positive delta. */
+static b8 pick_act(const TuiSettings *set, i32 delta) {
+    if (!g_tui.comp_n) return true;
+    pick_settings_act(set, (Str){ g_pick.query, g_pick.query_n }, delta);
+    repaint();
+    return true;
+}
+
+/* Enter is the key a reader reaches for, so on a settings row it does what
+ * Space does rather than closing the screen, and on a read-only page there
+ * is nothing to choose and it closes. */
+static b8 pick_enter(const TuiSettings *set) {
+    if (g_pick.kind == PICK_INFO) return false;
+    if (!g_tui.comp_n) return true;
+    if (g_pick.kind == PICK_SETTINGS) return pick_act(set, 1);
+    g_pick.out = g_tui.comp_idx[g_tui.comp_sel];
+    g_pick.chosen = true;
+    return false;
+}
+
+/* An open screen: the completion popup over a picker, the settings rows and
+ * a read-only page. It owns the keyboard while it is up, so the composer
+ * under it never sees a byte and binds none of these. */
+#define PICK_KEYS(X)                                                          \
+    X(0x0d, "Enter",     "Choose the row, or act on it",                      \
+                                              return pick_enter(set);)        \
+    X(0x0a, "",          "",                  return pick_enter(set);)        \
+    X(0x03, "Ctrl-C",    "Close without choosing",     return false;)         \
+    X(0x04, "",          "",                           return false;)         \
+    X(' ',  "Space",     "Act on the settings row",                           \
+                        if (!settings) return pick_typed(c);                  \
+                        return pick_act(set, 1);)                             \
+    X(0x0e, "Ctrl-N",    "Next row",          completion_move(1);)            \
+    X(0x10, "Ctrl-P",    "Previous row",      completion_move(-1);)           \
+    X(0x7f, "Backspace", "Delete the query glyph before",                     \
+                                              return pick_erase();)           \
+    X(0x08, "",          "",                  return pick_erase();)           \
+    X(0x15, "Ctrl-U",    "Clear the query",   return pick_clear();)
+
+#define PICK_ESCAPE_KEYS(X)                                                   \
+    X(KEY_NONE,  "Esc",   "Close without choosing",    return false;)         \
+    X(KEY_DOWN,  "Down",  "Next row",         completion_move(1);)            \
+    X(KEY_UP,    "Up",    "Previous row",     completion_move(-1);)           \
+    X(KEY_RIGHT, "Right", "Act on the settings row forwards",                 \
+                        if (settings) return pick_act(set, 1);)               \
+    X(KEY_LEFT,  "Left",  "Act on the settings row backwards",                \
+                        if (settings) return pick_act(set, -1);)
+
+static const KeyRow k_pick_rows[]        = { PICK_KEYS(KEY_DOC) };
+static const KeyRow k_pick_escape_rows[] = { PICK_ESCAPE_KEYS(KEY_DOC) };
+
 /* One input byte applied to the open screen. False once it has closed, and
  * the caller answers with pick_close. Painting happens here, so a caller
  * that is only forwarding bytes never has to know which key changed what. */
@@ -4043,65 +4167,31 @@ static b8 pick_feed(i32 c) {
     if (!g_pick.active) return false;
     b8 settings = g_pick.kind == PICK_SETTINGS;
     const TuiSettings *set = g_pick.has_set ? &g_pick.set : NULL;
-    Str query = { g_pick.query, g_pick.query_n };
 
     if (c == -3) { repaint(); return true; }
     /* -2 is a signal that is not a resize, so SIGINT cancels here just as
      * it abandons a draft at the prompt. */
-    /* Pasted text is a query rather than keys, so nothing in it picks,
-     * acts on a row or cancels. */
     if (c < 0) return false;
-    if ((c == 0x03 || c == 0x04) && !g_tui.pasting) return false;
-    if (g_tui.pasting && (c == '\r' || c == '\n')) return true;
-    i32 act = 0;   /* the direction a settings row was asked to move */
-    if ((c == '\r' || c == '\n') && !g_tui.pasting) {
-        if (g_pick.kind == PICK_INFO) return false;
-        if (!g_tui.comp_n) return true;
-        /* Enter is the key a reader reaches for, so on a settings row it
-         * does what Space does rather than closing the screen. */
-        if (!settings) {
-            g_pick.out = g_tui.comp_idx[g_tui.comp_sel];
-            g_pick.chosen = true;
-            return false;
-        }
-        act = 1;
-    } else if (c == ' ' && settings && !g_tui.pasting) {
-        if (!g_tui.comp_n) return true;
-        act = 1;
+    /* Pasted text is a query rather than keys, so nothing in it picks, acts
+     * on a row or cancels. The escape sequence still runs: the paste-end
+     * marker is one, and read_escape is what retires the paste state. */
+    if (g_tui.pasting && c != 0x1b) {
+        if (c == '\r' || c == '\n') return true;
+        return pick_typed(c);
     }
-    if (act) {
-        pick_settings_act(set, query, act);
+    if (c == 0x1b) {
+        i32 key = read_escape();
+        switch (key) {
+            PICK_ESCAPE_KEYS(KEY_CASE)
+            /* The transcript moves, not the list. */
+            default: scroll_key(key); break;
+        }
         repaint();
         return true;
     }
-    if (c == 0x0e) completion_move(1);
-    else if (c == 0x10) completion_move(-1);
-    else if (c == 0x1b) {
-        i32 key = read_escape();
-        if (key == KEY_DOWN) completion_move(1);
-        else if (key == KEY_UP) completion_move(-1);
-        else if (settings && g_tui.comp_n
-                 && (key == KEY_LEFT || key == KEY_RIGHT)) {
-            pick_settings_act(set, query, key == KEY_LEFT ? -1 : 1);
-        }
-        else if (scroll_key(key)) { /* the transcript moves, not the list */ }
-        else if (key == KEY_NONE) return false;       /* bare Esc cancels */
-    } else if (g_pick.search) {
-        if (c == 0x7f || c == 0x08) {
-            if (g_pick.query_n)
-                g_pick.query_n = prev_glyph(g_pick.query, g_pick.query_n);
-        } else if (c == 0x15) {
-            g_pick.query_n = 0;
-        } else if (((c >= 0x20 && c < 0x7f) || c >= 0x80)
-                   && g_pick.query_n + 1 < sizeof g_pick.query) {
-            g_pick.query[g_pick.query_n++] = (char)c;
-        } else {
-            return true;
-        }
-        query = (Str){ g_pick.query, g_pick.query_n };
-        pick_filter(query, settings);
-        pick_search_row(query, settings);
-        return true;
+    switch (c) {
+        PICK_KEYS(KEY_CASE)
+        default: return pick_typed(c);
     }
     repaint();
     return true;
@@ -4245,67 +4335,89 @@ static void edit_insert(char c, char *buf, size_t *n, size_t *cur, size_t cap) {
     buf[*n] = '\0';
 }
 
+/* On an empty tail, eat the line break itself, so repeated Ctrl-K walks down
+ * the composer the way readline does. */
+static void edit_kill_line(char *buf, size_t *n, size_t *cur) {
+    size_t end = line_end(buf, *n, *cur);
+    if (end == *cur && end < *n) end++;
+    kill_range(buf, n, cur, *cur, end);
+}
+
+/* Ctrl-Y puts back what the last kill took. */
+static void edit_yank(char *buf, size_t *n, size_t *cur, size_t cap) {
+    size_t k = g_tui.kill_n;
+    if (!k || *n + k >= cap) return;
+    memmove(buf + *cur + k, buf + *cur, *n - *cur);
+    memcpy(buf + *cur, g_bulk.kill, k);
+    *cur += k; *n += k; buf[*n] = '\0';
+}
+
+/* The line editor the composer and a question share: the readline keys, and
+ * the innermost layer of every chain that reaches it. */
+#define EDIT_KEYS(X)                                                          \
+    X(0x01, "Ctrl-A",    "Start of line",   *cur = line_start(buf, *cur);)    \
+    X(0x02, "Ctrl-B",    "Back one glyph",  *cur = prev_glyph(buf, *cur);)    \
+    X(0x04, "Ctrl-D",    "Delete forward",  edit_delete(buf, n, cur);)        \
+    X(0x05, "Ctrl-E",    "End of line",     *cur = line_end(buf, *n, *cur);)  \
+    X(0x06, "Ctrl-F",    "Forward one glyph",                                 \
+                                    *cur = next_glyph(buf, *n, *cur);)        \
+    X(0x7f, "Backspace", "Delete back",     edit_backspace(buf, n, cur);)     \
+    X(0x08, "",          "",                edit_backspace(buf, n, cur);)     \
+    X(0x0b, "Ctrl-K",    "Kill to end of line",  edit_kill_line(buf, n, cur);)\
+    X(0x15, "Ctrl-U",    "Kill to start of line",                             \
+               kill_range(buf, n, cur, line_start(buf, *cur), *cur);)         \
+    X(0x17, "Ctrl-W",    "Kill the word before",                              \
+               kill_range(buf, n, cur, prev_word(buf, *cur), *cur);)          \
+    X(0x19, "Ctrl-Y",    "Put back the last kill",                            \
+                                            edit_yank(buf, n, cur, cap);)
+
+#define EDIT_ESCAPE_KEYS(X)                                                   \
+    X(KEY_LEFT,      "Left",       "Back one glyph",                          \
+                                        *cur = prev_glyph(buf, *cur);)        \
+    X(KEY_RIGHT,     "Right",      "Forward one glyph",                       \
+                                        *cur = next_glyph(buf, *n, *cur);)    \
+    X(KEY_HOME,      "Home",       "Start of line",                           \
+                                        *cur = line_start(buf, *cur);)        \
+    X(KEY_END,       "End",        "End of line",                             \
+                                        *cur = line_end(buf, *n, *cur);)      \
+    X(KEY_PREV_WORD, "Ctrl-Left",  "Back one word",                           \
+                                        *cur = prev_word(buf, *cur);)         \
+    X(KEY_NEXT_WORD, "Ctrl-Right", "Forward one word",                        \
+                                        *cur = next_word(buf, *n, *cur);)     \
+    X(KEY_DELETE,    "Delete",     "Delete forward",                          \
+                                        edit_delete(buf, n, cur);)            \
+    X(KEY_KILL_WORD, "Alt-D",      "Kill the word after",                     \
+               kill_range(buf, n, cur, *cur, next_word(buf, *n, *cur));)      \
+    X(KEY_KILL_PREV_WORD, "Alt-Backspace", "Kill the word before",            \
+               kill_range(buf, n, cur, prev_word(buf, *cur), *cur);)
+
+static const KeyRow k_edit_rows[]        = { EDIT_KEYS(KEY_DOC) };
+static const KeyRow k_edit_escape_rows[] = { EDIT_ESCAPE_KEYS(KEY_DOC) };
+
 /* One plain editing byte applied to `buf`. The composer and a question share
  * this, so both answer the same readline keys. Returns whether the byte was
  * an editing key; anything else is the caller's to interpret. */
 static b8 edit_byte(i32 c, char *buf, size_t *n, size_t *cur, size_t cap) {
     switch (c) {
-        case 0x01: *cur = line_start(buf, *cur); return true;
-        case 0x02: *cur = prev_glyph(buf, *cur); return true;
-        case 0x04: edit_delete(buf, n, cur); return true;
-        case 0x05: *cur = line_end(buf, *n, *cur); return true;
-        case 0x06: *cur = next_glyph(buf, *n, *cur); return true;
-        case 0x08: case 0x7f: edit_backspace(buf, n, cur); return true;
-        case 0x0b: {
-            /* On an empty tail, eat the line break itself, so repeated Ctrl-K
-             * walks down the composer the way readline does. */
-            size_t end = line_end(buf, *n, *cur);
-            if (end == *cur && end < *n) end++;
-            kill_range(buf, n, cur, *cur, end);
-            return true;
-        }
-        case 0x15: kill_range(buf, n, cur, line_start(buf, *cur), *cur);
-                   return true;
-        case 0x17: kill_range(buf, n, cur, prev_word(buf, *cur), *cur);
-                   return true;
-        case 0x19: {
-            /* Ctrl-Y puts back what the last kill took. */
-            size_t k = g_tui.kill_n;
-            if (k && *n + k < cap) {
-                memmove(buf + *cur + k, buf + *cur, *n - *cur);
-                memcpy(buf + *cur, g_bulk.kill, k);
-                *cur += k; *n += k; buf[*n] = '\0';
+        EDIT_KEYS(KEY_CASE)
+        default:
+            if ((c >= 0x20 && c < 0x7f) || c >= 0x80) {
+                edit_insert((char)c, buf, n, cur, cap);
+                return true;
             }
-            return true;
-        }
-        default: break;
+            return false;
     }
-    if ((c >= 0x20 && c < 0x7f) || c >= 0x80) {
-        edit_insert((char)c, buf, n, cur, cap);
-        return true;
-    }
-    return false;
+    return true;
 }
 
 /* The escape-sequence half of `edit_byte`: motion and the kills a terminal
  * sends as a sequence rather than a control byte. */
 static b8 edit_escape(i32 key, char *buf, size_t *n, size_t *cur) {
     switch (key) {
-        case KEY_LEFT:      *cur = prev_glyph(buf, *cur); return true;
-        case KEY_RIGHT:     *cur = next_glyph(buf, *n, *cur); return true;
-        case KEY_HOME:      *cur = line_start(buf, *cur); return true;
-        case KEY_END:       *cur = line_end(buf, *n, *cur); return true;
-        case KEY_PREV_WORD: *cur = prev_word(buf, *cur); return true;
-        case KEY_NEXT_WORD: *cur = next_word(buf, *n, *cur); return true;
-        case KEY_DELETE:    edit_delete(buf, n, cur); return true;
-        case KEY_KILL_WORD:
-            kill_range(buf, n, cur, *cur, next_word(buf, *n, *cur));
-            return true;
-        case KEY_KILL_PREV_WORD:
-            kill_range(buf, n, cur, prev_word(buf, *cur), *cur);
-            return true;
+        EDIT_ESCAPE_KEYS(KEY_CASE)
         default: return false;
     }
+    return true;
 }
 
 /* A question the composer is borrowed for. The editor is deliberately not the
@@ -4500,41 +4612,252 @@ static void find_type(i32 c) {
     find_requery();
 }
 
+static void find_erase(void) {
+    if (!g_tui.find_q_n) return;
+    g_tui.find_q_n = prev_glyph(g_tui.find_q, g_tui.find_q_n);
+    find_requery();
+}
+
+static void find_clear(void) {
+    g_tui.find_q_n = 0;
+    find_requery();
+}
+
+static void find_kill_word(void) {
+    g_tui.find_q_n = prev_word(g_tui.find_q, g_tui.find_q_n);
+    find_requery();
+}
+
+/* The re-render changes every offset, which the next refresh sees as a new
+ * epoch and answers by counting again. Unset while no caller offers it, and
+ * then the key does nothing rather than reaching another binding. */
+static void find_expand_now(void) {
+    if (g_tui.find_expand) g_tui.find_expand(g_tui.find_expand_ud);
+}
+
+#define FIND_KEYS(X)                                                          \
+    X(0x0d, "Enter",     "Previous match",             find_step(-1);)        \
+    X(0x0a, "",          "",                           find_step(-1);)        \
+    X(0x10, "Ctrl-P",    "Previous match",             find_step(-1);)        \
+    X(0x0e, "Ctrl-N",    "Next match",                 find_step(1);)         \
+    X(0x07, "Ctrl-G",    "Close the box",              find_close();)         \
+    X(0x05, "Ctrl-E",    "Show a capped tool output in full",                 \
+                                                       find_expand_now();)    \
+    X(0x0c, "Ctrl-L",    "Repaint the screen",  g_tui.frame_valid = false;)   \
+    X(0x7f, "Backspace", "Delete the glyph before",     find_erase();)        \
+    X(0x08, "",          "",                            find_erase();)        \
+    X(0x15, "Ctrl-U",    "Clear the query",             find_clear();)        \
+    X(0x17, "Ctrl-W",    "Delete the word before",      find_kill_word();)
+
+#define FIND_ESCAPE_KEYS(X)                                                   \
+    X(KEY_UP,   "Up",   "Previous match",   find_step(-1);)                   \
+    X(KEY_DOWN, "Down", "Next match",       find_step(1);)                    \
+    X(KEY_NONE, "Esc",  "Close the box",    find_close();)
+
+static const KeyRow k_find_rows[]        = { FIND_KEYS(KEY_DOC) };
+static const KeyRow k_find_escape_rows[] = { FIND_ESCAPE_KEYS(KEY_DOC) };
+
 static void find_key(i32 c) {
     if (g_tui.pasting && c != 0x1b) {
         if ((c >= 0x20 && c < 0x7f) || c >= 0x80) find_type(c);
         repaint();
         return;
     }
-    if (c == '\r' || c == '\n' || c == 0x10) find_step(-1);
-    else if (c == 0x0e) find_step(1);
-    else if (c == 0x07) find_close();
-    else if (c == 0x05 && g_tui.find_expand)
-        /* The re-render changes every offset, which the next refresh sees as
-         * a new epoch and answers by counting again. */
-        g_tui.find_expand(g_tui.find_expand_ud);
-    else if (c == 0x0c) g_tui.frame_valid = false;
-    else if (c == 0x7f || c == 0x08) {
-        if (g_tui.find_q_n) {
-            g_tui.find_q_n = prev_glyph(g_tui.find_q, g_tui.find_q_n);
-            find_requery();
-        }
-    } else if (c == 0x15) {
-        g_tui.find_q_n = 0;
-        find_requery();
-    } else if (c == 0x17) {
-        g_tui.find_q_n = prev_word(g_tui.find_q, g_tui.find_q_n);
-        find_requery();
-    } else if (c == 0x1b) {
+    if (c == 0x1b) {
         i32 key = read_escape();
-        if (key == KEY_UP) find_step(-1);
-        else if (key == KEY_DOWN) find_step(1);
-        else if (scroll_key(key)) { /* the viewport moves, the query stays */ }
-        else if (key == KEY_NONE) find_close();
-    } else if ((c >= 0x20 && c < 0x7f) || c >= 0x80) {
-        find_type(c);
+        switch (key) {
+            FIND_ESCAPE_KEYS(KEY_CASE)
+            /* The viewport moves, the query stays. */
+            default: scroll_key(key); break;
+        }
+        repaint();
+        return;
+    }
+    switch (c) {
+        FIND_KEYS(KEY_CASE)
+        default:
+            if ((c >= 0x20 && c < 0x7f) || c >= 0x80) find_type(c);
+            break;
     }
     repaint();
+}
+
+/* What one composer key acts on. The bindings say what they did through the
+ * flags rather than repeating the bookkeeping, and the trailer in editor_key
+ * reads them back once. `done` is an early return: the trailer is skipped,
+ * which is what a key that submits or exits wants. */
+typedef struct {
+    char    *buf;
+    size_t   n, cur, cap;
+    EdAction action;
+    b8       done;
+    /* Anything but the mouse itself invalidates a highlight, as a keystroke
+     * drops the terminal's own selection. */
+    b8       keep_sel;
+    /* A recall is not typing: it must not reopen a dismissed popup. */
+    b8       recalled;
+    /* A vertical move keeps the column a run of them aims for, and only the
+     * keys that do not edit keep the history-recall mode Up/Down enter. */
+    b8       vertical, keep_nav;
+    /* Only a second Esc rewinds, so the arming is consumed before dispatch. */
+    b8       was_armed;
+} Ed;
+
+#define ED_RETURN(e, a) do { (e)->action = (a); (e)->done = true; } while (0)
+
+/* Take the highlighted entry. True when the popup closed with it, which a
+ * command does and a path does not: a path is text in a message rather than
+ * a command, so accepting one leaves the composer where it is. */
+static b8 completion_take(void) {
+    b8 path = g_tui.path_mode;
+    if (completion_would_change()) completion_accept();
+    if (path) return false;
+    g_tui.comp_n = 0;
+    g_tui.comp_sel = 0;
+    g_tui.comp_dismissed = true;
+    return true;
+}
+
+/* Enter picks from the popup and runs what it picked, so choosing an entry
+ * never costs a second Enter. */
+static void ed_enter(Ed *e) {
+    sel_clear();
+    if (!g_tui.comp_n) { ED_RETURN(e, ED_SUBMIT); return; }
+    ED_RETURN(e, completion_take() ? ED_SUBMIT : ED_EDIT);
+}
+
+/* Tab completes the highlighted entry and stays in the composer. With no
+ * popup there is nothing to complete and the byte is not text, so it falls
+ * through to the trailer having changed nothing. */
+static void ed_tab(Ed *e) {
+    if (!g_tui.comp_n) return;
+    sel_clear();
+    (void)completion_take();
+    ED_RETURN(e, ED_EDIT);
+}
+
+/* Down and Up, under either name. With the popup open they walk it and stop
+ * there: the rebuild the trailer would run puts the highlight back on a name
+ * typed out in full, which is how Down used to refuse to leave an exact
+ * match while Ctrl-N moved. With the popup closed they walk the draft, and
+ * then the history behind it. */
+static void ed_vertical(Ed *e, i32 dir) {
+    if (g_tui.comp_n) {
+        sel_clear();
+        completion_move(dir);
+        ED_RETURN(e, ED_EDIT);
+        return;
+    }
+    /* History keeps the keys until the draft is edited, so a recalled entry
+     * is browsed rather than walked. */
+    e->vertical = true;
+    e->keep_nav = true;
+    e->recalled = composer_vertical(dir, e->buf, &e->n, &e->cur);
+}
+
+/* Ctrl-D is the editor's forward delete everywhere but on an empty composer,
+ * where there is nothing to delete and it is the way out. */
+static void ed_delete_or_eof(Ed *e) {
+    if (!e->n) { ED_RETURN(e, ED_EOF); return; }
+    edit_delete(e->buf, &e->n, &e->cur);
+}
+
+static void ed_mouse_up(Ed *e) {
+    /* A click, not a drag: a range being selected is a copy, and the zone it
+     * starts in is not what the pointer meant. */
+    b8 hit = !g_tui.sel_active && g_tui.click_down
+          && g_tui.click_down == zone_at_cell(g_mouse_row, g_mouse_col);
+    if (hit) { g_tui.click_id = g_tui.click_down; e->action = ED_EXPAND; }
+    g_tui.click_down = 0;
+    sel_finish();
+    e->keep_sel = true;
+}
+
+/* Esc dismisses whatever is on top, one press at a time: the popup, then the
+ * notice above it, then a turn in flight. With nothing left to dismiss it
+ * arms a rewind, which only the next Esc takes: going back a turn is
+ * destructive enough to ask twice. */
+static void ed_escape(Ed *e) {
+    if (g_tui.comp_n) { g_tui.comp_dismissed = true; return; }
+    if (e->was_armed) { e->action = ED_REWIND; return; }
+    if (g_tui.notice_n) { g_tui.notice_n = 0; return; }
+    /* A turn running and nothing to dismiss: Esc cancels it the way Ctrl-C
+     * does, without touching the composed text. */
+    if (g_tui.busy && g_tui.interrupt) { *g_tui.interrupt = 1; return; }
+    g_tui.esc_armed = true;
+    tui_notice(STR("Press Escape again to edit previous message"));
+}
+
+static void ed_newline(Ed *e) {
+    if (e->n + 1 >= e->cap) return;
+    memmove(e->buf + e->cur + 1, e->buf + e->cur, e->n - e->cur);
+    e->buf[e->cur++] = '\n';
+    e->n++;
+    e->buf[e->n] = '\0';
+}
+
+/* The composer. Its rows are tried before the shared editor's, so Ctrl-D
+ * here overrides the editor's plain forward delete rather than duplicating
+ * it. Anything this table does not name reaches edit_byte. */
+#define COMPOSER_KEYS(X)                                                      \
+    X(0x0d, "Enter",  "Send the message, or take the popup entry",            \
+                                                        ed_enter(e);)         \
+    X(0x0a, "",       "",                               ed_enter(e);)         \
+    X('\t', "Tab",    "Complete the popup entry",       ed_tab(e);)           \
+    X(0x0e, "Ctrl-N", "Next entry, or the next draft",  ed_vertical(e, 1);)   \
+    X(0x10, "Ctrl-P", "Previous entry, or the previous draft",                \
+                                                        ed_vertical(e, -1);)  \
+    X(0x04, "Ctrl-D", "Delete forward, or exit on an empty composer",         \
+                                                        ed_delete_or_eof(e);) \
+    X(0x12, "Ctrl-R", "Search the transcript",                                \
+                    tui_find_open(); ED_RETURN(e, ED_EDIT);)                  \
+    X(0x0c, "Ctrl-L", "Repaint the screen",                                   \
+                    /* also repairs a terminal after stray output */          \
+                    g_tui.frame_valid = false;)
+
+#define COMPOSER_ESCAPE_KEYS(X)                                               \
+    X(KEY_NONE,      "Esc",       "Dismiss, or go back a message",            \
+                                                        ed_escape(e);)        \
+    X(KEY_UP,        "Up",        "Previous entry, or the previous draft",    \
+                                                        ed_vertical(e, -1);)  \
+    X(KEY_DOWN,      "Down",      "Next entry, or the next draft",            \
+                                                        ed_vertical(e, 1);)   \
+    X(KEY_NEWLINE,   "Alt-Enter", "Insert a line break", ed_newline(e);)      \
+    X(KEY_SHIFT_TAB, "Shift-Tab", "Switch between Build and Plan mode",       \
+                    /* a command rather than an edit: the draft is left */    \
+                    e->action = ED_MODE;)                                     \
+    X(KEY_MOUSE_DOWN, "Click",    "Start a selection",                        \
+                    sel_begin(g_mouse_row, g_mouse_col);                      \
+                    e->keep_sel = true;                                       \
+                    g_tui.click_down = zone_at_cell(g_mouse_row, g_mouse_col);)\
+    X(KEY_MOUSE_DRAG, "Drag",     "Extend the selection",                     \
+                    sel_extend(g_mouse_row, g_mouse_col);                     \
+                    e->keep_sel = true;)                                      \
+    X(KEY_MOUSE_MOVE, "",         "",                                         \
+                    g_tui.hover_id = zone_at_cell(g_mouse_row, g_mouse_col);  \
+                    e->keep_sel = true; e->vertical = true;                   \
+                    e->keep_nav = true;)                                      \
+    X(KEY_MOUSE_UP,   "",         "",                   ed_mouse_up(e);)
+
+static const KeyRow k_composer_rows[] = { COMPOSER_KEYS(KEY_DOC) };
+static const KeyRow k_composer_escape_rows[] = {
+    COMPOSER_ESCAPE_KEYS(KEY_DOC)
+};
+
+/* The escape half of the composer. Its own rows first, then the two layers
+ * below it: the shared editor's motion and kills, and the viewport keys a
+ * list drawn over the transcript must not cost the reader. */
+static void composer_escape(Ed *e) {
+    i32 key = read_escape();
+    switch (key) {
+        COMPOSER_ESCAPE_KEYS(KEY_CASE)
+        default:
+            if (edit_escape(key, e->buf, &e->n, &e->cur)) break;
+            /* The viewport moved; the draft did not, so neither the goal
+             * column nor a recall in progress is disturbed. */
+            if (scroll_key(key)) { e->vertical = true; e->keep_nav = true; }
+            break;
+    }
 }
 
 /* One input byte applied to the shared composer. The caller decides whether a
@@ -4543,129 +4866,120 @@ static void find_key(i32 c) {
 static EdAction editor_key(i32 c) {
     if (g_tui.find_open) { find_key(c); return ED_EDIT; }
     if (g_tui.pasting && c != 0x1b) { paste_byte(c); return ED_EDIT; }
-    /* Ctrl-R searches what is already on screen: the terminal's own find only
-     * sees the rows the frame is showing. */
-    if (c == 0x12) { tui_find_open(); return ED_EDIT; }
-    char *buf = g_bulk.input;
-    const size_t cap = sizeof g_bulk.input;
-    size_t n = g_tui.input_n, cur = g_tui.input_cur;
-    EdAction action = ED_EDIT;
-    /* Anything but the mouse itself invalidates a highlight, as a keystroke
-     * drops the terminal's own selection. */
-    b8 keep_sel = false;
-    /* A recall is not typing: it must not reopen a dismissed popup. */
-    b8 recalled = false;
-    /* A vertical move keeps the column a run of them aims for, and only the
-     * keys that do not edit keep the history-recall mode Up/Down enter. */
-    b8 vertical = false;
-    b8 keep_nav = false;
-    /* Only a second Esc rewinds, so the arming is consumed here. */
-    b8 was_armed = g_tui.esc_armed;
+
+    Ed ed = {
+        .buf = g_bulk.input,
+        .n = g_tui.input_n,
+        .cur = g_tui.input_cur,
+        .cap = sizeof g_bulk.input,
+        .action = ED_EDIT,
+        .was_armed = g_tui.esc_armed,
+    };
+    Ed *e = &ed;
     g_tui.esc_armed = false;
-    if (was_armed) g_tui.notice_n = 0;
+    if (e->was_armed) g_tui.notice_n = 0;
 
-    size_t before_n = n;
+    size_t before_n = e->n;
 
-    /* Keys are only stolen while the popup is open. Tab completes the
-     * highlighted entry and stays in the composer; Enter picks it and runs
-     * it, so choosing from the popup never costs a second Enter. */
-    if (g_tui.comp_n
-        && (c == '\t' || c == '\r' || c == '\n' || c == 0x0e || c == 0x10)) {
-        sel_clear();
-        if (c == 0x0e || c == 0x10) {
-            completion_move(c == 0x0e ? 1 : -1);
-            return ED_EDIT;
-        }
-        /* A path is text in a message rather than a command, so accepting one
-         * leaves the composer where it is. */
-        b8 path = g_tui.path_mode;
-        if (completion_would_change()) completion_accept();
-        if (path) return ED_EDIT;
-        g_tui.comp_n = 0;
-        g_tui.comp_sel = 0;
-        g_tui.comp_dismissed = true;
-        if (c == '\t') return ED_EDIT;
-        return ED_SUBMIT;
+    if (c == 0x1b) composer_escape(e);
+    else switch (c) {
+        COMPOSER_KEYS(KEY_CASE)
+        default: edit_byte(c, e->buf, &e->n, &e->cur, e->cap); break;
     }
-    if (c == '\r' || c == '\n') { sel_clear(); return ED_SUBMIT; }
-    if (c == 0x04 && n == 0) return ED_EOF;
-    if (c == 0x0e || c == 0x10) {
-        /* Ctrl-N/Ctrl-P are Down/Up: the popup took them above when open. */
-        vertical = true; keep_nav = true;
-        recalled = composer_vertical(c == 0x0e ? 1 : -1, buf, &n, &cur);
-    } else if (c == 0x0c) {
-        /* An explicit repaint also repairs a terminal after stray output. */
-        g_tui.frame_valid = false;
-    } else if (c == 0x1b) {
-        i32 key = read_escape();
-        if (edit_escape(key, buf, &n, &cur)) {
-            /* an editing key, already applied */
-        } else if (scroll_key(key)) {
-            /* The viewport moved; the draft did not, so neither the goal
-             * column nor a recall in progress is disturbed. */
-            vertical = true; keep_nav = true;
-        } else if (key == KEY_MOUSE_DOWN) {
-            sel_begin(g_mouse_row, g_mouse_col); keep_sel = true;
-            g_tui.click_down = zone_at_cell(g_mouse_row, g_mouse_col);
-        } else if (key == KEY_MOUSE_DRAG) {
-            sel_extend(g_mouse_row, g_mouse_col); keep_sel = true;
-        } else if (key == KEY_MOUSE_MOVE) {
-            g_tui.hover_id = zone_at_cell(g_mouse_row, g_mouse_col);
-            keep_sel = true; vertical = true; keep_nav = true;
-        } else if (key == KEY_MOUSE_UP) {
-            /* A click, not a drag: a range being selected is a copy, and the
-             * zone it starts in is not what the pointer meant. */
-            b8 hit = !g_tui.sel_active && g_tui.click_down
-                  && g_tui.click_down == zone_at_cell(g_mouse_row, g_mouse_col);
-            if (hit) { g_tui.click_id = g_tui.click_down; action = ED_EXPAND; }
-            g_tui.click_down = 0;
-            sel_finish(); keep_sel = true;
-        } else if (key == KEY_SHIFT_TAB) {
-            /* A command rather than an edit, so the draft is left alone. */
-            action = ED_MODE;
-        } else if (g_tui.comp_n && (key == KEY_DOWN || key == KEY_UP)) {
-            completion_move(key == KEY_DOWN ? 1 : -1);
-            keep_nav = true;
-        } else if (key == KEY_UP || key == KEY_DOWN) {
-            /* History keeps the keys until the draft is edited, so a
-             * recalled entry is browsed rather than walked. */
-            i32 dir = key == KEY_UP ? -1 : 1;
-            vertical = true; keep_nav = true;
-            recalled = composer_vertical(dir, buf, &n, &cur);
-        } else if (key == KEY_NONE && g_tui.comp_n) {
-            g_tui.comp_dismissed = true;   /* bare Esc closes the popup */
-        } else if (key == KEY_NONE && was_armed) {
-            action = ED_REWIND;
-        } else if (key == KEY_NONE && g_tui.notice_n) {
-            g_tui.notice_n = 0;            /* and then the notice above it */
-        } else if (key == KEY_NONE && g_tui.busy && g_tui.interrupt) {
-            /* Nothing to dismiss and a turn running: Esc cancels it the way
-             * Ctrl-C does, without touching the composed text. */
-            *g_tui.interrupt = 1;
-        } else if (key == KEY_NONE) {
-            /* Going back a turn is destructive enough to ask twice. */
-            g_tui.esc_armed = true;
-            tui_notice(STR("Press Escape again to edit previous message"));
-        } else if (key == KEY_NEWLINE && n + 1 < cap) {
-            memmove(buf + cur + 1, buf + cur, n - cur);
-            buf[cur++] = '\n'; n++; buf[n] = '\0';
-        }
-    } else {
-        edit_byte(c, buf, &n, &cur, cap);
-    }
+    if (e->done) return e->action;
 
-    if (!keep_sel) sel_clear();
+    if (!e->keep_sel) sel_clear();
     /* Editing, or any motion that is not vertical, returns Up and Down to the
      * draft and drops the column a run of them was aiming for. */
-    if (!keep_nav) g_tui.hist_nav = false;
-    if (!vertical) g_tui.goal_col_valid = false;
-    g_tui.input_n = n;
-    g_tui.input_cur = cur;
+    if (!e->keep_nav) g_tui.hist_nav = false;
+    if (!e->vertical) g_tui.goal_col_valid = false;
+    g_tui.input_n = e->n;
+    g_tui.input_cur = e->cur;
     /* Any change to the text reopens a popup an earlier Esc/Tab closed. */
-    if (recalled) g_tui.comp_dismissed = true;
-    else if (n != before_n) g_tui.comp_dismissed = false;
+    if (e->recalled) g_tui.comp_dismissed = true;
+    else if (e->n != before_n) g_tui.comp_dismissed = false;
     completion_refresh();
-    return action;
+    return e->action;
+}
+
+/* ---- the keys page -------------------------------------------------------
+ * The same tables the dispatchers expand, rendered. A context's byte rows and
+ * its escape rows are two switches but one context to the reader: a byte and
+ * a KEY_ code can never collide, so listing them together is still one key
+ * per line.
+ */
+#define KEY_CONTEXTS(X)                                                       \
+    X("[composer]",          k_composer_rows)                                 \
+    X("[composer]",          k_composer_escape_rows)                          \
+    X("[line editing]",      k_edit_rows)                                     \
+    X("[line editing]",      k_edit_escape_rows)                              \
+    X("[transcript search]", k_find_rows)                                     \
+    X("[transcript search]", k_find_escape_rows)                              \
+    X("[lists and screens]", k_pick_rows)                                     \
+    X("[lists and screens]", k_pick_escape_rows)
+
+static const KeyContext k_key_contexts[] = {
+#define X(name, rows) { name, rows, sizeof rows / sizeof rows[0] },
+    KEY_CONTEXTS(X)
+#undef X
+};
+#define KEY_CONTEXT_N (sizeof k_key_contexts / sizeof k_key_contexts[0])
+
+/* Every row plus a heading for each table, which overcounts the tables that
+ * share one. The page has to fit the caller's array, so growing a table past
+ * it is a build failure and not a page that silently stops early. */
+#define X(name, rows) + (sizeof rows / sizeof rows[0]) + 1
+enum { KEY_ROW_MAX = 0 KEY_CONTEXTS(X) };
+#undef X
+_Static_assert(KEY_ROW_MAX <= AGENT_MAX_KEY_ROWS,
+               "the keys page outgrew AGENT_MAX_KEY_ROWS");
+
+/* A duplicate inside one table is a duplicate case value and never gets this
+ * far. What the compiler cannot see is the seam between a context's two
+ * tables: they are separate switches, so the same label in both reaches the
+ * page twice and describes a key that behaves like neither row. Reported
+ * rather than asserted, since a wrong page is a wrong page and not a reason
+ * to refuse to start. */
+static void keys_selfcheck(void) {
+    for (size_t a = 0; a < KEY_CONTEXT_N; a++) {
+        const KeyContext *ka = &k_key_contexts[a];
+        for (size_t i = 0; i < ka->n; i++) {
+            const char *key = ka->rows[i].key;
+            if (!key || !key[0]) continue;
+            for (size_t b = 0; b <= a; b++) {
+                const KeyContext *kb = &k_key_contexts[b];
+                if (strcmp(kb->name, ka->name) != 0) continue;
+                size_t upto = b == a ? i : kb->n;
+                for (size_t j = 0; j < upto; j++)
+                    if (kb->rows[j].key && !strcmp(kb->rows[j].key, key))
+                        agent_log(AGENT_LOG_WARN,
+                                  "keys: %s lists %s twice", ka->name, key);
+            }
+        }
+    }
+}
+
+size_t tui_key_rows(TuiCmd *rows, size_t max) {
+    if (!rows) return 0;
+    size_t n = 0;
+    const char *heading = NULL;
+    for (size_t ctx = 0; ctx < KEY_CONTEXT_N; ctx++) {
+        const KeyContext *k = &k_key_contexts[ctx];
+        /* Consecutive tables under one name are one section, so the byte and
+         * escape halves of a context share a heading. */
+        if (!heading || strcmp(heading, k->name) != 0) {
+            if (n == max) return n;
+            heading = k->name;
+            rows[n++] = (TuiCmd){ str_c(heading), (Str){0} };
+        }
+        for (size_t i = 0; i < k->n; i++) {
+            if (!k->rows[i].key || !k->rows[i].key[0]) continue;
+            if (n == max) return n;
+            rows[n++] = (TuiCmd){ str_c(k->rows[i].key),
+                                  str_c(k->rows[i].help) };
+        }
+    }
+    return n;
 }
 
 /* Called when a line is submitted or abandoned: the notice answered the last

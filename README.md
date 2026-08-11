@@ -101,7 +101,8 @@ split on whitespace; anything needing quoting belongs in a wrapper script.
 - The composer takes the readline editing keys: Ctrl-A/E, Ctrl-B/F, Ctrl-P/N,
   Alt+B/F, Ctrl-K, Ctrl-U, Ctrl-W, Alt+D, Alt+Backspace, and Ctrl-Y to put
   the last kill back. Delete removes the glyph at the cursor. A question a
-  command asks (`/provider`, for one) answers the same keys.
+  command asks (`/provider`, for one) answers the same keys. `/keys` lists
+  every binding, grouped by where it applies.
 - `!command` runs a local shell command. Prefix with `\!` to send it to the
   model instead.
 - `@` opens the project file picker.
@@ -109,15 +110,15 @@ split on whitespace; anything needing quoting belongs in a wrapper script.
   Down newer, Esc closes. The reach is the scrollback's, and Ctrl-E lifts the
   caps on tool output when a match may be hiding under one.
 - `/` opens commands: `/clear`, `/resume`, `/fork`, `/compact`, `/model`,
-  `/provider`, `/mode`, `/settings`, `/help`, and `/exit`.
+  `/provider`, `/mode`, `/settings`, `/keys`, `/help`, and `/exit`.
 - `/compact` condenses the conversation into a checkpoint summary and starts a
   new session from it. The session it summarized is left as it is, and a
   compaction that fails or is interrupted changes nothing.
 - Shift+Tab toggles Build and Plan modes. Plan mode can inspect but cannot
   write or patch.
-- While a turn runs, `/settings`, `/statusline`, `/about` and `/copy` still
-  work; a message waits in the composer, and a setting the running request
-  reads changes at the next prompt.
+- While a turn runs, `/settings`, `/statusline`, `/about`, `/keys` and `/copy`
+  still work; a message waits in the composer, and a setting the running
+  request reads changes at the next prompt.
 
 The built-in tools are `read`, `write`, `bash`, `patch`, `grep`, `find`,
 `internet_search`, and `page_fetch`. Web results are untrusted reference content;

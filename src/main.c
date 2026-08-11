@@ -68,6 +68,7 @@ static size_t commands_init(void) {
     g_commands[n++] = (TuiCmd){ STR("/rewind"), STR("Go back to an earlier message and edit it") };
     g_commands[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
     g_commands[n++] = (TuiCmd){ STR("/find"), STR("Search the transcript (Ctrl-R)") };
+    g_commands[n++] = (TuiCmd){ STR("/keys"), STR("Show the keyboard shortcuts") };
     g_commands[n++] = (TuiCmd){ STR("/settings"), STR("Change how " AGENT_NAME " behaves") };
     g_commands[n++] = (TuiCmd){ STR("/statusline"), STR("Choose what the status line shows") };
     g_commands[n++] = (TuiCmd){ STR("/about"), STR("About " AGENT_NAME " and its contributors") };
@@ -97,6 +98,13 @@ static const TuiCmd k_about[] = {
     INFO_ROW("Inspired by", "Claude Code, Codex, OpenCode and Pi"),
 };
 #define ABOUT_N (sizeof k_about / sizeof k_about[0])
+
+/* The keybinding page. The rows are the TUI's own tables rendered, and they
+ * are static there, so this array only has to outlive the open screen. */
+static TuiCmd g_keys[AGENT_MAX_KEY_ROWS];
+static size_t keys_rows(void) {
+    return tui_key_rows(g_keys, sizeof g_keys / sizeof g_keys[0]);
+}
 
 /* A submitted alias is the command it stands for by the time anything reads
  * the line, so the dispatch and the telemetry know one name per command. */
@@ -2078,6 +2086,8 @@ static b8 on_busy_command(Str line, void *ud) {
                                 statusline_screen(ag->scratch));
     else if (str_eq(name, STR("/about")))
         ran = tui_info_open(STR("about " AGENT_NAME), k_about, ABOUT_N);
+    else if (str_eq(name, STR("/keys")))
+        ran = tui_info_open(STR("keyboard shortcuts"), g_keys, keys_rows());
     else if (str_eq(name, STR("/copy"))) {
         copy_last_reply(ag->conv);
         ran = true;
@@ -2699,6 +2709,10 @@ i32 main(i32 argc, char **argv) {
         }
         if (!strcmp(line, "/about")) {
             tui_info(STR("about " AGENT_NAME), k_about, ABOUT_N);
+            continue;
+        }
+        if (!strcmp(line, "/keys")) {
+            tui_info(STR("keyboard shortcuts"), g_keys, keys_rows());
             continue;
         }
         if (!strcmp(line, "/help")) {

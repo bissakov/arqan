@@ -111,6 +111,7 @@ typedef bool     b8;
  * hundreds of models is the reason it is not the row count. */
 #define AGENT_MAX_POPUP        4096        /* entries the popup can hold        */
 #define AGENT_MAX_MODELS       AGENT_MAX_POPUP /* models the /model picker offers */
+#define AGENT_MAX_KEY_ROWS     128        /* keys page: bindings and headings  */
 #define AGENT_MAX_ENDPOINTS    32          /* providers /provider can hold      */
 #define AGENT_MAX_ENDPOINT_NAME 64
 #define AGENT_MAX_URL          512
@@ -1105,6 +1106,12 @@ b8 tui_settings_open(Str title, const TuiSettings *set);
 void tui_info(Str title, const TuiCmd *rows, size_t n);
 /* The read-only page opened the way tui_settings_open opens a screen. */
 b8 tui_info_open(Str title, const TuiCmd *rows, size_t n);
+/* The keybinding tables as info-page rows, grouped by input context with a
+ * bracketed heading row per group. Writes at most `max` rows into `rows` and
+ * returns how many it wrote; every string is static and outlives the caller,
+ * so the rows may be held for as long as the page is open. A `max` short of
+ * AGENT_MAX_KEY_ROWS truncates the page rather than failing. */
+size_t tui_key_rows(TuiCmd *rows, size_t max);
 /* Whether a screen is up, modal or not. */
 b8 tui_screen_open(void);
 /* Modal one-line question, answered in the composer with `question` in the
