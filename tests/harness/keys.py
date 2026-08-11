@@ -39,6 +39,7 @@ KEYS = {
     "ctrl-right": ESC + "[1;5C",
     "paste-start": ESC + "[200~",
     "paste-end": ESC + "[201~",
+    "alt-backspace": ESC + "\x7f",   # kill the word before the cursor
     "wheel-up": ESC + "[<64;1;1M",
     "wheel-down": ESC + "[<65;1;1M",
 }

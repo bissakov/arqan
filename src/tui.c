@@ -203,6 +203,9 @@ typedef struct {
     size_t input_top;
     size_t goal_col;
     b8 goal_col_valid;
+    /* Text the last kill key took, in `g_bulk.kill`, which Ctrl-Y puts back.
+     * One entry rather than a ring: a kill replaces it. */
+    size_t kill_n;
     /* The registered command table plus the filtered view of it on screen. */
     const TuiCmd *cmds;
     const TuiMark *marks;   /* parallel to cmds, or NULL for none          */
@@ -306,6 +309,7 @@ typedef struct {
     char transcript[TUI_TRANSCRIPT_CAP];   /* to g_tui.transcript_n         */
     char input[AGENT_LINE_BUF];             /* to g_tui.input_n              */
     char draft[AGENT_LINE_BUF];             /* to g_tui.draft_n              */
+    char kill[AGENT_LINE_BUF];              /* to g_tui.kill_n               */
     char row_text[TUI_SEL_ROWS][TUI_SEL_ROW_BYTES];  /* g_tui.row_text_n[r] */
 } TuiBulk;
 
@@ -3210,7 +3214,9 @@ enum {
     KEY_NONE = 0, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN, KEY_HOME, KEY_END,
     KEY_PREV_WORD, KEY_NEXT_WORD, KEY_NEWLINE, KEY_PAGE_UP, KEY_PAGE_DOWN,
     KEY_WHEEL_UP, KEY_WHEEL_DOWN, KEY_MOUSE_DOWN, KEY_MOUSE_DRAG, KEY_MOUSE_UP,
-    KEY_MOUSE_MOVE, KEY_SHIFT_TAB, KEY_PASTE
+    KEY_MOUSE_MOVE, KEY_SHIFT_TAB, KEY_PASTE,
+    /* Meta (Alt) bindings: the readline keys a terminal cannot send as Ctrl. */
+    KEY_KILL_WORD, KEY_KILL_PREV_WORD
 };
 
 /* Coordinates of the mouse key just returned by read_escape (1-based). */
@@ -3278,6 +3284,16 @@ static i32 read_escape(void) {
             case 'F': return KEY_END;
             default:  return KEY_NONE;
         }
+    }
+    /* Meta: a terminal sends Alt as Esc then the key itself. Anything not
+     * bound here is a bare Esc followed by that key, which is what the
+     * composer treated every Alt sequence as before. */
+    switch (first) {
+        case 'b': case 'B': return KEY_PREV_WORD;
+        case 'f': case 'F': return KEY_NEXT_WORD;
+        case 'd': case 'D': return KEY_KILL_WORD;
+        case 0x7f: case 0x08: return KEY_KILL_PREV_WORD;
+        default: break;
     }
     return KEY_NONE;
 }
@@ -4222,6 +4238,38 @@ b8 tui_ask_edit(Str question, b8 allow_empty, char *inout, size_t cap) {
 typedef enum { ED_EDIT = 0, ED_SUBMIT, ED_EOF, ED_REWIND, ED_EXPAND,
                ED_MODE } EdAction;
 
+/* Up/Down, and their Ctrl-P/Ctrl-N twins: inside a multi-line draft they walk
+ * its rows, and history is reached from the first row going up and the last
+ * going down. Returns whether an entry was recalled. */
+static b8 composer_vertical(i32 dir, char *buf, size_t *n, size_t *cur) {
+    if (!g_tui.hist_nav && composer_move_row(dir, buf, *n, cur)) return false;
+    b8 recalled = history_recall(dir, buf, n, cur);
+    /* Stepping back down onto the draft hands the keys back to it; anything
+     * else on screen is still history. */
+    g_tui.hist_nav = recalled && g_tui.hist && history_browsing(g_tui.hist);
+    return recalled;
+}
+
+/* Remember what a kill key removed, so Ctrl-Y can put it back. Text longer
+ * than the buffer is dropped rather than truncated: half a kill is not what
+ * the yank promised. */
+static void kill_store(const char *s, size_t n) {
+    if (!n || n > sizeof g_bulk.kill) return;
+    memcpy(g_bulk.kill, s, n);
+    g_tui.kill_n = n;
+}
+
+/* Delete [a,b) from the draft, keeping the text for Ctrl-Y. The cursor ends
+ * at `a`, which is where every kill key leaves it. */
+static void kill_range(char *buf, size_t *n, size_t *cur, size_t a, size_t b) {
+    if (a >= b) return;
+    kill_store(buf + a, b - a);
+    memmove(buf + a, buf + b, *n - b);
+    *n -= b - a;
+    *cur = a;
+    buf[*n] = '\0';
+}
+
 /* The zone under a mouse cell, 0 outside them all. */
 static u32 zone_at_cell(i32 mouse_row, i32 mouse_col) {
     size_t row, col;
@@ -4396,21 +4444,28 @@ static EdAction editor_key(i32 c) {
     else if (c == 0x05) cur = line_end(buf, n, cur);
     else if (c == 0x02) cur = prev_glyph(buf, cur);
     else if (c == 0x06) cur = next_glyph(buf, n, cur);
-    else if (c == 0x0b) {
+    else if (c == 0x0e || c == 0x10) {
+        /* Ctrl-N/Ctrl-P are Down/Up: the popup took them above when open. */
+        vertical = true; keep_nav = true;
+        recalled = composer_vertical(c == 0x0e ? 1 : -1, buf, &n, &cur);
+    } else if (c == 0x19) {
+        /* Ctrl-Y puts back what the last kill took. */
+        size_t k = g_tui.kill_n;
+        if (k && n + k < cap) {
+            memmove(buf + cur + k, buf + cur, n - cur);
+            memcpy(buf + cur, g_bulk.kill, k);
+            cur += k; n += k; buf[n] = '\0';
+        }
+    } else if (c == 0x0b) {
         /* On an empty tail, eat the line break itself, so repeated Ctrl-K
          * walks down the composer the way readline does. */
         size_t end = line_end(buf, n, cur);
         if (end == cur && end < n) end++;
-        memmove(buf + cur, buf + end, n - end);
-        n -= end - cur; buf[n] = '\0';
+        kill_range(buf, &n, &cur, cur, end);
     } else if (c == 0x15) {
-        size_t start = line_start(buf, cur);
-        memmove(buf + start, buf + cur, n - cur);
-        n -= cur - start; cur = start; buf[n] = '\0';
+        kill_range(buf, &n, &cur, line_start(buf, cur), cur);
     } else if (c == 0x17) {
-        size_t word = prev_word(buf, cur);
-        memmove(buf + word, buf + cur, n - cur);
-        n -= cur - word; cur = word; buf[n] = '\0';
+        kill_range(buf, &n, &cur, prev_word(buf, cur), cur);
     } else if (c == 0x0c) {
         /* An explicit repaint also repairs a terminal after stray output. */
         g_tui.frame_valid = false;
@@ -4428,6 +4483,10 @@ static EdAction editor_key(i32 c) {
         else if (key == KEY_END) cur = line_end(buf, n, cur);
         else if (key == KEY_PREV_WORD) cur = prev_word(buf, cur);
         else if (key == KEY_NEXT_WORD) cur = next_word(buf, n, cur);
+        else if (key == KEY_KILL_WORD)
+            kill_range(buf, &n, &cur, cur, next_word(buf, n, cur));
+        else if (key == KEY_KILL_PREV_WORD)
+            kill_range(buf, &n, &cur, prev_word(buf, cur), cur);
         else if (scroll_key(key)) {
             /* The viewport moved; the draft did not, so neither the goal
              * column nor a recall in progress is disturbed. */
@@ -4455,22 +4514,11 @@ static EdAction editor_key(i32 c) {
             completion_move(key == KEY_DOWN ? 1 : -1);
             keep_nav = true;
         } else if (key == KEY_UP || key == KEY_DOWN) {
-            /* Inside a multi-line draft the two keys walk its own rows.
-             * History is reached from the first row going up and the last
-             * going down, and it then keeps them until the draft is edited,
-             * so a recalled entry is browsed rather than walked. */
+            /* History keeps the keys until the draft is edited, so a
+             * recalled entry is browsed rather than walked. */
             i32 dir = key == KEY_UP ? -1 : 1;
-            vertical = true;
-            if (!g_tui.hist_nav && composer_move_row(dir, buf, n, &cur)) {
-                keep_nav = true;
-            } else {
-                recalled = history_recall(dir, buf, &n, &cur);
-                /* Stepping back down onto the draft hands the keys back to
-                 * it; anything else on screen is still history. */
-                g_tui.hist_nav = recalled && g_tui.hist
-                              && history_browsing(g_tui.hist);
-                keep_nav = true;
-            }
+            vertical = true; keep_nav = true;
+            recalled = composer_vertical(dir, buf, &n, &cur);
         } else if (key == KEY_NONE && g_tui.comp_n) {
             g_tui.comp_dismissed = true;   /* bare Esc closes the popup */
         } else if (key == KEY_NONE && was_armed) {

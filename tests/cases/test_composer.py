@@ -116,6 +116,56 @@ def test_forward_delete(ctx):
     assert s.composer_text() == "cdef", s.composer_lines()
 
 
+def test_meta_word_motion(ctx):
+    """Alt-B / Alt-F jump words the way Ctrl-Left / Ctrl-Right do."""
+    s = ctx.spawn()
+    s.type("one two three").sync()
+    s.key("alt-b", "alt-b").sync()                  # before "two"
+    s.type("<").sync()
+    assert s.composer_text() == "one <two three", s.composer_lines()
+    s.key("alt-f").sync()                           # end of "two"
+    s.type(">").sync()
+    assert s.composer_text() == "one <two> three", s.composer_lines()
+
+
+def test_meta_kill_word(ctx):
+    """Alt-D kills forward, Alt-Backspace kills back like Ctrl-W."""
+    s = ctx.spawn()
+    s.type("alpha beta gamma").sync()
+    s.key("alt-backspace").sync()
+    assert s.composer_text() == "alpha beta", s.composer_lines()
+    s.key("ctrl-a", "alt-d").sync()
+    # readline stops at the end of the word, so the separating space stays
+    assert s.composer_text() == " beta", s.composer_lines()
+
+
+def test_ctrl_y_yanks_the_last_kill(ctx):
+    """Every kill key fills the yank buffer; Ctrl-Y puts it back at the cursor."""
+    s = ctx.spawn()
+    s.type("alpha beta").sync()
+    s.key("ctrl-w").sync()                          # kills "beta"
+    assert s.composer_text() == "alpha", s.composer_lines()
+    s.key("ctrl-y").sync()
+    assert s.composer_text() == "alpha beta", s.composer_lines()
+    s.key("ctrl-a", "ctrl-k", "ctrl-y", "ctrl-y").sync()
+    assert s.composer_text() == "alpha betaalpha beta", s.composer_lines()
+
+
+def test_ctrl_n_and_ctrl_p_walk_composer_rows(ctx):
+    """Ctrl-P / Ctrl-N move between draft lines like Up / Down."""
+    s = ctx.spawn()
+    s.type("first line").sync()
+    s.key("newline").sync()
+    s.type("second line").sync()
+    s.key("ctrl-p", "ctrl-a").sync()
+    s.type(">").sync()
+    assert s.composer_body(2) == [">first line", "second line"], s.composer_lines(2)
+    s.key("ctrl-n", "ctrl-e").sync()
+    s.type("!").sync()
+    assert s.composer_body(2) == [">first line", "second line!"], s.composer_lines(2)
+    assert ctx.mock.requests == []
+
+
 def test_alt_enter_inserts_newline(ctx):
     """Alt-Enter grows the composer instead of submitting."""
     s = ctx.spawn()

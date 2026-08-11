@@ -98,6 +98,9 @@ split on whitespace; anything needing quoting belongs in a wrapper script.
 
 - Enter sends; Alt+Enter adds a line. Ctrl-C or Esc cancels; Ctrl-D quits an
   empty composer.
+- The composer takes the readline editing keys: Ctrl-A/E, Ctrl-B/F, Ctrl-P/N,
+  Alt+B/F, Ctrl-K, Ctrl-U, Ctrl-W, Alt+D, Alt+Backspace, and Ctrl-Y to put
+  the last kill back.
 - `!command` runs a local shell command. Prefix with `\!` to send it to the
   model instead.
 - `@` opens the project file picker.

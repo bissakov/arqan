@@ -1,7 +1,7 @@
 """Resident footprint: the bulk buffers must stay out of the cleared block.
 
 The TUI's scrollback, composer, draft and per-row selection mirrors total
-about 11 MiB of static storage. Each is read only up to a counter in
+about 12 MiB of static storage. Each is read only up to a counter in
 TuiState, so tui_start clears the counters and leaves the bytes alone, and
 the pages behind them stay untouched until something is written there.
 Moving one of those arrays back into TuiState would put all of it into the
@@ -43,7 +43,7 @@ def test_idle_footprint_excludes_bulk_buffers(ctx):
     s.settle()
 
     kb = private_dirty_kb(s.proc.pid)
-    # The bulk buffers are 11 MiB. Clearing them would land here; the control
+    # The bulk buffers are 12 MiB. Clearing them would land here; the control
     # block plus libcurl's own allocations sit far below it.
     assert kb < 8192, f"idle private footprint {kb} KB: bulk buffers resident?"
 
