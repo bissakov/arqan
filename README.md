@@ -32,7 +32,7 @@ On first launch, use `/provider` to add an endpoint. Alternatively set:
 
 ```sh
 export ARQAN_BASE_URL=https://api.openai.com/v1
-export ARQAN_MODEL=gpt-4o-mini
+export ARQAN_MODEL=gpt-5.6-sol
 export ARQAN_API_KEY=sk-...
 export ARQAN_API=openai       # or anthropic
 ```
