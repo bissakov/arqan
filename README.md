@@ -164,7 +164,8 @@ no OS notification library is linked on any platform. A terminal without the
 sequence ignores it. `notify` picks the route (`off`, `bel`, `osc9`, the
 default, or `both`) and `notify_min_ms` sets the floor a finished turn must
 pass, 10000 by default, so a turn you watched stays quiet; an error or a
-question always speaks. Test a terminal with `printf '\e]9;test\a'`, and
+question always speaks. The line reads `arqan: <what happened>`. Test a
+terminal with `printf '\e]9;test\a'`, and
 under tmux enable `set -g allow-passthrough on`.
 
 `notify_command` names a program run at the same moments with a JSON object

@@ -2695,7 +2695,7 @@ void tui_desktop_notify(Str text) {
     if (!g_tui.tty || !text.n || text.n > AGENT_MAX_NOTIFY_TEXT) return;
     char seq[AGENT_MAX_NOTIFY_TEXT + 8];
     /* "9;" followed by a digit is a sub-command in ConEmu, Windows Terminal
-     * and ghostty (progress, cwd, marks); the caller's leading '[' keeps the
+     * and ghostty (progress, cwd, marks); the caller's leading name keeps the
      * text out of that space, and a payload that lost it is not sent. */
     if (text.p[0] >= '0' && text.p[0] <= '9') return;
     size_t n = 0;

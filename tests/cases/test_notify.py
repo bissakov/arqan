@@ -16,7 +16,7 @@ def test_a_finished_turn_notifies_over_osc9(ctx):
     s.wait_turn_done()
     assert s.screen.notifications, "no OSC 9 was written"
     said = s.screen.notifications[-1]
-    assert said.startswith("[arqan] done:"), said
+    assert said.startswith("arqan: "), said
     assert "all done here" in said, said
 
 
@@ -92,7 +92,7 @@ def test_a_provider_error_notifies(ctx):
     s.submit("do the thing")
     s.wait_turn_done()
     assert s.screen.notifications, "no OSC 9 was written"
-    assert s.screen.notifications[-1].startswith("[arqan] error"), (
+    assert s.screen.notifications[-1].startswith("arqan: "), (
         s.screen.notifications
     )
 

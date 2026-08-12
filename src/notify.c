@@ -200,12 +200,13 @@ void notify_event(NotifyKind kind, Str detail, f64 elapsed_ms) {
     Str said = sanitize(detail, body, sizeof body);
 
     char line[AGENT_MAX_NOTIFY_TEXT];
-    /* The leading bracket keeps the payload out of the "9;<digit>"
-     * sub-command space ConEmu, Windows Terminal and ghostty reserve. */
+    /* The leading name keeps the payload out of the "9;<digit>" sub-command
+     * space ConEmu, Windows Terminal and ghostty reserve, and says who is
+     * speaking in the one line a desktop notification shows. */
     i32 len = said.n
-        ? snprintf(line, sizeof line, "[" AGENT_NAME "] %s: %.*s",
-                   kind_label(kind), (i32)said.n, said.p)
-        : snprintf(line, sizeof line, "[" AGENT_NAME "] %s", kind_label(kind));
+        ? snprintf(line, sizeof line, AGENT_NAME ": %.*s",
+                   (i32)said.n, said.p)
+        : snprintf(line, sizeof line, AGENT_NAME ": %s", kind_label(kind));
     if (len < 0) return;
     Str msg = str_clip_utf8((Str){ line, (size_t)len < sizeof line
                                          ? (size_t)len : sizeof line - 1 },
