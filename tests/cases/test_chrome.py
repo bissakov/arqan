@@ -133,14 +133,18 @@ def test_notice_rows_are_styled_as_notices(ctx):
     assert s.screen.attr_at(row, 2).fg == 221, "S_YELLOW notice"
 
 
-def test_context_counter_formats_tokens(ctx):
-    """The token field shows a dash until the provider reports usage."""
+def test_context_counter_reports_the_context_not_the_bill(ctx):
+    """The field shows a dash until a request is measured, and then the
+    context that request carried: the reply the provider charged for is an
+    estimate on top of it, not part of the measurement."""
     ctx.scenario("text=ok,usage=900/100")
     s = ctx.spawn()
     assert s.status_field(5) == "-", s.status_line()
     s.submit("count")
     s.wait_turn_done()
-    assert s.status_line().endswith("1000"), s.status_line()
+    field = s.status_field(5)
+    assert field.startswith("~"), f"the reply is not measured: {field}"
+    assert 900 <= int(field.lstrip("~")) < 1000, s.status_line()
 
 
 def test_status_names_active_reasoning_controls(ctx):

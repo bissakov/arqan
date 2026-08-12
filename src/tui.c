@@ -114,6 +114,8 @@ typedef struct {
     Str cwd;
     size_t context_tokens;
     b8 context_known;
+    b8 context_exact;
+    size_t context_window;
     b8 status_visible[TUI_STATUS_N];
     char status[32];
     /* The operation a spinner row is reporting on, and when it began. Empty
@@ -2105,13 +2107,26 @@ static void paint_scrollbar(size_t first_row, size_t total_rows,
     style(S_RESET);
 }
 
+/* A window is a round number in the units it was quoted in, so it is shown
+ * in those rather than in six digits nobody reads. */
+static void format_window(char *buf, size_t cap, size_t w) {
+    if (w >= 1000000) snprintf(buf, cap, "%zuM", (w + 500000) / 1000000);
+    else if (w >= 1000) snprintf(buf, cap, "%zuk", (w + 500) / 1000);
+    else snprintf(buf, cap, "%zu", w);
+}
+
 static Str format_context_size(char *buf, size_t cap) {
     size_t n = g_tui.context_tokens;
+    const char *mark = g_tui.context_exact ? "" : "~";
     i32 written;
     if (!g_tui.context_known) {
         written = snprintf(buf, cap, "-");
+    } else if (g_tui.context_window) {
+        char window[16];
+        format_window(window, sizeof window, g_tui.context_window);
+        written = snprintf(buf, cap, "%s%zu/%s", mark, n, window);
     } else {
-        written = snprintf(buf, cap, "%zu", n);
+        written = snprintf(buf, cap, "%s%zu", mark, n);
     }
     size_t len = written > 0 ? (size_t)written : 0;
     if (len >= cap) len = cap ? cap - 1 : 0;
@@ -2344,6 +2359,10 @@ static void repaint(void) {
                            sizeof g_tui.context_tokens);
     status_hash = hash_add(status_hash, &g_tui.context_known,
                            sizeof g_tui.context_known);
+    status_hash = hash_add(status_hash, &g_tui.context_exact,
+                           sizeof g_tui.context_exact);
+    status_hash = hash_add(status_hash, &g_tui.context_window,
+                           sizeof g_tui.context_window);
     status_hash = hash_add(status_hash, g_tui.status_visible,
                            sizeof g_tui.status_visible);
     status_hash = hash_add(status_hash, &cols, sizeof cols);
@@ -2669,9 +2688,14 @@ b8 tui_copy(Str text) {
     return true;
 }
 
-void tui_set_context_tokens(size_t tokens) {
-    g_tui.context_tokens = tokens;
-    g_tui.context_known = true;
+void tui_set_context(size_t tokens, b8 known, b8 exact, size_t window) {
+    if (g_tui.context_tokens == tokens && g_tui.context_known == known
+        && g_tui.context_exact == exact && g_tui.context_window == window)
+        return;
+    g_tui.context_tokens = known ? tokens : 0;
+    g_tui.context_known = known;
+    g_tui.context_exact = known && exact;
+    g_tui.context_window = window;
     repaint();
 }
 

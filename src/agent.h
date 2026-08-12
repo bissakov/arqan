@@ -131,6 +131,9 @@ typedef bool     b8;
 #define AGENT_MAX_NOTIFY_ARGV  16          /* words that line may hold          */
 #define AGENT_MAX_REASONING_TEMPLATE (16u << 10)
 #define AGENT_MAX_MODEL_BYTES  (1u << 20)  /* largest /models reply we will read */
+/* A context window an endpoint reports above this is not one; the field is
+ * left unknown rather than clamped to something we made up. */
+#define AGENT_MAX_CONTEXT_WINDOW ((size_t)1 << 31)
 #define AGENT_WEB_BODY_BYTES   (2u << 20)  /* decompressed page source limit      */
 #define AGENT_WEB_URL_BYTES    4096        /* URL bytes plus its terminating nul  */
 #define AGENT_WEB_QUERY_BYTES  1025        /* search query plus its terminating nul*/
@@ -1065,10 +1068,16 @@ typedef struct {
     void (*on_reason)(Str delta, void *ud);
     void (*on_tool_call)(i32 index, Str id, Str name, Str args_delta, void *ud);
     /* The request's usage as it is heard: the mock and most providers send it
-     * once, on the last stream event, so `total` is the context the turn is
-     * being charged for. Fired from inside the request wait, so it reaches
-     * the status line even when the turn is interrupted before it ends. */
-    void (*on_usage)(size_t total, void *ud);
+     * once, on the last stream event. `prompt_tokens` is the context this
+     * request carried and is the only exact measurement of it there is;
+     * `completion_tokens` is what the reply cost and includes reasoning the
+     * next request will not carry. Fired from inside the request wait, so it
+     * reaches the status line even when the turn is interrupted before it
+     * ends. `conv` is the conversation the request was built from, which the
+     * count describes and which the reply has not been appended to yet; it
+     * is passed because `ud` belongs to the stream while one is running. */
+    void (*on_usage)(const Conv *conv, size_t prompt_tokens,
+                     size_t completion_tokens, void *ud);
     /* A request that produced nothing is about to be sent again. `attempt`
      * is 1-based over `attempts`, and `reason` is arqan's own wording: an
      * HTTP status or curl's catalogue string, never a URL. */
@@ -1092,10 +1101,53 @@ typedef struct {
 i32     provider_run(Provider *p, char *err, size_t err_cap);
 
 /* Model ids from GET <base_url>/models, in the order the endpoint serves
- * them, allocated in `scratch`. Zero with `err` set when it could not be
- * read. */
-size_t  provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
-                        char *err, size_t err_cap);
+ * them, allocated in `scratch`. When `window` is given it receives each
+ * model's context window as the listing states it, or 0 where the endpoint
+ * does not publish one. Zero with `err` set when it could not be read. */
+size_t  provider_models(const Config *cfg, Arena *scratch, Str *out,
+                        size_t *window, size_t max, char *err, size_t err_cap);
+
+/* ---- context gauge ------------------------------------------------------
+ * What the status line's context field reports.
+ *
+ * A provider states the tokens a request carried, so an exact figure exists
+ * only for the conversation as it stood when a response arrived. Everything
+ * appended since is estimated from conversation bytes through a fit the
+ * current model's own measurements supply: `slope` is what a byte is worth
+ * in this model's tokens, `offset` what a request carries beyond the
+ * conversation, which is the system prompt and the tool schemas.
+ *
+ * The fit describes one model. A model change keeps it as a starting point
+ * but drops exactness and the discovered window, so the field reads as an
+ * estimate until the new model has measured itself, rather than reporting
+ * one tokenizer's count as another's.
+ */
+typedef struct {
+    f64    slope;        /* tokens per conversation byte                    */
+    f64    offset;       /* tokens a request carries beyond the slots       */
+    size_t fit_tokens;   /* prompt tokens of the last measured request      */
+    f64    fit_bytes;    /* conversation bytes behind that measurement      */
+    size_t exact_slots;  /* conv->n it covered; SIZE_MAX when none does     */
+    size_t window;       /* discovered context window, 0 when unknown       */
+    b8     measured;     /* a measurement has been folded in                */
+    b8     basis;        /* fit_* describe the current model                */
+} CtxGauge;
+
+/* A zeroed gauge is not usable; this is what makes it "nothing known yet". */
+void ctx_init(CtxGauge *g);
+/* Fold one request's reported prompt tokens into the fit. `c` must be the
+ * conversation that request was built from, which is what it still is while
+ * the response streams. A zero count is not a measurement. */
+void ctx_note_usage(CtxGauge *g, const Conv *c, size_t prompt_tokens);
+/* The model or the provider changed: keep the fit as a starting point and
+ * drop what described the model that left. */
+void ctx_model_changed(CtxGauge *g);
+/* A window discovered from an endpoint's model listing. Zero, or a value no
+ * context window can be, leaves it unknown. */
+void ctx_set_window(CtxGauge *g, size_t window);
+/* Paint the field for `c`, exactly when the last measurement still covers
+ * it and as an estimate otherwise. */
+void ctx_sync(const CtxGauge *g, const Conv *c);
 
 /* ---- TUI --------------------------------------------------------------- */
 /* A block style claims whole rows (a wrapped continuation is painted like
@@ -1270,7 +1322,12 @@ void tui_desktop_notify(Str text);
 void tui_bell(void);
 void tui_stop(void);
 void tui_set_status(const char *status);
-void tui_set_context_tokens(size_t tokens);
+/* The context field. `known` false is the dash a run shows before anything
+ * has measured the conversation; `exact` false marks an estimate; `window`
+ * is 0 when the endpoint never said what its model's window is, and the
+ * field then shows the count alone rather than a share of a number arqan
+ * invented. */
+void tui_set_context(size_t tokens, b8 known, b8 exact, size_t window);
 void tui_clear(void);
 /* Drop the transcript alone, leaving the context counter as it is: the
  * conversation is unchanged, only its rendering is about to be replayed. */

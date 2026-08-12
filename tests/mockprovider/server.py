@@ -99,6 +99,12 @@ class Scenario:
         self.model_count: int = int(kw.get("model_count", 0))
         self.models_empty: bool = _truthy(kw.get("models_empty", "0"))
         self.models_status: int = int(kw.get("models_status", 200))
+        # GET /v1/models may publish a context window, under whichever name
+        # the endpoint being imitated uses. "top_provider" nests it the way
+        # OpenRouter does.
+        self.model_window: int = int(kw.get("model_window", 0))
+        self.model_window_key: str = kw.get("model_window_key",
+                                            "context_length")
 
     def model_ids(self) -> list[str]:
         if self.models_empty:
@@ -108,6 +114,15 @@ class Scenario:
         if self.model_count:
             return [f"model-{i:03d}" for i in range(self.model_count)]
         return ["mock"]
+
+    def model_entry(self, name: str) -> dict:
+        entry = {"id": name, "object": "model", "owned_by": "mock"}
+        if self.model_window:
+            if self.model_window_key == "top_provider":
+                entry["top_provider"] = {"context_length": self.model_window}
+            else:
+                entry[self.model_window_key] = self.model_window
+        return entry
 
     def _usage(self, messages, completion_chars):
         prompt = self.prompt_tokens
@@ -710,10 +725,8 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
                 200,
                 {
                     "object": "list",
-                    "data": [
-                        {"id": m, "object": "model", "owned_by": "mock"}
-                        for m in scenario.model_ids()
-                    ],
+                    "data": [scenario.model_entry(m)
+                             for m in scenario.model_ids()],
                 },
             )
         else:

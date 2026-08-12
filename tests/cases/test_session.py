@@ -32,18 +32,25 @@ def test_ctrl_d_on_empty_composer_exits(ctx):
 
 
 def test_clear_command_clears_the_transcript(ctx):
-    """/clear wipes the visible history and the token counter."""
+    """/clear wipes the visible history, and the token counter falls back to
+    what a request carries with no conversation in it: the system prompt and
+    the tool schemas are still sent."""
     ctx.scenario("text=remember+this,usage=500/10")
     s = ctx.spawn()
     s.submit("first message")
     s.wait_text("remember this")
     s.wait_turn_done()
-    assert "510" in s.status_line(), s.status_line()
+    counted = s.status_field(5)
+    assert counted.startswith("~"), f"the reply is estimated: {counted}"
+    before = int(counted.lstrip("~"))
+    assert before >= 500, s.status_line()
 
     s.submit("/clear")
     s.wait_for(lambda t: "remember this" not in t.text(), "transcript to clear")
     assert "first message" not in s.text()
-    assert s.status_field(5) == "-", s.status_line()
+    emptied = s.status_field(5)
+    assert emptied.startswith("~"), f"nothing has measured it: {emptied}"
+    assert int(emptied.lstrip("~")) <= before, s.status_line()
     assert s.PLACEHOLDER in s.text()
     ctx.check_screen(s)
 

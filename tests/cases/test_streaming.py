@@ -39,28 +39,33 @@ def test_request_shape(ctx):
 
 
 def test_usage_updates_context_counter(ctx):
-    """The status line shows the total token count reported by the provider."""
+    """The status line shows the context the request carried, which is the
+    prompt the provider counted and not what the turn was billed."""
     ctx.scenario("text=counted,usage=1234/66")
     s = ctx.spawn()
     s.submit("count me")
     s.wait_text("counted")
-    s.wait_for(lambda t: "1300" in t.row_text(t.rows - 1), "token total")
-    assert s.status_field(5) != "-", s.status_line()
+    s.wait_for(lambda t: s.status_field(5) not in ("-", ""), "the context")
+    field = s.status_field(5)
+    assert int(field.lstrip("~")) >= 1234, s.status_line()
 
 
 def test_context_survives_an_interrupt_once_usage_was_heard(ctx):
     """Usage heard mid-stream reaches the status line even if the turn ends
-    early: an interrupt cannot take back what the reply already cost."""
+    early: an interrupt cannot take back the context the request carried, and
+    what streamed before it is context the next request carries."""
     ctx.scenario("words=400,chunk=1,delay=0.02,usage_first=1,usage=5000/200")
     s = ctx.spawn()
     s.submit("go on")
     # The counter is the last field either way: while the turn runs the
     # status line carries no state word.
-    s.wait_for(lambda t: s.status_field(-1) == "5200", "context counter")
+    s.wait_for(lambda t: s.status_field(-1) == "5000", "context counter")
     s.key("ctrl-c")
     s.wait_text("[interrupted]")
     s.wait_turn_done()
-    assert s.status_field(-1) == "5200", s.status_line()
+    # The interrupted reply does not reach the conversation, so the
+    # measurement still describes it exactly.
+    assert s.status_field(-1) == "5000", s.status_line()
 
 
 def test_spinner_says_thinking_while_streaming(ctx):

@@ -24,6 +24,7 @@
 #include "provider.c"
 #include "session.c"
 #include "tui.c"
+#include "context.c"
 #include "notify.c"
 #include "highlight.c"
 #include "render.c"
@@ -176,12 +177,20 @@ static void on_tool_call(i32 idx, Str id, Str name, Str args_delta, void *ud) {
     (void)ud; (void)idx; (void)id; (void)name; (void)args_delta;
     say_busy("preparing tool call");
 }
-/* The context the turn is being charged for, heard from the response while
- * it streams: an interrupt cannot take it back, since nothing behind it is
- * lost to the turn having ended early. */
-static void on_usage(size_t total, void *ud) {
-    (void)ud;
-    tui_set_context_tokens(total);
+/* The gauge behind the status line's context field. It outlives a turn: the
+ * fit it holds is what lets the field answer between requests. */
+static CtxGauge g_ctx;
+
+/* The context the request carried, heard from the response while it streams:
+ * an interrupt cannot take it back, since nothing behind it is lost to the
+ * turn having ended early. The conversation is still the one the request was
+ * built from, the reply being appended only once the stream ends. */
+static void on_usage(const Conv *conv, size_t prompt_tokens,
+                     size_t completion_tokens, void *ud) {
+    (void)completion_tokens; (void)ud;
+    if (!conv) return;
+    ctx_note_usage(&g_ctx, conv, prompt_tokens);
+    ctx_sync(&g_ctx, conv);
 }
 /* Said in the transcript rather than in a notice: it belongs to the turn
  * being read. It never reaches Conv, so a replay does not repeat it. */
@@ -1253,18 +1262,20 @@ static size_t model_favorite(void *ud, size_t row, size_t *moved) {
 }
 
 static b8 pick_model(const Config *cfg, Arena *scratch, Str *out,
-                     b8 *verified) {
+                     size_t *window, b8 *verified) {
     *verified = false;
+    *window = 0;
     tui_set_status("loading models");
     Str *names = arena_new(scratch, Str, AGENT_MAX_MODELS);
-    if (!names) {
+    size_t *windows = arena_new(scratch, size_t, AGENT_MAX_MODELS);
+    if (!names || !windows) {
         tui_set_status("ready");
         tui_notice(STR("out of memory listing models"));
         return false;
     }
     char err[128] = {0};
-    size_t n = provider_models(cfg, scratch, names, AGENT_MAX_MODELS,
-                              err, sizeof err);
+    size_t n = provider_models(cfg, scratch, names, windows, AGENT_MAX_MODELS,
+                               err, sizeof err);
     tui_set_status("ready");
     if (!n) {
         const char *why = err[0] ? err : "no models returned";
@@ -1297,6 +1308,7 @@ static b8 pick_model(const Config *cfg, Arena *scratch, Str *out,
     size_t i = pick < rows ? mp.order[pick] : n;
     if (i >= n) return manual_model(scratch, NULL, out);
     *out = names[i];
+    *window = windows[i];
     *verified = true;
     return true;
 }
@@ -1306,14 +1318,18 @@ static b8 pick_model(const Config *cfg, Arena *scratch, Str *out,
 static void choose_model(Config *cfg, Arena *scratch) {
     arena_reset(scratch);
     Str picked = {0};
+    size_t window = 0;
     b8 verified = false;
-    if (!pick_model(cfg, scratch, &picked, &verified)) return;
+    if (!pick_model(cfg, scratch, &picked, &window, &verified)) return;
     if (!config_set_model(cfg, picked)) {
         tui_notice(STR("out of memory storing the model"));
         return;
     }
     Str chosen = cfg->model;
     tui_set_model(chosen);
+    /* The fit and the window described the model that just left. */
+    ctx_model_changed(&g_ctx);
+    ctx_set_window(&g_ctx, window);
     TelEvent e;
     tel_open(&e, "model");
     tel_str(&e, "name", chosen);
@@ -1341,6 +1357,7 @@ static b8 use_endpoint(Config *cfg, Str name, Str base_url, Str model,
         return false;
     tui_set_provider(cfg->provider);
     tui_set_model(cfg->model);
+    ctx_model_changed(&g_ctx);
     tui_set_reasoning(cfg->reasoning_effort, cfg->thinking_budget);
     tui_needs_provider(false);
     tui_set_setup(false);
@@ -1461,8 +1478,9 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
     probe.api_key = key[0] ? str_c(key) : (Str){0};
     probe.model = (Str){0};
     Str model = {0};
+    size_t window = 0;
     b8 verified = false;
-    if (!pick_model(&probe, scratch, &model, &verified)) return false;
+    if (!pick_model(&probe, scratch, &model, &window, &verified)) return false;
 
     char err[AGENT_MAX_PATH + 64] = {0};
     if (!endpoints_put(&eps, str_c(name), str_c(url), model, api,
@@ -1493,6 +1511,8 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
         tui_notice(STR("out of memory storing the provider"));
         return false;
     }
+    /* After use_endpoint, which drops what described the previous model. */
+    ctx_set_window(&g_ctx, window);
     if (verified) provider_chosen(cfg, scratch);
     else notice_fmt("provider: %.*s (model entered manually; not verified)",
                     (i32)cfg->provider.n, cfg->provider.p);
@@ -1576,16 +1596,22 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
     b8 changed_connection = !str_eq(str_c(url), eps->base_url[i]) || api != eps->api[i]
                          || !str_eq(str_c(model), eps->model[i]);
     b8 verified = true;
+    size_t window = 0;
     if (changed_connection) {
         Config probe = *cfg; probe.base_url = str_c(url); probe.api = api;
         probe.api_key = saved_key;
         Str listed[AGENT_MAX_MODELS]; char model_err[160] = {0};
-        size_t listed_n = provider_models(&probe, scratch, listed,
+        size_t *windows = arena_new(scratch, size_t, AGENT_MAX_MODELS);
+        size_t listed_n = provider_models(&probe, scratch, listed, windows,
                                           AGENT_MAX_MODELS, model_err,
                                           sizeof model_err);
         verified = false;
         for (size_t j = 0; j < listed_n; j++)
-            if (str_eq(listed[j], str_c(model))) { verified = true; break; }
+            if (str_eq(listed[j], str_c(model))) {
+                verified = true;
+                if (windows) window = windows[j];
+                break;
+            }
         if (!verified)
             tui_notice(str_c(model_err[0] ? model_err
                                          : "model was not listed by /models"));
@@ -1606,6 +1632,8 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
     if (!use_endpoint(cfg, eps->name[i], str_c(url), str_c(model), api, saved_key,
                       str_c(efforts), str_c(budgets), str_c(effort),
                       str_c(budget), str_c(templ))) return false;
+    /* After use_endpoint, which drops what described the previous model. */
+    ctx_set_window(&g_ctx, window);
     if (verified) provider_chosen(cfg, scratch);
     else notice_fmt("provider: %.*s (model entered manually; not verified)",
                     (i32)cfg->provider.n, cfg->provider.p);
@@ -1835,7 +1863,7 @@ static size_t statusline_build(void *ud) {
         STR("Build or Plan mode"),
         STR("Active provider name or endpoint host"),
         STR("Current project directory"),
-        STR("Tokens reported by the provider"),
+        STR("Context the next request carries; ~ marks an estimate"),
         STR("Brief acknowledgement after /copy"),
     };
     StatusView *v = ud;
@@ -2507,6 +2535,9 @@ static b8 agent_turn(Agent *ag, Str text) {
         render_user_message(text, (u32)conv->n);
     }
     session_save(ag->sess, conv);
+    /* The message is context now, whatever the next request comes back and
+     * says it was worth. */
+    ctx_sync(&g_ctx, conv);
 
     TelEvent te;
     tel_open(&te, "turn_start");
@@ -2616,6 +2647,9 @@ static b8 agent_turn(Agent *ag, Str text) {
          * than mirroring them into a second, separately capped array. */
         size_t tail = conv->n;
         TurnAction act = run_tool_calls(ag, before, tail);
+        /* Tool results are context the next round carries, and nothing has
+         * measured them yet. */
+        ctx_sync(&g_ctx, conv);
         if (act == TURN_FULL) {
             tui_set_status("ready");
             ending_text = STR("the conversation is full");
@@ -2773,6 +2807,7 @@ i32 main(i32 argc, char **argv) {
 
     setvbuf(stdout, NULL, _IONBF, 0);
     g_one_shot = opts.have_prompt;
+    ctx_init(&g_ctx);
     render_set_verbose(prefs.verbose_tools);
     md_set_raw(prefs.raw_markdown);
     b8 setup = no_provider(&cfg);
@@ -2840,6 +2875,10 @@ i32 main(i32 argc, char **argv) {
     static char line[AGENT_LINE_BUF];
     for (;;) {
         size_t ln = 0;
+        /* Every command that touches the conversation or the model lands
+         * back here, so the field is restated once rather than at each of
+         * them. */
+        ctx_sync(&g_ctx, &conv);
         if (!tui_readline("> ", line, sizeof line, &ln)) break;
         if (ln == 0) { g_got_sigint = 0; continue; }
         b8 escaped = ln >= 2 && line[0] == '\\'

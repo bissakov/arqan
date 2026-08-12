@@ -181,13 +181,15 @@ def test_signed_thinking_survives_a_session_resume(ctx):
 
 
 def test_usage_from_message_start_and_message_delta(ctx):
-    """The prompt is priced on the first event and the reply on the last."""
+    """The prompt is priced on the first event and the reply on the last, and
+    a cache read is context the request carried like any other."""
     ctx.scenario("text=counted,usage=200/40,cache_read=1000")
     s = anth(ctx)
     s.submit("hello")
     s.wait_turn_done()
-    s.wait_for(lambda t: "1240" in t.row_text(t.rows - 1), "token total")
-    assert s.status_field(5) != "-", s.status_line()
+    s.wait_for(lambda t: s.status_field(5) not in ("-", ""), "the context")
+    counted = s.status_field(5)
+    assert int(counted.lstrip("~")) >= 1200, s.status_line()
 
 
 def test_the_shell_run_is_a_text_block(ctx):

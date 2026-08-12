@@ -22,5 +22,5 @@
 |  › Message arqan...
 |
 |
-|  ● continue? · mock-model · plan · local · ~/work · 603
+|  ● continue? · mock-model · plan · local · ~/work · 588
 --- cursor row=21 col=5 visible=yes ---

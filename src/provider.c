@@ -409,7 +409,8 @@ static void read_usage(Provider *p, const JVal *root) {
     p->usage_valid = true;
     /* Fired wherever it is heard, so the caller's context counter is kept
      * current even when the turn is interrupted before it ends. */
-    if (p->on_usage) p->on_usage(p->total_tokens, p->ud);
+    if (p->on_usage)
+        p->on_usage(p->conv, p->prompt_tokens, p->completion_tokens, p->ud);
 }
 
 /* The composer has already advanced past the submitted line, so a provider
@@ -521,7 +522,8 @@ static void read_usage_anth(Provider *p, const JVal *owner) {
     if (!p->prompt_tokens && !p->completion_tokens) return;
     p->total_tokens = usage_add(p->prompt_tokens, p->completion_tokens);
     p->usage_valid = true;
-    if (p->on_usage) p->on_usage(p->total_tokens, p->ud);
+    if (p->on_usage)
+        p->on_usage(p->conv, p->prompt_tokens, p->completion_tokens, p->ud);
 }
 
 /* The name and id arrive whole on content_block_start; the arguments follow
@@ -728,8 +730,36 @@ static b8 read_message_anth(Provider *p, StreamState *s, Str raw,
     return true;
 }
 
-size_t provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
-                       char *err, size_t err_cap) {
+/* A context window costs nothing to learn where the listing already states
+ * it, and several OpenAI-compatible endpoints do, each under its own name.
+ * Only fields that describe the window the endpoint will actually serve are
+ * read: a model's trained window says nothing about a server started with a
+ * smaller one. An endpoint that publishes nothing leaves it unknown. */
+static size_t model_window(const JVal *m) {
+    static const char *const keys[] = {
+        "loaded_context_length", /* LM Studio, the window now in memory   */
+        "max_input_tokens",      /* Anthropic                             */
+        "context_length",        /* OpenRouter, Together                  */
+        "context_window",        /* Groq                                  */
+        "max_context_length",    /* Mistral, LM Studio                    */
+        "max_model_len",         /* vLLM                                  */
+        "inputTokenLimit",       /* Gemini                                */
+    };
+    const JVal *found = NULL;
+    for (size_t i = 0; i < sizeof keys / sizeof *keys && !found; i++)
+        found = json_get(m, str_c(keys[i]));
+    if (!found) {
+        const JVal *top = json_get(m, STR("top_provider"));
+        if (top && top->type == J_OBJ) found = json_get(top, STR("context_length"));
+    }
+    if (!found || found->type != J_NUM) return 0;
+    f64 n = found->u.n;
+    if (!(n >= 1) || n > (f64)AGENT_MAX_CONTEXT_WINDOW) return 0;
+    return (size_t)n;
+}
+
+size_t provider_models(const Config *cfg, Arena *scratch, Str *out,
+                       size_t *window, size_t max, char *err, size_t err_cap) {
     if (!out || !max) return 0;
     Buf body; buf_init(&body, scratch, AGENT_MAX_MODEL_BYTES);
     i32 rc = http_get(cfg->base_url.p, "/models", cfg->api_key.p, cfg->api,
@@ -754,7 +784,9 @@ size_t provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
     for (size_t i = 0; i < data->u.arr.n && n < max; i++) {
         /* The DOM lives in `scratch` beside the array. */
         Str id = json_str(&data->u.arr.items[i], STR("id"));
-        if (id.n) out[n++] = id;
+        if (!id.n) continue;
+        if (window) window[n] = model_window(&data->u.arr.items[i]);
+        out[n++] = id;
     }
     if (!n) snprintf(err, err_cap, "the provider listed no models");
     return n;

@@ -22,5 +22,5 @@
 |  › Message arqan...
 |
 |
-|  ● ready · mock-model · build · local · ~/work · 28
+|  ● ready · mock-model · build · local · ~/work · ~40
 --- cursor row=21 col=5 visible=yes ---
