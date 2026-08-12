@@ -105,6 +105,8 @@ clear. Write concise active sentences in ASCII; no padded preambles, smart
 punctuation, emoji, or AI/tool attributions. Header doc comments describe
 ownership, arena, and failure behaviour.
 
+README.md and AGENTS.md *must not* be edited without explicit user approval.
+
 ## Handoff
 
 If the task created or modified files that Git tracks or would track, suggest
