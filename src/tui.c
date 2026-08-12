@@ -200,6 +200,9 @@ typedef struct {
      * running is still here when the next prompt opens. */
     size_t input_n;
     size_t input_cur;
+    /* One submitted follow-up waiting for the running turn's next protocol
+     * boundary. Its bytes live in `g_bulk.queued`, apart from the next draft. */
+    size_t queued_n;
     /* Vertical motion inside the composer. `input_top` is the visual row the
      * composer window starts at, kept across frames so a tall draft scrolls
      * by the row the cursor left rather than snapping to the caret; the goal
@@ -313,6 +316,7 @@ typedef struct {
 typedef struct {
     char transcript[TUI_TRANSCRIPT_CAP];   /* to g_tui.transcript_n         */
     char input[AGENT_LINE_BUF];             /* to g_tui.input_n              */
+    char queued[AGENT_LINE_BUF];            /* to g_tui.queued_n             */
     char draft[AGENT_LINE_BUF];             /* to g_tui.draft_n              */
     char kill[AGENT_LINE_BUF];              /* to g_tui.kill_n               */
     char row_text[TUI_SEL_ROWS][TUI_SEL_ROW_BYTES];  /* g_tui.row_text_n[r] */
@@ -1935,11 +1939,13 @@ static void update_activity_row(size_t screen_row, size_t screen_col,
     size_t frames = sizeof k_spinner / sizeof k_spinner[0];
     size_t frame = (size_t)(elapsed * 10.0) % frames;
     Str label = { g_tui.activity, g_tui.activity_n };
+    b8 queued = g_tui.queued_n != 0;
     b8 stoppable = g_tui.busy && g_tui.interrupt != NULL;
 
     u64 hash = row_hash(secs, label, ROW_TOOL);
     hash = hash_add(hash, total.p, total.n);
     hash = hash_add(hash, &frame, sizeof frame);
+    hash = hash_add(hash, &queued, sizeof queued);
     hash = hash_add(hash, &stoppable, sizeof stoppable);
     size_t sel_c0, sel_c1;
     sel_row_range(screen_row, &sel_c0, &sel_c1);
@@ -1968,10 +1974,17 @@ static void update_activity_row(size_t screen_row, size_t screen_col,
         if (used < body_cols)
             put_safe_clipped(STR(" total"), body_cols - used, &used);
     }
+    if (queued && used + 3 <= body_cols) {
+        put_safe_clipped(STR(" \u00b7 "), body_cols - used, &used);
+        if (used < body_cols)
+            put_safe_clipped(STR("message queued"), body_cols - used, &used);
+    }
     if (stoppable && used + 3 <= body_cols) {
         put_safe_clipped(STR(" \u00b7 "), body_cols - used, &used);
         if (used < body_cols)
-            put_safe_clipped(STR("esc to interrupt"), body_cols - used, &used);
+            put_safe_clipped(queued ? STR("esc to cancel message")
+                                    : STR("esc to interrupt"),
+                             body_cols - used, &used);
     }
     paint_sel_tail(screen_row, screen_cols);
     style(S_RESET);
@@ -2576,6 +2589,17 @@ void tui_stop(void) {
 }
 
 b8 tui_busy(void) { return g_tui.busy; }
+
+b8 tui_queued_pending(void) { return g_tui.queued_n != 0; }
+
+Str tui_queued_take(void) {
+    Str out = { g_bulk.queued, g_tui.queued_n };
+    if (!out.n) return out;
+    g_tui.queued_n = 0;
+    g_tui.notice_n = 0;
+    repaint();
+    return out;
+}
 
 void tui_set_busy(b8 busy) {
     if (g_tui.busy == busy) return;
@@ -4919,6 +4943,13 @@ static void ed_mouse_up(Ed *e) {
 static void ed_escape(Ed *e) {
     if (g_tui.comp_n) { g_tui.comp_dismissed = true; return; }
     if (e->was_armed) { e->action = ED_REWIND; return; }
+    /* A queued follow-up is a separate cancellable operation. Cancelling it
+     * leaves both the request and any newer draft alone. */
+    if (g_tui.busy && g_tui.queued_n) {
+        g_tui.queued_n = 0;
+        tui_notice(STR("queued message cancelled"));
+        return;
+    }
     if (g_tui.notice_n) { g_tui.notice_n = 0; return; }
     /* A turn running and nothing to dismiss: Esc cancels it the way Ctrl-C
      * does, without touching the composed text. */
@@ -5178,15 +5209,31 @@ void tui_set_busy_command(b8 (*fn)(Str line, void *ud), void *ud) {
     g_busy_cmd_ud = ud;
 }
 
-/* Enter while a turn is in flight. A message belongs to the next turn and
- * stays in the composer; a slash command is offered to the hook, which takes
- * only the ones that leave the running turn alone. The composer is cleared
- * before the hook runs, since a screen it opens owns the popup afterwards,
- * and the text is handed back when the command was refused. */
+/* Enter while a turn is in flight. A slash command is offered to the hook,
+ * which takes only the ones that leave the running turn alone. One ordinary
+ * message moves to the follow-up queue, leaving the composer free for another
+ * draft. The composer is cleared before a command hook runs, since a screen
+ * it opens owns the popup afterwards, and refused command text is handed
+ * back. */
 static void busy_submit(void) {
-    if (!g_busy_cmd || !g_tui.input_n || g_bulk.input[0] != '/') return;
+    if (!g_tui.input_n) return;
+    if (g_bulk.input[0] != '/') {
+        if (g_tui.queued_n) {
+            tui_notice(STR("a message is already queued; Esc cancels it"));
+            return;
+        }
+        memcpy(g_bulk.queued, g_bulk.input, g_tui.input_n);
+        g_tui.queued_n = g_tui.input_n;
+        if (g_tui.hist)
+            history_add(g_tui.hist, (Str){g_bulk.input, g_tui.input_n});
+        composer_clear();
+        tui_notice(STR("message queued; Esc cancels it"));
+        return;
+    }
+    if (!g_busy_cmd) return;
     /* A line longer than any command is prose that happens to start with a
-     * slash, and it waits in the composer like every other message. */
+     * slash. It remains a draft because the fixed command handoff cannot hold
+     * it, rather than being truncated into a different command. */
     char cmd[256];
     size_t n = g_tui.input_n;
     if (n >= sizeof cmd) return;
@@ -5211,8 +5258,7 @@ static void busy_expand(void) {
 }
 
 /* Drain what the terminal already has, without ever blocking. Enter submits
- * only the commands a running turn can afford; anything else stays in the
- * composer until the prompt reopens. */
+ * commands a running turn can afford and queues one ordinary follow-up. */
 void tui_poll_input(void) {
     if (!g_tui.fullscreen) return;
     /* A screen opened mid-turn owns the keyboard, and reading it here is what

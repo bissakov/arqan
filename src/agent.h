@@ -1422,10 +1422,14 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n);
 /* Replace the composer's text, cursor at its end; ignored without a
  * fullscreen UI. This is how a rewind hands an earlier message back. */
 void tui_set_input(Str s);
-/* While a turn is in flight keystrokes are accepted and a message waits in
- * the composer. Callers pump tui_poll_input from wherever they wait. */
+/* While a turn is in flight keystrokes are accepted and Enter moves one
+ * follow-up into a queue. Callers pump tui_poll_input from wherever they wait.
+ * The queued Str is TUI-owned and remains valid until another message is
+ * queued; taking it clears the queue but not its bytes. */
 void tui_set_busy(b8 busy);
 b8   tui_busy(void);
+b8   tui_queued_pending(void);
+Str  tui_queued_take(void);
 /* Enter mid-turn submits a slash command to `fn`, which returns whether it
  * took it: a refused command is handed back to the composer untouched. The
  * hook runs inside tui_poll_input, so it must not block the wait it is

@@ -229,7 +229,7 @@ def test_unreachable_provider_is_surfaced(ctx):
 
 
 def test_typing_while_busy_is_kept(ctx):
-    """Keystrokes during a turn edit the composer; Enter does not submit."""
+    """Keystrokes edit the composer and Enter queues the next turn."""
     ctx.scenario("words=30,chunk=1,delay=0.06,first_delay=0.15")
     s = ctx.spawn()
     s.submit("take your time")
@@ -239,20 +239,13 @@ def test_typing_while_busy_is_kept(ctx):
     s.wait_for(lambda t: len(ctx.mock.requests) == 1, "the request to be sent")
 
     s.type("typed while busy")
-    s.key("enter")                    # must be swallowed while a turn runs
-    s.wait_for(
-        lambda t: "typed while busy" in "".join(t.lines()[t.rows - 5 :]),
-        "composer keeps the text",
-    )
+    s.key("enter")
+    s.wait_text("message queued")
+    assert s.composer_text() == "", s.composer_lines()
     assert s.activity_label() != "", "the turn should still be running"
     assert len(ctx.mock.requests) == 1, "Enter must not start a second turn"
 
-    s.wait_turn_done()
-    assert s.composer_text() == "typed while busy", s.composer_lines()
-
-    # once the turn is over, the same text submits normally
     ctx.scenario("text=second+turn")
-    s.key("enter")
     s.wait_text("second turn")
     s.wait_turn_done()
     assert len(ctx.mock.requests) == 2

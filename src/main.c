@@ -2662,6 +2662,17 @@ static b8 agent_turn(Agent *ag, Str text) {
             ending = NOTIFY_TURN_DONE;
             break;
         }
+        /* A follow-up cannot precede results for the tool calls it observed:
+         * that would split the assistant call from its required result. Once
+         * every result is appended, ending this turn lets the queued message
+         * become the next user turn instead of asking the model to continue
+         * along the old direction. */
+        if (tui_queued_pending()) {
+            tui_set_status("ready");
+            ok = true;
+            ending = NOTIFY_TURN_DONE;
+            break;
+        }
     }
     tui_set_busy(false);
     tui_activity_end();
@@ -2678,7 +2689,7 @@ static b8 agent_turn(Agent *ag, Str text) {
     tel_send(&te);
     /* A handoff is the same turn continuing in build mode, so the user is
      * told once, when the work it started actually stops. */
-    if (!ag->handoff.n) {
+    if (!ag->handoff.n && !tui_queued_pending()) {
         if (ending == NOTIFY_TURN_DONE) ending_text = last_reply(conv);
         notify_event(ending, ending_text,
                      (agent_now_seconds() - turn_started) * 1000.0);
@@ -2690,6 +2701,18 @@ static b8 agent_turn(Agent *ag, Str text) {
         g_rerender_pending = false;
         rerender_conv(conv, ag->cfg, ag->show_instructions, ag->scratch, 0);
     }
+    return ok;
+}
+
+/* Run submitted follow-ups without reopening the prompt between them. The
+ * TUI owns their bytes until they are taken; agent_turn duplicates each one
+ * into persist before polling can accept another. A submitted follow-up also
+ * runs after an error or Ctrl-C: Esc is the operation that cancels the queue,
+ * while Ctrl-C only stops the operation currently on screen. */
+static b8 agent_turn_interactive(Agent *ag, Str text) {
+    b8 ok = agent_turn(ag, text);
+    while (tui_queued_pending())
+        ok = agent_turn(ag, tui_queued_take());
     return ok;
 }
 
@@ -2989,7 +3012,7 @@ send_message:
             tui_notice(NO_PROVIDER_HINT);
             continue;
         }
-        agent_turn(&agent, (Str){ line, ln });
+        agent_turn_interactive(&agent, (Str){ line, ln });
     }
 
     tui_stop();

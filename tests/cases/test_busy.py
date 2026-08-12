@@ -107,16 +107,57 @@ def test_an_unknown_command_says_so_mid_turn(ctx):
     s.wait_turn_done()
 
 
-def test_a_message_typed_mid_turn_still_waits_in_the_composer(ctx):
-    """Only commands are submitted early: a message belongs to the next turn
-    and Enter leaves it where it was typed."""
+def test_a_message_submitted_mid_turn_runs_after_the_reply(ctx):
+    """A follow-up is queued without interrupting the response in flight."""
     s = running_turn(ctx)
     s.type("and then this")
     s.key("enter")
-    s.wait_for(lambda t: s.composer_text() == "and then this",
-               "the message to stay")
+    s.wait_text("message queued")
+    assert s.composer_text() == "", s.composer_lines()
     s.wait_turn_done()
-    assert len(ctx.mock.requests) == 1, "the message was sent mid-turn"
+    assert len(ctx.mock.requests) == 2, ctx.mock.requests
+    messages = ctx.mock.requests[-1]["messages"]
+    assert [m["role"] for m in messages] == [
+        "system", "user", "assistant", "user"
+    ]
+    assert messages[-1]["content"] == "and then this"
+
+
+def test_a_queued_message_joins_the_turn_after_its_tool(ctx):
+    """Tool calls receive their results before queued steering reaches the
+    provider, preserving the tool-call sequence on the wire."""
+    ctx.scenario('tool=bash:{"command":"sleep 1; echo finished"},'
+                 'final_text=steered')
+    s = ctx.spawn()
+    s.submit("start the work")
+    s.wait_activity("running bash")
+    s.submit("take a different direction")
+    s.wait_text("message queued")
+    s.wait_text("steered")
+    s.wait_turn_done()
+
+    # The fixed scenario asks for the same tool once in each user turn. The
+    # request immediately after the first result is where the steering enters.
+    messages = ctx.mock.requests[-2]["messages"]
+    roles = [m["role"] for m in messages]
+    assert roles == [
+        "system", "user", "assistant", "tool", "user"
+    ], roles
+    assert messages[-1]["content"] == "take a different direction"
+
+
+def test_escape_cancels_a_queued_message_without_interrupting(ctx):
+    """The queued follow-up is independently cancellable while the original
+    response keeps streaming."""
+    s = running_turn(ctx)
+    s.submit("do not send this")
+    s.wait_text("message queued")
+    s.key("esc")
+    s.wait_text("queued message cancelled")
+    s.wait_turn_done()
+
+    assert len(ctx.mock.requests) == 1, ctx.mock.requests
+    assert "[interrupted]" not in s.text(), s.text()
 
 
 def test_a_question_from_the_turn_takes_the_screen_back(ctx):
