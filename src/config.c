@@ -103,7 +103,7 @@ static const ConfSpec k_conf[CONF_N] = {
     /* "auto" is the keyless engine chain. Naming one engine uses only that
      * engine, which is what an endpoint or a key is worth configuring for. */
     [CONF_SEARCH_BACKEND] = { "search_backend", "auto",
-                              "auto,ddg,bing,brave,brave_api,google,searxng",
+                              "auto,ddg,brave,brave_api,google,searxng",
                               CV_ENUM, 0, 0, 0, true },
     /* Never from a project file: these three name where a search goes and
      * what it pays with, so a `git clone` must not be able to choose them. */

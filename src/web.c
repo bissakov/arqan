@@ -711,41 +711,6 @@ static Str percent_decode(Str s, Arena *scratch, b8 *ok) {
     return (Str){p, n};
 }
 
-static i32 base64url_digit(char c) {
-    if (c >= 'A' && c <= 'Z') return c - 'A';
-    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-    if (c >= '0' && c <= '9') return c - '0' + 52;
-    if (c == '-' || c == '+') return 62;
-    if (c == '_' || c == '/') return 63;
-    return -1;
-}
-
-/* Unpadded base64url, as engines use for a redirect's destination. The result
- * is nul terminated for http_url_ok and rejected when it embeds a nul. */
-static Str base64url_decode(Str s, Arena *scratch, b8 *ok) {
-    *ok = false;
-    while (s.n && s.p[s.n - 1] == '=') s.n--;
-    if (s.n % 4 == 1) return (Str){0};
-    char *p = arena_new(scratch, char, s.n / 4 * 3 + 3);
-    if (!p) return (Str){0};
-    size_t n = 0;
-    u32 acc = 0;
-    i32 bits = 0;
-    for (size_t i = 0; i < s.n; i++) {
-        i32 d = base64url_digit(s.p[i]);
-        if (d < 0) return (Str){0};
-        acc = (acc << 6) | (u32)d;
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            p[n++] = (char)((acc >> bits) & 0xffu);
-        }
-    }
-    p[n] = '\0';
-    *ok = memchr(p, '\0', n) == NULL;
-    return *ok ? (Str){p, n} : (Str){0};
-}
-
 static Str result_url(Str href, Arena *scratch, b8 *ok) {
     *ok = false;
     const char *q = memchr(href.p, '?', href.n);
@@ -759,14 +724,8 @@ static Str result_url(Str href, Arena *scratch, b8 *ok) {
                 size_t val = ++off;
                 while (off < href.n && href.p[off] != '&') off++;
                 Str raw = {href.p + val, off - val};
-                b8 wrapped = str_eq(key, STR("uddg"));
-                /* Bing hides the destination in "u=a1<base64url>". */
-                b8 b64 = str_eq(key, STR("u")) && raw.n > 2
-                         && raw.p[0] == 'a' && raw.p[1] == '1';
-                if (wrapped || b64) {
-                    Str decoded = b64
-                        ? base64url_decode((Str){raw.p + 2, raw.n - 2}, scratch, ok)
-                        : percent_decode(raw, scratch, ok);
+                if (str_eq(key, STR("uddg"))) {
+                    Str decoded = percent_decode(raw, scratch, ok);
                     if (*ok && decoded.n < AGENT_WEB_URL_BYTES
                         && http_url_ok(decoded.p)) return decoded;
                     *ok = false;
@@ -923,7 +882,7 @@ static b8 encode_query(Str query, Buf *url) {
  * engine answers JSON and is chosen by name, never guessed at.
  */
 typedef enum {
-    ENGINE_DDG_LITE, ENGINE_DDG_HTML, ENGINE_BING, ENGINE_BRAVE,
+    ENGINE_DDG_LITE, ENGINE_DDG_HTML, ENGINE_BRAVE,
     ENGINE_BRAVE_API, ENGINE_GOOGLE, ENGINE_SEARXNG, ENGINE_N
 } SearchEngine;
 
@@ -956,14 +915,6 @@ static const SearchEngineSpec k_engine[ENGINE_N] = {
         "html", "https://html.duckduckgo.com", "/html/?q=", NULL, 0, false,
         { NULL, {"result-link", "result__a"}, NULL,
           {"result-snippet", "result__snippet"}, false }, {0} },
-    /* Bare "q=" only. Bing answers a request carrying any other parameter
-     * with results for a different query, and it is kept out of the keyless
-     * chain because that poisoning is indistinguishable from a real answer;
-     * the language comes from the Accept-Language header instead. */
-    [ENGINE_BING] = {
-        "bing", "https://www.bing.com", "/search?q=", NULL, 0, false,
-        { "b_algo", {NULL, NULL}, NULL, {"b_caption", "b_algoSlug"}, true },
-        {0} },
     [ENGINE_BRAVE] = {
         "brave", "https://search.brave.com", "/search?q=", NULL, 0, false,
         { "snippet", {NULL, NULL}, "search-snippet-title",
@@ -984,18 +935,12 @@ static const SearchEngineSpec k_engine[ENGINE_N] = {
         { NULL, "results", "title", "url", "content" } },
 };
 
-/* The keyless chain, in the order a refusal walks it. Brave answers when the
- * DuckDuckGo endpoints are blocking an address, which they now often do. */
-static const SearchEngine k_auto[] = {
-    ENGINE_DDG_LITE, ENGINE_DDG_HTML, ENGINE_BRAVE,
-};
-
 static struct {
     SearchEngine chain[ENGINE_N];
     size_t chain_n;
     Str endpoint, api_key, engine_id;   /* in the persist arena, or empty */
-} g_search = { {ENGINE_DDG_LITE, ENGINE_DDG_HTML, ENGINE_BRAVE},
-               sizeof k_auto / sizeof k_auto[0], {0}, {0}, {0} };
+} g_search = { {ENGINE_DDG_LITE, ENGINE_DDG_HTML, ENGINE_BRAVE, 0, 0, 0},
+               3, {0}, {0}, {0} };
 
 /* Pacing and quarantine are per engine: one service refusing says nothing
  * about the next, and a chain of four would otherwise wait out three
@@ -1041,9 +986,10 @@ static size_t search_chain_for(Str name, SearchEngine out[ENGINE_N]) {
         out[0] = e;
         return 1;
     }
-    for (size_t i = 0; i < sizeof k_auto / sizeof k_auto[0]; i++)
-        out[i] = k_auto[i];
-    return sizeof k_auto / sizeof k_auto[0];
+    out[0] = ENGINE_DDG_LITE;
+    out[1] = ENGINE_DDG_HTML;
+    out[2] = ENGINE_BRAVE;
+    return 3;
 }
 
 #ifdef AGENT_TESTING

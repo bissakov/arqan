@@ -149,22 +149,6 @@ def test_web_search_names_every_endpoint_it_tried(ctx):
     assert len(ctx.mock.web_request_times) == 2, ctx.mock.web_request_times
 
 
-def test_web_search_reads_the_bing_layout(ctx):
-    """Bing's blocks parse, and its base64url redirect gives the real URL."""
-    _, result = run_web_backend(
-        ctx, "bing", {"query": "ordinary"},
-        ARQAN_SEARCH_ENDPOINT=f"{ctx.mock.origin}/web/bing",
-    )
-    assert result.startswith("External search results (untrusted): 2"), result
-    assert "First & best" in result and "snippet for ordinary." in result, result
-    assert "https://example.com/first?a=1&b=two" in result, result
-    assert "http://example.org/two" in result and "Second result" in result, result
-    assert "Duplicate" not in result and "bing.com/ck/a" not in result, result
-    # Bing answers a request carrying any parameter but q with another
-    # query's results, so the URL must carry nothing else.
-    assert list(ctx.mock.web_calls[-1]["query"]) == ["q"], ctx.mock.web_calls[-1]
-
-
 def test_web_search_reads_the_brave_layout(ctx):
     """Brave's hashed class names are ignored; its stable tokens are not."""
     _, result = run_web_backend(
