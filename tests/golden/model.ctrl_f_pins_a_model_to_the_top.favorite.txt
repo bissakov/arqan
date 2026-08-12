@@ -1,0 +1,26 @@
+--- screen 80x24 ---
+|
+|
+|
+|
+|                           __ _ _ __ __ _  __ _ _ __
+|                          / _` | '__/ _` |/ _` | '_ \
+|                         | (_| | | | (_| | (_| | | | |
+|                          \__,_|_|  \__, |\__,_|_| |_|
+|                                       |_|
+|
+|                   arqan 0.1.0 · a tiny terminal coding agent
+|
+|                    type a message and press Enter to begin
+|
+|
+|  › * beta
+|    alpha                     current
+|    gamma
+|    + enter a model manually  Use an id not verified by /models
+|
+|  › Message arqan...
+|
+|
+|  ● pick a model · alpha · build · local · ~/work · -
+--- cursor row=21 col=5 visible=yes ---

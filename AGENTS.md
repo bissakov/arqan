@@ -52,6 +52,7 @@ failure. For suspected flakes, use `python3 tests/run.py --repeat 5`.
 - `config.c`: the settings table, source precedence, `Config` and
   `UiPrefs`. A new setting is a row of `k_conf`, not a new reader.
 - `endpoints.c`: provider definitions, one `[providers.<name>]` section each.
+- `favorites.c`: the models `/model` pins, one state-file section per provider.
 - `prompt.c`: system prompt discovery and expansion.
 - `cli.c`: command-line parsing.
 - `tools.c`: registry and built-in tool implementations.

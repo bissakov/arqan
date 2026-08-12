@@ -16,6 +16,7 @@
 #include "history.c"
 #include "secrets.c"
 #include "endpoints.c"
+#include "favorites.c"
 #include "config.c"
 #include "cli.c"
 #include "tools.c"
@@ -1098,6 +1099,80 @@ static b8 manual_model(Arena *scratch, const char *why, Str *out) {
     return true;
 }
 
+/* The /model picker's rows: the provider's list with the favorites pinned to
+ * the top, then the manual-entry row. `starred` holds "* <model>" for the
+ * rows that are pinned, built once per model and reused, so a toggle costs no
+ * allocation the second time. `order` maps a row back to a model, and `n`
+ * itself names the manual row. */
+typedef struct {
+    const Str *names;
+    Str       *starred;
+    size_t    *order;
+    TuiCmd    *rows;
+    size_t     n;
+    Favorites  fav;
+    Str        provider;
+    Str        current;
+    Arena     *arena;
+    char       msg[160];   /* said after the picker closes, not under it */
+} ModelPick;
+
+/* "* <model>", the pinned row's name. The plain name when it cannot be
+ * built: a missed star is not a reason to lose the row. */
+static Str model_starred(ModelPick *mp, size_t i) {
+    if (!mp->starred[i].p) {
+        Buf b;
+        buf_init(&b, mp->arena, mp->names[i].n + 3);
+        buf_puts(&b, STR("* "));
+        buf_puts(&b, mp->names[i]);
+        mp->starred[i] = buf_ok(&b) ? buf_finish(&b) : mp->names[i];
+    }
+    return mp->starred[i];
+}
+
+static void model_row(ModelPick *mp, size_t row, size_t i, b8 fav) {
+    mp->order[row] = i;
+    mp->rows[row] = (TuiCmd){ fav ? model_starred(mp, i) : mp->names[i],
+                              str_eq(mp->names[i], mp->current)
+                                  ? STR("current") : (Str){0} };
+}
+
+/* Favorites first, in the order they were pinned, and every model once. */
+static size_t model_build(void *ud) {
+    ModelPick *mp = ud;
+    size_t row = 0;
+    for (size_t f = 0; f < mp->fav.n; f++)
+        for (size_t i = 0; i < mp->n; i++)
+            if (str_eq(mp->names[i], mp->fav.model[f]))
+                model_row(mp, row++, i, true);
+    for (size_t i = 0; i < mp->n; i++)
+        if (!favorites_has(&mp->fav, mp->names[i]))
+            model_row(mp, row++, i, false);
+    mp->order[row] = mp->n;
+    mp->rows[row] = (TuiCmd){ STR("+ enter a model manually"),
+                              STR("Use an id not verified by /models") };
+    return row + 1;
+}
+
+static size_t model_favorite(void *ud, size_t row, size_t *moved) {
+    ModelPick *mp = ud;
+    size_t i = mp->order[row];
+    if (i >= mp->n) { *moved = row; return mp->n + 1; }   /* the manual row */
+    b8 on = false;
+    char err[128] = {0};
+    /* The list is written as it is toggled: pinning is its own action, so it
+     * survives a picker the user then cancels. */
+    if (!favorites_toggle(&mp->fav, mp->provider, mp->names[i], mp->arena,
+                          &on, err, sizeof err))
+        snprintf(mp->msg, sizeof mp->msg, "%s", err[0] ? err
+                 : "could not save the favorites");
+    size_t rows = model_build(mp);
+    *moved = row;
+    for (size_t r = 0; r < rows; r++)
+        if (mp->order[r] == i) { *moved = r; break; }
+    return rows;
+}
+
 static b8 pick_model(const Config *cfg, Arena *scratch, Str *out,
                      b8 *verified) {
     *verified = false;
@@ -1117,23 +1192,31 @@ static b8 pick_model(const Config *cfg, Arena *scratch, Str *out,
         tui_notice(str_c(why));
         return manual_model(scratch, why, out);
     }
-    TuiCmd *items = arena_new(scratch, TuiCmd, n + 1);
-    if (!items) {
+    ModelPick mp = {0};
+    mp.names    = names;
+    mp.starred  = arena_new(scratch, Str, n);
+    mp.order    = arena_new(scratch, size_t, n + 1);
+    mp.rows     = arena_new(scratch, TuiCmd, n + 1);
+    mp.n        = n;
+    mp.provider = cfg->provider;
+    mp.current  = cfg->model;
+    mp.arena    = scratch;
+    if (!mp.starred || !mp.order || !mp.rows) {
         tui_notice(STR("out of memory listing models"));
         return false;
     }
-    for (size_t i = 0; i < n; i++)
-        items[i] = (TuiCmd){ names[i],
-                             str_eq(names[i], cfg->model) ? STR("current")
-                                                          : (Str){0} };
-    items[n] = (TuiCmd){ STR("+ enter a model manually"),
-                         STR("Use an id not verified by /models") };
+    memset(mp.starred, 0, n * sizeof *mp.starred);   /* built on first use */
+    favorites_load(&mp.fav, cfg->provider, scratch);
+    size_t rows = model_build(&mp);
+    TuiPickAction act = { mp.rows, n + 1, model_favorite, &mp };
     size_t pick = 0;
-    if (!tui_pick_search_count(STR("pick a model"), items, n + 1, n,
-                               TUI_PICK_FIRST, TUI_PICK_NONE, &pick))
-        return false;
-    if (pick == n) return manual_model(scratch, NULL, out);
-    *out = names[pick];
+    b8 chosen = tui_pick_action(STR("pick a model"), rows, n, TUI_PICK_FIRST,
+                                TUI_PICK_NONE, &act, &pick);
+    if (mp.msg[0]) tui_notice(str_c(mp.msg));
+    if (!chosen) return false;
+    size_t i = pick < rows ? mp.order[pick] : n;
+    if (i >= n) return manual_model(scratch, NULL, out);
+    *out = names[i];
     *verified = true;
     return true;
 }

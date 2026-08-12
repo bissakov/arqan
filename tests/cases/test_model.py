@@ -186,3 +186,141 @@ def test_an_empty_models_list_opens_manual_entry(ctx):
     s.key("enter")
     s.wait_text("entered manually; not verified")
     assert "manual-after-empty" in s.status_line(), s.status_line()
+
+
+# ---- favorites -----------------------------------------------------------
+def picker_rows(s, names):
+    """The picker's model rows, in the order the popup lists them."""
+    out = []
+    for line in s.text().splitlines():
+        row = line.strip()
+        if row.startswith("\u203a "):
+            row = row[2:].strip()
+        if row.startswith("* "):
+            row = row[2:].strip()
+        first = row.split()[0] if row.split() else ""
+        if first in names:
+            out.append(first)
+    return out
+
+
+def test_ctrl_f_pins_a_model_to_the_top(ctx):
+    """The favorite is starred, first, and listed once."""
+    ctx.scenario("models=alpha|beta|gamma")
+    s = ctx.spawn(ARQAN_MODEL="alpha")
+    open_picker(ctx, s)
+    s.key("down").sync()
+    assert "beta" in s.popup_selected(), s.popup_selected()
+    s.key("ctrl-f").sync()
+    text = s.text()
+    assert "* beta" in text, text
+    assert text.count("beta") == 1, "a favorite is not listed twice"
+    assert "* beta" in s.popup_selected(), "the selection follows the row"
+    assert picker_rows(s, ["alpha", "beta", "gamma"]) == \
+        ["beta", "alpha", "gamma"], s.text()
+    ctx.check_screen(s, "favorite")
+
+
+def test_ctrl_f_again_unpins_it(ctx):
+    ctx.scenario("models=alpha|beta|gamma")
+    s = ctx.spawn(ARQAN_MODEL="alpha")
+    open_picker(ctx, s)
+    s.key("down").sync()
+    s.key("ctrl-f").sync()
+    s.key("ctrl-f").sync()
+    assert "* beta" not in s.text(), s.text()
+    assert picker_rows(s, ["alpha", "beta", "gamma"]) == \
+        ["alpha", "beta", "gamma"], s.text()
+    assert "beta" in s.popup_selected(), s.popup_selected()
+    # The last favorite leaves no key behind, rather than an empty list.
+    assert "models" not in ctx.settings(ctx.state_file()).get("favorites", {}), \
+        ctx.settings(ctx.state_file())
+
+
+def test_a_favorite_is_remembered_across_runs(ctx):
+    """Pinning is its own action: it survives a picker the user cancels."""
+    ctx.scenario("models=alpha|beta|gamma")
+    s = ctx.spawn(ARQAN_MODEL="alpha")
+    open_picker(ctx, s)
+    s.key("down").sync()
+    s.key("ctrl-f").sync()
+    s.key("esc")
+    s.wait_status("ready")
+    assert s.status_field(1) == "alpha", "pinning does not choose"
+    favorites = ctx.settings(ctx.state_file()).get("favorites", {})
+    assert favorites.get("models") == "beta", favorites
+    s.submit("/exit")
+    s.wait_exit()
+
+    again = ctx.spawn(ARQAN_MODEL="alpha")
+    open_picker(ctx, again)
+    assert "* beta" in again.text(), again.text()
+    assert picker_rows(again, ["alpha", "beta", "gamma"]) == \
+        ["beta", "alpha", "gamma"], again.text()
+
+
+def test_favorites_keep_the_order_they_were_pinned_in(ctx):
+    ctx.scenario("models=alpha|beta|gamma")
+    s = ctx.spawn(ARQAN_MODEL="alpha")
+    open_picker(ctx, s)
+    s.key("down", "down").sync()
+    s.key("ctrl-f").sync()          # gamma
+    s.key("down").sync()            # back onto alpha, now last
+    s.key("ctrl-f").sync()
+    assert ctx.settings(ctx.state_file())["favorites"]["models"] == \
+        "gamma, alpha", ctx.settings(ctx.state_file())
+    assert picker_rows(s, ["alpha", "beta", "gamma"]) == \
+        ["gamma", "alpha", "beta"], s.text()
+
+
+def test_choosing_a_favorite_switches_to_it(ctx):
+    """The reordered row still answers with the model it names."""
+    ctx.scenario("models=alpha|beta|gamma")
+    s = ctx.spawn(ARQAN_MODEL="alpha")
+    open_picker(ctx, s)
+    s.key("down", "down").sync()
+    s.key("ctrl-f").sync()
+    s.key("enter")
+    s.wait_text("model: gamma")
+    assert s.status_field(1) == "gamma", s.status_line()
+
+
+def test_favorites_are_kept_per_provider(ctx):
+    """A model id only means something against the endpoint that served it."""
+    ctx.scenario("models=alpha|beta|gamma")
+    ctx.write_config(
+        f'provider = "mock"\n\n[providers.mock]\n'
+        f'base_url = "{ctx.mock.base_url}"\napi = "openai"\n'
+        f'model = "alpha"\n'
+    )
+    s = ctx.spawn(ARQAN_MODEL=None, ARQAN_BASE_URL=None)
+    open_picker(ctx, s)
+    s.key("down").sync()
+    s.key("ctrl-f").sync()
+    s.wait_for(lambda t: "* beta" in s.text(), "the favorite")
+    state = ctx.settings(ctx.state_file())
+    assert state.get("favorites.mock", {}).get("models") == "beta", state
+    assert "favorites" not in state, state
+
+
+def test_ctrl_f_on_the_manual_row_changes_nothing(ctx):
+    ctx.scenario("models=alpha|beta")
+    s = ctx.spawn(ARQAN_MODEL="alpha")
+    open_picker(ctx, s)
+    s.key("down", "down").sync()
+    assert "enter a model manually" in s.popup_selected(), s.popup_selected()
+    s.key("ctrl-f").sync()
+    assert "* +" not in s.text(), s.text()
+    assert ctx.settings(ctx.state_file()).get("favorites") is None, ctx.state()
+
+
+def test_a_favorite_survives_the_search_box(ctx):
+    """A long list filters and still pins the row the query left selected."""
+    ctx.scenario("model_count=20")
+    s = ctx.spawn()
+    open_picker(ctx, s)
+    s.type("017").sync()
+    s.key("ctrl-f").sync()
+    assert "* model-017" in s.text(), s.text()
+    s.key("ctrl-u").sync()
+    assert picker_rows(s, ["model-017", "model-000"])[0] == "model-017", s.text()

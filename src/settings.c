@@ -325,8 +325,12 @@ b8 settings_remove_section(Str path, Str section, Arena *scratch) {
  * a person edits should not be rewritten behind them by a toggle.
  */
 b8 state_set(Str key, Str val, Arena *scratch) {
+    return state_set_in((Str){0}, key, val, scratch);
+}
+
+b8 state_set_in(Str section, Str key, Str val, Arena *scratch) {
     Str dir = paths_dir(AGENT_DIR_STATE, scratch);
     Str path = paths_file(AGENT_DIR_STATE, AGENT_STATE_NAME, scratch);
     if (!dir.n || !path.n || !paths_ensure_dir(dir)) return false;
-    return settings_set_one(path, (Str){0}, key, val, 0600, scratch);
+    return settings_set_one(path, section, key, val, 0600, scratch);
 }

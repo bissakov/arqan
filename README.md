@@ -111,6 +111,9 @@ split on whitespace; anything needing quoting belongs in a wrapper script.
   caps on tool output when a match may be hiding under one.
 - `/` opens commands: `/clear`, `/resume`, `/fork`, `/compact`, `/model`,
   `/provider`, `/mode`, `/settings`, `/keys`, `/help`, and `/exit`.
+- In `/model`, Ctrl-F favorites the selected model: a favorite is starred and
+  listed once, at the top. Favorites are kept per provider in the state file
+  and are written as they are toggled, so pinning survives a cancelled picker.
 - `/compact` condenses the conversation into a checkpoint summary and starts a
   new session from it. The session it summarized is left as it is, and a
   compaction that fails or is interrupted changes nothing.

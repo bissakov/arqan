@@ -111,6 +111,7 @@ typedef bool     b8;
  * hundreds of models is the reason it is not the row count. */
 #define AGENT_MAX_POPUP        4096        /* entries the popup can hold        */
 #define AGENT_MAX_MODELS       AGENT_MAX_POPUP /* models the /model picker offers */
+#define AGENT_MAX_FAVORITES    16          /* models /model can pin to the top  */
 #define AGENT_MAX_KEY_ROWS     128        /* keys page: bindings and headings  */
 #define AGENT_MAX_ENDPOINTS    32          /* providers /provider can hold      */
 #define AGENT_MAX_ENDPOINT_NAME 64
@@ -374,6 +375,31 @@ b8     settings_write(Str path, Str data, u32 mode);
  * Keys are the configuration keys of config.c, so what the UI writes reads
  * back through the same table the config files feed. */
 b8     state_set(Str key, Str val, Arena *scratch);
+/* The same file, under a named section; an empty section names its head. */
+b8     state_set_in(Str section, Str key, Str val, Arena *scratch);
+
+/* ---- favorite models -----------------------------------------------------
+ * The models pinned to the top of the /model picker, kept in the state file
+ * per provider. Order is the order they were pinned in.
+ */
+typedef struct {
+    Str    model[AGENT_MAX_FAVORITES];
+    size_t n;
+} Favorites;
+
+/* Reads the list for `provider` (empty for a run with no named provider).
+ * Every Str points into `a` and lives as long as it does. */
+size_t favorites_load(Favorites *f, Str provider, Arena *a);
+b8     favorites_has(const Favorites *f, Str model);
+/* Pins `model` when it is not pinned and unpins it when it is, then writes
+ * the list back. `*on` is the state the model ends in, whether or not the
+ * write succeeded; false is returned with `err` filled in when the list is
+ * full, the id cannot be stored or the file could not be written. `model` is
+ * kept by reference, so it must outlive `f`; `scratch` is rewound before
+ * returning, so anything `f` already holds must be allocated before the
+ * call. */
+b8     favorites_toggle(Favorites *f, Str provider, Str model, Arena *scratch,
+                        b8 *on, char *err, size_t err_cap);
 
 /* ---- prompt history ------------------------------------------------------
  * A ring of past prompts, mirrored to $XDG_STATE_HOME/arqan/history as they
@@ -1074,6 +1100,20 @@ b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
 b8 tui_pick_search_count(Str title, const TuiCmd *items, size_t n,
                          size_t search_n, TuiPickAnchor anchor, size_t start,
                          size_t *out);
+/* A row action a chooser offers beside choosing, bound to Ctrl-F. `act` acts
+ * on the row `row` names, rebuilds `rows` and returns the new count, at most
+ * `max`; it writes to `*moved` the index the acted-on row now sits at, since
+ * an action may reorder the list. The caller owns `rows` and `ud` and keeps
+ * both alive for the call. */
+typedef struct {
+    TuiCmd *rows;
+    size_t  max;
+    size_t (*act)(void *ud, size_t row, size_t *moved);
+    void   *ud;
+} TuiPickAction;
+/* As tui_pick_search_count over `act->rows`, with that action bound. */
+b8 tui_pick_action(Str title, size_t n, size_t search_n, TuiPickAnchor anchor,
+                   size_t start, const TuiPickAction *act, size_t *out);
 /* The settings screen: the same list, read rather than chosen from. Space,
  * Enter and Right act on the selected row forwards, Left backwards, Escape
  * closes, and typing narrows the rows by fuzzy match.

@@ -4025,8 +4025,10 @@ typedef struct {
     b8 search;
     b8 has_set;
     b8 chosen;
+    b8 has_action;
     PickKind kind;
     TuiSettings set;
+    TuiPickAction action;   /* the Ctrl-F row action, when one is offered  */
     size_t out;            /* the chosen row; read after the screen closes */
     char query[TUI_PICK_QUERY];
     size_t query_n;
@@ -4137,6 +4139,24 @@ static b8 pick_act(const TuiSettings *set, i32 delta) {
     return true;
 }
 
+/* The chooser's row action. The action may reorder the list, so it says where
+ * the row went and the selection follows it there rather than staying at an
+ * index that now names a different row. */
+static b8 pick_row_action(void) {
+    const TuiPickAction *a = &g_pick.action;
+    if (!g_pick.has_action || !g_tui.comp_n) return true;
+    size_t row = g_tui.comp_idx[g_tui.comp_sel], moved = row;
+    size_t n = a->act(a->ud, row, &moved);
+    if (n > a->max) n = a->max;
+    if (n > AGENT_MAX_POPUP) n = AGENT_MAX_POPUP;
+    if (!n) { repaint(); return true; }   /* nothing left; the rows stand */
+    g_tui.cmd_n = n;
+    pick_reselect((Str){ g_pick.query, g_pick.query_n }, false,
+                  moved < n ? moved : n - 1);
+    repaint();
+    return true;
+}
+
 /* Enter is the key a reader reaches for, so on a settings row it does what
  * Space does rather than closing the screen, and on a read-only page there
  * is nothing to choose and it closes. */
@@ -4163,6 +4183,8 @@ static b8 pick_enter(const TuiSettings *set) {
                         return pick_act(set, 1);)                             \
     X(0x0e, "Ctrl-N",    "Next row",          completion_move(1);)            \
     X(0x10, "Ctrl-P",    "Previous row",      completion_move(-1);)           \
+    X(0x06, "Ctrl-F",    "Favorite the row, on a list that offers it",        \
+                                              return pick_row_action();)      \
     X(0x7f, "Backspace", "Delete the query glyph before",                     \
                                               return pick_erase();)           \
     X(0x08, "",          "",                  return pick_erase();)           \
@@ -4246,11 +4268,12 @@ static void pick_run(void) {
 static b8 pick_impl(Str title, const TuiCmd *items, const TuiMark *marks,
                     size_t n, size_t search_n, TuiPickAnchor anchor,
                     size_t start, PickKind kind, size_t *out,
-                    const TuiSettings *set) {
+                    const TuiSettings *set, const TuiPickAction *act) {
     if (!out) return false;
     if (!pick_open(title, items, marks, n, search_n, anchor, start, kind, set,
                    true))
         return false;
+    if (act) { g_pick.action = *act; g_pick.has_action = true; }
     pick_run();
     if (g_pick.chosen) *out = g_pick.out;
     return g_pick.chosen;
@@ -4259,14 +4282,21 @@ static b8 pick_impl(Str title, const TuiCmd *items, const TuiMark *marks,
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t start, size_t *out) {
     return pick_impl(title, items, NULL, n, n, anchor, start, PICK_CHOOSE, out,
-                     NULL);
+                     NULL, NULL);
 }
 
 b8 tui_pick_search_count(Str title, const TuiCmd *items, size_t n,
                          size_t search_n, TuiPickAnchor anchor, size_t start,
                          size_t *out) {
     return pick_impl(title, items, NULL, n, search_n, anchor, start,
-                     PICK_CHOOSE, out, NULL);
+                     PICK_CHOOSE, out, NULL, NULL);
+}
+
+b8 tui_pick_action(Str title, size_t n, size_t search_n, TuiPickAnchor anchor,
+                   size_t start, const TuiPickAction *act, size_t *out) {
+    if (!act || !act->rows || !act->act) return false;
+    return pick_impl(title, act->rows, NULL, n, search_n, anchor, start,
+                     PICK_CHOOSE, out, NULL, act);
 }
 
 void tui_settings(Str title, const TuiSettings *set) {
@@ -4275,7 +4305,7 @@ void tui_settings(Str title, const TuiSettings *set) {
     if (!n) return;
     size_t out = 0;
     (void)pick_impl(title, set->rows, set->marks, n, n, TUI_PICK_FIRST, 0,
-                    PICK_SETTINGS, &out, set);
+                    PICK_SETTINGS, &out, set, NULL);
 }
 
 b8 tui_settings_open(Str title, const TuiSettings *set) {
@@ -4297,7 +4327,7 @@ void tui_info(Str title, const TuiCmd *rows, size_t n) {
     }
     size_t row = 0;
     (void)pick_impl(title, rows, NULL, n, n, TUI_PICK_FIRST, 0, PICK_INFO, &row,
-                    NULL);
+                    NULL, NULL);
 }
 
 b8 tui_info_open(Str title, const TuiCmd *rows, size_t n) {
