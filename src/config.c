@@ -90,6 +90,16 @@ static const ConfSpec k_conf[CONF_N] = {
      * repository does not get to make it. */
     [CONF_TELEMETRY]      = { "telemetry", "false", NULL, CV_BOOL,
                               0, 0, 0, false },
+    [CONF_NOTIFY]         = { "notify", "osc9", "off,bel,osc9,both", CV_ENUM,
+                              0, 0, 0, true },
+    /* Never from a project file: it names a program arqan will run, so a
+     * `git clone` must not be able to choose it. */
+    [CONF_NOTIFY_COMMAND] = { "notify_command", "", NULL, CV_STR, 0, 0,
+                              AGENT_MAX_NOTIFY_CMD, false },
+    /* A turn shorter than this had the user watching it, so it passes in
+     * silence. Errors and questions ignore the floor. */
+    [CONF_NOTIFY_MIN_MS]  = { "notify_min_ms", "10000", NULL, CV_NUM,
+                              0, 24 * 60 * 60 * 1000, 0, true },
 };
 
 Str conf_key_name(ConfKey k) {

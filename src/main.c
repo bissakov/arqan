@@ -24,6 +24,7 @@
 #include "provider.c"
 #include "session.c"
 #include "tui.c"
+#include "notify.c"
 #include "highlight.c"
 #include "render.c"
 #include "markdown.c"
@@ -449,6 +450,7 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
          * while one is on screen. */
         if (str_eq(name, STR("submit_plan"))) {
             tui_activity_end();
+            notify_event(NOTIFY_INPUT_NEEDED, STR("a plan is ready to review"), 0);
             Str result = {0};
             TurnAction act = submit_plan_answer(ag, args, &result);
             if (!add_result(ag, i, STR("plan"), result, 0)) return TURN_FULL;
@@ -457,6 +459,7 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         }
         if (str_eq(name, STR("ask_user"))) {
             tui_activity_end();
+            notify_event(NOTIFY_INPUT_NEEDED, STR("the assistant asked a question"), 0);
             Str answer = ask_user_answer(ag, args);
             b8 dismissed = !answer.n;
             if (dismissed)
@@ -2391,6 +2394,20 @@ static b8 agent_handoff(Agent *ag) {
     return agent_turn(ag, plan);
 }
 
+/* The prose the turn ended on, without its trailing newlines. Empty when the
+ * turn only ran tools. */
+static Str last_reply(const Conv *conv) {
+    for (size_t i = conv->n; i-- > 0;) {
+        if (conv->role[i] != M_ASSISTANT || conv_is_call(conv, i)) continue;
+        Str reply = conv->text[i];
+        while (reply.n && (reply.p[reply.n - 1] == '\n'
+                           || reply.p[reply.n - 1] == '\r'))
+            reply.n--;
+        return reply;
+    }
+    return (Str){0};
+}
+
 static b8 agent_turn(Agent *ag, Str text) {
     Conv *conv = ag->conv;
 
@@ -2425,6 +2442,9 @@ static b8 agent_turn(Agent *ag, Str text) {
 
     /* The composer stays editable throughout; only submitting waits. */
     b8 ok = false;
+    NotifyKind ending = NOTIFY_TURN_FAILED;
+    Str ending_text = {0};
+    char ending_buf[256] = {0};
     g_got_sigint = 0;
     tui_set_busy(true);
     /* No round cap: it would end a long build in the middle of itself, and a
@@ -2441,6 +2461,7 @@ static b8 agent_turn(Agent *ag, Str text) {
             }
             tui_set_status("ready");
             g_got_sigint = 0;
+            ending = NOTIFY_INTERRUPTED;
             break;
         }
         tui_set_status("thinking");
@@ -2485,6 +2506,7 @@ static b8 agent_turn(Agent *ag, Str text) {
             }
             tui_set_status("ready");
             g_got_sigint = 0;
+            ending = NOTIFY_INTERRUPTED;
             break;
         }
         if (rc < 0) {
@@ -2502,11 +2524,14 @@ static b8 agent_turn(Agent *ag, Str text) {
                 tui_printf("[provider error: %s]\n", err);
             }
             tui_set_status("ready");
+            snprintf(ending_buf, sizeof ending_buf, "%s", err);
+            ending_text = str_c(ending_buf);
             break;
         }
         if (rc == 0) {
             tui_set_status("ready");
             ok = true;
+            ending = NOTIFY_TURN_DONE;
             break;
         }
         /* The turn appended one head slot plus a carrier per call at
@@ -2514,11 +2539,16 @@ static b8 agent_turn(Agent *ag, Str text) {
          * than mirroring them into a second, separately capped array. */
         size_t tail = conv->n;
         TurnAction act = run_tool_calls(ag, before, tail);
-        if (act == TURN_FULL) { tui_set_status("ready"); break; }
-        if (act == TURN_HANDOFF) { ok = true; break; }
+        if (act == TURN_FULL) {
+            tui_set_status("ready");
+            ending_text = STR("the conversation is full");
+            break;
+        }
+        if (act == TURN_HANDOFF) { ok = true; ending = NOTIFY_TURN_DONE; break; }
         if (act == TURN_DONE) {
             tui_set_status("ready");
             ok = true;
+            ending = NOTIFY_TURN_DONE;
             break;
         }
     }
@@ -2535,6 +2565,13 @@ static b8 agent_turn(Agent *ag, Str text) {
     tel_int(&te, "persist_used", (i64)arena_used(ag->persist));
     tel_int(&te, "scratch_used", (i64)arena_used(ag->scratch));
     tel_send(&te);
+    /* A handoff is the same turn continuing in build mode, so the user is
+     * told once, when the work it started actually stops. */
+    if (!ag->handoff.n) {
+        if (ending == NOTIFY_TURN_DONE) ending_text = last_reply(conv);
+        notify_event(ending, ending_text,
+                     (agent_now_seconds() - turn_started) * 1000.0);
+    }
     if (ag->handoff.n) return agent_handoff(ag);
     /* The plan a handoff carries lives in the scratch arena this resets, so
      * it runs only on the path that keeps the conversation. */
@@ -2549,10 +2586,7 @@ static void write_final_reply(const Conv *conv) {
     for (size_t i = conv->n; i-- > 0;) {
         if (conv->role[i] != M_ASSISTANT || conv_is_call(conv, i))
             continue;
-        Str reply = conv->text[i];
-        while (reply.n && (reply.p[reply.n - 1] == '\n'
-                           || reply.p[reply.n - 1] == '\r'))
-            reply.n--;
+        Str reply = last_reply(conv);
         if (reply.n) fwrite(reply.p, 1, reply.n, stdout);
         fputc('\n', stdout);
         return;
@@ -2588,6 +2622,7 @@ i32 main(i32 argc, char **argv) {
     cli_apply(&opts, &cfg);
     UiPrefs prefs;
     ui_prefs_load(&prefs, &conf);
+    notify_init(&conf, &persist);
     arena_reset(&scratch);
 
     ToolRegistry tools;

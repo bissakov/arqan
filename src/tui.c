@@ -2675,6 +2675,45 @@ void tui_set_context_tokens(size_t tokens) {
     repaint();
 }
 
+/* tmux drops an OSC it does not know, so one meant for the outer terminal
+ * has to travel inside a DCS passthrough with every ESC in it doubled. The
+ * user still needs `allow-passthrough on`; without it this is discarded,
+ * which is the same silence an unsupported terminal gives. */
+static void put_passthrough(Str seq) {
+    put_str("\033Ptmux;");
+    for (size_t i = 0; i < seq.n; i++) {
+        if (seq.p[i] == '\033') put_raw("\033", 1);
+        put_raw(seq.p + i, 1);
+    }
+    put_str("\033\\");
+}
+
+/* OSC 9 asks the terminal to raise a desktop notification, so arqan needs no
+ * notification API of its own on any platform. A terminal without it ignores
+ * an unknown OSC string, which is why this is safe to send blind. */
+void tui_desktop_notify(Str text) {
+    if (!g_tui.tty || !text.n || text.n > AGENT_MAX_NOTIFY_TEXT) return;
+    char seq[AGENT_MAX_NOTIFY_TEXT + 8];
+    /* "9;" followed by a digit is a sub-command in ConEmu, Windows Terminal
+     * and ghostty (progress, cwd, marks); the caller's leading '[' keeps the
+     * text out of that space, and a payload that lost it is not sent. */
+    if (text.p[0] >= '0' && text.p[0] <= '9') return;
+    size_t n = 0;
+    memcpy(seq + n, "\033]9;", 4); n += 4;
+    memcpy(seq + n, text.p, text.n); n += text.n;
+    seq[n++] = '\a';
+    Str s = { seq, n };
+    if (getenv("TMUX")) put_passthrough(s);
+    else put_raw(s.p, s.n);
+    flush_out();
+}
+
+void tui_bell(void) {
+    if (!g_tui.tty) return;
+    put_raw("\a", 1);
+    flush_out();
+}
+
 void tui_notice(Str msg) {
     if (!g_tui.fullscreen) {   /* no popup slot to answer in */
         if (msg.n) { tui_block(); tui_write(msg); tui_write(STR("\n")); }

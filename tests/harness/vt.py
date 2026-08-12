@@ -3,7 +3,8 @@
 Only the escape repertoire tui.c actually emits is implemented, which is
 enough to turn the byte stream on a pty into a deterministic screen snapshot:
 CUP, ED, EL, SGR, DEC private modes (alt screen / cursor / autowrap / mouse)
-and OSC 52 clipboard writes.
+and the OSC writes it makes: 52 for the clipboard, 9 for a desktop
+notification.
 
 Unknown sequences are consumed and ignored rather than printed, so a stray
 escape shows up as missing output instead of corrupting every later cell.
@@ -128,6 +129,7 @@ class Terminal:
         self.modes: dict[int, bool] = {}
         self.clipboard: str | None = None
         self.clipboard_writes: list[str] = []
+        self.notifications: list[str] = []
         self.bell_count = 0
         self.title: str | None = None
         self.unknown: list[str] = []
@@ -472,6 +474,8 @@ class Terminal:
                     text = ""
                 self.clipboard = text
                 self.clipboard_writes.append(text)
+        elif payload.startswith("9;"):
+            self.notifications.append(payload[2:])
         elif payload.startswith(("0;", "2;")):
             self.title = payload.split(";", 1)[1]
 

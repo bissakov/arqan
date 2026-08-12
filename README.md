@@ -156,6 +156,28 @@ history, credentials, and UI choices, and sessions are under
 `$XDG_DATA_HOME/arqan/sessions`. Optional anonymized telemetry is off by
 default and never includes prompt, tool-argument, raw-path, or endpoint data.
 
+## Notifications
+
+When a turn ends, fails, is interrupted, or stops to ask something, arqan
+writes an OSC 9 escape and the terminal raises the desktop notification, so
+no OS notification library is linked on any platform. A terminal without the
+sequence ignores it. `notify` picks the route (`off`, `bel`, `osc9`, the
+default, or `both`) and `notify_min_ms` sets the floor a finished turn must
+pass, 10000 by default, so a turn you watched stays quiet; an error or a
+question always speaks. Test a terminal with `printf '\e]9;test\a'`, and
+under tmux enable `set -g allow-passthrough on`.
+
+`notify_command` names a program run at the same moments with a JSON object
+on its stdin, `{"kind":"turn-done","text":"...","cwd":"..."}`, where `kind`
+is `turn-done`, `turn-failed`, `input-needed`, or `interrupted`. This is the
+route that works over ssh, in a headless session, and in a terminal with no
+OSC 9, and it is a route of its own rather than a fallback: `notify = off`
+silences the escape and leaves the hook running. The line is split on
+whitespace and run without a shell, so anything
+needing quoting belongs in a script: `notify-send` on Linux, `osascript -e
+'display notification ...'` on macOS. A project's `.arqan/config.toml` may
+not set it.
+
 ## Performance
 
 Measured at `0bf0805` on Linux 7.1.6 with GCC 16.1.1 and a Ryzen 7 7800X3D.

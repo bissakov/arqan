@@ -124,6 +124,11 @@ typedef bool     b8;
  * killed, since a wait with no end would take the UI with it. */
 #define AGENT_SECRET_TIMEOUT_MS 15000
 #define AGENT_MAX_REASONING_LIST 1024
+/* A desktop notification is a one-line summary, not a transcript: the text
+ * is cut to this and the tail is dropped rather than wrapped. */
+#define AGENT_MAX_NOTIFY_TEXT  128
+#define AGENT_MAX_NOTIFY_CMD   512         /* longest notify_command line       */
+#define AGENT_MAX_NOTIFY_ARGV  16          /* words that line may hold          */
 #define AGENT_MAX_REASONING_TEMPLATE (16u << 10)
 #define AGENT_MAX_MODEL_BYTES  (1u << 20)  /* largest /models reply we will read */
 #define AGENT_WEB_BODY_BYTES   (2u << 20)  /* decompressed page source limit      */
@@ -578,6 +583,7 @@ typedef enum {
     CONF_RETRIES, CONF_RETRY_DELAY_MS, CONF_DISABLE_TOOLS,
     CONF_VERBOSE_TOOLS, CONF_RAW_MARKDOWN, CONF_SHOW_IGNORED,
     CONF_SHOW_INSTRUCTIONS, CONF_WRAP, CONF_STATUS_FIELDS, CONF_TELEMETRY,
+    CONF_NOTIFY, CONF_NOTIFY_COMMAND, CONF_NOTIFY_MIN_MS,
     CONF_N
 } ConfKey;
 
@@ -627,6 +633,30 @@ typedef struct {
 } UiPrefs;
 
 void   ui_prefs_load(UiPrefs *p, const Conf *conf);
+
+/* ---- notifications ------------------------------------------------------
+ * What arqan tells the user about once they have looked away. The terminal
+ * owns the bridge to the desktop, so nothing here links an OS notification
+ * API: an escape goes out through the paint buffer, and anything more (a
+ * headless session, an unsupported terminal, tmux without passthrough) is
+ * the user's own notify_command, which is a route of its own rather than a
+ * fallback: it runs whether or not `notify` sends an escape.
+ */
+typedef enum {
+    NOTIFY_TURN_DONE,      /* the assistant finished a turn                 */
+    NOTIFY_TURN_FAILED,    /* the turn ended on an error                    */
+    NOTIFY_INPUT_NEEDED,   /* a question or approval is waiting             */
+    NOTIFY_INTERRUPTED,    /* Ctrl-C ended the turn                         */
+} NotifyKind;
+
+/* Reads the notify settings once. `persist` owns the copied command line. */
+void notify_init(const Conf *c, Arena *persist);
+/* Raise one notification. `detail` is untrusted model or provider text: it
+ * is stripped of control bytes and cut to AGENT_MAX_NOTIFY_TEXT before it
+ * reaches a terminal or a hook. `elapsed_ms` gates NOTIFY_TURN_DONE against
+ * notify_min_ms; the other kinds always speak. Best effort throughout: a
+ * failed hook or a terminal that ignores the escape changes nothing. */
+void notify_event(NotifyKind kind, Str detail, f64 elapsed_ms);
 
 /* ---- config ------------------------------------------------------------- */
 typedef struct {
@@ -1198,6 +1228,11 @@ void tui_needs_provider(b8 on);
  * the status line. False for an empty payload or one past the sequence cap,
  * which is refused rather than truncated. */
 b8 tui_copy(Str text);
+/* Ask the terminal to raise a desktop notification (OSC 9), wrapping the
+ * sequence for tmux when running under it, and ring the bell. `text` must
+ * already be free of control bytes; both are no-ops off a terminal. */
+void tui_desktop_notify(Str text);
+void tui_bell(void);
 void tui_stop(void);
 void tui_set_status(const char *status);
 void tui_set_context_tokens(size_t tokens);
