@@ -3337,7 +3337,7 @@ enum {
     KEY_PREV_WORD, KEY_NEXT_WORD, KEY_NEWLINE, KEY_PAGE_UP, KEY_PAGE_DOWN,
     KEY_WHEEL_UP, KEY_WHEEL_DOWN, KEY_MOUSE_DOWN, KEY_MOUSE_DRAG, KEY_MOUSE_UP,
     KEY_MOUSE_MOVE, KEY_SHIFT_TAB, KEY_PASTE,
-    KEY_DELETE,
+    KEY_DELETE, KEY_TOP, KEY_BOTTOM,
     /* Meta (Alt) bindings: the readline keys a terminal cannot send as Ctrl. */
     KEY_KILL_WORD, KEY_KILL_PREV_WORD
 };
@@ -3412,14 +3412,16 @@ static i32 read_escape(void) {
             case 'C': return ctrl ? KEY_NEXT_WORD : KEY_RIGHT;
             case 'A': return KEY_UP;
             case 'B': return KEY_DOWN;
-            case 'H': return KEY_HOME;
-            case 'F': return KEY_END;
+            case 'H': return ctrl ? KEY_TOP : KEY_HOME;
+            case 'F': return ctrl ? KEY_BOTTOM : KEY_END;
             case 'Z': return KEY_SHIFT_TAB;
             case '~':
                 if (csi.nparams < 1) return KEY_NONE;
-                if (csi.p[0] == 1 || csi.p[0] == 7) return KEY_HOME;
+                if (csi.p[0] == 1 || csi.p[0] == 7)
+                    return ctrl ? KEY_TOP : KEY_HOME;
                 if (csi.p[0] == 3) return KEY_DELETE;
-                if (csi.p[0] == 4 || csi.p[0] == 8) return KEY_END;
+                if (csi.p[0] == 4 || csi.p[0] == 8)
+                    return ctrl ? KEY_BOTTOM : KEY_END;
                 if (csi.p[0] == 5) return KEY_PAGE_UP;
                 if (csi.p[0] == 6) return KEY_PAGE_DOWN;
                 /* Bracketed paste: the markers are consumed here, so every
@@ -3985,8 +3987,19 @@ static void pick_filter(Str query, b8 fuzzy) {
     g_tui.comp_sel = g_tui.pick_end && g_tui.comp_n ? g_tui.comp_n - 1 : 0;
 }
 
+/* The oldest row there is. The count of rows belongs to the width the next
+ * frame is painted at, so the request is made as far as it can possibly go
+ * and the paint clamps it to what the transcript actually offers; the paint
+ * here is what retires the placeholder, so no other reader sees it. */
+static void scroll_to_top(void) {
+    g_tui.scroll_rows = SIZE_MAX;
+    repaint();
+}
+
 /* Viewport keys, shared by the composer and the picker: a list drawn over the
- * transcript is no reason to lose the transcript. */
+ * transcript is no reason to lose the transcript. Home and End reach here
+ * only where nothing above them is editing a line; Ctrl-Home and Ctrl-End
+ * are the transcript's everywhere. */
 static b8 scroll_key(i32 key) {
     size_t rows, cols;
     screen_size(&rows, &cols); (void)cols;
@@ -3998,6 +4011,8 @@ static b8 scroll_key(i32 key) {
     else if (key == KEY_WHEEL_UP) g_tui.scroll_rows += 3;
     else if (key == KEY_WHEEL_DOWN)
         g_tui.scroll_rows = g_tui.scroll_rows > 3 ? g_tui.scroll_rows - 3 : 0;
+    else if (key == KEY_TOP || key == KEY_HOME) scroll_to_top();
+    else if (key == KEY_BOTTOM || key == KEY_END) tui_scroll_to_bottom();
     else return false;
     return true;
 }
@@ -4885,6 +4900,26 @@ static void ed_newline(Ed *e) {
     e->buf[e->n] = '\0';
 }
 
+/* The viewport moved and the draft did not, so a run of Up and Down keeps
+ * the column it aims for and a recall in progress survives. */
+static void ed_viewport(Ed *e) {
+    e->vertical = true;
+    e->keep_nav = true;
+}
+
+/* Home and End are the line's while there is a line: an empty composer has
+ * no start or end to reach, so there they are the transcript's, which is
+ * what Ctrl-Home and Ctrl-End are with a draft in the box too. */
+static void ed_home(Ed *e) {
+    if (!e->n) { scroll_to_top(); ed_viewport(e); return; }
+    e->cur = line_start(e->buf, e->cur);
+}
+
+static void ed_end(Ed *e) {
+    if (!e->n) { tui_scroll_to_bottom(); ed_viewport(e); return; }
+    e->cur = line_end(e->buf, e->n, e->cur);
+}
+
 /* The composer. Its rows are tried before the shared editor's, so Ctrl-D
  * here overrides the editor's plain forward delete rather than duplicating
  * it. Anything this table does not name reaches edit_byte. */
@@ -4911,6 +4946,17 @@ static void ed_newline(Ed *e) {
                                                         ed_vertical(e, -1);)  \
     X(KEY_DOWN,      "Down",      "Next entry, or the next draft",            \
                                                         ed_vertical(e, 1);)   \
+    X(KEY_HOME,      "Home",      "Start of line, or the top of the "         \
+                                  "transcript on an empty composer",          \
+                                                        ed_home(e);)          \
+    X(KEY_END,       "End",       "End of line, or the bottom of the "        \
+                                  "transcript on an empty composer",          \
+                                                        ed_end(e);)           \
+    X(KEY_TOP,       "Ctrl-Home", "Top of the transcript",                    \
+                                        scroll_to_top(); ed_viewport(e);)     \
+    X(KEY_BOTTOM,    "Ctrl-End",  "Bottom of the transcript",                 \
+                                        tui_scroll_to_bottom();               \
+                                        ed_viewport(e);)                      \
     X(KEY_NEWLINE,   "Alt-Enter", "Insert a line break", ed_newline(e);)      \
     X(KEY_SHIFT_TAB, "Shift-Tab", "Switch between Build and Plan mode",       \
                     /* a command rather than an edit: the draft is left */    \

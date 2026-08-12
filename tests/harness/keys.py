@@ -37,6 +37,10 @@ KEYS = {
     "pagedown": ESC + "[6~",
     "ctrl-left": ESC + "[1;5D",
     "ctrl-right": ESC + "[1;5C",
+    "ctrl-home": ESC + "[1;5H",
+    "ctrl-end": ESC + "[1;5F",
+    "ctrl-home~": ESC + "[1;5~",
+    "ctrl-end~": ESC + "[4;5~",
     "paste-start": ESC + "[200~",
     "paste-end": ESC + "[201~",
     "alt-backspace": ESC + "\x7f",   # kill the word before the cursor

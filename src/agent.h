@@ -1013,6 +1013,12 @@ void   session_save(Session *s, const Conv *c);
  * was appending to as it is. */
 b8     session_fork(Session *s, const Conv *c);
 size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max);
+/* Remove one saved session file. `path` must name a file directly in this
+ * session's own directory, which is what session_list hands out; the file
+ * the live conversation is appending to is refused, since a session cannot
+ * delete itself while it is still being written. False leaves the file
+ * alone, including when it is that one. */
+b8     session_delete(const Session *s, Str path);
 /* Reading is separate from replaying because replaying rewinds the live
  * conversation, so a file that cannot be read has to be known before
  * anything is thrown away. `session_read` returns the raw contents in

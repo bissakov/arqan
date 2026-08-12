@@ -50,6 +50,61 @@ def test_scroll_is_clamped_at_the_top(ctx):
     assert s.text() == top, "already at the top: nothing more to scroll"
 
 
+def test_home_and_end_reach_both_ends_of_the_transcript(ctx):
+    """On an empty composer Home is the first row and End the last."""
+    s = ctx.spawn()
+    fill_transcript(ctx, s)
+    bottom = s.text()
+
+    s.key("home").sync()
+    top = s.text()
+    assert top != bottom, "Home should move the viewport"
+    assert "write a lot" in top, top
+
+    for _ in range(40):
+        s.key("pageup")
+    s.sync()
+    assert s.text() == top, "Home already went as far as PageUp can"
+
+    s.key("end").sync()
+    assert s.text() == bottom, "End returns to the newest row"
+
+
+def test_home_and_end_edit_the_line_while_a_draft_is_open(ctx):
+    """With text in the box they are the line's ends, not the transcript's."""
+    s = ctx.spawn()
+    fill_transcript(ctx, s)
+    s.type("abc").sync()
+    bottom = s.text()          # with the draft on screen, since it is drawn
+
+    s.key("home").sync()
+    assert s.text() == bottom, "the viewport must not move with a draft open"
+    s.type("X").sync()
+    assert s.composer_text() == "Xabc", s.composer_lines()
+
+    s.key("end").sync()
+    s.type("Y").sync()
+    assert s.composer_text() == "XabcY", s.composer_lines()
+
+
+def test_ctrl_home_and_ctrl_end_scroll_with_a_draft_open(ctx):
+    """The unshadowed pair reaches the ends whatever the composer holds."""
+    s = ctx.spawn()
+    fill_transcript(ctx, s)
+    s.type("a draft").sync()
+    bottom = s.text()
+
+    s.key("ctrl-home").sync()
+    top = s.text()
+    assert top != bottom, "Ctrl-Home should move the viewport"
+    assert "write a lot" in top, top
+    assert s.composer_text() == "a draft", s.composer_lines()
+
+    s.key("ctrl-end").sync()
+    assert s.text() == bottom, "Ctrl-End returns to the newest row"
+    assert s.composer_text() == "a draft", s.composer_lines()
+
+
 def test_scrollbar_thumb_tracks_position(ctx):
     """The thumb sits at the bottom when pinned and moves up when scrolled."""
     s = ctx.spawn()

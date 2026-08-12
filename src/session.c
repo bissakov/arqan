@@ -305,6 +305,23 @@ size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max) {
     return kept;
 }
 
+/* Remove one saved session. The path is checked against this session's own
+ * directory rather than trusted: a delete reaches the file system, so it may
+ * only ever name a file the picker listed, one component below the directory
+ * this cwd owns. The live file is refused because it is still being appended
+ * to, and a conversation that outlives its own record is worse than one the
+ * reader has to end before removing. */
+b8 session_delete(const Session *s, Str path) {
+    if (!s->dir.n || path.n <= s->dir.n + 1 || path.n >= AGENT_MAX_PATH)
+        return false;
+    if (memcmp(path.p, s->dir.p, s->dir.n) || path.p[s->dir.n] != '/')
+        return false;
+    Str file = str_drop(path, s->dir.n + 1);
+    if (memchr(file.p, '/', file.n) || str_eq(file, STR(".."))) return false;
+    if (s->path.n && str_eq(path, s->path)) return false;
+    return unlink(path.p) == 0;
+}
+
 /* Raw contents of a saved session, held in `scratch`. Reading is separate
  * from replaying because replaying rewinds the live conversation and
  * overwrites its storage: whether the file can be read at all has to be known

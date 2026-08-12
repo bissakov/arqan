@@ -109,8 +109,14 @@ split on whitespace; anything needing quoting belongs in a wrapper script.
 - Ctrl-R (or `/find`) searches the transcript: Enter or Up walks older matches,
   Down newer, Esc closes. The reach is the scrollback's, and Ctrl-E lifts the
   caps on tool output when a match may be hiding under one.
+- The transcript scrolls with the wheel and PageUp/PageDown. Home and End go
+  to its first and last row on an empty composer; with a draft in the box they
+  are the line's ends and Ctrl-Home/Ctrl-End reach the transcript's.
 - `/` opens commands: `/clear`, `/resume`, `/fork`, `/compact`, `/model`,
   `/provider`, `/mode`, `/settings`, `/keys`, `/help`, and `/exit`.
+- `/resume` browses this directory's saved sessions and also deletes one: its
+  last row opens the same list for removal and asks to confirm. The session
+  being written cannot be deleted; `/clear` ends it first.
 - In `/model`, Ctrl-F favorites the selected model: a favorite is starred and
   listed once, at the top. Favorites are kept per provider in the state file
   and are written as they are toggled, so pinning survives a cancelled picker.

@@ -61,7 +61,7 @@ static size_t g_command_n;
 static size_t commands_init(void) {
     size_t n = 0;
     g_commands[n++] = (TuiCmd){ STR("/clear"), STR("Start a fresh conversation") };
-    g_commands[n++] = (TuiCmd){ STR("/resume"), STR("Resume a saved session from this directory") };
+    g_commands[n++] = (TuiCmd){ STR("/resume"), STR("Resume or delete a saved session from this directory") };
     g_commands[n++] = (TuiCmd){ STR("/fork"), STR("Continue in a copy, leaving this session as it is") };
     g_commands[n++] = (TuiCmd){ STR("/compact"), STR("Summarize this session and continue in a new one") };
     g_commands[n++] = (TuiCmd){ STR("/model"), STR("Pick the model") };
@@ -896,6 +896,47 @@ static void start_help_session(Agent *ag) {
     session_save(ag->sess, conv);
 }
 
+/* Delete a saved session, chosen from the same list /resume offers and
+ * confirmed on its own screen: the file is the only record of a conversation,
+ * so removing one is asked twice and never in passing. The list is the
+ * caller's and stays alive for both screens. */
+static void delete_session(Agent *ag, const SessionList *list, size_t n,
+                           const TuiCmd *items, Arena *scratch) {
+    size_t pick = 0;
+    if (!tui_pick_search_count(STR("delete a session"), items, n, n,
+                               TUI_PICK_FIRST, TUI_PICK_NONE, &pick))
+        return;
+    if (ag->sess->path.n && str_eq(list->path[pick], ag->sess->path)) {
+        tui_notice(STR("that session is the one running: /clear first"));
+        return;
+    }
+
+    const TuiCmd actions[] = {
+        { STR("Keep session"), STR("Cancel and leave the file alone") },
+        { STR("Delete session"), STR("Remove the saved conversation") },
+    };
+    Buf title;
+    buf_init(&title, scratch, list->name[pick].n + 24);
+    buf_puts(&title, STR("delete session "));
+    buf_puts(&title, list->name[pick]);
+    buf_putc(&title, '?');
+    if (!buf_ok(&title)) return;
+    size_t action = 0;
+    if (!tui_pick(buf_finish(&title), actions, 2, TUI_PICK_FIRST, 0, &action)
+        || action == 0)
+        return;
+
+    if (!session_delete(ag->sess, list->path[pick])) {
+        tui_notice(STR("could not delete that session"));
+        return;
+    }
+    Buf msg;
+    buf_init(&msg, scratch, list->name[pick].n + 24);
+    buf_puts(&msg, STR("deleted session: "));
+    buf_puts(&msg, list->name[pick]);
+    tui_notice(buf_ok(&msg) ? buf_finish(&msg) : STR("deleted the session"));
+}
+
 /* Nothing to open leaves the view exactly as it was and answers in the
  * popup's own slot: a session that did not open is not part of the
  * conversation, so it has no business in the transcript.
@@ -915,18 +956,28 @@ static void resume_session(Agent *ag) {
         tui_notice(STR("no saved sessions in this directory"));
         return;
     }
-    TuiCmd *items = arena_new(scratch, TuiCmd, n);
+    /* The list plus the row that deletes from it. The delete row is not a
+     * session, so it is left out of the count that decides whether the
+     * picker searches. */
+    TuiCmd *items = arena_new(scratch, TuiCmd, n + 1);
     if (!items) {
         tui_notice(STR("out of memory listing sessions"));
         return;
     }
     for (size_t i = 0; i < n; i++)
         items[i] = (TuiCmd){ list.name[i], list.preview[i] };
+    items[n] = (TuiCmd){ STR("+ delete a session"),
+                         STR("Remove a saved conversation from this "
+                             "directory") };
 
     size_t pick = 0;
-    if (!tui_pick(STR("pick a session"), items, n, TUI_PICK_FIRST,
-                  TUI_PICK_NONE, &pick))
+    if (!tui_pick_search_count(STR("pick a session"), items, n + 1, n,
+                               TUI_PICK_FIRST, TUI_PICK_NONE, &pick))
         return;
+    if (pick == n) {
+        delete_session(ag, &list, n, items, scratch);
+        return;
+    }
 
     /* Read first: replaying overwrites the live conversation's storage, so a
      * session that cannot be read must not cost the one that is running. */

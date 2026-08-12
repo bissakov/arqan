@@ -238,6 +238,90 @@ def test_esc_leaves_the_picker_without_resuming(ctx):
     assert s.composer_text() == "", s.composer_lines()
 
 
+def open_delete(s):
+    """The picker, walked to its delete row and opened."""
+    s.submit("/resume")
+    s.wait_status("pick a session")
+    s.key("up")                       # the delete row sits last
+    s.wait_for(lambda t: "+ delete a session" in s.popup_selected(),
+               "the delete row to be selected")
+    s.key("enter")
+    return s.wait_status("delete a session")
+
+
+def test_a_session_is_deleted_from_the_picker(ctx):
+    """The file goes, and the list that offered it no longer does."""
+    record(ctx, "throwaway session", "forget me")
+    record(ctx, "kept session", "keep me")
+    d = sessions_dir(ctx)
+    assert len(sorted(d.iterdir())) == 2, sorted(p.name for p in d.iterdir())
+
+    s = ctx.spawn()
+    open_delete(s)
+    s.key("down")                     # newest first, so this is the older one
+    s.wait_for(lambda t: "throwaway session" in s.popup_selected(),
+               "the older session to be selected")
+    s.key("enter")
+    s.wait_for(lambda _: s.status_kind().startswith("delete session "),
+               "the confirmation to open")
+    s.key("down").sync()              # Keep is the default answer
+    assert "Delete session" in s.popup_selected(), s.popup_selected()
+    s.key("enter")
+    s.wait_text("deleted session")
+
+    files = sorted(d.iterdir())
+    assert len(files) == 1, [p.name for p in files]
+    assert "kept session" in files[0].read_text()
+
+    s.submit("/resume")
+    s.wait_status("pick a session")
+    text = s.text()
+    assert "kept session" in text, text
+    assert "throwaway session" not in text, text
+
+
+def test_the_confirmation_defaults_to_keeping_the_session(ctx):
+    """Enter on the confirmation cancels; the file is still there."""
+    record(ctx, "still here", "untouched")
+
+    s = ctx.spawn()
+    open_delete(s)
+    s.key("enter")
+    s.wait_for(lambda _: s.status_kind().startswith("delete session "),
+               "the confirmation to open")
+    assert "Keep session" in s.popup_selected(), s.popup_selected()
+    s.key("enter")
+    s.wait_status("ready")
+
+    files = sorted(sessions_dir(ctx).iterdir())
+    assert len(files) == 1, [p.name for p in files]
+    assert "still here" in files[0].read_text()
+
+
+def test_esc_leaves_the_delete_picker_alone(ctx):
+    """Cancelling the choice deletes nothing."""
+    record(ctx, "safe session", "safe reply")
+
+    s = ctx.spawn()
+    open_delete(s)
+    s.key("esc")
+    s.wait_status("ready")
+    assert len(sorted(sessions_dir(ctx).iterdir())) == 1
+
+
+def test_the_running_session_cannot_be_deleted(ctx):
+    """The file being appended to is refused, and says what to do instead."""
+    ctx.scenario("text=in+progress")
+    s = ctx.spawn()
+    s.submit("open a session")
+    s.wait_turn_done()
+
+    open_delete(s)
+    s.key("enter")
+    s.wait_text("that session is the one running")
+    assert len(sorted(sessions_dir(ctx).iterdir())) == 1
+
+
 def test_sessions_are_scoped_to_the_directory(ctx):
     """A session recorded elsewhere is not offered here."""
     record(ctx, "in the work dir", "noted")
