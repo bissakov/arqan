@@ -46,7 +46,9 @@ def test_recording_is_off_until_it_is_asked_for(ctx):
 
 def test_telemetry_toggle_records_the_turn(ctx):
     """With it on, a turn leaves the events a report is read from."""
-    ctx.scenario("text=hello+there,usage=200/12")
+    ctx.scenario(
+        "text=hello+there,usage=200/12,cache_read=128,cache_creation=64"
+    )
     s = ctx.spawn()
     s.settings_toggle("Telemetry")
     s.submit("say hi")
@@ -60,6 +62,8 @@ def test_telemetry_toggle_records_the_turn(ctx):
     request = [e for e in events(ctx) if e["ev"] == "request"][-1]
     assert request["prompt_tokens"] == 200
     assert request["completion_tokens"] == 12
+    assert request["cache_read_tokens"] == 128
+    assert request["cache_creation_tokens"] == 64
     assert request["reply_bytes"] == len("hello there")
     turn = [e for e in events(ctx) if e["ev"] == "turn_end"][-1]
     assert turn["ok"] is True and turn["rounds"] == 1, turn

@@ -135,6 +135,10 @@ class Scenario:
             "prompt_tokens": prompt,
             "completion_tokens": completion,
             "total_tokens": prompt + completion,
+            "prompt_tokens_details": {
+                "cached_tokens": self.cache_read_tokens,
+                "cache_write_tokens": self.cache_creation_tokens,
+            },
         }
 
     # -- DSL ---------------------------------------------------------------
@@ -947,17 +951,7 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             "choices": [{"index": 0, "message": message, "finish_reason": finish}],
         }
         if scenario.usage:
-            prompt = scenario.prompt_tokens
-            if prompt is None:
-                prompt = max(1, len(json.dumps(messages)) // 4)
-            completion = scenario.completion_tokens
-            if completion is None:
-                completion = max(1, completion_chars // 4)
-            payload["usage"] = {
-                "prompt_tokens": prompt,
-                "completion_tokens": completion,
-                "total_tokens": prompt + completion,
-            }
+            payload["usage"] = scenario._usage(messages, completion_chars)
         if scenario.first_delay:
             time.sleep(scenario.first_delay)
         self._json(200, payload)

@@ -390,6 +390,17 @@ static i32 slot(StreamState *s, i32 idx) {
     return idx;
 }
 
+static b8 usage_size(const JVal *v, size_t *out) {
+    if (!v || v->type != J_NUM || !(v->u.n >= 0)
+        || v->u.n >= (f64)SIZE_MAX) return false;
+    *out = (size_t)v->u.n;
+    return true;
+}
+
+static size_t usage_add(size_t a, size_t b) {
+    return a > SIZE_MAX - b ? SIZE_MAX : a + b;
+}
+
 /* With stream_options.include_usage the final event has no choices and
  * carries the request's token counts; a non-streamed reply carries the same
  * object at its top level. */
@@ -399,13 +410,20 @@ static void read_usage(Provider *p, const JVal *root) {
     const JVal *prompt = json_get(usage, STR("prompt_tokens"));
     const JVal *completion = json_get(usage, STR("completion_tokens"));
     const JVal *total = json_get(usage, STR("total_tokens"));
-    if (!prompt || prompt->type != J_NUM
-        || !completion || completion->type != J_NUM) return;
-    p->prompt_tokens = (size_t)prompt->u.n;
-    p->completion_tokens = (size_t)completion->u.n;
-    p->total_tokens = total && total->type == J_NUM
-                    ? (size_t)total->u.n
-                    : p->prompt_tokens + p->completion_tokens;
+    const JVal *details = json_get(usage, STR("prompt_tokens_details"));
+    size_t n = 0;
+    if (!usage_size(prompt, &p->prompt_tokens)
+        || !usage_size(completion, &p->completion_tokens)) return;
+    if (usage_size(total, &n))
+        p->total_tokens = n;
+    else
+        p->total_tokens = usage_add(p->prompt_tokens, p->completion_tokens);
+    if (details && details->type == J_OBJ) {
+        if (usage_size(json_get(details, STR("cached_tokens")), &n))
+            p->cache_read_tokens = n;
+        if (usage_size(json_get(details, STR("cache_write_tokens")), &n))
+            p->cache_creation_tokens = n;
+    }
     p->usage_valid = true;
     /* Fired wherever it is heard, so the caller's context counter is kept
      * current even when the turn is interrupted before it ends. */
@@ -493,17 +511,6 @@ static void openai_event(Provider *p, StreamState *s, const JVal *ev) {
 /* Anthropic reports the prompt on message_start and the completion on
  * message_delta, so each is kept where it was heard rather than replacing the
  * pair. */
-static b8 usage_size(const JVal *v, size_t *out) {
-    if (!v || v->type != J_NUM || !(v->u.n >= 0)
-        || v->u.n >= (f64)SIZE_MAX) return false;
-    *out = (size_t)v->u.n;
-    return true;
-}
-
-static size_t usage_add(size_t a, size_t b) {
-    return a > SIZE_MAX - b ? SIZE_MAX : a + b;
-}
-
 static void read_usage_anth(Provider *p, const JVal *owner) {
     const JVal *usage = json_get(owner, STR("usage"));
     if (!usage || usage->type != J_OBJ) return;
