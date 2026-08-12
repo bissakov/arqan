@@ -173,10 +173,6 @@ b8 conf_bool(const Conf *c, ConfKey k) {
 
 /* ---- resolution ---------------------------------------------------------- */
 
-static Str conf_dup(Arena *a, Str s) {
-    return s.n ? str_dup(a, s) : (Str){0};
-}
-
 /* One value from one source. `where` names the file for a diagnostic and is
  * empty for the built-in defaults. */
 static void conf_take(Conf *c, ConfKey k, Str v, ConfOrigin o, Str where,
@@ -195,7 +191,7 @@ static void conf_take(Conf *c, ConfKey k, Str v, ConfOrigin o, Str where,
     if (c->origin[k] > o) return;
     /* An empty value is "unset", and callers that pass the string to curl or
      * test for a pointer must not see an allocated empty one. */
-    Str dup = v.n ? str_dup(persist, v) : (Str){0};
+    Str dup = str_dup_opt(persist, v);
     if (v.n && !dup.p) return;
     c->val[k] = dup;
     c->origin[k] = (u8)o;
@@ -279,11 +275,11 @@ static void conf_apply_endpoint(Conf *c, Arena *persist, Arena *scratch) {
         conf_take(c, CONF_MODEL, e.model[i], CONF_FROM_ENDPOINT, where,
                   persist);
 
-    c->reasoning_efforts   = conf_dup(persist, e.reasoning_efforts[i]);
-    c->thinking_budgets    = conf_dup(persist, e.thinking_budgets[i]);
-    c->reasoning_effort    = conf_dup(persist, e.reasoning_effort[i]);
-    c->thinking_budget     = conf_dup(persist, e.thinking_budget[i]);
-    c->reasoning_template  = conf_dup(persist, e.reasoning_template[i]);
+    c->reasoning_efforts   = str_dup_opt(persist, e.reasoning_efforts[i]);
+    c->thinking_budgets    = str_dup_opt(persist, e.thinking_budgets[i]);
+    c->reasoning_effort    = str_dup_opt(persist, e.reasoning_effort[i]);
+    c->thinking_budget     = str_dup_opt(persist, e.thinking_budget[i]);
+    c->reasoning_template  = str_dup_opt(persist, e.reasoning_template[i]);
     scratch->off = mark;
 
     /* The key is kept apart from the settings, in the credentials file. */

@@ -48,7 +48,7 @@ diff before accepting an intentional update.
 | `text=` | literal response; `+` means a space and `\n` a newline |
 | `words=`, `paragraphs=`, `seed=` | generated lorem shape |
 | `chunk=`, `delay=`, `first_delay=` | streaming cadence |
-| `tool=NAME:JSON`, `tool_rounds=`, `final_text=` | tool-call rounds |
+| `tool=NAME:JSON`, `tool_rounds=`, `tool_ids=`, `final_text=` | tool-call rounds |
 | `reasoning=`, `reasoning_field=` | streamed reasoning trace |
 | `usage=P/C` | token counts |
 | `status=`, `fail_times=`, `fail_status=`, `fail_mode=` | failures and retries |

@@ -1008,10 +1008,10 @@ static const char *search_test_prefix(size_t slot) {
 }
 #endif
 
-/* Empty stays empty: str_dup of an empty Str would copy from NULL. */
+/* An unset setting stays unset: the checks below and the URL builder both
+ * read `.n` as "configured". */
 static Str search_setting(Arena *persist, Str value) {
-    value = str_trim(value);
-    return value.n ? str_dup(persist, value) : (Str){0};
+    return str_dup_opt(persist, str_trim(value));
 }
 
 void web_search_init(const Conf *c, Arena *persist) {

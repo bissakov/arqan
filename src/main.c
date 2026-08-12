@@ -882,7 +882,7 @@ static void start_help_session(Agent *ag) {
     tui_clear();
 
     Str built = help_build(ag);
-    Str prompt = built.n ? str_dup(ag->persist, built) : (Str){0};
+    Str prompt = str_dup_opt(ag->persist, built);
     arena_reset(ag->scratch);
     if (!prompt.p) {
         tui_notice(STR("out of memory building help context"));
@@ -1482,7 +1482,7 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
         tui_notice(str_c(err[0] ? err : "could not store the API key"));
         return false;
     }
-    Str stored_key = key[0] ? str_dup(persist, str_c(key)) : (Str){0};
+    Str stored_key = str_dup_opt(persist, str_c(key));
     if (key[0] && !stored_key.p) {
         tui_notice(STR("out of memory storing the provider"));
         return false;

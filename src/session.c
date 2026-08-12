@@ -365,8 +365,7 @@ Str session_read(Str path, Arena *scratch) {
 /* One string field of a saved line, copied into the conversation's arena.
  * Absent and empty are the same answer, so neither costs an allocation. */
 static Str sess_field(Arena *persist, const JVal *v, Str key) {
-    Str s = json_str(v, key);
-    return s.n ? str_dup(persist, s) : (Str){0};
+    return str_dup_opt(persist, json_str(v, key));
 }
 
 /* Session files are editable external input. Only validated thinking block

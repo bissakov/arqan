@@ -187,12 +187,12 @@ b8 endpoints_put(Endpoints *e, Str name, Str base_url, Str model, ApiKind api,
         e->n++;
     }
     Str url = str_dup(a, base_url);
-    Str mdl = model.n ? str_dup(a, model) : (Str){0};
-    Str ef = efforts.n ? str_dup(a, efforts) : (Str){0};
-    Str bu = budgets.n ? str_dup(a, budgets) : (Str){0};
-    Str es = effort.n ? str_dup(a, effort) : (Str){0};
-    Str bs = budget.n ? str_dup(a, budget) : (Str){0};
-    Str te = templ.n ? str_dup(a, templ) : (Str){0};
+    Str mdl = str_dup_opt(a, model);
+    Str ef = str_dup_opt(a, efforts);
+    Str bu = str_dup_opt(a, budgets);
+    Str es = str_dup_opt(a, effort);
+    Str bs = str_dup_opt(a, budget);
+    Str te = str_dup_opt(a, templ);
     if (!url.p || (model.n && !mdl.p) || (efforts.n && !ef.p)
         || (budgets.n && !bu.p) || (effort.n && !es.p)
         || (budget.n && !bs.p) || (templ.n && !te.p)) return false;

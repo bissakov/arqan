@@ -165,7 +165,13 @@ typedef struct { const char *p; size_t n; } Str;
 #define STR(lit) ((Str){ (lit), sizeof(lit) - 1 })
 
 Str     str_c(const char *z);
-Str     str_dup(Arena *a, Str s);              /* copies into arena         */
+/* Copies into `a`, terminated. Safe for an empty Str carrying a NULL pointer.
+ * An empty `s` still allocates, so a NULL `.p` back means the arena is full. */
+Str     str_dup(Arena *a, Str s);
+/* An optional value: empty stays unset ((Str){0}) rather than becoming an
+ * allocated "", which callers that test the pointer or hand it to curl rely
+ * on. A full arena answers the same way, so tell the two apart with `s.n`. */
+Str     str_dup_opt(Arena *a, Str s);
 b8    str_eq(Str a, Str b);
 b8    str_starts(Str s, Str prefix);
 Str     str_trim(Str s);

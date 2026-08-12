@@ -297,8 +297,7 @@ static Str prompt_for(const ToolRegistry *tools, AgentMode mode, Str configured,
     if (sources) {
         sources->primary = expanded;
         sources->primary_label = primary_label;
-        sources->primary_path = primary_path.n ? str_dup(persist, primary_path)
-                                               : (Str){0};
+        sources->primary_path = str_dup_opt(persist, primary_path);
         for (size_t i = 0; i < n_agents; i++) {
             sources->agents[i] = str_dup(persist, agents[i]);
             sources->agent_paths[i] = str_dup(persist, agent_paths[i]);

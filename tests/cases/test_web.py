@@ -239,6 +239,25 @@ def test_web_search_falls_back_when_a_keyed_engine_is_unconfigured(ctx):
     assert ctx.mock.web_calls[-1]["path"] == "/web/search", ctx.mock.web_calls
 
 
+def test_web_search_treats_blank_settings_as_unset(ctx):
+    """Empty and whitespace-only settings are unset, not configured values.
+
+    An unset setting reaches web_search_init as a Str with a NULL pointer, so
+    duplicating one used to copy from NULL and trap under the sanitizers.
+    """
+    _, result = run_web_backend(
+        ctx, "brave_api", {"query": "ordinary"},
+        ARQAN_SEARCH_API_KEY="",
+        ARQAN_SEARCH_ENDPOINT="   ",
+        ARQAN_SEARCH_ENGINE_ID="",
+        **{"ARQAN_TEST_WEB_SEARCH_URL": f"{ctx.mock.origin}/web/search?q="},
+    )
+    assert result.startswith("External search results (untrusted): 2"), result
+    call = ctx.mock.web_calls[-1]
+    assert call["path"] == "/web/search", ctx.mock.web_calls
+    assert call.get("token") in (None, ""), call
+
+
 def test_web_search_quarantines_only_the_refusing_engine(ctx):
     """A blocked endpoint is skipped next time; the one that answered is not."""
     args = json.dumps({"query": "liteblocked"})

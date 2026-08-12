@@ -55,10 +55,16 @@ b8 str_eq(Str a, Str b) { return a.n == b.n && (a.n == 0 || !memcmp(a.p, b.p, a.
 Str str_dup(Arena *a, Str s) {
     char *dst = (char *)arena_alloc(a, s.n + 1, 1);
     if (!dst) return (Str){0};
-    memcpy(dst, s.p, s.n);
+    /* An empty Str legitimately carries a NULL pointer, and memcpy from NULL
+     * is undefined at any length, zero included. The result is always
+     * allocated and terminated, so a NULL `.p` back means the arena is full
+     * and nothing else. */
+    if (s.n) memcpy(dst, s.p, s.n);
     dst[s.n] = '\0';
     return (Str){ dst, s.n };
 }
+
+Str str_dup_opt(Arena *a, Str s) { return s.n ? str_dup(a, s) : (Str){0}; }
 
 b8 str_starts(Str s, Str prefix) {
     return s.n >= prefix.n && (prefix.n == 0 || !memcmp(s.p, prefix.p, prefix.n));

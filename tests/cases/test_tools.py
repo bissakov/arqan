@@ -48,6 +48,26 @@ def test_tool_call_is_replayed_to_the_provider(ctx):
     assert messages[3]["content"] == "content A"
 
 
+def test_tool_call_without_an_id_still_runs(ctx):
+    """An OpenAI-compatible server may omit the call id; the round still runs.
+
+    An absent id reaches the conversation as an empty Str with a NULL pointer,
+    which duplicating into the persistent arena used to copy from NULL.
+    """
+    ctx.write_file("a.txt", "content A")
+    ctx.scenario('tool=read:{"path":"a.txt"},tool_ids=0,final_text=done')
+    s = ctx.spawn()
+    s.submit("read a.txt")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    assert ctx.mock.tool_results() == ["content A"], ctx.mock.tool_results()
+    messages = ctx.mock.requests[-1]["messages"]
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "tool"]
+    assert messages[2]["tool_calls"][0].get("id", "") == ""
+    assert messages[3]["tool_call_id"] == ""
+
+
 def test_write_tool_previews_the_content(ctx):
     """A write shows the path and the head of what it writes, not JSON."""
     body = "".join(f"line {i}\n" for i in range(12))

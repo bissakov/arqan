@@ -72,6 +72,9 @@ class Scenario:
         # tools: "read:{...}" entries, repeatable via `|`
         self.tools: list[tuple[str, str]] = kw.get("tools", [])
         self.tool_rounds: int = int(kw.get("tool_rounds", 1))
+        # Not every OpenAI-compatible server names its calls: with tool_ids=0
+        # the call arrives without an "id", which a client has to tolerate.
+        self.tool_ids: bool = _truthy(kw.get("tool_ids", "1"))
         # reasoning: streamed before the content, in the field a provider of
         # that family uses ("reasoning_content" or "reasoning").
         self.reasoning: str | None = kw.get("reasoning")
@@ -840,16 +843,14 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
 
         if emit_tools:
             for index, (name, args) in enumerate(scenario.tools):
-                head = {
-                    "tool_calls": [
-                        {
-                            "index": index,
-                            "id": f"call_{index}",
-                            "type": "function",
-                            "function": {"name": name, "arguments": ""},
-                        }
-                    ]
+                call = {
+                    "index": index,
+                    "type": "function",
+                    "function": {"name": name, "arguments": ""},
                 }
+                if scenario.tool_ids:
+                    call["id"] = f"call_{index}"
+                head = {"tool_calls": [call]}
                 if not self._sse(frame(head)):
                     return
                 # arguments arrive in fragments, like a real provider
@@ -911,9 +912,9 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             message["tool_calls"] = [
                 {
                     "index": index,
-                    "id": f"call_{index}",
                     "type": "function",
                     "function": {"name": name, "arguments": args},
+                    **({"id": f"call_{index}"} if scenario.tool_ids else {}),
                 }
                 for index, (name, args) in enumerate(scenario.tools)
             ]
