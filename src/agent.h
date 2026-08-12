@@ -1136,16 +1136,23 @@ b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
 b8 tui_pick_search_count(Str title, const TuiCmd *items, size_t n,
                          size_t search_n, TuiPickAnchor anchor, size_t start,
                          size_t *out);
-/* A row action a chooser offers beside choosing, bound to Ctrl-F. `act` acts
- * on the row `row` names, rebuilds `rows` and returns the new count, at most
- * `max`; it writes to `*moved` the index the acted-on row now sits at, since
- * an action may reorder the list. The caller owns `rows` and `ud` and keeps
- * both alive for the call. */
+/* A row action a chooser offers beside choosing. `key` is the byte it answers
+ * to, one of the action keys the picker binds: Ctrl-F (0x06) marks a row,
+ * Ctrl-X (0x18) removes one. `act` acts on the row `row` names, rebuilds
+ * `rows` and returns the new count, at most `max`; it writes to `*moved` the
+ * index the acted-on row now sits at, since an action may reorder the list,
+ * and returning zero closes the screen because nothing is left to choose.
+ * `hint` is shown in the notice slot while the screen is open, so a key only
+ * this list offers is read where it is used; it is dropped when the screen
+ * closes and an answer already in the slot keeps its place. The caller owns
+ * `rows` and `ud` and keeps both alive for the call. */
 typedef struct {
     TuiCmd *rows;
     size_t  max;
     size_t (*act)(void *ud, size_t row, size_t *moved);
     void   *ud;
+    i32     key;
+    Str     hint;
 } TuiPickAction;
 /* As tui_pick_search_count over `act->rows`, with that action bound. */
 b8 tui_pick_action(Str title, size_t n, size_t search_n, TuiPickAnchor anchor,

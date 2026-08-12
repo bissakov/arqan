@@ -238,75 +238,86 @@ def test_esc_leaves_the_picker_without_resuming(ctx):
     assert s.composer_text() == "", s.composer_lines()
 
 
-def open_delete(s):
-    """The picker, walked to its delete row and opened."""
+def open_picker(s):
+    """The session picker, open on its newest entry."""
     s.submit("/resume")
-    s.wait_status("pick a session")
-    s.key("up")                       # the delete row sits last
-    s.wait_for(lambda t: "+ delete a session" in s.popup_selected(),
-               "the delete row to be selected")
-    s.key("enter")
-    return s.wait_status("delete a session")
+    return s.wait_status("pick a session")
 
 
-def test_a_session_is_deleted_from_the_picker(ctx):
-    """The file goes, and the list that offered it no longer does."""
+def test_the_picker_says_which_key_deletes(ctx):
+    """The hint is in the notice slot while the list is up, and not after."""
+    record(ctx, "hinted session", "hinted reply")
+
+    s = ctx.spawn()
+    open_picker(s)
+    assert "Ctrl-X deletes the selected session" in s.text(), s.text()
+    s.key("esc")
+    s.wait_status("ready")
+    assert "Ctrl-X deletes" not in s.text(), s.text()
+
+
+def test_ctrl_x_deletes_the_selected_session_on_the_second_press(ctx):
+    """The first press asks, the second removes both the file and the row."""
     record(ctx, "throwaway session", "forget me")
     record(ctx, "kept session", "keep me")
     d = sessions_dir(ctx)
     assert len(sorted(d.iterdir())) == 2, sorted(p.name for p in d.iterdir())
 
     s = ctx.spawn()
-    open_delete(s)
+    open_picker(s)
     s.key("down")                     # newest first, so this is the older one
     s.wait_for(lambda t: "throwaway session" in s.popup_selected(),
                "the older session to be selected")
-    s.key("enter")
-    s.wait_for(lambda _: s.status_kind().startswith("delete session "),
-               "the confirmation to open")
-    s.key("down").sync()              # Keep is the default answer
-    assert "Delete session" in s.popup_selected(), s.popup_selected()
-    s.key("enter")
-    s.wait_text("deleted session")
 
+    s.key("ctrl-x").sync()
+    assert "Press Ctrl-X again to delete" in s.text(), s.text()
+    assert len(sorted(d.iterdir())) == 2, "the first press only asks"
+    assert "throwaway session" in s.text(), "and the row stays where it was"
+
+    s.key("ctrl-x")
+    s.wait_text("deleted session")
+    # the notice is painted with the delete, the shorter list on the frame
+    # after it, so the row leaving is its own wait
+    s.wait_gone("throwaway session")
     files = sorted(d.iterdir())
     assert len(files) == 1, [p.name for p in files]
     assert "kept session" in files[0].read_text()
 
+    # the list is still a list: the survivor resumes from where it now sits
+    s.key("enter")
+    s.wait_text("keep me")
+
+
+def test_a_second_press_on_another_row_only_arms_that_row(ctx):
+    """The arming belongs to the row it was asked on, not to the key."""
+    record(ctx, "first session", "first reply")
+    record(ctx, "second session", "second reply")
+    d = sessions_dir(ctx)
+
+    s = ctx.spawn()
+    open_picker(s)
+    s.key("ctrl-x").sync()
+    assert "Press Ctrl-X again to delete" in s.text(), s.text()
+    s.key("down").sync()
+    s.key("ctrl-x").sync()
+    assert len(sorted(d.iterdir())) == 2, "moving away re-asks"
+    assert "Press Ctrl-X again to delete" in s.text(), s.text()
+
+
+def test_esc_after_a_delete_reports_it_once_the_screen_closes(ctx):
+    """The picker borrows the notice slot, so the count is said again."""
+    record(ctx, "gone session", "gone reply")
+
+    s = ctx.spawn()
+    open_picker(s)
+    s.key("ctrl-x").sync()
+    s.key("ctrl-x")
+    s.wait_status("ready")            # the last row went, so the screen closed
+    s.wait_text("deleted 1 saved session")
+    assert not list(sessions_dir(ctx).iterdir()), "the file is gone"
+
     s.submit("/resume")
-    s.wait_status("pick a session")
-    text = s.text()
-    assert "kept session" in text, text
-    assert "throwaway session" not in text, text
-
-
-def test_the_confirmation_defaults_to_keeping_the_session(ctx):
-    """Enter on the confirmation cancels; the file is still there."""
-    record(ctx, "still here", "untouched")
-
-    s = ctx.spawn()
-    open_delete(s)
-    s.key("enter")
-    s.wait_for(lambda _: s.status_kind().startswith("delete session "),
-               "the confirmation to open")
-    assert "Keep session" in s.popup_selected(), s.popup_selected()
-    s.key("enter")
-    s.wait_status("ready")
-
-    files = sorted(sessions_dir(ctx).iterdir())
-    assert len(files) == 1, [p.name for p in files]
-    assert "still here" in files[0].read_text()
-
-
-def test_esc_leaves_the_delete_picker_alone(ctx):
-    """Cancelling the choice deletes nothing."""
-    record(ctx, "safe session", "safe reply")
-
-    s = ctx.spawn()
-    open_delete(s)
-    s.key("esc")
-    s.wait_status("ready")
-    assert len(sorted(sessions_dir(ctx).iterdir())) == 1
+    s.wait_text("no saved sessions in this directory")
 
 
 def test_the_running_session_cannot_be_deleted(ctx):
@@ -316,10 +327,13 @@ def test_the_running_session_cannot_be_deleted(ctx):
     s.submit("open a session")
     s.wait_turn_done()
 
-    open_delete(s)
-    s.key("enter")
+    open_picker(s)
+    s.key("ctrl-x").sync()
+    s.key("ctrl-x")
     s.wait_text("that session is the one running")
     assert len(sorted(sessions_dir(ctx).iterdir())) == 1
+    s.key("esc")
+    s.wait_status("ready")
 
 
 def test_sessions_are_scoped_to_the_directory(ctx):

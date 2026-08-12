@@ -61,7 +61,7 @@ static size_t g_command_n;
 static size_t commands_init(void) {
     size_t n = 0;
     g_commands[n++] = (TuiCmd){ STR("/clear"), STR("Start a fresh conversation") };
-    g_commands[n++] = (TuiCmd){ STR("/resume"), STR("Resume or delete a saved session from this directory") };
+    g_commands[n++] = (TuiCmd){ STR("/resume"), STR("Resume a saved session from this directory, or delete one") };
     g_commands[n++] = (TuiCmd){ STR("/fork"), STR("Continue in a copy, leaving this session as it is") };
     g_commands[n++] = (TuiCmd){ STR("/compact"), STR("Summarize this session and continue in a new one") };
     g_commands[n++] = (TuiCmd){ STR("/model"), STR("Pick the model") };
@@ -896,45 +896,63 @@ static void start_help_session(Agent *ag) {
     session_save(ag->sess, conv);
 }
 
-/* Delete a saved session, chosen from the same list /resume offers and
- * confirmed on its own screen: the file is the only record of a conversation,
- * so removing one is asked twice and never in passing. The list is the
- * caller's and stays alive for both screens. */
-static void delete_session(Agent *ag, const SessionList *list, size_t n,
-                           const TuiCmd *items, Arena *scratch) {
-    size_t pick = 0;
-    if (!tui_pick_search_count(STR("delete a session"), items, n, n,
-                               TUI_PICK_FIRST, TUI_PICK_NONE, &pick))
-        return;
-    if (ag->sess->path.n && str_eq(list->path[pick], ag->sess->path)) {
+/* The session picker's list, with the rows it draws beside the files they
+ * name so a delete can drop both together. `armed` is the row a second
+ * Ctrl-X removes: the file is the only record of a conversation, so it is
+ * asked twice, and the arming is the question. */
+typedef struct {
+    Agent      *ag;
+    SessionList list;
+    TuiCmd     *rows;
+    size_t      n;
+    size_t      armed;
+    b8          has_armed;
+    size_t      deleted;
+} SessionPick;
+
+/* Ctrl-X on a session row. The first press arms the row and says so; the
+ * second deletes the file and drops the row, which is what the picker
+ * redraws. Anything that refuses answers in the notice slot and leaves the
+ * list as it was, since a screen that closed on an error is an error the
+ * reader has to go looking for. */
+static size_t session_delete_row(void *ud, size_t row, size_t *moved) {
+    SessionPick *sp = ud;
+    if (row >= sp->n) return sp->n;
+    *moved = row;
+    Str name = sp->list.name[row];
+    char msg[128];
+
+    if (!sp->has_armed || sp->armed != row) {
+        sp->has_armed = true;
+        sp->armed = row;
+        snprintf(msg, sizeof msg, "Press Ctrl-X again to delete %.*s",
+                 (i32)name.n, name.p);
+        tui_notice(str_c(msg));
+        return sp->n;
+    }
+    sp->has_armed = false;
+    if (sp->ag->sess->path.n && str_eq(sp->list.path[row], sp->ag->sess->path)) {
         tui_notice(STR("that session is the one running: /clear first"));
-        return;
+        return sp->n;
     }
-
-    const TuiCmd actions[] = {
-        { STR("Keep session"), STR("Cancel and leave the file alone") },
-        { STR("Delete session"), STR("Remove the saved conversation") },
-    };
-    Buf title;
-    buf_init(&title, scratch, list->name[pick].n + 24);
-    buf_puts(&title, STR("delete session "));
-    buf_puts(&title, list->name[pick]);
-    buf_putc(&title, '?');
-    if (!buf_ok(&title)) return;
-    size_t action = 0;
-    if (!tui_pick(buf_finish(&title), actions, 2, TUI_PICK_FIRST, 0, &action)
-        || action == 0)
-        return;
-
-    if (!session_delete(ag->sess, list->path[pick])) {
+    if (!session_delete(sp->ag->sess, sp->list.path[row])) {
         tui_notice(STR("could not delete that session"));
-        return;
+        return sp->n;
     }
-    Buf msg;
-    buf_init(&msg, scratch, list->name[pick].n + 24);
-    buf_puts(&msg, STR("deleted session: "));
-    buf_puts(&msg, list->name[pick]);
-    tui_notice(buf_ok(&msg) ? buf_finish(&msg) : STR("deleted the session"));
+
+    sp->n--;
+    sp->deleted++;
+    for (size_t i = row; i < sp->n; i++) {
+        sp->list.name[i]    = sp->list.name[i + 1];
+        sp->list.path[i]    = sp->list.path[i + 1];
+        sp->list.preview[i] = sp->list.preview[i + 1];
+        sp->rows[i]         = sp->rows[i + 1];
+    }
+    sp->list.n = sp->n;
+    *moved = row < sp->n ? row : (sp->n ? sp->n - 1 : 0);
+    snprintf(msg, sizeof msg, "deleted session: %.*s", (i32)name.n, name.p);
+    tui_notice(str_c(msg));
+    return sp->n;
 }
 
 /* Nothing to open leaves the view exactly as it was and answers in the
@@ -950,46 +968,53 @@ static void resume_session(Agent *ag) {
     Arena *scratch = ag->scratch;
     size_t session_mark = ag->mark;
     arena_reset(scratch);
-    SessionList list;
-    size_t n = session_list(sess, scratch, &list, AGENT_MAX_SESSIONS);
+    SessionPick sp = { ag, {0}, NULL, 0, 0, false, 0 };
+    size_t n = session_list(sess, scratch, &sp.list, AGENT_MAX_SESSIONS);
     if (!n) {
         tui_notice(STR("no saved sessions in this directory"));
         return;
     }
-    /* The list plus the row that deletes from it. The delete row is not a
-     * session, so it is left out of the count that decides whether the
-     * picker searches. */
-    TuiCmd *items = arena_new(scratch, TuiCmd, n + 1);
+    TuiCmd *items = arena_new(scratch, TuiCmd, n);
     if (!items) {
         tui_notice(STR("out of memory listing sessions"));
         return;
     }
     for (size_t i = 0; i < n; i++)
-        items[i] = (TuiCmd){ list.name[i], list.preview[i] };
-    items[n] = (TuiCmd){ STR("+ delete a session"),
-                         STR("Remove a saved conversation from this "
-                             "directory") };
+        items[i] = (TuiCmd){ sp.list.name[i], sp.list.preview[i] };
+    sp.rows = items;
+    sp.n = n;
 
+    /* Deleting is a key on the list rather than an entry at the end of it:
+     * the row that removes a session is the one the reader is looking at,
+     * and a directory with a hundred sessions never scrolls it out of
+     * reach. */
     size_t pick = 0;
-    if (!tui_pick_search_count(STR("pick a session"), items, n + 1, n,
-                               TUI_PICK_FIRST, TUI_PICK_NONE, &pick))
-        return;
-    if (pick == n) {
-        delete_session(ag, &list, n, items, scratch);
-        return;
+    TuiPickAction act = { items, n, session_delete_row, &sp, 0x18,
+                          STR("Ctrl-X deletes the selected session") };
+    b8 chosen = tui_pick_action(STR("pick a session"), n, n, TUI_PICK_FIRST,
+                                TUI_PICK_NONE, &act, &pick);
+    /* The screen restores the notice slot it borrowed, so what the deletes
+     * did is said again once it has closed. */
+    if (sp.deleted && !chosen) {
+        char msg[64];
+        snprintf(msg, sizeof msg, "deleted %zu saved session%s", sp.deleted,
+                 sp.deleted == 1 ? "" : "s");
+        tui_notice(str_c(msg));
     }
+    if (!chosen || pick >= sp.n)
+        return;
 
     /* Read first: replaying overwrites the live conversation's storage, so a
      * session that cannot be read must not cost the one that is running. */
-    Str src = session_read(list.path[pick], scratch);
+    Str src = session_read(sp.list.path[pick], scratch);
     if (!src.n) {
         tui_notice(STR("could not read that session"));
         return;
     }
     conv->n = 1;
     persist->off = session_mark;
-    b8 whole = session_apply(sess, src, list.path[pick], list.name[pick], conv,
-                             persist, scratch);
+    b8 whole = session_apply(sess, src, sp.list.path[pick], sp.list.name[pick],
+                             conv, persist, scratch);
     tui_batch_begin();
     tui_clear();
     render_conv(conv, ag->cfg, ag->show_instructions, scratch);
@@ -1262,7 +1287,8 @@ static b8 pick_model(const Config *cfg, Arena *scratch, Str *out,
     memset(mp.starred, 0, n * sizeof *mp.starred);   /* built on first use */
     favorites_load(&mp.fav, cfg->provider, scratch);
     size_t rows = model_build(&mp);
-    TuiPickAction act = { mp.rows, n + 1, model_favorite, &mp };
+    TuiPickAction act = { mp.rows, n + 1, model_favorite, &mp, 0x06,
+                          STR("Ctrl-F pins the selected model to the top") };
     size_t pick = 0;
     b8 chosen = tui_pick_action(STR("pick a model"), rows, n, TUI_PICK_FIRST,
                                 TUI_PICK_NONE, &act, &pick);

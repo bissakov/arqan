@@ -4193,17 +4193,19 @@ static b8 pick_act(const TuiSettings *set, i32 delta) {
     return true;
 }
 
-/* The chooser's row action. The action may reorder the list, so it says where
- * the row went and the selection follows it there rather than staying at an
- * index that now names a different row. */
-static b8 pick_row_action(void) {
+/* The chooser's row action, on the key the list bound it to. The action may
+ * reorder the list, so it says where the row went and the selection follows
+ * it there rather than staying at an index that now names a different row.
+ * An action that leaves no rows closes the screen: an empty list is nothing
+ * to choose from, and the rows it drew are gone. */
+static b8 pick_row_action(i32 key) {
     const TuiPickAction *a = &g_pick.action;
-    if (!g_pick.has_action || !g_tui.comp_n) return true;
+    if (!g_pick.has_action || a->key != key || !g_tui.comp_n) return true;
     size_t row = g_tui.comp_idx[g_tui.comp_sel], moved = row;
     size_t n = a->act(a->ud, row, &moved);
     if (n > a->max) n = a->max;
     if (n > AGENT_MAX_POPUP) n = AGENT_MAX_POPUP;
-    if (!n) { repaint(); return true; }   /* nothing left; the rows stand */
+    if (!n) return false;
     g_tui.cmd_n = n;
     pick_reselect((Str){ g_pick.query, g_pick.query_n }, false,
                   moved < n ? moved : n - 1);
@@ -4238,7 +4240,9 @@ static b8 pick_enter(const TuiSettings *set) {
     X(0x0e, "Ctrl-N",    "Next row",          completion_move(1);)            \
     X(0x10, "Ctrl-P",    "Previous row",      completion_move(-1);)           \
     X(0x06, "Ctrl-F",    "Favorite the row, on a list that offers it",        \
-                                              return pick_row_action();)      \
+                                              return pick_row_action(0x06);)  \
+    X(0x18, "Ctrl-X",    "Delete the row, on a list that offers it",          \
+                                              return pick_row_action(0x18);)  \
     X(0x7f, "Backspace", "Delete the query glyph before",                     \
                                               return pick_erase();)           \
     X(0x08, "",          "",                  return pick_erase();)           \
@@ -4327,7 +4331,14 @@ static b8 pick_impl(Str title, const TuiCmd *items, const TuiMark *marks,
     if (!pick_open(title, items, marks, n, search_n, anchor, start, kind, set,
                    true))
         return false;
-    if (act) { g_pick.action = *act; g_pick.has_action = true; }
+    if (act) {
+        g_pick.action = *act;
+        g_pick.has_action = true;
+        /* The key is this list's alone, so the screen says so while it is
+         * open. An answer already in the slot is what the reader asked for
+         * and keeps its place. */
+        if (act->hint.n && !g_tui.notice_n) tui_notice(act->hint);
+    }
     pick_run();
     if (g_pick.chosen) *out = g_pick.out;
     return g_pick.chosen;

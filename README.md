@@ -114,9 +114,9 @@ split on whitespace; anything needing quoting belongs in a wrapper script.
   are the line's ends and Ctrl-Home/Ctrl-End reach the transcript's.
 - `/` opens commands: `/clear`, `/resume`, `/fork`, `/compact`, `/model`,
   `/provider`, `/mode`, `/settings`, `/keys`, `/help`, and `/exit`.
-- `/resume` browses this directory's saved sessions and also deletes one: its
-  last row opens the same list for removal and asks to confirm. The session
-  being written cannot be deleted; `/clear` ends it first.
+- In `/resume`, Ctrl-X deletes the selected session: the first press asks, the
+  second removes the file and its row. The session being written cannot be
+  deleted; `/clear` ends it first.
 - In `/model`, Ctrl-F favorites the selected model: a favorite is starred and
   listed once, at the top. Favorites are kept per provider in the state file
   and are written as they are toggled, so pinning survives a cancelled picker.
