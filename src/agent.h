@@ -1012,6 +1012,8 @@ void   session_save(Session *s, const Conv *c);
 /* Continue in a new file holding the conversation whole, leaving the one it
  * was appending to as it is. */
 b8     session_fork(Session *s, const Conv *c);
+/* Up to `max` saved sessions for this directory, most recently written
+ * first, held in `a`. Returns how many were listed. */
 size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max);
 /* Remove one saved session file. `path` must name a file directly in this
  * session's own directory, which is what session_list hands out; the file

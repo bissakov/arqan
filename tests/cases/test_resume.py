@@ -224,6 +224,36 @@ def test_the_picker_navigates_like_the_completion_popup(ctx):
     assert "newer reply" not in s.text(), s.text()
 
 
+def test_the_list_is_ordered_by_last_use(ctx):
+    """A session written to again is first, whenever it was started."""
+    record(ctx, "older session", "older reply")
+    record(ctx, "newer session", "newer reply")
+
+    ctx.scenario("text=picked+up+again")
+    s = ctx.spawn()
+    s.submit("/resume")
+    s.wait_status("pick a session")
+    assert "newer session" in s.popup_selected(), s.popup_selected()
+    s.key("down")
+    s.wait_for(lambda _: "older session" in s.popup_selected(),
+               "the older session to be selected")
+    s.key("enter")
+    s.wait_text("older reply")
+    s.submit("say more")
+    s.wait_text("picked up again")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+
+    s = ctx.spawn()
+    s.submit("/resume")
+    s.wait_status("pick a session")
+    # the file that was just appended to, though it was created first
+    assert "older session" in s.popup_selected(), s.popup_selected()
+    s.key("enter")
+    s.wait_text("picked up again")
+
+
 def test_esc_leaves_the_picker_without_resuming(ctx):
     """Cancelling keeps the empty session that was already running."""
     record(ctx, "not resumed", "not replayed")

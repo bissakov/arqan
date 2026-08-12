@@ -20,6 +20,7 @@
 #include <dirent.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -256,28 +257,56 @@ static Str sess_preview(Arena *a, const char *path) {
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
 }
 
-/* Saved sessions for this directory, newest first. Names are timestamps, so
- * a descending sort on the file name is a sort on time. */
+/* One directory entry while the list is being ordered: the file name and
+ * when it was last written. */
+typedef struct {
+    char   name[64];
+    time_t sec;
+    long   nsec;
+} SessEntry;
+
+/* Whether `e` sorts before a candidate, which is what an insertion walks
+ * back over. Last written first, because the session a reader wants back is
+ * the one they were last in, not the one that happens to have been started
+ * most recently. A file system too coarse to tell two writes apart leaves
+ * the names to break the tie, and those are creation timestamps. */
+static b8 sess_before(const SessEntry *e, const SessEntry *cand) {
+    if (e->sec != cand->sec) return e->sec > cand->sec;
+    if (e->nsec != cand->nsec) return e->nsec > cand->nsec;
+    return strcmp(e->name, cand->name) > 0;
+}
+
+/* Saved sessions for this directory, most recently written first. Only `max`
+ * of them are kept, so a directory with a thousand files still costs one
+ * pass and a fixed table. */
 size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max) {
     memset(out, 0, sizeof *out);
     if (!s->dir.n || !max) return 0;
     if (max > AGENT_MAX_SESSIONS) max = AGENT_MAX_SESSIONS;
 
-    char names[AGENT_MAX_SESSIONS][64];
+    SessEntry ents[AGENT_MAX_SESSIONS];
     size_t n = 0;
     DIR *d = opendir(s->dir.p);
     if (!d) return 0;
     for (struct dirent *e; (e = readdir(d)) != NULL;) {
         size_t len = strlen(e->d_name);
-        if (len < 7 || len >= sizeof names[0]) continue;
+        if (len < 7 || len >= sizeof ents[0].name) continue;
         if (memcmp(e->d_name + len - 6, ".jsonl", 6) != 0) continue;
+        /* A file that cannot be stat'ed still belongs in the list; it sorts
+         * as the oldest rather than disappearing from it. */
+        SessEntry cand = {{0}, 0, 0};
+        memcpy(cand.name, e->d_name, len + 1);
+        struct stat st;
+        if (fstatat(dirfd(d), e->d_name, &st, 0) == 0) {
+            cand.sec = st.st_mtim.tv_sec;
+            cand.nsec = st.st_mtim.tv_nsec;
+        }
         size_t pos = n;
-        while (pos > 0 && strcmp(names[pos - 1], e->d_name) < 0) pos--;
+        while (pos > 0 && !sess_before(&ents[pos - 1], &cand)) pos--;
         if (pos >= max) continue;               /* older than everything kept */
         if (n < max) n++;
-        for (size_t i = n - 1; i > pos; i--)
-            memcpy(names[i], names[i - 1], sizeof names[0]);
-        memcpy(names[pos], e->d_name, len + 1);
+        for (size_t i = n - 1; i > pos; i--) ents[i] = ents[i - 1];
+        ents[pos] = cand;
     }
     closedir(d);
     if (!n) return 0;
@@ -288,13 +317,13 @@ size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max) {
     if (!out->name || !out->path || !out->preview) return 0;
     size_t kept = 0;
     for (size_t i = 0; i < n; i++) {
-        Buf b; buf_init(&b, a, s->dir.n + sizeof names[0] + 2);
+        Buf b; buf_init(&b, a, s->dir.n + sizeof ents[0].name + 2);
         buf_puts(&b, s->dir);
         buf_putc(&b, '/');
-        buf_puts(&b, str_c(names[i]));
+        buf_puts(&b, str_c(ents[i].name));
         if (!buf_ok(&b)) continue;
         Str path = buf_finish(&b);
-        Str label = sess_label(a, str_c(names[i]));
+        Str label = sess_label(a, str_c(ents[i].name));
         if (!label.n) continue;
         out->path[kept] = path;
         out->name[kept] = label;

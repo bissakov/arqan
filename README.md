@@ -114,7 +114,9 @@ split on whitespace; anything needing quoting belongs in a wrapper script.
   are the line's ends and Ctrl-Home/Ctrl-End reach the transcript's.
 - `/` opens commands: `/clear`, `/resume`, `/fork`, `/compact`, `/model`,
   `/provider`, `/mode`, `/settings`, `/keys`, `/help`, and `/exit`.
-- In `/resume`, Ctrl-X deletes the selected session: the first press asks, the
+- `/resume` lists this directory's sessions by when they were last written, so
+  the one you were in comes first however old it is.
+  In it, Ctrl-X deletes the selected session: the first press asks, the
   second removes the file and its row. The session being written cannot be
   deleted; `/clear` ends it first.
 - In `/model`, Ctrl-F favorites the selected model: a favorite is starred and

@@ -43,10 +43,13 @@ def plant(ctx, name: str, tag: str, turns: int, lines: int, words: int = 12):
 
 
 def resume_first(s, timeout: float = 60.0):
-    """Open /resume and take the newest entry, which is the planted file."""
+    """Open /resume and take the first entry, which is the planted file.
+
+    The list is ordered by last write, and the file is planted after the seed
+    turn, so it leads however old its name says it is.
+    """
     s.submit("/resume")
     s.wait_text("pick a session", timeout=timeout)
-    s.key("down")          # row 0 is the seed turn, row 1 the planted session
     s.settle()
     s.key("enter")
     s.wait_gone("pick a session", timeout=timeout)
