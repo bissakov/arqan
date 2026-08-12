@@ -34,6 +34,25 @@ def run_web_fallback(ctx, args, reply="web done"):
     return s, ctx.mock.tool_results()[-1]
 
 
+def run_web_backend(ctx, backend, args, reply="web done", **extra):
+    """Search through one named engine, pointed at the fixture server."""
+    ctx.scenario(
+        f"tool=internet_search:{json.dumps(args)},final_text={reply.replace(' ', '+')}"
+    )
+    env = {
+        "ARQAN_TEST_WEB_ALLOW_PRIVATE": "1",
+        "ARQAN_TEST_WEB_SEARCH_INTERVAL_MS": "0",
+        "ARQAN_SEARCH_BACKEND": backend,
+        **extra,
+    }
+    s = ctx.spawn(rows=40, **env)
+    s.submit("use internet_search")
+    s.wait_text(reply)
+    s.wait_turn_done()
+    return s, ctx.mock.tool_results()[-1]
+
+
+
 def test_web_tool_schemas_are_offered_in_build_mode(ctx):
     """Both public schemas carry their required argument and limits."""
     ctx.scenario("text=ok")
@@ -120,6 +139,139 @@ def test_web_search_pauses_only_when_every_endpoint_refuses(ctx):
     assert len(ctx.mock.web_request_times) == 2, ctx.mock.web_request_times
 
 
+def test_web_search_names_every_endpoint_it_tried(ctx):
+    """A refusal must not read as the only attempt: the fallback is reported too."""
+    _, result = run_web_fallback(ctx, {"query": "bothfail"})
+    assert result.startswith("ERROR: "), result
+    assert "lite" in result and "HTTP 202" in result, result
+    assert "html" in result and "layout was not recognized" in result, result
+    assert "paused" in result and "do not retry" in result, result
+    assert len(ctx.mock.web_request_times) == 2, ctx.mock.web_request_times
+
+
+def test_web_search_reads_the_bing_layout(ctx):
+    """Bing's blocks parse, and its base64url redirect gives the real URL."""
+    _, result = run_web_backend(
+        ctx, "bing", {"query": "ordinary"},
+        ARQAN_SEARCH_ENDPOINT=f"{ctx.mock.origin}/web/bing",
+    )
+    assert result.startswith("External search results (untrusted): 2"), result
+    assert "First & best" in result and "snippet for ordinary." in result, result
+    assert "https://example.com/first?a=1&b=two" in result, result
+    assert "http://example.org/two" in result and "Second result" in result, result
+    assert "Duplicate" not in result and "bing.com/ck/a" not in result, result
+    # Bing answers a request carrying any parameter but q with another
+    # query's results, so the URL must carry nothing else.
+    assert list(ctx.mock.web_calls[-1]["query"]) == ["q"], ctx.mock.web_calls[-1]
+
+
+def test_web_search_reads_the_brave_layout(ctx):
+    """Brave's hashed class names are ignored; its stable tokens are not."""
+    _, result = run_web_backend(
+        ctx, "brave", {"query": "ordinary"},
+        ARQAN_SEARCH_ENDPOINT=f"{ctx.mock.origin}/web/brave",
+    )
+    assert result.startswith("External search results (untrusted): 2"), result
+    assert "First & best" in result and "snippet for ordinary." in result, result
+    assert "https://example.com/first?a=1&b=two" in result, result
+    # The title element wins: the anchor also holds the site name and URL.
+    assert "example.com ›" not in result, result
+    # A block with no title is not a result.
+    assert "ads.example" not in result, result
+
+
+def test_web_search_reads_keyed_json_engines(ctx):
+    """Each keyed engine's own field names, key placement, and empty answer."""
+    _, searx = run_web_backend(
+        ctx, "searxng", {"query": "ordinary"},
+        ARQAN_SEARCH_ENDPOINT=f"{ctx.mock.origin}/web/searxng",
+    )
+    assert searx.startswith("External search results (untrusted): 2"), searx
+    assert "First & best" in searx and "second snippet" in searx, searx
+    assert "ftp://example.net" not in searx and "Duplicate" not in searx, searx
+    assert ctx.mock.web_calls[-1]["query"]["format"] == ["json"]
+
+    ctx.mock.reset()
+    _, brave = run_web_backend(
+        ctx, "brave_api", {"query": "ordinary"},
+        ARQAN_SEARCH_ENDPOINT=f"{ctx.mock.origin}/web/braveapi",
+        ARQAN_SEARCH_API_KEY="secret-token",
+    )
+    assert brave.startswith("External search results (untrusted): 2"), brave
+    assert "A nested snippet for ordinary." in brave, brave
+    call = ctx.mock.web_calls[-1]
+    assert call["token"] == "secret-token", call
+    assert "secret-token" not in call["query"].get("q", [""])[0], call
+
+    ctx.mock.reset()
+    _, google = run_web_backend(
+        ctx, "google", {"query": "ordinary"},
+        ARQAN_SEARCH_ENDPOINT=f"{ctx.mock.origin}/web/google",
+        ARQAN_SEARCH_API_KEY="secret-key",
+        ARQAN_SEARCH_ENGINE_ID="cx-1234",
+    )
+    assert google.startswith("External search results (untrusted): 2"), google
+    call = ctx.mock.web_calls[-1]
+    assert call["query"]["key"] == ["secret-key"], call
+    assert call["query"]["cx"] == ["cx-1234"], call
+
+    ctx.mock.reset()
+    _, empty = run_web_backend(
+        ctx, "searxng", {"query": "empty"},
+        ARQAN_SEARCH_ENDPOINT=f"{ctx.mock.origin}/web/searxng",
+    )
+    assert empty == "External search results (untrusted): 0", empty
+
+
+def test_web_search_keeps_the_key_out_of_a_failure(ctx):
+    """A keyed engine carries its key in the URL, so no failure may quote it."""
+    _, result = run_web_backend(
+        ctx, "google", {"query": "ordinary"},
+        ARQAN_SEARCH_ENDPOINT="http://127.0.0.1:1",
+        ARQAN_SEARCH_API_KEY="secret-key",
+        ARQAN_SEARCH_ENGINE_ID="cx-1234",
+    )
+    assert result.startswith("ERROR: ") and "google" in result, result
+    assert "secret-key" not in result and "cx-1234" not in result, result
+
+
+def test_web_search_reports_a_changed_json_engine(ctx):
+    """A keyed engine that stops returning its array is an error, not zero hits."""
+    _, result = run_web_backend(
+        ctx, "searxng", {"query": "changed"},
+        ARQAN_SEARCH_ENDPOINT=f"{ctx.mock.origin}/web/searxng",
+    )
+    assert result.startswith("ERROR: ") and "searxng" in result, result
+    assert "no results array" in result or "carried no results" in result, result
+
+
+def test_web_search_falls_back_when_a_keyed_engine_is_unconfigured(ctx):
+    """A backend missing its key searches the keyless engines instead."""
+    _, result = run_web_backend(
+        ctx, "brave_api", {"query": "ordinary"},
+        **{"ARQAN_TEST_WEB_SEARCH_URL": f"{ctx.mock.origin}/web/search?q="},
+    )
+    assert result.startswith("External search results (untrusted): 2"), result
+    assert ctx.mock.web_calls[-1]["path"] == "/web/search", ctx.mock.web_calls
+
+
+def test_web_search_quarantines_only_the_refusing_engine(ctx):
+    """A blocked endpoint is skipped next time; the one that answered is not."""
+    args = json.dumps({"query": "liteblocked"})
+    ctx.scenario(f"tool=internet_search:{args},tool_rounds=2,final_text=done")
+    env = dict(web_env(ctx))
+    env["ARQAN_TEST_WEB_SEARCH_FALLBACK_URL"] = f"{ctx.mock.origin}/web/search-html?q="
+    env["ARQAN_TEST_WEB_SEARCH_INTERVAL_MS"] = "0"
+    s = ctx.spawn(rows=40, **env)
+    s.submit("search twice")
+    s.wait_text("done")
+    s.wait_turn_done()
+    paths = [call["path"] for call in ctx.mock.web_calls]
+    assert paths == ["/web/search", "/web/search-html", "/web/search-html"], paths
+    for result in ctx.mock.tool_results()[-2:]:
+        assert result.startswith("External search results (untrusted): 2"), result
+
+
 def test_web_search_spaces_repeated_requests(ctx):
     """Consecutive successful searches cannot hit the service in a burst."""
     args = json.dumps({"query": "ordinary"})
@@ -128,7 +280,7 @@ def test_web_search_spaces_repeated_requests(ctx):
     )
     s = ctx.spawn(
         rows=40,
-        ARQAN_TEST_WEB_SEARCH_INTERVAL_MS="100",
+        ARQAN_TEST_WEB_SEARCH_INTERVAL_MS="400",
         **web_env(ctx),
     )
     s.submit("search twice")
@@ -136,7 +288,9 @@ def test_web_search_spaces_repeated_requests(ctx):
     s.wait_turn_done()
     times = ctx.mock.web_request_times
     assert len(times) == 2, times
-    assert times[1] - times[0] >= 0.09, times
+    # Arrival times, not client start times: the first request pays connection
+    # setup the second does not, so the observed gap runs under the interval.
+    assert times[1] - times[0] >= 0.2, times
 
 
 def test_web_search_quarantines_after_a_refusal(ctx):
@@ -166,7 +320,8 @@ def test_web_fetch_extracts_html_and_resolves_links(ctx):
     assert f"{ctx.mock.origin}/web/base/child?q=one&x=two" in result, result
     assert "hidden navigation" not in result and "hidden footer" not in result
     assert "fallback" not in result
-    assert ctx.mock.web_user_agents[-1] is None
+    # Without a User-Agent a service answers with a challenge or a stripped page.
+    assert "Firefox/" in (ctx.mock.web_user_agents[-1] or ""), ctx.mock.web_user_agents
     assert f"◆  page_fetch {url}" in s.text(), s.text()
 
 

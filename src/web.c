@@ -22,8 +22,6 @@ typedef struct {
 } WebHooks;
 
 static WebHooks g_web_hooks = {NULL, NULL, -1, NULL};
-static f64 g_search_last_start;
-static f64 g_search_paused_until;
 
 void web_set_idle(void (*fn)(void *ud), void *ud, i32 idle_fd,
                   const volatile sig_atomic_t *interrupt_flag) {
@@ -59,28 +57,14 @@ static b8 search_wait_until(f64 until) {
     }
 }
 
-static b8 search_admit(char *err, size_t err_cap) {
-    f64 now = agent_now_seconds();
-    if (g_search_paused_until > now) {
-        i64 seconds = (i64)(g_search_paused_until - now) + 1;
-        snprintf(err, err_cap, "searches paused for %llds after a challenge or "
-                 "refusal; do not retry", (long long)seconds);
-        return false;
-    }
-    if (g_search_last_start > 0) {
-        f64 next = g_search_last_start + (f64)search_interval_ms() / 1000.0;
-        if (!search_wait_until(next)) {
-            snprintf(err, err_cap, "interrupted while pacing searches");
-            return false;
-        }
-    }
-    g_search_last_start = agent_now_seconds();
-    return true;
-}
-
-static void search_pause(void) {
-    f64 until = agent_now_seconds() + (f64)AGENT_WEB_SEARCH_PAUSE_MS / 1000.0;
-    if (until > g_search_paused_until) g_search_paused_until = until;
+/* Every backend that failed is named in the one error the model sees, so a
+ * refusal from the first endpoint is never mistaken for the only attempt. */
+static void search_attempts_add(char *dst, size_t cap, size_t *n,
+                                const char *msg) {
+    if (*n + 1 >= cap) return;
+    int w = snprintf(dst + *n, cap - *n, "%s%s", *n ? "; " : "", msg);
+    if (w < 0) return;
+    *n = (size_t)w >= cap - *n ? cap - 1 : *n + (size_t)w;
 }
 
 static b8 web_arg_cstr(Str s, char *z, size_t cap, const char *what,
@@ -142,7 +126,7 @@ static b8 web_public_only(void) {
 }
 
 static i32 web_request(const char *url, const char *operation, Buf *body,
-                       HttpUrlReq *req) {
+                       const char *header, HttpUrlReq *req) {
     *req = (HttpUrlReq){
         .url = url,
         .operation = operation,
@@ -152,6 +136,7 @@ static i32 web_request(const char *url, const char *operation, Buf *body,
         .timeout_ms = 20000,
         .max_redirects = 5,
         .public_only = web_public_only(),
+        .header = {header, NULL},
         .interrupt_flag = g_web_hooks.interrupt_flag,
         .idle_fd = g_web_hooks.idle_fd,
         .on_idle = g_web_hooks.idle,
@@ -631,7 +616,7 @@ b8 page_fetch_run(Str args, Arena *scratch, Buf *out,
     Buf source;
     buf_init(&source, scratch, 65536);
     HttpUrlReq req;
-    i32 rc = web_request(url, "page_fetch", &source, &req);
+    i32 rc = web_request(url, "page_fetch", &source, NULL, &req);
     if (rc != 0) {
         if (rc < 0) snprintf(err, err_cap, "HTTP status %lld",
                              (long long)-rc);
@@ -726,6 +711,41 @@ static Str percent_decode(Str s, Arena *scratch, b8 *ok) {
     return (Str){p, n};
 }
 
+static i32 base64url_digit(char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '-' || c == '+') return 62;
+    if (c == '_' || c == '/') return 63;
+    return -1;
+}
+
+/* Unpadded base64url, as engines use for a redirect's destination. The result
+ * is nul terminated for http_url_ok and rejected when it embeds a nul. */
+static Str base64url_decode(Str s, Arena *scratch, b8 *ok) {
+    *ok = false;
+    while (s.n && s.p[s.n - 1] == '=') s.n--;
+    if (s.n % 4 == 1) return (Str){0};
+    char *p = arena_new(scratch, char, s.n / 4 * 3 + 3);
+    if (!p) return (Str){0};
+    size_t n = 0;
+    u32 acc = 0;
+    i32 bits = 0;
+    for (size_t i = 0; i < s.n; i++) {
+        i32 d = base64url_digit(s.p[i]);
+        if (d < 0) return (Str){0};
+        acc = (acc << 6) | (u32)d;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            p[n++] = (char)((acc >> bits) & 0xffu);
+        }
+    }
+    p[n] = '\0';
+    *ok = memchr(p, '\0', n) == NULL;
+    return *ok ? (Str){p, n} : (Str){0};
+}
+
 static Str result_url(Str href, Arena *scratch, b8 *ok) {
     *ok = false;
     const char *q = memchr(href.p, '?', href.n);
@@ -738,9 +758,15 @@ static Str result_url(Str href, Arena *scratch, b8 *ok) {
             if (off < href.n && href.p[off] == '=') {
                 size_t val = ++off;
                 while (off < href.n && href.p[off] != '&') off++;
-                if (str_eq(key, STR("uddg"))) {
-                    Str decoded = percent_decode((Str){href.p + val, off - val},
-                                                 scratch, ok);
+                Str raw = {href.p + val, off - val};
+                b8 wrapped = str_eq(key, STR("uddg"));
+                /* Bing hides the destination in "u=a1<base64url>". */
+                b8 b64 = str_eq(key, STR("u")) && raw.n > 2
+                         && raw.p[0] == 'a' && raw.p[1] == '1';
+                if (wrapped || b64) {
+                    Str decoded = b64
+                        ? base64url_decode((Str){raw.p + 2, raw.n - 2}, scratch, ok)
+                        : percent_decode(raw, scratch, ok);
                     if (*ok && decoded.n < AGENT_WEB_URL_BYTES
                         && http_url_ok(decoded.p)) return decoded;
                     *ok = false;
@@ -774,47 +800,106 @@ typedef struct {
     Str snippet;
 } SearchResult;
 
+/* One engine's markup, as class tokens rather than selectors: a token match
+ * survives the hashed class names single-page engines add to every element. */
+typedef struct {
+    const char *result;     /* class token opening a result block, or NULL  */
+    const char *link[2];    /* the result anchor's class tokens, or NULL    */
+    const char *title;      /* class token holding the title, NULL: the anchor */
+    const char *snippet[2];
+    b8 link_in_heading;     /* the anchor is the block's <h2> link          */
+} SearchLayout;
+
 typedef struct {
     Arena *scratch;
+    const SearchLayout *layout;
     SearchResult result[10];
     size_t n;
     size_t layout_links;
     size_t current;
+    size_t heading;         /* open <h2> depth                              */
+    b8 in_result;           /* inside a block the layout opened             */
+    b8 linked;              /* this block's anchor was taken                */
     b8 oom;
     b8 challenge;
     b8 explicit_empty;
 } SearchCtx;
 
+static b8 class_any(AgentHtmlNode *node, const char *const tokens[2]) {
+    for (size_t i = 0; i < 2; i++)
+        if (tokens[i] && class_has(node, tokens[i])) return true;
+    return false;
+}
+
+/* True when this anchor is the one the layout calls a result's link. */
+static b8 search_link_here(const SearchCtx *s, AgentHtmlNode *node) {
+    const SearchLayout *lay = s->layout;
+    if (lay->link[0]) return class_any(node, lay->link);
+    if (!s->in_result || s->linked) return false;
+    return !lay->link_in_heading || s->heading > 0;
+}
+
+static Str search_text(SearchCtx *s, AgentHtmlNode *node, size_t max) {
+    b8 large = false;
+    Str text = visible_text(node, s->scratch, max, &large);
+    if (large) s->oom = true;
+    return text;
+}
+
 static b8 search_enter(AgentHtmlNode *node, void *ud) {
     SearchCtx *s = (SearchCtx *)ud;
+    const SearchLayout *lay = s->layout;
     if (class_has(node, "challenge-form") || class_has(node, "anomaly-modal"))
         s->challenge = true;
     if (class_has(node, "no-results")) s->explicit_empty = true;
-    if (tag_is(node, "a")
-        && (class_has(node, "result-link") || class_has(node, "result__a"))) {
+    if (tag_is(node, "h2")) s->heading++;
+    if (lay->result && class_has(node, lay->result)) {
+        s->in_result = true;
+        s->linked = false;
+        s->current = SIZE_MAX;
+    }
+    if (tag_is(node, "a") && search_link_here(s, node)) {
         s->layout_links++;
+        s->linked = true;
         s->current = SIZE_MAX;
         size_t hn = 0;
         const char *href = agent_html_attr(node, "href", 4, &hn);
-        b8 ok = false, large = false;
+        b8 ok = false;
         Str url = href ? result_url((Str){href, hn}, s->scratch, &ok) : (Str){0};
-        Str title = visible_text(node, s->scratch, WEB_TITLE_BYTES, &large);
-        if (large) s->oom = true;
-        if (!ok || !title.n || s->n == 10) return true;
+        /* A layout with its own title element leaves the anchor's text alone:
+         * it also carries the site name and the breadcrumb URL. */
+        Str title = lay->title ? (Str){0}
+                               : search_text(s, node, WEB_TITLE_BYTES);
+        if (!ok || (!lay->title && !title.n) || s->n == 10) return true;
         for (size_t i = 0; i < s->n; i++)
             if (str_eq(s->result[i].url, url)) return true;
         s->result[s->n] = (SearchResult){title, url, {0}};
         s->current = s->n++;
-    } else if ((class_has(node, "result-snippet")
-                || class_has(node, "result__snippet"))
-               && s->current < s->n
+    } else if (lay->title && class_has(node, lay->title)
+               && s->current < s->n && !s->result[s->current].title.n) {
+        s->result[s->current].title = search_text(s, node, WEB_TITLE_BYTES);
+    } else if (class_any(node, lay->snippet) && s->current < s->n
                && !s->result[s->current].snippet.n) {
-        b8 large = false;
-        s->result[s->current].snippet =
-            visible_text(node, s->scratch, WEB_SNIPPET_BYTES, &large);
-        if (large) s->oom = true;
+        s->result[s->current].snippet = search_text(s, node, WEB_SNIPPET_BYTES);
     }
     return true;
+}
+
+static void search_leave(AgentHtmlNode *node, void *ud) {
+    SearchCtx *s = (SearchCtx *)ud;
+    if (tag_is(node, "h2") && s->heading) s->heading--;
+    if (s->layout->result && class_has(node, s->layout->result))
+        s->in_result = false;
+}
+
+/* A layout that names a title element can open a result before the element
+ * arrives, and a block whose title never arrives is not a result. */
+static void search_compact(SearchCtx *s) {
+    size_t n = 0;
+    for (size_t i = 0; i < s->n; i++)
+        if (s->result[i].title.n) s->result[n++] = s->result[i];
+    s->n = n;
+    s->current = SIZE_MAX;
 }
 
 static b8 encode_query(Str query, Buf *url) {
@@ -831,30 +916,248 @@ static b8 encode_query(Str query, Buf *url) {
     return buf_ok(url);
 }
 
-/* Query prefixes tried in order. The lite endpoint answers with the smallest
- * markup; the HTML endpoint is a separate host with its own bot detection, so
- * a refusal or unfamiliar layout on one is retried on the other. */
-typedef struct {
-    const char *prefix;
-    const char *label;
-} SearchBackend;
+/* ---- engines -------------------------------------------------------------
+ * Every engine is one row: where its query goes, what its answer looks like,
+ * and what it needs configured. The keyless engines are scraped and each has
+ * its own bot detection, so a refusal on one is retried on the next; a keyed
+ * engine answers JSON and is chosen by name, never guessed at.
+ */
+typedef enum {
+    ENGINE_DDG_LITE, ENGINE_DDG_HTML, ENGINE_BING, ENGINE_BRAVE,
+    ENGINE_BRAVE_API, ENGINE_GOOGLE, ENGINE_SEARXNG, ENGINE_N
+} SearchEngine;
 
-static size_t search_backends(SearchBackend out[2]) {
+/* Where results sit in a keyed engine's JSON answer. */
+typedef struct {
+    const char *object;    /* wrapper object holding the array, or NULL     */
+    const char *array;
+    const char *title, *url, *snippet;
+} SearchShape;
+
+enum { NEED_KEY = 1u, NEED_ENGINE_ID = 2u, NEED_ENDPOINT = 4u };
+
+typedef struct {
+    const char *label;     /* the search_backend value, and what errors call it */
+    const char *base;      /* scheme and host; search_endpoint replaces it  */
+    const char *path;      /* path and query up to the query text; %k, %c   */
+    const char *header;    /* extra request header, or NULL; %k             */
+    u8 needs;
+    b8 json;
+    SearchLayout layout;
+    SearchShape shape;
+} SearchEngineSpec;
+
+static const SearchEngineSpec k_engine[ENGINE_N] = {
+    [ENGINE_DDG_LITE] = {
+        "lite", "https://lite.duckduckgo.com", "/lite/?q=", NULL, 0, false,
+        { NULL, {"result-link", "result__a"}, NULL,
+          {"result-snippet", "result__snippet"}, false }, {0} },
+    [ENGINE_DDG_HTML] = {
+        "html", "https://html.duckduckgo.com", "/html/?q=", NULL, 0, false,
+        { NULL, {"result-link", "result__a"}, NULL,
+          {"result-snippet", "result__snippet"}, false }, {0} },
+    /* Bare "q=" only. Bing answers a request carrying any other parameter
+     * with results for a different query, and it is kept out of the keyless
+     * chain because that poisoning is indistinguishable from a real answer;
+     * the language comes from the Accept-Language header instead. */
+    [ENGINE_BING] = {
+        "bing", "https://www.bing.com", "/search?q=", NULL, 0, false,
+        { "b_algo", {NULL, NULL}, NULL, {"b_caption", "b_algoSlug"}, true },
+        {0} },
+    [ENGINE_BRAVE] = {
+        "brave", "https://search.brave.com", "/search?q=", NULL, 0, false,
+        { "snippet", {NULL, NULL}, "search-snippet-title",
+          {"generic-snippet", "snippet-description"}, false }, {0} },
+    [ENGINE_BRAVE_API] = {
+        "brave_api", "https://api.search.brave.com",
+        "/res/v1/web/search?count=10&q=", "X-Subscription-Token: %k",
+        NEED_KEY, true, {0},
+        { "web", "results", "title", "url", "description" } },
+    [ENGINE_GOOGLE] = {
+        "google", "https://www.googleapis.com",
+        "/customsearch/v1?key=%k&cx=%c&num=10&q=", NULL,
+        NEED_KEY | NEED_ENGINE_ID, true, {0},
+        { NULL, "items", "title", "link", "snippet" } },
+    [ENGINE_SEARXNG] = {
+        "searxng", "", "/search?format=json&language=en&q=", NULL,
+        NEED_ENDPOINT, true, {0},
+        { NULL, "results", "title", "url", "content" } },
+};
+
+/* The keyless chain, in the order a refusal walks it. Brave answers when the
+ * DuckDuckGo endpoints are blocking an address, which they now often do. */
+static const SearchEngine k_auto[] = {
+    ENGINE_DDG_LITE, ENGINE_DDG_HTML, ENGINE_BRAVE,
+};
+
+static struct {
+    SearchEngine chain[ENGINE_N];
+    size_t chain_n;
+    Str endpoint, api_key, engine_id;   /* in the persist arena, or empty */
+} g_search = { {ENGINE_DDG_LITE, ENGINE_DDG_HTML, ENGINE_BRAVE},
+               sizeof k_auto / sizeof k_auto[0], {0}, {0}, {0} };
+
+/* Pacing and quarantine are per engine: one service refusing says nothing
+ * about the next, and a chain of four would otherwise wait out three
+ * intervals it does not owe anybody. */
+static f64 g_engine_start[ENGINE_N];
+static f64 g_engine_paused[ENGINE_N];
+
+static b8 search_admit(SearchEngine e, const char *label,
+                       char *err, size_t err_cap) {
+    f64 now = agent_now_seconds();
+    if (g_engine_paused[e] > now) {
+        i64 seconds = (i64)(g_engine_paused[e] - now) + 1;
+        snprintf(err, err_cap, "the %s search endpoint is paused for %llds "
+                 "after a challenge or refusal", label, (long long)seconds);
+        return false;
+    }
+    if (g_engine_start[e] > 0) {
+        f64 next = g_engine_start[e] + (f64)search_interval_ms() / 1000.0;
+        if (!search_wait_until(next)) {
+            snprintf(err, err_cap, "interrupted while pacing searches");
+            return false;
+        }
+    }
+    g_engine_start[e] = agent_now_seconds();
+    return true;
+}
+
+static void search_pause(SearchEngine e) {
+    f64 until = agent_now_seconds() + (f64)AGENT_WEB_SEARCH_PAUSE_MS / 1000.0;
+    if (until > g_engine_paused[e]) g_engine_paused[e] = until;
+}
+
+/* The engines `search_backend` selects. A name other than "auto" selects
+ * exactly what it names, so an endpoint or a key has one engine to belong to. */
+static size_t search_chain_for(Str name, SearchEngine out[ENGINE_N]) {
+    if (str_eq(name, STR("ddg"))) {
+        out[0] = ENGINE_DDG_LITE;
+        out[1] = ENGINE_DDG_HTML;
+        return 2;
+    }
+    for (SearchEngine e = 0; e < ENGINE_N; e++) {
+        if (!str_eq(name, str_c(k_engine[e].label))) continue;
+        out[0] = e;
+        return 1;
+    }
+    for (size_t i = 0; i < sizeof k_auto / sizeof k_auto[0]; i++)
+        out[i] = k_auto[i];
+    return sizeof k_auto / sizeof k_auto[0];
+}
+
 #ifdef AGENT_TESTING
-    const char *primary = getenv(AGENT_ENV_PREFIX "TEST_WEB_SEARCH_URL");
-    if (primary && *primary) {
+/* One full URL prefix per chain slot, replacing that engine's base and path.
+ * The chain is cut to the number of slots set, so a test says how many
+ * endpoints exist by saying where they are. */
+static const char *search_test_prefix(size_t slot) {
+    static const char *const env[] = {
+        AGENT_ENV_PREFIX "TEST_WEB_SEARCH_URL",
+        AGENT_ENV_PREFIX "TEST_WEB_SEARCH_FALLBACK_URL",
+        AGENT_ENV_PREFIX "TEST_WEB_SEARCH_BRAVE_URL",
+    };
+    if (slot >= sizeof env / sizeof env[0]) return NULL;
+    const char *value = getenv(env[slot]);
+    return value && *value ? value : NULL;
+}
+#endif
+
+/* Empty stays empty: str_dup of an empty Str would copy from NULL. */
+static Str search_setting(Arena *persist, Str value) {
+    value = str_trim(value);
+    return value.n ? str_dup(persist, value) : (Str){0};
+}
+
+void web_search_init(const Conf *c, Arena *persist) {
+    g_search.chain_n = search_chain_for(conf_str(c, CONF_SEARCH_BACKEND),
+                                        g_search.chain);
+    g_search.endpoint = search_setting(persist, conf_str(c, CONF_SEARCH_ENDPOINT));
+    g_search.api_key = search_setting(persist, conf_str(c, CONF_SEARCH_API_KEY));
+    g_search.engine_id = search_setting(persist,
+                                        conf_str(c, CONF_SEARCH_ENGINE_ID));
+    if (g_search.chain_n == 1) {
+        const SearchEngineSpec *spec = &k_engine[g_search.chain[0]];
+        const char *missing = NULL;
+        if ((spec->needs & NEED_KEY) && !g_search.api_key.n)
+            missing = "search_api_key";
+        else if ((spec->needs & NEED_ENGINE_ID) && !g_search.engine_id.n)
+            missing = "search_engine_id";
+        else if ((spec->needs & NEED_ENDPOINT) && !g_search.endpoint.n)
+            missing = "search_endpoint";
+        if (missing) {
+            agent_log(AGENT_LOG_WARN, "ignoring search_backend %s: it needs %s; "
+                      "searching the keyless engines instead", spec->label,
+                      missing);
+            g_search.chain_n = search_chain_for(STR("auto"), g_search.chain);
+        }
+    } else if (g_search.endpoint.n) {
+        agent_log(AGENT_LOG_WARN, "ignoring search_endpoint: it belongs to one "
+                  "engine, so search_backend must name one");
+        g_search.endpoint = (Str){0};
+    }
+#ifdef AGENT_TESTING
+    if (search_test_prefix(0)) {
         size_t n = 0;
-        out[n++] = (SearchBackend){primary, "lite"};
-        const char *fallback =
-            getenv(AGENT_ENV_PREFIX "TEST_WEB_SEARCH_FALLBACK_URL");
-        if (fallback && *fallback)
-            out[n++] = (SearchBackend){fallback, "html"};
-        return n;
+        while (n < g_search.chain_n && search_test_prefix(n)) n++;
+        g_search.chain_n = n;
     }
 #endif
-    out[0] = (SearchBackend){"https://lite.duckduckgo.com/lite/?q=", "lite"};
-    out[1] = (SearchBackend){"https://html.duckduckgo.com/html/?q=", "html"};
-    return 2;
+}
+
+/* base + path with %k and %c expanded, then the encoded query. */
+static b8 search_url(const SearchEngineSpec *spec, size_t slot,
+                     const char *query, Arena *scratch, Str *out,
+                     char *err, size_t err_cap) {
+    Buf url;
+    buf_init(&url, scratch, 2048);
+    const char *prefix = NULL;
+#ifdef AGENT_TESTING
+    prefix = search_test_prefix(slot);
+#else
+    (void)slot;
+#endif
+    if (prefix) {
+        buf_puts(&url, str_c(prefix));
+    } else {
+        Str base = g_search.endpoint.n ? g_search.endpoint : str_c(spec->base);
+        while (base.n && base.p[base.n - 1] == '/') base.n--;
+        buf_puts(&url, base);
+        for (const char *p = spec->path; *p; p++) {
+            if (*p != '%' || (p[1] != 'k' && p[1] != 'c')) {
+                buf_putc(&url, *p);
+                continue;
+            }
+            encode_query(p[1] == 'k' ? g_search.api_key : g_search.engine_id,
+                         &url);
+            p++;
+        }
+    }
+    if (!encode_query(str_c(query), &url)) {
+        snprintf(err, err_cap, "search URL does not fit in memory");
+        return false;
+    }
+    *out = buf_finish(&url);
+    if (!buf_ok(&url) || out->n >= AGENT_WEB_URL_BYTES) {
+        snprintf(err, err_cap, "encoded search URL is too long");
+        return false;
+    }
+    return true;
+}
+
+/* The one header an engine may need, with its key substituted. The result
+ * lives in `scratch` and is nul terminated for libcurl. */
+static const char *search_header(const SearchEngineSpec *spec, Arena *scratch) {
+    if (!spec->header) return NULL;
+    Buf h;
+    buf_init(&h, scratch, 256);
+    for (const char *p = spec->header; *p; p++) {
+        if (*p == '%' && p[1] == 'k') {
+            buf_puts(&h, g_search.api_key);
+            p++;
+        } else buf_putc(&h, *p);
+    }
+    Str s = buf_finish(&h);
+    return buf_ok(&h) ? s.p : NULL;
 }
 
 typedef enum {
@@ -864,40 +1167,76 @@ typedef enum {
     SEARCH_ERROR,   /* local failure; give up without trying another backend */
 } SearchOutcome;
 
-static SearchOutcome search_backend_run(const SearchBackend *backend,
+/* An engine's JSON answer, read through its shape. A result whose URL is not
+ * a public HTTP(S) one is skipped the way a malformed anchor is. */
+static SearchOutcome search_json(Str raw, const SearchEngineSpec *spec,
+                                 Arena *scratch, SearchCtx *found,
+                                 char *err, size_t err_cap) {
+    JVal *root = json_parse(scratch, raw);
+    if (!root) {
+        snprintf(err, err_cap, "the %s search response was not JSON",
+                 spec->label);
+        return SEARCH_UNKNOWN;
+    }
+    const JVal *holder = root;
+    if (spec->shape.object) holder = json_get(root, str_c(spec->shape.object));
+    const JVal *arr = holder ? json_get(holder, str_c(spec->shape.array)) : NULL;
+    if (!arr || arr->type != J_ARR) {
+        snprintf(err, err_cap, "the %s search response carried no results "
+                 "array; the service may have changed", spec->label);
+        return SEARCH_UNKNOWN;
+    }
+    for (size_t i = 0; i < arr->u.arr.n && found->n < 10; i++) {
+        const JVal *item = json_at(arr, i);
+        if (!item || item->type != J_OBJ) continue;
+        Str url = json_str(item, str_c(spec->shape.url));
+        Str title = json_str(item, str_c(spec->shape.title));
+        if (!url.n || !title.n || url.n >= AGENT_WEB_URL_BYTES) continue;
+        url = str_dup(scratch, url);
+        if (!url.p || !http_url_ok(url.p)) continue;
+        found->layout_links++;
+        b8 seen = false;
+        for (size_t k = 0; k < found->n; k++)
+            if (str_eq(found->result[k].url, url)) seen = true;
+        if (seen) continue;
+        found->result[found->n++] = (SearchResult){
+            title, url, json_str(item, str_c(spec->shape.snippet)) };
+    }
+    found->explicit_empty = arr->u.arr.n == 0;
+    return SEARCH_OK;
+}
+
+static SearchOutcome search_backend_run(SearchEngine engine, size_t slot,
                                         const char *query, Arena *scratch,
                                         SearchCtx *found,
                                         char *err, size_t err_cap) {
-    Buf url;
-    buf_init(&url, scratch, 2048);
-    buf_puts(&url, str_c(backend->prefix));
-    if (!encode_query(str_c(query), &url)) {
-        snprintf(err, err_cap, "search URL does not fit in memory");
+    const SearchEngineSpec *spec = &k_engine[engine];
+    Str request_url;
+    if (!search_url(spec, slot, query, scratch, &request_url, err, err_cap))
         return SEARCH_ERROR;
-    }
-    Str request_url = buf_finish(&url);
-    if (!buf_ok(&url) || request_url.n >= AGENT_WEB_URL_BYTES) {
-        snprintf(err, err_cap, "encoded search URL is too long");
-        return SEARCH_ERROR;
-    }
-    if (!search_admit(err, err_cap)) return SEARCH_ERROR;
-
+    /* A paused engine is a blocked one: the chain moves on to the next. */
+    if (!search_admit(engine, spec->label, err, err_cap)) return SEARCH_BLOCKED;
     Buf source;
     buf_init(&source, scratch, 65536);
     HttpUrlReq req;
-    i32 rc = web_request(request_url.p, "internet_search", &source, &req);
+    i32 rc = web_request(request_url.p, "internet_search", &source,
+                         search_header(spec, scratch), &req);
     if (req.status == 202 || req.status == 403 || req.status == 429) {
         snprintf(err, err_cap,
                  "the %s search endpoint refused the request with HTTP %lld",
-                 backend->label, (long long)req.status);
+                 spec->label, (long long)req.status);
+        search_pause(engine);
         return SEARCH_BLOCKED;
     }
     if (rc != 0) {
         if (rc < 0)
             snprintf(err, err_cap, "the %s search endpoint returned HTTP %lld",
-                     backend->label, (long long)-rc);
-        else snprintf(err, err_cap, "%s", req.failure[0] ? req.failure
-                                                         : "search request failed");
+                     spec->label, (long long)-rc);
+        /* A transport failure can quote the URL it was given, and a keyed
+         * engine's URL carries the key, so only a keyless one may say it. */
+        else if ((spec->needs & NEED_KEY) || !req.failure[0])
+            snprintf(err, err_cap, "the %s search request failed", spec->label);
+        else snprintf(err, err_cap, "%s", req.failure);
         return SEARCH_UNKNOWN;
     }
     Str raw = buf_finish(&source);
@@ -905,18 +1244,21 @@ static SearchOutcome search_backend_run(const SearchBackend *backend,
         snprintf(err, err_cap, "search response does not fit in memory");
         return SEARCH_ERROR;
     }
+    *found = (SearchCtx){.scratch = scratch, .layout = &spec->layout,
+                         .current = SIZE_MAX};
+    if (spec->json) return search_json(raw, spec, scratch, found, err, err_cap);
     AgentHtmlDoc *doc = agent_html_parse(raw.p, raw.n);
     if (!doc) {
         snprintf(err, err_cap, "search HTML parsing failed");
         return SEARCH_ERROR;
     }
-    *found = (SearchCtx){.scratch = scratch, .current = SIZE_MAX};
-    html_walk(agent_html_root(doc), search_enter, NULL, found);
+    html_walk(agent_html_root(doc), search_enter, search_leave, found);
     agent_html_destroy(doc);
-
+    search_compact(found);
     if (found->challenge || contains_ci(raw, "verify you are human")) {
         snprintf(err, err_cap, "the %s search endpoint returned a challenge page",
-                 backend->label);
+                 spec->label);
+        search_pause(engine);
         return SEARCH_BLOCKED;
     }
     if (found->oom) {
@@ -926,7 +1268,7 @@ static SearchOutcome search_backend_run(const SearchBackend *backend,
     if (!found->layout_links && !found->explicit_empty) {
         snprintf(err, err_cap,
                  "the %s search result layout was not recognized; the service "
-                 "may have changed", backend->label);
+                 "may have changed", spec->label);
         return SEARCH_UNKNOWN;
     }
     return SEARCH_OK;
@@ -943,26 +1285,33 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out,
     if (!web_arg_count(j, STR("limit"), 8, 10, &limit, err, err_cap)) return false;
 
     SearchCtx found = {.scratch = scratch, .current = SIZE_MAX};
-    SearchBackend backend[2];
-    size_t backends = search_backends(backend);
-    char blocked_err[256] = {0};
+    char attempts[512] = {0};
+    size_t attempts_n = 0;
+    b8 blocked = false;
     b8 answered = false;
-    for (size_t i = 0; i < backends && !answered; i++) {
+    for (size_t i = 0; i < g_search.chain_n && !answered; i++) {
         SearchCtx attempt = {.scratch = scratch, .current = SIZE_MAX};
-        SearchOutcome outcome = search_backend_run(&backend[i], query, scratch,
-                                                   &attempt, err, err_cap);
+        SearchOutcome outcome = search_backend_run(g_search.chain[i], i, query,
+                                                   scratch, &attempt,
+                                                   err, err_cap);
         if (outcome == SEARCH_ERROR) return false;
-        if (outcome == SEARCH_BLOCKED && !blocked_err[0])
-            snprintf(blocked_err, sizeof blocked_err, "%s", err);
-        if (outcome != SEARCH_OK) continue;
+        if (outcome != SEARCH_OK) {
+            if (outcome == SEARCH_BLOCKED) blocked = true;
+            search_attempts_add(attempts, sizeof attempts, &attempts_n, err);
+            continue;
+        }
         found = attempt;
         answered = true;
     }
     if (!answered) {
-        if (blocked_err[0]) {
-            search_pause();
-            snprintf(err, err_cap, "%s; searches paused for one hour; "
-                     "do not retry", blocked_err);
+        if (!attempts_n)
+            search_attempts_add(attempts, sizeof attempts, &attempts_n,
+                                "no search endpoint is configured");
+        if (blocked) {
+            snprintf(err, err_cap, "%s; each refusing endpoint is paused for "
+                     "one hour; do not retry", attempts);
+        } else {
+            snprintf(err, err_cap, "%s", attempts);
         }
         return false;
     }

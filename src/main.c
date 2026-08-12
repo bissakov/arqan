@@ -2700,6 +2700,7 @@ i32 main(i32 argc, char **argv) {
     UiPrefs prefs;
     ui_prefs_load(&prefs, &conf);
     notify_init(&conf, &persist);
+    web_search_init(&conf, &persist);
     arena_reset(&scratch);
 
     ToolRegistry tools;

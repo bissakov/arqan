@@ -137,6 +137,10 @@ typedef bool     b8;
 #define AGENT_WEB_TYPE_BYTES   128         /* normalized response media type      */
 #define AGENT_WEB_SEARCH_INTERVAL_MS 10000 /* minimum spacing between searches     */
 #define AGENT_WEB_SEARCH_PAUSE_MS 3600000  /* quarantine after service refusal      */
+/* Search engines answer a request with no User-Agent with a challenge or a
+ * stripped page, so every web request claims a current browser. */
+#define AGENT_WEB_USER_AGENT \
+    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
 #define AGENT_STATUS_FIELDS    9
 
 /* ---- arenas ------------------------------------------------------------- */
@@ -584,6 +588,8 @@ typedef enum {
     CONF_VERBOSE_TOOLS, CONF_RAW_MARKDOWN, CONF_SHOW_IGNORED,
     CONF_SHOW_INSTRUCTIONS, CONF_WRAP, CONF_STATUS_FIELDS, CONF_TELEMETRY,
     CONF_NOTIFY, CONF_NOTIFY_COMMAND, CONF_NOTIFY_MIN_MS,
+    CONF_SEARCH_BACKEND, CONF_SEARCH_ENDPOINT, CONF_SEARCH_API_KEY,
+    CONF_SEARCH_ENGINE_ID,
     CONF_N
 } ConfKey;
 
@@ -781,6 +787,9 @@ typedef struct {
     i32 timeout_ms;
     i32 max_redirects;
     b8 public_only;
+    /* Extra request headers, "Name: value" each, unset entries NULL. Their
+     * storage belongs to the caller and outlives the call. */
+    const char *header[2];
     const volatile sig_atomic_t *interrupt_flag;
     i32 idle_fd;
     void (*on_idle)(void *ud);
@@ -876,6 +885,11 @@ void        tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api);
 /* The built-in web tools share the TUI's single-threaded idle loop. */
 void        web_set_idle(void (*fn)(void *ud), void *ud, i32 idle_fd,
                          const volatile sig_atomic_t *interrupt_flag);
+/* Chooses the search engines internet_search tries and copies the endpoint,
+ * key and engine id it needs into `persist`. A backend whose requirement is
+ * missing is reported here and the search chain falls back to the keyless
+ * engines, so a half-configured key never fails silently at call time. */
+void        web_search_init(const Conf *c, Arena *persist);
 b8          internet_search_run(Str args, Arena *scratch, Buf *out,
                                 char *err, size_t err_cap);
 b8          page_fetch_run(Str args, Arena *scratch, Buf *out,

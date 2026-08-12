@@ -378,8 +378,12 @@ i32 http_url_get(HttpUrlReq *r) {
     hdrs = curl_slist_append(hdrs, "Accept: text/html, application/xhtml+xml, "
                                   "text/plain, application/json, application/xml;q=0.9, "
                                   "text/*;q=0.8, */*;q=0.1");
+    hdrs = curl_slist_append(hdrs, "Accept-Language: en-US,en;q=0.9");
+    for (size_t i = 0; i < sizeof r->header / sizeof r->header[0]; i++)
+        if (r->header[i]) hdrs = curl_slist_append(hdrs, r->header[i]);
     curl_easy_setopt(curl, CURLOPT_URL, r->url);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, AGENT_WEB_USER_AGENT);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, url_body_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, drop_header_cb);

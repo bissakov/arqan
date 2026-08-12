@@ -138,9 +138,32 @@ searching never fetches a result automatically. For example, an agent can call
 on one returned public HTTP(S) URL. Disable either tool with `/settings`,
 `ARQAN_DISABLE_TOOLS`, or `--disable-tools`.
 
-Search requests are spaced at least ten seconds apart. A challenge, HTTP 202,
-403, or 429 pauses further searches in that arqan process for one hour; arqan
-does not retry or attempt to solve service challenges.
+`internet_search` tries several engines. By default it walks the keyless ones,
+DuckDuckGo's lite and HTML endpoints and then Brave, and the first that answers
+wins; the error names every endpoint it tried. Requests to one engine are
+spaced at least ten seconds apart, and a challenge, HTTP 202, 403, or 429
+pauses that engine for one hour in that arqan process. The pause is per engine,
+so a service blocking your address does not stop the others, and arqan does not
+retry or attempt to solve service challenges.
+
+Blocking is common enough that a keyed engine is worth configuring:
+
+| setting | value |
+| --- | --- |
+| `search_backend` | `auto` (the default chain), `ddg`, `bing`, `brave`, `brave_api`, `google`, or `searxng` |
+| `search_endpoint` | the base URL of the named engine, required for `searxng` |
+| `search_api_key` | the key for `brave_api` or `google` |
+| `search_engine_id` | the Google programmable search engine id (`cx`) |
+
+Naming an engine uses only that engine. `brave_api` is the Brave Search API,
+`google` is the Programmable Search JSON API, and `searxng` is any SearXNG
+instance with JSON output enabled, including one you host. A backend missing
+what it needs is reported and the keyless chain is searched instead. The last
+three settings are refused in a project's `.arqan/config.toml`: a cloned
+repository does not get to choose where a search goes or what it pays with.
+`bing` is available by name but is out of the default chain: it answers a
+scraped request with results for an unrelated query often enough that a wrong
+answer cannot be told from a right one.
 
 A tool result is replayed on every later turn, so each call returns a bounded
 page. When `bash`, `grep`, `find`, `page_fetch`, or `internet_search` leaves

@@ -26,6 +26,7 @@ Standalone:
 from __future__ import annotations
 
 import argparse
+import base64
 import gzip
 import json
 import socket
@@ -470,6 +471,9 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
         if query == "liteblocked":
             self._body(202, "text/html", b"<html><body>refused</body></html>")
             return
+        if query == "bothfail":
+            self._body(202, "text/html", b"<html><body>refused</body></html>")
+            return
         if query == "challenge":
             self._body(200, "text/html", b"<html><body><form class='challenge-form'>captcha</form></body></html>")
             return
@@ -513,6 +517,9 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             status = int(query.removeprefix("status"))
             self._body(status, "text/html", b"<html><body>refused</body></html>")
             return
+        if query == "bothfail":
+            self._body(200, "text/html", b"<html><body>different markup</body></html>")
+            return
         one = quote("https://example.com/first?a=1&b=two", safe="")
         two = quote("http://example.org/two", safe="")
         html = f"""<!doctype html><html><body>
@@ -527,6 +534,73 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
           </div>
         </body></html>""".encode()
         self._body(200, "text/html; charset=utf-8", html)
+
+    def _bing_redirect(self, url):
+        """Bing hides the destination in a base64url "u=a1..." parameter."""
+        packed = base64.urlsafe_b64encode(url.encode()).decode().rstrip("=")
+        return f"https://www.bing.com/ck/a?!&amp;&amp;p=deadbeef&amp;u=a1{packed}&amp;ntb=1"
+
+    def _web_search_bing(self):
+        query = parse_qs(urlsplit(self.path).query).get("q", [""])[0]
+        one = self._bing_redirect("https://example.com/first?a=1&b=two")
+        two = self._bing_redirect("http://example.org/two")
+        html = f"""<!doctype html><html><body><ol id="b_results">
+          <li class="b_algo"><div class="b_tpcn">
+            <a class="tilk" href="{one}">example.com</a></div>
+            <h2><a href="{one}">First &amp; best</a></h2>
+            <div class="b_caption"><p class="b_lineclamp2">A <b>nested</b>
+              snippet for {query}.</p></div></li>
+          <li class="b_algo"><h2><a href="{two}">Second result &#937;</a></h2>
+            <div class="b_caption"><p>second snippet</p></div></li>
+          <li class="b_algo"><h2><a href="{one}">Duplicate</a></h2></li>
+        </ol></body></html>""".encode()
+        self._body(200, "text/html; charset=utf-8", html)
+
+    def _web_search_brave(self):
+        query = parse_qs(urlsplit(self.path).query).get("q", [""])[0]
+        html = f"""<!doctype html><html><body>
+          <div class="snippet svelte-jmfu5f" data-pos="0">
+            <a href="https://example.com/first?a=1&amp;b=two" class="svelte-x l1">
+              <cite class="snippet-url">example.com &rsaquo; first</cite>
+              <div class="title search-snippet-title line-clamp-1">First &amp; best</div>
+            </a>
+            <div class="generic-snippet svelte-y"><div class="content">A
+              <b>nested</b> snippet for {query}.</div></div>
+          </div>
+          <div class="snippet svelte-jmfu5f" data-pos="1">
+            <a href="http://example.org/two" class="svelte-x l1">
+              <div class="title search-snippet-title">Second result &#937;</div>
+            </a>
+            <div class="generic-snippet"><div class="content">second snippet</div></div>
+          </div>
+          <div class="snippet svelte-jmfu5f" data-pos="2">
+            <a href="https://ads.example/promo" class="svelte-x l1"></a>
+          </div>
+        </body></html>""".encode()
+        self._body(200, "text/html; charset=utf-8", html)
+
+    def _web_search_api(self, array, wrapper, fields):
+        """One keyed engine's JSON answer, in that engine's field names."""
+        query = parse_qs(urlsplit(self.path).query).get("q", [""])[0]
+        title, url, snippet = fields
+        if query == "empty":
+            body = {array: []}
+        elif query == "changed":
+            body = {"error": "quota"}
+        else:
+            body = {array: [
+                {title: "First & best", url: "https://example.com/first?a=1&b=two",
+                 snippet: f"A nested snippet for {query}."},
+                {title: "Second result \u03a9", url: "http://example.org/two",
+                 snippet: "second snippet"},
+                {title: "Duplicate", url: "https://example.com/first?a=1&b=two",
+                 snippet: "duplicate snippet"},
+                {title: "Not public", url: "ftp://example.net/file",
+                 snippet: "wrong scheme"},
+            ]}
+        if wrapper:
+            body = {wrapper: body}
+        self._body(200, "application/json", json.dumps(body).encode())
 
     def _web_page(self):
         filler = " ".join(["visible article content"] * 12)
@@ -584,10 +658,25 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
         if path.startswith("/web/"):
             srv.web_user_agents.append(self.headers.get("User-Agent"))
             srv.web_request_times.append(time.monotonic())
+            srv.web_calls.append({
+                "path": path,
+                "query": parse_qs(urlsplit(self.path).query),
+                "token": self.headers.get("X-Subscription-Token"),
+            })
         if path == "/web/search":
             self._web_search()
         elif path == "/web/search-html":
             self._web_search_html()
+        elif path == "/web/bing/search":
+            self._web_search_bing()
+        elif path == "/web/brave/search":
+            self._web_search_brave()
+        elif path == "/web/searxng/search":
+            self._web_search_api("results", None, ("title", "url", "content"))
+        elif path == "/web/braveapi/res/v1/web/search":
+            self._web_search_api("results", "web", ("title", "url", "description"))
+        elif path == "/web/google/customsearch/v1":
+            self._web_search_api("items", None, ("title", "link", "snippet"))
         elif path == "/web/page":
             self._web_page()
         elif path == "/web/malformed":
@@ -957,6 +1046,7 @@ class MockProvider:
         self.httpd.versions = []           # type: ignore[attr-defined]
         self.httpd.web_user_agents = []     # type: ignore[attr-defined]
         self.httpd.web_request_times = []   # type: ignore[attr-defined]
+        self.httpd.web_calls = []           # type: ignore[attr-defined]
         self.httpd.verbose = False         # type: ignore[attr-defined]
         self.scenario = scenario
         # socketserver's shutdown() only returns on the next poll tick, so the
@@ -1029,6 +1119,11 @@ class MockProvider:
         """Monotonic arrival times for fixture web requests."""
         return self.httpd.web_request_times  # type: ignore[attr-defined]
 
+    @property
+    def web_calls(self) -> list:
+        """One {"path", "query", "token"} per fixture web request."""
+        return self.httpd.web_calls  # type: ignore[attr-defined]
+
     def reset(self):
         self.requests.clear()
         self.bad_utf8.clear()
@@ -1037,6 +1132,7 @@ class MockProvider:
         self.versions.clear()
         self.web_user_agents.clear()
         self.web_request_times.clear()
+        self.web_calls.clear()
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> "MockProvider":
