@@ -3245,6 +3245,26 @@ static i32 rbyte_soon(void) {
     return input_ready(50) ? rbyte() : -1;
 }
 
+/* A bracketed paste is one burst: the terminal writes the start marker, the
+ * text and the end marker in one go. An end marker that never arrives - a
+ * terminal that died mid-paste, or text that carried a start marker of its
+ * own - would otherwise leave the composer treating every later key as text,
+ * with no key left that could recover it. So the paste is retired once the
+ * input has stayed drained, which only the caller about to block may decide:
+ * a paste larger than one read still arrives back to back.
+ *
+ * The grace covers the gap a writer leaves when a paste too big for the
+ * terminal's pipe is refilled a block at a time, and stays far below the
+ * time it takes to reach for the next key, which must not be eaten as text.
+ */
+enum { PASTE_GRACE_MS = 20 };
+
+static void paste_retire_if_drained(void) {
+    if (!g_tui.pasting || input_ready(PASTE_GRACE_MS)) return;
+    g_tui.pasting = false;
+    g_tui.paste_cr = false;
+}
+
 typedef struct { i32 final; i32 nparams; i32 p[4]; b8 mouse; } Csi;
 
 static i32 read_csi(Csi *out) {
@@ -5107,6 +5127,7 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
     tui_set_status(g_tui.needs_provider ? "setup" : "ready"); /* repaints */
 
     for (;;) {
+        paste_retire_if_drained();
         i32 c = rbyte();
         if (c == -3) { repaint(); continue; }
         if (c == -2 || (c == 0x03 && !g_tui.pasting)) {

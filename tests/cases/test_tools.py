@@ -654,3 +654,23 @@ def test_a_long_turn_runs_to_its_end(ctx):
     assert len(ctx.mock.requests) == 41, len(ctx.mock.requests)
     assert s.status_kind() == "ready"
     assert "stopped" not in s.text(), s.text()
+
+
+def test_binary_tool_output_is_sent_as_valid_utf8(ctx):
+    """A tool that prints raw bytes must not put them on the wire verbatim.
+
+    A JSON body is UTF-8 by definition (RFC 8259), so a provider rejects a
+    request carrying the tail of /dev/urandom. What the tool answers is
+    replayed, so the sanitising belongs to the serialiser, not the tool.
+    """
+    args = json.dumps({"command": "head -c 4096 /dev/urandom"})
+    ctx.scenario(f"tool=bash:{args},final_text=handled")
+    s = ctx.spawn()
+    s.submit("dump some bytes")
+    s.wait_text("handled")
+    s.wait_turn_done()
+
+    assert ctx.mock.bad_utf8 == [], f"{len(ctx.mock.bad_utf8)} non-UTF-8 bodies"
+    results = ctx.mock.tool_results()
+    assert results, ctx.mock.requests
+    results[-1].encode("utf-8")          # decoded cleanly, so it round-trips

@@ -22,6 +22,33 @@ ESCAPES = ["\x1b[200~", "\x1b[201~", "\x1b[<0;1;1M", "\x1b[1;5D", "\x1b[999;999R
            "\x1b]52;c;AAAA\x07", "\x1bOA", "\x1b[Z", "\x1b[6~", "\x1b[3~"]
 
 
+def clear_composer(s):
+    """Empty the draft whatever state the abuse left it in.
+
+    Ctrl-U kills to the start of a line, not the whole draft, and a storm
+    leaves both line breaks (Esc-Enter is a break) and the cursor somewhere in
+    the middle, so one Ctrl-U clears neither. Ctrl-K then Ctrl-U empties the
+    current line, and Backspace then takes the break in front of it, so each
+    round retires one line of the draft. Backspace is what the loop turns on:
+    neither kill can reach a break the cursor sits behind.
+
+    Emptiness is read from the placeholder rather than from the rows, because
+    composer_lines counts upward from the panel's last row and a short draft
+    would read the transcript above it.
+    """
+    def empty():
+        return s.PLACEHOLDER in s.composer_lines(1)[0]
+
+    for _ in range(400):
+        if empty():
+            return True
+        s.key("ctrl-k")
+        s.key("ctrl-u")
+        s.key("backspace")
+        s.sync(timeout=30.0)
+    return empty()
+
+
 def still_alive(b, s, what: str):
     """The end of every stress case: it survived and still paints.
 
@@ -32,14 +59,25 @@ def still_alive(b, s, what: str):
     for _ in range(3):
         s.key("esc")
         s.pump(0.05)
+    # An Esc at a composer with nothing left to dismiss arms a rewind and the
+    # next one opens that screen, which then owns the keyboard. The abuse
+    # never asked for it, so leave it before reading the composer back.
+    for _ in range(4):
+        s.settle(timeout=30.0)
+        if s.status_kind() == "ready":
+            break
+        s.key("esc")
     s.wait_status("ready", timeout=60.0)
-    s.key("ctrl-u")
-    s.sync(timeout=30.0)
+    b.check(clear_composer(s), f"the composer would not clear after {what}")
+    # A byte arriving within the Esc window is Alt+that key, and the last Esc
+    # above is real input, so the settle keeps the first typed byte a byte.
+    s.settle(timeout=30.0)
     s.type("still here")
     s.sync(timeout=30.0)
-    b.check("still here" in s.composer_text(3),
+    # The draft was cleared first, so the text is on the composer's own row.
+    b.check("still here" in s.composer_text(1),
             f"the composer stopped accepting text after {what}")
-    s.key("ctrl-u").sync(timeout=30.0)
+    clear_composer(s)
 
 
 @needs("proc")

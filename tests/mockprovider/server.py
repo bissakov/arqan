@@ -559,6 +559,12 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length else b""
         try:
             return json.loads(raw or b"{}")
+        except UnicodeDecodeError:
+            # A JSON body must be UTF-8 (RFC 8259), and a real provider
+            # answers 400 rather than guessing. Record it so a case can
+            # assert the agent never sends one.
+            self.server.bad_utf8.append(raw)   # type: ignore[attr-defined]
+            return {"_raw": raw.decode("utf-8", "replace")}
         except json.JSONDecodeError:
             return {"_raw": raw.decode("utf-8", "replace")}
 
@@ -945,6 +951,7 @@ class MockProvider:
     def __init__(self, scenario: str | Scenario | None = None, host="127.0.0.1", port=0):
         self.httpd = _Server((host, port), _Handler)
         self.httpd.requests = []           # type: ignore[attr-defined]
+        self.httpd.bad_utf8 = []           # type: ignore[attr-defined]
         self.httpd.auth = []               # type: ignore[attr-defined]
         self.httpd.keys = []               # type: ignore[attr-defined]
         self.httpd.versions = []           # type: ignore[attr-defined]
@@ -992,6 +999,11 @@ class MockProvider:
         return self.httpd.requests  # type: ignore[attr-defined]
 
     @property
+    def bad_utf8(self) -> list:
+        """Request bodies that were not valid UTF-8, so not valid JSON."""
+        return self.httpd.bad_utf8  # type: ignore[attr-defined]
+
+    @property
     def auth(self) -> list:
         """The Authorization header of each completion request, None when absent."""
         return self.httpd.auth  # type: ignore[attr-defined]
@@ -1019,6 +1031,7 @@ class MockProvider:
 
     def reset(self):
         self.requests.clear()
+        self.bad_utf8.clear()
         self.auth.clear()
         self.keys.clear()
         self.versions.clear()

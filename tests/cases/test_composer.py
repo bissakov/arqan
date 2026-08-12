@@ -412,6 +412,37 @@ def test_a_large_paste_arrives_whole_and_in_order(ctx):
     assert sent == body, (len(sent), len(body), sent[:80], sent[-80:])
 
 
+def test_an_unfinished_paste_does_not_wedge_the_composer(ctx):
+    """A paste-start with no paste-end must not eat every key that follows.
+
+    A terminal that dies mid-paste, or pasted text carrying a start marker of
+    its own, leaves the composer in paste mode, where a control byte is text
+    and no key can recover it. The paste retires when the input drains.
+    """
+    s = ctx.spawn()
+    s.send("\x1b[200~hello")          # start marker, no end marker
+    s.sync()
+    assert s.composer_text() == "hello", s.composer_text()
+
+    s.key("ctrl-u").sync()             # an edit key, not pasted text
+    assert s.composer_text() == "", s.composer_text()
+
+    s.type("back in control").sync()
+    assert s.composer_text() == "back in control", s.composer_text()
+
+
+def test_a_finished_paste_still_takes_its_text_whole(ctx):
+    """The retirement must not cut a paste short: the end marker still ends it."""
+    ctx.scenario("text=got+it")
+    body = "\n".join(f"line {i:04d}" for i in range(500))
+    s = ctx.spawn()
+    s.paste(body)
+    s.sync()
+    s.submit()
+    s.wait_turn_done()
+    assert ctx.mock.requests[-1]["messages"][-1]["content"] == body
+
+
 def test_up_moves_between_draft_lines(ctx):
     """Up walks the draft's own rows instead of leaving for history."""
     s = ctx.spawn()

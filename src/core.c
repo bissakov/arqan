@@ -219,6 +219,34 @@ void buf_json_str(Buf *b, Str s) {
     buf_json_chars(b, s);
     buf_putc(b, '"');
 }
+
+/* Length of the well-formed UTF-8 sequence at `s+i`, or 0 when there is none.
+ * Overlongs, surrogates and anything past U+10FFFF are not well formed: a
+ * decoder that accepts them is how a byte string smuggles itself through one
+ * that does not. */
+static size_t utf8_seq(Str s, size_t i) {
+    u8 c = (u8)s.p[i];
+    size_t need; u32 cp; u32 lo;
+    if (c < 0x80) return 1;
+    if ((c & 0xe0) == 0xc0) { need = 2; cp = c & 0x1fu; lo = 0x80; }
+    else if ((c & 0xf0) == 0xe0) { need = 3; cp = c & 0x0fu; lo = 0x800; }
+    else if ((c & 0xf8) == 0xf0) { need = 4; cp = c & 0x07u; lo = 0x10000; }
+    else return 0;
+    if (s.n - i < need) return 0;
+    for (size_t k = 1; k < need; k++) {
+        u8 t = (u8)s.p[i + k];
+        if ((t & 0xc0) != 0x80) return 0;
+        cp = (cp << 6) | (t & 0x3fu);
+    }
+    if (cp < lo || cp > 0x10ffff) return 0;
+    if (cp >= 0xd800 && cp <= 0xdfff) return 0;
+    return need;
+}
+
+/* JSON is UTF-8 by definition (RFC 8259), so a provider rejects a request
+ * carrying the raw bytes a tool happened to print. Every ill-formed byte
+ * becomes U+FFFD here, at the one point every document arqan writes passes
+ * through, rather than in each tool that might produce one. */
 void buf_json_chars(Buf *b, Str s) {
     for (size_t i = 0; i < s.n; i++) {
         u8 c = (u8)s.p[i];
@@ -230,9 +258,14 @@ void buf_json_chars(Buf *b, Str s) {
             case '\n': buf_put(b, "\\n", 2); break;
             case '\r': buf_put(b, "\\r", 2); break;
             case '\t': buf_put(b, "\\t", 2); break;
-            default:
-                if (c < 0x20) buf_putf(b, "\\u%04x", c);
-                else buf_putc(b, (char)c);
+            default: {
+                if (c < 0x20) { buf_putf(b, "\\u%04x", c); break; }
+                if (c < 0x80) { buf_putc(b, (char)c); break; }
+                size_t seq = utf8_seq(s, i);
+                if (!seq) { buf_put(b, "\xef\xbf\xbd", 3); break; }
+                buf_put(b, s.p + i, seq);
+                i += seq - 1;
+            }
         }
     }
 }
