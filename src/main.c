@@ -2594,6 +2594,7 @@ i32 main(i32 argc, char **argv) {
     /* A command runs where a request would, so it keeps the frame alive the
      * same way. */
     shell_set_idle(on_idle, NULL);
+    shell_set_interrupt_flag(&g_got_sigint);
     web_set_idle(on_idle, NULL, tui_input_fd(), &g_got_sigint);
     atexit(tui_stop);
     highlight_init(argv[0]);

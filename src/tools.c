@@ -18,6 +18,7 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <signal.h>
 
 /* ---- argument helpers ---------------------------------------------------- */
 /* Every tool starts here: the arguments as an object, or NULL with `err` set. */
@@ -217,15 +218,23 @@ void shell_set_idle(void (*fn)(void *ud), void *ud) {
     g_shell_idle_ud = ud;
 }
 
+static volatile sig_atomic_t *g_shell_interrupt;
+
+void shell_set_interrupt_flag(volatile sig_atomic_t *flag) {
+    g_shell_interrupt = flag;
+}
+
 /* Long enough that a chatty command is drained in whole blocks, short enough
  * that the caller's idle hook keeps a frame moving. */
 #define SHELL_POLL_MS 50
 
 b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
-    /* A truncated shell line is a different program, so anything over the
-     * limit is refused rather than clamped. */
     static char z[AGENT_MAX_COMMAND];
     if (!arg_cstr(cmd, z, sizeof z, "command", err, err_cap)) return false;
+    if (g_shell_interrupt && *g_shell_interrupt) {
+        buf_puts(out, STR("[interrupted]\n[exit 130]"));
+        return true;
+    }
 
     i32 fds[2];
     if (pipe(fds) != 0) { snprintf(err, err_cap, "pipe failed"); return false; }
@@ -236,6 +245,7 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
         return false;
     }
     if (pid == 0) {
+        setpgid(0, 0);
         i32 null_fd = open("/dev/null", O_RDONLY);
         if (null_fd >= 0) { dup2(null_fd, 0); close(null_fd); }
         dup2(fds[1], 1);
@@ -244,21 +254,44 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
         execl("/bin/sh", "sh", "-c", z, (char *)NULL);
         _exit(127);
     }
+    setpgid(pid, pid);
     close(fds[1]);
 
-    /* The tail is kept because a command that fails says why on its last
-     * lines. The child is drained to the end either way, since closing the
-     * pipe early would kill it with SIGPIPE mid-run. */
     static char ring[AGENT_SHELL_OUT_BYTES];
     size_t head = 0, len = 0, total = 0;
     char block[4096];
     struct pollfd pfd = { fds[0], POLLIN, 0 };
+    b8 interrupted = false;
+    b8 killed = false;
     for (;;) {
-        if (g_shell_idle) {
-            i32 ready = poll(&pfd, 1, SHELL_POLL_MS);
-            g_shell_idle(g_shell_idle_ud);
-            if (ready == 0) continue;
-            if (ready < 0) { if (errno == EINTR) continue; break; }
+        if (g_shell_interrupt && *g_shell_interrupt) {
+            interrupted = true;
+            if (!killed) {
+                if (kill(-pid, SIGTERM) != 0) kill(pid, SIGTERM);
+                killed = true;
+            }
+        }
+        i32 ready = poll(&pfd, 1, SHELL_POLL_MS);
+        if (g_shell_idle) g_shell_idle(g_shell_idle_ud);
+        if (g_shell_interrupt && *g_shell_interrupt) {
+            interrupted = true;
+            if (!killed) {
+                if (kill(-pid, SIGTERM) != 0) kill(pid, SIGTERM);
+                killed = true;
+            } else {
+                if (kill(-pid, SIGKILL) != 0) kill(pid, SIGKILL);
+            }
+        }
+        if (ready < 0) { if (errno == EINTR) continue; break; }
+        if (ready == 0) {
+            if (interrupted) {
+                pid_t w = waitpid(pid, NULL, WNOHANG);
+                if (w == pid) break;
+                if (killed) {
+                    if (kill(-pid, SIGKILL) != 0) kill(pid, SIGKILL);
+                }
+            }
+            continue;
         }
         ssize_t n = read(fds[0], block, sizeof block);
         if (n < 0) { if (errno == EINTR) continue; break; }
@@ -266,12 +299,32 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
         total += (size_t)n;
         ring_put(ring, sizeof ring, &head, &len, block, (size_t)n);
     }
+    if (interrupted) {
+        if (kill(-pid, SIGKILL) != 0) kill(pid, SIGKILL);
+        i32 flags = fcntl(fds[0], F_GETFL, 0);
+        if (flags >= 0) fcntl(fds[0], F_SETFL, flags | O_NONBLOCK);
+        for (;;) {
+            ssize_t n = read(fds[0], block, sizeof block);
+            if (n <= 0) break;
+            total += (size_t)n;
+            ring_put(ring, sizeof ring, &head, &len, block, (size_t)n);
+        }
+    }
     close(fds[0]);
 
     if (total > len)
         buf_putf(out, "[output truncated: last %zu of %zu bytes]\n", len, total);
     buf_put(out, ring + head, len < sizeof ring ? len : sizeof ring - head);
     if (len == sizeof ring) buf_put(out, ring, head);
+
+    if (interrupted) {
+        i32 status = 0;
+        pid_t done;
+        while ((done = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {}
+        (void)status; (void)done;
+        buf_puts(out, STR("\n[interrupted]"));
+        return true;
+    }
 
     i32 status = 0;
     pid_t done;
@@ -288,9 +341,11 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit, Buf *out,
                              char *err, size_t err_cap) {
     static char z[AGENT_MAX_COMMAND];
     if (!arg_cstr(cmd, z, sizeof z, "command", err, err_cap)) return false;
+    if (g_shell_interrupt && *g_shell_interrupt) {
+        buf_puts(out, STR("[interrupted]\n[exit 130]"));
+        return true;
+    }
 
-    /* Everything the command writes goes to the spill; the page above only
-     * carries the byte range asked for. */
     static Spill spill;
     spill_open(&spill, "bash", "log", cmd);
 
@@ -308,6 +363,7 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit, Buf *out,
         return false;
     }
     if (pid == 0) {
+        setpgid(0, 0);
         i32 null_fd = open("/dev/null", O_RDONLY);
         if (null_fd >= 0) { dup2(null_fd, 0); close(null_fd); }
         dup2(fds[1], 1); dup2(fds[1], 2);
@@ -315,17 +371,43 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit, Buf *out,
         execl("/bin/sh", "sh", "-c", z, (char *)NULL);
         _exit(127);
     }
+    setpgid(pid, pid);
     close(fds[1]);
 
     size_t total = 0, shown = 0, first = offset - 1;
     char block[4096];
     struct pollfd pfd = { fds[0], POLLIN, 0 };
+    b8 interrupted = false;
+    b8 killed = false;
     for (;;) {
-        if (g_shell_idle) {
-            i32 ready = poll(&pfd, 1, SHELL_POLL_MS);
-            g_shell_idle(g_shell_idle_ud);
-            if (ready == 0) continue;
-            if (ready < 0) { if (errno == EINTR) continue; break; }
+        if (g_shell_interrupt && *g_shell_interrupt) {
+            interrupted = true;
+            if (!killed) {
+                if (kill(-pid, SIGTERM) != 0) kill(pid, SIGTERM);
+                killed = true;
+            }
+        }
+        i32 ready = poll(&pfd, 1, SHELL_POLL_MS);
+        if (g_shell_idle) g_shell_idle(g_shell_idle_ud);
+        if (g_shell_interrupt && *g_shell_interrupt) {
+            interrupted = true;
+            if (!killed) {
+                if (kill(-pid, SIGTERM) != 0) kill(pid, SIGTERM);
+                killed = true;
+            } else {
+                if (kill(-pid, SIGKILL) != 0) kill(pid, SIGKILL);
+            }
+        }
+        if (ready < 0) { if (errno == EINTR) continue; break; }
+        if (ready == 0) {
+            if (interrupted) {
+                pid_t w = waitpid(pid, NULL, WNOHANG);
+                if (w == pid) break;
+                if (killed) {
+                    if (kill(-pid, SIGKILL) != 0) kill(pid, SIGKILL);
+                }
+            }
+            continue;
         }
         ssize_t n = read(fds[0], block, sizeof block);
         if (n < 0) { if (errno == EINTR) continue; break; }
@@ -341,7 +423,43 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit, Buf *out,
         }
         total += bytes;
     }
+    if (interrupted) {
+        if (kill(-pid, SIGKILL) != 0) kill(pid, SIGKILL);
+        i32 flags = fcntl(fds[0], F_GETFL, 0);
+        if (flags >= 0) fcntl(fds[0], F_SETFL, flags | O_NONBLOCK);
+        for (;;) {
+            ssize_t n = read(fds[0], block, sizeof block);
+            if (n <= 0) break;
+            size_t bytes = (size_t)n;
+            spill_put(&spill, block, bytes);
+            if (total + bytes > first && shown < limit) {
+                size_t at = total < first ? first - total : 0;
+                size_t take = bytes - at;
+                if (take > limit - shown) take = limit - shown;
+                buf_put(out, block + at, take);
+                shown += take;
+            }
+            total += bytes;
+        }
+    }
     close(fds[0]);
+
+    if (interrupted) {
+        if (offset > total) {
+            buf_putf(out, "[output has %zu bytes; offset %zu is past its end]\n",
+                     total, offset);
+        } else if (total > first + shown) {
+            buf_putf(out, "[read %zu of %zu output bytes; continue with offset=%zu]\n",
+                     shown, total, offset + shown);
+        }
+        spill_finish(&spill, out, shown < total);
+        i32 status = 0;
+        pid_t done;
+        while ((done = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {}
+        (void)status; (void)done;
+        buf_puts(out, STR("\n[interrupted]"));
+        return buf_ok(out) && out->n <= AGENT_TOOL_RESULT_BYTES;
+    }
 
     if (offset > total) {
         buf_putf(out, "[output has %zu bytes; offset %zu is past its end]\n",

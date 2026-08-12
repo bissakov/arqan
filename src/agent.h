@@ -834,6 +834,7 @@ b8          shell_capture(Str cmd, Buf *out, char *err, size_t err_cap);
 /* Pumped while a command runs, so a slow one keeps the UI live the way an
  * in-flight request does; unset by default, since a tool is not the TUI's. */
 void        shell_set_idle(void (*fn)(void *ud), void *ud);
+void        shell_set_interrupt_flag(volatile sig_atomic_t *flag);
 
 /* ---- prompt ------------------------------------------------------------- */
 /* The system prompt, placeholders expanded. `configured` is what --system or
