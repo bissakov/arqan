@@ -66,6 +66,8 @@ class Scenario:
         # connection before answering. `abort_after` drops it mid-stream, after
         # that many content deltas have been sent.
         self.fail_times: int = int(kw.get("fail_times", 0))
+        self.empty_times: int = int(kw.get("empty_times", 0))
+        self.stream_error_times: int = int(kw.get("stream_error_times", 0))
         self.fail_mode: str = kw.get("fail_mode", "status")
         self.fail_status: int = int(kw.get("fail_status", 503))
         self.abort_after: int = int(kw.get("abort_after", 0))
@@ -840,6 +842,24 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             )
 
         if not self._sse(frame({"role": "assistant", "content": ""})):
+            return
+
+        if len(srv.requests) <= scenario.stream_error_times:
+            self._sse({"error": {"message": "mock stream failure"}})
+            return
+
+        if len(srv.requests) <= scenario.empty_times:
+            if not self._sse(frame({}, "stop")):
+                return
+            if scenario.usage:
+                usage = scenario._usage(messages, 0)
+                if not self._sse(dict(base, choices=[], usage=usage)):
+                    return
+            try:
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
             return
 
         if scenario.usage and scenario.usage_first and tool_replies == 0:

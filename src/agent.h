@@ -77,9 +77,9 @@ typedef bool     b8;
 #define AGENT_ELIDE_TURNS      2
 #define AGENT_ELIDE_BYTES      512         /* under this, saying so costs more   */
 /* The delay doubles per attempt from Config.retry_delay_ms and stops here. */
-#define AGENT_RETRIES          3           /* extra attempts a turn is allowed  */
-#define AGENT_RETRY_DELAY_MS   500         /* wait before the first of them     */
-#define AGENT_MAX_RETRY_DELAY_MS 8000
+#define AGENT_RETRIES          4           /* extra attempts a turn is allowed  */
+#define AGENT_RETRY_DELAY_MS   2000        /* wait before the first of them     */
+#define AGENT_MAX_RETRY_DELAY_MS 30000
 #define AGENT_MAX_COMMANDS     32          /* slash commands offered by the TUI */
 #define AGENT_LINE_BUF         (1u << 20)  /* 1 MiB input line buffer          */
 #define AGENT_RESP_BUF         (1u << 22)  /* 4 MiB response accumulation      */
@@ -1096,8 +1096,11 @@ typedef struct {
     b8 usage_valid;
 } Provider;
 
+/* An otherwise successful completion carried no prose, reasoning or calls. */
+#define PROVIDER_EMPTY (-2)
 /* Run one completion turn, appending the assistant message and its tool
- * calls to conv. Returns the number of tool calls, or -1 with `err` set. */
+ * calls to conv. Returns the number of tool calls, PROVIDER_EMPTY for no
+ * semantic output, or -1 with `err` set for every other failure. */
 i32     provider_run(Provider *p, char *err, size_t err_cap);
 
 /* Model ids from GET <base_url>/models, in the order the endpoint serves

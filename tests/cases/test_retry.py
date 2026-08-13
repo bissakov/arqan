@@ -56,6 +56,40 @@ def test_dropped_connection_is_retried(ctx):
     assert len(ctx.mock.requests) == 2, ctx.mock.requests
 
 
+def test_empty_completion_is_retried(ctx):
+    """Metadata-only success is not accepted as the assistant's answer."""
+    ctx.scenario("empty_times=1,text=second+time+lucky")
+    s = ctx.spawn(**RETRY)
+    s.submit("say hi")
+    s.wait_text("second time lucky")
+    s.wait_turn_done()
+    text = s.text()
+    assert "empty response; retrying in 10ms (attempt" in text, text
+    assert len(ctx.mock.requests) == 2, ctx.mock.requests
+
+
+def test_empty_completions_are_exhausted(ctx):
+    """Repeated empty successes become an error, not a blank assistant turn."""
+    ctx.scenario("empty_times=9")
+    s = ctx.spawn(ARQAN_RETRIES=1, ARQAN_RETRY_DELAY_MS=10)
+    s.submit("say hi")
+    s.wait_text("[provider error: the provider returned an empty response]")
+    s.wait_turn_done()
+    assert len(ctx.mock.requests) == 2, ctx.mock.requests
+
+
+def test_stream_error_before_output_is_retried(ctx):
+    """An SSE error object is a failure even though the HTTP request was 200."""
+    ctx.scenario("stream_error_times=1,text=recovered")
+    s = ctx.spawn(**RETRY)
+    s.submit("say hi")
+    s.wait_text("recovered")
+    s.wait_turn_done()
+    text = s.text()
+    assert "provider reported a stream error; retrying" in text, text
+    assert len(ctx.mock.requests) == 2, ctx.mock.requests
+
+
 def test_retries_are_exhausted(ctx):
     """Past the last attempt the turn ends on the error and the UI stays usable."""
     ctx.scenario("fail_times=9")

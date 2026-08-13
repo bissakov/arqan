@@ -378,6 +378,7 @@ typedef struct {
     size_t events;       /* SSE data lines parsed, for telemetry           */
     size_t bad_events;   /* data lines that were not JSON arqan could read   */
     size_t reason_bytes; /* thinking trace streamed, which Conv never keeps */
+    b8 stream_error;     /* a parsed top-level provider error               */
 } StreamState;
 
 static i32 slot(StreamState *s, i32 idx) {
@@ -664,6 +665,10 @@ static b8 on_line(Str line, void *ud) {
          * parses into the turn's scratch rather than being dropped. */
         if (!ev) ev = json_parse(s->scratch, payload);
         if (!ev) { s->bad_events++; return true; }
+        if (json_get(ev, STR("error"))) {
+            s->stream_error = true;
+            return false;
+        }
         if (p->cfg->api == API_ANTHROPIC) anth_event(p, s, ev);
         else openai_event(p, s, ev);
     }
@@ -811,12 +816,14 @@ static b8 retryable(i32 rc) {
     }
 }
 
-/* Whether anything reached the screen or the state, which is what makes a
- * second attempt a retry rather than a duplicate: a stream that died after a
- * delta has been painted and cannot be taken back. */
-static b8 stream_untouched(const StreamState *s, const Provider *p) {
-    return s->events == 0 && s->text.n == 0 && s->reason_bytes == 0
-        && s->count == 0 && s->dropped == 0 && !p->usage_valid;
+/* Metadata and usage do not make an answer. A retry is safe until prose,
+ * reasoning or a tool call has reached the caller. */
+static b8 response_empty(const StreamState *s) {
+    return s->text.n == 0 && s->reason_bytes == 0 && s->count == 0;
+}
+
+static b8 output_untouched(const StreamState *s) {
+    return response_empty(s) && s->dropped == 0;
 }
 
 /* Doubling from the configured base; attempt 1 waits the base. */
@@ -1015,15 +1022,37 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     i32 attempts = p->cfg->retries > 0 ? p->cfg->retries + 1 : 1;
     i32 attempt = 1;
     i32 rc;
+    char parse_err[128] = {0};
+    b8 empty_reply = false;
     for (;;) {
         fail[0] = '\0';
         rc = http_post(&r);
-        if (rc == 0 || attempt >= attempts || !retryable(rc)) break;
-        if (!stream_untouched(s, p)) break;
+        if (rc == 0 && !p->cfg->stream) {
+            if (!buf_ok(&whole))
+                snprintf(parse_err, sizeof parse_err, "the reply is too large");
+            else if (p->cfg->api == API_ANTHROPIC)
+                read_message_anth(p, s, buf_finish(&whole), scratch, parse_err,
+                                  sizeof parse_err);
+            else
+                read_completion(p, s, buf_finish(&whole), scratch, parse_err,
+                                sizeof parse_err);
+        }
+        empty_reply = rc == 0 && !parse_err[0] && !s->stream_error
+                   && response_empty(s);
+        b8 retry_candidate = empty_reply || s->stream_error || retryable(rc);
+        if ((rc == 0 && !empty_reply && !s->stream_error)
+            || !retry_candidate || attempt >= attempts
+            || !output_untouched(s)) break;
 
         i32 delay = backoff_ms(p->cfg->retry_delay_ms, attempt);
         char reason[160];
-        if (rc < 0) snprintf(reason, sizeof reason, "HTTP %d", -rc);
+        if (s->stream_error)
+            snprintf(reason, sizeof reason,
+                     "the provider reported a stream error");
+        else if (empty_reply)
+            snprintf(reason, sizeof reason,
+                     "the provider returned an empty response");
+        else if (rc < 0) snprintf(reason, sizeof reason, "HTTP %d", -rc);
         else snprintf(reason, sizeof reason, "%s",
                       fail[0] ? fail : "the connection failed");
         TelEvent re;
@@ -1041,10 +1070,12 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
          * cleared. */
         s->events = 0;
         s->bad_events = 0;
+        s->stream_error = false;
         s->text.n = 0;
         s->text.oom = false;
         s->text_started = false;
         s->reason_started = false;
+        s->reason_bytes = 0;
         s->open_slot = -1;
         s->blocks = 0;
         s->anth_blocks.n = 1;
@@ -1054,21 +1085,14 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         s->anth_thinking_closed = false;
         s->anth_signature_open = false;
         if (!p->cfg->stream) { whole.n = 0; whole.oom = false; }
+        parse_err[0] = '\0';
+        p->prompt_tokens = 0;
+        p->completion_tokens = 0;
+        p->cache_creation_tokens = 0;
+        p->cache_read_tokens = 0;
+        p->total_tokens = 0;
+        p->usage_valid = false;
         attempt++;
-    }
-    char parse_err[128] = {0};
-    /* Read before the record below, so the cost is reported whether or not
-     * the document made sense. */
-    if (rc == 0 && !p->cfg->stream) {
-        p->ud = s;
-        if (!buf_ok(&whole))
-            snprintf(parse_err, sizeof parse_err, "the reply is too large");
-        else if (p->cfg->api == API_ANTHROPIC)
-            read_message_anth(p, s, buf_finish(&whole), scratch, parse_err,
-                              sizeof parse_err);
-        else
-            read_completion(p, s, buf_finish(&whole), scratch, parse_err,
-                            sizeof parse_err);
     }
     p->ud = saved_ud;
 
@@ -1089,6 +1113,8 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     tel_shape(&tev, "reply", (Str){ s->text.p, s->text.n });
     tel_int(&tev, "reason_bytes", (i64)s->reason_bytes);
     tel_int(&tev, "dropped_calls", s->dropped);
+    tel_bool(&tev, "empty", empty_reply);
+    tel_bool(&tev, "stream_error", s->stream_error);
     if (p->usage_valid) {
         tel_int(&tev, "prompt_tokens", (i64)p->prompt_tokens);
         tel_int(&tev, "completion_tokens", (i64)p->completion_tokens);
@@ -1109,6 +1135,10 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         else snprintf(err, err_cap, "request failed (%d)", rc);
         return -1;
     }
+    if (s->stream_error) {
+        snprintf(err, err_cap, "the provider reported a stream error");
+        return -1;
+    }
 
     if (s->dropped)
         agent_log(AGENT_LOG_WARN, "dropped %d tool call(s) past the per-turn cap of %d",
@@ -1120,6 +1150,10 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         snprintf(err, err_cap, "the provider sent %zu event(s) arqan could not "
                  "read", s->bad_events);
         return -1;
+    }
+    if (response_empty(s)) {
+        snprintf(err, err_cap, "the provider returned an empty response");
+        return PROVIDER_EMPTY;
     }
 
     anth_close_thinking(s);

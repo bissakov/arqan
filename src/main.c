@@ -2432,6 +2432,11 @@ static void compact_session(Agent *ag) {
         tui_notice(STR("compaction interrupted: this session is unchanged"));
         return;
     }
+    if (rc == PROVIDER_EMPTY) {
+        persist->off = mark;
+        tui_notice(STR("the model sent no summary: this session is unchanged"));
+        return;
+    }
     if (rc < 0) {
         persist->off = mark;
         notice_fmt("could not compact: %s; this session is unchanged", err);
