@@ -28,7 +28,7 @@
 #define TUI_SEL_ROWS 512         /* screen rows mirrored for selection      */
 #define TUI_SEL_ROW_BYTES 2048   /* visible bytes kept per screen row       */
 #define TUI_SEL_BYTES (1u << 16) /* clipboard payload cap                   */
-#define TUI_POPUP_ROWS 8         /* completion entries shown at once         */
+#define TUI_POPUP_ROWS 8         /* visual popup rows shown at once           */
 #define TUI_PICK_SEARCH_MIN 10   /* entries above which a picker searches    */
 #define TUI_PATH_ENTS 256        /* paths the '@' popup keeps for one word    */
 #define TUI_PATH_SLOT 512        /* longest path one of them holds            */
@@ -1720,12 +1720,13 @@ static const TuiCmd *popup_items(void) {
 }
 
 static void update_popup_row(size_t screen_row, Str name, Str desc,
-                             TuiMark mark, b8 selected, size_t name_cells,
-                             size_t screen_col, size_t screen_cols,
-                             size_t body_cols, b8 force) {
+                             TuiMark mark, b8 selected, b8 first_line,
+                             size_t name_cells, size_t screen_col,
+                             size_t screen_cols, size_t body_cols, b8 force) {
     u64 hash = row_hash(name, desc, ROW_POPUP);
     hash = hash_add(hash, &mark, sizeof mark);
     hash = hash_add(hash, &selected, sizeof selected);
+    hash = hash_add(hash, &first_line, sizeof first_line);
     hash = hash_add(hash, &name_cells, sizeof name_cells);
     size_t sel_c0, sel_c1;
     sel_row_range(screen_row, &sel_c0, &sel_c1);
@@ -1745,8 +1746,13 @@ static void update_popup_row(size_t screen_row, Str name, Str desc,
     size_t used = 0;
     style(bg);
     style(selected ? S_CYAN : S_TEXT);
-    put_safe_clipped(selected ? STR("\u203a ") : STR("  "), body_cols, &used);
-    put_safe_clipped(name, body_cols > used ? body_cols - used : 0, &used);
+    put_safe_clipped(selected && first_line ? STR("\u203a ") : STR("  "),
+                     body_cols, &used);
+    /* Two cells between the name and description remain even when a long
+     * name reaches the half-row cap used for its column. */
+    size_t name_room = name_cells > used + 2 ? name_cells - used - 2 : 0;
+    if (first_line)
+        put_safe_clipped(name, name_room, &used);
     while (used < name_cells && used < body_cols) { put_text(" ", 1); used++; }
     style(bg);
     style(S_MUTED);
@@ -1815,6 +1821,33 @@ static size_t popup_name_cells(size_t body_cols) {
     widest += 4;   /* "\u203a " marker plus a two-cell gap */
     size_t cap = body_cols / 2;
     return widest < cap ? widest : cap;
+}
+
+/* Visual rows one popup entry needs, capped because no popup can display
+ * more than its visual-row budget. Descriptions use the same word breaker as
+ * the transcript and composer, with their column as a hanging indent. */
+static size_t popup_entry_rows(const TuiCmd *cmd, size_t body_cols,
+                               size_t name_cells, size_t cap) {
+    size_t rows = 0;
+    for (size_t start = 0; rows < cap;) {
+        Row r = row_break(cmd->desc, start, body_cols, name_cells);
+        rows++;
+        if (r.hard && r.end >= cmd->desc.n) break;
+        start = r.next;
+    }
+    return rows;
+}
+
+/* The popup is bounded in visual rows, not entries: a wrapped description
+ * consumes the same screen space here that its painter consumes below. */
+static size_t popup_visual_rows(size_t body_cols, size_t cap) {
+    size_t name_cells = popup_name_cells(body_cols);
+    size_t rows = 0;
+    for (size_t i = 0; i < g_tui.comp_n && rows < cap; i++) {
+        const TuiCmd *cmd = &popup_items()[g_tui.comp_idx[i]];
+        rows += popup_entry_rows(cmd, body_cols, name_cells, cap - rows);
+    }
+    return rows;
 }
 
 /* The popup slot answering a command that opened no popup. */
@@ -1999,17 +2032,55 @@ static void update_activity_row(size_t screen_row, size_t screen_col,
 static void paint_completions(size_t top_row, size_t rows, size_t screen_col,
                               size_t screen_cols, size_t body_cols, b8 force) {
     if (!rows) return;
-    /* Keep the selection on screen when there are more matches than room. */
-    size_t first = g_tui.comp_sel >= rows ? g_tui.comp_sel - rows + 1 : 0;
     size_t name_cells = popup_name_cells(body_cols);
-    for (size_t i = 0; i < rows; i++) {
-        size_t at = g_tui.comp_idx[first + i];
+    /* Keep the complete selected entry on screen where it fits, with as many
+     * entries before it as the visual-row budget allows. */
+    size_t first = g_tui.comp_sel;
+    size_t need = popup_entry_rows(
+        &popup_items()[g_tui.comp_idx[first]], body_cols, name_cells, rows);
+    while (first) {
+        const TuiCmd *prev = &popup_items()[g_tui.comp_idx[first - 1]];
+        size_t room = rows - need;
+        size_t prev_rows = popup_entry_rows(prev, body_cols, name_cells,
+                                            room + 1);
+        if (prev_rows > room) break;
+        need += prev_rows;
+        first--;
+    }
+
+    size_t painted = 0;
+    for (size_t i = first; i < g_tui.comp_n && painted < rows; i++) {
+        size_t at = g_tui.comp_idx[i];
         const TuiCmd *cmd = &popup_items()[at];
-        TuiMark mark = g_tui.marks && !g_tui.path_mode ? g_tui.marks[at]
-                                                       : (TuiMark){0};
-        update_popup_row(top_row + i, cmd->name, cmd->desc, mark,
-                         first + i == g_tui.comp_sel, name_cells, screen_col,
-                         screen_cols, body_cols, force);
+        TuiMark whole = g_tui.marks && !g_tui.path_mode ? g_tui.marks[at]
+                                                        : (TuiMark){0};
+        for (size_t start = 0; painted < rows;) {
+            Row r = row_break(cmd->desc, start, body_cols, name_cells);
+            TuiMark mark = {0};
+            size_t m0 = whole.off > start ? whole.off : start;
+            size_t mend = whole.off <= cmd->desc.n
+                        && whole.n <= cmd->desc.n - whole.off
+                        ? whole.off + whole.n : cmd->desc.n;
+            size_t m1 = mend < r.end ? mend : r.end;
+            if (whole.n && m1 > m0) mark = (TuiMark){ m0 - start, m1 - m0 };
+            const char *desc = cmd->desc.p ? cmd->desc.p + start : NULL;
+            update_popup_row(top_row + painted,
+                             start ? (Str){0} : cmd->name,
+                             (Str){ desc, r.end - start }, mark,
+                             i == g_tui.comp_sel, start == 0, name_cells,
+                             screen_col, screen_cols, body_cols, force);
+            painted++;
+            if (r.hard && r.end >= cmd->desc.n) break;
+            start = r.next;
+        }
+    }
+    /* Entry heights need not divide the viewport. Clear any cells left when
+     * the selected tail cannot fit another complete entry before it. */
+    while (painted < rows) {
+        update_popup_row(top_row + painted, (Str){0}, (Str){0}, (TuiMark){0},
+                         false, false, name_cells, screen_col, screen_cols,
+                         body_cols, force);
+        painted++;
     }
 }
 
@@ -2243,8 +2314,7 @@ static void repaint(void) {
      * transcript rather than pushing it up, so opening one hides the last
      * rows and leaves every other where the reader last saw it. One row
      * always stays uncovered. */
-    size_t popup_rows = g_tui.comp_n < TUI_POPUP_ROWS
-                      ? g_tui.comp_n : TUI_POPUP_ROWS;
+    size_t popup_rows = popup_visual_rows(body_cols, TUI_POPUP_ROWS);
     size_t notice_rows = g_tui.notice_n ? 1 : 0;
     size_t find_rows = g_tui.find_open ? 1 : 0;
     /* The spinner row reads as the next line of the conversation, so it sits

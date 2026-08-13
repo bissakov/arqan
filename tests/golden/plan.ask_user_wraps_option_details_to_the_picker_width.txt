@@ -1,0 +1,22 @@
+--- screen 48x20 ---
+|
+|
+|  plan the storage
+|
+|
+|  ◆  ask
+|  │ Which storage?
+|
+|
+|
+|
+|  › sqlite            keeps local state beside
+|                      the project and supports
+|                      simple portable backups
+|    + something else  Answer in your own words
+|
+|  › Message arqan...
+|
+|
+|  ● pick an answer · mock-model · plan · local
+--- cursor row=17 col=5 visible=yes ---

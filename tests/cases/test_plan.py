@@ -268,6 +268,28 @@ def test_ask_user_offers_the_options_and_feeds_back_the_choice(ctx):
     assert ctx.mock.tool_results() == ["postgres"], ctx.mock.tool_results()
 
 
+def test_ask_user_wraps_option_details_to_the_picker_width(ctx):
+    """A picker keeps a description visible and reflows it after a resize."""
+    detail = (
+        "keeps local state beside the project and supports simple portable backups"
+    )
+    ctx.scenario(ask("Which storage?", [{"label": "sqlite", "detail": detail}]))
+    s = ctx.spawn(cols=48, rows=20)
+    to_plan(s)
+    s.submit("plan the storage")
+    s.wait_status("pick an answer")
+
+    lines = s.screen.lines()
+    assert any("keeps local state" in line for line in lines), s.text()
+    assert any("portable backups" in line for line in lines), s.text()
+    assert not any(detail in line for line in lines), "the narrow row should wrap"
+    ctx.check_screen(s)
+
+    s.resize(cols=100, rows=20).sync()
+    assert any(detail in line for line in s.screen.lines()), s.text()
+    assert all(len(line) <= 100 for line in s.screen.lines()), s.text()
+
+
 def test_ask_user_takes_an_answer_of_its_own(ctx):
     """The last row hands the composer over for something not on the list."""
     ctx.scenario(
