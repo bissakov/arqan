@@ -371,6 +371,13 @@ typedef struct {
     b8   anth_signature_open;
     b8   text_started;
     b8   reason_started;
+    char reason_last;
+    b8   anth_reason_new;
+    b8   reason_detail_seen;
+    b8   reason_detail_has_index;
+    f64  reason_detail_index;
+    b8   reason_detail_has_id;
+    u64  reason_detail_id;
     /* Anthropic streams one content block at a time, so the open block is
      * enough to route a delta: the tool slot it fills, or -1 for prose. */
     i32  open_slot;
@@ -455,8 +462,22 @@ static void take_reason(Provider *p, StreamState *s, Str raw) {
     Str rt = skip_leading_breaks(raw, s->reason_started);
     if (!rt.n) return;
     s->reason_started = true;
+    s->reason_last = rt.p[rt.n - 1];
     s->reason_bytes += rt.n;
     if (p->on_reason) p->on_reason(rt, p->ud);
+}
+
+/* Provider summary parts are separate prose units, while deltas within one
+ * part are token fragments. Keep the former readable without guessing at
+ * punctuation or changing the signed form retained for a later request. */
+static void take_reason_part(Provider *p, StreamState *s, Str raw, b8 new_part) {
+    if (!raw.n) return;
+    if (new_part && s->reason_started
+        && s->reason_last != '\n' && s->reason_last != '\r'
+        && raw.p[0] != '\n' && raw.p[0] != '\r'
+        && p->on_reason)
+        p->on_reason(STR("\n"), p->ud);
+    take_reason(p, s, raw);
 }
 
 static void take_text(Provider *p, StreamState *s, Str raw) {
@@ -492,7 +513,46 @@ static void openai_event(Provider *p, StreamState *s, const JVal *ev) {
     if (!ch0) return;
     const JVal *delta = json_get(ch0, STR("delta"));
     if (!delta) return;
-    take_reason(p, s, reasoning_of(delta));
+    const JVal *details = json_get(delta, STR("reasoning_details"));
+    b8 structured = false;
+    if (details && details->type == J_ARR) {
+        for (size_t i = 0; i < details->u.arr.n; i++) {
+            const JVal *d = &details->u.arr.items[i];
+            Str kind = json_str(d, STR("type"));
+            Str text = str_eq(kind, STR("reasoning.summary"))
+                     ? json_str(d, STR("summary"))
+                     : str_eq(kind, STR("reasoning.text"))
+                     ? json_str(d, STR("text")) : (Str){0};
+            if (!text.n) continue;
+
+            const JVal *iv = json_get(d, STR("index"));
+            b8 has_index = iv && iv->type == J_NUM && iv->u.n >= 0;
+            Str id = json_str(d, STR("id"));
+            u64 id_hash = str_hash64(id);
+            b8 new_part = !s->reason_detail_seen;
+            if (s->reason_detail_seen) {
+                new_part = has_index && s->reason_detail_has_index
+                         && s->reason_detail_index != iv->u.n;
+                if (id.n && s->reason_detail_has_id
+                    && s->reason_detail_id != id_hash)
+                    new_part = true;
+            }
+            s->reason_detail_seen = true;
+            if (has_index) {
+                s->reason_detail_has_index = true;
+                s->reason_detail_index = iv->u.n;
+            }
+            if (id.n) {
+                s->reason_detail_has_id = true;
+                s->reason_detail_id = id_hash;
+            }
+            take_reason_part(p, s, text, new_part);
+            structured = true;
+        }
+    }
+    /* Gateways commonly send the flattened field beside reasoning_details.
+     * Reading both repeats every summary. */
+    if (!structured) take_reason(p, s, reasoning_of(delta));
     take_text(p, s, json_str(delta, STR("content")));
     const JVal *tcs = json_get(delta, STR("tool_calls"));
     if (tcs && tcs->type == J_ARR) {
@@ -570,7 +630,8 @@ static void anth_open_thinking(Provider *p, StreamState *s, const JVal *blk) {
     buf_puts(&s->anth_blocks, STR("{\"type\":\"thinking\",\"thinking\":\""));
     Str thought = json_str(blk, STR("thinking"));
     buf_json_chars(&s->anth_blocks, thought);
-    take_reason(p, s, thought);
+    take_reason_part(p, s, thought, true);
+    s->anth_reason_new = !thought.n;
     s->anth_thinking_open = true;
 
     Str signature = json_str(blk, STR("signature"));
@@ -585,7 +646,8 @@ static void anth_open_thinking(Provider *p, StreamState *s, const JVal *blk) {
 static void anth_thinking_delta(Provider *p, StreamState *s, Str thought) {
     if (!s->anth_thinking_open || s->anth_thinking_closed) return;
     buf_json_chars(&s->anth_blocks, thought);
-    take_reason(p, s, thought);
+    take_reason_part(p, s, thought, s->anth_reason_new);
+    if (thought.n) s->anth_reason_new = false;
 }
 
 static void anth_signature_delta(StreamState *s, Str signature) {
@@ -694,7 +756,22 @@ static b8 read_completion(Provider *p, StreamState *s, Str raw, Arena *scratch,
         return false;
     }
 
-    take_reason(p, s, reasoning_of(msg));
+    const JVal *details = json_get(msg, STR("reasoning_details"));
+    b8 structured = false;
+    if (details && details->type == J_ARR) {
+        for (size_t i = 0; i < details->u.arr.n; i++) {
+            const JVal *d = &details->u.arr.items[i];
+            Str kind = json_str(d, STR("type"));
+            Str text = str_eq(kind, STR("reasoning.summary"))
+                     ? json_str(d, STR("summary"))
+                     : str_eq(kind, STR("reasoning.text"))
+                     ? json_str(d, STR("text")) : (Str){0};
+            if (!text.n) continue;
+            take_reason_part(p, s, text, structured);
+            structured = true;
+        }
+    }
+    if (!structured) take_reason(p, s, reasoning_of(msg));
     take_text(p, s, json_str(msg, STR("content")));
     const JVal *tcs = json_get(msg, STR("tool_calls"));
     if (!tcs || tcs->type != J_ARR) return true;
@@ -724,7 +801,7 @@ static b8 read_message_anth(Provider *p, StreamState *s, Str raw,
         if (str_eq(kind, STR("text"))) {
             take_text(p, s, json_str(blk, STR("text")));
         } else if (str_eq(kind, STR("thinking"))) {
-            take_reason(p, s, json_str(blk, STR("thinking")));
+            take_reason_part(p, s, json_str(blk, STR("thinking")), true);
             anth_save_block(s, blk);
         } else if (str_eq(kind, STR("redacted_thinking"))) {
             anth_save_block(s, blk);
@@ -1075,7 +1152,14 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         s->text.oom = false;
         s->text_started = false;
         s->reason_started = false;
+        s->reason_last = '\0';
         s->reason_bytes = 0;
+        s->anth_reason_new = false;
+        s->reason_detail_seen = false;
+        s->reason_detail_has_index = false;
+        s->reason_detail_index = 0;
+        s->reason_detail_has_id = false;
+        s->reason_detail_id = 0;
         s->open_slot = -1;
         s->blocks = 0;
         s->anth_blocks.n = 1;

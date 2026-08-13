@@ -7,6 +7,13 @@ went over the wire as well as on the transcript.
 import json
 
 
+def row_of(s, needle: str) -> int:
+    for row in range(s.screen.rows):
+        if needle in s.screen.row_text(row):
+            return row
+    raise AssertionError(f"{needle!r} is not on screen:\n{s.text()}")
+
+
 def anth(ctx, **env):
     """A session whose endpoint speaks the Anthropic API."""
     return ctx.spawn(ARQAN_API="anthropic", **env)
@@ -132,6 +139,33 @@ def test_a_thinking_block_reaches_the_screen_and_the_tool_follow_up(ctx):
         "signature": "sig_mock",
     }, json.dumps(assistant)
     assert assistant[2]["type"] == "tool_use", assistant
+
+
+def test_thinking_blocks_are_separated_without_changing_their_signatures(ctx):
+    """Separate summaries read as lines and round-trip as distinct blocks."""
+    ctx.write_file("notes.txt", "kept it\n")
+    ctx.scenario(
+        "reasoning_summaries=Designing+the+module|Defining+the+API,chunk=1,"
+        'tool=read:{"path":"notes.txt"},final_text=done'
+    )
+    s = anth(ctx)
+    s.submit("think first")
+    s.wait_text("done")
+    s.wait_turn_done()
+    assert row_of(s, "Designing the module") < row_of(s, "Defining the API")
+    assistant = ctx.mock.requests[-1]["messages"][1]["content"]
+    assert assistant[:2] == [
+        {
+            "type": "thinking",
+            "thinking": "Designing the module",
+            "signature": "sig_mock_0",
+        },
+        {
+            "type": "thinking",
+            "thinking": "Defining the API",
+            "signature": "sig_mock_1",
+        },
+    ], json.dumps(assistant)
 
 
 def test_an_unstreamed_reply_is_read_the_same_way(ctx):

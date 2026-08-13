@@ -80,6 +80,7 @@ class Scenario:
         # reasoning: streamed before the content, in the field a provider of
         # that family uses ("reasoning_content" or "reasoning").
         self.reasoning: str | None = kw.get("reasoning")
+        self.reasoning_summaries: list[str] = kw.get("reasoning_summaries", [])
         self.redacted: str | None = kw.get("redacted")
         self.reasoning_field: str = kw.get("reasoning_field", "reasoning_content")
         self.final_text: str | None = kw.get("final_text")
@@ -172,6 +173,8 @@ class Scenario:
                     kw["usage"] = value
             elif key == "models":
                 kw["models"] = [m for m in _unescape(value).split("|") if m]
+            elif key == "reasoning_summaries":
+                kw[key] = [m for m in _unescape(value).split("|") if m]
             elif key in ("text", "final_text", "prefix", "error", "reasoning",
                          "redacted"):
                 kw[key] = _unescape(value)
@@ -341,16 +344,22 @@ class _AnthropicHandlerMixin:
             ):
                 return
             index += 1
-        if scenario.reasoning and tool_replies == 0:
-            if not self._anth_block(
-                index, {"type": "thinking", "thinking": ""},
-                [{"type": "thinking_delta", "thinking": piece}
-                 for piece in chunks(scenario.reasoning, scenario.chunk)]
-                + [{"type": "signature_delta", "signature": "sig_mock"}],
-                scenario,
-            ):
-                return
-            index += 1
+        thoughts = scenario.reasoning_summaries or (
+            [scenario.reasoning] if scenario.reasoning else []
+        )
+        if tool_replies == 0:
+            for order, thought in enumerate(thoughts):
+                signature = (f"sig_mock_{order}"
+                             if scenario.reasoning_summaries else "sig_mock")
+                if not self._anth_block(
+                    index, {"type": "thinking", "thinking": ""},
+                    [{"type": "thinking_delta", "thinking": piece}
+                     for piece in chunks(thought, scenario.chunk)]
+                    + [{"type": "signature_delta", "signature": signature}],
+                    scenario,
+                ):
+                    return
+                index += 1
 
         if emit_tools:
             for order, (name, args) in enumerate(scenario.tools):
@@ -412,9 +421,15 @@ class _AnthropicHandlerMixin:
         completion_chars = 0
         if scenario.redacted and tool_replies == 0:
             content.append({"type": "redacted_thinking", "data": scenario.redacted})
-        if scenario.reasoning and tool_replies == 0:
-            content.append({"type": "thinking", "thinking": scenario.reasoning,
-                            "signature": "sig_mock"})
+        thoughts = scenario.reasoning_summaries or (
+            [scenario.reasoning] if scenario.reasoning else []
+        )
+        if tool_replies == 0:
+            for order, thought in enumerate(thoughts):
+                signature = (f"sig_mock_{order}"
+                             if scenario.reasoning_summaries else "sig_mock")
+                content.append({"type": "thinking", "thinking": thought,
+                                "signature": signature})
         if emit_tools:
             for order, (name, args) in enumerate(scenario.tools):
                 try:
@@ -871,7 +886,24 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             time.sleep(scenario.first_delay)
 
         completion_chars = 0
-        if scenario.reasoning and tool_replies == 0:
+        if scenario.reasoning_summaries and tool_replies == 0:
+            for index, summary in enumerate(scenario.reasoning_summaries):
+                for piece in chunks(summary, scenario.chunk):
+                    detail = {
+                        "type": "reasoning.summary",
+                        "summary": piece,
+                        "id": f"reasoning-summary-{index}",
+                        "format": "openai-responses-v1",
+                        "index": index,
+                    }
+                    if not self._sse(frame({
+                        "reasoning": piece,
+                        "reasoning_details": [detail],
+                    })):
+                        return
+                    if scenario.delay:
+                        time.sleep(scenario.delay)
+        elif scenario.reasoning and tool_replies == 0:
             for piece in chunks(scenario.reasoning, scenario.chunk):
                 if not self._sse(frame({scenario.reasoning_field: piece})):
                     return
@@ -943,7 +975,19 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
         """`stream: false`: the same reply as one chat.completion document."""
         message = {"role": "assistant", "content": None}
         completion_chars = 0
-        if scenario.reasoning and tool_replies == 0:
+        if scenario.reasoning_summaries and tool_replies == 0:
+            message["reasoning"] = "".join(scenario.reasoning_summaries)
+            message["reasoning_details"] = [
+                {
+                    "type": "reasoning.summary",
+                    "summary": summary,
+                    "id": f"reasoning-summary-{index}",
+                    "format": "openai-responses-v1",
+                    "index": index,
+                }
+                for index, summary in enumerate(scenario.reasoning_summaries)
+            ]
+        elif scenario.reasoning and tool_replies == 0:
             message[scenario.reasoning_field] = scenario.reasoning
         if emit_tools:
             message["tool_calls"] = [

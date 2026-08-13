@@ -83,6 +83,36 @@ def test_openrouter_reasoning_field(ctx):
     assert fg_of(s, "via openrouter") == MUTED
 
 
+def test_structured_reasoning_summaries_keep_their_boundaries(ctx):
+    """Chunks join within a summary, while adjacent summaries do not."""
+    ctx.scenario(
+        "reasoning_summaries=Designing+shared+module|Defining+the+API,"
+        "chunk=1,text=done"
+    )
+    s = ctx.spawn()
+    s.submit("go")
+    s.wait_text("done")
+    s.wait_turn_done()
+    text = s.text()
+    assert "Designing shared module" in text, text
+    assert "Defining the API" in text, text
+    assert row_of(s, "Designing shared module") < row_of(s, "Defining the API")
+    assert text.count("Designing shared module") == 1, text
+
+
+def test_unstreamed_structured_reasoning_keeps_summary_boundaries(ctx):
+    """A complete reasoning_details array has the same readable layout."""
+    ctx.scenario(
+        "reasoning_summaries=Checking+the+module|Planning+the+change,text=done"
+    )
+    s = ctx.spawn()
+    s.settings_toggle("Stream replies")
+    s.submit("go")
+    s.wait_text("done")
+    s.wait_turn_done()
+    assert row_of(s, "Checking the module") < row_of(s, "Planning the change")
+
+
 def test_reasoning_is_not_sent_back(ctx):
     """The next request carries the reply only: no thinking trace is echoed."""
     ctx.scenario("reasoning=secret+scratchpad,text=hello")
