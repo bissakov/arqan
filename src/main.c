@@ -486,6 +486,12 @@ static ToolAuthorization tool_authorization(Agent *ag,
 /* The three answers to a submitted plan are the three ways a turn goes on. */
 static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
     Str plan = json_str(json_parse(ag->scratch, args), STR("plan"));
+    if (!plan.n) {
+        *result = STR("ERROR: submit_plan requires a non-empty string plan in "
+                      "complete valid JSON. Call submit_plan again with the "
+                      "complete plan.");
+        return TURN_CONTINUE;
+    }
     if (!g_one_shot) render_plan(plan);
 
     const TuiCmd items[] = {

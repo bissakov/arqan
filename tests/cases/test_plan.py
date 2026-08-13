@@ -100,6 +100,47 @@ def test_the_plan_is_rendered_with_its_options(ctx):
     ctx.check_screen(s)
 
 
+def test_an_incomplete_plan_call_is_rejected_before_review(ctx):
+    """Malformed plan arguments cannot be approved as an empty handoff."""
+    ctx.scenario('tool=submit_plan:{"plan":"unfinished')
+    s = ctx.spawn()
+    to_plan(s)
+    s.submit("plan the change")
+    s.wait_turn_done()
+
+    assert "continue?" not in s.text(), s.text()
+    assert ctx.mock.tool_results() == [
+        "ERROR: submit_plan requires a non-empty string plan in complete valid JSON. "
+        "Call submit_plan again with the complete plan."
+    ], ctx.mock.tool_results()
+
+
+def test_a_long_markdown_plan_survives_a_new_session_handoff(ctx):
+    """The reviewed Markdown is the complete first prompt of the new session."""
+    plan = "# Permission model\n\n" + "\n".join(
+        f"{i}. Change component {i} without a shortcut" for i in range(1, 301)
+    )
+    assert len(plan) > 10_000
+    ctx.scenario(submit_plan(ctx, plan))
+    s = ctx.spawn(rows=40)
+    to_plan(s)
+    s.submit("plan the change")
+    s.wait_status("continue?")
+    ctx.scenario("text=started+the+complete+plan")
+    s.key("down").sync()
+    s.key("enter")
+    s.wait_text("started the complete plan")
+    s.wait_turn_done()
+
+    messages = ctx.mock.requests[-1]["messages"]
+    assert [m["role"] for m in messages] == ["system", "user"], messages
+    assert messages[1]["content"] == plan, (
+        len(messages[1]["content"]),
+        len(plan),
+        messages[1]["content"][-100:],
+    )
+
+
 def test_yes_switches_to_build_and_continues(ctx):
     """Approving the plan flips the mode and carries the same turn on."""
     ctx.scenario(submit_plan(ctx) + ",final_text=starting+now")
