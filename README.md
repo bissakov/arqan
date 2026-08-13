@@ -69,27 +69,30 @@ to the user's config and keys to `$XDG_STATE_HOME/arqan/credentials.toml`
 
 ## Performance
 
-Measured at `0bf0805` on Linux 7.1.6 with GCC 16.1.1 and a Ryzen 7 7800X3D.
-Build times are medians of three clean builds; runtime tests use the real TUI
-and agent loop against the local mock provider, excluding network and model
-latency.
+Measured at `1566515` on Linux 7.1.8 with GCC 16.2.1 and a Ryzen 7 7800X3D.
+Build times are medians of three clean 16-job builds. Runtime measurements use
+the real TUI and agent loop against the local mock provider, so they exclude
+network and model latency; the benchmark harness has a 60 ms quiet window, and
+reports the agent's CPU time separately from wall time.
 
-- Clean build: 1.41 s for `make -j16 minimal`; 2.92 s for `make -j16`.
-- Executables: 356 KiB for `bin/arqan`; 12.6 MiB for `bin/arqan-highlight`.
-- Startup: 4.53 ms median and 5.19 ms p95 to the first TUI frame over 20 runs.
-- Idle memory: 1.94 MiB private dirty; 11.0 MiB resident including shared and
-  file-backed pages.
-- Simulated coding work: eight turns using `read`, `grep`, `find`, and `bash`
-  across 16 provider requests took 1.59 s wall and 0.017 s CPU; the session
-  ended at 2.95 MiB private dirty with 14.4 MiB peak RSS.
-- Large context: resuming a 1.003M-token, 4.0 MB session took 0.24 s wall and
-  0.04 s CPU at 13.5 MiB private dirty. Four switches between 1M- and
-  200k-token sessions left that footprint unchanged.
-- Test suite: 586/586 end-to-end cases passed in 28.9 s; the same 586 passed
-  under ASan and UBSan in 29.4 s.
+- Clean build: 4.45 s for `make -j16 minimal`; 4.69 s for `make -j16`.
+- Executables: 1.56 MiB for `bin/arqan`; 12.64 MiB for
+  `bin/arqan-highlight`.
+- Startup: 65 ms wall and 2.9 ms CPU to the first TUI frame; idle memory was
+  2.5 MiB private dirty with 12 MiB peak RSS.
+- Streaming: a 2,000-word reply in 500 deltas took 210 ms wall and 11.3 ms
+  CPU, or 0.02 ms CPU per delta.
+- Tool loop: six `read` rounds in one turn took 204 ms wall and 4.5 ms CPU,
+  or 0.75 ms CPU per round.
+- Large context: replaying a 400k-token, 1.7 MB session took 198 ms wall and
+  13.4 ms CPU at 7.3 MiB private dirty with 17 MiB peak RSS.
+- Benchmarks: all 58 default cases completed within budget in 107.3 s.
+- Test suite: 754/754 end-to-end cases passed in 30.9 s.
 
 Private dirty is memory written for this process alone; RSS also counts
-resident shared libraries and file-backed pages.
+resident shared libraries and file-backed pages. Run `make bench` to reproduce
+the runtime measurements; see [bench/README.md](bench/README.md) for workloads,
+metrics and slow stress cases.
 
 ## License
 
