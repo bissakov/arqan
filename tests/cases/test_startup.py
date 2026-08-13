@@ -140,7 +140,7 @@ def test_piped_banner(ctx):
     """Without a tty, arqan stays line-oriented and prints a banner."""
     out = ctx.run_piped("/exit\n")
     assert out.returncode == 0, out
-    assert "arqan 0.1.0" in out.stdout, out.stdout
+    assert "arqan 0.2.0" in out.stdout, out.stdout
     assert "model=mock-model" in out.stdout, out.stdout
     assert "tools=" in out.stdout, out.stdout
     assert "\x1b[?1049h" not in out.stdout, "must not touch the alternate screen"
