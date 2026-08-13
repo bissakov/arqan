@@ -11,19 +11,30 @@ import time
 
 from bench.case import needs
 from bench.fixtures import markdown_doc, source_tree
+from bench.metrics import Stat
+
+
+def _wait_first_frame(s):
+    """Wait for visible composer chrome without waiting for output to settle."""
+    s.wait_for(
+        lambda t: t.contains("Message arqan") or t.contains("\u203a "),
+        "first frame",
+    )
 
 
 @needs("proc")
 def bench_first_frame(b):
     """Cold start to a painted composer, and what the idle process holds."""
     started = time.perf_counter()
-    s = b.spawn()
+    s = b.spawn(wait=False)
+    _wait_first_frame(s)
     wall = (time.perf_counter() - started) * 1000.0
-    b.lifetime("cold start to first frame", wall_ms=wall, budget_ms=120.0)
+    b.lifetime("cold start to first frame", wall_ms=wall, budget_ms=20.0)
+    b.check(wall < 120.0, f"first frame took {wall:.1f}ms wall")
 
     with b.step("settle", budget_ms=20.0):
         s.settle()
-    b.note(f"first frame in {wall:.0f}ms wall")
+    b.note(f"first frame in {wall:.2f}ms wall")
 
     # The bulk TUI buffers are static storage that startup must not touch;
     # anything that moved them into the cleared block shows up here.
@@ -66,9 +77,11 @@ def bench_project_context(b):
           note=f"{len(doc)} bytes of AGENTS.md per level")
 
     started = time.perf_counter()
-    s = b.spawn(cwd=str(here))
+    s = b.spawn(cwd=str(here), wait=False)
+    _wait_first_frame(s)
     wall = (time.perf_counter() - started) * 1000.0
-    b.lifetime("start inside the tree", wall_ms=wall, budget_ms=200.0)
+    b.lifetime("start inside the tree", wall_ms=wall, budget_ms=40.0)
+    b.check(wall < 200.0, f"first frame took {wall:.1f}ms wall")
     b.alive(s)
 
 
@@ -80,9 +93,11 @@ def bench_start_in_a_large_tree(b):
     b.row("tree", units=shape["files"], unit="file")
 
     started = time.perf_counter()
-    s = b.spawn(cwd=str(b.ctx.work / "repo"))
+    s = b.spawn(cwd=str(b.ctx.work / "repo"), wait=False)
+    _wait_first_frame(s)
     wall = (time.perf_counter() - started) * 1000.0
-    b.lifetime("start in the tree", wall_ms=wall, budget_ms=200.0)
+    b.lifetime("start in the tree", wall_ms=wall, budget_ms=40.0)
+    b.check(wall < 200.0, f"first frame took {wall:.1f}ms wall")
     b.alive(s)
 
 
@@ -90,17 +105,19 @@ def bench_start_in_a_large_tree(b):
 def bench_repeated_starts(b):
     """Start and quit repeatedly: the distribution, not one lucky run."""
     b.ctx.scenario("text=ok")
-    runs = b.scale(6, floor=2)
+    runs = b.scale(20, floor=5)
     walls, cpus = [], []
     for _ in range(runs):
         t0 = time.perf_counter()
-        s = b.ctx.spawn()
-        walls.append((time.perf_counter() - t0) * 1000.0)
+        s = b.ctx.spawn(wait=False)
         b.track(s)
+        _wait_first_frame(s)
+        walls.append((time.perf_counter() - t0) * 1000.0)
         cpus.append(b.probe.read().cpu * 1000.0)
         s.submit("/exit")
         s.wait_exit()
-    b.row("start", units=runs, unit="run", cpu_ms=sum(cpus),
-          note=f"wall mean {sum(walls) / len(walls):.0f}ms, "
-               f"worst {max(walls):.0f}ms")
+    wall_stat = Stat(walls)
+    b.row("start", units=runs, unit="run", wall_ms=sum(walls),
+          cpu_ms=sum(cpus),
+          note=f"wall {wall_stat}")
     b.check(max(walls) < 1500.0, f"a start took {max(walls):.0f}ms")

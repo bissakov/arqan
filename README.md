@@ -72,14 +72,15 @@ to the user's config and keys to `$XDG_STATE_HOME/arqan/credentials.toml`
 Measured at `1566515` on Linux 7.1.8 with GCC 16.2.1 and a Ryzen 7 7800X3D.
 Build times are medians of three clean 16-job builds. Runtime measurements use
 the real TUI and agent loop against the local mock provider, so they exclude
-network and model latency; the benchmark harness has a 60 ms quiet window, and
-reports the agent's CPU time separately from wall time.
+network and model latency. The harness measures the first visible frame before
+its 60 ms quiet window and reports agent CPU time separately from wall time.
 
 - Clean build: 4.45 s for `make -j16 minimal`; 4.69 s for `make -j16`.
 - Executables: 1.56 MiB for `bin/arqan`; 12.64 MiB for
   `bin/arqan-highlight`.
-- Startup: 65 ms wall and 2.9 ms CPU to the first TUI frame; idle memory was
-  2.5 MiB private dirty with 12 MiB peak RSS.
+- Startup: 5.0 ms median and 6.0 ms p95 to the first TUI frame over 80 runs;
+  agent CPU was about 3.0 ms, and idle memory was 2.5 MiB private dirty with
+  12 MiB peak RSS.
 - Streaming: a 2,000-word reply in 500 deltas took 210 ms wall and 11.3 ms
   CPU, or 0.02 ms CPU per delta.
 - Tool loop: six `read` rounds in one turn took 204 ms wall and 4.5 ms CPU,
