@@ -2,9 +2,9 @@
 
 #include <stddef.h>
 
-/* The JSON envelope a message is sent in: role, keys, quotes and commas. */
+// The JSON envelope a message is sent in: role, keys, quotes and commas.
 #define CTX_SLOT_BYTES     48
-/* Below this the growth between two requests is too small to divide by. */
+// Below this the growth between two requests is too small to divide by.
 #define CTX_FIT_MIN_BYTES  2048.0
 /* A token is a handful of bytes in every tokenizer anyone serves; a ratio
  * outside this came from something other than the conversation growing. */

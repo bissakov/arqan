@@ -8,7 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 
-/* $TMPDIR, or /tmp when it is unset or relative. */
+// $TMPDIR, or /tmp when it is unset or relative.
 static Str spill_dir(void) {
     const char *tmp = getenv("TMPDIR");
     if (!tmp || tmp[0] != '/') tmp = "/tmp";

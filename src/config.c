@@ -10,11 +10,11 @@ typedef enum { CV_STR, CV_NUM, CV_BOOL, CV_ENUM } ConfType;
 typedef struct {
     const char *name;
     const char *dflt;
-    const char *options;   /* CV_ENUM: every value it may take            */
+    const char *options;   // CV_ENUM: every value it may take
     ConfType    type;
-    i64         lo, hi;    /* CV_NUM: the range, refused outside          */
-    size_t      max_len;   /* CV_STR: longer is refused, never truncated  */
-    b8          project;   /* may a project's .arqan/config.toml set it    */
+    i64         lo, hi;    // CV_NUM: the range, refused outside
+    size_t      max_len;   // CV_STR: longer is refused, never truncated
+    b8          project;   // may a project's .arqan/config.toml set it
 } ConfSpec;
 
 #define CONF_TEXT2(x) #x
@@ -102,7 +102,7 @@ Str conf_key_name(ConfKey k) {
     return k < CONF_N ? str_c(k_conf[k].name) : (Str){0};
 }
 
-/* ---- values -------------------------------------------------------------- */
+// ---- values --------------------------------------------------------------
 
 static b8 conf_bool_value(Str v, b8 *out) {
     if (str_eq(v, STR("true")) || str_eq(v, STR("on"))) { *out = true; return true; }
@@ -153,7 +153,7 @@ b8 conf_bool(const Conf *c, ConfKey k) {
     return out;
 }
 
-/* ---- resolution ---------------------------------------------------------- */
+// ---- resolution ----------------------------------------------------------
 
 /* One value from one source. `where` names the file for a diagnostic and is
  * empty for the built-in defaults. */
@@ -322,7 +322,7 @@ void ui_prefs_load(UiPrefs *p, const Conf *conf) {
     p->status_fields     = (u64)conf_num(conf, CONF_STATUS_FIELDS);
 }
 
-/* ---- Config -------------------------------------------------------------- */
+// ---- Config --------------------------------------------------------------
 
 b8 config_remember_model(Str model, Arena *scratch) {
     return conf_remember(CONF_MODEL, model, scratch);

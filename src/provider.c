@@ -201,7 +201,7 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
             }
             buf_putc(b, ']');
             buf_putc(b, '}');
-            i = j - 1;   /* the carriers are consumed */
+            i = j - 1;   // the carriers are consumed
             continue;
         }
         buf_putf(b, ",\"content\":");
@@ -330,7 +330,7 @@ void conv_write_json_anthropic(Buf *b, const Conv *c) {
     buf_putc(b, ']');
 }
 
-/* ---- streaming state (in scratch arena) --------------------------------- */
+// ---- streaming state (in scratch arena) ---------------------------------
 typedef struct {
     Arena *scratch;
     /* Each SSE event is parsed into its own region and thrown away, so a
@@ -342,7 +342,7 @@ typedef struct {
     Buf  args[AGENT_MAX_TOOL_CALLS];
     b8   used[AGENT_MAX_TOOL_CALLS];
     i32  count;
-    i32  dropped;      /* calls past the per-turn cap */
+    i32  dropped;      // calls past the per-turn cap
     Buf  text;
     /* Canonical JSON array of signed Anthropic thinking blocks. The readable
      * summary is also sent to on_reason, but this whole form is what a later
@@ -364,11 +364,11 @@ typedef struct {
     /* Anthropic streams one content block at a time, so the open block is
      * enough to route a delta: the tool slot it fills, or -1 for prose. */
     i32  open_slot;
-    i32  blocks;        /* tool_use blocks seen, which is the next slot   */
-    size_t events;       /* SSE data lines parsed, for telemetry           */
-    size_t bad_events;   /* data lines that were not JSON arqan could read   */
-    size_t reason_bytes; /* thinking trace streamed, which Conv never keeps */
-    b8 stream_error;     /* a parsed top-level provider error               */
+    i32  blocks;        // tool_use blocks seen, which is the next slot
+    size_t events;       // SSE data lines parsed, for telemetry
+    size_t bad_events;   // data lines that were not JSON arqan could read
+    size_t reason_bytes; // thinking trace streamed, which Conv never keeps
+    b8 stream_error;     // a parsed top-level provider error
 } StreamState;
 
 static i32 slot(StreamState *s, i32 idx) {
@@ -809,13 +809,13 @@ static b8 read_message_anth(Provider *p, StreamState *s, Str raw,
  * smaller one. An endpoint that publishes nothing leaves it unknown. */
 static size_t model_window(const JVal *m) {
     static const char *const keys[] = {
-        "loaded_context_length", /* LM Studio, the window now in memory   */
-        "max_input_tokens",      /* Anthropic                             */
-        "context_length",        /* OpenRouter, Together                  */
-        "context_window",        /* Groq                                  */
-        "max_context_length",    /* Mistral, LM Studio                    */
-        "max_model_len",         /* vLLM                                  */
-        "inputTokenLimit",       /* Gemini                                */
+        "loaded_context_length", // LM Studio, the window now in memory
+        "max_input_tokens",      // Anthropic
+        "context_length",        // OpenRouter, Together
+        "context_window",        // Groq
+        "max_context_length",    // Mistral, LM Studio
+        "max_model_len",         // vLLM
+        "inputTokenLimit",       // Gemini
     };
     const JVal *found = NULL;
     for (size_t i = 0; i < sizeof keys / sizeof *keys && !found; i++)
@@ -854,7 +854,7 @@ size_t provider_models(const Config *cfg, Arena *scratch, Str *out,
     }
     size_t n = 0;
     for (size_t i = 0; i < data->u.arr.n && n < max; i++) {
-        /* The DOM lives in `scratch` beside the array. */
+        // The DOM lives in `scratch` beside the array.
         Str id = json_str(&data->u.arr.items[i], STR("id"));
         if (!id.n) continue;
         if (window) window[n] = model_window(&data->u.arr.items[i]);
@@ -886,7 +886,7 @@ static b8 output_untouched(const StreamState *s) {
     return response_empty(s) && s->dropped == 0;
 }
 
-/* Doubling from the configured base; attempt 1 waits the base. */
+// Doubling from the configured base; attempt 1 waits the base.
 static i32 backoff_ms(i32 base, i32 attempt) {
     i64 ms = base;
     for (i32 i = 1; i < attempt && ms < AGENT_MAX_RETRY_DELAY_MS; i++) ms *= 2;
@@ -1244,7 +1244,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         }
     }
 
-    /* Count first: a turn is appended whole or not at all. */
+    // Count first: a turn is appended whole or not at all.
     i32 calls = 0;
     for (i32 i = 0; i < s->count; i++)
         if (s->used[i] && s->name[i].p) calls++;

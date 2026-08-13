@@ -20,9 +20,9 @@ typedef struct {
     const char *argv[AGENT_MAX_SECRET_ARGV + 1];
     size_t n;
     char account[AGENT_MAX_ENDPOINT_NAME + 1];
-    char path[AGENT_MAX_ENDPOINT_NAME + 8];    /* "arqan/<account>"  */
-    char label[AGENT_MAX_ENDPOINT_NAME + 16];  /* "arqan: <account>" */
-    char words[AGENT_MAX_SECRET_CMD + 1];      /* key_command, split in place */
+    char path[AGENT_MAX_ENDPOINT_NAME + 8];    // "arqan/<account>"
+    char label[AGENT_MAX_ENDPOINT_NAME + 16];  // "arqan: <account>"
+    char words[AGENT_MAX_SECRET_CMD + 1];      // key_command, split in place
 } SecretCmd;
 
 /* Indexed by SecretSource, which is what the credentials file reads and
@@ -205,7 +205,7 @@ static b8 secret_exec(const SecretCmd *c, Str input, char *out, size_t out_cap,
         if (input.p) dup2(in_fds[0], STDIN_FILENO);
         else if (null_rd >= 0) dup2(null_rd, STDIN_FILENO);
         dup2(out_fds[1], STDOUT_FILENO);
-        /* Never the terminal: a helper's diagnostics may quote the secret. */
+        // Never the terminal: a helper's diagnostics may quote the secret.
         if (null_wr >= 0) dup2(null_wr, STDERR_FILENO);
         if (null_rd > STDERR_FILENO) close(null_rd);
         if (null_wr > STDERR_FILENO) close(null_wr);
@@ -249,7 +249,7 @@ static b8 secret_exec(const SecretCmd *c, Str input, char *out, size_t out_cap,
         i32 rc = secret_wait(out_fds[0], POLLIN, deadline);
         if (rc == 0) { timed_out = true; ok = false; break; }
         if (rc < 0) { ok = false; break; }
-        if (*out_n >= out_cap) {   /* drain, but the answer is already refused */
+        if (*out_n >= out_cap) {   // drain, but the answer is already refused
             char sink[256];
             ssize_t n = read(out_fds[0], sink, sizeof sink);
             if (n <= 0) { if (n < 0 && errno == EINTR) continue; break; }
@@ -335,7 +335,7 @@ Str secret_lookup(SecretSource src, Str account, Str command, Arena *out,
     Str line;
     if (!secret_first_line(buf, n, &line, err, err_cap)) return (Str){0};
     Str key = str_dup(out, line);
-    /* The plaintext must not outlive this frame in a buffer nobody owns. */
+    // The plaintext must not outlive this frame in a buffer nobody owns.
     memset(buf, 0, sizeof buf);
     if (!key.p) snprintf(err, err_cap, "out of memory reading the key");
     return key;

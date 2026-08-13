@@ -7,7 +7,7 @@
 #include <sys/stat.h>
 #include <time.h>
 
-/* ---- arena -------------------------------------------------------------- */
+// ---- arena --------------------------------------------------------------
 void arena_init(Arena *a, void *mem, size_t cap) {
     a->base = (u8 *)mem;
     a->cap  = cap;
@@ -18,7 +18,7 @@ void arena_init(Arena *a, void *mem, size_t cap) {
  * checked against the arena's own capacity instead of being computed first and
  * compared afterwards: `off + n` is exactly the addition that wraps. */
 void *arena_alloc(Arena *a, size_t n, size_t align) {
-    if (align == 0 || (align & (align - 1))) return NULL;   /* power of two */
+    if (align == 0 || (align & (align - 1))) return NULL;   // power of two
     size_t mask = align - 1;
     size_t pad = (align - (a->off & mask)) & mask;
     if (pad > a->cap - a->off) {
@@ -45,7 +45,7 @@ void *arena_alloc_array(Arena *a, size_t count, size_t size, size_t align) {
 void arena_reset(Arena *a) { a->off = 0; }
 size_t arena_used(const Arena *a) { return a->off; }
 
-/* ---- strings ------------------------------------------------------------ */
+// ---- strings ------------------------------------------------------------
 Str str_c(const char *z) { return (Str){ z, strlen(z) }; }
 /* An empty Str legitimately carries a NULL pointer (missing JSON field, failed
  * dup), and memcmp(NULL, NULL, 0) is undefined however harmless it looks. */
@@ -112,7 +112,7 @@ i64 str_int(Str s, b8 *ok) {
     for (; i < s.n; i++) {
         if (s.p[i]<'0'||s.p[i]>'9') { if(ok)*ok=false; return 0; }
         i64 digit = s.p[i] - '0';
-        /* Signed overflow is undefined, so refuse rather than wrap. */
+        // Signed overflow is undefined, so refuse rather than wrap.
         if (d > (INT64_MAX - digit) / 10) { if (ok) *ok = false; return 0; }
         d = d*10 + digit;
     }
@@ -129,7 +129,7 @@ u64 str_hash64(Str s) {
     return h;
 }
 
-/* ---- files -------------------------------------------------------------- */
+// ---- files --------------------------------------------------------------
 FileStatus file_read(Arena *a, const char *path, size_t max, size_t head,
                      Str *out, u64 *size_out) {
     *out = (Str){0};
@@ -158,7 +158,7 @@ FileStatus file_read(Arena *a, const char *path, size_t max, size_t head,
     return FILE_OK;
 }
 
-/* ---- buffer ------------------------------------------------------------- */
+// ---- buffer -------------------------------------------------------------
 void buf_init(Buf *b, Arena *a, size_t cap) {
     b->a = a; b->n = 0; b->oom = false;
     b->p = (char *)arena_alloc(a, cap, 1);
@@ -276,7 +276,7 @@ void buf_json_chars(Buf *b, Str s) {
 }
 Str buf_finish(Buf *b) {
     if (b->n == b->cap && !buf_grow(b, b->n + 1)) {
-        /* Nowhere to put the terminator: hand back what is safely readable. */
+        // Nowhere to put the terminator: hand back what is safely readable.
         if (b->n == 0) return (Str){0};
         b->n--;
     }
@@ -284,7 +284,7 @@ Str buf_finish(Buf *b) {
     return (Str){ b->p, b->n };
 }
 
-/* ---- logging ------------------------------------------------------------ */
+// ---- logging ------------------------------------------------------------
 static i32 g_level = AGENT_LOG_INFO;
 static AgentLogSink g_log_sink;
 static void *g_log_ud;
@@ -304,7 +304,7 @@ void agent_log(i32 level, const char *fmt, ...) {
     fprintf(stderr, "[" AGENT_NAME " %s] %.*s\n", tags[level], (i32)n, msg);
 }
 
-/* ---- time --------------------------------------------------------------- */
+// ---- time ---------------------------------------------------------------
 f64 agent_now_seconds(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);

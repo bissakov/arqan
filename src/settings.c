@@ -38,7 +38,7 @@ static Str setting_val(Str rest) {
             if (q == '"' && rest.p[i] == '\\') { i++; continue; }
             if (rest.p[i] == q) return setting_unquote((Str){ rest.p, i + 1 });
         }
-        return rest;   /* unterminated: the line as written */
+        return rest;   // unterminated: the line as written
     }
     for (size_t i = 1; i < rest.n; i++)
         if (rest.p[i] == '#' && (rest.p[i - 1] == ' ' || rest.p[i - 1] == '\t'))
@@ -197,7 +197,7 @@ b8 settings_set(Str path, Str section, const Str *keys, const Str *vals,
     /* The unnamed section is the head of the file, which always exists: a
      * key added to it belongs above the first header rather than under it. */
     b8 seen_section = section.n == 0, section_open = false;
-    size_t tail = 0;   /* bytes written when `section` was last still open   */
+    size_t tail = 0;   // bytes written when `section` was last still open
     while (str_line(src, &off, &line)) {
         b8 mine = in_section(&cur, line, section);
         if (mine) { seen_section = true; section_open = true; }

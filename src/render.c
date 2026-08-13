@@ -4,10 +4,10 @@
 #include <string.h>
 
 enum {
-    R_ARG_LINES    = 8,    /* input lines shown under a call's header  */
-    R_RESULT_LINES = 12,   /* output lines shown under a result        */
-    R_LINE_BYTES   = 200,  /* a single line's share of the transcript  */
-    R_TARGET_BYTES = 120   /* the header's path or command             */
+    R_ARG_LINES    = 8,    // input lines shown under a call's header
+    R_RESULT_LINES = 12,   // output lines shown under a result
+    R_LINE_BYTES   = 200,  // a single line's share of the transcript
+    R_TARGET_BYTES = 120   // the header's path or command
 };
 
 static b8 g_verbose;
@@ -45,7 +45,7 @@ static void write_clipped(Str s, size_t max, Sink sink) {
     if (head.n < s.n) sink(STR(" ..."));
 }
 
-/* The block being written, for the length of one render_* call. */
+// The block being written, for the length of one render_* call.
 static void block_begin(u32 id, b8 expanded) {
     /* A block is where a re-render can put the viewport back, so it is a
      * landmark whether it was written live or replayed. */

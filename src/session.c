@@ -7,9 +7,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#define SESSION_SLUG_MAX 200      /* encoded cwd kept whole up to this        */
-#define SESSION_PREVIEW_BYTES 60  /* of the first prompt, shown when browsing */
-#define SESSION_PREVIEW_READ 8192 /* bytes of a file scanned for that prompt  */
+#define SESSION_SLUG_MAX 200      // encoded cwd kept whole up to this
+#define SESSION_PREVIEW_BYTES 60  // of the first prompt, shown when browsing
+#define SESSION_PREVIEW_READ 8192 // bytes of a file scanned for that prompt
 
 static b8 sess_unreserved(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
@@ -80,7 +80,7 @@ static void sess_set_current(Session *s, Str path, Str name) {
     s->name = (Str){ s->name_buf, nn };
 }
 
-/* "20250607-134501" becomes "2025-06-07 13:45:01"; anything else is shown raw. */
+// "20250607-134501" becomes "2025-06-07 13:45:01"; anything else is shown raw.
 static Str sess_label(Arena *a, Str file) {
     Str stem = file;
     if (stem.n > 6 && !memcmp(stem.p + stem.n - 6, ".jsonl", 6)) stem.n -= 6;
@@ -118,7 +118,7 @@ b8 session_begin(Session *s) {
         i32 pn = snprintf(path, sizeof path, "%.*s/%s",
                           (i32)s->dir.n, s->dir.p, file);
         if (pn <= 0 || (size_t)pn >= sizeof path) return false;
-        if (access(path, F_OK) == 0) continue;   /* same second, twice */
+        if (access(path, F_OK) == 0) continue;   // same second, twice
         sess_set_current(s, (Str){ path, (size_t)pn }, str_c(file));
         return s->path.n != 0;
     }
@@ -284,7 +284,7 @@ size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max) {
         }
         size_t pos = n;
         while (pos > 0 && !sess_before(&ents[pos - 1], &cand)) pos--;
-        if (pos >= max) continue;               /* older than everything kept */
+        if (pos >= max) continue;               // older than everything kept
         if (n < max) n++;
         for (size_t i = n - 1; i > pos; i--) ents[i] = ents[i - 1];
         ents[pos] = cand;
@@ -383,7 +383,7 @@ static Str sess_thinking(Arena *persist, const JVal *v) {
 b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
                  Arena *persist, Arena *scratch) {
     sess_set_current(s, path, name);
-    telemetry_bind(s->path);          /* the record of the session reopened */
+    telemetry_bind(s->path);          // the record of the session reopened
     s->written = c->n;
     if (!src.n) return false;
     size_t mark = scratch->off;

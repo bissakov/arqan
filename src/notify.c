@@ -12,7 +12,7 @@ typedef enum { NOTIFY_OFF = 0, NOTIFY_BEL, NOTIFY_OSC9, NOTIFY_BOTH } NotifyMode
 
 static struct {
     NotifyMode mode;
-    Str        command;   /* in the persist arena, or empty */
+    Str        command;   // in the persist arena, or empty
     f64        min_ms;
 } g_notify;
 
@@ -55,7 +55,7 @@ static const char *kind_label(NotifyKind k) {
  * a UTF-8 boundary rather than mid-sequence. */
 static Str sanitize(Str in, char *out, size_t cap) {
     size_t n = 0;
-    b8 blank = true;   /* leading whitespace is dropped with the same test */
+    b8 blank = true;   // leading whitespace is dropped with the same test
     for (size_t i = 0; i < in.n && n < cap; i++) {
         u8 ch = (u8)in.p[i];
         if (ch < 0x20 || ch == 0x7f) ch = ' ';
@@ -71,7 +71,7 @@ static Str sanitize(Str in, char *out, size_t cap) {
     return str_clip_utf8((Str){ out, n }, cap);
 }
 
-/* JSON needs two more escapes than sanitize leaves behind. */
+// JSON needs two more escapes than sanitize leaves behind.
 static size_t json_put(char *dst, size_t cap, Str s) {
     size_t n = 0;
     for (size_t i = 0; i < s.n && n + 2 < cap; i++) {
@@ -121,7 +121,7 @@ static void run_command(NotifyKind kind, Str text) {
     char cwd[512];
     if (!getcwd(cwd, sizeof cwd)) cwd[0] = '\0';
     Str dir = { cwd, strlen(cwd) };
-    size_t cap = sizeof payload - 8;   /* room the closers always have */
+    size_t cap = sizeof payload - 8;   // room the closers always have
     size_t n = lit_put(payload, cap, 0, "{\"kind\":\"");
     n = lit_put(payload, cap, n, kind_name(kind));
     n = lit_put(payload, cap, n, "\",\"text\":\"");

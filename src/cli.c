@@ -43,7 +43,7 @@ static void cli_bad(const char *fmt, const char *arg) {
  * text after "=" or after a short name, NULL when there was none. */
 typedef struct {
     CliOpts *o;
-    const char *name;      /* as written, for diagnostics */
+    const char *name;      // as written, for diagnostics
     const char *attached;
     i32 *i;
     i32 argc;

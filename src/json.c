@@ -90,7 +90,7 @@ static Str unescape(JParser *p, Str raw) {
                         i += 6;
                     }
                 }
-                if (cp >= 0xD800u && cp <= 0xDFFFu) cp = 0xFFFDu;  /* lone half */
+                if (cp >= 0xD800u && cp <= 0xDFFFu) cp = 0xFFFDu;  // lone half
                 w += utf8_put(dst + w, cp);
                 continue;
             }
@@ -112,7 +112,7 @@ static Str parse_string_raw(JParser *p) {
         if (c == '\\') { p->pos += 2; continue; }
         if (c == '"') {
             Str raw = { p->src + start, p->pos - start };
-            p->pos++; /* closing quote */
+            p->pos++; // closing quote
             return raw;
         }
         p->pos++;
@@ -151,7 +151,7 @@ static JVal *parse_number(JParser *p) {
 }
 
 static JVal *parse_array(JParser *p) {
-    getc_(p); /* [ */
+    getc_(p); // [
     skipws(p);
     size_t count = 0;
     JVal list_head; list_head.next = NULL; JVal *tail = &list_head;
@@ -163,7 +163,7 @@ static JVal *parse_array(JParser *p) {
         if (peekc(p) == ',') { p->pos++; skipws(p); }
         else break;
     }
-    getc_(p); /* ] */
+    getc_(p); // ]
     JVal *arr = jnew(p, J_ARR);
     if (!arr) return NULL;
     arr->u.arr.items = NULL;
@@ -174,7 +174,7 @@ static JVal *parse_array(JParser *p) {
     JVal *cur = list_head.next;
     for (size_t i = 0; i < count; i++) {
         items[i] = *cur;
-        items[i].next = NULL;   /* the sibling link belongs to objects only */
+        items[i].next = NULL;   // the sibling link belongs to objects only
         cur = cur->next;
     }
     arr->u.arr.items = items;
@@ -183,7 +183,7 @@ static JVal *parse_array(JParser *p) {
 }
 
 static JVal *parse_object(JParser *p) {
-    getc_(p); /* { */
+    getc_(p); // {
     JVal *obj = jnew(p, J_OBJ);
     if (!obj) return NULL;
     obj->u.obj.head = NULL;
@@ -205,7 +205,7 @@ static JVal *parse_object(JParser *p) {
         if (peekc(p) == ',') { p->pos++; skipws(p); }
         else break;
     }
-    getc_(p); /* } */
+    getc_(p); // }
     return obj;
 }
 

@@ -80,7 +80,7 @@ static size_t commands_init(void) {
     return n;
 }
 
-/* -Wpedantic rejects STR()'s compound literal as a static initializer. */
+// -Wpedantic rejects STR()'s compound literal as a static initializer.
 #define ALIAS(a, b) { { (a), sizeof(a) - 1 }, { (b), sizeof(b) - 1 } }
 static const TuiAlias k_aliases[] = {
     ALIAS("/config", "/settings"),
@@ -235,7 +235,7 @@ typedef struct {
     Arena        *persist;
     Arena        *scratch;
     Session      *sess;
-    size_t        mark;   /* persist offset a conversation starts at */
+    size_t        mark;   // persist offset a conversation starts at
     /* An approved plan on its way to a session of its own. It lives in the
      * scratch arena until the turn carrying it re-anchors it in persist,
      * which is what lets the conversation it came from be dropped whole. */
@@ -244,7 +244,7 @@ typedef struct {
      * rewinds and handoffs leave them alone, and no persistence path sees it. */
     u8            permission_grants;
     b8            permission_blocked_one_shot;
-    b8            echo;   /* write the prompt into the transcript */
+    b8            echo;   // write the prompt into the transcript
     b8            show_instructions;
 } Agent;
 
@@ -1295,7 +1295,7 @@ typedef struct {
     Str        provider;
     Str        current;
     Arena     *arena;
-    char       msg[160];   /* said after the picker closes, not under it */
+    char       msg[160];   // said after the picker closes, not under it
 } ModelPick;
 
 /* "* <model>", the pinned row's name. The plain name when it cannot be
@@ -1337,7 +1337,7 @@ static size_t model_build(void *ud) {
 static size_t model_favorite(void *ud, size_t row, size_t *moved) {
     ModelPick *mp = ud;
     size_t i = mp->order[row];
-    if (i >= mp->n) { *moved = row; return mp->n + 1; }   /* the manual row */
+    if (i >= mp->n) { *moved = row; return mp->n + 1; }   // the manual row
     b8 on = false;
     char err[128] = {0};
     /* The list is written as it is toggled: pinning is its own action, so it
@@ -1387,7 +1387,7 @@ static b8 pick_model(const Config *cfg, Arena *scratch, Str *out,
         tui_notice(STR("out of memory listing models"));
         return false;
     }
-    memset(mp.starred, 0, n * sizeof *mp.starred);   /* built on first use */
+    memset(mp.starred, 0, n * sizeof *mp.starred);   // built on first use
     favorites_load(&mp.fav, cfg->provider, scratch);
     size_t rows = model_build(&mp);
     TuiPickAction act = { mp.rows, n + 1, model_favorite, &mp, 0x06,
@@ -1719,7 +1719,7 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
     if (!use_endpoint(cfg, eps->name[i], str_c(url), str_c(model), api, saved_key,
                       str_c(efforts), str_c(budgets), str_c(effort),
                       str_c(budget), str_c(templ))) return false;
-    /* After use_endpoint, which drops what described the previous model. */
+    // After use_endpoint, which drops what described the previous model.
     ctx_set_window(&g_ctx, window);
     if (verified) provider_chosen(cfg, scratch);
     else notice_fmt("provider: %.*s (model entered manually; not verified)",
@@ -1929,13 +1929,13 @@ static void remember_tools(const ToolRegistry *reg, Arena *scratch) {
  * strings live in the scratch arena, which each rebuild resets, so nothing
  * outside a build call may hold one. */
 typedef struct {
-    Arena  *scratch;       /* what remembering a choice writes through */
-    Arena   rows_arena;    /* what the rows themselves are built in    */
+    Arena  *scratch;       // what remembering a choice writes through
+    Arena   rows_arena;    // what the rows themselves are built in
     TuiCmd  rows[TUI_STATUS_N];
 } StatusView;
 
 static size_t statusline_build(void *ud) {
-    /* -Wpedantic rejects STR()'s compound literal as a static initializer. */
+    // -Wpedantic rejects STR()'s compound literal as a static initializer.
     const Str labels[TUI_STATUS_N] = {
         STR("State"), STR("Model"), STR("Reasoning effort"),
         STR("Thinking budget"), STR("Mode"), STR("Provider"),
@@ -2921,7 +2921,7 @@ i32 main(i32 argc, char **argv) {
                                                     : cfg.system_prompt);
     size_t session_mark = persist.off;
 
-    /* Without a resolvable data dir the conversation is not persisted. */
+    // Without a resolvable data dir the conversation is not persisted.
     static Session sess;
     session_init(&sess, &scratch);
     arena_reset(&scratch);
@@ -3026,7 +3026,7 @@ i32 main(i32 argc, char **argv) {
             conv.n = 1;
             persist.off = session_mark;
             arena_reset(&scratch);
-            session_begin(&sess);   /* the next message starts a new file */
+            session_begin(&sess);   // the next message starts a new file
             tui_clear();
             continue;
         }

@@ -41,7 +41,7 @@ static Str endpoint_field(const Settings *s, Str section, Str key, size_t max) {
     return v.n <= max ? v : (Str){0};
 }
 
-/* Provider capabilities are deliberately data, not a built-in ladder. */
+// Provider capabilities are deliberately data, not a built-in ladder.
 static b8 endpoint_list_ok(Str list, b8 budgets) {
     if (list.n > AGENT_MAX_REASONING_LIST) return false;
     size_t off = 0, count = 0;
@@ -224,7 +224,7 @@ static b8 creds_open(Settings *s, Arena *a, Str *path_out,
     if (path_out) *path_out = path;
     if (!path.n) return false;
     struct stat st;
-    if (stat(path.p, &st) != 0) return true;   /* no file is not a failure */
+    if (stat(path.p, &st) != 0) return true;   // no file is not a failure
     if (st.st_mode & (S_IRWXG | S_IRWXO)) {
         if (err) snprintf(err, err_cap, "credentials are readable by others: "
                           "chmod 600 %.*s", (i32)path.n, path.p);

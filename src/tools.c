@@ -15,7 +15,7 @@
 #include <fcntl.h>
 #include <signal.h>
 
-/* ---- argument helpers ---------------------------------------------------- */
+// ---- argument helpers ----------------------------------------------------
 static JVal *tool_args(Str args, Arena *scratch, char *err, size_t err_cap) {
     JVal *j = json_parse(scratch, args);
     if (!j) snprintf(err, err_cap, "bad args json");
@@ -162,7 +162,7 @@ static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
     return true;
 }
 
-/* ---- write ---- */
+// ---- write ----
 static b8 tool_write(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
     JVal *j = tool_args(args, scratch, err, err_cap);
     if (!j) return false;
@@ -510,9 +510,9 @@ static size_t find_unique(Str hay, Str needle, size_t *count) {
 
 typedef struct {
     char   path[AGENT_MAX_PATH];
-    Buf    body;              /* the file as the hunks applied so far leave it */
+    Buf    body;              // the file as the hunks applied so far leave it
     size_t added, removed;
-    size_t hunk_n;            /* hunks seen, so an error names one per file  */
+    size_t hunk_n;            // hunks seen, so an error names one per file
     b8     create;
     b8     unlink_it;
 } PatchFile;
@@ -528,7 +528,7 @@ typedef struct {
     size_t     err_cap;
 } Patch;
 
-/* "a/src/x.c\t2024-01-01" names src/x.c, the way patch -p1 reads it. */
+// "a/src/x.c\t2024-01-01" names src/x.c, the way patch -p1 reads it.
 static Str patch_path(Str s) {
     const char *tab = (const char *)memchr(s.p, '\t', s.n);
     if (tab) s.n = (size_t)(tab - s.p);
@@ -601,7 +601,7 @@ static size_t hunk_scan(Str text, size_t off, Buf *o, Buf *n, PatchFile *f) {
          * where the format wants a single one. */
         char c = line.n ? line.p[0] : ' ';
         if (c == '@' && str_starts(line, STR("@@"))) return start;
-        if (c == '\\') {                  /* "\ No newline at end of file" */
+        if (c == '\\') {                  // "\ No newline at end of file"
             if (o && prev != '+' && o->n) o->n--;
             if (n && prev != '-' && n->n) n->n--;
             continue;
@@ -640,7 +640,7 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str text, size_t *off) {
     }
 
     size_t end = hunk_scan(text, *off, NULL, NULL, NULL);
-    /* Neither side of a hunk is longer than the hunk. */
+    // Neither side of a hunk is longer than the hunk.
     size_t span = end - *off + 1;
     Buf o, n;
     buf_init(&o, p->scratch, span);
@@ -779,22 +779,22 @@ static b8 tool_patch(Str args, Arena *scratch, Buf *out, char *err, size_t err_c
  */
 typedef struct {
     Buf   *out;
-    Arena *names;         /* per-level directory listing, reset on the way out */
-    Arena *file;          /* one file's contents, reset after each             */
-    Str    pattern;       /* empty for find                                    */
-    const char *glob;     /* NULL for no name filter                           */
+    Arena *names;         // per-level directory listing, reset on the way out
+    Arena *file;          // one file's contents, reset after each
+    Str    pattern;       // empty for find
+    const char *glob;     // NULL for no name filter
     size_t max;
-    size_t offset;        /* 1-based first result to show                      */
-    size_t found;         /* total matches encountered                         */
-    size_t shown;         /* results actually written                          */
-    size_t skipped;       /* results past the page                             */
-    b8     out_limited;   /* page hit the byte budget before its record limit  */
+    size_t offset;        // 1-based first result to show
+    size_t found;         // total matches encountered
+    size_t shown;         // results actually written
+    size_t skipped;       // results past the page
+    b8     out_limited;   // page hit the byte budget before its record limit
     b8     ignore_case;
-    b8     single;         /* the root is one file rather than a tree      */
-    AgentIgnore ignore;    /* rules in force at the current path           */
+    b8     single;         // the root is one file rather than a tree
+    AgentIgnore ignore;    // rules in force at the current path
     char   path[AGENT_MAX_PATH];
     size_t path_n;
-    Spill  spill;         /* every record found, page or not                   */
+    Spill  spill;         // every record found, page or not
 } Walk;
 
 /* Keep the continuation line inside the same hard result budget. Once a page
@@ -1126,7 +1126,7 @@ static b8 tool_agent_only(Str args, Arena *scratch, Buf *out,
     return false;
 }
 
-/* ---- registry ---- */
+// ---- registry ----
 static AgentMode g_mode;
 
 void tools_set_mode(AgentMode mode) { g_mode = mode; }

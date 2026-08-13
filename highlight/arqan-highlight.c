@@ -1,4 +1,4 @@
-/* arqan-highlight: bounded Tree-sitter highlighting companion. */
+// arqan-highlight: bounded Tree-sitter highlighting companion.
 #define _POSIX_C_SOURCE 200809L
 
 #include "highlight_protocol.h"

@@ -290,7 +290,7 @@ static Str visible_text(AgentHtmlNode *node, Arena *scratch, size_t max,
     VisibleCtx v = {{&b, max, false, false}};
     html_walk(node, visible_enter, NULL, &v);
     Str out = normal_finish(&v.norm);
-    /* Reaching `max` clips display text; only arena failure makes it invalid. */
+    // Reaching `max` clips display text; only arena failure makes it invalid.
     *too_large = !buf_ok(&b);
     return out;
 }
@@ -761,11 +761,11 @@ typedef struct {
 /* One engine's markup, as class tokens rather than selectors: a token match
  * survives the hashed class names single-page engines add to every element. */
 typedef struct {
-    const char *result;     /* class token opening a result block, or NULL  */
-    const char *link[2];    /* the result anchor's class tokens, or NULL    */
-    const char *title;      /* class token holding the title, NULL: the anchor */
+    const char *result;     // class token opening a result block, or NULL
+    const char *link[2];    // the result anchor's class tokens, or NULL
+    const char *title;      // class token holding the title, NULL: the anchor
     const char *snippet[2];
-    b8 link_in_heading;     /* the anchor is the block's <h2> link          */
+    b8 link_in_heading;     // the anchor is the block's <h2> link
 } SearchLayout;
 
 typedef struct {
@@ -775,9 +775,9 @@ typedef struct {
     size_t n;
     size_t layout_links;
     size_t current;
-    size_t heading;         /* open <h2> depth                              */
-    b8 in_result;           /* inside a block the layout opened             */
-    b8 linked;              /* this block's anchor was taken                */
+    size_t heading;         // open <h2> depth
+    b8 in_result;           // inside a block the layout opened
+    b8 linked;              // this block's anchor was taken
     b8 oom;
     b8 challenge;
     b8 explicit_empty;
@@ -885,7 +885,7 @@ typedef enum {
 } SearchEngine;
 
 typedef struct {
-    const char *object;    /* wrapper object holding the array, or NULL     */
+    const char *object;    // wrapper object holding the array, or NULL
     const char *array;
     const char *title, *url, *snippet;
 } SearchShape;
@@ -893,10 +893,10 @@ typedef struct {
 enum { NEED_KEY = 1u, NEED_ENGINE_ID = 2u, NEED_ENDPOINT = 4u };
 
 typedef struct {
-    const char *label;     /* the search_backend value, and what errors call it */
-    const char *base;      /* scheme and host; search_endpoint replaces it  */
-    const char *path;      /* path and query up to the query text; %k, %c   */
-    const char *header;    /* extra request header, or NULL; %k             */
+    const char *label;     // the search_backend value, and what errors call it
+    const char *base;      // scheme and host; search_endpoint replaces it
+    const char *path;      // path and query up to the query text; %k, %c
+    const char *header;    // extra request header, or NULL; %k
     u8 needs;
     b8 json;
     SearchLayout layout;
@@ -935,7 +935,7 @@ static const SearchEngineSpec k_engine[ENGINE_N] = {
 static struct {
     SearchEngine chain[ENGINE_N];
     size_t chain_n;
-    Str endpoint, api_key, engine_id;   /* in the persist arena, or empty */
+    Str endpoint, api_key, engine_id;   // in the persist arena, or empty
 } g_search = { {ENGINE_DDG_LITE, ENGINE_DDG_HTML, ENGINE_BRAVE, 0, 0, 0},
                3, {0}, {0}, {0} };
 
@@ -1047,7 +1047,7 @@ void web_search_init(const Conf *c, Arena *persist) {
 #endif
 }
 
-/* base + path with %k and %c expanded, then the encoded query. */
+// base + path with %k and %c expanded, then the encoded query.
 static b8 search_url(const SearchEngineSpec *spec, size_t slot,
                      const char *query, Arena *scratch, Str *out,
                      char *err, size_t err_cap) {
@@ -1104,10 +1104,10 @@ static const char *search_header(const SearchEngineSpec *spec, Arena *scratch) {
 }
 
 typedef enum {
-    SEARCH_OK,      /* results, or a layout that states there are none */
-    SEARCH_BLOCKED, /* refusal or challenge; pause if no backend answers */
-    SEARCH_UNKNOWN, /* transport failure or unfamiliar layout */
-    SEARCH_ERROR,   /* local failure; give up without trying another backend */
+    SEARCH_OK,      // results, or a layout that states there are none
+    SEARCH_BLOCKED, // refusal or challenge; pause if no backend answers
+    SEARCH_UNKNOWN, // transport failure or unfamiliar layout
+    SEARCH_ERROR,   // local failure; give up without trying another backend
 } SearchOutcome;
 
 /* An engine's JSON answer, read through its shape. A result whose URL is not

@@ -11,9 +11,9 @@
 
 typedef struct {
     const HttpReq *r;
-    Buf    line;      /* the event being accumulated, grown rather than clipped */
-    b8     aborted;   /* on_line asked us to stop */
-    b8     oom;       /* a line outgrew the arena it accumulates in */
+    Buf    line;      // the event being accumulated, grown rather than clipped
+    b8     aborted;   // on_line asked us to stop
+    b8     oom;       // a line outgrew the arena it accumulates in
     /* What no return code carries: how many lines arrived and the longest the
      * stream went silent between them, which is the "it froze" report. */
     size_t lines;
@@ -120,12 +120,12 @@ static b8 ipv6_public(const struct in6_addr *in) {
      * subnets as well as every address outside it. */
     if ((p[0] & 0xe0u) != 0x20u) return false;
     if (p[0] == 0x20 && p[1] == 0x01) {
-        if (p[2] < 0x02) return false;               /* 2001:0000::/23 */
+        if (p[2] < 0x02) return false;               // 2001:0000::/23
         if (p[2] == 0x02 && p[3] == 0x00) return false;
         if (p[2] == 0x0d && p[3] == 0xb8) return false;
     }
-    if (p[0] == 0x20 && p[1] == 0x02) return false; /* 6to4 */
-    if (p[0] == 0x3f && p[1] == 0xff) return false; /* documentation */
+    if (p[0] == 0x20 && p[1] == 0x02) return false; // 6to4
+    if (p[0] == 0x3f && p[1] == 0xff) return false; // documentation
     return true;
 }
 
@@ -208,7 +208,7 @@ static b8 host_is_loopback(Str host) {
         || str_eq(host, STR("[::1]")) || str_starts(host, STR("127."));
 }
 
-/* curl reports its phases in microseconds; the record is in milliseconds. */
+// curl reports its phases in microseconds; the record is in milliseconds.
 static i64 curl_ms(CURL *curl, CURLINFO info) {
     curl_off_t us = 0;
     if (curl_easy_getinfo(curl, info, &us) != CURLE_OK || us < 0) return -1;
@@ -231,7 +231,7 @@ static void http_record(const char *method, const char *path, const char *url,
     tel_bool(&e, "tls", str_starts(str_c(url ? url : ""), STR("https://")));
     tel_int(&e, "status", status);
     tel_int(&e, "curl", (i64)rc);
-    /* A fixed catalogue string of curl's, nothing of the conversation. */
+    // A fixed catalogue string of curl's, nothing of the conversation.
     if (rc != CURLE_OK) tel_str(&e, "curl_error", str_c(curl_easy_strerror(rc)));
     tel_bool(&e, "interrupted", interrupted);
 
@@ -252,7 +252,7 @@ static void http_record(const char *method, const char *path, const char *url,
     curl_easy_getinfo(curl, CURLINFO_REDIRECT_COUNT, &redirects);
     tel_int(&e, "http_version", (i64)version);
     tel_int(&e, "redirects", (i64)redirects);
-    /* Which family the connection ended up on, never the address itself. */
+    // Which family the connection ended up on, never the address itself.
     char *ip = NULL;
     if (curl_easy_getinfo(curl, CURLINFO_PRIMARY_IP, &ip) == CURLE_OK && ip)
         tel_str(&e, "ip", strchr(ip, ':') ? STR("v6") : STR("v4"));
@@ -580,7 +580,7 @@ i32 http_post(const HttpReq *r) {
     if (stream && !interrupted && !ctx.aborted && rc == CURLE_OK && ctx.line.n)
         dispatch_line(&ctx, "\n", 1);
 
-    /* curl writes a `long` through this pointer, whatever its width. */
+    // curl writes a `long` through this pointer, whatever its width.
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     i64 http = (i64)http_code;
@@ -606,7 +606,7 @@ i32 http_post(const HttpReq *r) {
         return 2;
     }
     if (http < 200 || http >= 300) {
-        return -(i32)http;   /* negative HTTP code signals the error */
+        return -(i32)http;   // negative HTTP code signals the error
     }
     return 0;
 }

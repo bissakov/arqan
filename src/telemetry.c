@@ -11,19 +11,19 @@
 
 static struct {
     b8   on;
-    b8   ready;              /* the root below resolved                     */
-    char root_buf[AGENT_MAX_PATH];  /* .../arqan/telemetry                    */
-    char dir_buf[AGENT_MAX_PATH];   /* the current file's directory          */
-    char path_buf[AGENT_MAX_PATH];  /* the current file                      */
-    char slug_buf[256];      /* the session directory's last component      */
-    char stem_buf[64];       /* the session file without its extension      */
-    char run_stem[40];       /* the name a session that has none falls to   */
+    b8   ready;              // the root below resolved
+    char root_buf[AGENT_MAX_PATH];  // .../arqan/telemetry
+    char dir_buf[AGENT_MAX_PATH];   // the current file's directory
+    char path_buf[AGENT_MAX_PATH];  // the current file
+    char slug_buf[256];      // the session directory's last component
+    char stem_buf[64];       // the session file without its extension
+    char run_stem[40];       // the name a session that has none falls to
     Str  dir;
     u64  run;
     f64  t0;
     u64  seq;
-    b8   header_due;         /* the file has no session event yet           */
-    b8   attached;           /* a file was chosen                           */
+    b8   header_due;         // the file has no session event yet
+    b8   attached;           // a file was chosen
     /* What was recorded before a session named a file. Sized for a startup
      * and the commands that reach one: past that the run is a record of its
      * own rather than a reason to drop lines. */
@@ -72,7 +72,7 @@ static void tel_attach(const char *dir, size_t dn, const char *path, size_t pn) 
     }
 }
 
-/* Where waiting lines go when no conversation ever claims them. */
+// Where waiting lines go when no conversation ever claims them.
 static void tel_attach_run(void) {
     char path[AGENT_MAX_PATH];
     i32 pn = snprintf(path, sizeof path, "%s/%s.jsonl", g_tel.root_buf,
@@ -191,7 +191,7 @@ b8 telemetry_set(b8 on, Arena *scratch) {
     return conf_remember_bool(CONF_TELEMETRY, on, scratch);
 }
 
-/* ---- one event ---------------------------------------------------------- */
+// ---- one event ----------------------------------------------------------
 static void tel_add(TelEvent *e, const char *p, size_t n) {
     if (!e->live) return;
     /* The tail is reserved for what tel_send owes the line: the truncation
@@ -216,12 +216,12 @@ void tel_open(TelEvent *e, const char *ev) {
     e->live = telemetry_on();
     if (!e->live) return;
     if (g_tel.header_due && g_tel.header) {
-        g_tel.header_due = false;   /* before the call, which records too */
+        g_tel.header_due = false;   // before the call, which records too
         g_tel.header(g_tel.header_ud);
     }
     char head[96];
     u64 ms = (u64)((agent_now_seconds() - g_tel.t0) * 1000.0);
-    /* The run id names the file, so a line carries only its place in it. */
+    // The run id names the file, so a line carries only its place in it.
     i32 n = snprintf(head, sizeof head, "{\"t\":%llu,\"seq\":%llu,\"ev\":\"%s\"",
                      (unsigned long long)ms,
                      (unsigned long long)g_tel.seq++, ev);

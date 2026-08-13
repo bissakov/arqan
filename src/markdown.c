@@ -39,17 +39,17 @@ typedef struct {
 
 static struct {
     b8     raw;
-    b8     muted;      /* plain prose belongs to a thinking trace */
-    b8     fence;      /* inside a fenced code block */
+    b8     muted;      // plain prose belongs to a thinking trace
+    b8     fence;      // inside a fenced code block
     char   fence_mark;
-    b8     in_body;    /* the line's block marker has been resolved */
-    b8     skip_line;  /* the rest of the line is a marker's info string */
+    b8     in_body;    // the line's block marker has been resolved
+    b8     skip_line;  // the rest of the line is a marker's info string
     i32    block;
     char   prefix[MD_PREFIX_MAX];
     size_t prefix_n;
     char   pend[MD_PEND_MAX];
     size_t pend_n;
-    char   last;       /* last byte consumed, for the flanking rules */
+    char   last;       // last byte consumed, for the flanking rules
     char   line[MD_LINE_MAX];
     size_t line_n;
     b8     line_long;
@@ -63,9 +63,9 @@ static struct {
     size_t table_bytes;
     size_t table_cols;
     u8     table_align[MD_TABLE_COLS];
-    MdCell *cap;                  /* inline output goes here while set */
-    MdCell cell[MD_TABLE_COLS];   /* the row being drawn */
-    MdCell measured;              /* one cell, while widths are taken */
+    MdCell *cap;                  // inline output goes here while set
+    MdCell cell[MD_TABLE_COLS];   // the row being drawn
+    MdCell measured;              // one cell, while widths are taken
     char   hl_alias[YHL_ALIAS_MAX];
     size_t hl_alias_n;
     char   hl_source[YHL_SOURCE_MAX];
@@ -214,7 +214,7 @@ static void md_push(char c) {
     if (g_md.pend_n < MD_PEND_MAX) g_md.pend[g_md.pend_n++] = c;
 }
 
-/* ---- inline runs --------------------------------------------------------- */
+// ---- inline runs ---------------------------------------------------------
 
 static char md_prev(size_t i) { return i ? g_md.pend[i - 1] : g_md.last; }
 
@@ -378,7 +378,7 @@ static void md_drain(b8 flush) {
     g_md.pend_n -= i;
 }
 
-/* ---- block markers ------------------------------------------------------- */
+// ---- block markers -------------------------------------------------------
 
 /* Whether the buffered bytes can still grow into a block marker. While they
  * can, the line's shape is undecided and nothing has been painted. */
@@ -710,11 +710,11 @@ static Str md_wrap_segment(Str s, size_t width, size_t *advance) {
     if (fit == s.n) { *advance = s.n; return s; }
     size_t brk = fit;
     if (!md_space(s.p[fit])) {
-        size_t last = 0;   /* the last space that fits, 0 for none */
+        size_t last = 0;   // the last space that fits, 0 for none
         for (size_t i = 1; i < fit; i++) if (md_space(s.p[i])) last = i;
         if (last) brk = last;
     }
-    if (!brk) {            /* one glyph is already wider than the column */
+    if (!brk) {            // one glyph is already wider than the column
         brk = 1;
         while (brk < s.n && ((u8)s.p[brk] & 0xc0u) == 0x80u) brk++;
     }
@@ -726,7 +726,7 @@ static Str md_wrap_segment(Str s, size_t width, size_t *advance) {
     return seg;
 }
 
-/* One row, over as many visual lines as its widest cell wraps onto. */
+// One row, over as many visual lines as its widest cell wraps onto.
 static void md_table_line(Str line, const size_t *width, b8 head) {
     Str cells[MD_TABLE_COLS];
     size_t n = md_cells(line, cells, MD_TABLE_COLS);
@@ -770,7 +770,7 @@ static void md_table_line(Str line, const size_t *width, b8 head) {
  * one glyph wide says less than the wrapped rows do. */
 static void md_table_fit(size_t *width, size_t cols) {
     size_t body = tui_body_cols();
-    size_t frame = cols * 3 + 1;   /* "| " before every cell, "|" at the end */
+    size_t frame = cols * 3 + 1;   // "| " before every cell, "|" at the end
     if (!body || cols > MD_TABLE_COLS || body < frame + cols) return;
     size_t budget = body - frame, total = 0, widest = 0;
     for (size_t i = 0; i < cols; i++) {
@@ -778,7 +778,7 @@ static void md_table_fit(size_t *width, size_t cols) {
         if (width[i] > widest) widest = width[i];
     }
     if (total <= budget) return;
-    /* The largest cap every column can be clipped to and still fit. */
+    // The largest cap every column can be clipped to and still fit.
     size_t lo = 1, hi = widest;
     while (lo < hi) {
         size_t mid = lo + (hi - lo + 1) / 2, sum = 0;
@@ -944,7 +944,7 @@ void md_write(Str delta) {
             while (run < delta.n && delta.p[run] != '\n' && delta.p[run] != '\r')
                 run++;
             md_low_write((Str){ delta.p + i, run - i });
-            i = run - 1;   /* the loop's ++ lands on the stopper or the end */
+            i = run - 1;   // the loop's ++ lands on the stopper or the end
             continue;
         }
         if (c == '\n') {
