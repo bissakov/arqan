@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep `ask_user` questions visible above tall or multiline option lists.
+
 ## [0.1.0] - 2026-08-13
 
 ### Added

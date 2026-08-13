@@ -1267,6 +1267,10 @@ typedef enum {
  * untouched. */
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t start, size_t *out);
+/* As tui_pick, with a one-line notice kept above the options while the picker
+ * is open. The notice overlays the transcript rather than moving it. */
+b8 tui_pick_notice(Str title, Str notice, const TuiCmd *items, size_t n,
+                   TuiPickAnchor anchor, size_t start, size_t *out);
 /* As tui_pick, with `search_n` excluding fixed action rows from the length
  * that decides whether keyboard search opens. */
 b8 tui_pick_search_count(Str title, const TuiCmd *items, size_t n,

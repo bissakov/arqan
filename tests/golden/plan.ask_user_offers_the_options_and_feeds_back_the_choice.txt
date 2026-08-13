@@ -14,7 +14,7 @@
 |
 |
 |
-|
+|    Which storage?
 |    sqlite            one file
 |  › postgres          recommended · a server
 |    + something else  Answer in your own words

@@ -290,6 +290,27 @@ def test_ask_user_wraps_option_details_to_the_picker_width(ctx):
     assert all(len(line) <= 100 for line in s.screen.lines()), s.text()
 
 
+def test_ask_user_keeps_the_question_above_a_tall_picker(ctx):
+    """The question stays in an overlay when the options cover its transcript."""
+    question = "Which deployment target should this plan use?"
+    options = [
+        {"label": f"target-{i}", "detail": f"deployment option {i}"}
+        for i in range(12)
+    ]
+    ctx.scenario(ask(question, options))
+    s = ctx.spawn(cols=80, rows=16)
+    to_plan(s)
+    s.submit("plan the deployment")
+    s.wait_status("pick an answer")
+
+    rows = s.screen.lines()
+    question_rows = [i for i, row in enumerate(rows) if question in row]
+    assert len(question_rows) == 1, "\n".join(rows)
+    row = question_rows[0]
+    assert s.screen.attr_at(row, 2).fg == 221, "the question is a notice"
+    assert row < next(i for i, text in enumerate(rows) if "target-" in text), rows
+
+
 def test_ask_user_takes_an_answer_of_its_own(ctx):
     """The last row hands the composer over for something not on the list."""
     ctx.scenario(

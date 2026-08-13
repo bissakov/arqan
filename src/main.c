@@ -422,8 +422,8 @@ static Str ask_user_answer(Agent *ag, Str args) {
                          STR("Answer in your own words") };
 
     size_t pick = 0;
-    if (!tui_pick(STR("pick an answer"), items, n + 1, TUI_PICK_FIRST, start,
-                  &pick))
+    if (!tui_pick_notice(STR("pick an answer"), question, items, n + 1,
+                         TUI_PICK_FIRST, start, &pick))
         return (Str){0};
     if (pick < n) return str_dup(ag->persist, items[pick].name);
 

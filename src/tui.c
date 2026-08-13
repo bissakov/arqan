@@ -240,6 +240,10 @@ typedef struct {
      * of it. */
     char notice[160];
     size_t notice_n;
+    /* Context for a modal picker, separate so a searchable picker can use the
+     * ordinary notice row for its query. */
+    char pick_notice[160];
+    size_t pick_notice_n;
     b8 needs_provider;
     /* Prompt history recall: `g_bulk.draft` holds the text the first Up
      * displaced. */
@@ -2361,22 +2365,31 @@ static void repaint(void) {
      * always stays uncovered. */
     size_t popup_rows = popup_visual_rows(body_cols, TUI_POPUP_ROWS);
     size_t notice_rows = g_tui.notice_n ? 1 : 0;
+    size_t pick_notice_rows = g_tui.pick_notice_n ? 1 : 0;
     size_t find_rows = g_tui.find_open ? 1 : 0;
     /* The spinner row reads as the next line of the conversation, so it sits
      * against the transcript with a block's row of air above it rather than
      * among the overlays below. */
     size_t activity_rows = g_tui.activity_n ? 2 : 0;
     size_t overlay_cap = body_rows > 1 ? body_rows - 1 : 0;
-    if (popup_rows > overlay_cap) popup_rows = overlay_cap;
-    if (notice_rows + popup_rows > overlay_cap)
-        notice_rows = overlay_cap - popup_rows;
-    if (find_rows + notice_rows + popup_rows > overlay_cap)
-        find_rows = overlay_cap - notice_rows - popup_rows;
-    if (activity_rows + find_rows + notice_rows + popup_rows > overlay_cap)
-        activity_rows = overlay_cap - find_rows - notice_rows - popup_rows;
-    /* The spinner is not one of them: it is stacked above the notice row and
-     * below the transcript, so only these two move the composer. */
-    size_t overlay_rows = find_rows + notice_rows + popup_rows;
+    /* An extremely short terminal still needs one row to answer from. */
+    if (popup_rows && pick_notice_rows && overlay_cap < 2)
+        pick_notice_rows = 0;
+    if (pick_notice_rows > overlay_cap) pick_notice_rows = overlay_cap;
+    if (popup_rows + pick_notice_rows > overlay_cap)
+        popup_rows = overlay_cap - pick_notice_rows;
+    if (pick_notice_rows + notice_rows + popup_rows > overlay_cap)
+        notice_rows = overlay_cap - pick_notice_rows - popup_rows;
+    if (find_rows + pick_notice_rows + notice_rows + popup_rows > overlay_cap)
+        find_rows = overlay_cap - pick_notice_rows - notice_rows - popup_rows;
+    if (activity_rows + find_rows + pick_notice_rows + notice_rows
+        + popup_rows > overlay_cap)
+        activity_rows = overlay_cap - find_rows - pick_notice_rows
+                      - notice_rows - popup_rows;
+    /* The spinner is not one of them: it is stacked above the overlay rows
+     * and below the transcript, so it does not move the composer. */
+    size_t overlay_rows = find_rows + pick_notice_rows + notice_rows
+                        + popup_rows;
     size_t transcript_rows = body_rows - overlay_rows - activity_rows;
 
     /* Pinned to the bottom unless PageUp moved the viewport. Overlays stay in
@@ -2432,12 +2445,16 @@ static void repaint(void) {
     size_t overlay_top = transcript_rows + activity_rows + body_gap + 1;
     if (find_rows)
         update_find_row(overlay_top, body_col, cols, body_cols, force);
-    if (notice_rows)
+    if (pick_notice_rows)
         update_notice_row(overlay_top + find_rows,
+                          (Str){ g_tui.pick_notice, g_tui.pick_notice_n },
+                          body_col, cols, body_cols, force);
+    if (notice_rows)
+        update_notice_row(overlay_top + find_rows + pick_notice_rows,
                           (Str){ g_tui.notice, g_tui.notice_n }, body_col, cols,
                           body_cols, force);
-    paint_completions(overlay_top + find_rows + notice_rows, popup_rows,
-                      body_col, cols, body_cols, force);
+    paint_completions(overlay_top + find_rows + pick_notice_rows + notice_rows,
+                      popup_rows, body_col, cols, body_cols, force);
 
     /* The window over a draft taller than the box scrolls by the row the
      * caret leaves rather than snapping to it, so walking a long draft pages
@@ -4191,7 +4208,7 @@ static void pick_close(void);
 static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
                     size_t n, size_t search_n, TuiPickAnchor anchor,
                     size_t start, PickKind kind, const TuiSettings *set,
-                    b8 modal) {
+                    Str notice, b8 modal) {
     if (!g_tui.fullscreen || !items || !n) return false;
     if (terminal_too_small()) {
         repaint();
@@ -4219,6 +4236,10 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
     g_pick.saved_notice_n = g_tui.notice_n;
     memcpy(g_pick.saved_status, g_tui.status, sizeof g_pick.saved_status);
     memcpy(g_pick.saved_notice, g_tui.notice, sizeof g_pick.saved_notice);
+    size_t notice_n = notice.n < sizeof g_tui.pick_notice
+                    ? notice.n : sizeof g_tui.pick_notice;
+    if (notice_n) memcpy(g_tui.pick_notice, notice.p, notice_n);
+    g_tui.pick_notice_n = notice_n;
 
     b8 settings = kind == PICK_SETTINGS;
     /* Every settings row is searchable, however few there are: a list acted
@@ -4398,6 +4419,7 @@ static void pick_close(void) {
     g_tui.comp_dismissed = g_pick.saved_dismissed;
     memcpy(g_tui.notice, g_pick.saved_notice, sizeof g_tui.notice);
     g_tui.notice_n = g_pick.saved_notice_n;
+    g_tui.pick_notice_n = 0;
     g_pick.active = false;
     g_pick.modal = false;
     completion_refresh();
@@ -4414,10 +4436,11 @@ static void pick_run(void) {
 static b8 pick_impl(Str title, const TuiCmd *items, const TuiMark *marks,
                     size_t n, size_t search_n, TuiPickAnchor anchor,
                     size_t start, PickKind kind, size_t *out,
-                    const TuiSettings *set, const TuiPickAction *act) {
+                    const TuiSettings *set, const TuiPickAction *act,
+                    Str notice) {
     if (!out) return false;
     if (!pick_open(title, items, marks, n, search_n, anchor, start, kind, set,
-                   true))
+                   notice, true))
         return false;
     if (act) {
         g_pick.action = *act;
@@ -4435,21 +4458,27 @@ static b8 pick_impl(Str title, const TuiCmd *items, const TuiMark *marks,
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t start, size_t *out) {
     return pick_impl(title, items, NULL, n, n, anchor, start, PICK_CHOOSE, out,
-                     NULL, NULL);
+                     NULL, NULL, (Str){0});
+}
+
+b8 tui_pick_notice(Str title, Str notice, const TuiCmd *items, size_t n,
+                   TuiPickAnchor anchor, size_t start, size_t *out) {
+    return pick_impl(title, items, NULL, n, n, anchor, start, PICK_CHOOSE, out,
+                     NULL, NULL, notice);
 }
 
 b8 tui_pick_search_count(Str title, const TuiCmd *items, size_t n,
                          size_t search_n, TuiPickAnchor anchor, size_t start,
                          size_t *out) {
     return pick_impl(title, items, NULL, n, search_n, anchor, start,
-                     PICK_CHOOSE, out, NULL, NULL);
+                     PICK_CHOOSE, out, NULL, NULL, (Str){0});
 }
 
 b8 tui_pick_action(Str title, size_t n, size_t search_n, TuiPickAnchor anchor,
                    size_t start, const TuiPickAction *act, size_t *out) {
     if (!act || !act->rows || !act->act) return false;
     return pick_impl(title, act->rows, NULL, n, search_n, anchor, start,
-                     PICK_CHOOSE, out, NULL, act);
+                     PICK_CHOOSE, out, NULL, act, (Str){0});
 }
 
 void tui_settings(Str title, const TuiSettings *set) {
@@ -4458,7 +4487,7 @@ void tui_settings(Str title, const TuiSettings *set) {
     if (!n) return;
     size_t out = 0;
     (void)pick_impl(title, set->rows, set->marks, n, n, TUI_PICK_FIRST, 0,
-                    PICK_SETTINGS, &out, set, NULL);
+                    PICK_SETTINGS, &out, set, NULL, (Str){0});
 }
 
 b8 tui_settings_open(Str title, const TuiSettings *set) {
@@ -4466,7 +4495,7 @@ b8 tui_settings_open(Str title, const TuiSettings *set) {
     size_t n = set->build(set->ud);
     if (!n) return false;
     return pick_open(title, set->rows, set->marks, n, n, TUI_PICK_FIRST, 0,
-                     PICK_SETTINGS, set, false);
+                     PICK_SETTINGS, set, (Str){0}, false);
 }
 
 void tui_info(Str title, const TuiCmd *rows, size_t n) {
@@ -4480,13 +4509,13 @@ void tui_info(Str title, const TuiCmd *rows, size_t n) {
     }
     size_t row = 0;
     (void)pick_impl(title, rows, NULL, n, n, TUI_PICK_FIRST, 0, PICK_INFO, &row,
-                    NULL, NULL);
+                    NULL, NULL, (Str){0});
 }
 
 b8 tui_info_open(Str title, const TuiCmd *rows, size_t n) {
     if (!rows || !n) return false;
     return pick_open(title, rows, NULL, n, n, TUI_PICK_FIRST, 0, PICK_INFO,
-                     NULL, false);
+                     NULL, (Str){0}, false);
 }
 
 b8 tui_screen_open(void) { return g_pick.active; }

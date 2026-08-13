@@ -9,7 +9,7 @@
 |
 |
 |
-|
+|    Which storage?
 |  › sqlite            keeps local state beside
 |                      the project and supports
 |                      simple portable backups
