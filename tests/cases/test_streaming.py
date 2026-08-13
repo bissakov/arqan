@@ -106,6 +106,16 @@ def test_streaming_is_incremental(ctx):
     assert len(reply_text(s)) > len(mid), "more text should have arrived"
 
 
+def test_fast_multiline_stream_finishes_without_painting_every_line(ctx):
+    """A burst is throttled by frame rate even when every delta ends a line."""
+    ctx.scenario("text=" + "+".join(f"line-{i}\\n" for i in range(600))
+                 + ",chunk=1")
+    s = ctx.spawn()
+    s.submit("stream lines")
+    s.wait_turn_done(timeout=5)
+    assert "line-599" in s.text(), s.text()
+
+
 def test_done_ends_a_stream_even_when_http_stays_open(ctx):
     """The OpenAI sentinel ends a turn without waiting for a broken server."""
     ctx.scenario("text=finished,keep_open=1")

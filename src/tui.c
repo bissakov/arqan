@@ -3280,8 +3280,16 @@ void tui_block(void) {
 
 void tui_write(Str s) {
     /* The busiest path in a turn, so it doubles as the pump keeping the
-     * composer responsive and servicing a pending resize. */
-    if (g_tui.fullscreen) tui_poll_input();
+     * composer responsive and servicing a pending resize. Markdown may split
+     * one provider delta into many styled writes, so poll once per bounded
+     * batch rather than issuing a poll syscall for every style run. */
+    static u8 poll_skip;
+    if (g_tui.fullscreen && (g_winch || poll_skip == 0)) {
+        tui_poll_input();
+        poll_skip = 63;
+    } else if (g_tui.fullscreen) {
+        poll_skip--;
+    }
     if (!s.p || s.n == 0) return;
     for (size_t i = 0; i < s.n;) {
         if (s.p[i] == '\n') { g_tui.pend_nl++; i++; continue; }
@@ -3293,10 +3301,10 @@ void tui_write(Str s) {
     }
     if (!g_tui.fullscreen) { flush_out(); return; }
     /* SSE delivers many tiny deltas, and 15 Hz is plenty for readable text.
-     * A newline or a status change still paints at once. */
+     * Status changes repaint directly; line endings in a burst do not need
+     * thousands of intermediate frames. */
     f64 now = agent_now_seconds();
-    b8 has_newline = memchr(s.p, '\n', s.n) != NULL;
-    if (g_winch || has_newline || now - g_tui.last_paint >= 1.0 / 15.0)
+    if (g_winch || now - g_tui.last_paint >= 1.0 / 15.0)
         repaint();
 }
 
