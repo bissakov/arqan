@@ -24,6 +24,8 @@
 #define TUI_TRANSCRIPT_CAP (8u << 20)
 #define TUI_MAX_ROWS 4096
 #define TUI_BODY_GUTTER 2
+#define TUI_MIN_COLS 40
+#define TUI_MIN_ROWS 12
 #define TUI_OUT_CAP (1u << 16)   /* one frame's escapes, written in one go */
 #define TUI_SEL_ROWS 512         /* screen rows mirrored for selection      */
 #define TUI_SEL_ROW_BYTES 2048   /* visible bytes kept per screen row       */
@@ -193,6 +195,7 @@ typedef struct {
     size_t painted_cols;
     u64 row_hash[TUI_MAX_ROWS];
     b8 frame_valid;
+    b8 size_warning;
     size_t bar_first, bar_total, bar_visible;
     b8 bar_valid;
     /* The composer outlives a single tui_readline: text typed while a turn is
@@ -389,15 +392,21 @@ static void capture_cwd(void) {
     }
 }
 
-static void screen_size(size_t *rows, size_t *cols) {
+static void terminal_size(size_t *rows, size_t *cols) {
     struct winsize ws = {0};
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
-        *rows = ws.ws_row > 0 ? (size_t)ws.ws_row : 24;
-        *cols = ws.ws_col > 0 ? (size_t)ws.ws_col : 80;
+        *rows = (size_t)ws.ws_row;
+        *cols = (size_t)ws.ws_col;
     } else {
         *rows = 24;
         *cols = 80;
     }
+}
+
+static void screen_size(size_t *rows, size_t *cols) {
+    terminal_size(rows, cols);
+    if (*rows == 0) *rows = 24;
+    if (*cols == 0) *cols = 80;
     if (*rows < 4) *rows = 4;
     if (*rows > TUI_MAX_ROWS) *rows = TUI_MAX_ROWS;
     if (*cols < 8) *cols = 8;
@@ -2160,6 +2169,52 @@ static void paint_welcome(size_t body_rows, size_t transcript_rows,
     }
 }
 
+static void paint_size_warning(size_t rows, size_t cols,
+                               size_t reported_rows, size_t reported_cols,
+                               b8 force) {
+    char current[96], needed[96], compact[96];
+    i32 current_n = snprintf(current, sizeof current,
+                             "Width = %zu Height = %zu",
+                             reported_cols, reported_rows);
+    i32 needed_n = snprintf(needed, sizeof needed,
+                            "Width = %u Height = %u",
+                            TUI_MIN_COLS, TUI_MIN_ROWS);
+    i32 compact_n = snprintf(compact, sizeof compact,
+                             "%zux%zu; need %ux%u",
+                             reported_cols, reported_rows,
+                             TUI_MIN_COLS, TUI_MIN_ROWS);
+    Str full[] = {
+        STR("Terminal size too small:"),
+        { current, current_n > 0 ? (size_t)current_n : 0 },
+        STR("Needed for current config:"),
+        { needed, needed_n > 0 ? (size_t)needed_n : 0 },
+    };
+    Str compact_lines[] = {
+        STR("Terminal too small"),
+        { compact, compact_n > 0 ? (size_t)compact_n : 0 },
+    };
+    Str *lines = cols >= sizeof "Needed for current config:" - 1
+               ? full : compact_lines;
+    size_t line_n = lines == full ? sizeof full / sizeof full[0]
+                                  : sizeof compact_lines / sizeof compact_lines[0];
+    size_t shown = rows < line_n ? rows : line_n;
+    size_t top = (rows - shown) / 2;
+    for (size_t i = 0; i < shown && cols; i++) {
+        Str line = lines[i];
+        if (line.n > cols) line.n = cols;
+        size_t col = (cols - line.n) / 2 + 1;
+        update_text_row(top + i + 1, (Str){0}, line, col, cols,
+                        i == 0 ? ROW_ERROR : ROW_PLAIN,
+                        SIZE_MAX, 0, force);
+    }
+}
+
+static b8 terminal_too_small(void) {
+    size_t rows, cols;
+    terminal_size(&rows, &cols);
+    return rows < TUI_MIN_ROWS || cols < TUI_MIN_COLS;
+}
+
 /* The bar has a column of its own, so it sits outside the row-hash diff and
  * keeps a one-line cache instead. */
 static void paint_scrollbar(size_t first_row, size_t total_rows,
@@ -2250,13 +2305,43 @@ static b8 g_find_moving;
 static void repaint(void) {
     if (!g_tui.fullscreen || g_batch) return;
     g_tui.last_paint = agent_now_seconds();
+
+    size_t physical_rows, physical_cols;
+    terminal_size(&physical_rows, &physical_cols);
+    if (physical_rows < TUI_MIN_ROWS || physical_cols < TUI_MIN_COLS) {
+        size_t paint_rows = physical_rows ? physical_rows : 24;
+        size_t paint_cols = physical_cols ? physical_cols : 80;
+        if (paint_rows > TUI_MAX_ROWS) paint_rows = TUI_MAX_ROWS;
+        b8 force = !g_tui.frame_valid || !g_tui.size_warning || g_winch
+                 || paint_rows != g_tui.painted_rows
+                 || paint_cols != g_tui.painted_cols;
+        memset(g_tui.row_src, 0xff, sizeof g_tui.row_src);
+        g_winch = 0;
+        if (force) {
+            sel_clear();
+            put_str("\033[?25l\033[H\033[2J");
+            memset(g_tui.row_hash, 0, sizeof g_tui.row_hash);
+            memset(g_tui.row_text_n, 0, sizeof g_tui.row_text_n);
+            memset(g_tui.row_text_w, 0, sizeof g_tui.row_text_w);
+        } else {
+            put_str("\033[?25l");
+        }
+        paint_size_warning(paint_rows, paint_cols,
+                           physical_rows, physical_cols, force);
+        g_tui.painted_rows = paint_rows;
+        g_tui.painted_cols = paint_cols;
+        g_tui.frame_valid = true;
+        g_tui.size_warning = true;
+        flush_out();
+        return;
+    }
     /* The count the box shows is carried over the bytes appended since the
      * last frame, so a streaming turn costs the delta rather than a scan. */
     if (g_tui.find_open) find_refresh();
 
     size_t rows, cols;
     screen_size(&rows, &cols);
-    b8 force = !g_tui.frame_valid || g_winch
+    b8 force = !g_tui.frame_valid || g_tui.size_warning || g_winch
              || rows != g_tui.painted_rows || cols != g_tui.painted_cols;
     /* Rows not painted from the transcript carry no offset, so the mapping is
      * rebuilt rather than aged. */
@@ -2555,6 +2640,7 @@ static void repaint(void) {
     g_tui.painted_rows = rows;
     g_tui.painted_cols = cols;
     g_tui.frame_valid = true;
+    g_tui.size_warning = false;
     flush_out();
 }
 
@@ -4167,6 +4253,10 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
                     size_t start, PickKind kind, const TuiSettings *set,
                     b8 modal) {
     if (!g_tui.fullscreen || !items || !n) return false;
+    if (terminal_too_small()) {
+        repaint();
+        return false;
+    }
     /* A list is chosen from with the keys the search box reads, so opening one
      * closes it. */
     if (g_tui.find_open) find_close();

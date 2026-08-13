@@ -2,9 +2,9 @@
 |
 |
 |
+| Terminal too small
+|  20x8; need 40x12
 |
-| › Message arqan...
 |
 |
-| ● ready · mock-mod
---- cursor row=5 col=4 visible=yes ---
+--- cursor row=5 col=19 visible=no ---

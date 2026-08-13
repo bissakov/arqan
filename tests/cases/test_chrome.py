@@ -173,7 +173,7 @@ def test_status_names_active_reasoning_controls(ctx):
 
 def test_narrow_status_line_drops_fields_from_the_right(ctx):
     """On a narrow screen the state survives and the tail is clipped."""
-    s = ctx.spawn(cols=30, rows=12)
+    s = ctx.spawn(cols=40, rows=12)
     line = s.status_line()
     assert "ready" in line, line
-    assert len(line) <= 30, line
+    assert len(line) <= 40, line

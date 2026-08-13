@@ -53,10 +53,32 @@ def test_narrow_terminal(ctx):
 
 
 def test_tiny_terminal(ctx):
-    """A 20x8 terminal still renders a transcript row and a status line."""
-    s = ctx.spawn(cols=20, rows=8)
+    """A 20x8 terminal shows only the centered minimum-size warning."""
+    s = ctx.spawn(cols=20, rows=8, wait=False)
+    s.wait_text("Terminal too small")
     ctx.check_screen(s)
-    assert "mock-model" in s.status_line() or "mock" in s.status_line()
+    assert "20x8; need 40x12" in s.text()
+    assert "mock-model" not in s.text()
+
+
+def test_small_terminal_warning_tracks_resize(ctx):
+    """Either undersized dimension warns, and restoring both repaints the UI."""
+    s = ctx.spawn(cols=80, rows=24)
+
+    s.resize(cols=30, rows=24).sync()
+    assert "Terminal size too small:" in s.text()
+    assert "Width = 30 Height = 24" in s.text()
+    assert "Width = 40 Height = 12" in s.text()
+
+    s.resize(cols=80, rows=10).sync()
+    assert "Terminal size too small:" in s.text()
+    assert "Width = 80 Height = 10" in s.text()
+    assert "Width = 40 Height = 12" in s.text()
+
+    s.resize(cols=80, rows=24)
+    s.wait_text(WELCOME_ART).sync()
+    assert "Terminal size too small:" not in s.text()
+    assert "mock-model" in s.status_line()
 
 
 def test_welcome_screen_is_centered(ctx):
