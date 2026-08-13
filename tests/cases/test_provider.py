@@ -243,6 +243,18 @@ def test_escape_cancels_the_form_and_writes_nothing(ctx):
     assert s.composer_text() == "", s.composer_lines()
 
 
+def test_pasting_in_the_provider_form_does_not_trap_input(ctx):
+    """The limited editor consumes paste markers and remains cancellable."""
+    s = ctx.spawn()
+    s.submit("/provider")
+    s.wait_text("a name for this provider")
+    s.paste("work").sync()
+    assert s.composer_text() == "work", s.composer_lines()
+    s.key("esc")
+    s.wait_gone("a name for this provider")
+    assert store(ctx) == [], store(ctx)
+
+
 def test_a_url_without_a_scheme_is_refused(ctx):
     """A base URL is a URL, and saying so beats a failed turn later."""
     s = ctx.spawn()

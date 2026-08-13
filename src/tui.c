@@ -4559,6 +4559,7 @@ static b8 ask_impl(Str question, b8 secret, char *out, size_t cap,
 
     b8 answered = false;
     for (;;) {
+        paste_retire_if_drained();
         i32 c = rbyte();
         if (c == -3) { repaint(); continue; }
         if (c < 0) break;
@@ -4569,7 +4570,7 @@ static b8 ask_impl(Str question, b8 secret, char *out, size_t cap,
         }
         if (g_tui.pasting && (c == '\r' || c == '\n')) continue;
         size_t n = g_tui.input_n, cur = g_tui.input_cur;
-        if (g_tui.pasting) {
+        if (g_tui.pasting && c != 0x1b) {
             if ((c >= 0x20 && c < 0x7f) || c >= 0x80)
                 edit_insert((char)c, g_bulk.input, &n, &cur, limit + 1);
         } else if (c == 0x1b) {
