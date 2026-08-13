@@ -629,6 +629,59 @@ def test_a_second_turn_still_gets_its_tool_call(ctx):
     assert tools == ["first file\n", "second file\n"], tools
 
 
+def test_find_respects_ignore_files_and_the_ignored_files_setting(ctx):
+    """Tool walks and the @ picker share the Ignored files preference."""
+    ctx.write_file(".gitignore", "__pycache__/\n*.log\n")
+    ctx.write_file(".ignore", "*.tmp\n")
+    ctx.write_file("keep.py", "kept\n")
+    ctx.write_file("debug.log", "ignored\n")
+    ctx.write_file("scratch.tmp", "ignored\n")
+    ctx.write_file("bench/__pycache__/keep.cpython-314.pyc", "ignored\n")
+    ctx.scenario('tool=find:{"name":"*"},final_text=first+walk')
+    s = ctx.spawn()
+    s.submit("list files")
+    s.wait_text("first walk")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "keep.py" in result, result
+    assert "debug.log" not in result, result
+    assert "scratch.tmp" not in result, result
+    assert "__pycache__" not in result, result
+
+    s.settings_toggle("Ignored files")
+    ctx.scenario('tool=find:{"name":"*"},final_text=second+walk')
+    s.submit("list ignored files too")
+    s.wait_text("second walk")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "debug.log" in result, result
+    assert "scratch.tmp" in result, result
+    assert "bench/__pycache__/keep.cpython-314.pyc" in result, result
+
+
+def test_grep_respects_nested_ignore_files(ctx):
+    """A grep walk applies each directory's ignore rules to its subtree."""
+    ctx.write_file(".gitignore", "*.log\n")
+    ctx.write_file("src/.ignore", "generated.c\n")
+    ctx.write_file("keep.txt", "needle at root\n")
+    ctx.write_file("debug.log", "needle in ignored log\n")
+    ctx.write_file("src/main.c", "needle in source\n")
+    ctx.write_file("src/generated.c", "needle in generated source\n")
+    ctx.scenario('tool=grep:{"pattern":"needle"},final_text=searched')
+    s = ctx.spawn()
+    s.submit("search files")
+    s.wait_text("searched")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "keep.txt" in result, result
+    assert "src/main.c" in result, result
+    assert "debug.log" not in result, result
+    assert "src/generated.c" not in result, result
+
+
 def test_a_read_header_names_the_page_it_asked_for(ctx):
     """Two reads of one file differ by their range, so the range is on screen."""
     ctx.write_file("big.txt", "\n".join(f"line {i:04d}" for i in range(400)))

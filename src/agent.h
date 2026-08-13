@@ -65,6 +65,8 @@ typedef bool     b8;
 #define AGENT_WALK_DEPTH       32          /* directories a walk descends        */
 #define AGENT_WALK_ENTRIES     4096        /* names one directory level holds    */
 #define AGENT_WALK_BYTES       (4u << 20)  /* scratch a walk carves for names    */
+#define AGENT_IGNORE_PATTERNS  512         /* patterns in force for one walk     */
+#define AGENT_IGNORE_BYTES     (1u << 14)  /* copied ignore pattern storage      */
 #define AGENT_MAX_GREP_FILE    (1u << 20)  /* larger files are not searched      */
 #define AGENT_MAX_PATCH_FILES  32          /* files one patch call may touch     */
 #define AGENT_MAX_PATCH_HUNKS  512         /* hunks one patch call may carry     */
@@ -648,6 +650,30 @@ typedef struct {
 } UiPrefs;
 
 void   ui_prefs_load(UiPrefs *p, const Conf *conf);
+
+/* A walk's .gitignore and .ignore rules. Patterns point into `buf`; a mark
+ * lets a recursive walker remove one directory's rules on its way out. */
+typedef struct {
+    const char *pat[AGENT_IGNORE_PATTERNS];
+    u8 flag[AGENT_IGNORE_PATTERNS];
+    u16 base[AGENT_IGNORE_PATTERNS];
+    size_t n;
+    char buf[AGENT_IGNORE_BYTES];
+    size_t buf_n;
+} AgentIgnore;
+
+typedef struct { size_t n, buf_n; } AgentIgnoreMark;
+
+void            agent_ignore_build(AgentIgnore *ig, Str dir);
+void            agent_ignore_push(AgentIgnore *ig, const char *dir,
+                                  size_t dir_n, size_t path_n);
+b8              agent_ignore_match(const AgentIgnore *ig, const char *rel,
+                                   size_t rel_n, b8 is_dir);
+AgentIgnoreMark agent_ignore_mark(const AgentIgnore *ig);
+void            agent_ignore_restore(AgentIgnore *ig, AgentIgnoreMark mark);
+/* One preference controls both tool walks and the composer's path picker. */
+void            agent_ignore_set_show(b8 on);
+b8              agent_ignore_show(void);
 
 /* ---- notifications ------------------------------------------------------
  * What arqan tells the user about once they have looked away. The terminal
@@ -1283,9 +1309,9 @@ b8 tui_screen_open(void);
 b8 tui_ask(Str question, b8 secret, char *out, size_t cap);
 /* Edits the existing value in `inout`; Enter may accept an empty result. */
 b8 tui_ask_edit(Str question, b8 allow_empty, char *inout, size_t cap);
-/* The '@' picker hides what the project's .gitignore and .ignore exclude,
- * and always hides .git; this offers them anyway. Off by default. A path
- * typed by hand is unaffected either way. */
+/* The '@' picker and recursive tools hide what the project's .gitignore and
+ * .ignore exclude, while the picker always hides .git; this offers ignored
+ * paths anyway. Off by default. A path typed by hand is unaffected. */
 void tui_set_show_ignored(b8 on);
 b8   tui_show_ignored(void);
 /* Rows wrap between words either way; this also widens the gaps of a wrapped

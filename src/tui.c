@@ -9,8 +9,6 @@
 
 #include <dirent.h>
 #include <errno.h>
-#include <fcntl.h>
-#include <fnmatch.h>
 #include <locale.h>
 #include <poll.h>
 #include <stdarg.h>
@@ -39,8 +37,6 @@
 _Static_assert(TUI_STATUS_N == AGENT_STATUS_FIELDS,
                "status preference mask must cover every field");
 #define TUI_PATH_SCAN 20000      /* entries one keystroke's walk may look at  */
-#define TUI_IGNORE_PATS 512      /* ignore patterns in force for one listing  */
-#define TUI_IGNORE_BUF (1u << 14)
 #define TUI_PICK_QUERY 64        /* longest search a picker accepts          */
 #define TUI_FIND_QUERY 128       /* longest transcript search a box accepts  */
 #define TUI_FIND_ROW_HITS 64     /* matches one painted row highlights       */
@@ -234,20 +230,11 @@ typedef struct {
     u16 path_ord[TUI_PATH_ENTS];     /* slots in the order they are shown   */
     size_t path_n;
     size_t path_at;                  /* offset of the '@' being completed   */
-    b8 show_ignored;                 /* offer what an ignore file excludes  */
     /* Word wrap reaches the right edge only where a word does; justification
      * widens the gaps of a wrapped row until it does. Breaking is the same
      * either way, so this is read by the painter alone. */
     b8 justify;
-    /* The patterns in force for the directory being listed, gathered from
-     * every .gitignore and .ignore above it. NUL-terminated for fnmatch, each
-     * with the length of the path prefix it is relative to. */
-    const char *ig_pat[TUI_IGNORE_PATS];
-    u8 ig_flag[TUI_IGNORE_PATS];
-    u16 ig_base[TUI_IGNORE_PATS];
-    size_t ig_n;
-    char ig_buf[TUI_IGNORE_BUF];
-    size_t ig_buf_n;
+    AgentIgnore ignore;              /* rules in force for the path popup   */
     size_t comp_n;
     size_t comp_sel;
     b8 pick_end;                     /* the running picker selects from the end */
@@ -2519,7 +2506,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
     g_tui.model = setup ? (Str){0} : model;
     g_tui.base_url = base_url;
     g_tui.provider = setup ? (Str){0} : provider_from_url(base_url);
-    g_tui.show_ignored = show_ignored;
+    agent_ignore_set_show(show_ignored);
     g_tui.justify = justify;
     g_tui.mode = mode;
     tui_set_status(setup ? "setup" : "ready");
@@ -3624,101 +3611,6 @@ static b8 path_is_dir(const char *path) {
     return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-/* ---- ignore files --------------------------------------------------------
- * .gitignore and .ignore say the same thing about a path, so they are read as
- * one list: what the project says is not part of the work. The picker hides
- * what they exclude unless `show_ignored` is on, which is a default rather
- * than a rule, since a path typed by hand still reaches anything.
- *
- * The subset understood is the one people write: comments, '!' negation with
- * the last match winning, a trailing '/' for directories only, and a leading
- * or embedded '/' anchoring the pattern to the file's own directory. '**' is
- * left to fnmatch, which is enough while one directory is listed at a time.
- */
-enum { IG_NEG = 1, IG_DIRONLY = 2, IG_PATHNAME = 4 };
-
-static void ignore_add(Str pat, size_t base_n) {
-    pat = str_trim(pat);
-    if (!pat.n || pat.p[0] == '#') return;
-    u8 flags = 0;
-    if (pat.p[0] == '!') { flags |= IG_NEG; pat = str_drop(pat, 1); }
-    if (pat.n && pat.p[pat.n - 1] == '/') { flags |= IG_DIRONLY; pat.n--; }
-    if (pat.n && pat.p[0] == '/') { flags |= IG_PATHNAME; pat = str_drop(pat, 1); }
-    else for (size_t i = 0; i + 1 < pat.n; i++)
-        if (pat.p[i] == '/') { flags |= IG_PATHNAME; break; }
-    if (!pat.n || g_tui.ig_n >= TUI_IGNORE_PATS) return;
-    if (g_tui.ig_buf_n + pat.n + 1 > sizeof g_tui.ig_buf) return;
-    char *slot = g_tui.ig_buf + g_tui.ig_buf_n;
-    memcpy(slot, pat.p, pat.n);
-    slot[pat.n] = '\0';
-    g_tui.ig_buf_n += pat.n + 1;
-    g_tui.ig_pat[g_tui.ig_n] = slot;
-    g_tui.ig_flag[g_tui.ig_n] = flags;
-    g_tui.ig_base[g_tui.ig_n] = (u16)base_n;
-    g_tui.ig_n++;
-}
-
-static void ignore_load(const char *path, size_t base_n) {
-    i32 fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return;
-    char buf[TUI_IGNORE_BUF];
-    ssize_t got = read(fd, buf, sizeof buf);
-    (void)close(fd);
-    if (got <= 0) return;
-    size_t n = (size_t)got, start = 0;
-    for (size_t i = 0; i <= n; i++)
-        if (i == n || buf[i] == '\n') {
-            ignore_add((Str){ buf + start, i - start }, base_n);
-            start = i + 1;
-        }
-}
-
-/* The ignore files of one directory, in force from it downward. */
-static void ignore_push(const char *dir, size_t n) {
-    static const char *names[] = { ".gitignore", ".ignore" };
-    char path[AGENT_MAX_PATH];
-    if (n + 12 >= sizeof path || n > UINT16_MAX) return;
-    memcpy(path, dir, n);
-    for (size_t k = 0; k < sizeof names / sizeof names[0]; k++) {
-        memcpy(path + n, names[k], strlen(names[k]) + 1);
-        ignore_load(path, n);
-    }
-}
-
-/* Every ignore file from the working directory down to `dir`, outermost
- * first, since the last pattern that matches decides. Rebuilt per listing
- * rather than cached: an ignore file edited mid-session is a few opens, and a
- * stale answer is a file the picker refuses to show. */
-static void ignore_build(Str dir) {
-    g_tui.ig_n = 0;
-    g_tui.ig_buf_n = 0;
-    /* An absolute path is outside the project the ignore files describe. */
-    if (dir.n && dir.p[0] == '/') return;
-    for (size_t base = 0;;) {
-        ignore_push(dir.p, base);
-        if (base >= dir.n) break;
-        while (base < dir.n && dir.p[base] != '/') base++;
-        if (base < dir.n) base++;
-    }
-}
-
-static b8 ignore_match(const char *rel, size_t rel_n, b8 is_dir) {
-    b8 ignored = false;
-    for (size_t i = 0; i < g_tui.ig_n; i++) {
-        u8 f = g_tui.ig_flag[i];
-        if ((f & IG_DIRONLY) && !is_dir) continue;
-        if (g_tui.ig_base[i] > rel_n) continue;
-        const char *sub = rel + g_tui.ig_base[i];
-        if (!(f & IG_PATHNAME)) {
-            const char *slash = strrchr(sub, '/');
-            if (slash) sub = slash + 1;
-        }
-        i32 flags = f & IG_PATHNAME ? FNM_PATHNAME : 0;
-        if (fnmatch(g_tui.ig_pat[i], sub, flags) == 0) ignored = !(f & IG_NEG);
-    }
-    return ignored;
-}
-
 /* One directory, and every directory under it while a word is being matched.
  * A directory keeps its trailing slash, so accepting one is a step into it
  * rather than an answer, and recursing costs the slash already there. Its own
@@ -3745,7 +3637,8 @@ static void path_walk(char *path, size_t n, size_t root_n, Str q, u16 depth,
         /* Nothing inside a repository's own bookkeeping is worth mentioning
          * to a model, whatever the ignore files say. */
         if (is_dir && str_eq(name, STR(".git"))) continue;
-        if (!g_tui.show_ignored && ignore_match(path, end, is_dir)) continue;
+        if (!agent_ignore_show()
+            && agent_ignore_match(&g_tui.ignore, path, end, is_dir)) continue;
 
         u8 rank = is_dir ? 0 : 1;   /* with nothing typed, directories first */
         Str rel = { path + root_n, end - root_n };
@@ -3755,12 +3648,11 @@ static void path_walk(char *path, size_t n, size_t root_n, Str q, u16 depth,
             path[end + 1] = '\0';
             if (hit) path_insert(path, end + 1, rank, depth);
             if (depth < max_depth && *budget) {
-                size_t pats = g_tui.ig_n, bytes = g_tui.ig_buf_n;
-                ignore_push(path, end + 1);
+                AgentIgnoreMark mark = agent_ignore_mark(&g_tui.ignore);
+                agent_ignore_push(&g_tui.ignore, path, end + 1, end + 1);
                 path_walk(path, end + 1, root_n, q, (u16)(depth + 1),
                           max_depth, budget);
-                g_tui.ig_n = pats;
-                g_tui.ig_buf_n = bytes;
+                agent_ignore_restore(&g_tui.ignore, mark);
             }
         } else if (hit) {
             path_insert(path, end, rank, depth);
@@ -3785,7 +3677,7 @@ static void path_refresh(Str prefix, Str keep) {
     path[dir.n] = '\0';
 
     g_tui.path_n = 0;
-    ignore_build(dir);
+    agent_ignore_build(&g_tui.ignore, dir);
     /* The walk is bounded rather than complete: a tree nobody ignored is
      * still answered in the time a keystroke has. */
     size_t budget = TUI_PATH_SCAN;
@@ -3945,9 +3837,11 @@ static void completion_accept(void) {
     g_tui.comp_dismissed = true;
 }
 
-b8 tui_show_ignored(void) { return g_tui.show_ignored; }
+b8 tui_show_ignored(void) { return agent_ignore_show(); }
 
-void tui_set_show_ignored(b8 on) { g_tui.show_ignored = on; }
+void tui_set_show_ignored(b8 on) {
+    agent_ignore_set_show(on);
+}
 
 b8 tui_justify(void) { return g_tui.justify; }
 

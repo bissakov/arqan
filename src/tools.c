@@ -799,6 +799,7 @@ typedef struct {
     b8     out_limited;   /* page hit the byte budget before its record limit  */
     b8     ignore_case;
     b8     single;         /* the root is one file rather than a tree      */
+    AgentIgnore ignore;    /* rules in force at the current path           */
     char   path[AGENT_MAX_PATH];
     size_t path_n;
     Spill  spill;         /* every record found, page or not                   */
@@ -947,9 +948,26 @@ static b8 walk_dir(Walk *w, i32 depth) {
         struct stat st;
         if (lstat(w->path, &st) == 0) {
             if (S_ISDIR(st.st_mode)) {
-                room = walk_dir(w, depth + 1);
+                const char *shown = walk_shown(w);
+                if (agent_ignore_show()
+                    || !agent_ignore_match(&w->ignore, shown, strlen(shown),
+                                           true)) {
+                    AgentIgnoreMark mark = agent_ignore_mark(&w->ignore);
+                    size_t shown_n = strlen(shown);
+                    w->path[w->path_n] = '/';
+                    w->path[w->path_n + 1] = '\0';
+                    agent_ignore_push(&w->ignore, w->path, w->path_n + 1,
+                                      shown_n + 1);
+                    w->path[w->path_n] = '\0';
+                    room = walk_dir(w, depth + 1);
+                    agent_ignore_restore(&w->ignore, mark);
+                }
             } else if (S_ISREG(st.st_mode)) {
-                walk_file(w, ent[i].p);
+                const char *shown = walk_shown(w);
+                if (agent_ignore_show()
+                    || !agent_ignore_match(&w->ignore, shown, strlen(shown),
+                                           false))
+                    walk_file(w, ent[i].p);
             }
         }
         w->path_n = base_n;
@@ -970,6 +988,10 @@ static b8 walk_start(Walk *w, Str root, char *err, size_t err_cap) {
         return false;
     }
     while (len > 1 && w->path[len - 1] == '/') w->path[--len] = '\0';
+    while (len > 2 && w->path[0] == '.' && w->path[1] == '/') {
+        memmove(w->path, w->path + 2, (size_t)len - 1);
+        len -= 2;
+    }
     w->path_n = (size_t)len;
     struct stat st;
     if (stat(w->path, &st) != 0) {
@@ -984,6 +1006,30 @@ static b8 walk_start(Walk *w, Str root, char *err, size_t err_cap) {
     }
     w->single = !S_ISDIR(st.st_mode);
     return true;
+}
+
+static void walk_ignore_build(Walk *w) {
+    if (w->path[0] == '/') {
+        agent_ignore_build(&w->ignore, (Str){ w->path, w->path_n });
+        return;
+    }
+    char dir[AGENT_MAX_PATH];
+    size_t n = 0;
+    if (w->single) {
+        const char *slash = strrchr(w->path, '/');
+        if (slash) n = (size_t)(slash - w->path) + 1;
+    } else if (strcmp(w->path, ".") != 0) {
+        n = w->path_n;
+        if (n + 1 >= sizeof dir) {
+            agent_ignore_build(&w->ignore, (Str){ w->path, w->path_n });
+            return;
+        }
+        memcpy(dir, w->path, n);
+        dir[n++] = '/';
+    }
+    if (w->single && n) memcpy(dir, w->path, n);
+    dir[n] = '\0';
+    agent_ignore_build(&w->ignore, (Str){ dir, n });
 }
 
 static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep,
@@ -1020,6 +1066,7 @@ static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep,
     if (!arg_count(j, STR("offset"), 1, 1u << 30, &w.offset, err, err_cap))
         return false;
     if (!walk_start(&w, json_str(j, STR("path")), err, err_cap)) return false;
+    walk_ignore_build(&w);
 
     /* Carved once and never rewound past, since `out` keeps growing in
      * `scratch` above them for as long as the walk finds something. */
@@ -1033,7 +1080,13 @@ static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep,
 
     spill_open(&w.spill, grep ? "grep" : "find", "txt", args);
     b8 room = true;
-    if (w.single) {
+    const char *root_shown = walk_shown(&w);
+    b8 root_ignored = !agent_ignore_show() && strcmp(w.path, ".") != 0
+        && agent_ignore_match(&w.ignore, root_shown, strlen(root_shown),
+                              !w.single);
+    if (root_ignored) {
+        room = true;
+    } else if (w.single) {
         const char *slash = strrchr(w.path, '/');
         walk_file(&w, slash ? slash + 1 : w.path);
     } else {

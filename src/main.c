@@ -19,6 +19,7 @@
 #include "favorites.c"
 #include "config.c"
 #include "cli.c"
+#include "ignore.c"
 #include "tools.c"
 #include "prompt.c"
 #include "provider.c"
