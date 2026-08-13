@@ -148,12 +148,14 @@ typedef struct {
     size_t span_a[TUI_MAX_SPANS];
     size_t span_b[TUI_MAX_SPANS];
     u8     span_k[TUI_MAX_SPANS];
+    size_t span_head;
     size_t span_n;
     /* Presentation-only syntax foregrounds overlay the ordinary Markdown and
      * tool styles without changing their byte ranges or backgrounds. */
     size_t syntax_a[TUI_MAX_SYNTAX];
     size_t syntax_b[TUI_MAX_SYNTAX];
     u8     syntax_k[TUI_MAX_SYNTAX];
+    size_t syntax_head;
     size_t syntax_n;
     u64    transcript_epoch;
     /* User panels are a background layer, not a Markdown style: their ranges
@@ -912,53 +914,61 @@ static b8 str_fuzzy_ci(Str s, Str needle) {
 }
 
 /* ---- styled transcript spans --------------------------------------------- */
+static size_t span_slot(size_t i) {
+    return (g_tui.span_head + i) % TUI_MAX_SPANS;
+}
+
+static size_t syntax_slot(size_t i) {
+    return (g_tui.syntax_head + i) % TUI_MAX_SYNTAX;
+}
+
 /* Reasoning arrives as many tiny deltas, so an append that continues the
  * previous span extends it rather than claiming a slot. */
 static void span_add(size_t a, size_t b, u8 kind) {
-    if (g_tui.span_n && g_tui.span_k[g_tui.span_n - 1] == kind
-        && g_tui.span_b[g_tui.span_n - 1] == a) {
-        g_tui.span_b[g_tui.span_n - 1] = b;
+    size_t last = g_tui.span_n ? span_slot(g_tui.span_n - 1) : 0;
+    if (g_tui.span_n && g_tui.span_k[last] == kind
+        && g_tui.span_b[last] == a) {
+        g_tui.span_b[last] = b;
         return;
     }
     if (g_tui.span_n == TUI_MAX_SPANS) {
-        memmove(g_tui.span_a, g_tui.span_a + 1,
-                sizeof g_tui.span_a - sizeof g_tui.span_a[0]);
-        memmove(g_tui.span_b, g_tui.span_b + 1,
-                sizeof g_tui.span_b - sizeof g_tui.span_b[0]);
-        memmove(g_tui.span_k, g_tui.span_k + 1,
-                sizeof g_tui.span_k - sizeof g_tui.span_k[0]);
+        g_tui.span_head = (g_tui.span_head + 1) % TUI_MAX_SPANS;
         g_tui.span_n--;
     }
-    g_tui.span_a[g_tui.span_n] = a;
-    g_tui.span_b[g_tui.span_n] = b;
-    g_tui.span_k[g_tui.span_n] = kind;
+    size_t slot = span_slot(g_tui.span_n);
+    g_tui.span_a[slot] = a;
+    g_tui.span_b[slot] = b;
+    g_tui.span_k[slot] = kind;
     g_tui.span_n++;
 }
 
 /* Scrollback dropped `delta` bytes off the front. */
 static void spans_shift(size_t delta) {
-    size_t w = 0;
+    size_t drop = 0;
+    while (drop < g_tui.span_n
+           && g_tui.span_b[span_slot(drop)] <= delta) drop++;
+    g_tui.span_head = span_slot(drop);
+    g_tui.span_n -= drop;
     for (size_t i = 0; i < g_tui.span_n; i++) {
-        if (g_tui.span_b[i] <= delta) continue;
-        g_tui.span_a[w] = g_tui.span_a[i] > delta ? g_tui.span_a[i] - delta : 0;
-        g_tui.span_b[w] = g_tui.span_b[i] - delta;
-        g_tui.span_k[w] = g_tui.span_k[i];
-        w++;
+        size_t slot = span_slot(i);
+        g_tui.span_a[slot] = g_tui.span_a[slot] > delta
+                           ? g_tui.span_a[slot] - delta : 0;
+        g_tui.span_b[slot] -= delta;
     }
-    g_tui.span_n = w;
 }
 
 static void syntax_shift(size_t delta) {
-    size_t w = 0;
+    size_t drop = 0;
+    while (drop < g_tui.syntax_n
+           && g_tui.syntax_b[syntax_slot(drop)] <= delta) drop++;
+    g_tui.syntax_head = syntax_slot(drop);
+    g_tui.syntax_n -= drop;
     for (size_t i = 0; i < g_tui.syntax_n; i++) {
-        if (g_tui.syntax_b[i] <= delta) continue;
-        g_tui.syntax_a[w] = g_tui.syntax_a[i] > delta
-                          ? g_tui.syntax_a[i] - delta : 0;
-        g_tui.syntax_b[w] = g_tui.syntax_b[i] - delta;
-        g_tui.syntax_k[w] = g_tui.syntax_k[i];
-        w++;
+        size_t slot = syntax_slot(i);
+        g_tui.syntax_a[slot] = g_tui.syntax_a[slot] > delta
+                             ? g_tui.syntax_a[slot] - delta : 0;
+        g_tui.syntax_b[slot] -= delta;
     }
-    g_tui.syntax_n = w;
 }
 
 static void user_add(size_t a, size_t b) {
@@ -1070,7 +1080,7 @@ static size_t span_first(size_t off) {
     size_t lo = 0, hi = g_tui.span_n;
     while (lo < hi) {
         size_t mid = lo + (hi - lo) / 2;
-        if (g_tui.span_b[mid] <= off) lo = mid + 1; else hi = mid;
+        if (g_tui.span_b[span_slot(mid)] <= off) lo = mid + 1; else hi = mid;
     }
     return lo;
 }
@@ -1078,7 +1088,9 @@ static size_t span_first(size_t off) {
 /* The style a row starting at `off` takes, or 0 when it is plain. */
 static u8 span_kind(size_t off) {
     size_t i = span_first(off);
-    return i < g_tui.span_n && off >= g_tui.span_a[i] ? g_tui.span_k[i] : 0;
+    if (i == g_tui.span_n) return 0;
+    size_t slot = span_slot(i);
+    return off >= g_tui.span_a[slot] ? g_tui.span_k[slot] : 0;
 }
 
 /* The style covering `off` and the offset it stops at, never past `limit`. */
@@ -1087,11 +1099,12 @@ static u8 span_run(size_t off, size_t limit, size_t *end) {
     u8 kind = 0;
     size_t stop = limit;
     if (i < g_tui.span_n) {
-        if (off >= g_tui.span_a[i]) {
-            kind = g_tui.span_k[i];
-            if (g_tui.span_b[i] < stop) stop = g_tui.span_b[i];
-        } else if (g_tui.span_a[i] < stop) {
-            stop = g_tui.span_a[i];
+        size_t slot = span_slot(i);
+        if (off >= g_tui.span_a[slot]) {
+            kind = g_tui.span_k[slot];
+            if (g_tui.span_b[slot] < stop) stop = g_tui.span_b[slot];
+        } else if (g_tui.span_a[slot] < stop) {
+            stop = g_tui.span_a[slot];
         }
     }
     *end = stop;
@@ -1102,10 +1115,12 @@ static u8 span_run(size_t off, size_t limit, size_t *end) {
  * not move. */
 static u64 hash_spans(u64 h, size_t off, size_t n) {
     for (size_t i = span_first(off);
-         i < g_tui.span_n && g_tui.span_a[i] < off + n; i++) {
-        h = hash_add(h, &g_tui.span_a[i], sizeof g_tui.span_a[i]);
-        h = hash_add(h, &g_tui.span_b[i], sizeof g_tui.span_b[i]);
-        h = hash_add(h, &g_tui.span_k[i], sizeof g_tui.span_k[i]);
+         i < g_tui.span_n; i++) {
+        size_t slot = span_slot(i);
+        if (g_tui.span_a[slot] >= off + n) break;
+        h = hash_add(h, &g_tui.span_a[slot], sizeof g_tui.span_a[slot]);
+        h = hash_add(h, &g_tui.span_b[slot], sizeof g_tui.span_b[slot]);
+        h = hash_add(h, &g_tui.span_k[slot], sizeof g_tui.span_k[slot]);
     }
     return h;
 }
@@ -1114,7 +1129,7 @@ static size_t syntax_first(size_t off) {
     size_t lo = 0, hi = g_tui.syntax_n;
     while (lo < hi) {
         size_t mid = lo + (hi - lo) / 2;
-        if (g_tui.syntax_b[mid] <= off) lo = mid + 1; else hi = mid;
+        if (g_tui.syntax_b[syntax_slot(mid)] <= off) lo = mid + 1; else hi = mid;
     }
     return lo;
 }
@@ -1124,11 +1139,12 @@ static u8 syntax_run(size_t off, size_t limit, size_t *end) {
     u8 kind = 0;
     size_t stop = limit;
     if (i < g_tui.syntax_n) {
-        if (off >= g_tui.syntax_a[i]) {
-            kind = g_tui.syntax_k[i];
-            if (g_tui.syntax_b[i] < stop) stop = g_tui.syntax_b[i];
-        } else if (g_tui.syntax_a[i] < stop) {
-            stop = g_tui.syntax_a[i];
+        size_t slot = syntax_slot(i);
+        if (off >= g_tui.syntax_a[slot]) {
+            kind = g_tui.syntax_k[slot];
+            if (g_tui.syntax_b[slot] < stop) stop = g_tui.syntax_b[slot];
+        } else if (g_tui.syntax_a[slot] < stop) {
+            stop = g_tui.syntax_a[slot];
         }
     }
     *end = stop;
@@ -1137,10 +1153,12 @@ static u8 syntax_run(size_t off, size_t limit, size_t *end) {
 
 static u64 hash_syntax(u64 h, size_t off, size_t n) {
     for (size_t i = syntax_first(off);
-         i < g_tui.syntax_n && g_tui.syntax_a[i] < off + n; i++) {
-        h = hash_add(h, &g_tui.syntax_a[i], sizeof g_tui.syntax_a[i]);
-        h = hash_add(h, &g_tui.syntax_b[i], sizeof g_tui.syntax_b[i]);
-        h = hash_add(h, &g_tui.syntax_k[i], sizeof g_tui.syntax_k[i]);
+         i < g_tui.syntax_n; i++) {
+        size_t slot = syntax_slot(i);
+        if (g_tui.syntax_a[slot] >= off + n) break;
+        h = hash_add(h, &g_tui.syntax_a[slot], sizeof g_tui.syntax_a[slot]);
+        h = hash_add(h, &g_tui.syntax_b[slot], sizeof g_tui.syntax_b[slot]);
+        h = hash_add(h, &g_tui.syntax_k[slot], sizeof g_tui.syntax_k[slot]);
     }
     return h;
 }
@@ -2779,7 +2797,9 @@ void tui_clear_transcript(void) {
     g_tui.pend_nl = 0;
     g_tui.trail_nl = 0;
     g_tui.span_n = 0;
+    g_tui.span_head = 0;
     g_tui.syntax_n = 0;
+    g_tui.syntax_head = 0;
     g_tui.transcript_epoch++;
     g_tui.user_n = 0;
     g_tui.user_open = false;
@@ -3067,7 +3087,9 @@ static void transcript_put(Str s) {
         s.n = TUI_TRANSCRIPT_CAP - 1;
         g_tui.transcript_n = 0;
         g_tui.span_n = 0;
+        g_tui.span_head = 0;
         g_tui.syntax_n = 0;
+        g_tui.syntax_head = 0;
         g_tui.transcript_epoch++;
         g_tui.user_n = 0;
         g_tui.zone_n = 0;
@@ -3232,23 +3254,20 @@ void tui_syntax_add(size_t a, size_t b, u8 kind) {
     if (!tui_highlight_enabled() || a >= b || b > g_tui.transcript_n
         || kind < YHL_SEM_COMMENT || kind > YHL_SEM_BUILTIN)
         return;
-    if (g_tui.syntax_n && g_tui.syntax_k[g_tui.syntax_n - 1] == kind
-        && g_tui.syntax_b[g_tui.syntax_n - 1] == a) {
-        g_tui.syntax_b[g_tui.syntax_n - 1] = b;
+    size_t last = g_tui.syntax_n ? syntax_slot(g_tui.syntax_n - 1) : 0;
+    if (g_tui.syntax_n && g_tui.syntax_k[last] == kind
+        && g_tui.syntax_b[last] == a) {
+        g_tui.syntax_b[last] = b;
         return;
     }
     if (g_tui.syntax_n == TUI_MAX_SYNTAX) {
-        memmove(g_tui.syntax_a, g_tui.syntax_a + 1,
-                sizeof g_tui.syntax_a - sizeof g_tui.syntax_a[0]);
-        memmove(g_tui.syntax_b, g_tui.syntax_b + 1,
-                sizeof g_tui.syntax_b - sizeof g_tui.syntax_b[0]);
-        memmove(g_tui.syntax_k, g_tui.syntax_k + 1,
-                sizeof g_tui.syntax_k - sizeof g_tui.syntax_k[0]);
+        g_tui.syntax_head = (g_tui.syntax_head + 1) % TUI_MAX_SYNTAX;
         g_tui.syntax_n--;
     }
-    g_tui.syntax_a[g_tui.syntax_n] = a;
-    g_tui.syntax_b[g_tui.syntax_n] = b;
-    g_tui.syntax_k[g_tui.syntax_n] = kind;
+    size_t slot = syntax_slot(g_tui.syntax_n);
+    g_tui.syntax_a[slot] = a;
+    g_tui.syntax_b[slot] = b;
+    g_tui.syntax_k[slot] = kind;
     g_tui.syntax_n++;
 }
 

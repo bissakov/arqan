@@ -112,6 +112,19 @@ def bench_wide_glyph_layout(b):
     b.alive(s)
 
 
+@needs("proc")
+def bench_many_inline_styles(b):
+    """Thousands of Markdown spans must not make bounded style storage churn."""
+    runs = b.scale(12000, floor=1200)
+    doc = " ".join(f"**name{i}**" for i in range(runs))
+    s = b.spawn()
+    b.ctx.scenario(Scenario(text=doc, chunk=64))
+    with b.step("render styles", units=runs, unit="span", budget_ms=0.05):
+        s.submit("format these")
+        s.wait_turn_done(timeout=180.0)
+    b.alive(s)
+
+
 @slow
 @needs("proc")
 def bench_pathological_markdown(b):

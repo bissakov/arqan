@@ -1,5 +1,7 @@
 """Transcript messages are Markdown, and the composer remains literal."""
 
+from tests.mockprovider import Scenario
+
 TEXT = 253      # S_TEXT
 MUTED = 245     # S_MUTED
 CYAN = 81       # S_CYAN, headings
@@ -66,6 +68,17 @@ def test_emphasis_is_styled_not_spelled(ctx):
     assert cell(s, "loud").bold, "emphasis should be bold"
     assert cell(s, "ls ").fg == MONO
     assert cell(s, "soft").fg == MUTED
+
+
+def test_newest_emphasis_survives_style_capacity(ctx):
+    """Evicting old spans keeps the newest bounded set ordered and styled."""
+    text = " ".join(f"**word{i:04d}**" for i in range(4200))
+    ctx.scenario(Scenario(text=text, chunk=512))
+    s = ctx.spawn()
+    s.submit("format many words")
+    s.wait_turn_done(timeout=60.0)
+    assert "word4199" in s.text(), s.text()
+    assert cell(s, "word4199").bold, "the newest retained span lost its style"
 
 
 def test_underscores_inside_words_survive(ctx):
