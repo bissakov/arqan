@@ -69,6 +69,7 @@ def expected_payload(top: str) -> set[str]:
         "bin/arqan-highlight",
         "install.sh",
         "README.md",
+        "CHANGELOG.md",
         "LICENSE",
         "THIRD_PARTY_NOTICES.md",
         "vendor/lexbor/LICENSE",
@@ -138,7 +139,7 @@ def check_installation(archive_root: Path, temp: Path) -> None:
         if stat.S_IMODE(binary.stat().st_mode) != 0o755:
             fail(f"wrong installed executable mode: {binary}")
         run(binary, "--version", env=env)
-    for name in ("README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"):
+    for name in ("README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md"):
         path = docs / name
         if stat.S_IMODE(path.stat().st_mode) != 0o644:
             fail(f"wrong installed documentation mode: {path}")

@@ -77,6 +77,7 @@ bindir=$root/bin
 docdir=$root/share/doc/$PROGRAM
 
 payload='README.md
+CHANGELOG.md
 LICENSE
 THIRD_PARTY_NOTICES.md
 vendor/lexbor/LICENSE

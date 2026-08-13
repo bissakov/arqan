@@ -50,7 +50,7 @@ for exe in arqan arqan-highlight; do
     chmod 0755 "$stage/bin/$exe"
     strip --strip-unneeded "$stage/bin/$exe"
 done
-for path in install.sh README.md LICENSE THIRD_PARTY_NOTICES.md \
+for path in install.sh README.md CHANGELOG.md LICENSE THIRD_PARTY_NOTICES.md \
     vendor/lexbor/LICENSE vendor/lexbor/NOTICE \
     vendor/tree-sitter/licenses/*.txt vendor/tree-sitter/runtime/unicode/LICENSE; do
     [ -f "$path" ] || fail "missing payload file: $path"

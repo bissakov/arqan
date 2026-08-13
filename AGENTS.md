@@ -124,3 +124,21 @@ trailing period. No attribution of any kind: no `Co-Authored-By`, no
 Use the most specific type: `feat`, `fix`, `refactor`, `perf`, `test`, `docs`,
 `style`, `build`, `ci`, `revert`, or `chore`. Prefer one type and never add
 assistant/tool attribution or trailers.
+
+## Releases
+
+- `src/agent.h` contains the sole product version as `AGENT_VERSION`. Use
+  numeric `X.Y.Z` versions and a matching `vX.Y.Z` release tag.
+- Follow Semantic Versioning: increment patch for fixes, minor for compatible
+  features, and major for breaking changes. Before 1.0, increment minor for
+  breaking or substantial feature releases.
+- Maintain `CHANGELOG.md` using Keep a Changelog. Add notable user-visible
+  changes under `Unreleased`; do not list routine refactors, tests, or
+  formatting. When releasing, move those entries under a dated `X.Y.Z`
+  heading and update comparison links.
+- Prepare a release by updating `AGENT_VERSION` and `CHANGELOG.md` in one
+  commit, running `scripts/release-linux.sh`, then creating and pushing the
+  matching annotated tag. Never move or reuse a published version tag.
+- Review the generated draft GitHub Release, use the matching changelog
+  section as its curated notes, verify both attached files, and publish it
+  manually.
