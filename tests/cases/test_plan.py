@@ -325,6 +325,22 @@ def test_ask_user_wraps_option_details_to_the_picker_width(ctx):
     assert all(len(line) <= 100 for line in s.screen.lines()), s.text()
 
 
+def test_ask_user_wraps_option_values_to_the_picker_width(ctx):
+    """A value too wide for its column continues instead of clipping."""
+    label = "use the local embedded database with project scoped storage"
+    ctx.scenario(ask("Which storage?", [{"label": label, "detail": "one file"}]))
+    s = ctx.spawn(cols=48, rows=20)
+    to_plan(s)
+    s.submit("plan the storage")
+    s.wait_status("pick an answer")
+
+    lines = s.screen.lines()
+    assert any("use the local" in line for line in lines), s.text()
+    assert any("project scoped" in line for line in lines), s.text()
+    assert any("storage" in line for line in lines), s.text()
+    assert not any(label in line for line in lines), "the narrow value should wrap"
+
+
 def test_ask_user_keeps_the_question_above_a_tall_picker(ctx):
     """The question stays in an overlay when the options cover its transcript."""
     question = "Which deployment target should this plan use?"

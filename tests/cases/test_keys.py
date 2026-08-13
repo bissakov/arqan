@@ -23,23 +23,38 @@ def open_keys(s):
 def whole_page(s) -> list[str]:
     """The page walked row by row, since it is taller than the screen.
 
-    The highlight identifies one row and wraps at the end, so walking it back
-    to the heading it started on reads every row exactly once. Collecting
-    screenfuls instead would have to drop rows it had already seen, and a
-    duplicate binding is precisely a row seen twice.
+    Headings are separators rather than selectable rows. The nearest visible
+    heading identifies a binding's context; when it has scrolled away, the
+    previous binding's context continues until the next heading appears.
     """
     def selected() -> str:
         return s.popup_selected().removeprefix("\u203a ").strip()
 
     first = selected()
-    assert first.startswith("["), f"the page opens on a heading, not {first!r}"
-    rows = [first]
+    assert first and not first.startswith("["), \
+        f"the page opens on a separator, not a key: {first!r}"
+    rows = []
+    context = None
     for _ in range(500):
-        s.key("down").sync()
+        screen = s.screen.lines()
+        selected_row = next(
+            (i for i, row in enumerate(screen)
+             if row.lstrip().startswith("\u203a ")),
+            -1,
+        )
+        headings = [
+            row.strip() for row in screen[:selected_row + 1]
+            if re.match(r"^\[.+?\]$", row.strip())
+        ]
+        if headings and headings[-1] != context:
+            context = headings[-1]
+            rows.append(context)
         row = selected()
-        if row == first:
-            return rows
+        assert not row.startswith("["), f"selection landed on separator {row!r}"
         rows.append(row)
+        s.key("down").sync()
+        if selected() == first:
+            return rows
     raise AssertionError("the keys page never wrapped back to its first row")
 
 
@@ -77,6 +92,15 @@ def test_keys_page_lists_bindings_grouped_by_context(ctx):
     assert "Ctrl-G" in bindings["transcript search"], \
         bindings["transcript search"]
     assert "Ctrl-Y" in bindings["line editing"], bindings["line editing"]
+
+
+def test_keys_page_headings_are_non_interactive_separators(ctx):
+    """Walking the page lands only on bindings, never on section labels."""
+    s = ctx.spawn()
+    open_keys(s)
+    rows = whole_page(s)
+    assert any(row.startswith("[") for row in rows), rows
+    assert any(not row.startswith("[") for row in rows), rows
 
 
 def test_no_key_is_bound_twice_in_one_context(ctx):

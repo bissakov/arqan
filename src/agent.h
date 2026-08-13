@@ -1247,6 +1247,9 @@ void highlight_close(void);
 /* A slash command the completion popup offers. The table is owned by the
  * caller and only read here. */
 typedef struct { Str name; Str desc; } TuiCmd;
+/* A labelled row that divides a picker or information page into sections.
+ * It is painted with the other rows but cannot be selected or accepted. */
+TuiCmd tui_separator(Str label);
 /* A byte range of the matching row's `desc`, painted as the chosen one of the
  * options that row lists. A zero `n` is a description rather than options.
  * Rows and marks are parallel arrays; the caller owns both. */

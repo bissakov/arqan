@@ -1702,14 +1702,23 @@ static const TuiCmd *popup_items(void) {
     return g_tui.path_mode ? g_tui.path_ents : g_tui.cmds;
 }
 
+static b8 popup_separator(const TuiCmd *cmd) {
+    return cmd && cmd->desc.p == NULL && cmd->desc.n == SIZE_MAX;
+}
+
+TuiCmd tui_separator(Str label) {
+    return (TuiCmd){ label, { NULL, SIZE_MAX } };
+}
+
 static void update_popup_row(size_t screen_row, Str name, Str desc,
                              TuiMark mark, b8 selected, b8 first_line,
-                             size_t name_cells, size_t screen_col,
+                             b8 separator, size_t name_cells, size_t screen_col,
                              size_t screen_cols, size_t body_cols, b8 force) {
     u64 hash = row_hash(name, desc, ROW_POPUP);
     hash = hash_add(hash, &mark, sizeof mark);
     hash = hash_add(hash, &selected, sizeof selected);
     hash = hash_add(hash, &first_line, sizeof first_line);
+    hash = hash_add(hash, &separator, sizeof separator);
     hash = hash_add(hash, &name_cells, sizeof name_cells);
     size_t sel_c0, sel_c1;
     sel_row_range(screen_row, &sel_c0, &sel_c1);
@@ -1728,14 +1737,22 @@ static void update_popup_row(size_t screen_row, Str name, Str desc,
 
     size_t used = 0;
     style(bg);
+    if (separator) {
+        style(S_CYAN);
+        put_safe_clipped(STR("  "), body_cols, &used);
+        if (used < body_cols)
+            put_safe_clipped(name, body_cols - used, &used);
+        paint_sel_tail(screen_row, screen_cols);
+        style(S_RESET);
+        return;
+    }
     style(selected ? S_CYAN : S_TEXT);
     put_safe_clipped(selected && first_line ? STR("\u203a ") : STR("  "),
                      body_cols, &used);
     /* Two cells between the name and description remain even when a long
      * name reaches the half-row cap used for its column. */
     size_t name_room = name_cells > used + 2 ? name_cells - used - 2 : 0;
-    if (first_line)
-        put_safe_clipped(name, name_room, &used);
+    put_safe_clipped(name, name_room, &used);
     while (used < name_cells && used < body_cols) { put_text(" ", 1); used++; }
     style(bg);
     style(S_MUTED);
@@ -1797,7 +1814,9 @@ size_t tui_text_fit(Str s, size_t cells, size_t *used) {
 static size_t popup_name_cells(size_t body_cols) {
     size_t widest = 0;
     for (size_t i = 0; i < g_tui.comp_n; i++) {
-        size_t cells = tui_text_cells(popup_items()[g_tui.comp_idx[i]].name);
+        const TuiCmd *cmd = &popup_items()[g_tui.comp_idx[i]];
+        if (popup_separator(cmd)) continue;
+        size_t cells = tui_text_cells(cmd->name);
         if (cells > widest) widest = cells;
     }
     widest += 4;   // "\u203a " marker plus a two-cell gap
@@ -1806,18 +1825,27 @@ static size_t popup_name_cells(size_t body_cols) {
 }
 
 /* Visual rows one popup entry needs, capped because no popup can display
- * more than its visual-row budget. Descriptions use the same word breaker as
- * the transcript and composer, with their column as a hanging indent. */
+ * more than its visual-row budget. Values and descriptions use the same word
+ * breaker as the transcript and composer, with each column as a hanging
+ * indent. */
 static size_t popup_entry_rows(const TuiCmd *cmd, size_t body_cols,
                                size_t name_cells, size_t cap) {
-    size_t rows = 0;
-    for (size_t start = 0; rows < cap;) {
+    if (popup_separator(cmd)) return cap ? 1 : 0;
+    size_t name_rows = 0, desc_rows = 0;
+    size_t name_cols = name_cells > 2 ? name_cells - 2 : name_cells;
+    for (size_t start = 0; name_rows < cap;) {
+        Row r = row_break(cmd->name, start, name_cols, 2);
+        name_rows++;
+        if (r.hard && r.end >= cmd->name.n) break;
+        start = r.next;
+    }
+    for (size_t start = 0; desc_rows < cap;) {
         Row r = row_break(cmd->desc, start, body_cols, name_cells);
-        rows++;
+        desc_rows++;
         if (r.hard && r.end >= cmd->desc.n) break;
         start = r.next;
     }
-    return rows;
+    return name_rows > desc_rows ? name_rows : desc_rows;
 }
 
 /* The popup is bounded in visual rows, not entries: a wrapped description
@@ -2032,34 +2060,50 @@ static void paint_completions(size_t top_row, size_t rows, size_t screen_col,
     for (size_t i = first; i < g_tui.comp_n && painted < rows; i++) {
         size_t at = g_tui.comp_idx[i];
         const TuiCmd *cmd = &popup_items()[at];
+        if (popup_separator(cmd)) {
+            update_popup_row(top_row + painted, cmd->name, (Str){0},
+                             (TuiMark){0}, false, true, true, name_cells,
+                             screen_col, screen_cols, body_cols, force);
+            painted++;
+            continue;
+        }
         TuiMark whole = g_tui.marks && !g_tui.path_mode ? g_tui.marks[at]
                                                         : (TuiMark){0};
-        for (size_t start = 0; painted < rows;) {
-            Row r = row_break(cmd->desc, start, body_cols, name_cells);
+        size_t name_start = 0, desc_start = 0;
+        size_t name_cols = name_cells > 2 ? name_cells - 2 : name_cells;
+        for (b8 first_line = true; painted < rows; first_line = false) {
+            Row nr = row_break(cmd->name, name_start, name_cols, 2);
+            Row dr = row_break(cmd->desc, desc_start, body_cols, name_cells);
             TuiMark mark = {0};
-            size_t m0 = whole.off > start ? whole.off : start;
+            size_t m0 = whole.off > desc_start ? whole.off : desc_start;
             size_t mend = whole.off <= cmd->desc.n
                         && whole.n <= cmd->desc.n - whole.off
                         ? whole.off + whole.n : cmd->desc.n;
-            size_t m1 = mend < r.end ? mend : r.end;
-            if (whole.n && m1 > m0) mark = (TuiMark){ m0 - start, m1 - m0 };
-            const char *desc = cmd->desc.p ? cmd->desc.p + start : NULL;
+            size_t m1 = mend < dr.end ? mend : dr.end;
+            if (whole.n && m1 > m0)
+                mark = (TuiMark){ m0 - desc_start, m1 - m0 };
+            const char *name = cmd->name.p ? cmd->name.p + name_start : NULL;
+            const char *desc = cmd->desc.p ? cmd->desc.p + desc_start : NULL;
             update_popup_row(top_row + painted,
-                             start ? (Str){0} : cmd->name,
-                             (Str){ desc, r.end - start }, mark,
-                             i == g_tui.comp_sel, start == 0, name_cells,
-                             screen_col, screen_cols, body_cols, force);
+                             (Str){ name, nr.end - name_start },
+                             (Str){ desc, dr.end - desc_start }, mark,
+                             i == g_tui.comp_sel, first_line, false,
+                             name_cells, screen_col, screen_cols, body_cols,
+                             force);
             painted++;
-            if (r.hard && r.end >= cmd->desc.n) break;
-            start = r.next;
+            b8 name_done = nr.hard && nr.end >= cmd->name.n;
+            b8 desc_done = dr.hard && dr.end >= cmd->desc.n;
+            if (name_done && desc_done) break;
+            name_start = name_done ? cmd->name.n : nr.next;
+            desc_start = desc_done ? cmd->desc.n : dr.next;
         }
     }
     /* Entry heights need not divide the viewport. Clear any cells left when
      * the selected tail cannot fit another complete entry before it. */
     while (painted < rows) {
         update_popup_row(top_row + painted, (Str){0}, (Str){0}, (TuiMark){0},
-                         false, false, name_cells, screen_col, screen_cols,
-                         body_cols, force);
+                         false, false, false, name_cells, screen_col,
+                         screen_cols, body_cols, force);
         painted++;
     }
 }
@@ -3931,7 +3975,14 @@ static void completion_refresh(void) {
 static void completion_move(i32 delta) {
     if (!g_tui.comp_n) return;
     size_t n = g_tui.comp_n;
-    g_tui.comp_sel = (g_tui.comp_sel + (delta > 0 ? 1 : n - 1)) % n;
+    size_t next = g_tui.comp_sel;
+    for (size_t tried = 0; tried < n; tried++) {
+        next = (next + (delta > 0 ? 1 : n - 1)) % n;
+        if (!popup_separator(&popup_items()[g_tui.comp_idx[next]])) {
+            g_tui.comp_sel = next;
+            return;
+        }
+    }
 }
 
 /* A name typed out in full has nothing left to complete, so the completion
@@ -4088,13 +4139,18 @@ void tui_set_aliases(const TuiAlias *aliases, size_t n) {
  * reader is recalling rather than names they know. */
 static void pick_filter(Str query, b8 fuzzy) {
     g_tui.comp_n = 0;
-    for (size_t i = 0; i < g_tui.cmd_n && g_tui.comp_n < AGENT_MAX_POPUP; i++)
+    for (size_t i = 0; i < g_tui.cmd_n && g_tui.comp_n < AGENT_MAX_POPUP; i++) {
+        if (popup_separator(&g_tui.cmds[i]) && query.n) continue;
         if (fuzzy ? str_fuzzy_ci(g_tui.cmds[i].name, query)
                   : str_contains_ci(g_tui.cmds[i].name, query))
             g_tui.comp_idx[g_tui.comp_n++] = (u16)i;
+    }
     /* The narrowed list keeps the anchor it opened on, so a search never
      * moves the default choice to the other end. */
     g_tui.comp_sel = g_tui.pick_end && g_tui.comp_n ? g_tui.comp_n - 1 : 0;
+    if (g_tui.comp_n
+        && popup_separator(&g_tui.cmds[g_tui.comp_idx[g_tui.comp_sel]]))
+        completion_move(g_tui.pick_end ? -1 : 1);
 }
 
 /* The oldest row there is. The count of rows belongs to the width the next
@@ -4160,7 +4216,11 @@ typedef enum { PICK_CHOOSE, PICK_SETTINGS, PICK_INFO } PickKind;
 static void pick_reselect(Str query, b8 fuzzy, size_t keep) {
     pick_filter(query, fuzzy);
     for (size_t i = 0; i < g_tui.comp_n; i++)
-        if (g_tui.comp_idx[i] == keep) { g_tui.comp_sel = i; return; }
+        if (g_tui.comp_idx[i] == keep
+            && !popup_separator(&g_tui.cmds[keep])) {
+            g_tui.comp_sel = i;
+            return;
+        }
 }
 
 /* Changes the selected setting and rebuilds the rows where they stand. The
@@ -4170,6 +4230,7 @@ static void pick_reselect(Str query, b8 fuzzy, size_t keep) {
 static void pick_settings_act(const TuiSettings *set, Str query, i32 delta) {
     if (!set || !g_tui.comp_n) return;
     size_t row = g_tui.comp_idx[g_tui.comp_sel];
+    if (popup_separator(&g_tui.cmds[row])) return;
     set->act(set->ud, row, delta);
     size_t n = set->build(set->ud);
     if (n > set->max) n = set->max;
@@ -4259,6 +4320,8 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
     g_tui.pick_end = anchor == TUI_PICK_LAST;
     g_tui.comp_sel = start < n ? start : (g_tui.pick_end ? n - 1 : 0);
     for (size_t i = 0; i < n; i++) g_tui.comp_idx[i] = (u16)i;
+    if (popup_separator(&items[g_tui.comp_idx[g_tui.comp_sel]]))
+        completion_move(g_tui.pick_end ? -1 : 1);
     /* The status is set last, so the frame announcing the picker already
      * carries the list and the search box. */
     if (g_pick.search)
@@ -4340,6 +4403,8 @@ static b8 pick_row_action(i32 key) {
 static b8 pick_enter(const TuiSettings *set) {
     if (g_pick.kind == PICK_INFO) return false;
     if (!g_tui.comp_n) return true;
+    if (popup_separator(&g_tui.cmds[g_tui.comp_idx[g_tui.comp_sel]]))
+        return true;
     if (g_pick.kind == PICK_SETTINGS) return pick_act(set, 1);
     g_pick.out = g_tui.comp_idx[g_tui.comp_sel];
     g_pick.chosen = true;
@@ -4515,9 +4580,14 @@ void tui_info(Str title, const TuiCmd *rows, size_t n) {
     if (!rows || !n) return;
     if (!g_tui.fullscreen) {
         tui_printf("%.*s\n", (i32)title.n, title.p);
-        for (size_t i = 0; i < n; i++)
-            tui_printf("%.*s  %.*s\n", (i32)rows[i].name.n, rows[i].name.p,
-                       (i32)rows[i].desc.n, rows[i].desc.p);
+        for (size_t i = 0; i < n; i++) {
+            if (popup_separator(&rows[i]))
+                tui_printf("%.*s\n", (i32)rows[i].name.n, rows[i].name.p);
+            else
+                tui_printf("%.*s  %.*s\n", (i32)rows[i].name.n,
+                           rows[i].name.p, (i32)rows[i].desc.n,
+                           rows[i].desc.p);
+        }
         return;
     }
     size_t row = 0;
@@ -5249,7 +5319,7 @@ size_t tui_key_rows(TuiCmd *rows, size_t max) {
         if (!heading || strcmp(heading, k->name) != 0) {
             if (n == max) return n;
             heading = k->name;
-            rows[n++] = (TuiCmd){ str_c(heading), (Str){0} };
+            rows[n++] = tui_separator(str_c(heading));
         }
         for (size_t i = 0; i < k->n; i++) {
             if (!k->rows[i].key || !k->rows[i].key[0]) continue;
