@@ -3528,6 +3528,12 @@ static size_t line_start(const char *buf, size_t cur) {
     return cur;
 }
 
+static size_t ctrl_a_start(const char *buf, size_t cur) {
+    size_t start = line_start(buf, cur);
+    if (cur != start || start == 0) return start;
+    return line_start(buf, start - 1);
+}
+
 static size_t line_end(const char *buf, size_t n, size_t cur) {
     while (cur < n && buf[cur] != '\n') cur++;
     return cur;
@@ -4431,7 +4437,8 @@ static void edit_yank(char *buf, size_t *n, size_t *cur, size_t cap) {
 /* The line editor the composer and a question share: the readline keys, and
  * the innermost layer of every chain that reaches it. */
 #define EDIT_KEYS(X)                                                          \
-    X(0x01, "Ctrl-A",    "Start of line",   *cur = line_start(buf, *cur);)    \
+    X(0x01, "Ctrl-A",    "Start of line, then the previous line",             \
+                                        *cur = ctrl_a_start(buf, *cur);)        \
     X(0x02, "Ctrl-B",    "Back one glyph",  *cur = prev_glyph(buf, *cur);)    \
     X(0x04, "Ctrl-D",    "Delete forward",  edit_delete(buf, n, cur);)        \
     X(0x05, "Ctrl-E",    "End of line",     *cur = line_end(buf, *n, *cur);)  \

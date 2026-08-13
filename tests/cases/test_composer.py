@@ -84,6 +84,26 @@ def test_line_keys_are_line_scoped(ctx):
     assert ctx.mock.requests == []
 
 
+def test_repeated_ctrl_a_moves_to_the_previous_logical_line(ctx):
+    """Ctrl-A walks back only when already at a prompt line's start."""
+    s = ctx.spawn()
+    s.type("first line").sync()
+    s.key("newline").sync()
+    s.type("second line").sync()
+
+    s.key("ctrl-a").sync()          # ordinary start of the current line
+    s.key("ctrl-a").sync()          # then the start of the previous line
+    s.type(">").sync()
+    assert s.composer_body(2) == [">first line", "second line"], \
+        s.composer_lines(2)
+
+    s.key("ctrl-a", "ctrl-a").sync()  # the first prompt line is a boundary
+    s.type("X").sync()
+    assert s.composer_body(2) == ["X>first line", "second line"], \
+        s.composer_lines(2)
+    assert ctx.mock.requests == []
+
+
 def test_ctrl_k_on_empty_tail_joins_the_next_line(ctx):
     """With nothing left on the line, Ctrl-K eats the break like readline."""
     s = ctx.spawn()
