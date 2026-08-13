@@ -223,7 +223,7 @@ def test_usage_from_message_start_and_message_delta(ctx):
     s.wait_turn_done()
     s.wait_for(lambda t: s.status_field(5) not in ("-", ""), "the context")
     counted = s.status_field(5)
-    assert int(counted.lstrip("~")) >= 1200, s.status_line()
+    assert counted.lstrip("~") == "1k", s.status_line()
 
 
 def test_the_shell_run_is_a_text_block(ctx):

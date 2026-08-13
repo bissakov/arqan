@@ -14,16 +14,19 @@ def field(s) -> str:
 
 def tokens(s) -> int:
     value = field(s).lstrip("~").split("/")[0]
+    scales = {"k": 1000, "M": 1000000}
+    if value[-1:] in scales:
+        return int(value[:-1]) * scales[value[-1]]
     return int(value)
 
 
 def test_the_field_is_exact_only_while_the_measurement_covers_it(ctx):
     """Measured for the conversation that was sent, estimated once the reply
     lands on top of it."""
-    ctx.scenario("words=200,usage_first=1,usage=5000/300")
+    ctx.scenario("words=400,usage_first=1,usage=5000/300")
     s = ctx.spawn()
     s.submit("go on")
-    s.wait_for(lambda t: field(s) == "5000", "the measured request")
+    s.wait_for(lambda t: field(s) == "5k", "the measured request")
     s.wait_turn_done()
     assert field(s).startswith("~"), field(s)
     assert tokens(s) > 5000, "the reply is context the next request carries"
@@ -92,6 +95,24 @@ def test_a_configured_model_window_is_shown_beside_the_count(ctx):
     s.submit("hello")
     s.wait_turn_done()
     s.wait_for(lambda t: field(s).endswith("/200k"), "the configured window")
+
+
+def test_a_large_context_count_uses_the_same_units_as_the_window(ctx):
+    """Both sides of the context gauge stay compact and easy to compare."""
+    config = ctx.config_file()
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text('[providers.work]\n'
+                      f'base_url = {ctx.mock.base_url}\nmodel = alpha\n'
+                      '[providers.work.models."alpha"]\n'
+                      'context_window = 258000\n')
+    state = ctx.state_file()
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text("provider = work\n")
+    ctx.scenario("text=ok,usage=123405/100")
+    s = ctx.spawn(ARQAN_MODEL="alpha")
+    s.submit("hello")
+    s.wait_turn_done()
+    assert field(s) == "~123k/258k", field(s)
 
 
 def test_a_models_listing_does_not_define_the_window(ctx):

@@ -2219,12 +2219,12 @@ static void paint_scrollbar(size_t first_row, size_t total_rows,
     style(S_RESET);
 }
 
-/* A window is a round number in the units it was quoted in, so it is shown
- * in those rather than in six digits nobody reads. */
-static void format_window(char *buf, size_t cap, size_t w) {
-    if (w >= 1000000) snprintf(buf, cap, "%zuM", (w + 500000) / 1000000);
-    else if (w >= 1000) snprintf(buf, cap, "%zuk", (w + 500) / 1000);
-    else snprintf(buf, cap, "%zu", w);
+/* Context figures are gauges, not accounting totals. Compact units make both
+ * sides readable and leave more of the status line for the other fields. */
+static void format_context_count(char *buf, size_t cap, size_t n) {
+    if (n >= 1000000) snprintf(buf, cap, "%zuM", (n + 500000) / 1000000);
+    else if (n >= 1000) snprintf(buf, cap, "%zuk", (n + 500) / 1000);
+    else snprintf(buf, cap, "%zu", n);
 }
 
 static Str format_context_size(char *buf, size_t cap) {
@@ -2234,11 +2234,15 @@ static Str format_context_size(char *buf, size_t cap) {
     if (!g_tui.context_known) {
         written = snprintf(buf, cap, "-");
     } else if (g_tui.context_window) {
+        char count[16];
         char window[16];
-        format_window(window, sizeof window, g_tui.context_window);
-        written = snprintf(buf, cap, "%s%zu/%s", mark, n, window);
+        format_context_count(count, sizeof count, n);
+        format_context_count(window, sizeof window, g_tui.context_window);
+        written = snprintf(buf, cap, "%s%s/%s", mark, count, window);
     } else {
-        written = snprintf(buf, cap, "%s%zu", mark, n);
+        char count[16];
+        format_context_count(count, sizeof count, n);
+        written = snprintf(buf, cap, "%s%s", mark, count);
     }
     size_t len = written > 0 ? (size_t)written : 0;
     if (len >= cap) len = cap ? cap - 1 : 0;

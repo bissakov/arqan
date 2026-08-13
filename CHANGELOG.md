@@ -11,6 +11,8 @@
 
 ### Changed
 
+- Abbreviate context token counts in the status line with compact `k` and `M`
+  units, matching the context window.
 - Keep provider setup focused on transport and credentials; configure model
   capabilities from the model picker's visible key actions instead.
 - Stop inferring context windows from non-standard model-listing fields.
