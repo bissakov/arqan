@@ -151,6 +151,9 @@ class Ctx:
             # A failing request is an answer here, not weather: a case that
             # wants the retry loop asks for it and pins its backoff.
             "ARQAN_RETRIES": "0",
+            # Most cases exercise tool mechanics rather than approval. They
+            # opt into trusted automation; Ask-focused cases override this.
+            "ARQAN_PERMISSIONS": "free",
         }
         for k, v in overrides.items():
             if v is None:

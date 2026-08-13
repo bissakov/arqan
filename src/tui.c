@@ -101,6 +101,7 @@ typedef struct {
     Str reasoning_effort;
     Str thinking_budget;
     AgentMode mode;   /* named on the status line; Shift+Tab switches it */
+    PermissionPolicy permissions;
     Str base_url;     /* what provider is derived from when no name is set */
     /* A modal question owns the composer. Its answer is not a message, so it
      * reaches neither the transcript nor the prompt history. */
@@ -2367,6 +2368,8 @@ static void repaint(void) {
                            g_tui.thinking_budget.n);
     status_hash = hash_add(status_hash, &copied, sizeof copied);
     status_hash = hash_add(status_hash, &g_tui.mode, sizeof g_tui.mode);
+    status_hash = hash_add(status_hash, &g_tui.permissions,
+                           sizeof g_tui.permissions);
     status_hash = hash_add(status_hash, &status_sel_c0, sizeof status_sel_c0);
     status_hash = hash_add(status_hash, &status_sel_c1, sizeof status_sel_c1);
     status_hash = hash_add(status_hash, g_tui.cwd.p, g_tui.cwd.n);
@@ -2456,6 +2459,12 @@ static void repaint(void) {
         if (copied && g_tui.status_visible[TUI_STATUS_COPY])
             put_status_field(STR("copied"), S_GREEN, body_cols, &used,
                              &have_field);
+        if (g_tui.status_visible[TUI_STATUS_PERMISSIONS])
+            put_status_field(g_tui.permissions == PERMISSION_FREE
+                             ? STR("free") : STR("ask"),
+                             g_tui.permissions == PERMISSION_ASK
+                             ? S_YELLOW : S_TEXT,
+                             body_cols, &used, &have_field);
         paint_sel_tail(status_row, cols);
         style(S_RESET);
     }
@@ -2698,6 +2707,11 @@ void tui_set_status_visible(TuiStatusItem item, b8 visible) {
 
 void tui_set_mode(AgentMode mode) {
     g_tui.mode = mode;
+    repaint();
+}
+
+void tui_set_permissions(PermissionPolicy policy) {
+    g_tui.permissions = policy;
     repaint();
 }
 

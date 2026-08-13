@@ -16,5 +16,5 @@
 |  › resize me
 |
 |
-|  ● ready · mock-model · build · local · work · -
+|  ● ready · mock-model · build · local · work · - · free
 --- cursor row=15 col=14 visible=yes ---

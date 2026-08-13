@@ -43,7 +43,8 @@ typedef struct {
 #define CONF_TEXT(x)  CONF_TEXT2(x)
 /* The status field mask has one bit per field, so its default is all of
  * them; a literal is needed because the table's defaults are text. */
-_Static_assert(AGENT_STATUS_FIELDS == 9, "the status_fields default is 511");
+_Static_assert(AGENT_STATUS_FIELDS == 10,
+               "the status_fields default is 1023");
 
 static const ConfSpec k_conf[CONF_N] = {
     [CONF_PROVIDER] = { "provider", "", NULL, CV_STR, 0, 0,
@@ -65,6 +66,10 @@ static const ConfSpec k_conf[CONF_N] = {
     [CONF_STREAM]         = { "stream", "true", NULL, CV_BOOL, 0, 0, 0, true },
     [CONF_MODE]           = { "mode", "build", "build,plan", CV_ENUM,
                               0, 0, 0, true },
+    /* Never from a project file: a repository must not be able to turn off
+     * approval for commands or changes it may induce the model to request. */
+    [CONF_PERMISSIONS]    = { "permissions", "ask", "ask,free", CV_ENUM,
+                              0, 0, 0, false },
     [CONF_RETRIES]        = { "retries", CONF_TEXT(AGENT_RETRIES), NULL,
                               CV_NUM, 0, 16, 0, true },
     [CONF_RETRY_DELAY_MS] = { "retry_delay_ms", CONF_TEXT(AGENT_RETRY_DELAY_MS),
@@ -84,8 +89,8 @@ static const ConfSpec k_conf[CONF_N] = {
                                  0, 0, 0, true },
     [CONF_WRAP]           = { "wrap", "word", "word,justified", CV_ENUM,
                               0, 0, 0, true },
-    [CONF_STATUS_FIELDS]  = { "status_fields", "511", NULL, CV_NUM,
-                              0, 511, 0, true },
+    [CONF_STATUS_FIELDS]  = { "status_fields", "1023", NULL, CV_NUM,
+                              0, 1023, 0, true },
     /* Recording is the user's decision about their own machine, so a cloned
      * repository does not get to make it. */
     [CONF_TELEMETRY]      = { "telemetry", "false", NULL, CV_BOOL,
@@ -436,6 +441,8 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
            ? API_ANTHROPIC : API_OPENAI;
     c->mode = str_eq(conf_str(conf, CONF_MODE), STR("plan"))
             ? MODE_PLAN : MODE_BUILD;
+    c->permissions = str_eq(conf_str(conf, CONF_PERMISSIONS), STR("free"))
+                   ? PERMISSION_FREE : PERMISSION_ASK;
     c->stream         = conf_bool(conf, CONF_STREAM);
     c->max_tokens     = (i32)conf_num(conf, CONF_MAX_TOKENS);
     c->max_messages   = (size_t)conf_num(conf, CONF_MAX_MESSAGES);

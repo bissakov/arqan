@@ -22,5 +22,5 @@
 |  › Message arqan...
 |
 |
-|  ● setup · build · ~/work · -
+|  ● setup · build · ~/work · - · free
 --- cursor row=21 col=5 visible=yes ---

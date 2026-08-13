@@ -146,7 +146,7 @@ typedef bool     b8;
  * stripped page, so every web request claims a current browser. */
 #define AGENT_WEB_USER_AGENT \
     "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
-#define AGENT_STATUS_FIELDS    9
+#define AGENT_STATUS_FIELDS    10
 
 /* ---- arenas ------------------------------------------------------------- */
 typedef struct {
@@ -567,6 +567,24 @@ b8     endpoints_remember_active(Str name, Arena *scratch);
  */
 typedef enum { MODE_BUILD = 0, MODE_PLAN } AgentMode;
 
+/* Whether assistant-issued effectful tool calls pause for approval. This is
+ * independent of Build/Plan: Plan withholds every shell and file mutation
+ * tool structurally, while Build applies this policy to the ones it offers. */
+typedef enum { PERMISSION_ASK = 0, PERMISSION_FREE } PermissionPolicy;
+
+/* Declarative effect classes carried by the tool registry. Unguarded tools
+ * never need authorization; each guarded class can be remembered separately
+ * for the lifetime of one process. */
+typedef enum {
+    TOOL_APPROVAL_NONE = 0,
+    TOOL_APPROVAL_BASH,
+    TOOL_APPROVAL_WRITE,
+    TOOL_APPROVAL_PATCH,
+} ToolApprovalClass;
+
+/* Every guarded execution crosses tools_run with an explicit decision. */
+typedef enum { TOOL_AUTH_DENIED = 0, TOOL_AUTH_GRANTED } ToolAuthorization;
+
 /* The effective prompt remains one system message. These copies explain where
  * it came from when the session chooses to show instructions; they never go
  * through Conv or a provider request. */
@@ -595,6 +613,7 @@ typedef struct {
 typedef enum {
     CONF_PROVIDER, CONF_BASE_URL, CONF_MODEL, CONF_API, CONF_API_KEY,
     CONF_MAX_TOKENS, CONF_MAX_MESSAGES, CONF_STREAM, CONF_MODE,
+    CONF_PERMISSIONS,
     CONF_RETRIES, CONF_RETRY_DELAY_MS, CONF_DISABLE_TOOLS,
     CONF_VERBOSE_TOOLS, CONF_RAW_MARKDOWN, CONF_SHOW_IGNORED,
     CONF_SHOW_INSTRUCTIONS, CONF_WRAP, CONF_STATUS_FIELDS, CONF_TELEMETRY,
@@ -716,6 +735,7 @@ typedef struct {
     Str plan_prompt;   /* Plan mode's; built at startup, never configured. */
     PromptSources system_sources, plan_sources;
     AgentMode mode;
+    PermissionPolicy permissions;
     i32  max_tokens;
     /* Configurable so the full-history path is reachable in a test without
      * streaming four thousand messages. */
@@ -888,6 +908,7 @@ typedef struct {
     Str     *schema;      /* [AGENT_MAX_TOOLS] JSON schema fragment (object) */
     ToolRun *run;         /* [AGENT_MAX_TOOLS]                               */
     u8      *modes;       /* [AGENT_MAX_TOOLS] TOOL_IN_* bits                */
+    u8      *approval;    /* [AGENT_MAX_TOOLS] ToolApprovalClass             */
     b8      *off;         /* [AGENT_MAX_TOOLS] turned off by the user        */
     size_t   n;
 } ToolRegistry;
@@ -902,6 +923,9 @@ void        tools_set_mode(AgentMode mode);
  * which is what withholds it from the schemas and the prompt listing. */
 b8          tools_available(const ToolRegistry *r, size_t id, AgentMode mode);
 size_t      tools_find(const ToolRegistry *r, Str name);
+ToolApprovalClass tools_approval_class(const ToolRegistry *r, size_t id);
+/* A fixed, user-facing operation-class name; empty for unguarded. */
+Str         tools_approval_name(ToolApprovalClass approval);
 /* Whether the user may turn `id` off: everything but a TOOL_FIXED entry. */
 b8          tools_can_disable(const ToolRegistry *r, size_t id);
 b8          tools_disabled(const ToolRegistry *r, size_t id);
@@ -913,6 +937,7 @@ void        tools_set_disabled(ToolRegistry *r, size_t id, b8 off);
 b8          tools_disable_list(ToolRegistry *r, Str names,
                                char *err, size_t err_cap);
 b8          tools_run(const ToolRegistry *r, size_t id, Str args,
+                      ToolAuthorization authorization,
                       Arena *scratch, Buf *out, char *err, size_t err_cap);
 /* The registry as the API declares tools: an array of OpenAI "function"
  * wrappers, or of Anthropic entries carrying an "input_schema". */
@@ -1221,7 +1246,8 @@ typedef enum { TUI_PICK_FIRST = 0, TUI_PICK_LAST } TuiPickAnchor;
 typedef enum {
     TUI_STATUS_STATE, TUI_STATUS_MODEL, TUI_STATUS_REASONING,
     TUI_STATUS_THINKING, TUI_STATUS_MODE, TUI_STATUS_PROVIDER,
-    TUI_STATUS_CWD, TUI_STATUS_CONTEXT, TUI_STATUS_COPY, TUI_STATUS_N
+    TUI_STATUS_CWD, TUI_STATUS_CONTEXT, TUI_STATUS_COPY,
+    TUI_STATUS_PERMISSIONS, TUI_STATUS_N
 } TuiStatusItem;
 /* `start` for a list that recommends none of its entries, which opens on the
  * end `anchor` names. */
@@ -1328,6 +1354,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
 /* The strings the status line names; they must outlive the call. */
 void tui_set_model(Str model);
 void tui_set_mode(AgentMode mode);
+void tui_set_permissions(PermissionPolicy policy);
 void tui_set_provider(Str name);
 void tui_set_reasoning(Str effort, Str thinking_budget);
 /* Switch to truthful first-run chrome, clearing endpoint fields. */

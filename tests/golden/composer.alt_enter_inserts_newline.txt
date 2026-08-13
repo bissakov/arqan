@@ -22,5 +22,5 @@
 |    second line
 |
 |
-|  ● ready · mock-model · build · local · ~/work · -
+|  ● ready · mock-model · build · local · ~/work · - · free
 --- cursor row=21 col=16 visible=yes ---

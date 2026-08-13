@@ -368,7 +368,8 @@ def test_settings_choices_survive_a_restart(ctx):
     assert "65536" in again.popup_selected(), again.text()
     again.settings_select("bash")
     assert "[ ] bash" in again.popup_selected(), again.text()
-    again.key("esc")
+    again.key("esc").sync()
+    again.wait_status("ready")
 
     ctx.scenario("text=restored")
     again.submit("verify")

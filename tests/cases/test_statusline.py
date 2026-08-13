@@ -11,6 +11,7 @@ ITEMS = (
     "Working directory",
     "Context tokens",
     "Copy confirmation",
+    "Permissions",
 )
 
 
@@ -29,7 +30,7 @@ def select(s, label):
 
 def test_statusline_lists_every_item_as_visible(ctx):
     """Every independently rendered field has a checkbox."""
-    s = ctx.spawn()
+    s = ctx.spawn(ARQAN_STATUS_FIELDS="1023")
     open_statusline(s)
     for label in ITEMS:
         assert f"[x] {label}" in s.popup_selected(), s.text()

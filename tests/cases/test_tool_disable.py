@@ -49,8 +49,8 @@ def test_a_disabled_tool_is_not_sent(ctx):
     open_tools(s)
     s.key("space").sync()
     s.wait_text("[ ] bash")
-    s.key("esc")
-    s.wait_gone("Verbose tool output")
+    s.key("esc").sync()
+    s.wait_status("ready")
 
     s.submit("say something")
     s.wait_turn_done()
@@ -67,8 +67,8 @@ def test_a_disabled_tool_is_refused_when_called_anyway(ctx):
     open_tools(s)
     s.key("space").sync()
     s.wait_text("[ ] bash")
-    s.key("esc")
-    s.wait_gone("Verbose tool output")
+    s.key("esc").sync()
+    s.wait_status("ready")
 
     s.submit("run it")
     s.wait_text("understood")
@@ -87,8 +87,8 @@ def test_a_tool_turned_back_on_is_sent_again(ctx):
     s.wait_text("[ ] bash")
     s.key("space").sync()
     s.wait_text("[x] bash")
-    s.key("esc")
-    s.wait_gone("Verbose tool output")
+    s.key("esc").sync()
+    s.wait_status("ready")
 
     s.submit("say something")
     s.wait_turn_done()

@@ -8,8 +8,8 @@ field says is an estimate, and says so.
 
 
 def field(s) -> str:
-    """The context field, which is the last one on the status line."""
-    return s.status_field(-1)
+    """The context field, immediately before the appended permissions field."""
+    return s.status_field(-2)
 
 
 def tokens(s) -> int:

@@ -211,7 +211,7 @@ def test_scrolled_view_survives_a_resize(ctx):
     ctx.scenario("words=400,paragraphs=4,chunk=16,final_text=x")
     s.submit("write a lot")
     s.wait_turn_done()
-    tail = s.text().split()[-1]
+    tail = "x"
 
     s.key("pageup").sync()
     s.resize(60, 20)

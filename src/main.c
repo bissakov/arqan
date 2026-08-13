@@ -244,12 +244,20 @@ typedef struct {
      * scratch arena until the turn carrying it re-anchors it in persist,
      * which is what lets the conversation it came from be dropped whole. */
     Str           handoff;
+    /* Process-lifetime grants are neither conversation nor configuration:
+     * rewinds and handoffs leave them alone, and no persistence path sees it. */
+    u8            permission_grants;
+    b8            permission_blocked_one_shot;
     b8            echo;   /* write the prompt into the transcript */
     b8            show_instructions;
 } Agent;
 
 static Str mode_name(AgentMode m) {
     return m == MODE_PLAN ? STR("plan") : STR("build");
+}
+
+static Str permission_name(PermissionPolicy policy) {
+    return policy == PERMISSION_FREE ? STR("free") : STR("ask");
 }
 
 /* The settings a report needs and the working directory as a hash. It opens
@@ -261,6 +269,7 @@ static void telemetry_session(const Config *cfg, const ToolRegistry *tools) {
     tel_str(&e, "model", cfg->model);
     tel_str(&e, "provider", cfg->provider);
     tel_str(&e, "mode", mode_name(cfg->mode));
+    tel_bool(&e, "permissions_free", cfg->permissions == PERMISSION_FREE);
     tel_int(&e, "tools", (i64)tools->n);
     size_t off = 0;
     for (size_t i = 0; i < tools->n; i++)
@@ -284,7 +293,9 @@ static void telemetry_header(void *ud) {
 }
 
 /* What the tool calls of one round asked the turn to do next. */
-typedef enum { TURN_CONTINUE, TURN_DONE, TURN_HANDOFF, TURN_FULL } TurnAction;
+typedef enum {
+    TURN_CONTINUE, TURN_DONE, TURN_HANDOFF, TURN_FULL, TURN_DENIED
+} TurnAction;
 
 static void rerender_conv(const Conv *c, const Config *cfg,
                           b8 show_instructions, Arena *scratch, u32 zone);
@@ -312,6 +323,22 @@ static void agent_set_mode(Agent *ag, AgentMode mode) {
     tui_set_mode(mode);
     if (ag->show_instructions)
         rerender_conv(ag->conv, ag->cfg, true, ag->scratch, 0);
+}
+
+static void agent_set_permissions(Agent *ag, PermissionPolicy policy) {
+    TelEvent e;
+    tel_open(&e, "permissions");
+    tel_bool(&e, "free", policy == PERMISSION_FREE);
+    tel_send(&e);
+    ag->cfg->permissions = policy;
+    if (!conf_remember(CONF_PERMISSIONS, permission_name(policy), ag->scratch)) {
+        if (g_one_shot)
+            one_shot_diag("warning", (Str){0},
+                          STR("permissions changed but were not remembered"));
+        else
+            tui_notice(STR("setting changed but was not remembered: could not write state"));
+    }
+    tui_set_permissions(policy);
 }
 
 /* A failed run answers where its output would have been, since the result
@@ -411,6 +438,51 @@ static Str ask_user_answer(Agent *ag, Str args) {
     return str_dup(ag->persist, str_c(typed));
 }
 
+static ToolAuthorization tool_authorization(Agent *ag,
+                                             ToolApprovalClass approval) {
+    if (approval == TOOL_APPROVAL_NONE
+        || ag->cfg->permissions == PERMISSION_FREE
+        || (ag->permission_grants & ((u8)1u << (u8)approval)))
+        return TOOL_AUTH_GRANTED;
+
+    Str cls = tools_approval_name(approval);
+    if (g_one_shot) {
+        one_shot_diag("approval required for assistant", cls,
+                      STR("guarded call denied in non-interactive Ask mode; configure permissions=free for trusted automation"));
+        ag->permission_blocked_one_shot = true;
+        return TOOL_AUTH_DENIED;
+    }
+
+    tui_activity_end();
+    notify_event(NOTIFY_INPUT_NEEDED, cls, 0);
+    Str once = STR("Approve only this call");
+    Str remembered = STR("Approve this class until the process exits");
+    if (approval == TOOL_APPROVAL_BASH) {
+        once = STR("Run this shell command");
+        remembered = STR("Run future shell commands until the process exits");
+    } else if (approval == TOOL_APPROVAL_WRITE) {
+        once = STR("Write this file");
+        remembered = STR("Allow future whole-file writes until the process exits");
+    } else if (approval == TOOL_APPROVAL_PATCH) {
+        once = STR("Apply this patch");
+        remembered = STR("Allow future patches until the process exits");
+    }
+    TuiCmd items[] = {
+        { STR("Yes"), once },
+        { STR("Yes and remember"), remembered },
+        { STR("No"), STR("Execute nothing and report the denial") },
+    };
+    char title[32];
+    i32 n = snprintf(title, sizeof title, "allow %.*s?", (i32)cls.n, cls.p);
+    size_t pick = 2;
+    if (n <= 0 || !tui_pick((Str){ title, (size_t)n }, items, 3,
+                            TUI_PICK_FIRST, 0, &pick))
+        pick = 2;
+    if (pick == 1)
+        ag->permission_grants |= (u8)((u8)1u << (u8)approval);
+    return pick < 2 ? TOOL_AUTH_GRANTED : TOOL_AUTH_DENIED;
+}
+
 /* The three answers to a submitted plan are the three ways a turn goes on. */
 static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
     Str plan = json_str(json_parse(ag->scratch, args), STR("plan"));
@@ -449,6 +521,7 @@ static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
  * answered here instead of through tools_run, which cannot reach the screen. */
 static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
     Conv *conv = ag->conv;
+    ag->permission_blocked_one_shot = false;
     /* Every call is answered even once the user has ended the turn: one left
      * without its result is a conversation the provider refuses. */
     TurnAction pending = TURN_CONTINUE;
@@ -484,15 +557,34 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         Buf out; buf_init(&out, ag->scratch, 4096);
         char err[256] = {0};
         if (g_one_shot) one_shot_diag("tool call", name, args);
-        char status[32];
-        snprintf(status, sizeof status, "running %.*s", (i32)name.n, name.p);
-        say_busy(status);
         if (!g_one_shot)
             render_tool_call(name, args, ag->scratch, (u32)(i + 1),
                              conv->expanded[i]);
+        ToolApprovalClass approval = TOOL_APPROVAL_NONE;
+        if (tool != TOOL_NONE && !tools_disabled(ag->tools, tool)
+            && tools_available(ag->tools, tool, ag->cfg->mode))
+            approval = tools_approval_class(ag->tools, tool);
+        ToolAuthorization authorization = tool_authorization(ag, approval);
+        if (authorization == TOOL_AUTH_DENIED
+            && approval != TOOL_APPROVAL_NONE) {
+            Str cls = tools_approval_name(approval);
+            (void)tools_run(ag->tools, tool, args, authorization, ag->scratch,
+                            &out, err, sizeof err);
+            out.n = 0;
+            buf_putf(&out, "DENIED: the user did not approve this %.*s call. "
+                     "Do not retry it blindly.", (i32)cls.n, cls.p);
+            Str result = buf_finish(&out);
+            if (!add_result(ag, i, name, keep_result(ag->persist, result), 0))
+                return TURN_FULL;
+            if (ag->permission_blocked_one_shot) return TURN_DENIED;
+            continue;
+        }
+        char status[32];
+        snprintf(status, sizeof status, "running %.*s", (i32)name.n, name.p);
+        say_busy(status);
         f64 started = agent_now_seconds();
-        b8 ok = tools_run(ag->tools, tool, args, ag->scratch, &out, err,
-                          sizeof err);
+        b8 ok = tools_run(ag->tools, tool, args, authorization, ag->scratch,
+                          &out, err, sizeof err);
         if (!ok) buf_error(&out, err, "tool failed");
         Str result = buf_finish(&out);
         /* Which tool, which argument keys, how long, how much. What the
@@ -736,6 +828,8 @@ static Str help_build(Agent *ag) {
         "or request API key values.\n\n"
         "## Effective configuration\n"));
     buf_putf(&b, "- mode: %s\n", cfg->mode == MODE_PLAN ? "plan" : "build");
+    buf_putf(&b, "- permissions: %s\n",
+             cfg->permissions == PERMISSION_FREE ? "free" : "ask");
     buf_putf(&b, "- API: %.*s\n", (i32)api_name(cfg->api).n,
              api_name(cfg->api).p);
     buf_putf(&b, "- active provider: %.*s\n",
@@ -769,6 +863,7 @@ static Str help_build(Agent *ag) {
     static const char *const status_names[TUI_STATUS_N] = {
         "state", "model", "reasoning effort", "thinking budget", "mode",
         "provider", "working directory", "context tokens", "copy confirmation",
+        "permissions",
     };
     buf_puts(&b, STR("\n### Status fields\n"));
     for (size_t i = 0; i < TUI_STATUS_N; i++)
@@ -1778,9 +1873,9 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
 enum {
     SET_VERBOSE, SET_RAW, SET_STREAM, SET_IGNORED, SET_TELEMETRY,
     SET_SHOW_INSTRUCTIONS, SET_TOOL, SET_WRAP, SET_MODE, SET_MAX_TOKENS,
-    SET_EFFORT, SET_BUDGET
+    SET_EFFORT, SET_BUDGET, SET_PERMISSIONS
 };
-#define SET_MAX_ROWS (16 + AGENT_MAX_TOOLS)
+#define SET_MAX_ROWS (17 + AGENT_MAX_TOOLS)
 
 /* "[x] label" for a toggle and the same column for a value row, so the two
  * kinds read as one list. A row that lost its checkbox to a full arena is
@@ -1854,7 +1949,7 @@ static size_t statusline_build(void *ud) {
         STR("State"), STR("Model"), STR("Reasoning effort"),
         STR("Thinking budget"), STR("Mode"), STR("Provider"),
         STR("Working directory"), STR("Context tokens"),
-        STR("Copy confirmation"),
+        STR("Copy confirmation"), STR("Permissions"),
     };
     const Str descriptions[TUI_STATUS_N] = {
         STR("Current ready, thinking, or error state"),
@@ -1866,6 +1961,7 @@ static size_t statusline_build(void *ud) {
         STR("Current project directory"),
         STR("Context the next request carries; ~ marks an estimate"),
         STR("Brief acknowledgement after /copy"),
+        STR("Ask or Free approval policy"),
     };
     StatusView *v = ud;
     arena_reset(&v->rows_arena);
@@ -2042,9 +2138,9 @@ static size_t settings_build(void *ud) {
      * absent: the agent loop answers them, so "disabled" would mean a mode
      * that cannot end.
      *
-     * Five rows are held back for the option rows below: a registry that
+     * Six rows are held back for the option rows below: a registry that
      * outgrew the array is a screen missing its settings, not its tools. */
-    for (size_t i = 0; i < reg->n && n + 5 < SET_MAX_ROWS; i++) {
+    for (size_t i = 0; i < reg->n && n + 6 < SET_MAX_ROWS; i++) {
         if (!tools_can_disable(reg, i)) continue;
         kind[n] = SET_TOOL;
         v->tool[n] = i;
@@ -2063,6 +2159,13 @@ static size_t settings_build(void *ud) {
     kind[n] = SET_MODE;
     rows[n] = (TuiCmd){ setting_value(rows_arena, STR("Mode")),
         setting_options(rows_arena, mode_opts, 2, cfg->mode == MODE_PLAN ? 1 : 0,
+                        &marks[n]) };
+    n++;
+    const Str permission_opts[2] = { STR("Ask"), STR("Free") };
+    kind[n] = SET_PERMISSIONS;
+    rows[n] = (TuiCmd){ setting_value(rows_arena, STR("Permissions")),
+        setting_options(rows_arena, permission_opts, 2,
+                        cfg->permissions == PERMISSION_FREE ? 1 : 0,
                         &marks[n]) };
     n++;
     /* The rungs are too many to list beside the row, so this one says where
@@ -2189,6 +2292,11 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
         case SET_MODE:
             agent_set_mode(ag, cfg->mode == MODE_PLAN ? MODE_BUILD
                                                       : MODE_PLAN);
+            break;
+        case SET_PERMISSIONS:
+            agent_set_permissions(ag,
+                cfg->permissions == PERMISSION_ASK ? PERMISSION_FREE
+                                                   : PERMISSION_ASK);
             break;
         case SET_SHOW_INSTRUCTIONS:
             ag->show_instructions = !ag->show_instructions;
@@ -2661,6 +2769,11 @@ static b8 agent_turn(Agent *ag, Str text) {
             ending_text = STR("the conversation is full");
             break;
         }
+        if (act == TURN_DENIED) {
+            tui_set_status("ready");
+            ending_text = STR("approval was required for a guarded tool call");
+            break;
+        }
         if (act == TURN_HANDOFF) { ok = true; ending = NOTIFY_TURN_DONE; break; }
         if (act == TURN_DONE) {
             tui_set_status("ready");
@@ -2843,6 +2956,7 @@ i32 main(i32 argc, char **argv) {
     tui_start(cfg.model, cfg.base_url, !cfg.api_key.p, setup, tools.n,
               prefs.show_ignored, prefs.justify, prefs.status_fields,
               cfg.mode, opts.have_prompt);
+    tui_set_permissions(cfg.permissions);
     if (cfg.provider.n) tui_set_provider(cfg.provider);
     tui_set_reasoning(cfg.reasoning_effort, cfg.thinking_budget);
     if (prefs.show_instructions && !opts.have_prompt)

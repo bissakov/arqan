@@ -45,8 +45,8 @@ def test_usage_updates_context_counter(ctx):
     s = ctx.spawn()
     s.submit("count me")
     s.wait_text("counted")
-    s.wait_for(lambda t: s.status_field(5) not in ("-", ""), "the context")
-    field = s.status_field(5)
+    s.wait_for(lambda t: s.status_field(-2) not in ("-", ""), "the context")
+    field = s.status_field(-2)
     assert int(field.lstrip("~")) >= 1234, s.status_line()
 
 
@@ -57,15 +57,15 @@ def test_context_survives_an_interrupt_once_usage_was_heard(ctx):
     ctx.scenario("words=400,chunk=1,delay=0.02,usage_first=1,usage=5000/200")
     s = ctx.spawn()
     s.submit("go on")
-    # The counter is the last field either way: while the turn runs the
-    # status line carries no state word.
-    s.wait_for(lambda t: s.status_field(-1) == "5000", "context counter")
+    # The counter precedes Permissions: while the turn runs the status line
+    # carries no state word.
+    s.wait_for(lambda t: s.status_field(-2) == "5000", "context counter")
     s.key("ctrl-c")
     s.wait_text("[interrupted]")
     s.wait_turn_done()
     # The interrupted reply does not reach the conversation, so the
     # measurement still describes it exactly.
-    assert s.status_field(-1) == "5000", s.status_line()
+    assert s.status_field(-2) == "5000", s.status_line()
 
 
 def test_spinner_says_thinking_while_streaming(ctx):

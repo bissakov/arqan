@@ -45,7 +45,7 @@ def test_shift_tab_keeps_the_draft(ctx):
 
 
 def test_plan_mode_withholds_the_writing_tools(ctx):
-    """The provider is offered read and bash, never write or patch."""
+    """The provider is offered reads, never bash, write, or patch."""
     ctx.scenario("text=here+is+what+I+see")
     s = ctx.spawn()
     to_plan(s)
@@ -53,8 +53,8 @@ def test_plan_mode_withholds_the_writing_tools(ctx):
     s.wait_turn_done()
 
     names = tool_names(ctx.mock.requests[-1])
-    assert "read" in names and "bash" in names, names
-    assert "write" not in names and "patch" not in names, names
+    assert "read" in names, names
+    assert "bash" not in names and "write" not in names and "patch" not in names, names
     assert "submit_plan" in names and "ask_user" in names, names
 
 
