@@ -14,7 +14,8 @@ def test_picker_lists_the_provider_models(ctx):
     text = s.text()
     assert "alpha" in text and "beta" in text and "gamma" in text, text
     assert "current" in text, "the live model is labelled"
-    assert "+ enter a model manually" in text, text
+    assert "+ enter a model manually" not in text, text
+    assert "Ctrl-O enters manually" in text, text
     assert "search:" not in text, "a short list needs no search box"
     ctx.check_screen(s)
 
@@ -156,15 +157,51 @@ def test_an_unreachable_models_endpoint_answers_in_the_popup_slot(ctx):
 
 
 def test_manual_entry_is_offered_after_a_successful_list(ctx):
-    ctx.scenario("models=alpha|beta")
+    """Ctrl-O stays visible and available with hundreds of model rows."""
+    ctx.scenario("model_count=900")
     s = ctx.spawn(ARQAN_MODEL="alpha")
     open_picker(ctx, s)
-    s.key("down", "down", "enter")
+    s.key("ctrl-o")
     s.wait_text("model id (not verified)")
     s.type("private-model").sync()
     s.key("enter")
     s.wait_text("entered manually; not verified")
     assert "private-model" in s.status_line(), s.status_line()
+
+
+def test_the_current_model_can_be_configured_from_the_picker(ctx):
+    """Ctrl-E works above a long list and configures the exact active model."""
+    ctx.scenario("model_count=900,text=ok,usage=5000/100")
+    write_provider = ctx.config_file()
+    write_provider.parent.mkdir(parents=True, exist_ok=True)
+    write_provider.write_text(
+        f"[providers.work]\nbase_url = {ctx.mock.base_url}\nmodel = alpha\n")
+    state = ctx.state_file()
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text("provider = work\n")
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
+    open_picker(ctx, s)
+    s.key("ctrl-e")
+    s.wait_text("context window")
+    s.type("200000").key("enter")
+    s.wait_text("Named efforts")
+    s.key("down", "enter")
+    s.wait_text("reasoning efforts")
+    s.type("low,high").key("enter")
+    s.wait_text("active effort")
+    s.type("high").key("enter")
+    s.wait_text("model settings saved")
+    s.submit("hello")
+    s.wait_turn_done()
+    assert ctx.mock.requests[-1]["reasoning_effort"] == "high"
+    assert s.status_field(-2).endswith("/200k"), s.status_line()
+    profile = ctx.settings(ctx.config_file())[
+        'providers.work.models."alpha"']
+    assert profile == {
+        "context_window": "200000",
+        "reasoning_efforts": "low,high",
+        "reasoning_effort": "high",
+    }, profile
 
 
 def test_cancelling_manual_fallback_keeps_the_model(ctx):
@@ -303,15 +340,13 @@ def test_favorites_are_kept_per_provider(ctx):
     assert "favorites" not in state, state
 
 
-def test_ctrl_f_on_the_manual_row_changes_nothing(ctx):
+def test_ctrl_o_is_available_without_a_manual_row(ctx):
     ctx.scenario("models=alpha|beta")
     s = ctx.spawn(ARQAN_MODEL="alpha")
     open_picker(ctx, s)
-    s.key("down", "down").sync()
-    assert "enter a model manually" in s.popup_selected(), s.popup_selected()
-    s.key("ctrl-f").sync()
-    assert "* +" not in s.text(), s.text()
-    assert ctx.settings(ctx.state_file()).get("favorites") is None, ctx.state()
+    assert "enter a model manually" not in s.text(), s.text()
+    s.key("ctrl-o")
+    s.wait_text("model id (not verified)")
 
 
 def test_a_favorite_survives_the_search_box(ctx):

@@ -41,44 +41,6 @@ static Str endpoint_field(const Settings *s, Str section, Str key, size_t max) {
     return v.n <= max ? v : (Str){0};
 }
 
-// Provider capabilities are deliberately data, not a built-in ladder.
-static b8 endpoint_list_ok(Str list, b8 budgets) {
-    if (list.n > AGENT_MAX_REASONING_LIST) return false;
-    size_t off = 0, count = 0;
-    while (off < list.n) {
-        size_t end = off;
-        while (end < list.n && list.p[end] != ',') end++;
-        Str item = str_trim((Str){ list.p + off, end - off });
-        if (!item.n || ++count > AGENT_MAX_ENDPOINTS) return false;
-        if (budgets) {
-            b8 ok = false; i64 n = str_int(item, &ok);
-            if (!ok || n <= 0) return false;
-        }
-        size_t prev = 0;
-        while (prev < off) {
-            size_t pend = prev;
-            while (pend < list.n && list.p[pend] != ',') pend++;
-            if (str_eq(item, str_trim((Str){ list.p + prev, pend - prev })))
-                return false;
-            prev = pend + 1;
-        }
-        off = end + 1;
-    }
-    return true;
-}
-
-static b8 endpoint_selected_ok(Str list, Str selected) {
-    if (!selected.n) return true;
-    size_t off = 0;
-    while (off < list.n) {
-        size_t end = off;
-        while (end < list.n && list.p[end] != ',') end++;
-        if (str_eq(selected, str_trim((Str){ list.p + off, end - off }))) return true;
-        off = end + 1;
-    }
-    return false;
-}
-
 /* Said rather than obeyed: a shared config file naming a key store would be a
  * way to choose what arqan runs, so the line is reported and dropped. */
 static void endpoint_warn_credential_keys(const Settings *s, Str section,
@@ -107,12 +69,7 @@ static void endpoints_collect(Endpoints *e, const Settings *s, Arena *a) {
         Str model = endpoint_field(s, sections[i], STR("model"),
                                    AGENT_MAX_MODEL_NAME);
         ApiKind api = api_from_str(settings_get(s, sections[i], STR("api")));
-        Str efforts = endpoint_field(s, sections[i], STR("reasoning_efforts"), AGENT_MAX_REASONING_LIST);
-        Str budgets = endpoint_field(s, sections[i], STR("thinking_budgets"), AGENT_MAX_REASONING_LIST);
-        Str effort = endpoint_field(s, sections[i], STR("reasoning_effort"), AGENT_MAX_REASONING_LIST);
-        Str budget = endpoint_field(s, sections[i], STR("thinking_budget"), AGENT_MAX_REASONING_LIST);
-        Str templ = endpoint_field(s, sections[i], STR("reasoning_template"), AGENT_MAX_REASONING_TEMPLATE);
-        endpoints_put(e, name, url, model, api, efforts, budgets, effort, budget, templ, a);
+        endpoints_put(e, name, url, model, api, a);
     }
 }
 
@@ -141,15 +98,10 @@ size_t endpoints_find(const Endpoints *e, Str name) {
 }
 
 b8 endpoints_put(Endpoints *e, Str name, Str base_url, Str model, ApiKind api,
-                 Str efforts, Str budgets, Str effort, Str budget, Str templ,
                  Arena *a) {
     if (!endpoint_name_ok(name)) return false;
     if (!base_url.n || base_url.n > AGENT_MAX_URL) return false;
     if (model.n > AGENT_MAX_MODEL_NAME) return false;
-    if (!endpoint_list_ok(efforts, false) || !endpoint_list_ok(budgets, true)
-        || !endpoint_selected_ok(efforts, effort)
-        || !endpoint_selected_ok(budgets, budget)
-        || templ.n > AGENT_MAX_REASONING_TEMPLATE) return false;
     size_t i = endpoints_find(e, name);
     if (i == ENDPOINT_NONE) {
         if (e->n >= AGENT_MAX_ENDPOINTS) return false;
@@ -161,30 +113,17 @@ b8 endpoints_put(Endpoints *e, Str name, Str base_url, Str model, ApiKind api,
     }
     Str url = str_dup(a, base_url);
     Str mdl = str_dup_opt(a, model);
-    Str ef = str_dup_opt(a, efforts);
-    Str bu = str_dup_opt(a, budgets);
-    Str es = str_dup_opt(a, effort);
-    Str bs = str_dup_opt(a, budget);
-    Str te = str_dup_opt(a, templ);
-    if (!url.p || (model.n && !mdl.p) || (efforts.n && !ef.p)
-        || (budgets.n && !bu.p) || (effort.n && !es.p)
-        || (budget.n && !bs.p) || (templ.n && !te.p)) return false;
+    if (!url.p || (model.n && !mdl.p)) return false;
     e->base_url[i] = url;
     e->model[i] = mdl;
     e->api[i] = api;
-    e->reasoning_efforts[i] = ef;
-    e->thinking_budgets[i] = bu;
-    e->reasoning_effort[i] = es;
-    e->thinking_budget[i] = bs;
-    e->reasoning_template[i] = te;
     return true;
 }
 
 /* One endpoint at a time, since the rest of the config file is the user's and
  * a rewrite would cost them their comments and their order. */
 b8 endpoints_save_one(Str name, Str base_url, Str model, ApiKind api,
-                      Str efforts, Str budgets, Str effort, Str budget,
-                      Str templ, Arena *scratch) {
+                      Arena *scratch) {
     size_t mark = scratch->off;
     Str dir  = paths_dir(AGENT_DIR_CONFIG, scratch);
     Str path = paths_file(AGENT_DIR_CONFIG, AGENT_CONFIG_NAME, scratch);
@@ -193,11 +132,9 @@ b8 endpoints_save_one(Str name, Str base_url, Str model, ApiKind api,
         scratch->off = mark;
         return false;
     }
-    Str keys[8] = { STR("base_url"), STR("model"), STR("api"),
-        STR("reasoning_efforts"), STR("thinking_budgets"),
-        STR("reasoning_effort"), STR("thinking_budget"), STR("reasoning_template") };
-    Str vals[8] = { base_url, model, api_name(api), efforts, budgets, effort, budget, templ };
-    b8 ok = settings_set(path, section, keys, vals, 8, 0600, scratch);
+    Str keys[3] = { STR("base_url"), STR("model"), STR("api") };
+    Str vals[3] = { base_url, model, api_name(api) };
+    b8 ok = settings_set(path, section, keys, vals, 3, 0600, scratch);
     scratch->off = mark;
     return ok;
 }
@@ -208,9 +145,7 @@ b8 endpoints_remember_model(Str name, Str model, Arena *scratch) {
     endpoints_load(&e, scratch);
     size_t i = endpoints_find(&e, name);
     b8 ok = i != ENDPOINT_NONE
-         && endpoints_save_one(name, e.base_url[i], model, e.api[i],
-             e.reasoning_efforts[i], e.thinking_budgets[i], e.reasoning_effort[i],
-             e.thinking_budget[i], e.reasoning_template[i], scratch);
+         && endpoints_save_one(name, e.base_url[i], model, e.api[i], scratch);
     scratch->off = mark;
     return ok;
 }
@@ -345,6 +280,7 @@ b8 endpoints_delete(Str name, Arena *scratch, char *err, size_t err_cap) {
     b8 erased = !secret_source_external(src)
              || secret_erase(src, name, store_err, sizeof store_err);
     b8 cleared = settings_remove_section(credential_path, section, scratch);
+    b8 profiles_removed = model_profiles_delete(name, scratch);
     b8 removed = settings_remove_section(config_path, section, scratch);
 
     if (!erased)
@@ -352,11 +288,11 @@ b8 endpoints_delete(Str name, Arena *scratch, char *err, size_t err_cap) {
     else if (!cleared)
         snprintf(err, err_cap, "the key could not be removed from %.*s",
                  (i32)credential_path.n, credential_path.p);
-    else if (!removed)
+    else if (!profiles_removed || !removed)
         snprintf(err, err_cap, "the key is gone, but its settings could not "
                  "be removed from %.*s", (i32)config_path.n, config_path.p);
     scratch->off = mark;
-    return erased && cleared && removed;
+    return erased && cleared && profiles_removed && removed;
 }
 
 b8 endpoints_remember_active(Str name, Arena *scratch) {

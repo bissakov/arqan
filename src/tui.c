@@ -4188,7 +4188,7 @@ typedef struct {
     b8 has_action;
     PickKind kind;
     TuiSettings set;
-    TuiPickAction action;   // the Ctrl-F row action, when one is offered
+    TuiPickAction action;   // picker-specific key actions, when offered
     size_t out;            // the chosen row; read after the screen closes
     char query[TUI_PICK_QUERY];
     size_t query_n;
@@ -4312,9 +4312,14 @@ static b8 pick_act(const TuiSettings *set, i32 delta) {
  * to choose from, and the rows it drew are gone. */
 static b8 pick_row_action(i32 key) {
     const TuiPickAction *a = &g_pick.action;
-    if (!g_pick.has_action || a->key != key || !g_tui.comp_n) return true;
-    size_t row = g_tui.comp_idx[g_tui.comp_sel], moved = row;
-    size_t n = a->act(a->ud, row, &moved);
+    if (!g_pick.has_action) return true;
+    const TuiPickBinding *binding = NULL;
+    for (size_t i = 0; i < a->n_bindings; i++)
+        if (a->bindings[i].key == key) { binding = &a->bindings[i]; break; }
+    if (!binding) return true;
+    size_t row = g_tui.comp_n ? g_tui.comp_idx[g_tui.comp_sel] : SIZE_MAX;
+    size_t moved = row;
+    size_t n = binding->act(binding->ud, row, &moved);
     if (n > a->max) n = a->max;
     if (n > AGENT_MAX_POPUP) n = AGENT_MAX_POPUP;
     if (!n) return false;
@@ -4353,6 +4358,10 @@ static b8 pick_enter(const TuiSettings *set) {
     X(0x10, "Ctrl-P",    "Previous row",      completion_move(-1);)           \
     X(0x06, "Ctrl-F",    "Favorite the row, on a list that offers it",        \
                                               return pick_row_action(0x06);)  \
+    X(0x05, "Ctrl-E",    "Configure, on a list that offers it",               \
+                                              return pick_row_action(0x05);)  \
+    X(0x0f, "Ctrl-O",    "Enter another value, on a list that offers it",     \
+                                              return pick_row_action(0x0f);)  \
     X(0x18, "Ctrl-X",    "Delete the row, on a list that offers it",          \
                                               return pick_row_action(0x18);)  \
     X(0x7f, "Backspace", "Delete the query glyph before",                     \
@@ -4476,7 +4485,7 @@ b8 tui_pick_search_count(Str title, const TuiCmd *items, size_t n,
 
 b8 tui_pick_action(Str title, size_t n, size_t search_n, TuiPickAnchor anchor,
                    size_t start, const TuiPickAction *act, size_t *out) {
-    if (!act || !act->rows || !act->act) return false;
+    if (!act || !act->rows || !act->bindings || !act->n_bindings) return false;
     return pick_impl(title, act->rows, NULL, n, search_n, anchor, start,
                      PICK_CHOOSE, out, NULL, act, (Str){0});
 }

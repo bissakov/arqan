@@ -6,6 +6,14 @@
 
 - Let Build mode agents use `ask_user` to resolve a decision and continue the
   same turn.
+- Let users configure context windows and reasoning controls for exact
+  provider/model pairs, without a built-in provider or model registry.
+
+### Changed
+
+- Keep provider setup focused on transport and credentials; configure model
+  capabilities from the model picker's visible key actions instead.
+- Stop inferring context windows from non-standard model-listing fields.
 
 ### Fixed
 

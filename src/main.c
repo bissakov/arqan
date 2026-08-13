@@ -15,6 +15,7 @@
 #include "history.c"
 #include "secrets.c"
 #include "endpoints.c"
+#include "models.c"
 #include "favorites.c"
 #include "config.c"
 #include "cli.c"
@@ -936,24 +937,6 @@ static Str help_build(Agent *ag) {
                  endpoints.model[i].p);
         buf_putf(&b, "- API key: %s\n",
                  key_err[0] ? key_err : has_key ? "present" : "missing");
-        buf_putf(&b, "- reasoning efforts: %.*s\n",
-                 (i32)endpoints.reasoning_efforts[i].n,
-                 endpoints.reasoning_efforts[i].p);
-        buf_putf(&b, "- selected reasoning effort: %.*s\n",
-                 (i32)(endpoints.reasoning_effort[i].n
-                       ? endpoints.reasoning_effort[i].n : 3u),
-                 endpoints.reasoning_effort[i].n
-                       ? endpoints.reasoning_effort[i].p : "off");
-        buf_putf(&b, "- thinking budgets: %.*s\n",
-                 (i32)endpoints.thinking_budgets[i].n,
-                 endpoints.thinking_budgets[i].p);
-        buf_putf(&b, "- selected thinking budget: %.*s\n",
-                 (i32)(endpoints.thinking_budget[i].n
-                       ? endpoints.thinking_budget[i].n : 3u),
-                 endpoints.thinking_budget[i].n
-                       ? endpoints.thinking_budget[i].p : "off");
-        buf_putf(&b, "- reasoning template: %s\n",
-                 endpoints.reasoning_template[i].n ? "configured" : "off");
     }
 
     buf_puts(&b, STR("\n## Effective prompt sources\n"));
@@ -1114,7 +1097,8 @@ static void resume_session(Agent *ag) {
      * and a directory with a hundred sessions never scrolls it out of
      * reach. */
     size_t pick = 0;
-    TuiPickAction act = { items, n, session_delete_row, &sp, 0x18,
+    TuiPickBinding binding = { session_delete_row, &sp, 0x18 };
+    TuiPickAction act = { items, n, &binding, 1,
                           STR("Ctrl-X deletes the selected session") };
     b8 chosen = tui_pick_action(STR("pick a session"), n, n, TUI_PICK_FIRST,
                                 TUI_PICK_NONE, &act, &pick);
@@ -1317,11 +1301,10 @@ static b8 manual_model(Arena *scratch, const char *why, Str *out) {
     return true;
 }
 
-/* The /model picker's rows: the provider's list with the favorites pinned to
- * the top, then the manual-entry row. `starred` holds "* <model>" for the
- * rows that are pinned, built once per model and reused, so a toggle costs no
- * allocation the second time. `order` maps a row back to a model, and `n`
- * itself names the manual row. */
+/* The /model picker's rows are only models, with favorites pinned to the top.
+ * Manual entry and configuration are keys rather than rows that disappear at
+ * the bottom of a large provider list. `starred` holds "* <model>" for pinned
+ * rows and `order` maps each visible row back to a model. */
 typedef struct {
     const Str *names;
     Str       *starred;
@@ -1332,8 +1315,86 @@ typedef struct {
     Str        provider;
     Str        current;
     Arena     *arena;
+    u8         requested;
     char       msg[160];   // said after the picker closes, not under it
 } ModelPick;
+
+enum { MODEL_ACTION_NONE, MODEL_ACTION_MANUAL, MODEL_ACTION_CONFIGURE };
+
+static b8 edit_model_profile(Config *cfg, Arena *scratch) {
+    if (!cfg->provider.n || !cfg->model.n) {
+        tui_notice(STR("model settings need a named provider"));
+        return false;
+    }
+    ModelProfile old;
+    model_profile_load(&old, cfg->provider, cfg->model, scratch, scratch);
+    char window[32] = {0};
+    char efforts[AGENT_MAX_REASONING_LIST + 1] = {0};
+    char budgets[AGENT_MAX_REASONING_LIST + 1] = {0};
+    char effort[AGENT_MAX_REASONING_LIST + 1] = {0};
+    char budget[AGENT_MAX_REASONING_LIST + 1] = {0};
+    char templ[AGENT_MAX_REASONING_TEMPLATE + 1] = {0};
+    if (old.context_window)
+        snprintf(window, sizeof window, "%zu", old.context_window);
+    const TuiCmd modes[] = {
+        { STR("Off"), STR("Send no reasoning fields") },
+        { STR("Named efforts"), STR("Choose from user-defined string values") },
+        { STR("Token budgets"), STR("Choose from user-defined token counts") },
+        { STR("Custom JSON"), STR("Add a user-defined request object") },
+    };
+    size_t mode = old.reasoning_template.n ? 3 : old.reasoning_efforts.n ? 1
+                : old.thinking_budgets.n ? 2 : 0;
+    if (!tui_ask_edit(STR("context window (tokens; empty is unknown)"), true,
+                      window, sizeof window)
+        || !tui_pick(STR("reasoning control for this model"), modes, 4,
+                     TUI_PICK_FIRST, mode, &mode)) return false;
+    if (mode == 1) {
+        snprintf(efforts, sizeof efforts, "%.*s",
+                 (i32)old.reasoning_efforts.n, old.reasoning_efforts.p);
+        snprintf(effort, sizeof effort, "%.*s", (i32)old.reasoning_effort.n,
+                 old.reasoning_effort.p);
+        if (!tui_ask_edit(STR("reasoning efforts (comma separated)"), false,
+                          efforts, sizeof efforts)
+            || !tui_ask_edit(STR("active effort (empty is Off)"), true,
+                             effort, sizeof effort)) return false;
+    } else if (mode == 2) {
+        snprintf(budgets, sizeof budgets, "%.*s",
+                 (i32)old.thinking_budgets.n, old.thinking_budgets.p);
+        snprintf(budget, sizeof budget, "%.*s", (i32)old.thinking_budget.n,
+                 old.thinking_budget.p);
+        if (!tui_ask_edit(STR("thinking budgets (comma separated)"), false,
+                          budgets, sizeof budgets)
+            || !tui_ask_edit(STR("active budget (empty is Off)"), true,
+                             budget, sizeof budget)) return false;
+    } else if (mode == 3) {
+        snprintf(templ, sizeof templ, "%.*s", (i32)old.reasoning_template.n,
+                 old.reasoning_template.p);
+        if (!tui_ask_edit(STR("request JSON object"), false, templ,
+                          sizeof templ)) return false;
+    }
+    ModelProfile p = { .reasoning_efforts = str_c(efforts),
+        .thinking_budgets = str_c(budgets), .reasoning_effort = str_c(effort),
+        .thinking_budget = str_c(budget), .reasoning_template = str_c(templ),
+        .configured = true };
+    if (window[0]) {
+        b8 ok = false;
+        i64 n = str_int(str_c(window), &ok);
+        if (!ok || n <= 0 || (u64)n > (u64)AGENT_MAX_CONTEXT_WINDOW) {
+            tui_notice(STR("context window must be a positive token count"));
+            return false;
+        }
+        p.context_window = (size_t)n;
+    }
+    if (!model_profile_save(cfg->provider, cfg->model, &p, scratch)
+        || !config_set_model_profile(cfg, &p)) {
+        tui_notice(STR("invalid model settings or could not write config"));
+        return false;
+    }
+    ctx_set_window(&g_ctx, cfg->context_window);
+    tui_set_reasoning(cfg->reasoning_effort, cfg->thinking_budget);
+    tui_notice(STR("model settings saved"));
+    return true;
+}
 
 /* "* <model>", the pinned row's name. The plain name when it cannot be
  * built: a missed star is not a reason to lose the row. */
@@ -1365,16 +1426,13 @@ static size_t model_build(void *ud) {
     for (size_t i = 0; i < mp->n; i++)
         if (!favorites_has(&mp->fav, mp->names[i]))
             model_row(mp, row++, i, false);
-    mp->order[row] = mp->n;
-    mp->rows[row] = (TuiCmd){ STR("+ enter a model manually"),
-                              STR("Use an id not verified by /models") };
-    return row + 1;
+    return row;
 }
 
 static size_t model_favorite(void *ud, size_t row, size_t *moved) {
     ModelPick *mp = ud;
+    if (row == SIZE_MAX) { *moved = 0; return model_build(mp); }
     size_t i = mp->order[row];
-    if (i >= mp->n) { *moved = row; return mp->n + 1; }   // the manual row
     b8 on = false;
     char err[128] = {0};
     /* The list is written as it is toggled: pinning is its own action, so it
@@ -1390,21 +1448,35 @@ static size_t model_favorite(void *ud, size_t row, size_t *moved) {
     return rows;
 }
 
-static b8 pick_model(const Config *cfg, Arena *scratch, Str *out,
-                     size_t *window, b8 *verified) {
+static size_t model_manual_action(void *ud, size_t row, size_t *moved) {
+    ModelPick *mp = ud;
+    (void)row;
+    *moved = 0;
+    mp->requested = MODEL_ACTION_MANUAL;
+    return 0;
+}
+
+static size_t model_configure_action(void *ud, size_t row, size_t *moved) {
+    ModelPick *mp = ud;
+    (void)row;
+    *moved = 0;
+    mp->requested = MODEL_ACTION_CONFIGURE;
+    return 0;
+}
+
+static b8 pick_model(Config *cfg, Arena *scratch, Str *out,
+                     b8 *verified) {
     *verified = false;
-    *window = 0;
     tui_set_status("loading models");
     Str *names = arena_new(scratch, Str, AGENT_MAX_MODELS);
-    size_t *windows = arena_new(scratch, size_t, AGENT_MAX_MODELS);
-    if (!names || !windows) {
+    if (!names) {
         tui_set_status("ready");
         tui_notice(STR("out of memory listing models"));
         return false;
     }
     char err[128] = {0};
-    size_t n = provider_models(cfg, scratch, names, windows, AGENT_MAX_MODELS,
-                               err, sizeof err);
+    size_t n = provider_models(cfg, scratch, names, AGENT_MAX_MODELS, err,
+                               sizeof err);
     tui_set_status("ready");
     if (!n) {
         const char *why = err[0] ? err : "no models returned";
@@ -1414,8 +1486,8 @@ static b8 pick_model(const Config *cfg, Arena *scratch, Str *out,
     ModelPick mp = {0};
     mp.names    = names;
     mp.starred  = arena_new(scratch, Str, n);
-    mp.order    = arena_new(scratch, size_t, n + 1);
-    mp.rows     = arena_new(scratch, TuiCmd, n + 1);
+    mp.order    = arena_new(scratch, size_t, n);
+    mp.rows     = arena_new(scratch, TuiCmd, n);
     mp.n        = n;
     mp.provider = cfg->provider;
     mp.current  = cfg->model;
@@ -1427,19 +1499,35 @@ static b8 pick_model(const Config *cfg, Arena *scratch, Str *out,
     memset(mp.starred, 0, n * sizeof *mp.starred);   // built on first use
     favorites_load(&mp.fav, cfg->provider, scratch);
     size_t rows = model_build(&mp);
-    TuiPickAction act = { mp.rows, n + 1, model_favorite, &mp, 0x06,
-                          STR("Ctrl-F pins the selected model to the top") };
+    TuiPickBinding bindings[] = {
+        { model_favorite, &mp, 0x06 },
+        { model_manual_action, &mp, 0x0f },
+        { model_configure_action, &mp, 0x05 },
+    };
+    TuiPickAction act = { mp.rows, n, bindings, 3,
+        STR("Ctrl-F pins · Ctrl-O enters manually · Ctrl-E configures current") };
     size_t pick = 0;
     b8 chosen = tui_pick_action(STR("pick a model"), rows, n, TUI_PICK_FIRST,
                                 TUI_PICK_NONE, &act, &pick);
     if (mp.msg[0]) tui_notice(str_c(mp.msg));
+    if (mp.requested == MODEL_ACTION_MANUAL)
+        return manual_model(scratch, NULL, out);
+    if (mp.requested == MODEL_ACTION_CONFIGURE) {
+        (void)edit_model_profile(cfg, scratch);
+        return false;
+    }
     if (!chosen) return false;
     size_t i = pick < rows ? mp.order[pick] : n;
-    if (i >= n) return manual_model(scratch, NULL, out);
+    if (i >= n) return false;
     *out = names[i];
-    *window = windows[i];
     *verified = true;
     return true;
+}
+
+static b8 apply_model_profile(Config *cfg, Arena *scratch) {
+    ModelProfile p;
+    model_profile_load(&p, cfg->provider, cfg->model, scratch, scratch);
+    return config_set_model_profile(cfg, &p);
 }
 
 /* Switch model for this session and remember it for the next. The
@@ -1447,17 +1535,21 @@ static b8 pick_model(const Config *cfg, Arena *scratch, Str *out,
 static void choose_model(Config *cfg, Arena *scratch) {
     arena_reset(scratch);
     Str picked = {0};
-    size_t window = 0;
     b8 verified = false;
-    if (!pick_model(cfg, scratch, &picked, &window, &verified)) return;
+    if (!pick_model(cfg, scratch, &picked, &verified)) return;
     if (!config_set_model(cfg, picked)) {
         tui_notice(STR("out of memory storing the model"));
         return;
     }
     Str chosen = cfg->model;
+    if (!apply_model_profile(cfg, scratch)) {
+        tui_notice(STR("out of memory storing model settings"));
+        return;
+    }
     tui_set_model(chosen);
     ctx_model_changed(&g_ctx);
-    ctx_set_window(&g_ctx, window);
+    ctx_set_window(&g_ctx, cfg->context_window);
+    tui_set_reasoning(cfg->reasoning_effort, cfg->thinking_budget);
     TelEvent e;
     tel_open(&e, "model");
     tel_str(&e, "name", chosen);
@@ -1477,14 +1569,14 @@ static b8 no_provider(const Config *cfg) {
 }
 
 static b8 use_endpoint(Config *cfg, Str name, Str base_url, Str model,
-                       ApiKind api, Str key, Str efforts, Str budgets,
-                       Str effort, Str budget, Str templ) {
-    if (!config_set_endpoint(cfg, name, base_url, model, api, key, efforts,
-                             budgets, effort, budget, templ))
+                       ApiKind api, Str key, Arena *scratch) {
+    if (!config_set_endpoint(cfg, name, base_url, model, api, key)
+        || !apply_model_profile(cfg, scratch))
         return false;
     tui_set_provider(cfg->provider);
     tui_set_model(cfg->model);
     ctx_model_changed(&g_ctx);
+    ctx_set_window(&g_ctx, cfg->context_window);
     tui_set_reasoning(cfg->reasoning_effort, cfg->thinking_budget);
     tui_needs_provider(false);
     tui_set_setup(false);
@@ -1549,11 +1641,6 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
     char name[AGENT_MAX_ENDPOINT_NAME + 1];
     char url[AGENT_MAX_URL + 1];
     char key[AGENT_MAX_API_KEY + 1];
-    char efforts[AGENT_MAX_REASONING_LIST + 1] = {0};
-    char budgets[AGENT_MAX_REASONING_LIST + 1] = {0};
-    char effort[AGENT_MAX_REASONING_LIST + 1] = {0};
-    char budget[AGENT_MAX_REASONING_LIST + 1] = {0};
-    char templ[AGENT_MAX_REASONING_TEMPLATE + 1] = {0};
     if (!tui_ask(STR("a name for this provider"), false, name, sizeof name))
         return false;
     if (!endpoint_name_ok(str_c(name))) {
@@ -1580,17 +1667,6 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
         tui_notice(STR("a base URL starts with http:// or https://"));
         return false;
     }
-    if (!tui_ask_edit(STR("reasoning efforts (comma separated; empty is Off)"),
-                      true, efforts, sizeof efforts)
-        || !tui_ask_edit(STR("thinking budgets (comma separated; empty is Off)"),
-                         true, budgets, sizeof budgets)
-        || !tui_ask_edit(STR("active reasoning effort (empty is Off)"),
-                         true, effort, sizeof effort)
-        || !tui_ask_edit(STR("active thinking budget (empty is Off)"),
-                         true, budget, sizeof budget)
-        || !tui_ask_edit(STR("reasoning JSON template (one object; empty is Off)"),
-                         true, templ, sizeof templ))
-        return false;
     if (!tui_ask(STR("its API key (empty if it needs none)"), true, key,
                  sizeof key))
         key[0] = '\0';
@@ -1601,19 +1677,15 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
     probe.base_url = str_c(url);
     probe.api = api;
     probe.api_key = key[0] ? str_c(key) : (Str){0};
+    probe.provider = (Str){0};
     probe.model = (Str){0};
     Str model = {0};
-    size_t window = 0;
     b8 verified = false;
-    if (!pick_model(&probe, scratch, &model, &window, &verified)) return false;
+    if (!pick_model(&probe, scratch, &model, &verified)) return false;
 
     char err[AGENT_MAX_PATH + 64] = {0};
-    if (!endpoints_put(&eps, str_c(name), str_c(url), model, api,
-                       str_c(efforts), str_c(budgets), str_c(effort),
-                       str_c(budget), str_c(templ), scratch)
-        || !endpoints_save_one(str_c(name), str_c(url), model, api,
-                               str_c(efforts), str_c(budgets), str_c(effort),
-                               str_c(budget), str_c(templ), scratch)) {
+    if (!endpoints_put(&eps, str_c(name), str_c(url), model, api, scratch)
+        || !endpoints_save_one(str_c(name), str_c(url), model, api, scratch)) {
         tui_notice(STR("could not write the provider store"));
         return false;
     }
@@ -1631,12 +1703,10 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
         return false;
     }
     if (!use_endpoint(cfg, str_c(name), str_c(url), model, api, stored_key,
-                      str_c(efforts), str_c(budgets), str_c(effort),
-                      str_c(budget), str_c(templ))) {
+                      scratch)) {
         tui_notice(STR("out of memory storing the provider"));
         return false;
     }
-    ctx_set_window(&g_ctx, window);
     if (verified) provider_chosen(cfg, scratch);
     else notice_fmt("provider: %.*s (model entered manually; not verified)",
                     (i32)cfg->provider.n, cfg->provider.p);
@@ -1644,28 +1714,15 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
 }
 
 /* Existing provider names are identities: editing changes its fields, never
- * the section name.  The compact JSON template is kept in config, not the
- * credentials store, so it must never contain a secret. */
+ * the section name. Model capabilities are edited from /model instead. */
 static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
                         Arena *persist, Arena *scratch) {
     char url[AGENT_MAX_URL + 1], model[AGENT_MAX_MODEL_NAME + 1];
-    char efforts[AGENT_MAX_REASONING_LIST + 1], budgets[AGENT_MAX_REASONING_LIST + 1];
-    char effort[AGENT_MAX_REASONING_LIST + 1], budget[AGENT_MAX_REASONING_LIST + 1];
-    char templ[AGENT_MAX_REASONING_TEMPLATE + 1], key[AGENT_MAX_API_KEY + 1];
+    char key[AGENT_MAX_API_KEY + 1];
     snprintf(url, sizeof url, "%.*s", (i32)eps->base_url[i].n, eps->base_url[i].p);
     snprintf(model, sizeof model, "%.*s", (i32)eps->model[i].n, eps->model[i].p);
-    snprintf(efforts, sizeof efforts, "%.*s", (i32)eps->reasoning_efforts[i].n, eps->reasoning_efforts[i].p);
-    snprintf(budgets, sizeof budgets, "%.*s", (i32)eps->thinking_budgets[i].n, eps->thinking_budgets[i].p);
-    snprintf(effort, sizeof effort, "%.*s", (i32)eps->reasoning_effort[i].n, eps->reasoning_effort[i].p);
-    snprintf(budget, sizeof budget, "%.*s", (i32)eps->thinking_budget[i].n, eps->thinking_budget[i].p);
-    snprintf(templ, sizeof templ, "%.*s", (i32)eps->reasoning_template[i].n, eps->reasoning_template[i].p);
     if (!tui_ask_edit(STR("base URL"), false, url, sizeof url)
-        || !tui_ask_edit(STR("model"), false, model, sizeof model)
-        || !tui_ask_edit(STR("reasoning efforts (comma separated; empty is Off)"), true, efforts, sizeof efforts)
-        || !tui_ask_edit(STR("thinking budgets (comma separated; empty is Off)"), true, budgets, sizeof budgets)
-        || !tui_ask_edit(STR("active reasoning effort (empty is Off)"), true, effort, sizeof effort)
-        || !tui_ask_edit(STR("active thinking budget (empty is Off)"), true, budget, sizeof budget)
-        || !tui_ask_edit(STR("reasoning JSON template (one object; empty is Off)"), true, templ, sizeof templ)) return false;
+        || !tui_ask_edit(STR("model"), false, model, sizeof model)) return false;
     if (!str_starts(str_c(url), STR("http://"))
         && !str_starts(str_c(url), STR("https://"))) {
         tui_notice(STR("a base URL starts with http:// or https://"));
@@ -1720,20 +1777,17 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
     b8 changed_connection = !str_eq(str_c(url), eps->base_url[i]) || api != eps->api[i]
                          || !str_eq(str_c(model), eps->model[i]);
     b8 verified = true;
-    size_t window = 0;
     if (changed_connection) {
         Config probe = *cfg; probe.base_url = str_c(url); probe.api = api;
         probe.api_key = saved_key;
         Str listed[AGENT_MAX_MODELS]; char model_err[160] = {0};
-        size_t *windows = arena_new(scratch, size_t, AGENT_MAX_MODELS);
-        size_t listed_n = provider_models(&probe, scratch, listed, windows,
+        size_t listed_n = provider_models(&probe, scratch, listed,
                                           AGENT_MAX_MODELS, model_err,
                                           sizeof model_err);
         verified = false;
         for (size_t j = 0; j < listed_n; j++)
             if (str_eq(listed[j], str_c(model))) {
                 verified = true;
-                if (windows) window = windows[j];
                 break;
             }
         if (!verified)
@@ -1741,10 +1795,10 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
                                          : "model was not listed by /models"));
     }
     if (!endpoints_put(eps, eps->name[i], str_c(url), str_c(model), api,
-                       str_c(efforts), str_c(budgets), str_c(effort), str_c(budget), str_c(templ), scratch)
+                       scratch)
         || !endpoints_save_one(eps->name[i], str_c(url), str_c(model), api,
-                               str_c(efforts), str_c(budgets), str_c(effort), str_c(budget), str_c(templ), scratch)) {
-        tui_notice(STR("invalid provider reasoning settings")); return false;
+                               scratch)) {
+        tui_notice(STR("invalid provider settings")); return false;
     }
     if (key_action != KEY_KEEP
         && !endpoints_set_key(eps->name[i],
@@ -1753,11 +1807,8 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
             key_source, scratch, err, sizeof err)) {
         tui_notice(str_c(err[0] ? err : "could not store the API key")); return false;
     }
-    if (!use_endpoint(cfg, eps->name[i], str_c(url), str_c(model), api, saved_key,
-                      str_c(efforts), str_c(budgets), str_c(effort),
-                      str_c(budget), str_c(templ))) return false;
-    // After use_endpoint, which drops what described the previous model.
-    ctx_set_window(&g_ctx, window);
+    if (!use_endpoint(cfg, eps->name[i], str_c(url), str_c(model), api,
+                      saved_key, scratch)) return false;
     if (verified) provider_chosen(cfg, scratch);
     else notice_fmt("provider: %.*s (model entered manually; not verified)",
                     (i32)cfg->provider.n, cfg->provider.p);
@@ -1839,7 +1890,7 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
     items[n] = (TuiCmd){ STR("+ add a provider"),
                          STR("An OpenAI- or Anthropic-compatible endpoint") };
     items[n + 1] = (TuiCmd){ STR("+ edit a provider"),
-                             STR("Connection, key status, and reasoning settings") };
+                             STR("Connection and credential settings") };
     items[n + 2] = (TuiCmd){ STR("+ delete a provider"),
                              STR("Remove its settings and stored credential") };
 
@@ -1872,9 +1923,7 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
         return;
     }
     if (!use_endpoint(cfg, eps.name[pick], eps.base_url[pick], eps.model[pick],
-                      eps.api[pick], key, eps.reasoning_efforts[pick],
-                      eps.thinking_budgets[pick], eps.reasoning_effort[pick],
-                      eps.thinking_budget[pick], eps.reasoning_template[pick])) {
+                      eps.api[pick], key, scratch)) {
         tui_notice(STR("out of memory switching provider"));
         return;
     }
@@ -1895,7 +1944,7 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
  * choosing between them, not reading about one.
  */
 /* What a row changes, since the rows a session offers vary: the tools it
- * runs and the reasoning controls its provider takes are both conditional.
+ * runs and the active model's reasoning controls are both conditional.
  * Checkboxes come first, then the tools, then the rows that step between
  * options: a list a reader scans is a list whose answers look alike. */
 enum {
@@ -2091,17 +2140,17 @@ static Str list_step(Str list, Str current, i32 dir) {
 static b8 remember_reasoning(Config *cfg, Arena *scratch,
                              b8 effort, Str value) {
     if (!cfg->provider.n) return false;
-    Endpoints e; size_t mark = scratch->off; endpoints_load(&e, scratch);
-    size_t i = endpoints_find(&e, cfg->provider);
-    if (i == ENDPOINT_NONE || !config_set_reasoning(cfg, effort, value)) {
+    size_t mark = scratch->off;
+    ModelProfile p;
+    model_profile_load(&p, cfg->provider, cfg->model, scratch, scratch);
+    if (!p.configured || !config_set_reasoning(cfg, effort, value)) {
         scratch->off = mark;
         return false;
     }
     tui_set_reasoning(cfg->reasoning_effort, cfg->thinking_budget);
-    b8 ok = endpoints_save_one(cfg->provider,
-        e.base_url[i], e.model[i], e.api[i], e.reasoning_efforts[i],
-        e.thinking_budgets[i], effort ? value : e.reasoning_effort[i],
-        effort ? e.thinking_budget[i] : value, e.reasoning_template[i], scratch);
+    if (effort) p.reasoning_effort = value;
+    else p.thinking_budget = value;
+    b8 ok = model_profile_save(cfg->provider, cfg->model, &p, scratch);
     scratch->off = mark;
     return ok;
 }
@@ -2897,6 +2946,10 @@ i32 main(i32 argc, char **argv) {
     conf_resolve(&conf, &persist, &scratch);
     config_load(&cfg, &conf, &persist);
     cli_apply(&opts, &cfg);
+    if (cfg.provider.n && !apply_model_profile(&cfg, &scratch)) {
+        fprintf(stderr, AGENT_NAME ": cannot store model settings\n");
+        return 1;
+    }
     UiPrefs prefs;
     ui_prefs_load(&prefs, &conf);
     notify_init(&conf, &persist);
@@ -2973,6 +3026,7 @@ i32 main(i32 argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     g_one_shot = opts.have_prompt;
     ctx_init(&g_ctx);
+    ctx_set_window(&g_ctx, cfg.context_window);
     render_set_verbose(prefs.verbose_tools);
     md_set_raw(prefs.raw_markdown);
     b8 setup = no_provider(&cfg);

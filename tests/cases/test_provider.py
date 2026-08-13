@@ -58,9 +58,7 @@ def select_provider(ctx, name):
 
 
 def add_provider(s, ctx, name, url=None, key="sk-secret", api="openai",
-                 reasoning_efforts="", thinking_budgets="",
-                 reasoning_effort="", thinking_budget="",
-                 reasoning_template="", submit_key=True):
+                 submit_key=True):
     """Drive the creation form to the model picker.
 
     A key is followed by the store to keep it in; the default answer is the
@@ -79,17 +77,6 @@ def add_provider(s, ctx, name, url=None, key="sk-secret", api="openai",
     s.key("enter")
     if key is None:      # the URL was meant to be refused
         return s
-    for question, value in (
-        ("reasoning efforts", reasoning_efforts),
-        ("thinking budgets", thinking_budgets),
-        ("active reasoning effort", reasoning_effort),
-        ("active thinking budget", thinking_budget),
-        ("reasoning JSON template", reasoning_template),
-    ):
-        s.wait_text(question)
-        if value:
-            s.type(value).sync()
-        s.key("enter")
     s.wait_text("its API key")
     if key:
         s.type(key).sync()
@@ -131,37 +118,29 @@ def test_creating_a_provider_stores_it_and_switches_to_it(ctx):
     assert active(ctx) == "work", ctx.state()
 
 
-def test_creating_a_provider_includes_reasoning_options(ctx):
-    """Add exposes and stores every optional control that edit exposes."""
+def test_provider_creation_does_not_ask_for_model_capabilities(ctx):
+    """Provider setup owns transport; model capabilities are configured later."""
     ctx.scenario("models=alpha")
     s = ctx.spawn(cols=160)
     s.submit("/provider")
-    add_provider(
-        s, ctx, "work", reasoning_efforts="low,xhigh",
-        thinking_budgets="1024,2048", reasoning_effort="xhigh",
-        thinking_budget="1024",
-        reasoning_template='{"vendor":"$reasoning_effort"}',
-    )
+    add_provider(s, ctx, "work")
     s.wait_status("pick a model")
+    assert "reasoning efforts" not in s.text(), s.text()
     s.key("enter")
     s.wait_text("provider: work")
-
     assert store(ctx) == [{
         "name": "work", "base_url": ctx.mock.base_url, "model": "alpha",
-        "api": "openai", "reasoning_efforts": "low,xhigh",
-        "thinking_budgets": "1024,2048", "reasoning_effort": "xhigh",
-        "thinking_budget": "1024",
-        "reasoning_template": '{"vendor":"$reasoning_effort"}',
+        "api": "openai",
     }], store(ctx)
-    assert s.status_field(2) == "xhigh", s.status_line()
-    assert s.status_field(3) == "thinking 1024", s.status_line()
-    assert s.status_field(4) == "build", s.status_line()
 
 
 def test_a_provider_can_be_deleted_from_the_tui(ctx):
-    """Deletion removes its public settings and its stored credential."""
+    """Deletion removes its connection, model profiles, and credential."""
     write_provider(ctx, "work", ctx.mock.base_url, key="sk-work")
     write_provider(ctx, "home", ctx.mock.base_url, key="sk-home")
+    with ctx.config_file().open("a") as f:
+        f.write('[providers.home.models."mock-model"]\n'
+                'context_window = 12345\n')
     select_provider(ctx, "work")
     s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.submit("/provider")
@@ -174,6 +153,8 @@ def test_a_provider_can_be_deleted_from_the_tui(ctx):
     s.wait_text("deleted provider: home")
 
     assert [p["name"] for p in store(ctx)] == ["work"], store(ctx)
+    assert 'providers.home.models."mock-model"' not in \
+        ctx.settings(ctx.config_file())
     assert creds(ctx) == {"work": "sk-work"}, creds(ctx)
     assert active(ctx) == "work", ctx.state()
 
@@ -391,11 +372,14 @@ def test_an_anthropic_provider_configures_the_next_run(ctx):
     assert [m["role"] for m in body["messages"]] == ["user"], body["messages"]
 
 
-def test_provider_reasoning_controls_shape_requests(ctx):
-    """Selections follow their provider and use each native API's field."""
+def test_reasoning_controls_belong_to_the_exact_model(ctx):
+    """A provider-wide value is ignored; an exact model profile is applied."""
     write_provider(ctx, "open", ctx.mock.base_url, key="sk", api="openai")
     with ctx.config_file().open("a") as f:
-        f.write("reasoning_efforts = tiny,careful\nreasoning_effort = careful\n")
+        f.write("reasoning_efforts = wrong\nreasoning_effort = wrong\n"
+                '[providers.open.models."mock-model"]\n'
+                "reasoning_efforts = tiny,careful\n"
+                "reasoning_effort = careful\n")
     select_provider(ctx, "open")
     ctx.scenario("text=ok")
     s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
@@ -404,11 +388,31 @@ def test_provider_reasoning_controls_shape_requests(ctx):
     assert ctx.mock.requests[-1]["reasoning_effort"] == "careful"
 
 
+def test_an_unconfigured_model_does_not_inherit_reasoning(ctx):
+    """Switching models clears request controls from the model that left."""
+    write_provider(ctx, "open", ctx.mock.base_url, model="alpha", key="sk",
+                   api="openai")
+    with ctx.config_file().open("a") as f:
+        f.write('[providers.open.models."alpha"]\n'
+                "reasoning_efforts = low,high\nreasoning_effort = high\n")
+    select_provider(ctx, "open")
+    ctx.scenario("models=alpha|beta,text=ok")
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
+    s.submit("/model")
+    s.wait_status("pick a model")
+    s.key("down", "enter")
+    s.wait_text("model: beta")
+    s.submit("hello")
+    s.wait_turn_done()
+    assert "reasoning_effort" not in ctx.mock.requests[-1]
+
+
 def test_anthropic_effort_enables_visible_adaptive_thinking(ctx):
     """Anthropic efforts use output_config and request summarized thinking."""
     write_provider(ctx, "anth", ctx.mock.base_url, key="sk", api="anthropic")
     with ctx.config_file().open("a") as f:
-        f.write("reasoning_efforts = low,medium,high\nreasoning_effort = medium\n"
+        f.write('[providers.anth.models."mock-model"]\n'
+                "reasoning_efforts = low,medium,high\nreasoning_effort = medium\n"
                 "thinking_budgets = 1024\nthinking_budget = 1024\n")
     select_provider(ctx, "anth")
     ctx.scenario("text=ok")
@@ -418,41 +422,6 @@ def test_anthropic_effort_enables_visible_adaptive_thinking(ctx):
     body = ctx.mock.requests[-1]
     assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
     assert body["output_config"] == {"effort": "medium"}
-
-
-def test_provider_reasoning_controls_are_editable_in_the_tui(ctx):
-    """Editing keeps defaults and the key while optional controls may stay Off."""
-    write_provider(ctx, "work", ctx.mock.base_url, key="sk-kept", api="openai")
-    select_provider(ctx, "work")
-    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
-    s.submit("/provider")
-    s.wait_status("pick a provider")
-    s.key("down", "down", "enter")
-    s.wait_status("edit a provider")
-    s.key("enter")
-
-    s.wait_text("base URL  (Esc cancels)")
-    assert s.composer_text() == ctx.mock.base_url, s.composer_text()
-    s.key("enter").sync()
-    assert s.composer_text() == "mock-model", s.composer_text()
-    s.key("enter").sync()
-    s.type("low,high").key("enter").sync()
-    s.key("enter").sync()          # thinking budgets stay Off
-    s.type("high").key("enter").sync()
-    s.key("enter").sync()          # thinking budget stays Off
-    s.key("enter").sync()          # template stays Off
-    s.wait_status("which API does it speak")
-    s.key("enter")
-    s.wait_status("API key")
-    s.key("enter")                  # keep the credential already stored
-    s.wait_text("provider: work")
-
-    assert store(ctx) == [{
-        "name": "work", "base_url": ctx.mock.base_url,
-        "model": "mock-model", "api": "openai",
-        "reasoning_efforts": "low,high", "reasoning_effort": "high",
-    }], store(ctx)
-    assert creds(ctx) == {"work": "sk-kept"}, creds(ctx)
 
 
 def test_provider_answers_take_the_composer_editing_keys(ctx):
@@ -483,7 +452,6 @@ def test_provider_answers_take_the_composer_editing_keys(ctx):
     s.type("-2").sync()
     s.key("enter").sync()
 
-    s.key(*(["enter"] * 5))                    # the reasoning questions
     s.wait_status("which API does it speak")
     s.key("enter")
     s.wait_status("API key")
@@ -497,35 +465,6 @@ def test_provider_answers_take_the_composer_editing_keys(ctx):
     assert creds(ctx) == {"work": "sk-kept"}, creds(ctx)
 
 
-def test_provider_editor_clears_values_and_keeps_a_long_template(ctx):
-    """Empty is distinct from cancel, and templates are not clipped to 1 KiB."""
-    template = '{"padding":"' + "x" * 1200 + '"}'
-    write_provider(ctx, "work", ctx.mock.base_url, key="sk", api="openai")
-    with ctx.config_file().open("a") as f:
-        f.write("reasoning_efforts = low,high\nreasoning_effort = high\n"
-                f"reasoning_template = {template}\n")
-    select_provider(ctx, "work")
-    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
-    s.submit("/provider")
-    s.wait_status("pick a provider")
-    s.key("down", "down", "enter")
-    s.wait_status("edit a provider")
-    s.key("enter")
-    s.wait_text("base URL  (Esc cancels)")
-
-    s.key("enter", "enter", "enter", "enter", "ctrl-u", "enter",
-          "enter", "enter")
-    s.wait_status("which API does it speak")
-    s.key("enter")
-    s.wait_status("API key")
-    s.key("enter")
-    s.wait_text("provider: work")
-
-    saved = store(ctx)[0]
-    assert "reasoning_effort" not in saved, saved
-    assert saved["reasoning_template"] == template, len(saved["reasoning_template"])
-
-
 def test_provider_editor_can_clear_the_stored_key(ctx):
     """Clearing a credential is explicit and does not overload an empty answer."""
     write_provider(ctx, "work", ctx.mock.base_url, key="sk-remove", api="openai")
@@ -537,7 +476,7 @@ def test_provider_editor_can_clear_the_stored_key(ctx):
     s.wait_status("edit a provider")
     s.key("enter")
     s.wait_text("base URL  (Esc cancels)")
-    s.key(*(["enter"] * 7))
+    s.key("enter", "enter")
     s.wait_status("which API does it speak")
     s.key("enter")
     s.wait_status("API key")
@@ -552,7 +491,8 @@ def test_provider_reasoning_template_substitutes_a_number(ctx):
     """Templates are structured JSON, so a budget placeholder is a number."""
     write_provider(ctx, "custom", ctx.mock.base_url, key="sk", api="openai")
     with ctx.config_file().open("a") as f:
-        f.write("thinking_budgets = 17\nthinking_budget = 17\n"
+        f.write('[providers.custom.models."mock-model"]\n'
+                "thinking_budgets = 17\nthinking_budget = 17\n"
                 "reasoning_template = {\"vendor_budget\":\"$thinking_budget\",\"static\":true}\n")
     select_provider(ctx, "custom")
     ctx.scenario("text=ok")
@@ -567,7 +507,8 @@ def test_invalid_reasoning_template_never_reaches_the_provider(ctx):
     """Bad config is answered locally before an ambiguous request is sent."""
     write_provider(ctx, "bad", ctx.mock.base_url, key="sk")
     with ctx.config_file().open("a") as f:
-        f.write("reasoning_template = [not an object]\n")
+        f.write('[providers.bad.models."mock-model"]\n'
+                "reasoning_template = [not an object]\n")
     select_provider(ctx, "bad")
     s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.submit("hello")
@@ -579,7 +520,8 @@ def test_reasoning_template_rejects_trailing_garbage(ctx):
     """A valid JSON prefix does not make the whole template valid JSON."""
     write_provider(ctx, "bad", ctx.mock.base_url, key="sk")
     with ctx.config_file().open("a") as f:
-        f.write('reasoning_template = {"vendor":1} trailing\n')
+        f.write('[providers.bad.models."mock-model"]\n'
+                'reasoning_template = {"vendor":1} trailing\n')
     select_provider(ctx, "bad")
     s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.submit("hello")

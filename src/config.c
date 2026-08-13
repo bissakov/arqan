@@ -257,11 +257,8 @@ static void conf_apply_endpoint(Conf *c, Arena *persist, Arena *scratch) {
         conf_take(c, CONF_MODEL, e.model[i], CONF_FROM_ENDPOINT, where,
                   persist);
 
-    c->reasoning_efforts   = str_dup_opt(persist, e.reasoning_efforts[i]);
-    c->thinking_budgets    = str_dup_opt(persist, e.thinking_budgets[i]);
-    c->reasoning_effort    = str_dup_opt(persist, e.reasoning_effort[i]);
-    c->thinking_budget     = str_dup_opt(persist, e.thinking_budget[i]);
-    c->reasoning_template  = str_dup_opt(persist, e.reasoning_template[i]);
+    model_profile_load(&c->model_profile, name, conf_str(c, CONF_MODEL),
+                       persist, scratch);
     scratch->off = mark;
 
     char err[AGENT_MAX_PATH + 96] = {0};
@@ -344,16 +341,10 @@ b8 config_set_model(Config *c, Str model) {
 }
 
 b8 config_set_endpoint(Config *c, Str name, Str base_url, Str model,
-                       ApiKind api, Str key, Str efforts, Str budgets,
-                       Str effort, Str budget, Str templ) {
+                       ApiKind api, Str key) {
     if (!name.n || name.n > AGENT_MAX_ENDPOINT_NAME
         || !base_url.n || base_url.n > AGENT_MAX_URL
-        || model.n > AGENT_MAX_MODEL_NAME || key.n > AGENT_MAX_API_KEY
-        || efforts.n > AGENT_MAX_REASONING_LIST
-        || budgets.n > AGENT_MAX_REASONING_LIST
-        || effort.n > AGENT_MAX_REASONING_LIST
-        || budget.n > AGENT_MAX_REASONING_LIST
-        || templ.n > AGENT_MAX_REASONING_TEMPLATE)
+        || model.n > AGENT_MAX_MODEL_NAME || key.n > AGENT_MAX_API_KEY)
         return false;
 
     Str saved_name = config_owned(c->owned_provider,
@@ -362,21 +353,7 @@ b8 config_set_endpoint(Config *c, Str name, Str base_url, Str model,
                                  sizeof c->owned_base_url, base_url);
     Str saved_key = config_owned(c->owned_api_key,
                                  sizeof c->owned_api_key, key);
-    Str saved_efforts = config_owned(c->owned_reasoning_efforts,
-                                     sizeof c->owned_reasoning_efforts,
-                                     efforts);
-    Str saved_budgets = config_owned(c->owned_thinking_budgets,
-                                     sizeof c->owned_thinking_budgets,
-                                     budgets);
-    Str saved_effort = config_owned(c->owned_reasoning_effort,
-                                    sizeof c->owned_reasoning_effort, effort);
-    Str saved_budget = config_owned(c->owned_thinking_budget,
-                                    sizeof c->owned_thinking_budget, budget);
-    Str saved_templ = config_owned(c->owned_reasoning_template,
-                                   sizeof c->owned_reasoning_template, templ);
-    if (!saved_name.p || !saved_url.p || !saved_key.p || !saved_efforts.p
-        || !saved_budgets.p || !saved_effort.p || !saved_budget.p
-        || !saved_templ.p)
+    if (!saved_name.p || !saved_url.p || !saved_key.p)
         return false;
     if (model.n && !config_set_model(c, model)) return false;
 
@@ -385,11 +362,34 @@ b8 config_set_endpoint(Config *c, Str name, Str base_url, Str model,
     c->base_url_set = true;
     c->api = api;
     c->api_key = key.n ? saved_key : (Str){0};
-    c->reasoning_efforts = efforts.n ? saved_efforts : (Str){0};
-    c->thinking_budgets = budgets.n ? saved_budgets : (Str){0};
-    c->reasoning_effort = effort.n ? saved_effort : (Str){0};
-    c->thinking_budget = budget.n ? saved_budget : (Str){0};
-    c->reasoning_template = templ.n ? saved_templ : (Str){0};
+    return true;
+}
+
+b8 config_set_model_profile(Config *c, const ModelProfile *p) {
+    if (!c || !p || p->reasoning_efforts.n > AGENT_MAX_REASONING_LIST
+        || p->thinking_budgets.n > AGENT_MAX_REASONING_LIST
+        || p->reasoning_effort.n > AGENT_MAX_REASONING_LIST
+        || p->thinking_budget.n > AGENT_MAX_REASONING_LIST
+        || p->reasoning_template.n > AGENT_MAX_REASONING_TEMPLATE
+        || p->context_window > AGENT_MAX_CONTEXT_WINDOW) return false;
+    Str efforts = config_owned(c->owned_reasoning_efforts,
+        sizeof c->owned_reasoning_efforts, p->reasoning_efforts);
+    Str budgets = config_owned(c->owned_thinking_budgets,
+        sizeof c->owned_thinking_budgets, p->thinking_budgets);
+    Str effort = config_owned(c->owned_reasoning_effort,
+        sizeof c->owned_reasoning_effort, p->reasoning_effort);
+    Str budget = config_owned(c->owned_thinking_budget,
+        sizeof c->owned_thinking_budget, p->thinking_budget);
+    Str templ = config_owned(c->owned_reasoning_template,
+        sizeof c->owned_reasoning_template, p->reasoning_template);
+    if (!efforts.p || !budgets.p || !effort.p || !budget.p || !templ.p)
+        return false;
+    c->reasoning_efforts = p->reasoning_efforts.n ? efforts : (Str){0};
+    c->thinking_budgets = p->thinking_budgets.n ? budgets : (Str){0};
+    c->reasoning_effort = p->reasoning_effort.n ? effort : (Str){0};
+    c->thinking_budget = p->thinking_budget.n ? budget : (Str){0};
+    c->reasoning_template = p->reasoning_template.n ? templ : (Str){0};
+    c->context_window = p->context_window;
     return true;
 }
 
@@ -430,11 +430,12 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
     Str tools = conf_str(conf, CONF_DISABLE_TOOLS);
     c->disable_tools = str_eq(tools, STR("none")) ? (Str){0} : tools;
 
-    c->reasoning_efforts   = conf->reasoning_efforts;
-    c->thinking_budgets    = conf->thinking_budgets;
-    c->reasoning_effort    = conf->reasoning_effort;
-    c->thinking_budget     = conf->thinking_budget;
-    c->reasoning_template  = conf->reasoning_template;
+    c->reasoning_efforts   = conf->model_profile.reasoning_efforts;
+    c->thinking_budgets    = conf->model_profile.thinking_budgets;
+    c->reasoning_effort    = conf->model_profile.reasoning_effort;
+    c->thinking_budget     = conf->model_profile.thinking_budget;
+    c->reasoning_template  = conf->model_profile.reasoning_template;
+    c->context_window      = conf->model_profile.context_window;
 
     /* A prompt is a document rather than a setting, so it has no row in the
      * table; the variable and --system are the only ways to pass one. */

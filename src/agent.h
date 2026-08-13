@@ -514,11 +514,6 @@ typedef struct {
     Str     name[AGENT_MAX_ENDPOINTS];
     Str     base_url[AGENT_MAX_ENDPOINTS];
     Str     model[AGENT_MAX_ENDPOINTS];
-    Str     reasoning_efforts[AGENT_MAX_ENDPOINTS];
-    Str     thinking_budgets[AGENT_MAX_ENDPOINTS];
-    Str     reasoning_effort[AGENT_MAX_ENDPOINTS];
-    Str     thinking_budget[AGENT_MAX_ENDPOINTS];
-    Str     reasoning_template[AGENT_MAX_ENDPOINTS];
     ApiKind api[AGENT_MAX_ENDPOINTS];
     size_t  n;
 } Endpoints;
@@ -533,12 +528,10 @@ size_t endpoints_find(const Endpoints *e, Str name);
 b8     endpoint_name_ok(Str name);
 // False when the store is full or a field is past its cap.
 b8     endpoints_put(Endpoints *e, Str name, Str base_url, Str model,
-                     ApiKind api, Str efforts, Str budgets, Str effort,
-                     Str budget, Str templ, Arena *a);
+                     ApiKind api, Arena *a);
 // Writes one endpoint's section, leaving the rest of the config file alone.
 b8     endpoints_save_one(Str name, Str base_url, Str model, ApiKind api,
-                          Str efforts, Str budgets, Str effort, Str budget,
-                          Str templ, Arena *scratch);
+                          Arena *scratch);
 // Where /model writes while a provider is active.
 b8     endpoints_remember_model(Str name, Str model, Arena *scratch);
 /* The key stored for `name`, allocated in `out`. Empty when there is none,
@@ -557,6 +550,24 @@ b8     endpoints_set_key(Str name, Str key, SecretSource src, Arena *scratch,
 b8     endpoints_delete(Str name, Arena *scratch, char *err, size_t err_cap);
 // An empty name forgets the active provider.
 b8     endpoints_remember_active(Str name, Arena *scratch);
+
+/* Optional user-owned capabilities for one exact (provider, model) pair.
+ * Missing fields stay unavailable rather than being inferred from names. */
+typedef struct {
+    Str reasoning_efforts, thinking_budgets;
+    Str reasoning_effort, thinking_budget, reasoning_template;
+    size_t context_window;
+    b8 configured;
+} ModelProfile;
+
+/* Every returned string lives in `out`; file parsing uses `scratch`. The two
+ * arenas may be the same. A missing or invalid profile is all zeroes. */
+void model_profile_load(ModelProfile *p, Str provider, Str model, Arena *out,
+                        Arena *scratch);
+b8   model_profile_save(Str provider, Str model, const ModelProfile *p,
+                        Arena *scratch);
+// Removes the user-configured profiles nested under one provider.
+b8   model_profiles_delete(Str provider, Arena *scratch);
 
 /* ---- agent modes ---------------------------------------------------------
  * Build carries the work out; Plan reads and proposes, handing over through
@@ -634,10 +645,7 @@ typedef enum {
 typedef struct {
     Str val[CONF_N];
     u8  origin[CONF_N];
-    /* The active provider's reasoning controls. Only a provider defines
-     * these, so they are its section's rather than the table's. */
-    Str reasoning_efforts, thinking_budgets;
-    Str reasoning_effort, thinking_budget, reasoning_template;
+    ModelProfile model_profile;
 } Conf;
 
 /* Reads every source in precedence order. Values are copied into `persist`;
@@ -727,6 +735,7 @@ typedef struct {
     Str reasoning_efforts, thinking_budgets;
     Str reasoning_effort, thinking_budget;
     Str reasoning_template;
+    size_t context_window;
     /* A run with neither this nor a key has nothing to talk to, and asks for
      * a provider instead of starting a conversation. */
     b8  base_url_set;
@@ -768,8 +777,8 @@ b8    config_remember_model(Str model, Arena *scratch);
 // Runtime choices are copied into Config itself and survive /clear.
 b8    config_set_model(Config *c, Str model);
 b8    config_set_endpoint(Config *c, Str name, Str base_url, Str model,
-                          ApiKind api, Str key, Str efforts, Str budgets,
-                          Str effort, Str budget, Str templ);
+                          ApiKind api, Str key);
+b8    config_set_model_profile(Config *c, const ModelProfile *p);
 b8    config_set_reasoning(Config *c, b8 effort, Str value);
 
 
@@ -1166,11 +1175,10 @@ typedef struct {
 i32     provider_run(Provider *p, char *err, size_t err_cap);
 
 /* Model ids from GET <base_url>/models, in the order the endpoint serves
- * them, allocated in `scratch`. When `window` is given it receives each
- * model's context window as the listing states it, or 0 where the endpoint
- * does not publish one. Zero with `err` set when it could not be read. */
+ * them, allocated in `scratch`. Zero with `err` set when it could not be
+ * read. Model capabilities deliberately do not come from this listing. */
 size_t  provider_models(const Config *cfg, Arena *scratch, Str *out,
-                        size_t *window, size_t max, char *err, size_t err_cap);
+                        size_t max, char *err, size_t err_cap);
 
 /* ---- context gauge ------------------------------------------------------
  * What the status line's context field reports.
@@ -1207,7 +1215,7 @@ void ctx_note_usage(CtxGauge *g, const Conv *c, size_t prompt_tokens);
 /* The model or the provider changed: keep the fit as a starting point and
  * drop what described the model that left. */
 void ctx_model_changed(CtxGauge *g);
-/* A window discovered from an endpoint's model listing. Zero, or a value no
+/* A user-configured window for the exact active model. Zero, or a value no
  * context window can be, leaves it unknown. */
 void ctx_set_window(CtxGauge *g, size_t window);
 /* Paint the field for `c`, exactly when the last measurement still covers
@@ -1280,25 +1288,25 @@ b8 tui_pick_notice(Str title, Str notice, const TuiCmd *items, size_t n,
 b8 tui_pick_search_count(Str title, const TuiCmd *items, size_t n,
                          size_t search_n, TuiPickAnchor anchor, size_t start,
                          size_t *out);
-/* A row action a chooser offers beside choosing. `key` is the byte it answers
- * to, one of the action keys the picker binds: Ctrl-F (0x06) marks a row,
- * Ctrl-X (0x18) removes one. `act` acts on the row `row` names, rebuilds
- * `rows` and returns the new count, at most `max`; it writes to `*moved` the
- * index the acted-on row now sits at, since an action may reorder the list,
- * and returning zero closes the screen because nothing is left to choose.
- * `hint` is shown in the notice slot while the screen is open, so a key only
- * this list offers is read where it is used; it is dropped when the screen
- * closes and an answer already in the slot keeps its place. The caller owns
- * `rows` and `ud` and keeps both alive for the call. */
 typedef struct {
-    TuiCmd *rows;
-    size_t  max;
     size_t (*act)(void *ud, size_t row, size_t *moved);
     void   *ud;
     i32     key;
+} TuiPickBinding;
+/* Key actions a chooser offers beside choosing. A binding receives the
+ * selected row, or SIZE_MAX when filtering left no selection. It rebuilds
+ * the rows and returns their new count; zero closes the picker. `moved`
+ * follows a row reordered by the action. `hint` is shown while the picker is
+ * open, so its otherwise invisible keys are discoverable. The caller owns
+ * every pointer for the duration of the call. */
+typedef struct {
+    TuiCmd *rows;
+    size_t  max;
+    const TuiPickBinding *bindings;
+    size_t  n_bindings;
     Str     hint;
 } TuiPickAction;
-// As tui_pick_search_count over `act->rows`, with that action bound.
+// As tui_pick_search_count over `act->rows`, with its key actions bound.
 b8 tui_pick_action(Str title, size_t n, size_t search_n, TuiPickAnchor anchor,
                    size_t start, const TuiPickAction *act, size_t *out);
 /* The settings screen: the same list, read rather than chosen from. Space,

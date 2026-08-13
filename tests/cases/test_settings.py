@@ -150,10 +150,11 @@ def test_space_toggles_the_selected_row_only(ctx):
 
 
 def test_reasoning_rows_do_not_shift_tool_toggle_ids(ctx):
-    """A tool row still changes that tool when provider controls precede it."""
+    """A tool row still changes that tool when model controls precede it."""
     write_provider(ctx, "work", ctx.mock.base_url, key="sk", api="openai")
     with ctx.config_file().open("a") as f:
-        f.write("reasoning_efforts = low,high\nreasoning_effort = high\n")
+        f.write('[providers.work.models."mock-model"]\n'
+                "reasoning_efforts = low,high\nreasoning_effort = high\n")
     select_provider(ctx, "work")
     s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.open_settings().settings_select("bash")
@@ -163,10 +164,11 @@ def test_reasoning_rows_do_not_shift_tool_toggle_ids(ctx):
 
 
 def test_a_reasoning_row_lists_off_and_every_configured_effort(ctx):
-    """The provider's own list is the row's options, Off among them."""
+    """The exact model's list is the row's options, Off among them."""
     write_provider(ctx, "work", ctx.mock.base_url, key="sk", api="openai")
     with ctx.config_file().open("a") as f:
-        f.write("reasoning_efforts = low,high\nreasoning_effort = high\n")
+        f.write('[providers.work.models."mock-model"]\n'
+                "reasoning_efforts = low,high\nreasoning_effort = high\n")
     select_provider(ctx, "work")
     s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.open_settings().settings_select("Reasoning effort")

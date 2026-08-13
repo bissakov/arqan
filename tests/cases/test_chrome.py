@@ -153,6 +153,7 @@ def test_status_names_active_reasoning_controls(ctx):
         f"[providers.local-chatgpt]\n"
         f"base_url = {ctx.mock.base_url}\n"
         "model = gpt-5.6-terra\n"
+        '[providers.local-chatgpt.models."gpt-5.6-terra"]\n'
         "reasoning_efforts = low,xhigh\n"
         "reasoning_effort = xhigh\n"
         "thinking_budgets = 1024,2048\n"

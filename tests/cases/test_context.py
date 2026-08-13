@@ -76,52 +76,52 @@ def test_clearing_the_conversation_drops_what_it_carried(ctx):
     s.wait_for(lambda t: tokens(s) < before - 500, "the emptied conversation")
 
 
-def test_a_published_window_is_shown_beside_the_count(ctx):
-    """The /models listing is the free source of a context window."""
-    ctx.scenario("models=alpha|beta,model_window=200000,text=ok,"
-                 "usage=5000/100")
+def test_a_configured_model_window_is_shown_beside_the_count(ctx):
+    """The user-owned exact model profile supplies the context window."""
+    config = ctx.config_file()
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text('[providers.work]\n'
+                      f'base_url = {ctx.mock.base_url}\nmodel = alpha\n'
+                      '[providers.work.models."alpha"]\n'
+                      'context_window = 200000\n')
+    state = ctx.state_file()
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text("provider = work\n")
+    ctx.scenario("text=ok,usage=5000/100")
     s = ctx.spawn(ARQAN_MODEL="alpha")
     s.submit("hello")
     s.wait_turn_done()
-    assert "/" not in field(s), "nothing has listed the models yet"
-    s.submit("/model")
-    s.wait_status("pick a model")
-    s.key("down").sync()
-    s.key("enter")
-    s.wait_for(lambda t: field(s).endswith("/200k"), "the published window")
+    s.wait_for(lambda t: field(s).endswith("/200k"), "the configured window")
 
 
-def test_each_endpoint_publishes_the_window_under_its_own_name(ctx):
-    """One endpoint's field name is another's; the listing is read for all of
-    the names endpoints actually use."""
-    for key in ("max_input_tokens", "context_window", "max_model_len",
-                "loaded_context_length", "top_provider"):
-        ctx.scenario(f"models=alpha|beta,text=ok,model_window=128000,"
-                     f"model_window_key={key}")
-        s = ctx.spawn(ARQAN_MODEL="alpha")
-        s.submit("hello")
-        s.wait_turn_done()
-        s.submit("/model")
-        s.wait_status("pick a model")
-        s.key("down").sync()
-        s.key("enter")
-        s.wait_text("model: beta")
-        s.wait_for(lambda t: field(s).endswith("/128k"), f"window from {key}")
-        s.submit("/exit")
-        s.wait_exit()
-
-
-def test_a_window_no_model_could_have_is_refused(ctx):
-    """A listing states the window; a number that cannot be one is dropped
-    rather than believed or clamped."""
-    ctx.scenario("models=alpha|beta,model_window=9000000000,text=ok,"
-                 "usage=5000/100")
+def test_a_models_listing_does_not_define_the_window(ctx):
+    """Non-standard listing metadata is not a user-owned model profile."""
+    ctx.scenario("models=alpha|beta,text=ok,model_window=128000,"
+                 "model_window_key=context_window,usage=5000/100")
     s = ctx.spawn(ARQAN_MODEL="alpha")
     s.submit("/model")
     s.wait_status("pick a model")
-    s.key("down").sync()
-    s.key("enter")
+    s.key("down", "enter")
     s.wait_text("model: beta")
+    s.submit("hello")
+    s.wait_turn_done()
+    assert "/" not in field(s), field(s)
+
+
+def test_a_window_no_model_could_have_is_refused(ctx):
+    """An invalid configured window is dropped rather than clamped."""
+    config = ctx.config_file()
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text('[providers.work]\n'
+                      f'base_url = {ctx.mock.base_url}\nmodel = alpha\n'
+                      '[providers.work.models."alpha"]\n'
+                      'context_window = 9000000000\n')
+    state = ctx.state_file()
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text("provider = work\n")
+    ctx.scenario("text=ok,usage=5000/100")
+    s = ctx.spawn(ARQAN_MODEL="alpha", ARQAN_BASE_URL=None,
+                  ARQAN_API_KEY=None)
     s.submit("hello")
     s.wait_turn_done()
     assert "/" not in field(s), field(s)
