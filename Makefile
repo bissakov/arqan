@@ -24,14 +24,15 @@ HL_PARSE := $(addprefix build/highlight/,$(addsuffix -parser.o,$(HL_LANG)))
 HL_SCAN_LANG := cpp rust python javascript typescript tsx bash toml yaml
 HL_SCAN := $(addprefix build/highlight/,$(addsuffix -scanner.o,$(HL_SCAN_LANG)))
 HL_OBJ  := $(HL_OWN) build/highlight/tree-sitter.o $(HL_PARSE) $(HL_SCAN)
-HL_CPPFLAGS := -Isrc -Ihighlight -Ivendor/tree-sitter/include
+HL_CPPFLAGS := -Isrc -Ihighlight -Ivendor/tree-sitter/include \
+               -Ivendor/tree-sitter/runtime
 VENDOR_CFLAGS ?= -std=c17 -O2 -fno-strict-aliasing -pipe -w \
                  -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L
 
 PYTHON  ?= python3
 
 .PHONY: all minimal clean run test test-update test-asan mock bench bench-slow \
-        bench-baseline
+        bench-baseline package-linux test-package-linux release-linux
 
 all: $(BIN) $(HL_BIN)
 
@@ -131,6 +132,15 @@ bench-slow: all
 bench-baseline: all
 	$(PYTHON) -m bench.run --slow --json bench-baseline.json $(B)
 
+package-linux: all
+	./scripts/package-linux.sh
+
+test-package-linux: package-linux
+	$(PYTHON) tests/package_linux.py
+
+release-linux:
+	./scripts/release-linux.sh
+
 clean:
-	rm -rf build bin
+	rm -rf build bin dist
 	rm -rf tests/__pycache__ tests/*/__pycache__

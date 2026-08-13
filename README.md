@@ -26,6 +26,60 @@ arqan --disable-tools bash,write,patch
 arqan --disable-tools internet_search,page_fetch
 ```
 
+## Linux installation
+
+The project release is for Linux x86_64 systems with glibc 2.31 or newer,
+`libcurl.so.4` from libcurl 7.66 or newer, and a system CA certificate bundle.
+macOS, Windows, aarch64, native `.deb`/`.rpm` packages, and fully static builds
+are not part of this release milestone.
+
+Download both files for a release, verify the archive, and extract it:
+
+```sh
+sha256sum -c arqan-X.Y.Z-linux-x86_64.tar.gz.sha256
+tar -xzf arqan-X.Y.Z-linux-x86_64.tar.gz
+cd arqan-X.Y.Z-linux-x86_64
+```
+
+The extracted archive is self-contained. Run `./bin/arqan` directly without
+installing, or install both executables and their documentation for the current
+user:
+
+```sh
+./install.sh
+export PATH="$HOME/.local/bin:$PATH"
+arqan
+```
+
+On first launch, use `/provider` to configure an endpoint. For a system-wide
+installation, choose the prefix explicitly and invoke `sudo` yourself:
+
+```sh
+sudo ./install.sh --prefix /usr/local
+```
+
+Upgrade by running `install.sh` from a newer archive with the same prefix.
+Uninstall using that prefix, for example `./install.sh --uninstall` or
+`sudo ./install.sh --prefix /usr/local --uninstall`.
+
+Uninstall removes only the installed programs and documentation. It preserves
+configuration under `${XDG_CONFIG_HOME:-$HOME/.config}/arqan`, state and
+credentials under `${XDG_STATE_HOME:-$HOME/.local/state}/arqan`, sessions under
+`${XDG_DATA_HOME:-$HOME/.local/share}/arqan`, and project `.arqan` directories.
+
+A source checkout uses the same installer after building:
+
+```sh
+make
+./install.sh
+```
+
+Maintainers can run `make package-linux` to package binaries built on the local
+Linux x86_64 host. `make release-linux` (or `scripts/release-linux.sh`) performs
+a clean build, all tests, and packaging in the pinned Debian 11 compatibility
+container. `make test-package-linux` runs the package and installer regression
+suite against the local artifact.
+
 ## Configure
 
 On first launch, use `/provider` to add an endpoint. Alternatively set:
