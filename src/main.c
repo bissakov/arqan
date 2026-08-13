@@ -76,6 +76,7 @@ static size_t commands_init(void) {
     g_commands[n++] = (TuiCmd){ STR("/about"), STR("About " AGENT_NAME " and its contributors") };
     g_commands[n++] = (TuiCmd){ STR("/help"), STR("Start a conversation about using " AGENT_NAME) };
     g_commands[n++] = (TuiCmd){ STR("/exit"), STR("Quit " AGENT_NAME) };
+    g_commands[n++] = (TuiCmd){ STR("/export"), STR("Export this session as Markdown") };
     g_command_n = n;
     return n;
 }
@@ -1240,6 +1241,21 @@ static void notice_fmt(const char *fmt, ...) {
     if (len <= 0) return;
     size_t n = (size_t)len < sizeof msg ? (size_t)len : sizeof msg - 1;
     tui_notice((Str){ msg, n });
+}
+
+static void export_session(const Conv *conv, Str requested) {
+    if (conv->n <= 1) {
+        tui_notice(STR("nothing to export yet"));
+        return;
+    }
+    char path[AGENT_MAX_PATH];
+    char err[256];
+    if (!session_export_markdown(conv, requested, path, sizeof path,
+                                 err, sizeof err)) {
+        notice_fmt("could not export session: %s", err);
+        return;
+    }
+    notice_fmt("exported session to %s", path);
 }
 
 static b8 command_offered(Str name) {
@@ -3058,6 +3074,10 @@ i32 main(i32 argc, char **argv) {
         }
         if (!strcmp(line, "/copy")) {
             copy_last_reply(&conv);
+            continue;
+        }
+        if (!strcmp(line, "/export") || !strncmp(line, "/export ", 8)) {
+            export_session(&conv, (Str){ line + 7, ln - 7 });
             continue;
         }
         if (!strcmp(line, "/settings")) {

@@ -1,6 +1,7 @@
 #include "agent.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -199,6 +200,162 @@ b8 session_fork(Session *s, const Conv *c) {
     if (!session_begin(s)) return false;
     session_save(s, c);
     return s->written >= c->n;
+}
+
+static b8 export_put(FILE *f, Str s) {
+    return !s.n || fwrite(s.p, 1, s.n, f) == s.n;
+}
+
+static b8 export_text_section(FILE *f, const char *heading, Str text) {
+    if (fprintf(f, "\n## %s\n\n", heading) < 0 || !export_put(f, text))
+        return false;
+    return text.n && text.p[text.n - 1] == '\n' ? true : fputc('\n', f) != EOF;
+}
+
+/* A fence longer than any run in the body keeps arbitrary tool text from
+ * closing its own block. */
+static size_t export_fence_len(Str body) {
+    size_t longest = 0, run = 0;
+    for (size_t i = 0; i < body.n; i++) {
+        if (body.p[i] == '`') {
+            run++;
+            if (run > longest) longest = run;
+        } else {
+            run = 0;
+        }
+    }
+    return longest < 3 ? 3 : longest + 1;
+}
+
+static b8 export_code(FILE *f, Str language, Str body) {
+    size_t fence = export_fence_len(body);
+    for (size_t i = 0; i < fence; i++) if (fputc('`', f) == EOF) return false;
+    if (!export_put(f, language) || fputc('\n', f) == EOF || !export_put(f, body))
+        return false;
+    if ((!body.n || body.p[body.n - 1] != '\n') && fputc('\n', f) == EOF)
+        return false;
+    for (size_t i = 0; i < fence; i++) if (fputc('`', f) == EOF) return false;
+    return fputc('\n', f) != EOF;
+}
+
+static Str export_call_name(const Conv *c, size_t result) {
+    for (size_t i = result; i-- > 0;)
+        if (conv_is_call(c, i)
+            && str_eq(c->tool_call_id[i], c->tool_call_id[result]))
+            return c->tool_name[i];
+    return STR("tool");
+}
+
+static b8 export_tool_section(FILE *f, const char *kind, Str name,
+                              Str language, Str body) {
+    if (fprintf(f, "\n## %s", kind) < 0) return false;
+    if (name.n) {
+        if (fputs(": `", f) == EOF || !export_put(f, name)
+            || fputs("`", f) == EOF)
+            return false;
+    }
+    return fputs("\n\n", f) != EOF && export_code(f, language, body);
+}
+
+static b8 export_markdown(FILE *f, const Conv *c) {
+    if (fputs("# " AGENT_NAME " session\n", f) == EOF) return false;
+    for (size_t i = 0; i < c->n; i++) {
+        switch (c->role[i]) {
+            case M_SYSTEM:
+                break;
+            case M_USER:
+                if (conv_is_shell(c, i)) {
+                    if (!export_tool_section(f, "Shell", (Str){0}, STR("sh"),
+                                             c->text[i])
+                        || !export_tool_section(f, "Shell output", (Str){0},
+                                                STR("text"), c->shell_out[i]))
+                        return false;
+                } else if (!export_text_section(f, "User", c->text[i])) {
+                    return false;
+                }
+                break;
+            case M_ASSISTANT:
+                if (conv_is_call(c, i)) {
+                    if (!export_tool_section(f, "Tool call", c->tool_name[i],
+                                             STR("json"), c->text[i]))
+                        return false;
+                } else if (c->text[i].n
+                           && !export_text_section(f, "Assistant", c->text[i])) {
+                    return false;
+                }
+                break;
+            case M_TOOL:
+                if (!export_tool_section(f, "Tool result",
+                                         export_call_name(c, i), STR("text"),
+                                         c->text[i]))
+                    return false;
+                break;
+        }
+    }
+    return !ferror(f);
+}
+
+static b8 export_auto_path(char *path, size_t cap, char *err, size_t err_cap) {
+    time_t now = time(NULL);
+    struct tm tm;
+    if (!localtime_r(&now, &tm)) {
+        snprintf(err, err_cap, "could not create an automatic file name");
+        return false;
+    }
+    char stamp[32];
+    i32 n = snprintf(stamp, sizeof stamp, "%04d%02d%02d-%02d%02d%02d",
+                     tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                     tm.tm_hour, tm.tm_min, tm.tm_sec);
+    if (n <= 0 || (size_t)n >= sizeof stamp) return false;
+    for (i32 suffix = 1; suffix <= 999; suffix++) {
+        n = suffix == 1
+          ? snprintf(path, cap, AGENT_NAME "-session-%s.md", stamp)
+          : snprintf(path, cap, AGENT_NAME "-session-%s-%d.md", stamp, suffix);
+        if (n <= 0 || (size_t)n >= cap) break;
+        if (access(path, F_OK) != 0) {
+            if (errno == ENOENT) return true;
+            snprintf(err, err_cap, "could not inspect export path: %s",
+                     strerror(errno));
+            return false;
+        }
+    }
+    snprintf(err, err_cap, "could not choose an unused export file name");
+    return false;
+}
+
+b8 session_export_markdown(const Conv *c, Str requested,
+                           char *path, size_t path_cap,
+                           char *err, size_t err_cap) {
+    requested = str_trim(requested);
+    if (requested.n) {
+        if (requested.n >= path_cap) {
+            snprintf(err, err_cap, "export path is too long");
+            return false;
+        }
+        memcpy(path, requested.p, requested.n);
+        path[requested.n] = '\0';
+    } else if (!export_auto_path(path, path_cap, err, err_cap)) {
+        return false;
+    }
+
+    char tmp[AGENT_MAX_PATH];
+    i32 n = snprintf(tmp, sizeof tmp, "%s." AGENT_NAME "-tmp", path);
+    if (n <= 0 || (size_t)n >= sizeof tmp) {
+        snprintf(err, err_cap, "export path is too long");
+        return false;
+    }
+    FILE *f = fopen(tmp, "wb");
+    if (!f) {
+        snprintf(err, err_cap, "could not open export file: %s", strerror(errno));
+        return false;
+    }
+    b8 ok = export_markdown(f, c);
+    if (fclose(f) != 0) ok = false;
+    if (ok && rename(tmp, path) == 0) return true;
+    i32 saved = errno;
+    unlink(tmp);
+    snprintf(err, err_cap, "could not write export file: %s", strerror(saved));
+    return false;
 }
 
 /* Single-line preview of a session: its first user prompt, flattened. Only

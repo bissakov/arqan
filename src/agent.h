@@ -1085,6 +1085,14 @@ void   session_save(Session *s, const Conv *c);
 /* Continue in a new file holding the conversation whole, leaving the one it
  * was appending to as it is. */
 b8     session_fork(Session *s, const Conv *c);
+/* Writes the conversation as Markdown. `requested` names the output file;
+ * empty chooses a timestamped name in the working directory. The system
+ * prompt and private thinking are omitted. On success `path` receives the
+ * NUL-terminated path used. A failed write leaves an existing destination
+ * unchanged and fills `err`. */
+b8     session_export_markdown(const Conv *c, Str requested,
+                               char *path, size_t path_cap,
+                               char *err, size_t err_cap);
 /* Up to `max` saved sessions for this directory, most recently written
  * first, held in `a`. Returns how many were listed. */
 size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max);

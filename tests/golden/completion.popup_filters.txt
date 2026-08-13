@@ -16,8 +16,8 @@
 |
 |
 |
-|
-|  › /exit  Quit arqan
+|  › /exit    Quit arqan
+|    /export  Export this session as Markdown
 |
 |  › /e
 |
