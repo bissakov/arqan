@@ -1,8 +1,3 @@
-/* tools.c: SoA tool registry and the built-in tools.
- *
- * A ToolRun receives raw JSON args, a scratch arena the agent loop resets per
- * turn, an output Buf and an error buffer.
- */
 #include "agent.h"
 
 #include <ctype.h>
@@ -21,7 +16,6 @@
 #include <signal.h>
 
 /* ---- argument helpers ---------------------------------------------------- */
-/* Every tool starts here: the arguments as an object, or NULL with `err` set. */
 static JVal *tool_args(Str args, Arena *scratch, char *err, size_t err_cap) {
     JVal *j = json_parse(scratch, args);
     if (!j) snprintf(err, err_cap, "bad args json");
@@ -46,7 +40,6 @@ static b8 arg_cstr(Str s, char *z, size_t cap, const char *what,
     return true;
 }
 
-/* file_read validates the size; this is where a tool says what went wrong. */
 static b8 slurp(const char *z, Arena *scratch, Str *out,
                 char *err, size_t err_cap) {
     u64 size = 0;
@@ -524,7 +517,6 @@ typedef struct {
     b8     unlink_it;
 } PatchFile;
 
-/* The body as the hunk after this one has to read it. */
 static Str patch_body(const PatchFile *f) { return (Str){ f->body.p, f->body.n }; }
 
 typedef struct {
@@ -888,7 +880,6 @@ static void walk_grep_file(Walk *w) {
     }
 }
 
-/* One regular file the walk reached, or the one it was pointed at. */
 static void walk_file(Walk *w, const char *base) {
     if (!name_matches(w, base)) return;
     if (w->pattern.n) { walk_grep_file(w); return; }
@@ -904,7 +895,6 @@ static void walk_file(Walk *w, const char *base) {
     buf_putf(w->out, "%s\n", walk_shown(w));
 }
 
-/* Appends "/name" to the walked path and restores it afterwards. */
 static b8 walk_enter(Walk *w, const char *name, size_t n) {
     if (w->path_n + n + 2 >= sizeof w->path) return false;
     w->path[w->path_n] = '/';
@@ -924,7 +914,6 @@ static b8 walk_dir(Walk *w, i32 depth) {
     size_t n = 0;
     struct dirent *de;
     while (ent && n < AGENT_WALK_ENTRIES && (de = readdir(d))) {
-        /* .git alone would be most of the walk. */
         if (de->d_name[0] == '.') continue;
         Str name = str_dup(w->names, str_c(de->d_name));
         if (!name.p) break;
@@ -977,7 +966,6 @@ static b8 walk_dir(Walk *w, i32 depth) {
     return room;
 }
 
-/* The root a search starts from, refused when it leaves nothing to search. */
 static b8 walk_start(Walk *w, Str root, char *err, size_t err_cap) {
     char rel[AGENT_MAX_PATH];
     if (!root.n) root = STR(".");

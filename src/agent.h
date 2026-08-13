@@ -1,4 +1,3 @@
-/* agent.h: umbrella header. Every module includes this. */
 #ifndef AGENT_H
 #define AGENT_H
 
@@ -34,67 +33,67 @@ typedef bool     b8;
 /* ---- capacities (compile-time, no growth) ------------------------------- */
 /* Both arenas are static storage, so this is address space rather than
  * startup cost, sized an order of magnitude above the per-turn peak. */
-#define AGENT_ARENA_BYTES      (1u << 27)  /* 128 MiB scratch arena            */
-#define AGENT_PERSIST_BYTES    (1u << 26)  /* 64  MiB persistent arena         */
+#define AGENT_ARENA_BYTES      (1u << 27)
+#define AGENT_PERSIST_BYTES    (1u << 26)
 /* The rows of a modal screen, which outlive an action that rerenders the
  * transcript from the scratch arena; see choose_settings. */
-#define AGENT_SCREEN_BYTES     (1u << 15)  /* 32  KiB modal screen arena       */
-#define AGENT_MAX_MESSAGES     4096        /* default; see Config.max_messages   */
+#define AGENT_SCREEN_BYTES     (1u << 15)
+#define AGENT_MAX_MESSAGES     4096
 /* A reply that reaches this stops mid-sentence, so the default is above what
  * a long answer or a large patch needs rather than at a provider's minimum. */
-#define AGENT_MAX_TOKENS       32768       /* default; see Config.max_tokens    */
+#define AGENT_MAX_TOKENS       32768
 #define AGENT_MAX_TOOLS        64
-#define AGENT_MAX_TOOL_CALLS   1024        /* per turn                          */
+#define AGENT_MAX_TOOL_CALLS   1024
 #define AGENT_MAX_TOOL_ARGS    8
-#define AGENT_MAX_JSON_DEPTH   64          /* nesting a provider may hand us    */
-#define AGENT_MAX_PATH         4096        /* longest path a tool will accept   */
-#define AGENT_MAX_COMMAND      (1u << 16)  /* longest shell command             */
-#define AGENT_MAX_FILE_BYTES   (16u << 20) /* largest file a tool will read     */
+#define AGENT_MAX_JSON_DEPTH   64
+#define AGENT_MAX_PATH         4096
+#define AGENT_MAX_COMMAND      (1u << 16)
+#define AGENT_MAX_FILE_BYTES   (16u << 20)
 /* A tool result is replayed on every later turn, so each cap below makes one
  * call a page rather than a file; the call says where to continue. */
-#define AGENT_TOOL_RESULT_BYTES (8u << 10) /* hard cap, including paging notes   */
-#define AGENT_READ_LINES       2000        /* lines one read returns by default  */
+#define AGENT_TOOL_RESULT_BYTES (8u << 10)
+#define AGENT_READ_LINES       2000
 /* Leave enough room under the result cap for a continuation/status line. */
 #define AGENT_READ_BYTES       (AGENT_TOOL_RESULT_BYTES - 256u)
 /* One page of shell output, with room for its notes and a spill line. */
 #define AGENT_SHELL_OUT_BYTES  (AGENT_TOOL_RESULT_BYTES - 256u \
                                 - AGENT_SPILL_NOTE_BYTES)
-#define AGENT_GREP_RESULTS     100         /* matches one grep returns by default*/
-#define AGENT_FIND_RESULTS     200         /* paths one find returns by default  */
-#define AGENT_GREP_LINE        200         /* of a matched line, what is shown   */
-#define AGENT_WALK_DEPTH       32          /* directories a walk descends        */
-#define AGENT_WALK_ENTRIES     4096        /* names one directory level holds    */
-#define AGENT_WALK_BYTES       (4u << 20)  /* scratch a walk carves for names    */
-#define AGENT_IGNORE_PATTERNS  512         /* patterns in force for one walk     */
-#define AGENT_IGNORE_BYTES     (1u << 14)  /* copied ignore pattern storage      */
-#define AGENT_MAX_GREP_FILE    (1u << 20)  /* larger files are not searched      */
-#define AGENT_MAX_PATCH_FILES  32          /* files one patch call may touch     */
-#define AGENT_MAX_PATCH_HUNKS  512         /* hunks one patch call may carry     */
+#define AGENT_GREP_RESULTS     100
+#define AGENT_FIND_RESULTS     200
+#define AGENT_GREP_LINE        200
+#define AGENT_WALK_DEPTH       32
+#define AGENT_WALK_ENTRIES     4096
+#define AGENT_WALK_BYTES       (4u << 20)
+#define AGENT_IGNORE_PATTERNS  512
+#define AGENT_IGNORE_BYTES     (1u << 14)
+#define AGENT_MAX_GREP_FILE    (1u << 20)
+#define AGENT_MAX_PATCH_FILES  32
+#define AGENT_MAX_PATCH_HUNKS  512
 /* The whole output a paged tool keeps on disk; see spill.c. */
-#define AGENT_SPILL_BYTES      (16u << 20) /* of one spill file, what is kept    */
-#define AGENT_SPILL_PATH_MAX   128         /* longer, and the note costs too much*/
-#define AGENT_SPILL_NOTE_BYTES 256         /* result budget the note reserves    */
+#define AGENT_SPILL_BYTES      (16u << 20)
+#define AGENT_SPILL_PATH_MAX   128
+#define AGENT_SPILL_NOTE_BYTES 256
 /* A tool result older than this many user turns is replaced on the wire by a
  * line naming what it was; see conv_write_json. */
 #define AGENT_ELIDE_TURNS      2
-#define AGENT_ELIDE_BYTES      512         /* under this, saying so costs more   */
+#define AGENT_ELIDE_BYTES      512
 /* The delay doubles per attempt from Config.retry_delay_ms and stops here. */
-#define AGENT_RETRIES          4           /* extra attempts a turn is allowed  */
-#define AGENT_RETRY_DELAY_MS   2000        /* wait before the first of them     */
+#define AGENT_RETRIES          4
+#define AGENT_RETRY_DELAY_MS   2000
 #define AGENT_MAX_RETRY_DELAY_MS 30000
-#define AGENT_MAX_COMMANDS     32          /* slash commands offered by the TUI */
-#define AGENT_LINE_BUF         (1u << 20)  /* 1 MiB input line buffer          */
-#define AGENT_RESP_BUF         (1u << 22)  /* 4 MiB response accumulation      */
-#define AGENT_MAX_HISTORY      500         /* recallable prompts kept on disk   */
-#define AGENT_HISTORY_BYTES    (1u << 20)  /* entry storage carved from persist */
-#define AGENT_MAX_HISTORY_LINE (1u << 16)  /* longest prompt worth remembering  */
-#define AGENT_MAX_HISTORY_BYTES (8u << 20) /* largest history file we will read */
-#define AGENT_MAX_CONFIG_FILES 8           /* XDG config candidates we consider */
-#define AGENT_MAX_PROJECT_FILES 8          /* .arqan/config.toml files we collect */
-#define AGENT_MAX_SETTINGS     512         /* key lines one settings file holds */
+#define AGENT_MAX_COMMANDS     32
+#define AGENT_LINE_BUF         (1u << 20)
+#define AGENT_RESP_BUF         (1u << 22)
+#define AGENT_MAX_HISTORY      500
+#define AGENT_HISTORY_BYTES    (1u << 20)
+#define AGENT_MAX_HISTORY_LINE (1u << 16)
+#define AGENT_MAX_HISTORY_BYTES (8u << 20)
+#define AGENT_MAX_CONFIG_FILES 8
+#define AGENT_MAX_PROJECT_FILES 8
+#define AGENT_MAX_SETTINGS     512
 #define AGENT_MAX_SETTINGS_BYTES (1u << 20)/* largest settings file we will read */
-#define AGENT_MAX_SET_KEYS     8           /* keys one settings_set writes      */
-#define AGENT_MAX_TOOL_LIST    256         /* longest disable_tools value       */
+#define AGENT_MAX_SET_KEYS     8
+#define AGENT_MAX_TOOL_LIST    256
 /* The three files settings live in. One format, three audiences: the config
  * is the user's document, the state is what the UI remembers, and the
  * credentials file holds keys alone at mode 0600. */
@@ -105,23 +104,23 @@ typedef bool     b8;
 #define AGENT_PROJECT_DIR      STR("." AGENT_NAME)
 /* Past this arqan refuses to start rather than send a truncated prompt. */
 #define AGENT_MAX_PROMPT_FILE  (1u << 16)
-#define AGENT_MAX_AGENTS_FILES 8           /* AGENTS.md chain depth we collect  */
-#define AGENT_MAX_SESSIONS     64          /* saved sessions the picker offers  */
+#define AGENT_MAX_AGENTS_FILES 8
+#define AGENT_MAX_SESSIONS     64
 #define AGENT_MAX_SESSION_BYTES (32u << 20)/* largest session file we will read */
 /* A popup shows a handful of rows at a time, so this bounds what it can hold
  * and scroll or search through, not what it can show: a provider that serves
  * hundreds of models is the reason it is not the row count. */
-#define AGENT_MAX_POPUP        4096        /* entries the popup can hold        */
-#define AGENT_MAX_MODELS       AGENT_MAX_POPUP /* models the /model picker offers */
-#define AGENT_MAX_FAVORITES    16          /* models /model can pin to the top  */
-#define AGENT_MAX_KEY_ROWS     128        /* keys page: bindings and headings  */
-#define AGENT_MAX_ENDPOINTS    32          /* providers /provider can hold      */
+#define AGENT_MAX_POPUP        4096
+#define AGENT_MAX_MODELS       AGENT_MAX_POPUP
+#define AGENT_MAX_FAVORITES    16
+#define AGENT_MAX_KEY_ROWS     128
+#define AGENT_MAX_ENDPOINTS    32
 #define AGENT_MAX_ENDPOINT_NAME 64
 #define AGENT_MAX_URL          512
 #define AGENT_MAX_MODEL_NAME   128
 #define AGENT_MAX_API_KEY      512
-#define AGENT_MAX_SECRET_ARGV  16          /* words a key helper argv may hold  */
-#define AGENT_MAX_SECRET_CMD   512         /* longest key_command line          */
+#define AGENT_MAX_SECRET_ARGV  16
+#define AGENT_MAX_SECRET_CMD   512
 /* A locked keyring may prompt through its own agent; past this the helper is
  * killed, since a wait with no end would take the UI with it. */
 #define AGENT_SECRET_TIMEOUT_MS 15000
@@ -129,19 +128,19 @@ typedef bool     b8;
 /* A desktop notification is a one-line summary, not a transcript: the text
  * is cut to this and the tail is dropped rather than wrapped. */
 #define AGENT_MAX_NOTIFY_TEXT  128
-#define AGENT_MAX_NOTIFY_CMD   512         /* longest notify_command line       */
-#define AGENT_MAX_NOTIFY_ARGV  16          /* words that line may hold          */
+#define AGENT_MAX_NOTIFY_CMD   512
+#define AGENT_MAX_NOTIFY_ARGV  16
 #define AGENT_MAX_REASONING_TEMPLATE (16u << 10)
-#define AGENT_MAX_MODEL_BYTES  (1u << 20)  /* largest /models reply we will read */
+#define AGENT_MAX_MODEL_BYTES  (1u << 20)
 /* A context window an endpoint reports above this is not one; the field is
  * left unknown rather than clamped to something we made up. */
 #define AGENT_MAX_CONTEXT_WINDOW ((size_t)1 << 31)
-#define AGENT_WEB_BODY_BYTES   (2u << 20)  /* decompressed page source limit      */
-#define AGENT_WEB_URL_BYTES    4096        /* URL bytes plus its terminating nul  */
-#define AGENT_WEB_QUERY_BYTES  1025        /* search query plus its terminating nul*/
-#define AGENT_WEB_TYPE_BYTES   128         /* normalized response media type      */
-#define AGENT_WEB_SEARCH_INTERVAL_MS 10000 /* minimum spacing between searches     */
-#define AGENT_WEB_SEARCH_PAUSE_MS 3600000  /* quarantine after service refusal      */
+#define AGENT_WEB_BODY_BYTES   (2u << 20)
+#define AGENT_WEB_URL_BYTES    4096
+#define AGENT_WEB_QUERY_BYTES  1025
+#define AGENT_WEB_TYPE_BYTES   128
+#define AGENT_WEB_SEARCH_INTERVAL_MS 10000
+#define AGENT_WEB_SEARCH_PAUSE_MS 3600000
 /* Search engines answer a request with no User-Agent with a challenge or a
  * stripped page, so every web request claims a current browser. */
 #define AGENT_WEB_USER_AGENT \
@@ -209,10 +208,10 @@ void    buf_putc(Buf *b, char c);
 void    buf_put(Buf *b, const void *p, size_t n);
 void    buf_puts(Buf *b, Str s);
 void    buf_putf(Buf *b, const char *fmt, ...) __attribute__((format(printf,2,3)));
-void    buf_json_str(Buf *b, Str s);           /* JSON-escaped string      */
+void    buf_json_str(Buf *b, Str s);
 /* Its body without the quotes, so several pieces can share one string. */
 void    buf_json_chars(Buf *b, Str s);
-Str     buf_finish(Buf *b);                    /* nul-terminates            */
+Str     buf_finish(Buf *b);
 
 /* ---- files ---------------------------------------------------------------
  * The one reader every file arqan owns goes through, so a size that comes from
@@ -299,27 +298,27 @@ void tel_hash_field(TelEvent *e, const char *key, Str v);
 void tel_send(TelEvent *e);
 
 /* ---- time --------------------------------------------------------------- */
-f64  agent_now_seconds(void);   /* monotonic                                */
+f64  agent_now_seconds(void);
 
 /* ---- JSON --------------------------------------------------------------- */
 typedef enum { J_NULL, J_BOOL, J_NUM, J_STR, J_ARR, J_OBJ } JType;
 typedef struct JVal JVal;
 struct JVal {
-    Str   key;        /* set for object members                            */
+    Str   key;
     JType type;
     union {
         b8    b;
         f64  n;
         Str     s;
         struct { JVal *items; size_t n; } arr;
-        struct { JVal *head; } obj;                     /* linked members */
+        struct { JVal *head; } obj;
     } u;
-    JVal  *next;     /* next sibling in object                                */
+    JVal  *next;
 };
 
 typedef struct { Arena *a; const char *src; size_t pos, len; i32 depth; b8 oom; } JParser;
 
-JVal   *json_parse(Arena *a, Str s);            /* NULL on error             */
+JVal   *json_parse(Arena *a, Str s);
 void    json_write(Buf *b, const JVal *v);
 const JVal *json_get(const JVal *obj, Str key);
 const JVal *json_at(const JVal *arr, size_t i);
@@ -338,7 +337,7 @@ typedef enum { AGENT_DIR_CONFIG, AGENT_DIR_DATA, AGENT_DIR_STATE, AGENT_DIR_CACH
 /* Absolute "<base>/arqan" path, empty when no base resolves. */
 Str    paths_dir(AgentDir kind, Arena *a);
 Str    paths_file(AgentDir kind, Str name, Arena *a);
-b8     paths_ensure_dir(Str dir);    /* mkdir -p, mode 0700                  */
+b8     paths_ensure_dir(Str dir);
 /* Candidates for a global config file, lowest precedence first: each
  * XDG_CONFIG_DIRS entry, then XDG_CONFIG_HOME. */
 size_t paths_config_files(Str name, Arena *a, Str *out, size_t max);
@@ -361,7 +360,7 @@ Str    paths_project_dir(Arena *a);
  * that copy.
  */
 typedef struct {
-    Str    section[AGENT_MAX_SETTINGS];   /* empty above the first header    */
+    Str    section[AGENT_MAX_SETTINGS];
     Str    key[AGENT_MAX_SETTINGS];
     Str    val[AGENT_MAX_SETTINGS];
     size_t n;
@@ -431,11 +430,11 @@ b8     favorites_toggle(Favorites *f, Str provider, Str model, Arena *scratch,
  * ascending address order, so the move never overlaps forward.
  */
 typedef struct {
-    Str   *entry;   /* [cap] oldest first                                   */
+    Str   *entry;
     size_t n, cap;
     size_t cursor;
-    Str    path;    /* nul-terminated; empty disables persistence           */
-    Arena *a;       /* entry storage, used by nothing else                  */
+    Str    path;
+    Arena *a;
     size_t base_off;/* where entries start, past the index array            */
 } History;
 
@@ -474,11 +473,11 @@ Str     api_name(ApiKind k);
  * built here, never through a shell. See secrets.c.
  */
 typedef enum {
-    SECRET_STORED = 0,  /* the key line in the credentials file            */
-    SECRET_SERVICE,     /* freedesktop Secret Service, via secret-tool     */
-    SECRET_PASS,        /* password-store, via pass                        */
-    SECRET_KEYCHAIN,    /* macOS keychain, via security                    */
-    SECRET_COMMAND,     /* the credentials file's own key_command argv     */
+    SECRET_STORED = 0,
+    SECRET_SERVICE,
+    SECRET_PASS,
+    SECRET_KEYCHAIN,
+    SECRET_COMMAND,
 } SecretSource;
 
 /* The name written in and read from the credentials file. `known` reports
@@ -514,7 +513,7 @@ b8  secret_erase(SecretSource src, Str account, char *err, size_t err_cap);
 typedef struct {
     Str     name[AGENT_MAX_ENDPOINTS];
     Str     base_url[AGENT_MAX_ENDPOINTS];
-    Str     model[AGENT_MAX_ENDPOINTS];   /* empty when none was chosen yet  */
+    Str     model[AGENT_MAX_ENDPOINTS];
     Str     reasoning_efforts[AGENT_MAX_ENDPOINTS];
     Str     thinking_budgets[AGENT_MAX_ENDPOINTS];
     Str     reasoning_effort[AGENT_MAX_ENDPOINTS];
@@ -703,10 +702,10 @@ b8              agent_ignore_show(void);
  * fallback: it runs whether or not `notify` sends an escape.
  */
 typedef enum {
-    NOTIFY_TURN_DONE,      /* the assistant finished a turn                 */
-    NOTIFY_TURN_FAILED,    /* the turn ended on an error                    */
-    NOTIFY_INPUT_NEEDED,   /* a question or approval is waiting             */
-    NOTIFY_INTERRUPTED,    /* Ctrl-C ended the turn                         */
+    NOTIFY_TURN_DONE,
+    NOTIFY_TURN_FAILED,
+    NOTIFY_INPUT_NEEDED,
+    NOTIFY_INTERRUPTED,
 } NotifyKind;
 
 /* Reads the notify settings once. `persist` owns the copied command line. */
@@ -720,19 +719,19 @@ void notify_event(NotifyKind kind, Str detail, f64 elapsed_ms);
 
 /* ---- config ------------------------------------------------------------- */
 typedef struct {
-    Str base_url;     /* e.g. https://api.openai.com/v1                    */
+    Str base_url;
     Str model;
     Str api_key;
-    ApiKind api;      /* the wire format base_url speaks                   */
-    Str provider;     /* active endpoint name; empty when none is selected */
+    ApiKind api;
+    Str provider;
     Str reasoning_efforts, thinking_budgets;
     Str reasoning_effort, thinking_budget;
     Str reasoning_template;
     /* A run with neither this nor a key has nothing to talk to, and asks for
      * a provider instead of starting a conversation. */
     b8  base_url_set;
-    Str system_prompt; /* Only --system and ARQAN_SYSTEM_PROMPT set this. */
-    Str plan_prompt;   /* Plan mode's; built at startup, never configured. */
+    Str system_prompt;
+    Str plan_prompt;
     PromptSources system_sources, plan_sources;
     AgentMode mode;
     PermissionPolicy permissions;
@@ -778,17 +777,17 @@ b8    config_set_reasoning(Config *c, b8 effort, Str value);
 /* Every Str points into argv, so nothing is copied and nothing is freed. */
 typedef struct {
     Str base_url, model, api_key, system_prompt;
-    Str api;           /* "openai" or "anthropic"; empty leaves the config */
-    Str disable_tools; /* comma separated names; replaces the configured set */
-    Str prompt;        /* the one turn to run; see have_prompt              */
-    b8  have_prompt;   /* true even for an empty prompt, which is an error  */
-    i32 max_tokens;    /* 0 leaves the configured value alone               */
+    Str api;
+    Str disable_tools;
+    Str prompt;
+    b8  have_prompt;
+    i32 max_tokens;
 } CliOpts;
 
 typedef enum {
-    CLI_RUN,     /* carry on starting up                                    */
-    CLI_DONE,    /* --help or --version was answered; exit 0                */
-    CLI_ERROR,   /* the usage error is already on stderr; exit 2            */
+    CLI_RUN,
+    CLI_DONE,
+    CLI_ERROR,
 } CliStatus;
 
 CliStatus cli_parse(i32 argc, char **argv, CliOpts *out);
@@ -798,9 +797,9 @@ void      cli_apply(const CliOpts *o, Config *c);
 typedef struct {
     const char *base_url;
     const char *api_key;
-    /* Which path the request goes to and which header carries the key. */
+
     ApiKind api;
-    /* Each accumulated SSE line. Return false to abort the stream. */
+
     b8 (*on_line)(Str line, void *ud);
     void *ud;
     /* Where a streamed line is accumulated. An event carries as much as the
@@ -808,17 +807,17 @@ typedef struct {
      * delta is not JSON, and the reply behind it would be lost without a
      * word. Required whenever on_line is set. */
     Arena *line_arena;
-    /* Non-streaming: the whole body lands here and on_line is never called. */
+
     Buf *body_out;
-    const char *body;     /* nul-terminated JSON request                    */
+    const char *body;
     const volatile sig_atomic_t *interrupt_flag;
     /* The transfer waits on curl's sockets and `idle_fd` together, so the UI
      * stays alive without threads. on_idle runs after every wait and must
      * not block. */
-    i32   idle_fd;        /* -1 disables the extra poll fd                  */
+    i32   idle_fd;
     void (*on_idle)(void *ud);
     void *idle_ud;
-    /* Optional: curl's own message for a transport failure. */
+
     char  *fail_out;
     size_t fail_cap;
 } HttpReq;
@@ -835,7 +834,7 @@ i32     http_get(const char *base_url, const char *path, const char *api_key,
 
 typedef struct {
     const char *url;
-    const char *operation;       /* fixed telemetry label, never URL text    */
+    const char *operation;
     Buf *out;
     size_t max_bytes;
     i32 connect_timeout_ms;
@@ -869,11 +868,11 @@ i32     http_url_get(HttpUrlReq *r);
  * no-op once the spill has failed or was never opened, and the tool answers
  * as it would without one. No arena: a Spill owns only its file. */
 typedef struct {
-    char   path[AGENT_SPILL_PATH_MAX]; /* empty when there is no file       */
-    i32    fd;                         /* -1 when the spill is not open     */
-    size_t written;                    /* bytes accepted, capped            */
+    char   path[AGENT_SPILL_PATH_MAX];
+    i32    fd;
+    size_t written;
     size_t buf_n;
-    b8     full;                       /* hit AGENT_SPILL_BYTES             */
+    b8     full;
     char   buf[4096];
 } Spill;
 
@@ -900,16 +899,16 @@ typedef b8 (*ToolRun)(Str args_json, Arena *scratch, Buf *out,
 #define TOOL_FIXED    4u
 
 typedef struct {
-    Str     *name;        /* [AGENT_MAX_TOOLS]                               */
-    Str     *desc;        /* [AGENT_MAX_TOOLS] what the model is told         */
+    Str     *name;
+    Str     *desc;
     /* What a row of the settings screen says: one line that fits beside the
      * name, since the model's description is written for a model. */
-    Str     *brief;       /* [AGENT_MAX_TOOLS]                               */
-    Str     *schema;      /* [AGENT_MAX_TOOLS] JSON schema fragment (object) */
-    ToolRun *run;         /* [AGENT_MAX_TOOLS]                               */
-    u8      *modes;       /* [AGENT_MAX_TOOLS] TOOL_IN_* bits                */
-    u8      *approval;    /* [AGENT_MAX_TOOLS] ToolApprovalClass             */
-    b8      *off;         /* [AGENT_MAX_TOOLS] turned off by the user        */
+    Str     *brief;
+    Str     *schema;
+    ToolRun *run;
+    u8      *modes;
+    u8      *approval;
+    b8      *off;
     size_t   n;
 } ToolRegistry;
 
@@ -1000,16 +999,16 @@ typedef enum { M_SYSTEM = 0, M_USER, M_ASSISTANT, M_TOOL } MRole;
 #define CONV_NONE ((size_t)-1)
 
 typedef struct {
-    MRole *role;          /* [cap]                                       */
-    Str   *text;          /* [cap] prose, tool result or call arguments  */
+    MRole *role;
+    Str   *text;
     /* [cap] canonical JSON array of Anthropic thinking blocks attached to
      * an assistant head. The encrypted signatures must survive tool rounds. */
     Str   *anthropic_thinking;
-    Str   *tool_name;     /* [cap]                                       */
-    Str   *tool_call_id;  /* [cap]                                       */
-    Str   *shell_out;     /* [cap] what a '!' run printed                */
-    b8  *has_tool_call; /* [cap]                                       */
-    b8  *expanded;      /* [cap] this block's transcript caps are lifted */
+    Str   *tool_name;
+    Str   *tool_call_id;
+    Str   *shell_out;
+    b8  *has_tool_call;
+    b8  *expanded;
     /* [cap] the carrier's arguments parse as a JSON object. Decided once,
      * when the call is recorded, since every later Anthropic request would
      * otherwise re-parse the whole history to ask the same question. */
@@ -1065,21 +1064,21 @@ typedef struct {
     char   dir_buf[AGENT_MAX_PATH];
     char   path_buf[AGENT_MAX_PATH];
     char   name_buf[32];
-    Str    dir;      /* per-cwd directory; empty when no XDG base resolves  */
-    Str    path;     /* live session file; empty disables persistence       */
-    Str    name;     /* its file name                                       */
-    size_t written;  /* conversation slots already on disk                  */
+    Str    dir;
+    Str    path;
+    Str    name;
+    size_t written;
 } Session;
 
 typedef struct {
-    Str   *name;     /* [n] timestamp label, newest first                   */
-    Str   *path;     /* [n] nul-terminated file path                        */
-    Str   *preview;  /* [n] first prompt of the session, one line           */
+    Str   *name;
+    Str   *path;
+    Str   *preview;
     size_t n;
 } SessionList;
 
-b8     session_init(Session *s, Arena *scratch);   /* resolve the cwd's dir  */
-b8     session_begin(Session *s);                  /* new timestamped file   */
+b8     session_init(Session *s, Arena *scratch);
+b8     session_begin(Session *s);
 /* Append the messages produced since the last call; the file is created on
  * the first one, so an untouched session never reaches the picker. */
 void   session_save(Session *s, const Conv *c);
@@ -1110,8 +1109,8 @@ typedef struct {
     const Config      *cfg;
     const ToolRegistry*tools;
     Conv              *conv;
-    Arena             *persist;   /* message storage                           */
-    Arena             *scratch;   /* reset each turn                           */
+    Arena             *persist;
+    Arena             *scratch;
     void (*on_text)(Str delta, void *ud);
     /* OpenAI reasoning text or an Anthropic thinking summary, displayed as
      * the turn streams. Anthropic's complete signed blocks are also retained
@@ -1135,9 +1134,9 @@ typedef struct {
     void (*on_retry)(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
                      void *ud);
     void *ud;
-    /* Pumped while the request is in flight; see HttpReq.on_idle. */
+
     void (*on_idle)(void *ud);
-    i32   idle_fd;                /* -1 when there is nothing to watch         */
+    i32   idle_fd;
     const volatile sig_atomic_t *interrupt_flag;
     size_t prompt_tokens;
     size_t completion_tokens;
@@ -1177,14 +1176,14 @@ size_t  provider_models(const Config *cfg, Arena *scratch, Str *out,
  * one tokenizer's count as another's.
  */
 typedef struct {
-    f64    slope;        /* tokens per conversation byte                    */
-    f64    offset;       /* tokens a request carries beyond the slots       */
-    size_t fit_tokens;   /* prompt tokens of the last measured request      */
-    f64    fit_bytes;    /* conversation bytes behind that measurement      */
-    size_t exact_slots;  /* conv->n it covered; SIZE_MAX when none does     */
-    size_t window;       /* discovered context window, 0 when unknown       */
-    b8     measured;     /* a measurement has been folded in                */
-    b8     basis;        /* fit_* describe the current model                */
+    f64    slope;
+    f64    offset;
+    size_t fit_tokens;
+    f64    fit_bytes;
+    size_t exact_slots;
+    size_t window;
+    b8     measured;
+    b8     basis;
 } CtxGauge;
 
 /* A zeroed gauge is not usable; this is what makes it "nothing known yet". */
@@ -1207,8 +1206,8 @@ void ctx_sync(const CtxGauge *g, const Conv *c);
 /* A block style claims whole rows (a wrapped continuation is painted like
  * its first row); an inline one applies to the bytes it covers. */
 typedef enum {
-    TUI_PLAIN = 0, TUI_HEADING, TUI_CODE, TUI_QUOTE,   /* block */
-    TUI_BOLD, TUI_EMPH, TUI_MONO, TUI_MARKER, TUI_STRIKE /* inline */
+    TUI_PLAIN = 0, TUI_HEADING, TUI_CODE, TUI_QUOTE,
+    TUI_BOLD, TUI_EMPH, TUI_MONO, TUI_MARKER, TUI_STRIKE
 } TuiStyle;
 
 typedef enum {
@@ -1300,7 +1299,7 @@ b8 tui_pick_action(Str title, size_t n, size_t search_n, TuiPickAnchor anchor,
  * into an arena `act` resets, since the rows outlive every call. */
 typedef struct {
     TuiCmd  *rows;
-    TuiMark *marks;                          /* optional, NULL for none    */
+    TuiMark *marks;
     size_t   max;
     size_t (*build)(void *ud);
     void   (*act)(void *ud, size_t row, i32 delta);
@@ -1500,7 +1499,7 @@ void tui_set_busy_command(b8 (*fn)(Str line, void *ud), void *ud);
 void tui_activity(Str label);
 void tui_activity_end(void);
 void tui_poll_input(void);
-i32  tui_input_fd(void);      /* readable-input fd, or -1 when not interactive */
+i32  tui_input_fd(void);
 
 /* ---- markdown ------------------------------------------------------------
  * Renders a message into the transcript: headings, lists, tables, rules,
@@ -1544,4 +1543,4 @@ void render_question(Str question);
 void render_set_verbose(b8 on);
 b8   render_verbose(void);
 
-#endif /* AGENT_H */
+#endif

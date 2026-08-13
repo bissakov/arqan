@@ -1,35 +1,3 @@
-/* secrets.c: where an endpoint's API key comes from.
- *
- * A key may be kept in arqan's own credentials file, or left to an external
- * store that arqan only asks. The second kind is named by a `key_source` line
- * in the credentials file:
- *
- *   [providers.openai]
- *   key_source = "secret-service"
- *
- * and arqan builds the helper's argv itself from the table below, so the file
- * carries a keyword rather than a command. `key_source = command` is the
- * escape hatch for stores with no entry here; only then is `key_command`
- * read, and it is split on whitespace and exec'd directly.
- *
- * Two rules make this safe to add, and both are the reason nothing here reads
- * the config file:
- *
- *   - A source directive is a request to execute a program, so it lives only
- *     in $XDG_STATE_HOME/arqan/credentials.toml, which is mode 0600, machine-local
- *     and never carried by a dotfile repository. The config file stays inert
- *     data that is safe to commit and share; endpoints.c warns when a config
- *     section names one of these keys and ignores it.
- *   - No shell. The helper is exec'd through execvp with an argv arqan built,
- *     so a value in either file cannot become a pipeline, a substitution or
- *     a glob. The account name is restricted to a portable character set so
- *     it cannot turn into an option either.
- *
- * The child's stderr goes to /dev/null: a helper that echoes the secret on
- * failure must not paint it over the frame the TUI owns. Only the first line
- * of stdout is the key, and a helper that hangs on a locked collection is
- * killed at the deadline rather than stalling the single-threaded UI.
- */
 #include "agent.h"
 
 #include <errno.h>

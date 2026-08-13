@@ -1,4 +1,3 @@
-/* web.c: bounded public web search and readable page extraction. */
 #include "agent.h"
 #include "../vendor/lexbor/bridge.h"
 
@@ -790,7 +789,6 @@ static b8 class_any(AgentHtmlNode *node, const char *const tokens[2]) {
     return false;
 }
 
-/* True when this anchor is the one the layout calls a result's link. */
 static b8 search_link_here(const SearchCtx *s, AgentHtmlNode *node) {
     const SearchLayout *lay = s->layout;
     if (lay->link[0]) return class_any(node, lay->link);
@@ -886,7 +884,6 @@ typedef enum {
     ENGINE_BRAVE_API, ENGINE_GOOGLE, ENGINE_SEARXNG, ENGINE_N
 } SearchEngine;
 
-/* Where results sit in a keyed engine's JSON answer. */
 typedef struct {
     const char *object;    /* wrapper object holding the array, or NULL     */
     const char *array;
@@ -1160,7 +1157,6 @@ static SearchOutcome search_backend_run(SearchEngine engine, size_t slot,
     Str request_url;
     if (!search_url(spec, slot, query, scratch, &request_url, err, err_cap))
         return SEARCH_ERROR;
-    /* A paused engine is a blocked one: the chain moves on to the next. */
     if (!search_admit(engine, spec->label, err, err_cap)) return SEARCH_BLOCKED;
     Buf source;
     buf_init(&source, scratch, 65536);

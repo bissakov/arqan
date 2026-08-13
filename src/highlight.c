@@ -1,4 +1,3 @@
-/* highlight.c: bounded client for the optional arqan-highlight companion. */
 #include "agent.h"
 #include "highlight_protocol.h"
 

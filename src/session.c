@@ -1,20 +1,3 @@
-/* session.c: persistent conversations, one set per working directory.
- *
- * A session is the conversation as it happened: a JSON object per line in
- * $XDG_DATA_HOME/arqan/sessions/<cwd>/<timestamp>.jsonl, appended as messages
- * are produced rather than flushed at exit, because the session worth resuming
- * is often the one that ended badly.
- *
- * Sessions are keyed by the directory arqan was launched in, because that is
- * the unit of work: browsing them from ~/src/foo must not surface what was
- * said in ~/src/bar. The key is the absolute cwd, percent-encoded so it is
- * one path component and still readable, with a hash appended when the
- * encoding is too long to keep whole.
- *
- * Paths live in the struct rather than in an arena: /clear rewinds the
- * session arena, and the file the next message appends to has to survive
- * that.
- */
 #include "agent.h"
 
 #include <dirent.h>
@@ -169,7 +152,6 @@ static void sess_put_json(FILE *f, Str s) {
  * the time the session is resumed. */
 void session_save(Session *s, const Conv *c) {
     if (!s->path.n || s->written >= c->n) return;
-    /* The file exists from here on, so the record it owns starts here too. */
     telemetry_bind(s->path);
     Str dir = s->dir;
     if (dir.n) paths_ensure_dir(dir);
@@ -195,7 +177,6 @@ void session_save(Session *s, const Conv *c) {
             fwrite(c->anthropic_thinking[i].p, 1,
                    c->anthropic_thinking[i].n, f);
         }
-        /* A '!' run keeps its output beside the command it ran. */
         if (c->shell_out[i].n) {
             fputs(",\"output\":", f);
             sess_put_json(f, c->shell_out[i]);

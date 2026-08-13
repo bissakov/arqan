@@ -1,26 +1,3 @@
-/* notify.c: telling the user about a turn they walked away from.
- *
- * Two routes, and neither links an OS notification API:
- *
- *   - OSC 9 through the paint buffer. The terminal emulator owns the bridge
- *     to the desktop (D-Bus, Notification Center, a Windows toast), so the
- *     same ASCII bytes work on every platform arqan builds for, and a
- *     terminal without the sequence ignores an unknown OSC string.
- *   - notify_command: a program the user names, run with a small JSON object
- *     on its stdin. This is the only route that survives ssh, a headless
- *     session, tmux without passthrough, and a terminal that has no OSC 9.
- *     It is a route of its own, not a fallback: `notify = off` silences the
- *     escape and leaves the hook running, since a user who configured one
- *     asked for it by name.
- *
- * The command is refused from a project's config.toml (see config.c): a
- * cloned repository must not choose a program arqan runs. It is exec'd
- * without a shell, from an argv split on whitespace, the way key_command is.
- *
- * Everything here is best effort. A hook that fails to spawn, a terminal
- * that discards the escape and a full pipe all read the same: no
- * notification, and nothing else in the session changes.
- */
 #include "agent.h"
 
 #include <errno.h>

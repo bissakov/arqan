@@ -1,9 +1,3 @@
-/* render.c: how a tool call and its result read in the transcript.
- *
- * A call on the wire is a JSON blob and a result is whatever the tool
- * printed, so each gets a header naming what it does to what, a preview of
- * the input it carries, and a result summarised by its own shape.
- */
 #include "agent.h"
 
 #include <stdio.h>
@@ -16,12 +10,8 @@ enum {
     R_TARGET_BYTES = 120   /* the header's path or command             */
 };
 
-/* Verbose drops every cap below. */
 static b8 g_verbose;
 
-/* The block being written, set for the length of one render_tool_* call: its
- * caps are lifted while `g_expanded` holds, and the tail that folds it back
- * carries `g_zone`. */
 static b8 g_expanded;
 static u32 g_zone;
 
@@ -68,7 +58,6 @@ static void block_end(void) {
     g_expanded = false;
 }
 
-/* A count argument as the tool reads it; absent or malformed is 0. */
 static size_t num_arg(const JVal *args, Str key) {
     const JVal *v = args ? json_get(args, key) : NULL;
     if (!v || v->type != J_NUM || v->u.n < 1 || v->u.n > (f64)(1u << 30))
@@ -140,7 +129,6 @@ static void write_styled(Str body, Str gutter, size_t max, Sink sink,
         len = snprintf(buf, sizeof buf, "\u25be %zu more line%s\n",
                        rest, rest == 1 ? "" : "s");
     } else if (g_expanded && !g_verbose && shown > max) {
-        /* Only an unfolded block offers to fold; verbose hides nothing. */
         len = snprintf(buf, sizeof buf, "\u25b4 show less\n");
     } else {
         return;
@@ -191,7 +179,6 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
     Str patch_hint = {0};
     if (patch.n)
         path = patch_target(patch, patch_buf, sizeof patch_buf, &patch_hint);
-    /* What a search is about is what it looks for, not where it starts. */
     Str query = str_eq(name, STR("grep")) ? json_str(j, STR("pattern"))
               : str_eq(name, STR("find")) ? json_str(j, STR("name"))
               : str_eq(name, STR("internet_search")) ? json_str(j, STR("query"))
@@ -260,7 +247,6 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
             write_lines(str_drop(cmd, cmd_off), STR("\u2502 "),
                         R_ARG_LINES, tui_write_muted);
     } else if (!path.n && !query.n) {
-        /* No shape this renderer knows, so the arguments as they came. */
         write_lines(args, STR("\u2502 "), R_ARG_LINES,
                     tui_write_muted);
     }
@@ -384,7 +370,6 @@ static b8 patch_fragment(Str line, Str *fragment) {
     return true;
 }
 
-/* An empty fragment carries a null pointer, so skip the copy for it. */
 static b8 batch_line(char *out, size_t cap, size_t *n, Str fragment) {
     if (fragment.n + 1 > cap - *n) return false;
     if (fragment.n) memcpy(out + *n, fragment.p, fragment.n);

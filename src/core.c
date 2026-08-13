@@ -1,4 +1,3 @@
-/* core.c: arena, strings, buffers, logging, time. */
 #include "agent.h"
 
 #include <stdio.h>

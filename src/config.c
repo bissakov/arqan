@@ -1,25 +1,3 @@
-/* config.c: every setting arqan has, in one table, resolved once.
- *
- * A setting is a row of k_conf: the name it has in a file, its type, its
- * bounds and whether a project file may set it. That name is also its
- * environment variable, upper-cased under ARQAN_, and the name the state file
- * remembers it by, so a new setting is a row rather than a branch in each of
- * five readers.
- *
- * Sources are read lowest precedence first (see ConfOrigin); a write from an
- * origin below the one already recorded is dropped, which is the whole of the
- * precedence rule. A value a source may not set, or one outside its bounds,
- * is reported and dropped rather than clamped: a mistyped line should fall
- * through to the value below it, not shadow it with something nobody wrote.
- *
- * A project's .arqan/config.toml arrives with a `git clone`, so it is not
- * trusted with anything that names a secret or chooses what arqan runs:
- * `api_key` is refused there, and the key directives are refused in every
- * config file (see endpoints.c and secrets.c).
- *
- * The system prompt is not a row here: it is a document, so it lives in
- * SYSTEM.md (see prompt.c). Only ARQAN_SYSTEM_PROMPT and --system set it.
- */
 #include "agent.h"
 
 #include <stdio.h>
@@ -132,7 +110,6 @@ static b8 conf_bool_value(Str v, b8 *out) {
     return false;
 }
 
-/* True when `v` is one of the comma separated `options`. */
 static b8 conf_option_has(const char *options, Str v) {
     Str all = str_c(options);
     size_t start = 0;
@@ -287,7 +264,6 @@ static void conf_apply_endpoint(Conf *c, Arena *persist, Arena *scratch) {
     c->reasoning_template  = str_dup_opt(persist, e.reasoning_template[i]);
     scratch->off = mark;
 
-    /* The key is kept apart from the settings, in the credentials file. */
     char err[AGENT_MAX_PATH + 96] = {0};
     Str key = endpoints_key(name, persist, scratch, err, sizeof err);
     if (err[0]) agent_log(AGENT_LOG_WARN, "%s", err);

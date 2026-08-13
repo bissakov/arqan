@@ -1,18 +1,3 @@
-/* spill.c: the whole of a tool's output, kept on disk when the result is a page.
- *
- * A tool result is replayed to the provider on every later turn, so each tool
- * returns a bounded page. The bytes that did not fit are still worth having:
- * a spill writes the complete output to a file and the tool names that path,
- * so the next call narrows it with bash instead of paging it all back into
- * the context.
- *
- * The file name hashes the call, so a repeated call overwrites its own file
- * rather than filling the directory, and a spill nothing was dropped from is
- * unlinked before the tool returns.
- *
- * Spilling is best effort: a spill that cannot be opened or written closes
- * itself and the tool answers exactly as it did before.
- */
 #include "agent.h"
 
 #include <errno.h>

@@ -1,31 +1,3 @@
-/* telemetry.c: an anonymized record of a session, for debugging.
- *
- * Off until /telemetry turns it on, which is remembered as the state file's
- * `telemetry` key so a later run records without being asked again. Events
- * are JSON objects, one per line, appended to the file of the conversation
- * they belong to: $XDG_STATE_HOME/arqan/telemetry/<cwd>/<timestamp>.jsonl,
- * named after the session file under $XDG_DATA_HOME and rebound whenever the
- * session is, so /clear starts a record as it starts a conversation and
- * /resume appends to the record of the one it reopened. What is recorded
- * before a conversation exists (a startup, a /provider, the /resume that
- * picks one) waits in memory for the file the session that follows names, so
- * opening arqan and resuming leaves the record of that conversation and
- * nothing beside it. A run that ends with lines still waiting writes them to
- * a record named after the run. Every file opens with a session event, so
- * each is read on its own.
- *
- * The file holds the shape of a session and none of its content: a message is
- * a byte and a line count, a tool call is its name and the keys of its
- * arguments, a reply is its size and its token counts. The strings that do
- * land there are the ones arqan formats itself (a tool name, a model id, a log
- * line), so the record says what happened without saying what was said. The
- * working directory is a hash for the same reason: two runs can be told apart
- * without naming the project either of them was in.
- *
- * A line is built on the stack and appended with its own open and close, so an
- * interrupted run leaves whole lines behind and a recorder that cannot write
- * costs the session nothing.
- */
 #include "agent.h"
 
 #include <stdio.h>

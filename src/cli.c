@@ -1,12 +1,3 @@
-/* cli.c: command line parsing.
- *
- * Options only override what conf_resolve already settled, so the precedence
- * is flag > env > provider > state > project > user > site config: a flag is
- * the most explicit and the most local statement about this one invocation.
- *
- * Values attach either way, "--model=m", "--model m", "-mm" and "-m m" all
- * name the same thing, and "--" ends the options.
- */
 #include "agent.h"
 
 #include <stdio.h>

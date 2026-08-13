@@ -1,4 +1,3 @@
-/* ignore.c: shared .gitignore and .ignore matching for path walks. */
 #include "agent.h"
 
 #include <fcntl.h>

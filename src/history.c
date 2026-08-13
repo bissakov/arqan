@@ -1,16 +1,8 @@
-/* history.c: persistent prompt history.
- *
- * Entries live in $XDG_STATE_HOME/arqan/history, one per line, with backslash
- * escapes for the breaks a multi-line prompt carries. They are appended as
- * they are submitted rather than flushed at exit: a session that ends in a
- * crash is exactly the one whose prompt is worth recalling.
- */
 #include "agent.h"
 
 #include <stdio.h>
 #include <string.h>
 
-/* Escaped straight to the stream: an entry has no bound worth a buffer. */
 static void hist_write(FILE *f, Str s) {
     for (size_t i = 0; i < s.n; i++) {
         char c = s.p[i];
@@ -60,7 +52,6 @@ static void hist_compact(History *h) {
     h->a->off = off;
 }
 
-/* Copy into the entry arena, compacting once when it is full. */
 static Str hist_store(History *h, Str s) {
     Str kept = str_dup(h->a, s);
     if (kept.p) return kept;
@@ -90,7 +81,6 @@ void history_load(History *h, Str path, Arena *scratch) {
     fseek(f, 0, SEEK_END);
     i64 sz = ftell(f);
     fseek(f, 0, SEEK_SET);
-    /* Bounded like any other outside input. */
     char *buf = sz > 0 && sz <= (i64)AGENT_MAX_HISTORY_BYTES
               ? arena_new(scratch, char, (size_t)sz + 1) : NULL;
     if (!buf) { fclose(f); return; }
@@ -116,7 +106,6 @@ void history_load(History *h, Str path, Arena *scratch) {
     if (h->n == h->cap) history_rewrite(h);
 }
 
-/* Replace the file with what the ring holds. */
 void history_rewrite(const History *h) {
     if (!h->path.n) return;
     FILE *f = fopen(h->path.p, "wb");
@@ -136,7 +125,6 @@ void history_add(History *h, Str line) {
     h->cursor = h->n;
     if (dup || !h->path.n) return;
 
-    /* The state directory is created lazily, on the first write. */
     Str dir = h->path;
     while (dir.n && dir.p[dir.n - 1] != '/') dir.n--;
     if (dir.n > 1) { dir.n--; paths_ensure_dir(dir); }

@@ -1,26 +1,3 @@
-/* settings.c: the file format every setting arqan owns is written in.
- *
- * A subset of TOML: a file is a list of "key = value" lines, optionally
- * grouped under a "[section]" header; a line whose first non-blank byte is
- * '#' is a comment, and so is a '#' after a value. A value may be quoted or
- * bare. Reading accepts both, since a hand-written file is a document; a
- * write quotes anything that is not an integer or a boolean, so what arqan
- * produces parses as TOML and an editor highlights it.
- *
- * The same syntax serves the three files a user may look at:
- *   $XDG_CONFIG_HOME/arqan/config.toml      theirs to edit, providers included
- *   $cwd/.arqan/config.toml                 the project's, checked in with it
- *   $XDG_STATE_HOME/arqan/state.toml        what the UI last chose
- *   $XDG_STATE_HOME/arqan/credentials.toml  the keys alone, mode 0600
- *
- * Reads parse a whole file into a Settings table pointing into the arena copy
- * of its bytes; a quoted value is unescaped in place in that copy. A write is
- * a per-key upsert rather than a rewrite: a config file is a document its
- * owner edits, so /provider changes the lines it owns and leaves the
- * comments, the order and the unknown keys exactly as they were. The result
- * is written to a temporary file and renamed, so an interrupted write leaves
- * the previous file rather than half a line.
- */
 #include "agent.h"
 
 #include <errno.h>
@@ -69,7 +46,6 @@ static Str setting_val(Str rest) {
     return str_trim(rest);
 }
 
-/* Splits "key = value"; false for a blank line, a comment and a header. */
 static b8 setting_kv(Str line, Str *k, Str *v) {
     line = str_trim(line);
     if (line.n == 0 || line.p[0] == '#' || line.p[0] == '[') return false;
@@ -81,7 +57,6 @@ static b8 setting_kv(Str line, Str *k, Str *v) {
     return k->n > 0;
 }
 
-/* The name inside "[...]", empty when the line is not a header. */
 static Str setting_section(Str line) {
     line = str_trim(line);
     if (line.n < 2 || line.p[0] != '[' || line.p[line.n - 1] != ']')
@@ -172,7 +147,6 @@ b8 settings_load(Settings *s, Str path, Arena *a) {
 }
 
 Str settings_get(const Settings *s, Str section, Str key) {
-    /* Last wins, so a key repeated in one file reads like a later assignment. */
     Str out = {0};
     for (size_t i = 0; i < s->n; i++)
         if (str_eq(s->section[i], section) && str_eq(s->key[i], key))

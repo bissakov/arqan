@@ -1,19 +1,11 @@
-/* markdown.c: renders message Markdown into the transcript.
- *
- * Rendering stays incremental outside short lines that may be table rows.
- * Buffers are bounded by a line, an unresolved inline run, or the table caps
- * below; prose that crosses a cap falls back to the streaming path.
- */
 #include "agent.h"
 
 #include <string.h>
 
-/* A block marker plus its indent; anything longer is prose. */
 #define MD_PREFIX_MAX 24
 /* Past this an unresolved opener is taken literally, which bounds how far a
  * stray '*' holds the stream back. */
 #define MD_PEND_MAX 512
-/* Widest rule drawn, so a wide terminal does not get one reading as a wall. */
 #define MD_RULE_MAX 60
 #define MD_LINE_MAX 256
 #define MD_TABLE_ROWS 64
@@ -498,7 +490,6 @@ static void md_prefix_byte(char c) {
             Str fence = str_drop(m, i);
             if ((md_all(fence, '`') || md_all(fence, '~'))
                 && m.n - i == 3) {
-                /* Neither the fence nor its info string is content. */
                 if (g_md.fence) {
                     g_md.fence = false;
                     g_md.fence_mark = 0;

@@ -1,16 +1,3 @@
-/* provider.c: chat completions with tool calls, in either wire format.
- *
- * Builds the request JSON from the conversation, POSTs it, and dispatches
- * text and tool-call deltas to the caller's sinks. With Config.stream off the
- * reply is one document instead of a sequence of events and reaches the same
- * sinks in one piece. Either way the assistant message and its tool calls are
- * appended to the conversation at the end.
- *
- * Config.api picks between OpenAI chat completions and the Anthropic messages
- * API. They differ in the shape of a request, of an event and of a reply, and
- * nowhere else: both are read into the same slots and pushed through the same
- * callbacks, so nothing above this file knows which one answered.
- */
 #include "agent.h"
 
 #include <stdio.h>
@@ -68,7 +55,6 @@ b8 conv_clone(Conv *dst, const Conv *src, Arena *a, size_t extra) {
     return true;
 }
 
-/* CONV_NONE when the conversation is full. */
 static size_t conv_push(Conv *c, MRole role, Str text, Str id, Str name,
                         b8 has_call) {
     if (c->n >= c->cap) return CONV_NONE;
@@ -127,7 +113,6 @@ b8 conv_is_call(const Conv *c, size_t i) {
         && c->tool_name[i].p != NULL;
 }
 
-/* First slot of the last `turns` user turns, or 0 when there are fewer. */
 static size_t conv_recent_start(const Conv *c, size_t turns) {
     size_t seen = 0;
     for (size_t i = c->n; i-- > 0;)
@@ -135,7 +120,6 @@ static size_t conv_recent_start(const Conv *c, size_t turns) {
     return 0;
 }
 
-/* The tool a result answers, for the line that replaces an elided one. */
 static Str conv_call_name(const Conv *c, size_t result) {
     for (size_t i = result; i-- > 0;)
         if (conv_is_call(c, i)
@@ -197,7 +181,6 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
             continue;
         }
         if (c->role[i] == M_ASSISTANT && c->has_tool_call[i]) {
-            /* Prose, then the tool_calls array built from the carriers. */
             buf_putf(b, ",\"content\":");
             buf_json_str(b, c->text[i]);
             buf_puts(b, STR(",\"tool_calls\":["));
@@ -1046,7 +1029,6 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     memset(s, 0, sizeof *s);
     s->scratch = scratch;
     s->open_slot = -1;
-    /* One event is at most an SSE line, so this is generous. */
     enum { EVENT_ARENA_BYTES = 4u << 20 };
     void *ev_mem = arena_alloc(scratch, EVENT_ARENA_BYTES, 16);
     if (!ev_mem) { snprintf(err, err_cap, "out of memory starting a turn"); return -1; }

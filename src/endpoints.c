@@ -1,29 +1,3 @@
-/* endpoints.c: the providers the /provider command creates and switches to.
- *
- * An endpoint is a user-defined service: a name, a base URL, the API that URL
- * speaks and the model last used against it. Nothing is built in, because
- * only the user knows which endpoints exist.
- * (`Provider` in provider.c is the streaming run context; this is the entry a
- * run is configured from.)
- *
- * An endpoint is a section of the config files, so the settings a user edits
- * are one document:
- *
- *   [providers.openai]
- *   base_url = "https://api.openai.com/v1"
- *   model = "gpt-4o-mini"
- *   api = "openai"
- *
- * The key is not there. It lives under the same section name in
- * $XDG_STATE_HOME/arqan/credentials.toml at mode 0600, so the file a dotfile
- * repository carries holds no secret, and a credentials file anyone else can
- * read is refused rather than loaded. That file may also say `key_source`
- * instead, naming an external store to ask (see secrets.c); asking one means
- * running a program, so the directive is honoured only from there. A config
- * section that names `key`, `key_source` or `key_command` is ignored with a
- * warning: a shared file must not be able to choose what arqan executes.
- * The active endpoint is named by the `provider` setting (see config.c).
- */
 #include "agent.h"
 
 #include <string.h>
@@ -53,7 +27,6 @@ b8 endpoint_name_ok(Str name) {
     return true;
 }
 
-/* "providers.<name>", the section both files key an endpoint by. */
 static Str endpoint_section(Str name, Arena *a) {
     Buf b; buf_init(&b, a, ENDPOINT_SECTION.n + name.n + 1);
     buf_puts(&b, ENDPOINT_SECTION);
@@ -340,7 +313,6 @@ b8 endpoints_set_key(Str name, Str key, SecretSource src, Arena *scratch,
         if (secret_source_external(src) && key.n)
             ok = secret_store(src, name, key, err, err_cap);
     }
-    /* An external key never reaches the file: only the name of its store. */
     Str keys[2] = { STR("key"), STR("key_source") };
     Str vals[2] = { secret_source_external(src) ? (Str){0} : key,
                     secret_source_external(src) ? secret_source_name(src)
@@ -368,7 +340,6 @@ b8 endpoints_delete(Str name, Arena *scratch, char *err, size_t err_cap) {
         return false;
     }
 
-    /* Whichever store held it, wherever the rest of the delete ends up. */
     char store_err[160] = {0};
     SecretSource src = creds_source(&credentials, section, name, NULL, 0);
     b8 erased = !secret_source_external(src)

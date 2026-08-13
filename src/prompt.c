@@ -1,27 +1,3 @@
-/* prompt.c: the system prompt, as a template with placeholders.
- *
- * A prompt is a document, so it comes from one place at a time rather than
- * from layers: --system or ARQAN_SYSTEM_PROMPT, else the project's
- * .arqan/SYSTEM.md found by walking up from the working directory, else the
- * global $XDG_CONFIG_HOME/arqan/SYSTEM.md, else the built-in template. One
- * past AGENT_MAX_PROMPT_FILE is refused rather than truncated.
- *
- * Whichever wins is expanded before it is sent, so a prompt written months
- * ago still describes the tools that exist today. An unknown "{name}" is left
- * as written, which keeps braces safe in a prompt about JSON or C.
- *
- * AGENTS.md is the project's instructions rather than the operator's, so it
- * does not compete with the prompt: every one from the working directory up
- * to the root is appended to whichever won, since a subdirectory refines its
- * parent instead of replacing it.
- *
- * Plan mode's prompt is resolved the same way from PLAN.md and expanded
- * against the tools plan mode offers.
- *
- * The compaction prompt is neither: it describes the shape of one checkpoint
- * summary rather than how to work, so it is built in, takes no placeholder
- * and no AGENTS.md.
- */
 #include "agent.h"
 
 #include <stdio.h>
@@ -162,7 +138,6 @@ static Str prompt_project(Str dir, const char *suffix, size_t suffix_size,
     memcpy(path, dir.p, n);
     while (n > 1 && path[n - 1] == '/') n--;
     for (;;) {
-        /* At the root the directory is the separator the suffix carries. */
         size_t off = n == 1 ? 0 : n;
         memcpy(path + off, suffix, suffix_size);
         Str body = prompt_read((Str){ path, off + suffix_size - 1 }, scratch,
@@ -179,7 +154,6 @@ static Str prompt_project(Str dir, const char *suffix, size_t suffix_size,
     }
 }
 
-/* The highest precedence `name` in the config dirs. */
 static Str prompt_global(Str name, Arena *scratch, Str *path_out, char *err,
                          size_t err_cap) {
     Str cand[AGENT_MAX_CONFIG_FILES];
@@ -235,7 +209,6 @@ static void prompt_tools(Buf *b, const ToolRegistry *tools, AgentMode mode) {
     }
 }
 
-/* Expands the placeholders of `tmpl` into `b`. */
 static void prompt_expand(Buf *b, Str tmpl, const ToolRegistry *tools,
                           AgentMode mode, Str cwd) {
     for (size_t i = 0; i < tmpl.n; i++) {

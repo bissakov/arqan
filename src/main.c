@@ -1,4 +1,3 @@
-/* main.c: arqan entry point. Unity build: includes every module as one TU. */
 #define _XOPEN_SOURCE 700
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE 1
@@ -46,7 +45,6 @@
 static volatile sig_atomic_t g_got_sigint = 0;
 static void on_sigint(i32 sig) { (void)sig; g_got_sigint = 1; }
 
-/* Static backing storage: no malloc anywhere in our code. */
 static alignas(64) u8 g_persist[AGENT_PERSIST_BYTES];
 static alignas(64) u8 g_scratch[AGENT_ARENA_BYTES];
 /* The rows of whichever modal screen is open. Only one is ever open, and its
@@ -225,13 +223,11 @@ static void on_retry(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
     g_replying = false;
     g_reasoning = false;
 }
-/* Called from inside the request wait, so the composer stays typeable. */
 static void on_idle(void *ud) {
     (void)ud;
     tui_poll_input();
 }
 
-/* Everything one user turn touches, so the interactive loop and -p share it. */
 typedef struct {
     Config       *cfg;
     ToolRegistry *tools;
@@ -292,7 +288,6 @@ static void telemetry_header(void *ud) {
     telemetry_session(h->cfg, h->tools);
 }
 
-/* What the tool calls of one round asked the turn to do next. */
 typedef enum {
     TURN_CONTINUE, TURN_DONE, TURN_HANDOFF, TURN_FULL, TURN_DENIED
 } TurnAction;
@@ -367,7 +362,6 @@ static void say_conv_full(void) {
     tui_write(STR("[conversation is full: /clear to start a new one]\n"));
 }
 
-/* False when the conversation had no room left, which ends the turn. */
 static b8 add_result(Agent *ag, size_t call, Str name, Str result, u32 ms) {
     Conv *conv = ag->conv;
     size_t slot = conv_add_tool(conv, conv->tool_call_id[call], result);
@@ -483,7 +477,6 @@ static ToolAuthorization tool_authorization(Agent *ag,
     return pick < 2 ? TOOL_AUTH_GRANTED : TOOL_AUTH_DENIED;
 }
 
-/* The three answers to a submitted plan are the three ways a turn goes on. */
 static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
     Str plan = json_str(json_parse(ag->scratch, args), STR("plan"));
     if (!plan.n) {
@@ -501,7 +494,6 @@ static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
         { STR("No"), STR("Keep planning; say what to change") },
     };
     size_t pick = 2;
-    /* A dismissed question is not an approval, so cancelling is "No". */
     if (!tui_pick(STR("continue?"), items, 3, TUI_PICK_FIRST, TUI_PICK_NONE,
                   &pick))
         pick = 2;
@@ -1237,7 +1229,6 @@ static void copy_last_reply(const Conv *conv) {
     tui_notice(STR("no response to copy"));
 }
 
-/* tui_notice copies, so the stack buffer only has to outlive the call. */
 static void notice_fmt(const char *fmt, ...)
     __attribute__((format(printf, 1, 2)));
 static void notice_fmt(const char *fmt, ...) {
@@ -1327,7 +1318,6 @@ static void model_row(ModelPick *mp, size_t row, size_t i, b8 fav) {
                                   ? STR("current") : (Str){0} };
 }
 
-/* Favorites first, in the order they were pinned, and every model once. */
 static size_t model_build(void *ud) {
     ModelPick *mp = ud;
     size_t row = 0;
@@ -1429,14 +1419,12 @@ static void choose_model(Config *cfg, Arena *scratch) {
     }
     Str chosen = cfg->model;
     tui_set_model(chosen);
-    /* The fit and the window described the model that just left. */
     ctx_model_changed(&g_ctx);
     ctx_set_window(&g_ctx, window);
     TelEvent e;
     tel_open(&e, "model");
     tel_str(&e, "name", chosen);
     tel_send(&e);
-    /* A model id only means something against the endpoint that served it. */
     b8 saved = cfg->provider.n
              ? endpoints_remember_model(cfg->provider, chosen, scratch)
              : config_remember_model(chosen, scratch);
@@ -1531,7 +1519,6 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
     char templ[AGENT_MAX_REASONING_TEMPLATE + 1] = {0};
     if (!tui_ask(STR("a name for this provider"), false, name, sizeof name))
         return false;
-    /* The name becomes a TOML header, so it is a bare key or nothing. */
     if (!endpoint_name_ok(str_c(name))) {
         tui_notice(STR("a provider name takes letters, digits, - and _"));
         return false;
@@ -1567,7 +1554,6 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
         || !tui_ask_edit(STR("reasoning JSON template (one object; empty is Off)"),
                          true, templ, sizeof templ))
         return false;
-    /* A local server needs no key, so an empty answer is a valid one. */
     if (!tui_ask(STR("its API key (empty if it needs none)"), true, key,
                  sizeof key))
         key[0] = '\0';
@@ -1613,7 +1599,6 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
         tui_notice(STR("out of memory storing the provider"));
         return false;
     }
-    /* After use_endpoint, which drops what described the previous model. */
     ctx_set_window(&g_ctx, window);
     if (verified) provider_chosen(cfg, scratch);
     else notice_fmt("provider: %.*s (model entered manually; not verified)",
@@ -2060,7 +2045,6 @@ static size_t list_at(const Str *opts, size_t n, Str current) {
 static Str list_step(Str list, Str current, i32 dir) {
     Str opt[SET_MAX_OPTIONS];
     size_t n = list_options(list, opt, SET_MAX_OPTIONS);
-    /* Off is position zero; selection wraps so both directions reach it. */
     i32 pos = (i32)list_at(opt, n, current) + (dir > 0 ? 1 : -1);
     if (pos >= (i32)n) pos = 0;
     if (pos < 0) pos = (i32)n - 1;
@@ -2435,7 +2419,6 @@ static void run_shell(Agent *ag, Str cmd) {
         buf_error(&out, err, "shell failed");
     u32 ms = elapsed_ms(started);
     Str result = keep_result(ag->persist, buf_finish(&out));
-    /* The command is the user's own text, so only its size is recorded. */
     TelEvent e;
     tel_open(&e, "shell");
     tel_shape(&e, "command", cmd);
@@ -2524,7 +2507,6 @@ static void compact_session(Agent *ag) {
     tui_activity_end();
     tui_set_status("ready");
 
-    /* Prose from the reply, whether or not the model also asked for tools. */
     Str summary = {0};
     if (rc >= 0) {
         for (size_t i = tmp.n; i-- > conv->n;) {
@@ -2668,7 +2650,6 @@ static b8 agent_turn(Agent *ag, Str text) {
     f64 turn_started = agent_now_seconds();
     i32 rounds = 0;
 
-    /* The composer stays editable throughout; only submitting waits. */
     b8 ok = false;
     NotifyKind ending = NOTIFY_TURN_FAILED;
     Str ending_text = {0};
@@ -2917,8 +2898,6 @@ i32 main(i32 argc, char **argv) {
     arena_reset(&scratch);
     tools_set_mode(cfg.mode);
 
-    /* Without a resolvable state dir, recall still works for this session and
-     * only the on-disk copy is lost. */
     History hist = {0};
     Arena hist_arena = {0};
     void *hist_mem = arena_alloc(&persist, AGENT_HISTORY_BYTES, 64);
@@ -2948,7 +2927,6 @@ i32 main(i32 argc, char **argv) {
     arena_reset(&scratch);
     session_begin(&sess);
 
-    /* SIGINT cancels line editing or the active provider request. */
     struct sigaction sa = {0}; sa.sa_handler = on_sigint;
     sigemptyset(&sa.sa_mask); sa.sa_flags = 0;
     sigaction(SIGINT, &sa, NULL);
@@ -2980,7 +2958,6 @@ i32 main(i32 argc, char **argv) {
     highlight_init(argv[0]);
     atexit(highlight_close);
 
-    /* After tui_start, since the record names the shape of the terminal. */
     telemetry_init(&scratch, prefs.telemetry);
     static TelHead head;
     head.cfg = &cfg;
@@ -3046,7 +3023,6 @@ i32 main(i32 argc, char **argv) {
         }
         if (!strcmp(line, "/exit")) break;
         if (!strcmp(line, "/clear")) {
-            /* Slot 0 stays; everything else goes. */
             conv.n = 1;
             persist.off = session_mark;
             arena_reset(&scratch);
@@ -3133,7 +3109,6 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
 send_message:
-        /* A turn with no endpoint is an HTTP 401 the user cannot act on. */
         if (no_provider(&cfg)) {
             tui_notice(NO_PROVIDER_HINT);
             continue;

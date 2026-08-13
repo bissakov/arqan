@@ -1,17 +1,3 @@
-/* favorites.c: the models pinned to the top of the /model picker.
- *
- * A favorite is a choice the UI made rather than a document the user edits,
- * so the list lives in the state file beside the remembered model. A model id
- * only means something against the endpoint that served it, so the list is
- * kept per provider:
- *
- *   [favorites.openai]
- *   models = "gpt-5, o3"
- *
- * A run with no named provider writes the "[favorites]" section instead,
- * which is the same split config.c and endpoints.c make between a remembered
- * model and a provider's own.
- */
 #include "agent.h"
 
 #include <stdio.h>

@@ -1,19 +1,3 @@
-/* context.c: how full the context is, as accurately as the provider lets us say.
- *
- * The only exact figure anyone gets is the prompt token count a provider
- * reports for a request it has just read, and that describes the
- * conversation as it stood when the request went out. Between requests the
- * conversation grows by tool results, shell output and typed messages that
- * nothing has counted, so the field is an estimate: conversation bytes
- * turned into tokens by a fit taken from this model's own measurements.
- *
- * The fit is affine. Two measurements give the slope directly, and their
- * difference cancels the constant a request carries beyond the conversation;
- * the constant then follows from either measurement. That constant matters:
- * a system prompt and a set of tool schemas are thousands of tokens that no
- * byte of the conversation accounts for, which is why an unmeasured model
- * reports nothing instead of a byte count that would be wrong by that much.
- */
 #include "agent.h"
 
 #include <stddef.h>

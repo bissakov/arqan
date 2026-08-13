@@ -1,8 +1,3 @@
-/* http.c: libcurl POST, streaming or not.
- *
- * A stream accumulates one line in the caller's arena and emits it to
- * on_line; a single reply accumulates whole into the caller's Buf.
- */
 #include "agent.h"
 
 #include <stdio.h>
@@ -154,7 +149,6 @@ static curl_socket_t public_open_cb(void *ud, curlsocktype purpose,
     return socket(address->family, address->socktype, address->protocol);
 }
 
-/* Neither request here has any use for the headers. */
 static size_t drop_header_cb(char *p, size_t sz, size_t n, void *ud) {
     (void)p; (void)ud;
     return sz * n;
@@ -191,12 +185,10 @@ static struct curl_slist *auth_header(struct curl_slist *hdrs,
     return hdrs;
 }
 
-/* Where a completion is asked for, which is all the two APIs share of a URL. */
 static const char *api_post_path(ApiKind api) {
     return api == API_ANTHROPIC ? "/messages" : "/chat/completions";
 }
 
-/* The host of a URL, without the scheme, the port or anything after it. */
 static Str url_host(const char *url) {
     Str s = str_c(url ? url : "");
     const char *sep = strstr(s.p, "://");

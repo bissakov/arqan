@@ -1,8 +1,3 @@
-/* json.c: tiny arena JSON parser + serializer.
- *
- * DOM lives entirely in the scratch arena. Objects are a singly linked list of
- * members (ordered). Arrays are contiguous JVal arrays.
- */
 #include "agent.h"
 
 #include <stdio.h>
@@ -62,7 +57,6 @@ static size_t utf8_put(char *dst, u32 cp) {
     return 4;
 }
 
-/* Copies into the arena, unescaping \uXXXX, \\ and friends. */
 static Str unescape(JParser *p, Str raw) {
     char *dst = arena_new(p->a, char, raw.n + 1);
     if (!dst) { p->oom = true; return (Str){0}; }
@@ -160,7 +154,6 @@ static JVal *parse_array(JParser *p) {
     getc_(p); /* [ */
     skipws(p);
     size_t count = 0;
-    /* Built as a linked list, then compacted into one contiguous block. */
     JVal list_head; list_head.next = NULL; JVal *tail = &list_head;
     while (peekc(p) != ']') {
         JVal *v = parse_value(p);

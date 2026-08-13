@@ -1,9 +1,3 @@
-/* paths.c: XDG Base Directory resolution.
- *
- * Two rules the spec is explicit about and this file enforces: a relative
- * value in an XDG_* variable is invalid and falls back to the default as if
- * unset, and directories are created with mode 0700.
- */
 #include "agent.h"
 
 #include <errno.h>
@@ -46,7 +40,6 @@ static Str dir_default(AgentDir kind) {
     return (Str){0};
 }
 
-/* Base directory for `kind`, without the AGENT_NAME component. */
 static Str paths_base(AgentDir kind, Arena *a) {
     const char *env = getenv(dir_env(kind));
     if (env && env[0] == '/') {   /* a relative value is ignored */
@@ -110,7 +103,6 @@ b8 paths_ensure_dir(Str dir) {
     return true;
 }
 
-/* "<dir>/.arqan/<name>", empty when it would not fit a path buffer. */
 static Str project_file(const char *dir, size_t n, Str name, Arena *a) {
     Buf b;
     buf_init(&b, a, n + name.n + AGENT_PROJECT_DIR.n + 3);
@@ -152,7 +144,6 @@ size_t paths_project_files(Str name, Arena *a, Str *out, size_t max) {
     size_t found = 0, n = strlen(cwd);
     while (n > 1 && cwd[n - 1] == '/') n--;
     for (;;) {
-        /* At the root the directory is the separator the suffix carries. */
         Str p = project_file(cwd, n == 1 ? 0 : n, name, a);
         struct stat st;
         if (p.n && stat(p.p, &st) == 0 && S_ISREG(st.st_mode)) {
