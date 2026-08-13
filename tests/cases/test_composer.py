@@ -210,6 +210,18 @@ def test_alt_enter_inserts_newline(ctx):
     ctx.check_screen(s)
 
 
+def test_shift_enter_inserts_newline_without_arming_rewind(ctx):
+    """A modified Enter sequence is not mistaken for a bare Escape."""
+    s = ctx.spawn()
+    s.type("first line").sync()
+    s.key("shift-enter").sync()
+    s.type("second line").sync()
+    assert s.composer_body(2) == ["first line", "second line"], \
+        s.composer_lines(2)
+    assert "Press Escape again" not in s.text(), s.text()
+    assert ctx.mock.requests == [], "nothing should have been sent"
+
+
 def test_wraps_long_input(ctx):
     """Input longer than the body wraps onto a second composer row."""
     s = ctx.spawn(cols=40, rows=20)

@@ -3387,7 +3387,8 @@ static i32 read_csi(Csi *out) {
 }
 
 enum {
-    KEY_NONE = 0, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN, KEY_HOME, KEY_END,
+    KEY_NONE = 0, KEY_IGNORE, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN, KEY_HOME,
+    KEY_END,
     KEY_PREV_WORD, KEY_NEXT_WORD, KEY_NEWLINE, KEY_PAGE_UP, KEY_PAGE_DOWN,
     KEY_WHEEL_UP, KEY_WHEEL_DOWN, KEY_MOUSE_DOWN, KEY_MOUSE_DRAG, KEY_MOUSE_UP,
     KEY_MOUSE_MOVE, KEY_SHIFT_TAB, KEY_PASTE,
@@ -3449,7 +3450,7 @@ static i32 read_escape(void) {
         if (csi.mouse && (final == 'M' || final == 'm') && csi.nparams >= 1) {
             i32 button = csi.p[0];
             if (button & 64) return button & 1 ? KEY_WHEEL_DOWN : KEY_WHEEL_UP;
-            if (csi.nparams < 3) return KEY_NONE;
+            if (csi.nparams < 3) return KEY_IGNORE;
             g_mouse_col = csi.p[1];
             g_mouse_row = csi.p[2];
             if (final == 'm') return KEY_MOUSE_UP;
@@ -3457,7 +3458,7 @@ static i32 read_escape(void) {
             if (button & 32) return (button & 3) == 3 ? KEY_MOUSE_MOVE
                                                       : KEY_MOUSE_DRAG;
             if ((button & 3) == 0) return KEY_MOUSE_DOWN;
-            return KEY_NONE;
+            return KEY_IGNORE;
         }
         i32 modifier = csi.nparams >= 2 ? csi.p[1] : 0;
         b8 ctrl = modifier == 5;
@@ -3470,7 +3471,12 @@ static i32 read_escape(void) {
             case 'F': return ctrl ? KEY_BOTTOM : KEY_END;
             case 'Z': return KEY_SHIFT_TAB;
             case '~':
-                if (csi.nparams < 1) return KEY_NONE;
+                if (csi.nparams < 1) return KEY_IGNORE;
+                /* xterm's modifyOtherKeys form for Shift-Enter. */
+                if (csi.nparams >= 3 && csi.p[0] == 27
+                    && csi.p[1] == 2
+                    && (csi.p[2] == '\r' || csi.p[2] == '\n'))
+                    return KEY_NEWLINE;
                 if (csi.p[0] == 1 || csi.p[0] == 7)
                     return ctrl ? KEY_TOP : KEY_HOME;
                 if (csi.p[0] == 3) return KEY_DELETE;
@@ -3485,8 +3491,14 @@ static i32 read_escape(void) {
                     g_tui.paste_cr = false;
                     return KEY_PASTE;
                 }
-                return KEY_NONE;
-            default: return KEY_NONE;
+                return KEY_IGNORE;
+            case 'u':
+                /* Kitty's keyboard protocol encodes Shift-Enter as CSI u. */
+                if (csi.nparams >= 2 && csi.p[1] == 2
+                    && (csi.p[0] == '\r' || csi.p[0] == '\n'))
+                    return KEY_NEWLINE;
+                return KEY_IGNORE;
+            default: return KEY_IGNORE;
         }
     }
     /* SS3: what a terminal in application cursor key mode sends, which is
@@ -3499,7 +3511,7 @@ static i32 read_escape(void) {
             case 'D': return KEY_LEFT;
             case 'H': return KEY_HOME;
             case 'F': return KEY_END;
-            default:  return KEY_NONE;
+            default:  return KEY_IGNORE;
         }
     }
     /* Meta: a terminal sends Alt as Esc then the key itself. Anything not
@@ -3512,7 +3524,7 @@ static i32 read_escape(void) {
         case 0x7f: case 0x08: return KEY_KILL_PREV_WORD;
         default: break;
     }
-    return KEY_NONE;
+    return KEY_IGNORE;
 }
 
 static size_t prev_word(const char *buf, size_t cur) {
@@ -4943,7 +4955,8 @@ static void ed_end(Ed *e) {
     X(KEY_BOTTOM,    "Ctrl-End",  "Bottom of the transcript",                 \
                                         tui_scroll_to_bottom();               \
                                         ed_viewport(e);)                      \
-    X(KEY_NEWLINE,   "Alt-Enter", "Insert a line break", ed_newline(e);)      \
+    X(KEY_NEWLINE,   "Alt/Shift-Enter", "Insert a line break",                \
+                                                        ed_newline(e);)       \
     X(KEY_SHIFT_TAB, "Shift-Tab", "Switch between Build and Plan mode",       \
                     /* a command rather than an edit: the draft is left */    \
                     e->action = ED_MODE;)                                     \

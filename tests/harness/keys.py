@@ -13,6 +13,7 @@ KEYS = {
     "enter": "\r",
     "return": "\r",
     "newline": ESC + "\r",      # alt-enter: insert a line break, do not submit
+    "shift-enter": ESC + "[13;2u",  # CSI u: insert a line break
     "tab": "\t",
     "shift-tab": ESC + "[Z",
     "esc": ESC,

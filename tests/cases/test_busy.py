@@ -160,6 +160,20 @@ def test_escape_cancels_a_queued_message_without_interrupting(ctx):
     assert "[interrupted]" not in s.text(), s.text()
 
 
+def test_shift_enter_does_not_interrupt_a_running_turn(ctx):
+    """Shift-Enter edits the follow-up draft while the response continues."""
+    s = running_turn(ctx)
+    s.type("first line").sync()
+    s.key("shift-enter").sync()
+    s.type("second line").sync()
+    s.wait_turn_done()
+
+    assert s.composer_body(2) == ["first line", "second line"], \
+        s.composer_lines(2)
+    assert "[interrupted]" not in s.text(), s.text()
+    assert len(ctx.mock.requests) == 1, ctx.mock.requests
+
+
 def test_a_question_from_the_turn_takes_the_screen_back(ctx):
     """The agent loop is waiting on the answer, so a plan handover closes the
     screen the user left open rather than being refused by it."""
