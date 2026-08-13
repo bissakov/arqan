@@ -155,6 +155,20 @@ def test_prompt_runs_tools(ctx):
     assert "written down" in out.stderr, out.stderr
 
 
+def test_prompt_withholds_the_interactive_question_tool(ctx):
+    """A one-shot request cannot advertise a picker nobody can answer."""
+    ctx.scenario("text=no+question+needed")
+    out = ctx.run_cli("-p", "make the choice", ARQAN_SYSTEM_PROMPT=None)
+    assert out.returncode == 0, out
+    names = [
+        tool["function"]["name"]
+        for tool in ctx.mock.requests[-1].get("tools", [])
+    ]
+    assert "ask_user" not in names, names
+    system = ctx.mock.requests[-1]["messages"][0]["content"]
+    assert "Call ask_user" not in system, system
+
+
 def test_prompt_hides_reasoning_and_intermediate_prose(ctx):
     """Only the last successful non-tool assistant message reaches stdout."""
     ctx.write_file("notes.txt", "result bytes\n")

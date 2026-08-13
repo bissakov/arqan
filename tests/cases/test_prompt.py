@@ -28,8 +28,11 @@ def test_builtin_prompt_names_tools_and_cwd(ctx):
     assert "expert coding assistant" in content, content
     for name in ("read", "write", "bash", "patch"):
         assert f"- {name}: " in content, content
+    assert "Call ask_user instead of ending your turn with a question" in content
     assert f"Current working directory: {ctx.work}" in content, content
-    assert "{tools}" not in content and "{cwd}" not in content, content
+    assert not any(
+        field in content for field in ("{tools}", "{ask_user_guidance}", "{cwd}")
+    ), content
 
 
 def test_global_system_md_replaces_the_prompt(ctx):

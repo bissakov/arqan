@@ -1114,11 +1114,11 @@ static b8 tool_find(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
     return walk_run(args, scratch, out, false, err, err_cap);
 }
 
-/* ---- plan mode ----
+/* ---- agent UI tools ----
  * submit_plan and ask_user are registered like any other tool so the model is
  * offered them in the usual place, but the agent loop intercepts both, since
- * each is a question put to the user and a ToolRun cannot reach the screen.
- * Reaching these bodies means the interception is gone. */
+ * each waits for the user and a ToolRun cannot reach the screen. Reaching
+ * these bodies means the interception is gone. */
 static b8 tool_agent_only(Str args, Arena *scratch, Buf *out,
                           char *err, size_t err_cap) {
     (void)args; (void)scratch; (void)out;
@@ -1128,12 +1128,15 @@ static b8 tool_agent_only(Str args, Arena *scratch, Buf *out,
 
 // ---- registry ----
 static AgentMode g_mode;
+static b8 g_interactive;
 
 void tools_set_mode(AgentMode mode) { g_mode = mode; }
+void tools_set_interactive(b8 interactive) { g_interactive = interactive; }
 
 b8 tools_available(const ToolRegistry *r, size_t id, AgentMode mode) {
     if (!r->modes || id >= r->n) return false;
     if (r->off && r->off[id]) return false;
+    if ((r->modes[id] & TOOL_INTERACTIVE) && !g_interactive) return false;
     return (r->modes[id] & (mode == MODE_PLAN ? TOOL_IN_PLAN : TOOL_IN_BUILD))
            != 0;
 }
@@ -1292,7 +1295,8 @@ void tools_init(ToolRegistry *r, Arena *persist) {
         tool_write);
     ADD("ask_user", "Ask the user to choose between options. Mark the one you "
         "recommend; they may also answer in their own words.",
-        "Ask the user to choose", TOOL_IN_PLAN | TOOL_FIXED, TOOL_APPROVAL_NONE,
+        "Ask the user to choose", BOTH | TOOL_FIXED | TOOL_INTERACTIVE,
+        TOOL_APPROVAL_NONE,
         "{\"type\":\"object\",\"properties\":{\"question\":{\"type\":\"string\"},\"options\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"label\":{\"type\":\"string\"},\"detail\":{\"type\":\"string\"},\"recommended\":{\"type\":\"boolean\"}},\"required\":[\"label\"]}}},\"required\":[\"question\",\"options\"]}",
         tool_agent_only);
     ADD("submit_plan", "Hand the finished plan to the user to approve.",

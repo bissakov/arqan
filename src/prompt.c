@@ -26,6 +26,7 @@ static const char PROMPT_BUILTIN[] =
     "- Change code with patch, giving each hunk enough context to match one "
     "place in the file; put every file of one change in a single call\n"
     "- Use write only for a whole file, and read a file before patching it\n"
+    "{ask_user_guidance}"
     "- Be concise in responses\n"
     "- Show file paths clearly when working with files\n"
     "\n"
@@ -44,9 +45,7 @@ static const char PROMPT_PLAN_BUILTIN[] =
     "Guidelines:\n"
     "- Read the code before planning it: a plan built on a guess about the "
     "codebase is worse than no plan\n"
-    "- Call ask_user whenever a choice is the user's to make, offering the "
-    "options you see and marking the one you recommend\n"
-    "- Ask about one thing at a time, not a form of questions at once\n"
+    "{ask_user_guidance}"
     "- Call submit_plan once the plan is complete: the plan is its argument, "
     "written as Markdown, and the user decides from it whether the work goes "
     "ahead\n"
@@ -209,6 +208,26 @@ static void prompt_tools(Buf *b, const ToolRegistry *tools, AgentMode mode) {
     }
 }
 
+static void prompt_ask_user(Buf *b, const ToolRegistry *tools,
+                            AgentMode mode) {
+    size_t id = tools ? tools_find(tools, STR("ask_user")) : TOOL_NONE;
+    if (id == TOOL_NONE || !tools_available(tools, id, mode)) return;
+    if (mode == MODE_PLAN) {
+        buf_puts(b, STR("- Call ask_user whenever a choice is the user's to "
+                        "make, offering the options you see and marking the "
+                        "one you recommend\n"
+                        "- Ask about one thing at a time, not a form of "
+                        "questions at once\n"));
+        return;
+    }
+    buf_puts(b, STR("- Call ask_user instead of ending your turn with a "
+                    "question when progress requires a decision from the "
+                    "user; offer concrete options, mark one recommended, "
+                    "and ask one thing at a time\n"
+                    "- Do not ask the user for information you can determine "
+                    "by inspecting the project\n"));
+}
+
 static void prompt_expand(Buf *b, Str tmpl, const ToolRegistry *tools,
                           AgentMode mode, Str cwd) {
     for (size_t i = 0; i < tmpl.n; i++) {
@@ -219,6 +238,8 @@ static void prompt_expand(Buf *b, Str tmpl, const ToolRegistry *tools,
         if (end == tmpl.n || tmpl.p[end] != '}') { buf_putc(b, '{'); continue; }
         if (str_eq(name, STR("tools")))    prompt_tools(b, tools, mode);
         else if (str_eq(name, STR("cwd"))) buf_puts(b, cwd);
+        else if (str_eq(name, STR("ask_user_guidance")))
+            prompt_ask_user(b, tools, mode);
         else { buf_putc(b, '{'); continue; }
         i = end;
     }

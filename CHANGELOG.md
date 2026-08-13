@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Let Build mode agents use `ask_user` to resolve a decision and continue the
+  same turn.
+
 ### Fixed
 
 - Keep `ask_user` questions visible above tall or multiline option lists.

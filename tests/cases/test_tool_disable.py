@@ -103,7 +103,9 @@ def test_the_flag_disables_a_list(ctx):
     s.wait_turn_done()
 
     names = tool_names(ctx.mock.requests[-1])
-    assert names == ["find", "grep", "internet_search", "page_fetch", "read"], names
+    assert names == [
+        "ask_user", "find", "grep", "internet_search", "page_fetch", "read"
+    ], names
 
 
 def test_the_flag_keeps_them_out_of_the_prompt(ctx):

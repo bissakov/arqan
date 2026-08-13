@@ -894,9 +894,11 @@ typedef b8 (*ToolRun)(Str args_json, Arena *scratch, Buf *out,
 // A bit per mode in ToolRegistry.modes.
 #define TOOL_IN_BUILD 1u
 #define TOOL_IN_PLAN  2u
-/* Answered by the agent loop rather than run, so the mode owns it: it is
- * never offered as a toggle and never disabled. */
+/* Answered by the agent loop rather than run, so it is never offered as a
+ * toggle and never disabled. */
 #define TOOL_FIXED    4u
+/* Needs a live terminal user, so non-interactive requests do not advertise it. */
+#define TOOL_INTERACTIVE 8u
 
 typedef struct {
     Str     *name;
@@ -918,8 +920,10 @@ typedef struct {
 void        tools_init(ToolRegistry *r, Arena *persist);
 // The mode tools_write_schemas offers and tools_run enforces.
 void        tools_set_mode(AgentMode mode);
-/* False for a tool the mode does not offer and for one the user turned off,
- * which is what withholds it from the schemas and the prompt listing. */
+// Whether tools that wait for terminal input are offered and accepted.
+void        tools_set_interactive(b8 interactive);
+/* False for a tool the mode or interaction style does not offer and for one
+ * the user turned off. This withholds it from schemas and prompt listings. */
 b8          tools_available(const ToolRegistry *r, size_t id, AgentMode mode);
 size_t      tools_find(const ToolRegistry *r, Str name);
 ToolApprovalClass tools_approval_class(const ToolRegistry *r, size_t id);

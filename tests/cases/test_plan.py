@@ -58,8 +58,8 @@ def test_plan_mode_withholds_the_writing_tools(ctx):
     assert "submit_plan" in names and "ask_user" in names, names
 
 
-def test_build_mode_withholds_the_plan_tools(ctx):
-    """submit_plan and ask_user exist only where a plan is being made."""
+def test_build_mode_offers_questions_but_withholds_plan_submission(ctx):
+    """Build can ask for a decision but cannot submit a plan for approval."""
     ctx.scenario("text=on+it")
     s = ctx.spawn()
     s.submit("do the work")
@@ -67,7 +67,42 @@ def test_build_mode_withholds_the_plan_tools(ctx):
 
     names = tool_names(ctx.mock.requests[-1])
     assert "write" in names and "patch" in names, names
-    assert "submit_plan" not in names and "ask_user" not in names, names
+    assert "ask_user" in names and "submit_plan" not in names, names
+
+
+def test_build_mode_asks_and_continues_the_same_turn(ctx):
+    """A build agent receives the decision as a tool result and carries on."""
+    args = json.dumps({
+        "question": "Which database should I configure?",
+        "options": [
+            {"label": "sqlite", "recommended": True},
+            {"label": "postgres"},
+        ],
+    })
+    ctx.scenario(f"tool=ask_user:{args},final_text=configuring+it+now")
+    s = ctx.spawn()
+    s.submit("set up the application")
+    s.wait_status("pick an answer")
+    s.key("enter")
+    s.wait_text("configuring it now")
+    s.wait_turn_done()
+
+    assert ctx.mock.tool_results() == ["sqlite"], ctx.mock.tool_results()
+    assert len(ctx.mock.requests) == 2, ctx.mock.requests
+
+
+def test_build_mode_refuses_an_unavailable_plan_submission(ctx):
+    """Special UI tools still obey the registry mode when called unasked."""
+    ctx.scenario(submit_plan(ctx) + ",final_text=understood")
+    s = ctx.spawn()
+    s.submit("do the work")
+    s.wait_text("understood")
+    s.wait_turn_done()
+
+    assert "continue?" not in s.text(), s.text()
+    assert ctx.mock.tool_results() == [
+        "ERROR: submit_plan is not available in build mode"
+    ], ctx.mock.tool_results()
 
 
 def test_a_write_in_plan_mode_is_refused(ctx):

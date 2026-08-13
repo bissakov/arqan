@@ -515,9 +515,9 @@ static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
     return TURN_HANDOFF;
 }
 
-/* Run the carrier slots in [first, last) and append each result. The two plan
- * mode tools are questions put to the user rather than work, so they are
- * answered here instead of through tools_run, which cannot reach the screen. */
+/* Run the carrier slots in [first, last) and append each result. The agent UI
+ * tools wait for the user rather than doing work, so they are answered here
+ * instead of through tools_run, which cannot reach the screen. */
 static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
     Conv *conv = ag->conv;
     ag->permission_blocked_one_shot = false;
@@ -528,8 +528,30 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         if (!conv_is_call(conv, i)) continue;
         Str name = conv->tool_name[i];
         Str args = conv->text[i];
-        /* Both plan tools are questions put to the user: nothing is running
-         * while one is on screen. */
+        size_t tool = tools_find(ag->tools, name);
+        b8 agent_ui = str_eq(name, STR("submit_plan"))
+                   || str_eq(name, STR("ask_user"));
+        if (agent_ui && (tool == TOOL_NONE
+                         || !tools_available(ag->tools, tool,
+                                             ag->cfg->mode))) {
+            char msg[128];
+            u8 mode = ag->cfg->mode == MODE_PLAN ? TOOL_IN_PLAN
+                                                 : TOOL_IN_BUILD;
+            i32 n = tool != TOOL_NONE && !(ag->tools->modes[tool] & mode)
+                  ? snprintf(msg, sizeof msg,
+                             "ERROR: %.*s is not available in %s mode",
+                             (i32)name.n, name.p,
+                             ag->cfg->mode == MODE_PLAN ? "plan" : "build")
+                  : snprintf(msg, sizeof msg,
+                             "ERROR: %.*s is not available in this "
+                             "non-interactive session", (i32)name.n, name.p);
+            size_t len = n > 0 && (size_t)n < sizeof msg
+                       ? (size_t)n : sizeof msg - 1;
+            Str result = keep_result(ag->persist, (Str){msg, len});
+            if (!add_result(ag, i, name, result, 0)) return TURN_FULL;
+            continue;
+        }
+        /* Nothing is running while an agent UI tool is on screen. */
         if (str_eq(name, STR("submit_plan"))) {
             tui_activity_end();
             notify_event(NOTIFY_INPUT_NEEDED, STR("a plan is ready to review"), 0);
@@ -552,7 +574,6 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
             if (dismissed) pending = TURN_DONE;
             continue;
         }
-        size_t tool = tools_find(ag->tools, name);
         Buf out; buf_init(&out, ag->scratch, 4096);
         char err[256] = {0};
         if (g_one_shot) one_shot_diag("tool call", name, args);
@@ -2884,6 +2905,8 @@ i32 main(i32 argc, char **argv) {
 
     ToolRegistry tools;
     tools_init(&tools, &persist);
+    tools_set_interactive(!opts.have_prompt && isatty(STDIN_FILENO)
+                          && isatty(STDOUT_FILENO));
     /* Before the prompt is built, so a disabled tool is absent from the
      * listing the model reads as well as from the schemas it is sent. */
     char tools_err[128] = {0};
