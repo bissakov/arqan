@@ -1,0 +1,13 @@
+Package: arqan
+Version: @VERSION@-1
+Architecture: amd64
+Maintainer: Alikhan Bissakov <bissakov@users.noreply.github.com>
+Homepage: https://github.com/bissakov/arqan
+Vcs-Browser: https://github.com/bissakov/arqan
+Vcs-Git: https://github.com/bissakov/arqan.git
+Depends: libc6 (>= 2.31), ca-certificates, libcurl4 | libcurl4t64
+Section: devel
+Priority: optional
+Description: terminal coding agent
+ arqan is a terminal coding agent for OpenAI-compatible Chat Completions
+ and Anthropic Messages APIs.

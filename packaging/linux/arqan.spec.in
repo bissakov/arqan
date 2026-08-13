@@ -1,0 +1,37 @@
+Name: arqan
+Version: @VERSION@
+Release: 1
+Summary: Terminal coding agent
+License: MPL-2.0 AND Apache-2.0 AND MIT AND ICU AND BSD-3-Clause
+URL: https://github.com/bissakov/arqan
+Source0: https://github.com/bissakov/arqan/archive/refs/tags/v%{version}.tar.gz
+Packager: Alikhan Bissakov <bissakov@users.noreply.github.com>
+BuildArch: x86_64
+Requires: ca-certificates
+%global __requires_exclude ^libcurl\\.so\\.4\\(CURL_.*
+
+%description
+arqan is a terminal coding agent for OpenAI-compatible Chat Completions
+and Anthropic Messages APIs.
+
+%prep
+%setup -q -n arqan-%{version}-package
+
+%build
+
+%install
+rm -rf %{buildroot}
+mkdir -p %{buildroot}
+cp -a usr %{buildroot}/
+
+%files
+/usr/bin/arqan
+/usr/bin/arqan-highlight
+%doc /usr/share/doc/arqan/README.md
+%doc /usr/share/doc/arqan/CHANGELOG.md
+%doc /usr/share/doc/arqan/THIRD_PARTY_NOTICES.md
+%doc /usr/share/doc/arqan/vendor/lexbor/NOTICE
+%license /usr/share/licenses/arqan/LICENSE
+%license /usr/share/licenses/arqan/vendor/lexbor/LICENSE
+%license /usr/share/licenses/arqan/vendor/tree-sitter/licenses/*.txt
+%license /usr/share/licenses/arqan/vendor/tree-sitter/runtime/unicode/LICENSE

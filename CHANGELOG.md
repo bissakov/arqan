@@ -4,6 +4,7 @@
 
 ### Added
 
+- Add native Debian/Ubuntu and RPM Linux release packages.
 - Let Build mode agents use `ask_user` to resolve a decision and continue the
   same turn.
 - Let users configure context windows and reasoning controls for exact
@@ -11,6 +12,8 @@
 
 ### Changed
 
+- Make the portable Linux archive installer-free and replace its sidecar
+  checksum with one manifest covering the archive and native packages.
 - Abbreviate context token counts in the status line with compact `k` and `M`
   units, matching the context window.
 - Keep provider setup focused on transport and credentials; configure model

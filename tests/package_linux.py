@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Regression tests for Linux release archives and installation."""
+"""Regression tests for Linux release archives and native packages."""
 
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import platform
 import re
@@ -18,18 +19,9 @@ from pathlib import Path, PurePosixPath
 ROOT = Path(__file__).resolve().parent.parent
 HEADER = ROOT / "src/agent.h"
 LICENSES = {
-    "bash.txt",
-    "c.txt",
-    "cpp.txt",
-    "go.txt",
-    "javascript.txt",
-    "json.txt",
-    "python.txt",
-    "rust.txt",
-    "toml.txt",
-    "tree-sitter.txt",
-    "typescript.txt",
-    "yaml.txt",
+    "bash.txt", "c.txt", "cpp.txt", "go.txt", "javascript.txt", "json.txt",
+    "python.txt", "rust.txt", "toml.txt", "tree-sitter.txt",
+    "typescript.txt", "yaml.txt",
 }
 
 
@@ -37,15 +29,17 @@ def fail(message: str) -> None:
     raise AssertionError(message)
 
 
-def run(*args, cwd=ROOT, env=None, check=True):
+def run(*args, cwd=ROOT, env=None, check=True, text=True, input_data=None):
     result = subprocess.run(
-        [str(arg) for arg in args], cwd=cwd, env=env, text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        [str(arg) for arg in args], cwd=cwd, env=env, text=text,
+        input=input_data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     if check and result.returncode:
+        stdout = result.stdout if text else result.stdout.decode(errors="replace")
+        stderr = result.stderr if text else result.stderr.decode(errors="replace")
         fail(
             f"command failed ({result.returncode}): {' '.join(map(str, args))}\n"
-            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            f"stdout:\n{stdout}\nstderr:\n{stderr}"
         )
     return result
 
@@ -63,27 +57,28 @@ def version() -> str:
     return extract_version(HEADER.read_text())
 
 
-def expected_payload(top: str) -> set[str]:
+def payload_files() -> set[str]:
     files = {
-        "bin/arqan",
-        "bin/arqan-highlight",
-        "install.sh",
-        "README.md",
-        "CHANGELOG.md",
-        "LICENSE",
-        "THIRD_PARTY_NOTICES.md",
-        "vendor/lexbor/LICENSE",
-        "vendor/lexbor/NOTICE",
+        "README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md",
+        "vendor/lexbor/LICENSE", "vendor/lexbor/NOTICE",
         "vendor/tree-sitter/runtime/unicode/LICENSE",
     }
     files.update(f"vendor/tree-sitter/licenses/{name}" for name in LICENSES)
-    dirs = {""}
+    return files
+
+
+def paths_with_dirs(files: set[str], prefix: str = "") -> set[str]:
+    paths = set()
+    if prefix:
+        paths.add(prefix)
     for name in files:
-        parent = PurePosixPath(name).parent
+        path = PurePosixPath(prefix, name) if prefix else PurePosixPath(name)
+        paths.add(str(path))
+        parent = path.parent
         while str(parent) != ".":
-            dirs.add(str(parent))
+            paths.add(str(parent))
             parent = parent.parent
-    return {top if not name else f"{top}/{name}" for name in files | dirs}
+    return paths
 
 
 def glibc_versions(binary: Path) -> list[tuple[int, ...]]:
@@ -107,8 +102,9 @@ def check_elf(binary: Path, expected: set[str]) -> None:
     dynamic = run("readelf", "-dW", binary).stdout
     if re.search(r"\((?:RPATH|RUNPATH)\)", dynamic):
         fail(f"RPATH/RUNPATH found in {binary}")
-    if needed(binary) != expected:
-        fail(f"unexpected dependencies for {binary}: {needed(binary)}")
+    actual = needed(binary)
+    if actual != expected:
+        fail(f"unexpected dependencies for {binary}: {actual}")
     versions = glibc_versions(binary)
     if not versions or max(versions) > (2, 31):
         fail(f"GLIBC ceiling exceeded by {binary}: {max(versions, default=())}")
@@ -117,163 +113,236 @@ def check_elf(binary: Path, expected: set[str]) -> None:
         fail(f"missing shared library for {binary}")
 
 
-def install(archive_root: Path, *args: str, env: dict[str, str]) -> None:
-    run(archive_root / "install.sh", *args, cwd=archive_root, env=env)
+def check_member(
+    member: tarfile.TarInfo, epoch: int, executable: bool,
+    named_root: bool = False,
+) -> None:
+    path = PurePosixPath(member.name)
+    if path.is_absolute() or ".." in path.parts:
+        fail(f"unsafe package path: {member.name}")
+    expected_names = ("root", "root") if named_root else ("", "")
+    if (member.uid, member.gid, member.uname, member.gname) != (
+        0, 0, *expected_names,
+    ):
+        fail(f"non-root/non-normalized ownership: {member.name}")
+    if int(member.mtime) != epoch:
+        fail(f"non-normalized timestamp: {member.name}")
+    expected_mode = 0o755 if member.isdir() or executable else 0o644
+    if member.mode != expected_mode:
+        fail(f"wrong mode {member.mode:o}: {member.name}")
+    if not (member.isdir() or member.isfile()):
+        fail(f"unexpected entry type: {member.name}")
 
 
-def check_installation(archive_root: Path, temp: Path) -> None:
-    home = temp / "home with spaces"
-    home.mkdir()
-    env = os.environ.copy()
-    env.update({
-        "HOME": str(home),
-        "PATH": "/usr/bin:/bin",
-        "XDG_CONFIG_HOME": str(home / "cfg"),
-        "XDG_STATE_HOME": str(home / "state"),
-        "XDG_DATA_HOME": str(home / "data"),
-    })
-    install(archive_root, env=env)
-    prefix = home / ".local"
-    docs = prefix / "share/doc/arqan"
-    for binary in (prefix / "bin/arqan", prefix / "bin/arqan-highlight"):
-        if stat.S_IMODE(binary.stat().st_mode) != 0o755:
-            fail(f"wrong installed executable mode: {binary}")
-        run(binary, "--version", env=env)
-    for name in ("README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md"):
-        path = docs / name
-        if stat.S_IMODE(path.stat().st_mode) != 0o644:
-            fail(f"wrong installed documentation mode: {path}")
+def check_executables(root: Path) -> None:
+    checks = {
+        "arqan": {"libc.so.6", "libcurl.so.4"},
+        "arqan-highlight": {"libc.so.6"},
+    }
+    for name, dependencies in checks.items():
+        binary = root / "usr/bin" / name
+        run(binary, "--version")
+        check_elf(binary, dependencies)
 
-    no_home = env.copy()
-    no_home.pop("HOME")
-    missing_home = run(
-        archive_root / "install.sh", cwd=archive_root, env=no_home, check=False,
-    )
-    if missing_home.returncode == 0 or "HOME is not set" not in missing_home.stderr:
-        fail("default installation must refuse an unset HOME")
 
-    unrelated = prefix / "bin/keep-me"
-    unrelated.write_text("sentinel")
-    old_program = prefix / "bin/arqan"
-    old_program.write_text("incomplete upgrade")
-    install(archive_root, env=env)
-    run(old_program, "--version", env=env)
-    if unrelated.read_text() != "sentinel":
-        fail("reinstall damaged an unrelated file")
+def check_tarball(archive: Path, top: str, epoch: int, temp: Path) -> None:
+    expected_files = {"bin/arqan", "bin/arqan-highlight"} | payload_files()
+    expected = paths_with_dirs(expected_files, top)
+    with tarfile.open(archive, "r:gz") as tf:
+        members = tf.getmembers()
+        names = {member.name.rstrip("/") for member in members}
+        if names != expected:
+            fail(f"tar payload mismatch\nmissing: {sorted(expected - names)}\n"
+                 f"extra: {sorted(names - expected)}")
+        if any(name.endswith("install.sh") for name in names):
+            fail("portable archive still contains install.sh")
+        for member in members:
+            path = PurePosixPath(member.name)
+            if not path.parts or path.parts[0] != top:
+                fail(f"path outside versioned archive directory: {member.name}")
+            executable = member.name in {
+                f"{top}/bin/arqan", f"{top}/bin/arqan-highlight",
+            }
+            check_member(member, epoch, executable)
+        # Paths and entry types were validated before extraction.
+        tf.extractall(temp)
+    root = temp / top
+    check_elf(root / "bin/arqan", {"libc.so.6", "libcurl.so.4"})
+    check_elf(root / "bin/arqan-highlight", {"libc.so.6"})
+    run(root / "bin/arqan", "--version")
+    run(root / "bin/arqan-highlight", "--version")
 
-    explicit = temp / "explicit prefix"
-    install(archive_root, "--prefix", str(explicit), env=env)
-    if not (explicit / "bin/arqan-highlight").is_file():
-        fail("--prefix did not install both binaries")
 
-    staging = temp / "staging root"
-    staged_prefix = "/opt/arqan test"
-    install(
-        archive_root, "--prefix", staged_prefix, "--destdir", str(staging),
-        env=env,
-    )
-    if not (staging / staged_prefix.lstrip("/") / "bin/arqan").is_file():
-        fail("--destdir did not preserve the prefix-relative tree")
+def deb_expected() -> set[str]:
+    docs = payload_files() - {"LICENSE"}
+    docs.add("copyright")
+    files = {"usr/bin/arqan", "usr/bin/arqan-highlight"}
+    files.update(f"usr/share/doc/arqan/{name}" for name in docs)
+    return paths_with_dirs(files) | {"."}
 
-    project = temp / "project/.arqan"
-    project.mkdir(parents=True)
-    sentinels = [
-        unrelated,
-        Path(env["XDG_CONFIG_HOME"]) / "arqan/config.toml",
-        Path(env["XDG_STATE_HOME"]) / "arqan/state.toml",
-        Path(env["XDG_STATE_HOME"]) / "arqan/credentials.toml",
-        Path(env["XDG_DATA_HOME"]) / "arqan/sessions/keep.json",
-        project / "config.toml",
-        docs / "unrelated.txt",
+
+def check_deb(package: Path, ver: str, epoch: int, temp: Path) -> None:
+    fields = run("dpkg-deb", "-f", package).stdout
+    expected_fields = {
+        "Package": "arqan", "Version": f"{ver}-1", "Architecture": "amd64",
+        "Maintainer": "Alikhan Bissakov <bissakov@users.noreply.github.com>",
+        "Homepage": "https://github.com/bissakov/arqan",
+    }
+    for field, value in expected_fields.items():
+        if not re.search(rf"^{field}: {re.escape(value)}$", fields, re.MULTILINE):
+            fail(f"wrong Debian {field}")
+    depends = run("dpkg-deb", "-f", package, "Depends").stdout.strip()
+    for dependency in ("libc6 (>= 2.31)", "ca-certificates", "libcurl4 | libcurl4t64"):
+        if dependency not in depends:
+            fail(f"missing Debian dependency: {dependency}")
+
+    control_dir = temp / "deb-control"
+    run("dpkg-deb", "-e", package, control_dir)
+    control_files = {path.relative_to(control_dir).as_posix()
+                     for path in control_dir.rglob("*") if path.is_file()}
+    if control_files != {"control"}:
+        fail(f"Debian package has maintainer scripts: {sorted(control_files)}")
+
+    data = run("dpkg-deb", "--fsys-tarfile", package, text=False).stdout
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as tf:
+        members = tf.getmembers()
+        names = {member.name.rstrip("/").removeprefix("./") for member in members}
+        expected = deb_expected()
+        if names != expected:
+            fail(f"deb payload mismatch\nmissing: {sorted(expected - names)}\n"
+                 f"extra: {sorted(names - expected)}")
+        for member in members:
+            executable = member.name in {"./usr/bin/arqan", "./usr/bin/arqan-highlight"}
+            check_member(member, epoch, executable, named_root=True)
+        root = temp / "deb-root"
+        root.mkdir()
+        # Paths and entry types were validated before extraction.
+        tf.extractall(root)
+    check_executables(root)
+
+
+def rpm_file_records(package: Path) -> dict[str, tuple[str, str, str, int]]:
+    query = "[%{FILENAMES}\\t%{FILEMODES:perms}\\t%{FILEUSERNAME}\\t%{FILEGROUPNAME}\\t%{FILEMTIMES}\\n]"
+    lines = run("rpm", "-qp", "--qf", query, package).stdout.splitlines()
+    records = {}
+    for line in lines:
+        name, mode, owner, group, mtime = line.split("\t")
+        records[name] = (mode, owner, group, int(mtime))
+    return records
+
+
+def rpm_expected_files() -> set[str]:
+    docs = {"README.md", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md",
+            "vendor/lexbor/NOTICE"}
+    licenses = payload_files() - docs
+    files = {"/usr/bin/arqan", "/usr/bin/arqan-highlight"}
+    files.update(f"/usr/share/doc/arqan/{name}" for name in docs)
+    files.update(f"/usr/share/licenses/arqan/{name}" for name in licenses)
+    return files
+
+
+def check_rpm(package: Path, ver: str, epoch: int, temp: Path) -> None:
+    query = "%{NAME}\n%{VERSION}\n%{RELEASE}\n%{ARCH}\n%{PACKAGER}\n%{URL}\n%{LICENSE}\n%{BUILDHOST}\n%{BUILDTIME}\n"
+    values = run("rpm", "-qp", "--qf", query, package).stdout.splitlines()
+    expected = [
+        "arqan", ver, "1", "x86_64",
+        "Alikhan Bissakov <bissakov@users.noreply.github.com>",
+        "https://github.com/bissakov/arqan",
+        "MPL-2.0 AND Apache-2.0 AND MIT AND ICU AND BSD-3-Clause",
+        "reproducible.invalid", str(epoch),
     ]
-    for sentinel in sentinels[1:]:
-        sentinel.parent.mkdir(parents=True, exist_ok=True)
-        sentinel.write_text("sentinel")
-    install(archive_root, "--uninstall", env=env)
-    if (prefix / "bin/arqan").exists() or (prefix / "bin/arqan-highlight").exists():
-        fail("uninstall left an installed executable")
-    for sentinel in sentinels:
-        if sentinel.read_text() != "sentinel":
-            fail(f"uninstall damaged sentinel {sentinel}")
+    if values != expected:
+        fail(f"wrong RPM identity metadata: {values}")
+    requires = set(run("rpm", "-qp", "--requires", package).stdout.splitlines())
+    if "ca-certificates" not in requires:
+        fail("RPM lacks explicit CA certificate dependency")
+    for pattern in (r"^libc\.so\.6", r"^libcurl\.so\.4"):
+        if not any(re.search(pattern, item) for item in requires):
+            fail(f"RPM lacks generated dependency {pattern}")
+    scripts = run("rpm", "-qp", "--scripts", package).stdout.strip()
+    if scripts:
+        fail(f"RPM contains scriptlets: {scripts}")
+
+    records = rpm_file_records(package)
+    expected_files = rpm_expected_files()
+    if set(records) != expected_files:
+        fail(f"rpm payload mismatch\nmissing: {sorted(expected_files - set(records))}\n"
+             f"extra: {sorted(set(records) - expected_files)}")
+    for name, (mode, owner, group, mtime) in records.items():
+        expected_mode = "-rwxr-xr-x" if name.startswith("/usr/bin/") else "-rw-r--r--"
+        if (mode, owner, group, mtime) != (expected_mode, "root", "root", epoch):
+            fail(f"wrong RPM file metadata for {name}: {records[name]}")
+
+    root = temp / "rpm-root"
+    root.mkdir()
+    cpio_data = run("rpm2cpio", package, text=False).stdout
+    run("cpio", "-idm", "--quiet", cwd=root, text=False, input_data=cpio_data)
+    extracted = {"/" + path.relative_to(root).as_posix()
+                 for path in root.rglob("*") if path.is_file()}
+    if extracted != expected_files:
+        fail("RPM extraction disagrees with its file metadata")
+    check_executables(root)
 
 
 def main() -> int:
     if platform.system() != "Linux" or platform.machine() not in {"x86_64", "amd64"}:
         print("package-linux tests require Linux x86_64", file=sys.stderr)
         return 2
-    for command in ("file", "readelf", "sha256sum", "tar"):
+    requirements = ("cpio", "dpkg-deb", "file", "readelf", "rpm", "rpm2cpio", "sha256sum", "tar")
+    for command in requirements:
         if shutil.which(command) is None:
             print(f"missing test requirement: {command}", file=sys.stderr)
             return 2
 
     ver = version()
     workflow = ROOT / ".github/workflows/release-linux.yml"
-    if not workflow.is_file() or "GITHUB_REF_NAME" not in workflow.read_text():
+    workflow_text = workflow.read_text() if workflow.is_file() else ""
+    if "GITHUB_REF_NAME" not in workflow_text:
         fail("release workflow does not validate its tag")
-    if extract_version(HEADER.read_text()) != ver:
-        fail("tag validation version parser disagrees with packaging")
-    archive = ROOT / "dist" / f"arqan-{ver}-linux-x86_64.tar.gz"
-    checksum = archive.with_name(archive.name + ".sha256")
-    if not archive.is_file() or not checksum.is_file():
-        fail(f"missing {archive.name} and checksum; run make package-linux")
-    checksum_line = checksum.read_text().strip()
-    if not re.fullmatch(rf"[0-9a-f]{{64}}  {re.escape(archive.name)}", checksum_line):
-        fail("checksum filename or format does not agree with AGENT_VERSION")
-    run("sha256sum", "-c", checksum.name, cwd=checksum.parent)
+
+    names = sorted([
+        f"arqan-{ver}-linux-x86_64.tar.gz",
+        f"arqan_{ver}-1_amd64.deb",
+        f"arqan-{ver}-1.x86_64.rpm",
+    ])
+    dist = ROOT / "dist"
+    assets = [dist / name for name in names]
+    manifest = dist / "SHA256SUMS"
+    actual_files = {path.name for path in dist.iterdir() if path.is_file()}
+    if actual_files != set(names) | {"SHA256SUMS"}:
+        fail(f"unexpected release asset set: {sorted(actual_files)}")
+    lines = manifest.read_text().splitlines()
+    expected_pattern = [rf"[0-9a-f]{{64}}  {re.escape(name)}" for name in names]
+    if len(lines) != 3 or any(not re.fullmatch(pattern, line)
+                              for pattern, line in zip(expected_pattern, lines)):
+        fail("SHA256SUMS must contain exactly the three sorted versioned artifacts")
+    run("sha256sum", "--ignore-missing", "-c", manifest.name, cwd=dist)
 
     epoch_text = os.environ.get("SOURCE_DATE_EPOCH")
     if epoch_text is None:
         epoch_text = run("git", "show", "-s", "--format=%ct", "HEAD").stdout.strip()
     epoch = int(epoch_text)
-    top = f"arqan-{ver}-linux-x86_64"
-    with tarfile.open(archive, "r:gz") as tf:
-        members = tf.getmembers()
-        names = {member.name.rstrip("/") for member in members}
-        if names != expected_payload(top):
-            fail(
-                "archive payload mismatch\nmissing: "
-                f"{sorted(expected_payload(top) - names)}\nextra: {sorted(names - expected_payload(top))}"
-            )
-        for member in members:
-            path = PurePosixPath(member.name)
-            if path.is_absolute() or ".." in path.parts or path.parts[0] != top:
-                fail(f"unsafe archive path: {member.name}")
-            if member.uid != 0 or member.gid != 0 or member.uname or member.gname:
-                fail(f"non-normalized archive ownership: {member.name}")
-            if int(member.mtime) != epoch:
-                fail(f"non-normalized timestamp: {member.name}")
-            expected_mode = 0o755 if member.isdir() or member.name in {
-                f"{top}/bin/arqan", f"{top}/bin/arqan-highlight",
-                f"{top}/install.sh",
-            } else 0o644
-            if member.mode != expected_mode:
-                fail(f"wrong mode {member.mode:o}: {member.name}")
-            if not (member.isdir() or member.isfile()):
-                fail(f"unexpected archive entry type: {member.name}")
+    with tempfile.TemporaryDirectory(prefix="arqan package test ") as tmp_name:
+        temp = Path(tmp_name)
+        check_tarball(
+            dist / f"arqan-{ver}-linux-x86_64.tar.gz",
+            f"arqan-{ver}-linux-x86_64", epoch, temp / "tar",
+        )
+        check_deb(dist / f"arqan_{ver}-1_amd64.deb", ver, epoch, temp)
+        check_rpm(dist / f"arqan-{ver}-1.x86_64.rpm", ver, epoch, temp)
 
-    first_hash = hashlib.sha256(archive.read_bytes()).hexdigest()
+    first = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+             for path in assets + [manifest]}
     env = os.environ.copy()
     env["SOURCE_DATE_EPOCH"] = str(epoch)
     run(ROOT / "scripts/package-linux.sh", env=env)
-    second_hash = hashlib.sha256(archive.read_bytes()).hexdigest()
-    if first_hash != second_hash:
-        fail("packaging identical inputs twice produced different bytes")
+    second = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in assets + [manifest]}
+    if first != second:
+        changed = sorted(name for name in first if first[name] != second[name])
+        fail(f"packaging identical inputs produced different bytes: {changed}")
 
-    with tempfile.TemporaryDirectory(prefix="arqan package test ") as tmp_name:
-        temp = Path(tmp_name)
-        with tarfile.open(archive, "r:gz") as tf:
-            # Paths and entry types were checked above before extraction.
-            tf.extractall(temp)
-        archive_root = temp / top
-        arqan = archive_root / "bin/arqan"
-        helper = archive_root / "bin/arqan-highlight"
-        run(arqan, "--version")
-        run(helper, "--version")
-        check_elf(arqan, {"libc.so.6", "libcurl.so.4"})
-        check_elf(helper, {"libc.so.6"})
-        check_installation(archive_root, temp)
-
-    print(f"package-linux: verified {archive.name}")
+    print("package-linux: verified tar, deb, rpm, and SHA256SUMS")
     return 0
 
 

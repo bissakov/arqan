@@ -30,55 +30,60 @@ arqan --disable-tools internet_search,page_fetch
 
 The project release is for Linux x86_64 systems with glibc 2.31 or newer,
 `libcurl.so.4` from libcurl 7.66 or newer, and a system CA certificate bundle.
-macOS, Windows, aarch64, native `.deb`/`.rpm` packages, and fully static builds
-are not part of this release milestone.
+macOS, Windows, aarch64, fully static builds, hosted apt/dnf repositories, and
+package signing are not part of this release milestone. Release packages are
+downloaded directly from the GitHub release rather than from a configured
+package repository.
 
-Download both files for a release, verify the archive, and extract it:
+Download `SHA256SUMS` and the package for your system, then verify and install
+it. Debian and Ubuntu users can install the native package with:
 
 ```sh
-sha256sum -c arqan-X.Y.Z-linux-x86_64.tar.gz.sha256
+sha256sum --ignore-missing -c SHA256SUMS
+sudo apt install ./arqan_X.Y.Z-1_amd64.deb
+```
+
+RPM-based systems can install with:
+
+```sh
+sha256sum --ignore-missing -c SHA256SUMS
+sudo dnf install ./arqan-X.Y.Z-1.x86_64.rpm
+```
+
+Upgrade by passing the newer local package to the same `apt install` or
+`dnf install` command. Remove a package with:
+
+```sh
+sudo apt remove arqan       # Debian or Ubuntu
+sudo dnf remove arqan       # RPM-based systems
+```
+
+Package removal deletes only package-owned programs and documentation. It
+preserves configuration under `${XDG_CONFIG_HOME:-$HOME/.config}/arqan`, state
+and credentials under `${XDG_STATE_HOME:-$HOME/.local/state}/arqan`, sessions
+under `${XDG_DATA_HOME:-$HOME/.local/share}/arqan`, and project `.arqan`
+directories.
+
+The portable archive is an installer-free fallback. Verify it with the same
+manifest, extract it, and run it in place:
+
+```sh
+sha256sum --ignore-missing -c SHA256SUMS
 tar -xzf arqan-X.Y.Z-linux-x86_64.tar.gz
 cd arqan-X.Y.Z-linux-x86_64
+./bin/arqan
 ```
 
-The extracted archive is self-contained. Run `./bin/arqan` directly without
-installing, or install both executables and their documentation for the current
-user:
+On first launch, use `/provider` to configure an endpoint. A source checkout
+can instead be built and run with `make` and `./bin/arqan`.
 
-```sh
-./install.sh
-export PATH="$HOME/.local/bin:$PATH"
-arqan
-```
-
-On first launch, use `/provider` to configure an endpoint. For a system-wide
-installation, choose the prefix explicitly and invoke `sudo` yourself:
-
-```sh
-sudo ./install.sh --prefix /usr/local
-```
-
-Upgrade by running `install.sh` from a newer archive with the same prefix.
-Uninstall using that prefix, for example `./install.sh --uninstall` or
-`sudo ./install.sh --prefix /usr/local --uninstall`.
-
-Uninstall removes only the installed programs and documentation. It preserves
-configuration under `${XDG_CONFIG_HOME:-$HOME/.config}/arqan`, state and
-credentials under `${XDG_STATE_HOME:-$HOME/.local/state}/arqan`, sessions under
-`${XDG_DATA_HOME:-$HOME/.local/share}/arqan`, and project `.arqan` directories.
-
-A source checkout uses the same installer after building:
-
-```sh
-make
-./install.sh
-```
-
-Maintainers can run `make package-linux` to package binaries built on the local
-Linux x86_64 host. `make release-linux` (or `scripts/release-linux.sh`) performs
-a clean build, all tests, and packaging in the pinned Debian 11 compatibility
-container. `make test-package-linux` runs the package and installer regression
-suite against the local artifact.
+Maintainers can run `make package-linux` to produce the tarball, `.deb`, `.rpm`,
+and checksum manifest from binaries built on the local Linux x86_64 host.
+`make test-package-linux` checks all three formats and reproducibility.
+`make release-linux` (or `scripts/release-linux.sh`) performs a clean build, all
+tests, and packaging in the pinned Debian 11 compatibility container, then
+tests native install, reinstall, and removal in disposable Debian, Ubuntu, and
+Fedora-family containers.
 
 ## Configure
 
