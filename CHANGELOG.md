@@ -8,6 +8,11 @@
   scrollable and selectable window containing the complete block text,
   instead of deferring the fold until the turn ends.
 
+### Fixed
+
+- Stop the model picker from reading past the command table when a picked
+  entry sits beyond it.
+
 ## [0.2.0] - 2026-08-14
 
 ### Added

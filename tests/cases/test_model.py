@@ -101,6 +101,20 @@ def test_search_is_a_literal_substring(ctx):
     assert "(no match)" not in s.text(), s.text()
 
 
+def test_closing_a_long_picker_drops_its_matches(ctx):
+    """A choice past the command count leaves no stale match behind it."""
+    ctx.scenario("model_count=900")
+    s = ctx.spawn()
+    open_picker(ctx, s)
+    s.type("899").sync()
+    s.key("enter")
+    s.wait_for(lambda t: s.status_field(1) == "model-899", "the picked model")
+    # The composer popup indexes the command table, which the picker's 900
+    # entries outnumber: a match surviving the close reads past its end.
+    s.type("/").sync()
+    assert "/model" in s.text(), s.text()
+
+
 def test_search_keystrokes_never_reach_the_composer(ctx):
     """The picker owns the keyboard while it is open."""
     ctx.scenario("model_count=20")

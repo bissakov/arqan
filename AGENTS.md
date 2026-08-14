@@ -11,6 +11,7 @@ make            # build bin/arqan
 make run        # build and run
 make test       # end-to-end TUI suite
 make test-asan  # ASan + UBSan suite
+make test-fil   # Fil-C memory-safety suite (needs /opt/fil)
 make clean      # remove build/ and bin/
 ```
 

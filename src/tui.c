@@ -4844,6 +4844,12 @@ static void pick_close(void) {
     g_tui.cmds = g_pick.saved_cmds;
     g_tui.marks = g_pick.saved_marks;
     g_tui.cmd_n = g_pick.saved_cmd_n;
+    /* The matches index the picker's list, which is what the lines above just
+     * took away: carrying them into the refresh below would read past the
+     * restored command table, whose entries a picker outnumbers. The composer
+     * popup belongs to the input buffer, so the rebuild starts from nothing. */
+    g_tui.comp_n = 0;
+    g_tui.comp_sel = 0;
     g_tui.pick_end = false;
     g_tui.comp_dismissed = g_pick.saved_dismissed;
     memcpy(g_tui.notice, g_pick.saved_notice, sizeof g_tui.notice);

@@ -15,6 +15,18 @@ SANFLAGS := -fsanitize=address,undefined -fno-sanitize-recover=all \
 ASAN_BUILD := build/asan
 ASAN_BIN := bin/asan
 
+# The same suite against a Fil-C binary: `make test-fil`. Fil-C shares no ABI
+# with the system, so it cannot link the system libcurl; the compiler and every
+# library it links must come from one Fil-C slice. Only the /opt/fil
+# distribution ships a Fil-C libcurl, so that is what this target expects.
+# Install it from https://fil-c.org/install_optfil.
+FILCC ?= /opt/fil/bin/filcc
+FIL_BUILD := build/fil
+FIL_BIN := bin/fil
+# Fil-C proves what these flags approximate, and LTO is not supported: keep the
+# warnings and drop the hardening. -g gives Fil-C panics a symbolized trace.
+FIL_DROP := -flto -fstack-protector-strong -D_FORTIFY_SOURCE=2
+
 # BUILDDIR and BINDIR select a build variant; the sanitizer recipe overrides
 # both. Everything below derives from them, so no rule writes a fixed path.
 BUILDDIR ?= build
@@ -41,8 +53,8 @@ VENDOR_CFLAGS ?= -std=c17 -O2 -fno-strict-aliasing -pipe -w \
 PYTHON  ?= python3
 
 .PHONY: all minimal clean clean-asan run test test-update asan test-asan mock \
-        bench bench-slow bench-baseline package-linux test-package-linux \
-        release-linux
+        clean-fil fil test-fil bench bench-slow bench-baseline \
+        package-linux test-package-linux release-linux
 
 all: $(BIN) $(HL_BIN)
 
@@ -130,6 +142,23 @@ test-asan: asan
 	ASAN_OPTIONS=detect_leaks=0 ARQAN_TEST_BIN=$(ASAN_BIN)/arqan-test \
 	    $(PYTHON) tests/run.py $(T)
 
+# Fil-C catches what the sanitizers can only sample, and it needs no leak
+# suppression: it collects. Same variant layout as asan, under build/fil and
+# bin/fil.
+fil:
+	@command -v $(FILCC) >/dev/null 2>&1 || { \
+	    echo "$(FILCC) not found. Install the Fil-C /opt/fil distribution"; \
+	    echo "from https://fil-c.org/install_optfil, or set FILCC=<path>."; \
+	    exit 1; }
+	$(MAKE) all $(FIL_BIN)/arqan-test \
+	    CC='$(FILCC)' BUILDDIR='$(FIL_BUILD)' BINDIR='$(FIL_BIN)' \
+	    CFLAGS='$(filter-out $(FIL_DROP),$(CFLAGS)) -g' \
+	    LDFLAGS='$(filter-out $(FIL_DROP),$(LDFLAGS))' \
+	    VENDOR_CFLAGS='$(filter-out $(FIL_DROP),$(VENDOR_CFLAGS)) -g'
+
+test-fil: fil
+	ARQAN_TEST_BIN=$(FIL_BIN)/arqan-test $(PYTHON) tests/run.py $(T)
+
 mock:
 	$(PYTHON) -m tests.mockprovider.server $(MOCK_ARGS)
 
@@ -161,3 +190,7 @@ clean:
 # Drop only the instrumented tree; the shipped build survives.
 clean-asan:
 	rm -rf $(ASAN_BUILD) $(ASAN_BIN)
+
+# Drop only the Fil-C tree; the shipped build survives.
+clean-fil:
+	rm -rf $(FIL_BUILD) $(FIL_BIN)

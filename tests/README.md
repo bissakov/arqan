@@ -10,6 +10,7 @@ make test T="-k composer"       # matching cases
 make test T=--list              # list cases
 make test-update                # update intended golden screens
 make test-asan                  # ASan + UBSan suite
+make test-fil                   # Fil-C memory-safety suite
 python3 tests/run.py -v -x      # verbose; stop on failure
 python3 tests/run.py --repeat 5 # check a suspected flake
 python3 tests/run.py -j 1       # serial debugging
@@ -27,6 +28,12 @@ ASAN_OPTIONS=detect_leaks=0 ARQAN_TEST_BIN=bin/asan/arqan-test \
     python3 tests/run.py -k composer
 make clean-asan                 # drop the instrumented tree only
 ```
+
+`make test-fil` is the same arrangement under Fil-C, in `build/fil/` and
+`bin/fil/`. It needs the Fil-C `/opt/fil` distribution, the only one shipping a
+Fil-C libcurl; set `FILCC` if the compiler lives elsewhere. Fil-C carries
+bounds on the pointer, so it catches an out-of-bounds access that lands inside
+another valid object, which ASan cannot.
 
 Each case receives an isolated home directory, working directory, mock-server
 port, and pty. Cases normally run in parallel.

@@ -19,10 +19,14 @@ def unmeasurable() -> bool:
     A sanitizer surrounds every global with a redzone and keeps a shadow map
     it writes as it goes, so it changes both the size of the storage under
     test and the pages behind it. The footprint it reports is its own.
+    Fil-C answers differently for the same reason: its runtime carries
+    capability metadata beside every object and a garbage collector that
+    touches pages on its own schedule.
     """
     if not Path("/proc/self/smaps_rollup").exists():
         return True   # not Linux; there is nothing to read
-    return b"__asan_init" in BIN.read_bytes()
+    blob = BIN.read_bytes()
+    return b"__asan_init" in blob or b"libpizlo" in blob
 
 
 def private_dirty_kb(pid: int) -> int:
