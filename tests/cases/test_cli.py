@@ -21,7 +21,7 @@ def test_version(ctx):
     """--version and -v print the version and nothing else."""
     out = ctx.run_cli("--version")
     assert out.returncode == 0, out
-    assert out.stdout == "arqan 0.2.0\n", out.stdout
+    assert out.stdout == "arqan 0.3.0\n", out.stdout
     assert ctx.run_cli("-v").stdout == out.stdout
 
 
@@ -86,7 +86,7 @@ def test_prompt_flag_runs_one_turn(ctx):
     out = ctx.run_cli("-p", "say it")
     assert out.returncode == 0, out
     assert out.stdout == "one shot reply\n", out.stdout
-    assert "arqan 0.2.0" not in out.stdout, "the banner is UI, not output"
+    assert "arqan 0.3.0" not in out.stdout, "the banner is UI, not output"
     assert "say it" not in out.stdout, "the prompt is the input, not the output"
     assert "hi" not in out.stdout
     body = json.dumps(ctx.mock.requests[-1])

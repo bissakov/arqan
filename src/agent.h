@@ -22,7 +22,7 @@ typedef float    f32;
 typedef double   f64;
 typedef bool     b8;
 
-#define AGENT_VERSION "0.2.0"
+#define AGENT_VERSION "0.3.0"
 /* The user-facing name: the binary, the XDG directories, the project
  * directory and the environment prefix all derive from it. Internal
  * identifiers keep the AGENT_ prefix, so a rename touches this line and
