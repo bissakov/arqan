@@ -275,3 +275,49 @@ def test_ctrl_e_reaches_output_the_transcript_capped(ctx):
     s.wait_for(lambda t: "1 of 1" in find_row(s), "the match the cap hid")
     assert "sunken treasure" in s.text(), s.text()
     assert "^E" not in find_row(s), "nothing left to reveal"
+
+
+def transcript_row(s, needle: str) -> int:
+    """1-based screen row of `needle`, ignoring the search box's echo."""
+    for r in range(s.term.rows):
+        row = s.row(r)
+        if "find:" in row:
+            continue
+        if needle in row:
+            return r + 1
+    raise AssertionError(f"{needle!r} not on screen\n{s.text()}")
+
+
+def test_the_pointer_still_selects_while_the_box_is_open(ctx):
+    """The box holds the keyboard, not the pointer: a drag still copies."""
+    s = ctx.spawn()
+    a_transcript(ctx, s)
+    open_find(s, "needle")
+
+    row = transcript_row(s, "alpha needle one")
+    col = s.row(row - 1).index("alpha") + 1
+    s.mouse("down", row, col)
+    s.mouse("drag", row, col + len("alpha") - 1)
+    s.mouse("up", row, col + len("alpha") - 1).sync()
+
+    assert s.term.clipboard == "alpha", repr(s.term.clipboard)
+    assert "find: needle" in find_row(s), "the query survives a selection"
+
+
+def test_a_selection_survives_pointer_motion_but_not_a_keystroke(ctx):
+    """Hovering leaves the range alone; typing drops it, as in the composer."""
+    s = ctx.spawn()
+    a_transcript(ctx, s)
+    open_find(s, "needle")
+
+    row = transcript_row(s, "alpha needle one")
+    col = s.row(row - 1).index("alpha") + 1
+    s.mouse("down", row, col)
+    s.mouse("drag", row, col + len("alpha") - 1).sync()
+    assert s.term.attr_at(row - 1, col - 1).reverse
+
+    s.mouse("move", row, col + 12).sync()
+    assert s.term.attr_at(row - 1, col - 1).reverse, "hovering keeps the range"
+
+    s.type("x").sync()
+    assert not s.term.attr_at(row - 1, col - 1).reverse, "a keystroke drops it"

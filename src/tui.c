@@ -5371,24 +5371,36 @@ static void find_expand_now(void) {
 #define FIND_ESCAPE_KEYS(X)                                                   \
     X(KEY_UP,   "Up",   "Previous match",   find_step(-1);)                   \
     X(KEY_DOWN, "Down", "Next match",       find_step(1);)                    \
-    X(KEY_NONE, "Esc",  "Close the box",    find_close();)
+    X(KEY_NONE, "Esc",  "Close the box",    find_close();)                    \
+    X(KEY_MOUSE_DOWN, "Click", "Start a selection",                           \
+                    sel_begin(g_mouse_row, g_mouse_col); keep_sel = true;)    \
+    X(KEY_MOUSE_DRAG, "Drag",  "Extend the selection",                        \
+                    sel_extend(g_mouse_row, g_mouse_col); keep_sel = true;)   \
+    X(KEY_MOUSE_UP,   "",      "",          sel_finish(); keep_sel = true;)   \
+    X(KEY_MOUSE_MOVE, "",      "",          keep_sel = true;)
 
 static const KeyRow k_find_rows[]        = { FIND_KEYS(KEY_DOC) };
 static const KeyRow k_find_escape_rows[] = { FIND_ESCAPE_KEYS(KEY_DOC) };
 
+/* The box holds the keyboard but not the pointer: selection works over the
+ * search overlay exactly as it does over the composer, and anything else the
+ * box reads drops the range the way a keystroke does elsewhere. */
 static void find_key(i32 c) {
     if (g_tui.pasting && c != 0x1b) {
         if ((c >= 0x20 && c < 0x7f) || c >= 0x80) find_type(c);
+        sel_clear();
         repaint();
         return;
     }
     if (c == 0x1b) {
         i32 key = read_escape();
+        b8 keep_sel = false;
         switch (key) {
             FIND_ESCAPE_KEYS(KEY_CASE)
             // The viewport moves, the query stays.
             default: scroll_key(key); break;
         }
+        if (!keep_sel) sel_clear();
         repaint();
         return;
     }
@@ -5398,6 +5410,7 @@ static void find_key(i32 c) {
             if ((c >= 0x20 && c < 0x7f) || c >= 0x80) find_type(c);
             break;
     }
+    sel_clear();
     repaint();
 }
 
