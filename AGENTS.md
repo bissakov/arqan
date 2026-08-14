@@ -137,9 +137,13 @@ assistant/tool attribution or trailers.
   changes under `Unreleased`; do not list routine refactors, tests, or
   formatting. When releasing, move those entries under a dated `X.Y.Z`
   heading and update comparison links.
+- Write a changelog entry without a commit link; a commit cannot carry its
+  own hash. `python3 scripts/changelog-links.py` links every bare entry to
+  the commit that introduced it, and `--check` reports the ones still bare.
 - Prepare a release by updating `AGENT_VERSION` and `CHANGELOG.md` in one
-  commit, running `scripts/release-linux.sh`, then creating and pushing the
-  matching annotated tag. Never move or reuse a published version tag.
+  commit, running `scripts/changelog-links.py` and then
+  `scripts/release-linux.sh`, then creating and pushing the matching
+  annotated tag. Never move or reuse a published version tag.
 - Review the generated draft GitHub Release, use the matching changelog
   section as its curated notes, verify both attached files, and publish it
   manually.
