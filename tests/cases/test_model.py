@@ -374,3 +374,193 @@ def test_a_favorite_survives_the_search_box(ctx):
     assert "* model-017" in s.text(), s.text()
     s.key("ctrl-u").sync()
     assert picker_rows(s, ["model-017", "model-000"])[0] == "model-017", s.text()
+
+
+# ---- pins of other providers ---------------------------------------------
+def two_providers(ctx, pins="delta"):
+    """Two stored endpoints, `mock` active, with `spare` holding the pins.
+
+    Both are served by the same mock: what is under test is which provider a
+    row belongs to, not what an endpoint answers.
+    """
+    ctx.write_config(
+        f'[providers.mock]\nbase_url = "{ctx.mock.base_url}"\n'
+        f'api = "openai"\nmodel = "alpha"\n\n'
+        f'[providers.spare]\nbase_url = "{ctx.mock.base_url}"\n'
+        f'api = "openai"\nmodel = "gamma"\n'
+    )
+    p = ctx.state_file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f"provider = mock\n\n[favorites.spare]\nmodels = {pins}\n")
+
+
+def open_two_provider_picker(ctx, s=None):
+    ctx.scenario("models=alpha|beta|gamma")
+    two_providers(ctx)
+    s = ctx.spawn(ARQAN_MODEL=None, ARQAN_BASE_URL=None, ARQAN_API_KEY=None)
+    open_picker(ctx, s)
+    return s
+
+
+def pinned_row(s, name):
+    """The picker row for `name`, without the selection marker."""
+    for line in s.text().splitlines():
+        row = line.strip().lstrip("\u203a ").strip()
+        if row.startswith(f"* {name}"):
+            return row
+    return ""
+
+
+def test_another_providers_pins_are_listed_under_the_local_ones(ctx):
+    """A pin is local state, so it is offered without asking its endpoint."""
+    s = open_two_provider_picker(ctx)
+    assert "alpha" in s.popup_selected(), \
+        "the cursor opens on the active provider's own model"
+    s.key("down").sync()             # beta, of the active provider
+    s.key("ctrl-f").sync()
+    text = s.text()
+    assert "* delta" in text, text
+    assert "spare" in text, "the row names the provider that serves it"
+    assert picker_rows(s, ["alpha", "beta", "gamma", "delta"]) == \
+        ["beta", "delta", "alpha", "gamma"], s.text()
+
+
+def test_another_providers_pin_is_not_marked_current(ctx):
+    """Matching ids across endpoints are different models."""
+    ctx.scenario("models=alpha|beta|gamma")
+    two_providers(ctx, pins="alpha")
+    s = ctx.spawn(ARQAN_MODEL=None, ARQAN_BASE_URL=None, ARQAN_API_KEY=None)
+    open_picker(ctx, s)
+    row = pinned_row(s, "alpha")
+    assert "spare" in row, "the pinned row names the provider that serves it"
+    assert "current" not in row, row
+    assert s.text().count("current") == 1, "only the live model is current"
+
+
+def test_choosing_another_providers_pin_switches_provider(ctx):
+    """The pin carries its endpoint: the model is set on that provider."""
+    s = open_two_provider_picker(ctx)
+    s.key("up").sync()
+    assert "* delta" in s.popup_selected(), s.popup_selected()
+    s.key("enter")
+    s.wait_text("model: delta")
+    assert s.status_field(1) == "delta", s.status_line()
+    assert s.status_field(3) == "spare", s.status_line()
+    assert ctx.state().get("provider") == "spare", ctx.state()
+    stored = ctx.settings(ctx.config_file())
+    assert stored["providers.spare"]["model"] == "delta", stored
+    assert stored["providers.mock"]["model"] == "alpha", "the old one is left"
+
+
+def test_the_followed_provider_serves_the_next_turn(ctx):
+    """Switching by pin moves the whole endpoint, not just the model name."""
+    s = open_two_provider_picker(ctx)
+    s.key("up").sync()
+    s.key("enter")
+    s.wait_text("model: delta")
+    s.submit("hello")
+    s.wait_turn_done()
+    assert ctx.mock.requests[-1]["model"] == "delta", ctx.mock.requests[-1]
+
+
+def test_ctrl_f_unpins_another_providers_pin(ctx):
+    """Unpinning is the one thing the picker changes about a foreign row."""
+    s = open_two_provider_picker(ctx)
+    s.key("up").sync()
+    s.key("ctrl-f").sync()
+    assert "* delta" not in s.text(), "the row goes with the pin"
+    state = ctx.settings(ctx.state_file())
+    assert state.get("favorites.spare", {}).get("models") is None, state
+    assert ctx.state().get("provider") == "mock", "unpinning does not switch"
+
+
+def test_ctrl_s_refuses_a_pin_of_another_provider(ctx):
+    """The small model belongs to the endpoint that serves it."""
+    s = open_two_provider_picker(ctx)
+    s.key("up").sync()
+    s.key("ctrl-s").sync()
+    assert "* delta" in s.text(), "the row is unchanged"
+    s.key("esc")
+    s.wait_text("switch to spare to set its small model")
+    stored = ctx.settings(ctx.config_file())
+    assert "small_model" not in stored["providers.spare"], stored
+    assert "small_model" not in stored["providers.mock"], stored
+
+
+def three_providers(ctx, pins):
+    """`mock` active, with `spare` and `other` pinning what `pins` says."""
+    ctx.write_config(
+        f'[providers.mock]\nbase_url = "{ctx.mock.base_url}"\n'
+        f'api = "openai"\nmodel = "alpha"\n\n'
+        f'[providers.spare]\nbase_url = "{ctx.mock.base_url}"\n'
+        f'api = "openai"\nmodel = "gamma"\n\n'
+        f'[providers.other]\nbase_url = "{ctx.mock.base_url}"\n'
+        f'api = "openai"\nmodel = "gamma"\n'
+    )
+    p = ctx.state_file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("provider = mock\n"
+                 + "".join(f"\n[favorites.{name}]\nmodels = {models}\n"
+                           for name, models in pins.items()))
+
+
+def test_one_id_pinned_on_two_providers_is_two_named_rows(ctx):
+    """An id names a model only against an endpoint, so each row names one."""
+    ctx.scenario("models=alpha|beta|gamma")
+    three_providers(ctx, {"spare": "delta", "other": "delta"})
+    s = ctx.spawn(ARQAN_MODEL=None, ARQAN_BASE_URL=None, ARQAN_API_KEY=None)
+    open_picker(ctx, s)
+    text = s.text()
+    assert "* delta @ spare" in text, text
+    assert "* delta @ other" in text, text
+    s.key("up").sync()
+    assert "* delta @ other" in s.popup_selected(), s.popup_selected()
+    s.key("enter")
+    s.wait_text("model: delta")
+    assert ctx.state().get("provider") == "other", ctx.state()
+    stored = ctx.settings(ctx.config_file())
+    assert stored["providers.other"]["model"] == "delta", stored
+    assert stored["providers.spare"]["model"] == "gamma", "the other pin is"
+
+
+def test_a_pin_matching_a_local_model_stays_a_separate_row(ctx):
+    """The same id from two endpoints is two models, and one is not switched
+    to by choosing the other."""
+    ctx.scenario("models=alpha|beta|gamma")
+    three_providers(ctx, {"spare": "beta"})
+    s = ctx.spawn(ARQAN_MODEL=None, ARQAN_BASE_URL=None, ARQAN_API_KEY=None)
+    open_picker(ctx, s)
+    assert "* beta @ spare" in s.text(), s.text()
+    assert picker_rows(s, ["alpha", "beta", "gamma"]) == \
+        ["beta", "alpha", "beta", "gamma"], s.text()
+    s.key("down").sync()
+    assert "@" not in s.popup_selected(), "the local row is the plain one"
+    s.key("enter")
+    s.wait_text("model: beta")
+    assert ctx.state().get("provider") == "mock", "a local row switches nothing"
+    assert s.status_field(3) == "mock", s.status_line()
+
+
+def test_a_search_finds_another_providers_pins_by_provider(ctx):
+    """The picker searches names, so the name is what has to carry it."""
+    ctx.scenario("model_count=20")
+    ctx.write_config(
+        f'[providers.mock]\nbase_url = "{ctx.mock.base_url}"\n'
+        f'api = "openai"\nmodel = "model-000"\n\n'
+        f'[providers.spare]\nbase_url = "{ctx.mock.base_url}"\n'
+        f'api = "openai"\nmodel = "model-001"\n'
+    )
+    p = ctx.state_file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("provider = mock\n\n[favorites.spare]\n"
+                 "models = model-001, model-017\n")
+    s = ctx.spawn(ARQAN_MODEL=None, ARQAN_BASE_URL=None, ARQAN_API_KEY=None)
+    open_picker(ctx, s)
+    s.type("spare").sync()
+    text = s.text()
+    assert "* model-001 @ spare" in text and "* model-017 @ spare" in text, text
+    assert "model-002" not in text, "only that provider's pins are left"
+    # The id alone still finds both the pin and the local model of that name.
+    s.key("ctrl-u").sync()
+    s.type("model-017").sync()
+    assert picker_rows(s, ["model-017"]) == ["model-017", "model-017"], s.text()

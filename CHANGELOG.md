@@ -9,6 +9,11 @@
   turn.
 - Pick a provider's small model with `Ctrl-S` in `/model`, and turn automatic
   session naming off with the `Name sessions` setting.
+- List the models pinned on other configured providers in `/model`, below the
+  active provider's own pins, each named `<model> @ <provider>` so one id
+  served by several endpoints stays several rows and can be searched for by
+  provider; choosing one switches to that provider. The rows come from local
+  state, so no endpoint is asked for a list the user did not choose.
 
 ### Changed
 

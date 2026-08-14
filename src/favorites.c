@@ -20,14 +20,7 @@ static Str favorites_section(Str provider, Arena *a) {
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
 }
 
-size_t favorites_load(Favorites *f, Str provider, Arena *a) {
-    memset(f, 0, sizeof *f);
-    Str section = favorites_section(provider, a);
-    if (!section.n) return 0;
-    Str path = paths_file(AGENT_DIR_STATE, AGENT_STATE_NAME, a);
-    Settings s;
-    if (!path.n || !settings_load(&s, path, a)) return 0;
-    Str list = settings_get(&s, section, FAVORITES_KEY);
+static void favorites_parse(Favorites *f, Str list) {
     size_t off = 0;
     while (off < list.n && f->n < AGENT_MAX_FAVORITES) {
         size_t end = off;
@@ -38,7 +31,43 @@ size_t favorites_load(Favorites *f, Str provider, Arena *a) {
         if (favorites_has(f, item)) continue;
         f->model[f->n++] = item;
     }
+}
+
+size_t favorites_load(Favorites *f, Str provider, Arena *a) {
+    memset(f, 0, sizeof *f);
+    Str section = favorites_section(provider, a);
+    if (!section.n) return 0;
+    Str path = paths_file(AGENT_DIR_STATE, AGENT_STATE_NAME, a);
+    Settings s;
+    if (!path.n || !settings_load(&s, path, a)) return 0;
+    favorites_parse(f, settings_get(&s, section, FAVORITES_KEY));
     return f->n;
+}
+
+size_t favorites_others(Str skip, Arena *a, Str *provider, Str *model,
+                        size_t max) {
+    if (!provider || !model || !max) return 0;
+    Endpoints eps;
+    size_t n_eps = endpoints_load(&eps, a);
+    Str path = paths_file(AGENT_DIR_STATE, AGENT_STATE_NAME, a);
+    Settings s;
+    // The state file is read once here rather than once per provider.
+    if (!n_eps || !path.n || !settings_load(&s, path, a)) return 0;
+    size_t n = 0;
+    for (size_t i = 0; i < n_eps && n < max; i++) {
+        if (str_eq(eps.name[i], skip)) continue;
+        Str section = favorites_section(eps.name[i], a);
+        if (!section.n) continue;
+        Favorites f;
+        memset(&f, 0, sizeof f);
+        favorites_parse(&f, settings_get(&s, section, FAVORITES_KEY));
+        for (size_t j = 0; j < f.n && n < max; j++) {
+            provider[n] = eps.name[i];
+            model[n] = f.model[j];
+            n++;
+        }
+    }
+    return n;
 }
 
 b8 favorites_has(const Favorites *f, Str model) {

@@ -118,6 +118,9 @@ typedef bool     b8;
 #define AGENT_MAX_POPUP        4096
 #define AGENT_MAX_MODELS       AGENT_MAX_POPUP
 #define AGENT_MAX_FAVORITES    16
+/* Pins from other providers the model picker offers below the active
+ * provider's own, bounding what favorites_others reports. */
+#define AGENT_MAX_FOREIGN_PINS 64
 #define AGENT_MAX_KEY_ROWS     128
 #define AGENT_MAX_ENDPOINTS    32
 #define AGENT_MAX_ENDPOINT_NAME 64
@@ -415,6 +418,13 @@ typedef struct {
  * Every Str points into `a` and lives as long as it does. */
 size_t favorites_load(Favorites *f, Str provider, Arena *a);
 b8     favorites_has(const Favorites *f, Str model);
+/* The pins of every configured provider except `skip`, as pairs written to
+ * `provider[i]` and `model[i]`, at most `max` of them and in the order the
+ * providers are stored. This reads state and config files, never the
+ * network, so a provider that is unreachable still contributes its pins.
+ * Every Str points into `a` and lives as long as it does. */
+size_t favorites_others(Str skip, Arena *a, Str *provider, Str *model,
+                        size_t max);
 /* Pins `model` when it is not pinned and unpins it when it is, then writes
  * the list back. `*on` is the state the model ends in, whether or not the
  * write succeeded; false is returned with `err` filled in when the list is

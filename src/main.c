@@ -1357,13 +1357,23 @@ static b8 manual_model(Arena *scratch, const char *why, Str *out) {
 
 /* The /model picker's rows are only models, with favorites pinned to the top.
  * Manual entry and configuration are keys rather than rows that disappear at
- * the bottom of a large provider list. `starred` holds "* <model>" for pinned
- * rows and `order` maps each visible row back to a model. */
+ * the bottom of a large provider list. `starred` holds the decorated name of
+ * a pinned row and `order` maps each visible row back to a model, which is
+ * always the undecorated id in `names`.
+ *
+ * Entries below `live` are the active provider's models as its endpoint
+ * listed them; the rest are pins of other providers, read from local state,
+ * and carry the provider that serves them in `owner`. Choosing one of those
+ * switches endpoint, so nothing here asks an endpoint the user did not
+ * choose. An entry whose name was emptied has been unpinned and is no longer
+ * a row. */
 typedef struct {
-    const Str *names;
+    Str       *names;
+    Str       *owner;      // empty for the active provider's own models
     Str       *starred;
     size_t    *order;
     TuiCmd    *rows;
+    size_t     live;
     size_t     n;
     Favorites  fav;
     Str        provider;
@@ -1452,46 +1462,90 @@ static b8 edit_model_profile(Config *cfg, Arena *scratch) {
     return true;
 }
 
-/* "* <model>", the pinned row's name. The plain name when it cannot be
- * built: a missed star is not a reason to lose the row. */
+/* A pinned row's name: "* <model>", and "* <model> @ <provider>" for a pin
+ * of another provider. The provider belongs in the name because one id can
+ * be served by several endpoints, and because the picker searches names: two
+ * providers pinning one id would otherwise be two rows with one name, and
+ * neither could be narrowed to by the provider it switches to. Empty when it
+ * cannot be built, which the caller answers without losing the row. */
 static Str model_starred(ModelPick *mp, size_t i) {
     if (!mp->starred[i].p) {
+        Str owner = mp->owner[i];
         Buf b;
-        buf_init(&b, mp->arena, mp->names[i].n + 3);
+        buf_init(&b, mp->arena, mp->names[i].n + owner.n + 6);
         buf_puts(&b, STR("* "));
         buf_puts(&b, mp->names[i]);
-        mp->starred[i] = buf_ok(&b) ? buf_finish(&b) : mp->names[i];
+        if (owner.n) {
+            buf_puts(&b, STR(" @ "));
+            buf_puts(&b, owner);
+        }
+        if (!buf_ok(&b)) return (Str){0};
+        mp->starred[i] = buf_finish(&b);
     }
     return mp->starred[i];
 }
 
 static void model_row(ModelPick *mp, size_t row, size_t i, b8 fav) {
     mp->order[row] = i;
+    Str name = fav ? model_starred(mp, i) : (Str){0};
+    if (mp->owner[i].n) {
+        /* A row of another provider is never the current model, whatever its
+         * id matches here. The column carries the provider only when the
+         * name could not be built to hold it. */
+        mp->rows[row] = name.n ? (TuiCmd){ name, (Str){0} }
+                               : (TuiCmd){ mp->names[i], mp->owner[i] };
+        return;
+    }
     b8 current = str_eq(mp->names[i], mp->current);
     b8 small = mp->small.n && str_eq(mp->names[i], mp->small);
     Str desc = current && small ? STR("current \xc2\xb7 small")
              : current ? STR("current") : small ? STR("small") : (Str){0};
-    mp->rows[row] = (TuiCmd){ fav ? model_starred(mp, i) : mp->names[i],
-                              desc };
+    mp->rows[row] = (TuiCmd){ name.n ? name : mp->names[i], desc };
 }
 
 static size_t model_build(void *ud) {
     ModelPick *mp = ud;
     size_t row = 0;
     for (size_t f = 0; f < mp->fav.n; f++)
-        for (size_t i = 0; i < mp->n; i++)
+        for (size_t i = 0; i < mp->live; i++)
             if (str_eq(mp->names[i], mp->fav.model[f]))
                 model_row(mp, row++, i, true);
-    for (size_t i = 0; i < mp->n; i++)
+    for (size_t i = mp->live; i < mp->n; i++)
+        if (mp->names[i].n) model_row(mp, row++, i, true);
+    for (size_t i = 0; i < mp->live; i++)
         if (!favorites_has(&mp->fav, mp->names[i]))
             model_row(mp, row++, i, false);
     return row;
+}
+
+/* Unpinning another provider's model, which is all the picker changes about
+ * a provider it did not switch to. The row goes with the pin, since a pin is
+ * the only reason it was listed. */
+static void model_unpin_other(ModelPick *mp, size_t i) {
+    Favorites f;
+    Str owner = mp->owner[i], model = mp->names[i];
+    favorites_load(&f, owner, mp->arena);
+    char err[128] = {0};
+    if (favorites_has(&f, model)
+        && !favorites_toggle(&f, owner, model, mp->arena, NULL, err,
+                             sizeof err)) {
+        snprintf(mp->msg, sizeof mp->msg, "%s", err[0] ? err
+                 : "could not save the favorites");
+        return;
+    }
+    mp->names[i] = (Str){0};
 }
 
 static size_t model_favorite(void *ud, size_t row, size_t *moved) {
     ModelPick *mp = ud;
     if (row == SIZE_MAX) { *moved = 0; return model_build(mp); }
     size_t i = mp->order[row];
+    if (mp->owner[i].n) {
+        model_unpin_other(mp, i);
+        size_t left = model_build(mp);
+        *moved = row < left ? row : left ? left - 1 : 0;
+        return left;
+    }
     b8 on = false;
     char err[128] = {0};
     /* The list is written as it is toggled: pinning is its own action, so it
@@ -1530,6 +1584,15 @@ static size_t model_small_action(void *ud, size_t row, size_t *moved) {
     ModelPick *mp = ud;
     if (row == SIZE_MAX) { *moved = 0; return model_build(mp); }
     size_t i = mp->order[row];
+    if (mp->owner[i].n) {
+        /* The endpoint that serves it is the one that owns it, and it is not
+         * the active one here. */
+        snprintf(mp->msg, sizeof mp->msg,
+                 "switch to %.*s to set its small model",
+                 (i32)mp->owner[i].n, mp->owner[i].p);
+        *moved = row;
+        return model_build(mp);
+    }
     b8 on = mp->small.n && str_eq(mp->names[i], mp->small);
     Str next = on ? (Str){0} : mp->names[i];
     b8 saved = mp->provider.n
@@ -1544,12 +1607,18 @@ static size_t model_small_action(void *ud, size_t row, size_t *moved) {
     return model_build(mp);
 }
 
-static b8 pick_model(Config *cfg, Arena *scratch, Str *out,
-                     b8 *verified) {
+/* `switch_to` names the provider the pick belongs to, empty when it is the
+ * active one. A caller that passes NULL is choosing a model for one endpoint
+ * only, and is offered no other provider's pins. */
+static b8 pick_model(Config *cfg, Arena *scratch, Str *out, b8 *verified,
+                     Str *switch_to) {
     *verified = false;
+    if (switch_to) *switch_to = (Str){0};
     tui_set_status("loading models");
-    Str *names = arena_new(scratch, Str, AGENT_MAX_MODELS);
-    if (!names) {
+    size_t cap = AGENT_MAX_MODELS + AGENT_MAX_FOREIGN_PINS;
+    Str *names = arena_new(scratch, Str, cap);
+    Str *owner = arena_new(scratch, Str, cap);
+    if (!names || !owner) {
         tui_set_status("ready");
         tui_notice(STR("out of memory listing models"));
         return false;
@@ -1563,11 +1632,20 @@ static b8 pick_model(Config *cfg, Arena *scratch, Str *out,
         tui_notice(str_c(why));
         return manual_model(scratch, why, out);
     }
+    size_t live = n;
+    memset(owner, 0, live * sizeof *owner);
+    /* Local state, so this costs no request and no key: a pin was already
+     * verified against its own provider when it was made. */
+    if (switch_to)
+        n += favorites_others(cfg->provider, scratch, owner + live,
+                              names + live, AGENT_MAX_FOREIGN_PINS);
     ModelPick mp = {0};
     mp.names    = names;
+    mp.owner    = owner;
     mp.starred  = arena_new(scratch, Str, n);
     mp.order    = arena_new(scratch, size_t, n);
     mp.rows     = arena_new(scratch, TuiCmd, n);
+    mp.live     = live;
     mp.n        = n;
     mp.provider = cfg->provider;
     mp.current  = cfg->model;
@@ -1595,8 +1673,14 @@ static b8 pick_model(Config *cfg, Arena *scratch, Str *out,
         STR("Ctrl-F pins · Ctrl-O manual entry · Ctrl-E configures · "
             "Ctrl-S small model") };
     size_t pick = 0;
+    /* The cursor opens on a model of the active provider: Enter is a model
+     * change here, and another provider's pin under it would make the first
+     * keystroke a provider switch. */
+    size_t start = 0;
+    while (start < rows && mp.owner[mp.order[start]].n) start++;
+    if (start >= rows) start = 0;
     b8 chosen = tui_pick_action(STR("pick a model"), rows, n, TUI_PICK_FIRST,
-                                TUI_PICK_NONE, &act, &pick);
+                                start, &act, &pick);
     if (mp.msg[0]) tui_notice(str_c(mp.msg));
     if (mp.requested == MODEL_ACTION_MANUAL)
         return manual_model(scratch, NULL, out);
@@ -1606,7 +1690,8 @@ static b8 pick_model(Config *cfg, Arena *scratch, Str *out,
     }
     if (!chosen) return false;
     size_t i = pick < rows ? mp.order[pick] : n;
-    if (i >= n) return false;
+    if (i >= n || !names[i].n) return false;
+    if (switch_to) *switch_to = owner[i];
     *out = names[i];
     *verified = true;
     return true;
@@ -1618,13 +1703,51 @@ static b8 apply_model_profile(Config *cfg, Arena *scratch) {
     return config_set_model_profile(cfg, &p);
 }
 
+/* Defined with the provider commands below, and used here because a pinned
+ * model reaches the endpoint that serves it. */
+static b8 use_endpoint(Config *cfg, Str name, Str base_url, Str model,
+                       ApiKind api, Str key, Arena *scratch);
+static void provider_chosen(const Config *cfg, Arena *scratch);
+
+/* Following a pinned model to the provider that serves it. The endpoint is
+ * taken as it is stored, with `model` in place of the model it remembers. */
+static b8 model_follow_provider(Config *cfg, Str name, Str model,
+                                Arena *persist, Arena *scratch) {
+    Endpoints eps;
+    endpoints_load(&eps, scratch);
+    size_t i = endpoints_find(&eps, name);
+    if (i == ENDPOINT_NONE) {
+        notice_fmt("provider %.*s is no longer configured",
+                   (i32)name.n, name.p);
+        return false;
+    }
+    char err[AGENT_MAX_PATH + 64] = {0};
+    Str key = endpoints_key(name, persist, scratch, err, sizeof err);
+    if (err[0]) {
+        tui_notice(str_c(err));
+        return false;
+    }
+    if (!use_endpoint(cfg, eps.name[i], eps.base_url[i], model, eps.api[i],
+                      key, scratch)) {
+        tui_notice(STR("out of memory switching provider"));
+        return false;
+    }
+    provider_chosen(cfg, scratch);
+    return true;
+}
+
 /* Switch model for this session and remember it for the next. The
- * conversation is untouched: a model change is not part of it. */
-static void choose_model(Config *cfg, Arena *scratch) {
+ * conversation is untouched: a model change is not part of it. A pin of
+ * another provider carries its endpoint, so choosing one switches provider
+ * first and the model is then set on that provider. */
+static void choose_model(Config *cfg, Arena *persist, Arena *scratch) {
     arena_reset(scratch);
-    Str picked = {0};
+    Str picked = {0}, provider = {0};
     b8 verified = false;
-    if (!pick_model(cfg, scratch, &picked, &verified)) return;
+    if (!pick_model(cfg, scratch, &picked, &verified, &provider)) return;
+    if (provider.n && !str_eq(provider, cfg->provider)
+        && !model_follow_provider(cfg, provider, picked, persist, scratch))
+        return;
     if (!config_set_model(cfg, picked)) {
         tui_notice(STR("out of memory storing the model"));
         return;
@@ -1772,7 +1895,8 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
     probe.model = (Str){0};
     Str model = {0};
     b8 verified = false;
-    if (!pick_model(&probe, scratch, &model, &verified)) return false;
+    // A provider being created lists its own models and nothing else.
+    if (!pick_model(&probe, scratch, &model, &verified, NULL)) return false;
 
     char err[AGENT_MAX_PATH + 64] = {0};
     if (!endpoints_put(&eps, str_c(name), str_c(url), model, api, scratch)
@@ -3502,7 +3626,7 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
         if (!strcmp(line, "/model")) {
-            choose_model(&cfg, &scratch);
+            choose_model(&cfg, &persist, &scratch);
             continue;
         }
         if (!strcmp(line, "/provider")) {

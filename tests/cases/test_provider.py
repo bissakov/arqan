@@ -630,3 +630,21 @@ def test_a_new_provider_never_inherits_a_leftover_key(ctx):
     s.key("enter")
     s.wait_text("provider: work")
     assert creds(ctx) == {}, creds(ctx)
+
+
+def test_the_new_provider_form_lists_only_its_own_models(ctx):
+    """Setting up an endpoint is not the place to reach another one's pins."""
+    write_provider(ctx, "home", ctx.mock.base_url, model="beta", key="sk-home")
+    p = ctx.state_file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("provider = home\n\n[favorites.home]\nmodels = beta\n")
+    ctx.scenario("models=alpha|beta")
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
+    s.submit("/provider")
+    s.wait_status("pick a provider")
+    s.key("down").sync()
+    assert "add a provider" in s.popup_selected(), s.popup_selected()
+    s.key("enter")
+    add_provider(s, ctx, "work")
+    s.wait_status("pick a model")
+    assert "* beta" not in s.text(), s.text()
