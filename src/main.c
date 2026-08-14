@@ -402,6 +402,7 @@ static Str ask_user_answer(Agent *ag, Str args) {
     size_t n = opts && opts->type == J_ARR ? opts->u.arr.n : 0;
     if (n > AGENT_MAX_POPUP - 1) n = AGENT_MAX_POPUP - 1;
 
+    size_t at = tui_transcript_pos();
     if (!g_one_shot) render_question(question);
 
     TuiCmd *items = arena_new(ag->scratch, TuiCmd, n + 1);
@@ -424,6 +425,7 @@ static Str ask_user_answer(Agent *ag, Str args) {
                          STR("Answer in your own words") };
 
     size_t pick = 0;
+    tui_keep_visible(at);
     if (!tui_pick_notice(STR("pick an answer"), question, items, n + 1,
                          TUI_PICK_FIRST, start, &pick))
         return (Str){0};
@@ -435,8 +437,11 @@ static Str ask_user_answer(Agent *ag, Str args) {
     return str_dup(ag->persist, str_c(typed));
 }
 
+/* `at` is where the call's own block starts in the transcript, so the prompt
+ * that asks about it does not cover it. */
 static ToolAuthorization tool_authorization(Agent *ag,
-                                             ToolApprovalClass approval) {
+                                             ToolApprovalClass approval,
+                                             size_t at) {
     if (approval == TOOL_APPROVAL_NONE
         || ag->cfg->permissions == PERMISSION_FREE
         || (ag->permission_grants & ((u8)1u << (u8)approval)))
@@ -472,6 +477,7 @@ static ToolAuthorization tool_authorization(Agent *ag,
     char title[32];
     i32 n = snprintf(title, sizeof title, "allow %.*s?", (i32)cls.n, cls.p);
     size_t pick = 2;
+    tui_keep_visible(at);
     if (n <= 0 || !tui_pick((Str){ title, (size_t)n }, items, 3,
                             TUI_PICK_FIRST, 0, &pick))
         pick = 2;
@@ -488,6 +494,7 @@ static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
                       "complete plan.");
         return TURN_CONTINUE;
     }
+    size_t at = tui_transcript_pos();
     if (!g_one_shot) render_plan(plan);
 
     const TuiCmd items[] = {
@@ -497,6 +504,7 @@ static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
         { STR("No"), STR("Keep planning; say what to change") },
     };
     size_t pick = 2;
+    tui_keep_visible(at);
     if (!tui_pick(STR("continue?"), items, 3, TUI_PICK_FIRST, TUI_PICK_NONE,
                   &pick))
         pick = 2;
@@ -579,6 +587,7 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         Buf out; buf_init(&out, ag->scratch, 4096);
         char err[256] = {0};
         if (g_one_shot) one_shot_diag("tool call", name, args);
+        size_t call_at = tui_transcript_pos();
         if (!g_one_shot)
             render_tool_call(name, args, ag->scratch, (u32)(i + 1),
                              conv->expanded[i]);
@@ -586,7 +595,8 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         if (tool != TOOL_NONE && !tools_disabled(ag->tools, tool)
             && tools_available(ag->tools, tool, ag->cfg->mode))
             approval = tools_approval_class(ag->tools, tool);
-        ToolAuthorization authorization = tool_authorization(ag, approval);
+        ToolAuthorization authorization = tool_authorization(ag, approval,
+                                                             call_at);
         if (authorization == TOOL_AUTH_DENIED
             && approval != TOOL_APPROVAL_NONE) {
             Str cls = tools_approval_name(approval);

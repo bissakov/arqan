@@ -245,6 +245,10 @@ typedef struct {
      * ordinary notice row for its query. */
     char pick_notice[160];
     size_t pick_notice_n;
+    /* The transcript block the open modal screen is asking about, SIZE_MAX
+     * for none. Set only while that screen is up, and the frame lifts the
+     * transcript out from under it rather than covering the block. */
+    size_t keep_off;
     b8 needs_provider;
     /* Prompt history recall: `g_bulk.draft` holds the text the first Up
      * displaced. */
@@ -2559,6 +2563,7 @@ void tui_batch_end(void) {
 static void find_refresh(void);
 static void find_goto(size_t off);
 static void find_close(void);
+static size_t rows_below(size_t off);
 
 /* Set while a frame is correcting the viewport it just measured, so the
  * correction paints exactly one more frame. */
@@ -2701,8 +2706,19 @@ static void repaint(void) {
      * up, which leaves the newest rows under it. A search box may not: a match
      * it cannot show is a search that did not answer, so while it is open the
      * rows it covers are scrolled out from under it. */
-    size_t view_rows = g_tui.find_open ? transcript_rows
-                                       : body_rows - activity_rows;
+    size_t view_rows = body_rows - activity_rows;
+    if (g_tui.find_open) view_rows = transcript_rows;
+    else if (g_tui.keep_off != SIZE_MAX) {
+        /* A modal screen the agent opened is about the block written just
+         * above it: the question, the plan, or the call awaiting approval.
+         * Covering that block asks about something the reader cannot see, so
+         * the transcript is lifted out from under the overlay. A block too
+         * tall for the rows left over is lifted only to its first row, which
+         * keeps its head on screen and leaves the rest to scrolling. */
+        size_t need = rows_below(g_tui.keep_off);
+        if (need < transcript_rows) need = transcript_rows;
+        if (need < view_rows) view_rows = need;
+    }
     size_t max_scroll = all_rows > view_rows ? all_rows - view_rows : 0;
     if (g_tui.scroll_rows > max_scroll) g_tui.scroll_rows = max_scroll;
     size_t first = all_rows > view_rows + g_tui.scroll_rows
@@ -2949,6 +2965,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
     for (size_t i = 0; i < TUI_STATUS_N; i++)
         g_tui.status_visible[i] = (status_fields & ((u64)1 << i)) != 0;
     g_tui.find_cur = SIZE_MAX;
+    g_tui.keep_off = SIZE_MAX;
     g_tui.tty = !plain && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
     g_tui.model = setup ? (Str){0} : model;
     g_tui.base_url = base_url;
@@ -3231,6 +3248,7 @@ void tui_notice(Str msg) {
 void tui_clear_transcript(void) {
     g_tui.notice_n = 0;
     g_tui.transcript_n = 0;
+    g_tui.keep_off = SIZE_MAX;
     g_tui.pend_nl = 0;
     g_tui.trail_nl = 0;
     g_tui.span_n = 0;
@@ -3520,6 +3538,7 @@ static void transcript_put(Str s) {
         g_tui.user_n = 0;
         g_tui.zone_n = 0;
         g_tui.pin_n = 0;
+        g_tui.keep_off = SIZE_MAX;
         find_invalidate();
         wrap_invalidate();   // the bytes the index described are gone
     } else if (g_tui.transcript_n + s.n >= TUI_TRANSCRIPT_CAP) {
@@ -3536,6 +3555,11 @@ static void transcript_put(Str s) {
         zones_shift(g_tui.transcript_n - keep);
         pins_shift(g_tui.transcript_n - keep);
         find_shift(g_tui.transcript_n - keep);
+        if (g_tui.keep_off != SIZE_MAX) {
+            size_t delta = g_tui.transcript_n - keep;
+            g_tui.keep_off = g_tui.keep_off > delta ? g_tui.keep_off - delta
+                                                    : 0;
+        }
         g_tui.transcript_n = keep;
         wrap_invalidate();   // every offset in the index just moved
     }
@@ -3680,6 +3704,10 @@ b8 tui_highlight_enabled(void) {
 
 size_t tui_transcript_pos(void) { return g_tui.transcript_n; }
 u64 tui_transcript_epoch(void) { return g_tui.transcript_epoch; }
+
+void tui_keep_visible(size_t off) {
+    if (off <= g_tui.transcript_n) g_tui.keep_off = off;
+}
 
 void tui_syntax_add(size_t a, size_t b, u8 kind) {
     if (!tui_highlight_enabled() || a >= b || b > g_tui.transcript_n
@@ -4623,6 +4651,10 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
                     size_t n, size_t search_n, TuiPickAnchor anchor,
                     size_t start, PickKind kind, const TuiSettings *set,
                     Str notice, b8 modal) {
+    /* The request belongs to this screen: one that never opens must not leave
+     * it behind, and a frame painted with no screen up never lifts. */
+    size_t keep_off = g_tui.keep_off;
+    g_tui.keep_off = SIZE_MAX;
     if (!g_tui.fullscreen || !items || !n) return false;
     if (terminal_too_small()) {
         repaint();
@@ -4656,6 +4688,7 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
                     ? notice.n : sizeof g_tui.pick_notice;
     if (notice_n) memcpy(g_tui.pick_notice, notice.p, notice_n);
     g_tui.pick_notice_n = notice_n;
+    g_tui.keep_off = keep_off;
 
     b8 settings = kind == PICK_SETTINGS;
     /* Every settings row is searchable, however few there are: a list acted
@@ -4857,6 +4890,7 @@ static void pick_close(void) {
     memcpy(g_tui.notice, g_pick.saved_notice, sizeof g_tui.notice);
     g_tui.notice_n = g_pick.saved_notice_n;
     g_tui.pick_notice_n = 0;
+    g_tui.keep_off = SIZE_MAX;
     g_pick.active = false;
     g_pick.modal = false;
     completion_refresh();

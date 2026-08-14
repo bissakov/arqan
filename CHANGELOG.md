@@ -17,6 +17,10 @@
 
 ### Changed
 
+- Keep the block a modal screen asks about on screen: the question of
+  `ask_user`, a submitted plan, and the call awaiting approval lift the
+  transcript out from under their options instead of being covered by them.
+  Every other overlay still leaves the transcript where it was.
 - Answer a click on a folded tool block mid-turn with a separate centered,
   scrollable and selectable window containing the complete block text,
   instead of deferring the fold until the turn ends. ([`6ac01f4`])

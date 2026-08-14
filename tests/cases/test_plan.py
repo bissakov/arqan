@@ -404,3 +404,62 @@ def test_a_call_beside_the_plan_is_still_answered(ctx):
     answered = {m["tool_call_id"] for m in messages if m["role"] == "tool"}
     ids = {c["id"] for m in calls for c in m["tool_calls"]}
     assert ids and ids == answered, (ids, answered)
+
+
+def report_turn(ctx, s, lines: int = 20):
+    """A first turn whose prose fills the screen, so its tail can be covered."""
+    ctx.scenario("text=" + "\\n".join(f"report line {i}" for i in range(lines)))
+    s.submit("look around")
+    s.wait_turn_done()
+
+
+def test_ask_user_lifts_the_transcript_out_from_under_the_picker(ctx):
+    """The question block stays readable: a picker may not cover its subject."""
+    s = ctx.spawn(cols=80, rows=24)
+    to_plan(s)
+    report_turn(ctx, s)
+    ctx.scenario(
+        ask(
+            "Which storage?",
+            [
+                {"label": "sqlite", "detail": "one file"},
+                {"label": "postgres", "detail": "a server"},
+            ],
+        )
+        + ",final_text=noted"
+    )
+    s.submit("plan the storage")
+    s.wait_status("pick an answer")
+
+    rows = s.screen.lines()
+    asked = [i for i, row in enumerate(rows) if "Which storage?" in row]
+    assert len(asked) == 2, "\n".join(rows)   # the ask block and the notice
+    block, notice = asked
+    assert "\u2502" in rows[block], rows[block]
+    assert "ask" in rows[block - 1], rows[block - 1]
+    assert notice < next(i for i, row in enumerate(rows) if "sqlite" in row)
+    assert any("report line 19" in row for row in rows[:block]), "\n".join(rows)
+
+    s.key("enter")
+    s.wait_text("noted")
+    s.wait_turn_done()
+    text = s.text()
+    assert "report line 19" in text and "sqlite" in text, text
+
+
+def test_a_command_picker_leaves_the_transcript_where_it_was(ctx):
+    """Only a screen asking about a block lifts it: /model covers as before."""
+    s = ctx.spawn(cols=80, rows=24)
+    to_plan(s)
+    report_turn(ctx, s)
+    assert any("report line 19" in row for row in s.screen.lines())
+
+    s.submit("/model")
+    s.wait_status("pick a model")
+    rows = s.screen.lines()
+    assert not any("report line 19" in row for row in rows), "\n".join(rows)
+    assert any("report line 17" in row for row in rows), "\n".join(rows)
+
+    s.key("esc")
+    s.wait_status("ready")
+    assert any("report line 19" in row for row in s.screen.lines())

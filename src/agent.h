@@ -1330,6 +1330,13 @@ typedef enum {
 /* `start` for a list that recommends none of its entries, which opens on the
  * end `anchor` names. */
 #define TUI_PICK_NONE ((size_t)-1)
+/* Keep the transcript from `off` to its end out from under the next modal
+ * screen: a screen that asks about a block may not cover it. `off` is a
+ * tui_transcript_pos taken before the block was written. Set it immediately
+ * before opening the screen, which consumes it and retires it on close; a
+ * screen that never opens drops it. A block taller than the rows left over
+ * is lifted only to its first row. */
+void tui_keep_visible(size_t off);
 /* Modal picker: the completion popup over a caller-owned list. `title` names
  * it in the status line, Enter chooses (index in *out), Esc/Ctrl-C cancels.
  * `start` opens the selection on one entry, which is how a list carrying a
@@ -1339,7 +1346,8 @@ typedef enum {
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t start, size_t *out);
 /* As tui_pick, with a one-line notice kept above the options while the picker
- * is open. The notice overlays the transcript rather than moving it. */
+ * is open. The notice overlays the transcript, which moves only for a block
+ * tui_keep_visible asked to keep on screen. */
 b8 tui_pick_notice(Str title, Str notice, const TuiCmd *items, size_t n,
                    TuiPickAnchor anchor, size_t start, size_t *out);
 /* As tui_pick, with `search_n` excluding fixed action rows from the length
