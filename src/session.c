@@ -72,6 +72,8 @@ b8 session_init(Session *s, Arena *scratch) {
 static void sess_set_current(Session *s, Str path, Str name) {
     size_t pn = path.n < sizeof s->path_buf - 1 ? path.n : 0;
     size_t nn = name.n < sizeof s->name_buf - 1 ? name.n : 0;
+    s->title_buf[0] = '\0';
+    s->title = (Str){0};
     if (!pn) { s->path = (Str){0}; s->name = (Str){0}; return; }
     memcpy(s->path_buf, path.p, pn);
     s->path_buf[pn] = '\0';
@@ -96,10 +98,98 @@ static Str sess_label(Arena *a, Str file) {
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
 }
 
+/* A session name from arbitrary text: the first line, unwrapped, flattened
+ * to one plain line and cut on a UTF-8 boundary the way sess_preview cuts a
+ * preview. Zero means "not a title", which every caller reads as absent, so
+ * neither a model's stray formatting nor a hand-edited sidecar can put a
+ * control byte or a second line into a popup row. */
+static size_t sess_title_clean(char *out, size_t cap, Str src) {
+    if (!cap) return 0;
+    for (size_t i = 0; i < src.n; i++)
+        if (src.p[i] == '\n' || src.p[i] == '\r') { src.n = i; break; }
+    src = str_trim(src);
+    /* A model asked for a name answers with a quoted sentence often enough
+     * that the quotes and the full stop are peeled together: the stop hides
+     * the closing quote, so one pass would leave the opening one behind. */
+    for (size_t before = 0; before != src.n;) {
+        before = src.n;
+        while (src.n && (src.p[src.n - 1] == '.' || src.p[src.n - 1] == ' '))
+            src.n--;
+        if (src.n >= 2) {
+            char q = src.p[0];
+            if ((q == '"' || q == '\'' || q == '`') && src.p[src.n - 1] == q)
+                src = str_trim((Str){ src.p + 1, src.n - 2 });
+        }
+    }
+    size_t n = 0;
+    size_t max = cap - 1 < AGENT_MAX_TITLE ? cap - 1 : AGENT_MAX_TITLE;
+    for (size_t i = 0; i < src.n && n < max; i++) {
+        char c = (u8)src.p[i] < 0x20 ? ' ' : src.p[i];
+        if (c == ' ' && (!n || out[n - 1] == ' ')) continue;
+        out[n++] = c;
+    }
+    /* The cut lands on a UTF-8 boundary: a row of the picker showing half a
+     * glyph is a hole in the frame. Only an incomplete last sequence goes. */
+    size_t last = n;
+    while (last && ((u8)out[last - 1] & 0xc0u) == 0x80u) last--;
+    if (last) {
+        u8 lead = (u8)out[last - 1];
+        size_t len = lead < 0x80 ? 1 : lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3
+                   : lead >= 0xc0 ? 2 : 0;
+        if (!len || last - 1 + len > n) n = last - 1;
+    }
+    while (n && (out[n - 1] == ' ' || out[n - 1] == '.')) n--;
+    out[n] = '\0';
+    return n;
+}
+
+/* The sidecar beside a session file: its path with ".jsonl" replaced. A path
+ * that is not a session file, or one that would not fit, has none. */
+static size_t sess_title_path(char *out, size_t cap, Str session_path) {
+    Str suffix = AGENT_TITLE_SUFFIX;
+    if (session_path.n <= 6
+        || memcmp(session_path.p + session_path.n - 6, ".jsonl", 6) != 0)
+        return 0;
+    size_t stem = session_path.n - 6;
+    if (stem + suffix.n + 1 > cap) return 0;
+    memcpy(out, session_path.p, stem);
+    memcpy(out + stem, suffix.p, suffix.n);
+    out[stem + suffix.n] = '\0';
+    return stem + suffix.n;
+}
+
+Str session_title_read(Str session_path, Arena *a) {
+    char path[AGENT_MAX_PATH];
+    if (!sess_title_path(path, sizeof path, session_path)) return (Str){0};
+    size_t mark = a->off;
+    Str src = {0};
+    file_read(a, path, AGENT_MAX_TITLE * 8, 0, &src, NULL);
+    char buf[AGENT_MAX_TITLE + 1];
+    size_t n = sess_title_clean(buf, sizeof buf, src);
+    a->off = mark;
+    return n ? str_dup(a, (Str){ buf, n }) : (Str){0};
+}
+
+b8 session_set_title(Session *s, Str title) {
+    if (!s->path.n) return false;
+    char path[AGENT_MAX_PATH];
+    size_t n = sess_title_clean(s->title_buf, sizeof s->title_buf, title);
+    s->title = n ? (Str){ s->title_buf, n } : (Str){0};
+    if (!sess_title_path(path, sizeof path, s->path)) return false;
+    if (!n) {
+        unlink(path);           // an unnamed session leaves no sidecar behind
+        return true;
+    }
+    return settings_write(str_c(path), s->title, 0600);
+}
+
 /* Start a fresh session file. The file itself is only created by the first
  * save, so an untouched session never shows up in the picker. */
 b8 session_begin(Session *s) {
     s->written = 0;
+    /* A reservation is a new thread, so the automatic name it has not earned
+     * yet is still owed to it. */
+    s->title_tried = false;
     /* The name is reserved here, but the conversation starts with its first
      * message: the record follows the file rather than the reservation, so
      * whatever happens in between waits for the session that claims it. */
@@ -197,9 +287,16 @@ void session_save(Session *s, const Conv *c) {
  * which every later save appends to. The file left behind keeps exactly what
  * it had, so a fork costs the conversation it came from nothing. */
 b8 session_fork(Session *s, const Conv *c) {
+    /* A fork is the same thread continuing, so it carries the name over: the
+     * title is copied out before the reservation clears it. */
+    char title[AGENT_MAX_TITLE + 1];
+    size_t title_n = s->title.n < sizeof title ? s->title.n : 0;
+    if (title_n) memcpy(title, s->title.p, title_n);
     if (!session_begin(s)) return false;
     session_save(s, c);
-    return s->written >= c->n;
+    b8 ok = s->written >= c->n;
+    if (title_n) session_set_title(s, (Str){ title, title_n });
+    return ok;
 }
 
 static b8 export_put(FILE *f, Str s) {
@@ -452,7 +549,8 @@ size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max) {
     out->name    = arena_new(a, Str, n);
     out->path    = arena_new(a, Str, n);
     out->preview = arena_new(a, Str, n);
-    if (!out->name || !out->path || !out->preview) return 0;
+    out->title   = arena_new(a, Str, n);
+    if (!out->name || !out->path || !out->preview || !out->title) return 0;
     size_t kept = 0;
     for (size_t i = 0; i < n; i++) {
         Buf b; buf_init(&b, a, s->dir.n + sizeof ents[0].name + 2);
@@ -466,6 +564,9 @@ size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max) {
         out->path[kept] = path;
         out->name[kept] = label;
         out->preview[kept] = sess_preview(a, path.p);
+        /* Read back rather than remembered: the sidecar is a file a reader
+         * may have edited, so it is cleaned again on the way into a row. */
+        out->title[kept] = session_title_read(path, a);
         kept++;
     }
     out->n = kept;
@@ -486,7 +587,12 @@ b8 session_delete(const Session *s, Str path) {
     Str file = str_drop(path, s->dir.n + 1);
     if (memchr(file.p, '/', file.n) || str_eq(file, STR(".."))) return false;
     if (s->path.n && str_eq(path, s->path)) return false;
-    return unlink(path.p) == 0;
+    b8 ok = unlink(path.p) == 0;
+    /* Best effort: a name left behind names nothing, and failing to remove
+     * it does not change whether the session was removed. */
+    char title[AGENT_MAX_PATH];
+    if (sess_title_path(title, sizeof title, path)) unlink(title);
+    return ok;
 }
 
 /* Raw contents of a saved session, held in `scratch`. Reading is separate
@@ -542,6 +648,17 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
     sess_set_current(s, path, name);
     telemetry_bind(s->path);          // the record of the session reopened
     s->written = c->n;
+    /* A resumed session is not a fresh one to name automatically, so a name
+     * it already has ends the question. One that has none may still earn it
+     * from the turn that follows. */
+    {
+        size_t mark = scratch->off;
+        Str title = session_title_read(s->path, scratch);
+        size_t n = sess_title_clean(s->title_buf, sizeof s->title_buf, title);
+        s->title = n ? (Str){ s->title_buf, n } : (Str){0};
+        s->title_tried = n != 0;
+        scratch->off = mark;
+    }
     if (!src.n) return false;
     size_t mark = scratch->off;
 

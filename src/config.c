@@ -96,6 +96,14 @@ static const ConfSpec k_conf[CONF_N] = {
                                AGENT_MAX_API_KEY, false },
     [CONF_SEARCH_ENGINE_ID] = { "search_engine_id", "", NULL, CV_STR, 0, 0,
                                 AGENT_MAX_ENDPOINT_NAME, false },
+    /* A model id like `model`, so a project that pins one may pin the cheap
+     * one it wants beside it. */
+    [CONF_SMALL_MODEL] = { "small_model", "", NULL, CV_STR, 0, 0,
+                           AGENT_MAX_MODEL_NAME, true },
+    /* Inert while no small model is configured, which is why it is on: a
+     * user who names one asked for the errands it pays for. */
+    [CONF_AUTO_TITLE]  = { "auto_title", "true", NULL, CV_BOOL, 0, 0, 0,
+                           true },
 };
 
 Str conf_key_name(ConfKey k) {
@@ -256,6 +264,11 @@ static void conf_apply_endpoint(Conf *c, Arena *persist, Arena *scratch) {
     if (e.model[i].n)
         conf_take(c, CONF_MODEL, e.model[i], CONF_FROM_ENDPOINT, where,
                   persist);
+    /* A provider's own small model outranks the config files and is still
+     * overridden by the environment. */
+    if (e.small_model[i].n)
+        conf_take(c, CONF_SMALL_MODEL, e.small_model[i], CONF_FROM_ENDPOINT,
+                  where, persist);
 
     model_profile_load(&c->model_profile, name, conf_str(c, CONF_MODEL),
                        persist, scratch);
@@ -340,6 +353,15 @@ b8 config_set_model(Config *c, Str model) {
     return true;
 }
 
+b8 config_set_small_model(Config *c, Str model) {
+    if (model.n > AGENT_MAX_MODEL_NAME) return false;
+    Str saved = config_owned(c->owned_small_model,
+                             sizeof c->owned_small_model, model);
+    if (!saved.p) return false;
+    c->small_model = model.n ? saved : (Str){0};
+    return true;
+}
+
 b8 config_set_endpoint(Config *c, Str name, Str base_url, Str model,
                        ApiKind api, Str key) {
     if (!name.n || name.n > AGENT_MAX_ENDPOINT_NAME
@@ -412,6 +434,7 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
     c->base_url = conf_str(conf, CONF_BASE_URL);
     c->base_url_set = c->base_url.n != 0;
     c->model    = conf_str(conf, CONF_MODEL);
+    c->small_model = conf_str(conf, CONF_SMALL_MODEL);
     c->api_key  = conf_str(conf, CONF_API_KEY);
     c->api = str_eq(conf_str(conf, CONF_API), STR("anthropic"))
            ? API_ANTHROPIC : API_OPENAI;
@@ -424,6 +447,7 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
     c->max_messages   = (size_t)conf_num(conf, CONF_MAX_MESSAGES);
     c->retries        = (i32)conf_num(conf, CONF_RETRIES);
     c->retry_delay_ms = (i32)conf_num(conf, CONF_RETRY_DELAY_MS);
+    c->auto_title     = conf_bool(conf, CONF_AUTO_TITLE);
 
     /* "none" is how the UI records that nothing is disabled: an empty value
      * removes the key, which the next run would read as never chosen. */

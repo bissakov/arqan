@@ -68,8 +68,15 @@ static void endpoints_collect(Endpoints *e, const Settings *s, Arena *a) {
         if (!url.n) continue;
         Str model = endpoint_field(s, sections[i], STR("model"),
                                    AGENT_MAX_MODEL_NAME);
+        Str small = endpoint_field(s, sections[i], STR("small_model"),
+                                   AGENT_MAX_MODEL_NAME);
         ApiKind api = api_from_str(settings_get(s, sections[i], STR("api")));
-        endpoints_put(e, name, url, model, api, a);
+        if (!endpoints_put(e, name, url, model, api, a)) continue;
+        /* Kept beside the entry rather than in endpoints_put's signature:
+         * every caller that writes an endpoint writes the three fields that
+         * name the service, and this one does not name it. */
+        size_t at = endpoints_find(e, name);
+        if (at != ENDPOINT_NONE) e->small_model[at] = str_dup_opt(a, small);
     }
 }
 
@@ -109,6 +116,7 @@ b8 endpoints_put(Endpoints *e, Str name, Str base_url, Str model, ApiKind api,
         Str dup = str_dup(a, name);
         if (!dup.p) return false;
         e->name[i] = dup;
+        e->small_model[i] = (Str){0};
         e->n++;
     }
     Str url = str_dup(a, base_url);
@@ -146,6 +154,28 @@ b8 endpoints_remember_model(Str name, Str model, Arena *scratch) {
     size_t i = endpoints_find(&e, name);
     b8 ok = i != ENDPOINT_NONE
          && endpoints_save_one(name, e.base_url[i], model, e.api[i], scratch);
+    scratch->off = mark;
+    return ok;
+}
+
+Str endpoints_small_model(Str name, Arena *scratch) {
+    Endpoints e;
+    if (!name.n) return (Str){0};
+    endpoints_load(&e, scratch);
+    size_t i = endpoints_find(&e, name);
+    return i == ENDPOINT_NONE ? (Str){0} : e.small_model[i];
+}
+
+/* Only the one key: remembering a small model must not rewrite the base URL,
+ * the model or the API of a section the user wrote. */
+b8 endpoints_remember_small_model(Str name, Str model, Arena *scratch) {
+    size_t mark = scratch->off;
+    Str dir  = paths_dir(AGENT_DIR_CONFIG, scratch);
+    Str path = paths_file(AGENT_DIR_CONFIG, AGENT_CONFIG_NAME, scratch);
+    Str section = endpoint_section(name, scratch);
+    b8 ok = dir.n && path.n && section.n && paths_ensure_dir(dir)
+         && settings_set_one(path, section, STR("small_model"), model, 0600,
+                             scratch);
     scratch->off = mark;
     return ok;
 }

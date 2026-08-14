@@ -15,7 +15,8 @@ def test_picker_lists_the_provider_models(ctx):
     assert "alpha" in text and "beta" in text and "gamma" in text, text
     assert "current" in text, "the live model is labelled"
     assert "+ enter a model manually" not in text, text
-    assert "Ctrl-O enters manually" in text, text
+    assert "Ctrl-O manual entry" in text, text
+    assert "Ctrl-S small model" in text, text
     assert "search:" not in text, "a short list needs no search box"
     ctx.check_screen(s)
 

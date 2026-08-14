@@ -17,7 +17,7 @@
 |    [ ] Telemetry            An anonymized debug log, for a bug report
 |    [ ] Show instructions    Reveal the active system and project instructions
 |                             in the transcript
-|    [x] read                 Read a page of a file
+|    [x] Name sessions        Name a session after its first turn, with a small
 |
 |  › Message arqan...
 |

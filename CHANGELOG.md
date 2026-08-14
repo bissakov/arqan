@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Name a saved session: set or edit the name with `/title`, see it in
+  `/resume`, and let a configured small model name a session after its first
+  turn.
+- Pick a provider's small model with `Ctrl-S` in `/model`, and turn automatic
+  session naming off with the `Name sessions` setting.
+
 ### Changed
 
 - Answer a click on a folded tool block mid-turn with a separate centered,

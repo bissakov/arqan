@@ -14,7 +14,7 @@
 |                    type a message and press Enter to begin
 |
 |
-|    Ctrl-F pins · Ctrl-O enters manually · Ctrl-E configures current
+|    Ctrl-F pins · Ctrl-O manual entry · Ctrl-E configures · Ctrl-S small model
 |  › alpha
 |    beta   current
 |    gamma

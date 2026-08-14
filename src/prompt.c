@@ -108,6 +108,20 @@ static const char PROMPT_COMPACT_ASK[] =
     "Summarize the conversation above as a context checkpoint, in the exact "
     "format you were given.";
 
+/* A session name is a row of a list, so what is asked for is a label rather
+ * than a sentence: the length and the punctuation are stated because a model
+ * asked for "a short title" answers with a quoted one. */
+static const char PROMPT_TITLE_BUILTIN[] =
+    "You name a conversation so a user can recognize it in a list of saved "
+    "sessions.\n"
+    "\n"
+    "Answer with the name alone: at most six words and 48 characters, no "
+    "quotes, no trailing punctuation, no preamble, no explanation and no "
+    "tool call. Name what the conversation is about, not that it is a "
+    "conversation. Write it in the language the user writes in.\n";
+
+static const char PROMPT_TITLE_ASK[] = "Name the conversation below.";
+
 /* Empty when `path` does not exist or holds only space. A file past the limit
  * sets `err` and reads nothing, which stops the search rather than falling
  * through to a prompt the user did not ask for. */
@@ -341,4 +355,12 @@ Str prompt_compact(void) {
 
 Str prompt_compact_ask(void) {
     return (Str){ PROMPT_COMPACT_ASK, sizeof PROMPT_COMPACT_ASK - 1 };
+}
+
+Str prompt_title(void) {
+    return (Str){ PROMPT_TITLE_BUILTIN, sizeof PROMPT_TITLE_BUILTIN - 1 };
+}
+
+Str prompt_title_ask(void) {
+    return (Str){ PROMPT_TITLE_ASK, sizeof PROMPT_TITLE_ASK - 1 };
 }

@@ -107,6 +107,11 @@ typedef bool     b8;
 #define AGENT_MAX_AGENTS_FILES 8
 #define AGENT_MAX_SESSIONS     64
 #define AGENT_MAX_SESSION_BYTES (32u << 20) // largest session file we will read
+/* A session's name: one short line of display text, not a file name. It is
+ * kept beside the session file, so the picker reads it back rather than
+ * deriving it from anything on the wire. */
+#define AGENT_MAX_TITLE        64
+#define AGENT_TITLE_SUFFIX     STR(".title")
 /* A popup shows a handful of rows at a time, so this bounds what it can hold
  * and scroll or search through, not what it can show: a provider that serves
  * hundreds of models is the reason it is not the row count. */
@@ -514,6 +519,9 @@ typedef struct {
     Str     name[AGENT_MAX_ENDPOINTS];
     Str     base_url[AGENT_MAX_ENDPOINTS];
     Str     model[AGENT_MAX_ENDPOINTS];
+    /* The cheap model this provider names for arqan's own errands, naming a
+     * session among them. Empty when it names none. */
+    Str     small_model[AGENT_MAX_ENDPOINTS];
     ApiKind api[AGENT_MAX_ENDPOINTS];
     size_t  n;
 } Endpoints;
@@ -534,6 +542,12 @@ b8     endpoints_save_one(Str name, Str base_url, Str model, ApiKind api,
                           Arena *scratch);
 // Where /model writes while a provider is active.
 b8     endpoints_remember_model(Str name, Str model, Arena *scratch);
+/* The provider's own small model, allocated in `scratch`. Empty when it has
+ * none. */
+Str    endpoints_small_model(Str name, Arena *scratch);
+/* Writes only the `small_model` key of the provider's section, leaving the
+ * rest of it alone. An empty model removes the key. */
+b8     endpoints_remember_small_model(Str name, Str model, Arena *scratch);
 /* The key stored for `name`, allocated in `out`. Empty when there is none,
  * and empty with `err` filled in when the credentials file is readable by
  * anyone but its owner: that is a key to rotate rather than one to load. */
@@ -630,6 +644,7 @@ typedef enum {
     CONF_NOTIFY, CONF_NOTIFY_COMMAND, CONF_NOTIFY_MIN_MS,
     CONF_SEARCH_BACKEND, CONF_SEARCH_ENDPOINT, CONF_SEARCH_API_KEY,
     CONF_SEARCH_ENGINE_ID,
+    CONF_SMALL_MODEL, CONF_AUTO_TITLE,
     CONF_N
 } ConfKey;
 
@@ -732,6 +747,9 @@ typedef struct {
     Str api_key;
     ApiKind api;
     Str provider;
+    /* A cheap model for arqan's own short errands, empty when none is
+     * configured. Naming a session is the only one so far. */
+    Str small_model;
     Str reasoning_efforts, thinking_budgets;
     Str reasoning_effort, thinking_budget;
     Str reasoning_template;
@@ -756,10 +774,13 @@ typedef struct {
     /* Tools to turn off before the first turn, comma separated. Applied once
      * the registry exists, since config_load runs before tools_init. */
     Str disable_tools;
+    // Name a session automatically once it has a turn to name.
+    b8 auto_title;
     /* Commands may replace these fields after the conversation rewind mark.
      * Their owned copies live here so /clear cannot reclaim them. */
     char owned_base_url[AGENT_MAX_URL + 1];
     char owned_model[AGENT_MAX_MODEL_NAME + 1];
+    char owned_small_model[AGENT_MAX_MODEL_NAME + 1];
     char owned_api_key[AGENT_MAX_API_KEY + 1];
     char owned_provider[AGENT_MAX_ENDPOINT_NAME + 1];
     char owned_reasoning_efforts[AGENT_MAX_REASONING_LIST + 1];
@@ -776,6 +797,9 @@ b8    config_load(Config *c, const Conf *conf, Arena *persist);
 b8    config_remember_model(Str model, Arena *scratch);
 // Runtime choices are copied into Config itself and survive /clear.
 b8    config_set_model(Config *c, Str model);
+/* An empty model clears the field, which is what switching to a provider
+ * that names no small model must do. */
+b8    config_set_small_model(Config *c, Str model);
 b8    config_set_endpoint(Config *c, Str name, Str base_url, Str model,
                           ApiKind api, Str key);
 b8    config_set_model_profile(Config *c, const ModelProfile *p);
@@ -1004,6 +1028,13 @@ Str   prompt_compact(void);
 /* The user turn that request ends on, so the summary is asked for by a
  * message rather than only by the system prompt. */
 Str   prompt_compact_ask(void);
+/* The naming instruction, a static document like the compaction one: it
+ * stands in for the system prompt of the single request that names a
+ * session. */
+Str   prompt_title(void);
+/* The lead line of that request's user turn; main.c appends the excerpt of
+ * the conversation being named to it. */
+Str   prompt_title_ask(void);
 
 // ---- conversation (SoA) -------------------------------------------------
 typedef enum { M_SYSTEM = 0, M_USER, M_ASSISTANT, M_TOOL } MRole;
@@ -1077,9 +1108,16 @@ typedef struct {
     char   dir_buf[AGENT_MAX_PATH];
     char   path_buf[AGENT_MAX_PATH];
     char   name_buf[32];
+    /* The session's name, cleaned. `title` points into `title_buf` and is
+     * cleared by session_begin and session_apply along with the path. */
+    char   title_buf[AGENT_MAX_TITLE + 1];
     Str    dir;
     Str    path;
     Str    name;
+    Str    title;
+    /* One automatic naming attempt per session file, so an attempt that was
+     * refused or interrupted is not retried on every later turn. */
+    b8     title_tried;
     size_t written;
 } Session;
 
@@ -1087,6 +1125,7 @@ typedef struct {
     Str   *name;
     Str   *path;
     Str   *preview;
+    Str   *title;          // empty for a session that has no name
     size_t n;
 } SessionList;
 
@@ -1124,6 +1163,13 @@ b8     session_delete(const Session *s, Str path);
 Str    session_read(Str path, Arena *scratch);
 b8     session_apply(Session *s, Str src, Str path, Str name, Conv *c,
                      Arena *persist, Arena *scratch);
+/* The cleaned contents of a session's title sidecar, held in `a`. Empty when
+ * there is none, it cannot be read, or nothing survives cleaning. */
+Str    session_title_read(Str session_path, Arena *a);
+/* Clean `title` into the session's own buffer and write the sidecar beside
+ * the session file. An empty title removes both the name and the file.
+ * False when there is no session file yet or the write failed. */
+b8     session_set_title(Session *s, Str title);
 
 // ---- provider -----------------------------------------------------------
 typedef struct {

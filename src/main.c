@@ -69,6 +69,7 @@ static size_t commands_init(void) {
     g_commands[n++] = (TuiCmd){ STR("/provider"), STR("Switch provider, or add one") };
     g_commands[n++] = (TuiCmd){ STR("/mode"), STR("Switch between Build and Plan mode (Shift+Tab)") };
     g_commands[n++] = (TuiCmd){ STR("/rewind"), STR("Go back to an earlier message and edit it") };
+    g_commands[n++] = (TuiCmd){ STR("/title"), STR("Name this session, or `/title auto` to let the small model name it") };
     g_commands[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
     g_commands[n++] = (TuiCmd){ STR("/find"), STR("Search the transcript (Ctrl-R)") };
     g_commands[n++] = (TuiCmd){ STR("/keys"), STR("Show the keyboard shortcuts") };
@@ -1087,8 +1088,25 @@ static void resume_session(Agent *ag) {
         tui_notice(STR("out of memory listing sessions"));
         return;
     }
-    for (size_t i = 0; i < n; i++)
-        items[i] = (TuiCmd){ sp.list.name[i], sp.list.preview[i] };
+    /* A named session is listed under its name, with the timestamp it would
+     * otherwise have shown moved beside the preview. An unnamed one is the
+     * row it always was. */
+    for (size_t i = 0; i < n; i++) {
+        if (!sp.list.title[i].n) {
+            items[i] = (TuiCmd){ sp.list.name[i], sp.list.preview[i] };
+            continue;
+        }
+        Buf desc;
+        buf_init(&desc, scratch, sp.list.name[i].n + sp.list.preview[i].n + 8);
+        buf_puts(&desc, sp.list.name[i]);
+        if (sp.list.preview[i].n) {
+            buf_puts(&desc, STR(" \xc2\xb7 "));
+            buf_puts(&desc, sp.list.preview[i]);
+        }
+        items[i] = (TuiCmd){ sp.list.title[i],
+                             buf_ok(&desc) ? buf_finish(&desc)
+                                           : sp.list.preview[i] };
+    }
     sp.rows = items;
     sp.n = n;
 
@@ -1263,6 +1281,42 @@ static void export_session(const Conv *conv, Str requested) {
     notice_fmt("exported session to %s", path);
 }
 
+/* Built beside /compact's request, so a name that never arrives cannot cost
+ * the conversation anything. */
+static b8 name_session(Agent *ag, b8 manual);
+
+/* /title: the name a session is listed under. Set by hand, edited in the
+ * composer, cleared by an empty answer, or asked of the small model. */
+static void title_command(Agent *ag, Str arg) {
+    Session *sess = ag->sess;
+    arg = str_trim(arg);
+    /* A session with no file behind it is not in any list yet, so there is
+     * nothing a name would name. */
+    if (!sess->path.n || ag->conv->n <= 1) {
+        tui_notice(STR("nothing to name yet"));
+        return;
+    }
+    if (str_eq(arg, STR("auto"))) {
+        name_session(ag, true);
+        return;
+    }
+    char buf[AGENT_MAX_TITLE + 1];
+    if (!arg.n) {
+        snprintf(buf, sizeof buf, "%.*s", (i32)sess->title.n, sess->title.p);
+        if (!tui_ask_edit(STR("session title"), true, buf, sizeof buf)) return;
+        arg = str_c(buf);
+    }
+    if (!session_set_title(sess, arg)) {
+        tui_notice(STR("could not name this session"));
+        return;
+    }
+    if (!sess->title.n) {
+        tui_notice(STR("session title cleared"));
+        return;
+    }
+    notice_fmt("session named: %.*s", (i32)sess->title.n, sess->title.p);
+}
+
 static b8 command_offered(Str name) {
     for (size_t i = 0; i < g_command_n; i++)
         if (str_eq(g_commands[i].name, name)) return true;
@@ -1314,6 +1368,8 @@ typedef struct {
     Favorites  fav;
     Str        provider;
     Str        current;
+    Str        small;      // the provider's small model, marked like `current`
+    Config    *cfg;        // what Ctrl-S applies the small model to
     Arena     *arena;
     u8         requested;
     char       msg[160];   // said after the picker closes, not under it
@@ -1411,9 +1467,12 @@ static Str model_starred(ModelPick *mp, size_t i) {
 
 static void model_row(ModelPick *mp, size_t row, size_t i, b8 fav) {
     mp->order[row] = i;
+    b8 current = str_eq(mp->names[i], mp->current);
+    b8 small = mp->small.n && str_eq(mp->names[i], mp->small);
+    Str desc = current && small ? STR("current \xc2\xb7 small")
+             : current ? STR("current") : small ? STR("small") : (Str){0};
     mp->rows[row] = (TuiCmd){ fav ? model_starred(mp, i) : mp->names[i],
-                              str_eq(mp->names[i], mp->current)
-                                  ? STR("current") : (Str){0} };
+                              desc };
 }
 
 static size_t model_build(void *ud) {
@@ -1464,6 +1523,27 @@ static size_t model_configure_action(void *ud, size_t row, size_t *moved) {
     return 0;
 }
 
+/* The small model is a property of the endpoint, so it is written where the
+ * endpoint is: a named provider's own section, and the state file otherwise.
+ * Like pinning, it is its own action and survives a cancelled picker. */
+static size_t model_small_action(void *ud, size_t row, size_t *moved) {
+    ModelPick *mp = ud;
+    if (row == SIZE_MAX) { *moved = 0; return model_build(mp); }
+    size_t i = mp->order[row];
+    b8 on = mp->small.n && str_eq(mp->names[i], mp->small);
+    Str next = on ? (Str){0} : mp->names[i];
+    b8 saved = mp->provider.n
+             ? endpoints_remember_small_model(mp->provider, next, mp->arena)
+             : conf_remember(CONF_SMALL_MODEL, next, mp->arena);
+    if (!config_set_small_model(mp->cfg, next))
+        snprintf(mp->msg, sizeof mp->msg, "out of memory storing the small model");
+    else if (!saved)
+        snprintf(mp->msg, sizeof mp->msg, "could not save the small model");
+    mp->small = mp->cfg->small_model;
+    *moved = row;
+    return model_build(mp);
+}
+
 static b8 pick_model(Config *cfg, Arena *scratch, Str *out,
                      b8 *verified) {
     *verified = false;
@@ -1491,6 +1571,8 @@ static b8 pick_model(Config *cfg, Arena *scratch, Str *out,
     mp.n        = n;
     mp.provider = cfg->provider;
     mp.current  = cfg->model;
+    mp.small    = cfg->small_model;
+    mp.cfg      = cfg;
     mp.arena    = scratch;
     if (!mp.starred || !mp.order || !mp.rows) {
         tui_notice(STR("out of memory listing models"));
@@ -1503,9 +1585,15 @@ static b8 pick_model(Config *cfg, Arena *scratch, Str *out,
         { model_favorite, &mp, 0x06 },
         { model_manual_action, &mp, 0x0f },
         { model_configure_action, &mp, 0x05 },
+        /* Ctrl-S reaches the app: raw mode clears IXON, so it is not flow
+         * control here. */
+        { model_small_action, &mp, 0x13 },
     };
-    TuiPickAction act = { mp.rows, n, bindings, 3,
-        STR("Ctrl-F pins · Ctrl-O enters manually · Ctrl-E configures current") };
+    /* Four keys have to fit one 80-column row, so each is named as briefly
+     * as it can be and still be found. */
+    TuiPickAction act = { mp.rows, n, bindings, 4,
+        STR("Ctrl-F pins · Ctrl-O manual entry · Ctrl-E configures · "
+            "Ctrl-S small model") };
     size_t pick = 0;
     b8 chosen = tui_pick_action(STR("pick a model"), rows, n, TUI_PICK_FIRST,
                                 TUI_PICK_NONE, &act, &pick);
@@ -1573,6 +1661,9 @@ static b8 use_endpoint(Config *cfg, Str name, Str base_url, Str model,
     if (!config_set_endpoint(cfg, name, base_url, model, api, key)
         || !apply_model_profile(cfg, scratch))
         return false;
+    /* The small model belongs to the endpoint that serves it, so switching
+     * provider takes that provider's and clears it when it has none. */
+    config_set_small_model(cfg, endpoints_small_model(cfg->provider, scratch));
     tui_set_provider(cfg->provider);
     tui_set_model(cfg->model);
     ctx_model_changed(&g_ctx);
@@ -1949,10 +2040,11 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
  * options: a list a reader scans is a list whose answers look alike. */
 enum {
     SET_VERBOSE, SET_RAW, SET_STREAM, SET_IGNORED, SET_TELEMETRY,
-    SET_SHOW_INSTRUCTIONS, SET_TOOL, SET_WRAP, SET_MODE, SET_MAX_TOKENS,
+    SET_SHOW_INSTRUCTIONS, SET_AUTO_TITLE, SET_TOOL, SET_WRAP, SET_MODE,
+    SET_MAX_TOKENS,
     SET_EFFORT, SET_BUDGET, SET_PERMISSIONS
 };
-#define SET_MAX_ROWS (17 + AGENT_MAX_TOOLS)
+#define SET_MAX_ROWS (18 + AGENT_MAX_TOOLS)
 
 /* "[x] label" for a toggle and the same column for a value row, so the two
  * kinds read as one list. A row that lost its checkbox to a full arena is
@@ -2207,6 +2299,11 @@ static size_t settings_build(void *ud) {
         setting_check(rows_arena, ag->show_instructions,
                       STR("Show instructions")),
         STR("Reveal the active system and project instructions in the transcript") };
+    kind[n] = SET_AUTO_TITLE;
+    rows[n++] = (TuiCmd){
+        setting_check(rows_arena, cfg->auto_title,
+                      STR("Name sessions")),
+        STR("Name a session after its first turn, with a small model configured") };
 
     /* One checkbox per tool a turn may call. A tool the mode does not offer
      * is still listed, since turning bash off is a statement about the
@@ -2379,6 +2476,10 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
             remember_ui_bool(scratch, CONF_SHOW_INSTRUCTIONS,
                              ag->show_instructions);
             rerender_or_defer(ag);
+            break;
+        case SET_AUTO_TITLE:
+            cfg->auto_title = !cfg->auto_title;
+            remember_ui_bool(scratch, CONF_AUTO_TITLE, cfg->auto_title);
             break;
         case SET_MAX_TOKENS:
             cfg->max_tokens = max_tokens_step(cfg->max_tokens, delta);
@@ -2708,6 +2809,11 @@ static void compact_session(Agent *ag) {
         tui_notice(STR("out of memory keeping the summary"));
         return;
     }
+    /* The compacted session is the same thread continuing, so it keeps its
+     * name: the reservation clears the title, so it is copied out first. */
+    char title[AGENT_MAX_TITLE + 1];
+    size_t title_n = ag->sess->title.n < sizeof title ? ag->sess->title.n : 0;
+    if (title_n) memcpy(title, ag->sess->title.p, title_n);
     session_begin(ag->sess);
     tui_clear();
     if (conv_add(conv, M_USER, stored) == CONV_NONE) {
@@ -2716,7 +2822,138 @@ static void compact_session(Agent *ag) {
     }
     render_user_message(stored, (u32)conv->n);
     session_save(ag->sess, conv);
+    if (title_n) session_set_title(ag->sess, (Str){ title, title_n });
     tui_notice(STR("compacted: a new session continues from the summary"));
+}
+
+/* The excerpt the naming request is made from: one turn of the conversation,
+ * labelled and cut, so a session is named from what it opened with rather
+ * than from everything it grew into. */
+#define TITLE_EXCERPT_BYTES 1024
+
+/* Name the session from its first exchange, through the small model. Built
+ * the way /compact builds its request: a conversation of its own in a part
+ * of the persistent arena that is rewound either way, so a name that does
+ * not arrive costs the session nothing.
+ *
+ * `manual` says the user asked, which is what decides whether a missing
+ * piece is reported: the automatic attempt happens on its own and says
+ * nothing when it cannot. */
+static b8 name_session(Agent *ag, b8 manual) {
+    Session *sess = ag->sess;
+    const Conv *conv = ag->conv;
+    const Config *cfg = ag->cfg;
+    Arena *persist = ag->persist;
+
+    Str first_user = {0}, first_reply = {0};
+    for (size_t i = 0; i < conv->n && !first_reply.n; i++) {
+        if (conv->role[i] == M_USER && !conv_is_shell(conv, i)
+            && !first_user.n)
+            first_user = conv->text[i];
+        else if (first_user.n && conv->role[i] == M_ASSISTANT
+                 && !conv_is_call(conv, i) && conv->text[i].n)
+            first_reply = conv->text[i];
+    }
+    if (!sess->path.n || !first_user.n || !first_reply.n) {
+        if (manual) tui_notice(STR("nothing to name yet"));
+        return false;
+    }
+    if (no_provider(cfg)) {
+        if (manual) tui_notice(NO_PROVIDER_HINT);
+        return false;
+    }
+    if (!cfg->small_model.n) {
+        if (manual)
+            tui_notice(STR("no small model is configured: pick one with "
+                           "Ctrl-S in /model"));
+        return false;
+    }
+    sess->title_tried = true;
+
+    size_t mark = persist->off;
+    Conv tmp;
+    Buf ask;
+    buf_init(&ask, persist, TITLE_EXCERPT_BYTES * 2 + 128);
+    buf_puts(&ask, prompt_title_ask());
+    buf_puts(&ask, STR("\n\nUser: "));
+    buf_puts(&ask, str_clip_utf8(first_user, TITLE_EXCERPT_BYTES));
+    buf_puts(&ask, STR("\n\nAssistant: "));
+    buf_puts(&ask, str_clip_utf8(first_reply, TITLE_EXCERPT_BYTES));
+    if (!conv_init(&tmp, persist, 4) || !buf_ok(&ask)
+        || conv_add(&tmp, M_SYSTEM, prompt_title()) == CONV_NONE
+        || conv_add(&tmp, M_USER, buf_finish(&ask)) == CONV_NONE) {
+        persist->off = mark;
+        if (manual) tui_notice(STR("out of memory naming this session"));
+        return false;
+    }
+
+    /* Static: a Config carries kilobytes of owned buffers, and this runs
+     * from the command loop rather than from a frame with room for them. The
+     * reasoning controls describe the main model, so the small one is asked
+     * without them. */
+    static Config small;
+    small = *cfg;
+    if (!config_set_model(&small, cfg->small_model)) {
+        persist->off = mark;
+        if (manual) tui_notice(STR("could not use the small model"));
+        return false;
+    }
+    small.reasoning_effort = (Str){0};
+    small.thinking_budget = (Str){0};
+    small.reasoning_template = (Str){0};
+    if (small.max_tokens > 64) small.max_tokens = 64;
+
+    say_busy("naming");
+    /* No tools and no text callbacks: the answer is read from `tmp` once the
+     * request is whole, exactly as /compact reads its summary. */
+    Provider p = {
+        .cfg = &small,
+        .tools = NULL,
+        .conv = &tmp,
+        .persist = persist,
+        .scratch = ag->scratch,
+        .on_idle = on_idle,
+        .idle_fd = tui_input_fd(),
+        .interrupt_flag = &g_got_sigint,
+    };
+    char err[256] = {0};
+    f64 started = agent_now_seconds();
+    arena_reset(ag->scratch);
+    i32 rc = provider_run(&p, err, sizeof err);
+    tui_activity_end();
+    tui_set_status("ready");
+    /* An interrupt skips the naming and stops there: it must not leak into
+     * the turn the user types next. */
+    b8 interrupted = g_got_sigint != 0;
+    if (interrupted) g_got_sigint = 0;
+
+    Str title = {0};
+    if (rc >= 0 && !interrupted) {
+        for (size_t i = tmp.n; i-- > 0;) {
+            if (tmp.role[i] != M_ASSISTANT || conv_is_call(&tmp, i)) continue;
+            if (tmp.text[i].n) { title = str_trim(tmp.text[i]); break; }
+        }
+    }
+    b8 named = title.n && session_set_title(sess, title);
+
+    TelEvent e;
+    tel_open(&e, "title");
+    tel_bool(&e, "auto", !manual);
+    tel_int(&e, "rc", rc);
+    tel_int(&e, "ms", (i64)((agent_now_seconds() - started) * 1000.0));
+    tel_shape(&e, "title", title);
+    tel_send(&e);
+
+    persist->off = mark;
+    if (named && sess->title.n) {
+        notice_fmt("session named: %.*s", (i32)sess->title.n, sess->title.p);
+        return true;
+    }
+    if (!manual) return false;
+    if (interrupted) tui_notice(STR("naming interrupted"));
+    else if (rc < 0) notice_fmt("could not name this session: %s", err);
+    else tui_notice(STR("the model sent no name for this session"));
+    return false;
 }
 
 /* The conversation that produced the plan is dropped whole and the plan
@@ -2736,7 +2973,13 @@ static b8 agent_handoff(Agent *ag) {
         return false;
     }
     agent_set_mode(ag, MODE_BUILD);
+    /* The plan's session continues the thread that produced it, so the name
+     * follows it across the new file. */
+    char title[AGENT_MAX_TITLE + 1];
+    size_t title_n = ag->sess->title.n < sizeof title ? ag->sess->title.n : 0;
+    if (title_n) memcpy(title, ag->sess->title.p, title_n);
     session_begin(ag->sess);
+    if (title_n) session_set_title(ag->sess, (Str){ title, title_n });
     tui_clear();
     return agent_turn(ag, plan);
 }
@@ -2920,6 +3163,12 @@ static b8 agent_turn(Agent *ag, Str text) {
             break;
         }
     }
+    /* Inside the busy window: naming a session belongs to the turn that
+     * earned the name, and a spinner that flicked to ready and back would
+     * read as two waits rather than one. */
+    if (ok && !g_one_shot && ag->cfg->auto_title && ag->cfg->small_model.n
+        && !ag->sess->title.n && !ag->sess->title_tried)
+        name_session(ag, false);
     tui_set_busy(false);
     tui_activity_end();
     session_save(ag->sess, conv);
@@ -3215,6 +3464,10 @@ i32 main(i32 argc, char **argv) {
         }
         if (!strcmp(line, "/export") || !strncmp(line, "/export ", 8)) {
             export_session(&conv, (Str){ line + 7, ln - 7 });
+            continue;
+        }
+        if (!strcmp(line, "/title") || !strncmp(line, "/title ", 7)) {
+            title_command(&agent, (Str){ line + 6, ln - 6 });
             continue;
         }
         if (!strcmp(line, "/settings")) {

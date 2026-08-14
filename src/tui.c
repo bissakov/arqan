@@ -4784,6 +4784,8 @@ static b8 pick_enter(const TuiSettings *set) {
                                               return pick_row_action(0x0f);)  \
     X(0x18, "Ctrl-X",    "Delete the row, on a list that offers it",          \
                                               return pick_row_action(0x18);)  \
+    X(0x13, "Ctrl-S",    "Set the small model, on a list that offers it",     \
+                                              return pick_row_action(0x13);)  \
     X(0x7f, "Backspace", "Delete the query glyph before",                     \
                                               return pick_erase();)           \
     X(0x08, "",          "",                  return pick_erase();)           \
