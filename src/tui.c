@@ -4630,10 +4630,17 @@ typedef struct {
     b8 has_set;
     b8 chosen;
     b8 has_action;
+    b8 expired;            // the deadline answered it, not the reader
     PickKind kind;
     TuiSettings set;
     TuiPickAction action;   // picker-specific key actions, when offered
     size_t out;            // the chosen row; read after the screen closes
+    /* A deadline, and the row it answers with. 0 ms is a screen that waits
+     * for a key however long that takes, which is every screen but the one
+     * the agent asks a question through. */
+    i32 timeout_ms;
+    size_t fallback;
+    f64 deadline;          // agent_now_seconds when the wait is up
     char query[TUI_PICK_QUERY];
     size_t query_n;
     const TuiCmd *saved_cmds;
@@ -4900,9 +4907,36 @@ static void pick_close(void) {
     repaint();
 }
 
+/* A question nobody is at the keyboard for must not hold a turn open past
+ * the provider's prompt cache, so a picker given a deadline answers itself
+ * with the row it opened on. Any key restarts the wait: a reader who is
+ * there reading is not hurried by it. */
 static void pick_run(void) {
     g_pick.modal = true;
-    while (g_pick.active && pick_feed(rbyte())) { }
+    while (g_pick.active) {
+        if (g_pick.timeout_ms > 0) {
+            f64 left = g_pick.deadline - agent_now_seconds();
+            if (left <= 0.0) {
+                g_pick.out = g_pick.fallback;
+                g_pick.chosen = true;
+                g_pick.expired = true;
+                break;
+            }
+            /* poll(2) counts milliseconds in an int, so a deadline further
+             * out than one holds is waited for in pieces. */
+            i32 ms = left > 3600.0 ? 3600 * 1000 : (i32)(left * 1000.0) + 1;
+            if (!input_ready(ms)) {
+                /* A resize with nobody typing still has to be drawn: the
+                 * blocking read reports one, a poll that timed out does
+                 * not. */
+                if (g_winch) repaint();
+                continue;
+            }
+            g_pick.deadline = agent_now_seconds()
+                            + (f64)g_pick.timeout_ms / 1000.0;
+        }
+        if (!pick_feed(rbyte())) break;
+    }
     pick_close();
 }
 
@@ -4910,11 +4944,18 @@ static b8 pick_impl(Str title, const TuiCmd *items, const TuiMark *marks,
                     size_t n, size_t search_n, TuiPickAnchor anchor,
                     size_t start, PickKind kind, size_t *out,
                     const TuiSettings *set, const TuiPickAction *act,
-                    Str notice) {
+                    Str notice, i32 timeout_ms) {
     if (!out) return false;
     if (!pick_open(title, items, marks, n, search_n, anchor, start, kind, set,
                    notice, true))
         return false;
+    /* Set after pick_open, which clamps the list and is the only place that
+     * knows how many rows a deadline may name. */
+    if (timeout_ms > 0 && start < g_tui.cmd_n) {
+        g_pick.timeout_ms = timeout_ms;
+        g_pick.fallback = start;
+        g_pick.deadline = agent_now_seconds() + (f64)timeout_ms / 1000.0;
+    }
     if (act) {
         g_pick.action = *act;
         g_pick.has_action = true;
@@ -4931,27 +4972,39 @@ static b8 pick_impl(Str title, const TuiCmd *items, const TuiMark *marks,
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t start, size_t *out) {
     return pick_impl(title, items, NULL, n, n, anchor, start, PICK_CHOOSE, out,
-                     NULL, NULL, (Str){0});
+                     NULL, NULL, (Str){0}, 0);
 }
 
 b8 tui_pick_notice(Str title, Str notice, const TuiCmd *items, size_t n,
                    TuiPickAnchor anchor, size_t start, size_t *out) {
     return pick_impl(title, items, NULL, n, n, anchor, start, PICK_CHOOSE, out,
-                     NULL, NULL, notice);
+                     NULL, NULL, notice, 0);
+}
+
+b8 tui_pick_timed(Str title, Str notice, const TuiCmd *items, size_t n,
+                  TuiPickAnchor anchor, size_t start, i32 timeout_ms,
+                  size_t *out, b8 *expired) {
+    if (expired) *expired = false;
+    b8 ok = pick_impl(title, items, NULL, n, n, anchor, start, PICK_CHOOSE,
+                      out, NULL, NULL, notice, timeout_ms);
+    /* g_pick outlives its screen up to the next one, which is what lets the
+     * answer be read after pick_close, and this beside it. */
+    if (ok && expired) *expired = g_pick.expired;
+    return ok;
 }
 
 b8 tui_pick_search_count(Str title, const TuiCmd *items, size_t n,
                          size_t search_n, TuiPickAnchor anchor, size_t start,
                          size_t *out) {
     return pick_impl(title, items, NULL, n, search_n, anchor, start,
-                     PICK_CHOOSE, out, NULL, NULL, (Str){0});
+                     PICK_CHOOSE, out, NULL, NULL, (Str){0}, 0);
 }
 
 b8 tui_pick_action(Str title, size_t n, size_t search_n, TuiPickAnchor anchor,
                    size_t start, const TuiPickAction *act, size_t *out) {
     if (!act || !act->rows || !act->bindings || !act->n_bindings) return false;
     return pick_impl(title, act->rows, NULL, n, search_n, anchor, start,
-                     PICK_CHOOSE, out, NULL, act, (Str){0});
+                     PICK_CHOOSE, out, NULL, act, (Str){0}, 0);
 }
 
 void tui_settings(Str title, const TuiSettings *set) {
@@ -4960,7 +5013,7 @@ void tui_settings(Str title, const TuiSettings *set) {
     if (!n) return;
     size_t out = 0;
     (void)pick_impl(title, set->rows, set->marks, n, n, TUI_PICK_FIRST, 0,
-                    PICK_SETTINGS, &out, set, NULL, (Str){0});
+                    PICK_SETTINGS, &out, set, NULL, (Str){0}, 0);
 }
 
 b8 tui_settings_open(Str title, const TuiSettings *set) {
@@ -4987,7 +5040,7 @@ void tui_info(Str title, const TuiCmd *rows, size_t n) {
     }
     size_t row = 0;
     (void)pick_impl(title, rows, NULL, n, n, TUI_PICK_FIRST, 0, PICK_INFO, &row,
-                    NULL, NULL, (Str){0});
+                    NULL, NULL, (Str){0}, 0);
 }
 
 b8 tui_info_open(Str title, const TuiCmd *rows, size_t n) {

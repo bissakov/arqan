@@ -395,7 +395,10 @@ static u32 elapsed_ms(f64 started) {
 
 /* The rows are the options the model offered, the list opens on the one it
  * recommends, and a last row hands the composer over for an answer it did
- * not think of. Empty when the question was dismissed. */
+ * not think of. A recommended option is also what the question answers
+ * itself with once ask_timeout_ms passes unanswered, so a user who stepped
+ * away costs a wait rather than the provider's whole prompt cache. Empty
+ * when the question was dismissed. */
 static Str ask_user_answer(Agent *ag, Str args) {
     JVal *j = json_parse(ag->scratch, args);
     Str question = json_str(j, STR("question"));
@@ -409,12 +412,14 @@ static Str ask_user_answer(Agent *ag, Str args) {
     TuiCmd *items = arena_new(ag->scratch, TuiCmd, n + 1);
     if (!items) return (Str){0};
     size_t start = 0;
+    b8 recommended = false;
     for (size_t i = 0; i < n; i++) {
         const JVal *o = json_at(opts, i);
         Str label = json_str(o, STR("label"));
         Str detail = json_str(o, STR("detail"));
         if (json_bool(o, STR("recommended"))) {
             start = i;
+            recommended = true;
             Buf b; buf_init(&b, ag->scratch, detail.n + 24);
             buf_puts(&b, STR("recommended"));
             if (detail.n) { buf_puts(&b, STR(" \u00b7 ")); buf_puts(&b, detail); }
@@ -425,12 +430,37 @@ static Str ask_user_answer(Agent *ag, Str args) {
     items[n] = (TuiCmd){ STR("+ something else"),
                          STR("Answer in your own words") };
 
+    /* A question that recommends nothing has no answer to fall back on, so
+     * it waits however long the user takes. */
+    i32 wait_ms = recommended ? ag->cfg->ask_timeout_ms : 0;
+    if (wait_ms > 0) {
+        char hint[96];
+        i32 hn = snprintf(hint, sizeof hint,
+                          "no answer in %ds picks the recommended option",
+                          wait_ms / 1000 > 0 ? wait_ms / 1000 : 1);
+        if (hn > 0 && (size_t)hn < sizeof hint)
+            tui_notice((Str){ hint, (size_t)hn });
+    }
+
     size_t pick = 0;
+    b8 expired = false;
     tui_keep_visible(at);
-    if (!tui_pick_notice(STR("pick an answer"), question, items, n + 1,
-                         TUI_PICK_FIRST, start, &pick))
+    if (!tui_pick_timed(STR("pick an answer"), question, items, n + 1,
+                        TUI_PICK_FIRST, start, wait_ms, &pick, &expired))
         return (Str){0};
-    if (pick < n) return str_dup(ag->persist, items[pick].name);
+    if (pick < n) {
+        if (!expired) return str_dup(ag->persist, items[pick].name);
+        /* The model is told nobody read the question: an answer it gave
+         * itself is not the user's approval of anything. */
+        Buf b; buf_init(&b, ag->persist, items[pick].name.n + 160);
+        buf_puts(&b, items[pick].name);
+        buf_puts(&b, STR("\n\n(Nobody answered in time, so the recommended "
+                         "option was taken automatically. The user has not "
+                         "seen the question: do not read it as approval for "
+                         "anything irreversible.)"));
+        return buf_ok(&b) ? buf_finish(&b)
+                          : str_dup(ag->persist, items[pick].name);
+    }
 
     char typed[512];
     if (!tui_ask(STR("your answer"), false, typed, sizeof typed))

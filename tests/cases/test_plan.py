@@ -1,6 +1,7 @@
 """Plan mode: a read-only agent that ends on a plan the user approves."""
 
 import json
+import time
 
 PLAN = "## Steps\n\n1. Read the file\n2. Change the line"
 
@@ -381,6 +382,82 @@ def test_ask_user_takes_an_answer_of_its_own(ctx):
 
     assert ctx.mock.tool_results() == ["neither, use files"], ctx.mock.tool_results()
     assert "neither, use files" in s.text(), s.text()
+
+
+def test_ask_user_answers_itself_when_nobody_answers(ctx):
+    """An unattended question takes the recommendation instead of waiting."""
+    ctx.scenario(
+        ask(
+            "Which storage?",
+            [
+                {"label": "sqlite", "detail": "one file"},
+                {"label": "postgres", "detail": "a server", "recommended": True},
+            ],
+        )
+        + ",final_text=noted"
+    )
+    s = ctx.spawn(ARQAN_ASK_TIMEOUT_MS=1000)
+    to_plan(s)
+    s.submit("plan the storage")
+    s.wait_status("pick an answer")
+    assert "no answer in 1s picks the recommended option" in s.text(), s.text()
+
+    s.wait_text("noted")
+    s.wait_turn_done()
+    results = ctx.mock.tool_results()
+    assert len(results) == 1, results
+    assert results[0].startswith("postgres"), results[0]
+    assert "recommended option was taken automatically" in results[0], results[0]
+
+
+def test_ask_user_without_a_recommendation_waits(ctx):
+    """With nothing to fall back on the question keeps the keyboard."""
+    ctx.scenario(
+        ask("Which storage?", [{"label": "sqlite"}]) + ",final_text=noted"
+    )
+    s = ctx.spawn(ARQAN_ASK_TIMEOUT_MS=500)
+    to_plan(s)
+    s.submit("plan the storage")
+    s.wait_status("pick an answer")
+    assert "no answer in" not in s.text(), s.text()
+
+    time.sleep(1.5)
+    s.settle()
+    assert s.status_kind() == "pick an answer", s.status_line()
+
+    s.key("enter")
+    s.wait_text("noted")
+    s.wait_turn_done()
+    assert ctx.mock.tool_results() == ["sqlite"], ctx.mock.tool_results()
+
+
+def test_a_key_restarts_the_ask_user_wait(ctx):
+    """A reader who is there is not hurried: browsing resets the deadline."""
+    ctx.scenario(
+        ask(
+            "Which storage?",
+            [
+                {"label": "sqlite", "detail": "one file"},
+                {"label": "postgres", "detail": "a server", "recommended": True},
+            ],
+        )
+        + ",final_text=noted"
+    )
+    s = ctx.spawn(ARQAN_ASK_TIMEOUT_MS=1500)
+    to_plan(s)
+    s.submit("plan the storage")
+    s.wait_status("pick an answer")
+
+    for _ in range(3):
+        time.sleep(0.5)
+        s.key("up").sync()
+        s.key("down").sync()
+    assert s.status_kind() == "pick an answer", s.status_line()
+
+    s.key("enter")
+    s.wait_text("noted")
+    s.wait_turn_done()
+    assert ctx.mock.tool_results() == ["postgres"], ctx.mock.tool_results()
 
 
 def test_a_call_beside_the_plan_is_still_answered(ctx):

@@ -4,6 +4,13 @@
 
 ### Added
 
+- Answer an unattended `ask_user` question automatically: after
+  `ask_timeout_ms` (three minutes by default) with no key pressed, the picker
+  takes the option the model recommended and tells it nobody read the
+  question, so a user who stepped away costs a wait rather than the
+  provider's prompt cache. Any key restarts the wait, a question that
+  recommends nothing waits as before, and `ask_timeout_ms = 0` waits forever.
+  A project config file may not set it.
 - Name a saved session: set or edit the name with `/title`, see it in
   `/resume`, and let a configured small model name a session after its first
   turn.

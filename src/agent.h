@@ -81,6 +81,10 @@ typedef bool     b8;
 #define AGENT_RETRIES          4
 #define AGENT_RETRY_DELAY_MS   2000
 #define AGENT_MAX_RETRY_DELAY_MS 30000
+/* How long an unanswered ask_user question waits. Short of the shortest
+ * provider prompt cache, so a user who stepped away costs a wait rather
+ * than a full re-read of the conversation. */
+#define AGENT_ASK_TIMEOUT_MS   180000
 #define AGENT_MAX_COMMANDS     32
 #define AGENT_LINE_BUF         (1u << 20)
 #define AGENT_RESP_BUF         (1u << 22)
@@ -666,6 +670,7 @@ typedef enum {
     CONF_SEARCH_BACKEND, CONF_SEARCH_ENDPOINT, CONF_SEARCH_API_KEY,
     CONF_SEARCH_ENGINE_ID,
     CONF_SMALL_MODEL, CONF_SMALL_PROVIDER, CONF_AUTO_TITLE,
+    CONF_ASK_TIMEOUT_MS,
     CONF_N
 } ConfKey;
 
@@ -808,6 +813,10 @@ typedef struct {
     Str disable_tools;
     // Name a session automatically once it has a turn to name.
     b8 auto_title;
+    /* How long an ask_user question waits for a keypress before it answers
+     * itself with the option the model recommended. 0 waits forever, which
+     * is also what a question recommending nothing does. */
+    i32 ask_timeout_ms;
     /* Commands may replace these fields after the conversation rewind mark.
      * Their owned copies live here so /clear cannot reclaim them. */
     char owned_base_url[AGENT_MAX_URL + 1];
@@ -1428,6 +1437,14 @@ b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
  * tui_keep_visible asked to keep on screen. */
 b8 tui_pick_notice(Str title, Str notice, const TuiCmd *items, size_t n,
                    TuiPickAnchor anchor, size_t start, size_t *out);
+/* As tui_pick_notice, answering itself with `start` once `timeout_ms` passes
+ * with no key pressed; every key restarts the wait. `timeout_ms` of 0, or a
+ * `start` outside the list, waits for a key the way tui_pick_notice does.
+ * `*expired` reports an answer the deadline gave rather than the reader, and
+ * is false whenever this returns false. */
+b8 tui_pick_timed(Str title, Str notice, const TuiCmd *items, size_t n,
+                  TuiPickAnchor anchor, size_t start, i32 timeout_ms,
+                  size_t *out, b8 *expired);
 /* As tui_pick, with `search_n` excluding fixed action rows from the length
  * that decides whether keyboard search opens. */
 b8 tui_pick_search_count(Str title, const TuiCmd *items, size_t n,

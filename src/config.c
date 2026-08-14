@@ -110,6 +110,12 @@ static const ConfSpec k_conf[CONF_N] = {
      * user who names one asked for the errands it pays for. */
     [CONF_AUTO_TITLE]  = { "auto_title", "true", NULL, CV_BOOL, 0, 0, 0,
                            true },
+    /* Never from a project file: a repository must not be able to shorten
+     * the wait until the agent answers its own questions. 0 waits for the
+     * user however long they take. */
+    [CONF_ASK_TIMEOUT_MS] = { "ask_timeout_ms",
+                              CONF_TEXT(AGENT_ASK_TIMEOUT_MS), NULL, CV_NUM,
+                              0, 24 * 60 * 60 * 1000, 0, false },
 };
 
 Str conf_key_name(ConfKey k) {
@@ -479,6 +485,7 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
     c->retries        = (i32)conf_num(conf, CONF_RETRIES);
     c->retry_delay_ms = (i32)conf_num(conf, CONF_RETRY_DELAY_MS);
     c->auto_title     = conf_bool(conf, CONF_AUTO_TITLE);
+    c->ask_timeout_ms = (i32)conf_num(conf, CONF_ASK_TIMEOUT_MS);
 
     /* "none" is how the UI records that nothing is disabled: an empty value
      * removes the key, which the next run would read as never chosen. */

@@ -13,8 +13,8 @@
 |
 |
 |
-|
 |    Which storage?
+|    no answer in 180s picks the recommended option
 |    sqlite            one file
 |  › postgres          recommended · a server
 |    + something else  Answer in your own words
