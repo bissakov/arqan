@@ -806,10 +806,15 @@ size_t provider_models(const Config *cfg, Arena *scratch, Str *out,
                        size_t max, char *err, size_t err_cap) {
     if (!out || !max) return 0;
     Buf body; buf_init(&body, scratch, AGENT_MAX_MODEL_BYTES);
+    char why[192] = {0};
     i32 rc = http_get(cfg->base_url.p, "/models", cfg->api_key.p, cfg->api,
-                      &body);
+                      &body, why, sizeof why);
     if (rc != 0) {
+        // curl phrases its reasons as sentences; notices here are not.
+        if (why[0] >= 'A' && why[0] <= 'Z')
+            why[0] = (char)(why[0] - 'A' + 'a');
         if (rc < 0) snprintf(err, err_cap, "models: HTTP %d", -rc);
+        else if (why[0]) snprintf(err, err_cap, "models: %s", why);
         else snprintf(err, err_cap, "models: request failed (%d)", rc);
         return 0;
     }

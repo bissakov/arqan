@@ -906,9 +906,11 @@ typedef struct {
  * for an interrupt, other positive values for a transport failure. */
 i32     http_post(const HttpReq *r);
 /* GET base_url + path, appending the whole body to `out`, with the statuses
- * above. Blocking: callers fetch a short document between turns. */
+ * above. Blocking: callers fetch a short document between turns. A transport
+ * failure is written to `fail_out` when one is given, and is not logged as an
+ * error: the caller says what a document it could not fetch means. */
 i32     http_get(const char *base_url, const char *path, const char *api_key,
-                ApiKind api, Buf *out);
+                ApiKind api, Buf *out, char *fail_out, size_t fail_cap);
 
 typedef struct {
     const char *url;

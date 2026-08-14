@@ -268,14 +268,19 @@ static void http_record(const char *method, const char *path, const char *url,
 }
 
 i32 http_get(const char *base_url, const char *path, const char *api_key,
-             ApiKind api, Buf *out) {
+             ApiKind api, Buf *out, char *fail_out, size_t fail_cap) {
+    if (fail_out && fail_cap) fail_out[0] = 0;
     char url[2048];
     if (!build_url(url, sizeof url, base_url, path)) {
-        agent_log(AGENT_LOG_ERROR, "base_url is empty or too long");
+        if (fail_out && fail_cap)
+            snprintf(fail_out, fail_cap, "base URL is empty or too long");
         return 1;
     }
     CURL *curl = curl_easy_init();
-    if (!curl) { agent_log(AGENT_LOG_ERROR, "curl init failed"); return 1; }
+    if (!curl) {
+        if (fail_out && fail_cap) snprintf(fail_out, fail_cap, "curl init failed");
+        return 1;
+    }
 
     struct curl_slist *hdrs = curl_slist_append(NULL, "Accept: application/json");
     hdrs = auth_header(hdrs, api_key, api);
@@ -298,7 +303,11 @@ i32 http_get(const char *base_url, const char *path, const char *api_key,
     curl_easy_cleanup(curl);
 
     if (rc != CURLE_OK) {
-        agent_log(AGENT_LOG_ERROR, "curl: %s", curl_easy_strerror(rc));
+        /* Debug, not error: an endpoint that is down is an ordinary answer
+         * here, and the caller reports it in its own words. */
+        agent_log(AGENT_LOG_DEBUG, "curl: %s", curl_easy_strerror(rc));
+        if (fail_out && fail_cap)
+            snprintf(fail_out, fail_cap, "%s", curl_easy_strerror(rc));
         return 2;
     }
     if (http_code < 200 || http_code >= 300) return -(i32)http_code;

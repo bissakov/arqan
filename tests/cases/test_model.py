@@ -552,6 +552,16 @@ def test_a_provider_that_cannot_be_listed_is_reported_with_its_pins(ctx):
     assert s.status_field(3) == "dead", s.status_line()
 
 
+def test_an_endpoint_that_is_down_does_not_log_a_transport_error(ctx):
+    """One notice names the provider; the transport reason is not a log line."""
+    s = unreachable_provider(ctx)
+    text = s.text()
+    assert "[error:" not in text, text
+    assert "curl:" not in text, text
+    assert "could not list dead: models: " in text, text
+    assert "connect to server" in text, "the reason reaches the notice"
+
+
 def test_unpinning_a_pin_of_an_unlisted_provider_takes_the_row(ctx):
     """The pin was the only reason the row existed, so it goes with it."""
     s = unreachable_provider(ctx)

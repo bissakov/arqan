@@ -45,6 +45,9 @@
 
 ### Fixed
 
+- Stop `/model` from writing a raw transport error into the transcript when a
+  provider is unreachable. The listing failure is reported once, with the
+  reason, in the line that names the providers the list is missing.
 - Stop the model picker from reading past the command table when a picked
   entry sits beyond it. ([`946fa99`])
 
