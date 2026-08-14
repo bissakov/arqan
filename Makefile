@@ -7,23 +7,32 @@ CFLAGS  ?= -std=c17 -O2 -Wall -Wextra -Wpedantic -Wconversion \
 LDFLAGS ?= -flto
 LIBS    ?= -lcurl
 
-# The same suite against an instrumented binary: `make test-asan`.
+# The same suite against an instrumented binary: `make test-asan`. The
+# sanitizer build lives in its own object and binary directories, so it never
+# overwrites the shipped one and the two can coexist without a rebuild.
 SANFLAGS := -fsanitize=address,undefined -fno-sanitize-recover=all \
             -fno-omit-frame-pointer -g
+ASAN_BUILD := build/asan
+ASAN_BIN := bin/asan
+
+# BUILDDIR and BINDIR select a build variant; the sanitizer recipe overrides
+# both. Everything below derives from them, so no rule writes a fixed path.
+BUILDDIR ?= build
+BINDIR  ?= bin
 
 SRC     := src/main.c
-OBJ     := build/arqan.o
-LEXBOR_OBJ := build/vendor/lexbor.o
-BIN     := bin/arqan
-TEST_OBJ := build/arqan-test.o
-TEST_BIN := bin/arqan-test
-HL_BIN  := bin/arqan-highlight
-HL_OWN  := build/highlight/arqan-highlight.o build/highlight/queries.o
+OBJ     := $(BUILDDIR)/arqan.o
+LEXBOR_OBJ := $(BUILDDIR)/vendor/lexbor.o
+BIN     := $(BINDIR)/arqan
+TEST_OBJ := $(BUILDDIR)/arqan-test.o
+TEST_BIN := $(BINDIR)/arqan-test
+HL_BIN  := $(BINDIR)/arqan-highlight
+HL_OWN  := $(BUILDDIR)/highlight/arqan-highlight.o $(BUILDDIR)/highlight/queries.o
 HL_LANG := c cpp rust go python javascript typescript tsx bash json toml yaml
-HL_PARSE := $(addprefix build/highlight/,$(addsuffix -parser.o,$(HL_LANG)))
+HL_PARSE := $(addprefix $(BUILDDIR)/highlight/,$(addsuffix -parser.o,$(HL_LANG)))
 HL_SCAN_LANG := cpp rust python javascript typescript tsx bash toml yaml
-HL_SCAN := $(addprefix build/highlight/,$(addsuffix -scanner.o,$(HL_SCAN_LANG)))
-HL_OBJ  := $(HL_OWN) build/highlight/tree-sitter.o $(HL_PARSE) $(HL_SCAN)
+HL_SCAN := $(addprefix $(BUILDDIR)/highlight/,$(addsuffix -scanner.o,$(HL_SCAN_LANG)))
+HL_OBJ  := $(HL_OWN) $(BUILDDIR)/highlight/tree-sitter.o $(HL_PARSE) $(HL_SCAN)
 HL_CPPFLAGS := -Isrc -Ihighlight -Ivendor/tree-sitter/include \
                -Ivendor/tree-sitter/runtime
 VENDOR_CFLAGS ?= -std=c17 -O2 -fno-strict-aliasing -pipe -w \
@@ -31,68 +40,69 @@ VENDOR_CFLAGS ?= -std=c17 -O2 -fno-strict-aliasing -pipe -w \
 
 PYTHON  ?= python3
 
-.PHONY: all minimal clean run test test-update test-asan mock bench bench-slow \
-        bench-baseline package-linux test-package-linux release-linux
+.PHONY: all minimal clean clean-asan run test test-update asan test-asan mock \
+        bench bench-slow bench-baseline package-linux test-package-linux \
+        release-linux
 
 all: $(BIN) $(HL_BIN)
 
 minimal: $(BIN)
 
 $(BIN): $(OBJ) $(LEXBOR_OBJ)
-	@mkdir -p bin
+	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) $(OBJ) $(LEXBOR_OBJ) -o $@ $(LDFLAGS) $(LIBS)
 
 $(OBJ): $(SRC) $(wildcard src/*.c) $(wildcard src/*.h)
-	@mkdir -p build
+	@mkdir -p $(BUILDDIR)
 	$(CC) $(CFLAGS) -c $(SRC) -o $@
 
 $(LEXBOR_OBJ): vendor/lexbor/bridge.c vendor/lexbor/bridge.h \
                vendor/lexbor/lexbor.c
-	@mkdir -p build/vendor
+	@mkdir -p $(BUILDDIR)/vendor
 	$(CC) $(VENDOR_CFLAGS) -Ivendor/lexbor -c $< -o $@
 
 $(TEST_OBJ): $(SRC) $(wildcard src/*.c) $(wildcard src/*.h)
-	@mkdir -p build
+	@mkdir -p $(BUILDDIR)
 	$(CC) $(CFLAGS) -DAGENT_TESTING -c $(SRC) -o $@
 
 $(TEST_BIN): $(TEST_OBJ) $(LEXBOR_OBJ)
-	@mkdir -p bin
+	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) $(TEST_OBJ) $(LEXBOR_OBJ) -o $@ $(LDFLAGS) $(LIBS)
 
 $(HL_BIN): $(HL_OBJ)
-	@mkdir -p bin
+	@mkdir -p $(BINDIR)
 	$(CC) $(HL_OBJ) -o $@ $(LDFLAGS)
 	./$@ --self-test
 
-build/highlight/arqan-highlight.o: highlight/arqan-highlight.c \
+$(BUILDDIR)/highlight/arqan-highlight.o: highlight/arqan-highlight.c \
                                   highlight/queries.h src/highlight_protocol.h
-	@mkdir -p build/highlight
+	@mkdir -p $(BUILDDIR)/highlight
 	$(CC) $(CFLAGS) $(HL_CPPFLAGS) -c $< -o $@
 
-build/highlight/queries.o: highlight/queries.c highlight/queries.h
-	@mkdir -p build/highlight
+$(BUILDDIR)/highlight/queries.o: highlight/queries.c highlight/queries.h
+	@mkdir -p $(BUILDDIR)/highlight
 	$(CC) $(CFLAGS) $(HL_CPPFLAGS) -c $< -o $@
 
-build/highlight/tree-sitter.o: vendor/tree-sitter/runtime/lib.c \
+$(BUILDDIR)/highlight/tree-sitter.o: vendor/tree-sitter/runtime/lib.c \
                               $(wildcard vendor/tree-sitter/runtime/*.c) \
                               $(wildcard vendor/tree-sitter/runtime/*.h)
-	@mkdir -p build/highlight
+	@mkdir -p $(BUILDDIR)/highlight
 	$(CC) $(VENDOR_CFLAGS) $(HL_CPPFLAGS) -c $< -o $@
 
 define HL_PARSER_RULE
-build/highlight/$(1)-parser.o: vendor/tree-sitter/grammars/$(1)/parser.c \
+$$(BUILDDIR)/highlight/$(1)-parser.o: vendor/tree-sitter/grammars/$(1)/parser.c \
                               $$(wildcard vendor/tree-sitter/include/tree_sitter/*.h)
-	@mkdir -p build/highlight
+	@mkdir -p $$(BUILDDIR)/highlight
 	$$(CC) $$(VENDOR_CFLAGS) $$(HL_CPPFLAGS) -c $$< -o $$@
 endef
 $(foreach lang,$(HL_LANG),$(eval $(call HL_PARSER_RULE,$(lang))))
 
 define HL_SCANNER_RULE
-build/highlight/$(1)-scanner.o: vendor/tree-sitter/grammars/$(1)/scanner.c \
+$$(BUILDDIR)/highlight/$(1)-scanner.o: vendor/tree-sitter/grammars/$(1)/scanner.c \
                                $$(wildcard vendor/tree-sitter/include/tree_sitter/*.h) \
                                $$(wildcard vendor/tree-sitter/common/*.h) \
                                $$(wildcard vendor/tree-sitter/grammars/$(1)/schema.*.c)
-	@mkdir -p build/highlight
+	@mkdir -p $$(BUILDDIR)/highlight
 	$$(CC) $$(VENDOR_CFLAGS) $$(HL_CPPFLAGS) -c $$< -o $$@
 endef
 $(foreach lang,$(HL_SCAN_LANG),$(eval $(call HL_SCANNER_RULE,$(lang))))
@@ -106,15 +116,18 @@ test: all $(TEST_BIN)
 test-update: all $(TEST_BIN)
 	ARQAN_TEST_BIN=$(TEST_BIN) $(PYTHON) tests/run.py --update $(T)
 
-# Rebuilds bin/arqan instrumented, runs the suite, then leaves it instrumented:
-# `make` puts the normal binary back.
-test-asan:
-	$(MAKE) clean
-	$(MAKE) all $(TEST_BIN) \
+# The instrumented tree is built and run entirely under build/asan and
+# bin/asan, so bin/arqan stays the shipped binary and a bare
+# `python3 tests/run.py` keeps testing it.
+asan:
+	$(MAKE) all $(ASAN_BIN)/arqan-test \
+	    BUILDDIR='$(ASAN_BUILD)' BINDIR='$(ASAN_BIN)' \
 	    CFLAGS='$(filter-out -flto -D_FORTIFY_SOURCE=2,$(CFLAGS)) $(SANFLAGS)' \
 	    LDFLAGS='$(filter-out -flto,$(LDFLAGS)) $(SANFLAGS)' \
 	    VENDOR_CFLAGS='$(VENDOR_CFLAGS) $(SANFLAGS)'
-	ASAN_OPTIONS=detect_leaks=0 ARQAN_TEST_BIN=$(TEST_BIN) \
+
+test-asan: asan
+	ASAN_OPTIONS=detect_leaks=0 ARQAN_TEST_BIN=$(ASAN_BIN)/arqan-test \
 	    $(PYTHON) tests/run.py $(T)
 
 mock:
@@ -144,3 +157,7 @@ release-linux:
 clean:
 	rm -rf build bin dist
 	rm -rf tests/__pycache__ tests/*/__pycache__
+
+# Drop only the instrumented tree; the shipped build survives.
+clean-asan:
+	rm -rf $(ASAN_BUILD) $(ASAN_BIN)

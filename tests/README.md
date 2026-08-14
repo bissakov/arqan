@@ -15,6 +15,19 @@ python3 tests/run.py --repeat 5 # check a suspected flake
 python3 tests/run.py -j 1       # serial debugging
 ```
 
+The sanitizer build is a separate tree: `make test-asan` compiles into
+`build/asan/` and `bin/asan/` and never touches `bin/arqan`, so a plain `make`
+stays valid afterwards and a bare `python3 tests/run.py` keeps driving the
+shipped binary. To run part of the suite against the instrumented build, build
+it once with `make asan` and point the runner at it:
+
+```sh
+make asan
+ASAN_OPTIONS=detect_leaks=0 ARQAN_TEST_BIN=bin/asan/arqan-test \
+    python3 tests/run.py -k composer
+make clean-asan                 # drop the instrumented tree only
+```
+
 Each case receives an isolated home directory, working directory, mock-server
 port, and pty. Cases normally run in parallel.
 

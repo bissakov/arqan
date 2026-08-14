@@ -23,6 +23,9 @@ from .mockprovider import MockProvider, Scenario
 
 ROOT = Path(__file__).resolve().parent.parent
 BIN = ROOT / os.environ.get("ARQAN_TEST_BIN", "bin/arqan")
+# The agent looks for its highlighter beside its own executable, so a variant
+# build (bin/asan) tests its own helper, never the shipped one.
+HIGHLIGHT_BIN = BIN.parent / "arqan-highlight"
 GOLDEN = Path(__file__).resolve().parent / "golden"
 
 # Enough room for the status line's model · provider · cwd · tokens groups.

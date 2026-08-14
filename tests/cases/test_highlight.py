@@ -7,10 +7,10 @@ import struct
 import subprocess
 import time
 
-from tests.context import ROOT
+from tests.context import HIGHLIGHT_BIN
 
 
-HELPER = ROOT / "bin" / "arqan-highlight"
+HELPER = HIGHLIGHT_BIN
 MAGIC = b"YHL1"
 REQ = struct.Struct("<4sIB3xII")
 RESP = struct.Struct("<4sIB3xI")
