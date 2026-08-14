@@ -12,21 +12,21 @@
   question, so a user who stepped away costs a wait rather than the
   provider's prompt cache. Any key restarts the wait, a question that
   recommends nothing waits as before, and `ask_timeout_ms = 0` waits forever.
-  A project config file may not set it.
+  A project config file may not set it. ([`73fa08d`])
 - Name a saved session: set or edit the name with `/title`, see it in
   `/resume`, and let a configured small model name a session after its first
-  turn.
+  turn. ([`0d187c3`])
 - Pick the small model with `Ctrl-S` in `/model`, including one served by
   another provider: the choice is one model at one endpoint, and errands such
   as naming a session are sent there with that provider's key while the
   conversation stays where it is. Turn automatic session naming off with the
-  `Name sessions` setting.
+  `Name sessions` setting. ([`e98fc9a`])
 - Offer every configured provider's models in one `/model` list. An entry is a
   model at a provider, named `<model> @ <provider>` when more than one
   provider serves the list, so one id offered by several endpoints stays
   several rows and can be searched for by provider name. Each open asks every
   provider for its models; one that cannot answer is named with the reason,
-  and the models pinned on it are still offered.
+  and the models pinned on it are still offered. ([`e98fc9a`])
 
 ### Changed
 
@@ -36,11 +36,11 @@
   it, with its URL, API and key. The choice is remembered as a `provider` and
   `model` pair in the state file, so a `model` line under a
   `[providers.<name>]` section is now only a default for a run that has chosen
-  none, and pinned models are pinned per provider.
+  none, and pinned models are pinned per provider. ([`e98fc9a`])
 - Keep the block a modal screen asks about on screen: the question of
   `ask_user`, a submitted plan, and the call awaiting approval lift the
   transcript out from under their options instead of being covered by them.
-  Every other overlay still leaves the transcript where it was.
+  Every other overlay still leaves the transcript where it was. ([`aac2dee`])
 - Answer a click on a folded tool block mid-turn with a separate centered,
   scrollable and selectable window containing the complete block text,
   instead of deferring the fold until the turn ends. ([`6ac01f4`])
@@ -50,6 +50,7 @@
 - Stop `/model` from writing a raw transport error into the transcript when a
   provider is unreachable. The listing failure is reported once, with the
   reason, in the line that names the providers the list is missing.
+  ([`a79c5c2`])
 - Stop the model picker from reading past the command table when a picked
   entry sits beyond it. ([`946fa99`])
 
@@ -101,7 +102,12 @@
 [0.2.0]: https://github.com/bissakov/arqan/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bissakov/arqan/releases/tag/v0.1.0
 
+[`73fa08d`]: https://github.com/bissakov/arqan/commit/73fa08d9b39c18378ccfef3af0617390a26636f6
+[`0d187c3`]: https://github.com/bissakov/arqan/commit/0d187c32dc098d11f6b7c13f55c8e6053691ed3a
+[`e98fc9a`]: https://github.com/bissakov/arqan/commit/e98fc9a60dca8eca563f4579cb32d59ef038a637
+[`aac2dee`]: https://github.com/bissakov/arqan/commit/aac2deefbe4e18b5104cfffd02c2722ee2b372bb
 [`6ac01f4`]: https://github.com/bissakov/arqan/commit/6ac01f4ead97e861365149a2f09e7feeb2294e78
+[`a79c5c2`]: https://github.com/bissakov/arqan/commit/a79c5c23f37ae38a24e3cbc0fdef467fac8323cf
 [`946fa99`]: https://github.com/bissakov/arqan/commit/946fa99a0bc75301ea3835e95ff6f9af7a749f73
 [`e44b0ca`]: https://github.com/bissakov/arqan/commit/e44b0ca3628069c32acfbd0e2cd337f42f514add
 [`44b4173`]: https://github.com/bissakov/arqan/commit/44b41738e25ed038807474616ea5f89a70c75302
