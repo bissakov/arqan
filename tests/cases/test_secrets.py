@@ -93,7 +93,7 @@ def write_endpoint(ctx, name, ctx_url, model="mock-model"):
 
 def start_with(ctx, name, **env):
     """Spawn against a stored provider, with nothing supplied by the env."""
-    select_provider(ctx, name)
+    select_provider(ctx, name, model="mock-model")
     return ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None,
                      **with_path(ctx, **env))
 
@@ -126,13 +126,15 @@ def test_no_key_store_keeps_the_credentials_file_working(ctx):
 
 
 def test_an_unknown_key_source_is_refused_rather_than_guessed(ctx):
-    """Falling back to the file would send a key the user moved off it."""
+    """Falling back to the file would send a key the user moved off it.
+
+    Listing the provider's models needs its key, so the picker is where a
+    store arqan cannot read is reported.
+    """
     write_endpoint(ctx, "work", ctx.mock.base_url)
     write_credentials(ctx, "[providers.work]\nkey_source = wallet\nkey = sk-file\n")
     s = start_with(ctx, "work")
-    s.submit("/provider")
-    s.wait_status("pick a provider")
-    s.key("enter")
+    s.submit("/model")
     s.wait_text("unknown key_source")
 
 
@@ -142,12 +144,10 @@ def test_a_missing_helper_is_reported_not_silently_ignored(ctx):
     write_credentials(ctx, "[providers.work]\nkey_source = secret-service\n")
     # Only the empty stub directory: a secret-tool the developer happens to
     # have installed would answer, and this case is about one that is absent.
-    select_provider(ctx, "work")
+    select_provider(ctx, "work", model="mock-model")
     s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None,
                   PATH=str(fake_bin(ctx)))
-    s.submit("/provider")
-    s.wait_status("pick a provider")
-    s.key("enter")
+    s.submit("/model")
     s.wait_text("not installed")
 
 
@@ -219,7 +219,8 @@ def test_choosing_the_keyring_writes_no_key_to_disk(ctx):
     """/provider stores the secret in the keyring and the name of the store."""
     install_secret_tool(ctx)
     ctx.scenario("models=alpha")
-    s = ctx.spawn(**with_path(ctx))
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None,
+                  **with_path(ctx))
     s.submit("/provider")
 
     s.wait_text("a name for this provider")
@@ -237,7 +238,7 @@ def test_choosing_the_keyring_writes_no_key_to_disk(ctx):
     s.key("down", "enter")
     s.wait_status("pick a model")
     s.key("enter")
-    s.wait_text("provider: work")
+    s.wait_text("model: alpha @ work")
 
     section = ctx.settings(credentials_file(ctx)).get("providers.work", {})
     assert section.get("key_source") == "secret-service", section
@@ -270,9 +271,7 @@ def test_a_provider_name_that_could_become_an_option_is_refused(ctx):
     write_endpoint(ctx, "-w", ctx.mock.base_url)
     write_credentials(ctx, "[providers.-w]\nkey_source = secret-service\n")
     s = start_with(ctx, "-w")
-    s.submit("/provider")
-    s.wait_status("pick a provider")
-    s.key("enter")
+    s.submit("/model")
     s.wait_text("provider name")
 
 
@@ -289,12 +288,10 @@ def test_an_existing_key_can_move_stores_without_being_retyped(ctx):
 
     s = start_with(ctx, "work")
     s.submit("/provider")
-    s.wait_status("pick a provider")
-    s.key("down", "down", "enter")           # + edit a provider
-    s.wait_status("edit a provider")
-    s.key("enter")
+    s.wait_status("providers")
+    s.key("enter")                           # Enter edits the connection
     s.wait_text("base URL")
-    s.key("enter", "enter")
+    s.key("enter")
     s.wait_status("which API does it speak")
     s.key("enter")
     s.wait_status("API key")
@@ -317,12 +314,10 @@ def test_the_key_menu_names_the_store_that_holds_it(ctx):
 
     s = start_with(ctx, "work")
     s.submit("/provider")
-    s.wait_status("pick a provider")
-    s.key("down", "down", "enter")
-    s.wait_status("edit a provider")
+    s.wait_status("providers")
     s.key("enter")
     s.wait_text("base URL")
-    s.key("enter", "enter")
+    s.key("enter")
     s.wait_status("which API does it speak")
     s.key("enter")
     s.wait_status("API key")

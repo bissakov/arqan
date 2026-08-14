@@ -74,8 +74,9 @@ cd arqan-X.Y.Z-linux-x86_64
 ./bin/arqan
 ```
 
-On first launch, use `/provider` to configure an endpoint. A source checkout
-can instead be built and run with `make` and `./bin/arqan`.
+On first launch, use `/provider` to add a connection and `/model` to pick a
+model. A source checkout can instead be built and run with `make` and
+`./bin/arqan`.
 
 Maintainers can run `make package-linux` to produce the tarball, `.deb`, `.rpm`,
 and checksum manifest from binaries built on the local Linux x86_64 host.
@@ -87,7 +88,10 @@ Fedora-family containers.
 
 ## Configure
 
-On first launch, use `/provider` to add an endpoint. Alternatively set:
+A provider is a connection: a base URL, an API flavour, and a key. A model is
+a `(provider, model)` pair. `/provider` adds, edits, and removes connections;
+`/model` lists every configured provider and picks a pair from any of them, so
+there is no provider to switch. Alternatively set:
 
 ```sh
 export ARQAN_BASE_URL=https://api.openai.com/v1
@@ -110,7 +114,6 @@ stream = true
 
 [providers.openai]
 base_url = "https://api.openai.com/v1"
-model = "gpt-4o-mini"
 api = "openai"
 ```
 
@@ -121,10 +124,11 @@ such a line is reported and ignored.
 
 Precedence, lowest first: defaults, `$XDG_CONFIG_DIRS/arqan/config.toml`,
 `$XDG_CONFIG_HOME/arqan/config.toml`, `.arqan/config.toml`, remembered UI
-choices in `$XDG_STATE_HOME/arqan/state.toml`, the active provider's section,
+choices in `$XDG_STATE_HOME/arqan/state.toml`, the chosen provider's section,
 `ARQAN_*`, then command-line options. `/provider` writes provider definitions
 to the user's config and keys to `$XDG_STATE_HOME/arqan/credentials.toml`
-(mode 0600). Run `arqan --help` for all options.
+(mode 0600); `/model` remembers the chosen pair in the state file. Run
+`arqan --help` for all options.
 
 ## Performance
 

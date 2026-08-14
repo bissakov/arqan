@@ -23,6 +23,7 @@
 #include "tools.c"
 #include "prompt.c"
 #include "provider.c"
+#include "catalog.c"
 #include "session.c"
 #include "tui.c"
 #include "context.c"
@@ -65,8 +66,8 @@ static size_t commands_init(void) {
     g_commands[n++] = (TuiCmd){ STR("/resume"), STR("Resume a saved session from this directory, or delete one") };
     g_commands[n++] = (TuiCmd){ STR("/fork"), STR("Continue in a copy, leaving this session as it is") };
     g_commands[n++] = (TuiCmd){ STR("/compact"), STR("Summarize this session and continue in a new one") };
-    g_commands[n++] = (TuiCmd){ STR("/model"), STR("Pick the model") };
-    g_commands[n++] = (TuiCmd){ STR("/provider"), STR("Switch provider, or add one") };
+    g_commands[n++] = (TuiCmd){ STR("/model"), STR("Pick the model, from any provider") };
+    g_commands[n++] = (TuiCmd){ STR("/provider"), STR("Add, edit or remove a provider") };
     g_commands[n++] = (TuiCmd){ STR("/mode"), STR("Switch between Build and Plan mode (Shift+Tab)") };
     g_commands[n++] = (TuiCmd){ STR("/rewind"), STR("Go back to an earlier message and edit it") };
     g_commands[n++] = (TuiCmd){ STR("/title"), STR("Name this session, or `/title auto` to let the small model name it") };
@@ -864,7 +865,7 @@ static Str help_build(Agent *ag) {
              cfg->permissions == PERMISSION_FREE ? "free" : "ask");
     buf_putf(&b, "- API: %.*s\n", (i32)api_name(cfg->api).n,
              api_name(cfg->api).p);
-    buf_putf(&b, "- active provider: %.*s\n",
+    buf_putf(&b, "- provider serving it: %.*s\n",
              (i32)(cfg->provider.n ? cfg->provider.n : STR("unnamed override").n),
              cfg->provider.n ? cfg->provider.p : STR("unnamed override").p);
     buf_putf(&b, "- model: %.*s\n", (i32)cfg->model.n, cfg->model.p);
@@ -939,12 +940,13 @@ static Str help_build(Agent *ag) {
         a->off = mark;
         buf_putf(&b, "### %.*s%s\n", (i32)endpoints.name[i].n,
                  endpoints.name[i].p,
-                 str_eq(endpoints.name[i], cfg->provider) ? " (active)" : "");
+                 str_eq(endpoints.name[i], cfg->provider)
+                 ? " (serving the chosen model)" : "");
         buf_putf(&b, "- API: %.*s\n", (i32)api_name(endpoints.api[i]).n,
                  api_name(endpoints.api[i]).p);
         buf_puts(&b, STR("- base URL: "));
         buf_json_str(&b, endpoints.base_url[i]); buf_putc(&b, '\n');
-        buf_putf(&b, "- model: %.*s\n", (i32)endpoints.model[i].n,
+        buf_putf(&b, "- default model: %.*s\n", (i32)endpoints.model[i].n,
                  endpoints.model[i].p);
         buf_putf(&b, "- API key: %s\n",
                  key_err[0] ? key_err : has_key ? "present" : "missing");
@@ -1346,65 +1348,60 @@ static void telemetry_command(Str line) {
     tel_send(&e);
 }
 
-/* The pick points into `scratch`, so a caller that keeps it copies it out
- * before resetting. False when nothing was listed or chosen, having said so. */
-static b8 manual_model(Arena *scratch, const char *why, Str *out) {
-    char question[256];
-    if (why && *why)
-        snprintf(question, sizeof question, "%s; enter a model manually", why);
-    else
-        snprintf(question, sizeof question, "model id (not verified)");
-    char model[AGENT_MAX_MODEL_NAME + 1];
-    if (!tui_ask(str_c(question), false, model, sizeof model)) return false;
-    Str saved = str_dup(scratch, str_c(model));
-    if (!saved.p) {
-        tui_notice(STR("out of memory storing the model"));
-        return false;
-    }
-    *out = saved;
-    return true;
-}
+/* ---- /model --------------------------------------------------------------
+ * One list, every provider. A model is a (provider, model) pair, because an
+ * id belongs to the endpoint that serves it: choosing a row selects the
+ * connection as well as the model, and nothing else in a session selects an
+ * endpoint. /provider creates connections; this is where they are used.
+ */
 
-/* The /model picker's rows are only models, with favorites pinned to the top.
- * Manual entry and configuration are keys rather than rows that disappear at
- * the bottom of a large provider list. `starred` holds the decorated name of
- * a pinned row and `order` maps each visible row back to a model, which is
- * always the undecorated id in `names`.
+/* What a key pressed in the picker asked for, answered once it has closed: a
+ * question or a form must not open under a popup. */
+enum { MODEL_ACTION_NONE, MODEL_ACTION_MANUAL, MODEL_ACTION_CONFIGURE };
+
+/* The picker's rows. `label` is a row's name, built once: the id alone while
+ * one endpoint serves the list, and "<id> @ <provider>" once more than one
+ * does, since the picker searches names and two providers may serve one id.
+ * `starred` is the same name with the pin marker, and `order` maps a visible
+ * row back to a catalog entry.
  *
- * Entries below `live` are the active provider's models as its endpoint
- * listed them; the rest are pins of other providers, read from local state,
- * and carry the provider that serves them in `owner`. Choosing one of those
- * switches endpoint, so nothing here asks an endpoint the user did not
- * choose. An entry whose name was emptied has been unpinned and is no longer
- * a row. */
+ * Entries at or past `live` came from pins rather than from a listing, which
+ * is what keeps the models of an unreachable provider reachable: a pin is
+ * local state. One of those whose model is emptied has just been unpinned and
+ * is no longer a row.
+ */
 typedef struct {
-    Str       *names;
-    Str       *owner;      // empty for the active provider's own models
+    Catalog   *cat;
+    Str       *label;
     Str       *starred;
     size_t    *order;
     TuiCmd    *rows;
     size_t     live;
-    size_t     n;
     Favorites  fav;
-    Str        provider;
+    b8         named;        // more than one endpoint serves the list
+    Str        provider;     // the pair the session is on
     Str        current;
-    Str        small;      // the chosen small model, marked like `current`
-    Str        small_owner; // the provider serving it, empty for the active one
-    Config    *cfg;        // what Ctrl-S applies the small model to
+    Str        small;
+    Str        small_owner;  // the provider serving it, empty for this run's
+    Config    *cfg;          // what Ctrl-S applies the small model to
     Arena     *arena;
     u8         requested;
-    char       msg[160];   // said after the picker closes, not under it
+    size_t     acted;        // the entry a key acted on, read after the close
+    char       msg[192];     // said after the picker closes, not under it
 } ModelPick;
 
-enum { MODEL_ACTION_NONE, MODEL_ACTION_MANUAL, MODEL_ACTION_CONFIGURE };
-
-static b8 edit_model_profile(Config *cfg, Arena *scratch) {
-    if (!cfg->provider.n || !cfg->model.n) {
+/* Capabilities for one exact pair, which is where they are configured: a
+ * model's reasoning controls belong to the endpoint that serves it. They are
+ * applied to the session only when the pair is the one it is on. */
+static b8 edit_model_profile(Config *cfg, Str provider, Str model,
+                             Arena *scratch) {
+    if (!provider.n || !model.n) {
         tui_notice(STR("model settings need a named provider"));
         return false;
     }
+    b8 live = str_eq(provider, cfg->provider) && str_eq(model, cfg->model);
     ModelProfile old;
-    model_profile_load(&old, cfg->provider, cfg->model, scratch, scratch);
+    model_profile_load(&old, provider, model, scratch, scratch);
     char window[32] = {0};
     char efforts[AGENT_MAX_REASONING_LIST + 1] = {0};
     char budgets[AGENT_MAX_REASONING_LIST + 1] = {0};
@@ -1462,126 +1459,121 @@ static b8 edit_model_profile(Config *cfg, Arena *scratch) {
         }
         p.context_window = (size_t)n;
     }
-    if (!model_profile_save(cfg->provider, cfg->model, &p, scratch)
-        || !config_set_model_profile(cfg, &p)) {
+    if (!model_profile_save(provider, model, &p, scratch)
+        || (live && !config_set_model_profile(cfg, &p))) {
         tui_notice(STR("invalid model settings or could not write config"));
         return false;
     }
-    ctx_set_window(&g_ctx, cfg->context_window);
-    tui_set_reasoning(cfg->reasoning_effort, cfg->thinking_budget);
+    if (live) {
+        ctx_set_window(&g_ctx, cfg->context_window);
+        tui_set_reasoning(cfg->reasoning_effort, cfg->thinking_budget);
+    }
     tui_notice(STR("model settings saved"));
     return true;
 }
 
-/* A pinned row's name: "* <model>", and "* <model> @ <provider>" for a pin
- * of another provider. The provider belongs in the name because one id can
- * be served by several endpoints, and because the picker searches names: two
- * providers pinning one id would otherwise be two rows with one name, and
- * neither could be narrowed to by the provider it switches to. Empty when it
- * cannot be built, which the caller answers without losing the row. */
+/* A row's name. The provider is part of it, rather than of the column beside
+ * it, because the picker searches names: two providers serving one id would
+ * otherwise be two rows with one name, and neither could be narrowed to by
+ * the provider that serves it. Empty when it cannot be built, which the
+ * caller answers with the bare id rather than by losing the row. */
+static Str model_label(ModelPick *mp, size_t i) {
+    if (!mp->label[i].p) {
+        Str name = mp->cat->model[i], owner = mp->cat->provider[i];
+        if (!mp->named || !owner.n) return name;
+        Buf b;
+        buf_init(&b, mp->arena, name.n + owner.n + 4);
+        buf_puts(&b, name);
+        buf_puts(&b, STR(" @ "));
+        buf_puts(&b, owner);
+        if (!buf_ok(&b)) return name;
+        mp->label[i] = buf_finish(&b);
+    }
+    return mp->label[i];
+}
+
+// The same name behind the pin marker.
 static Str model_starred(ModelPick *mp, size_t i) {
     if (!mp->starred[i].p) {
-        Str owner = mp->owner[i];
+        Str name = model_label(mp, i);
         Buf b;
-        buf_init(&b, mp->arena, mp->names[i].n + owner.n + 6);
+        buf_init(&b, mp->arena, name.n + 3);
         buf_puts(&b, STR("* "));
-        buf_puts(&b, mp->names[i]);
-        if (owner.n) {
-            buf_puts(&b, STR(" @ "));
-            buf_puts(&b, owner);
-        }
-        if (!buf_ok(&b)) return (Str){0};
+        buf_puts(&b, name);
+        if (!buf_ok(&b)) return name;
         mp->starred[i] = buf_finish(&b);
     }
     return mp->starred[i];
 }
 
-/* Which endpoint serves the row: its own provider for a pin of another one,
- * and the active provider otherwise. */
-static Str model_row_provider(const ModelPick *mp, size_t i) {
-    return mp->owner[i].n ? mp->owner[i] : mp->provider;
+/* Both marks compare the pair: the same id served by another provider is
+ * another model, and neither the session's nor the small model's row is
+ * decided by the id alone. An empty owner is this run's own endpoint, which
+ * is what a small model configured without a provider names. */
+static b8 model_is_current(const ModelPick *mp, size_t i) {
+    return str_eq(mp->cat->model[i], mp->current)
+        && str_eq(mp->cat->provider[i], mp->provider);
 }
 
-/* The small model is one model at one endpoint, so a row matches it only
- * when both agree: the same id served by another provider is not it. */
 static b8 model_is_small(const ModelPick *mp, size_t i) {
-    if (!mp->small.n || !str_eq(mp->names[i], mp->small)) return false;
+    if (!mp->small.n || !str_eq(mp->cat->model[i], mp->small)) return false;
     Str owner = mp->small_owner.n ? mp->small_owner : mp->provider;
-    return str_eq(model_row_provider(mp, i), owner);
+    return str_eq(mp->cat->provider[i], owner);
 }
 
 static void model_row(ModelPick *mp, size_t row, size_t i, b8 fav) {
     mp->order[row] = i;
-    Str name = fav ? model_starred(mp, i) : (Str){0};
-    if (mp->owner[i].n) {
-        /* A row of another provider is never the current model, whatever its
-         * id matches here. The column carries the provider only when the
-         * name could not be built to hold it. */
-        Str desc = model_is_small(mp, i) ? STR("small") : (Str){0};
-        mp->rows[row] = name.n ? (TuiCmd){ name, desc }
-                               : (TuiCmd){ mp->names[i], mp->owner[i] };
-        return;
-    }
-    b8 current = str_eq(mp->names[i], mp->current);
+    Str name = fav ? model_starred(mp, i) : model_label(mp, i);
+    b8 current = model_is_current(mp, i);
     b8 small = model_is_small(mp, i);
     Str desc = current && small ? STR("current \xc2\xb7 small")
              : current ? STR("current") : small ? STR("small") : (Str){0};
-    mp->rows[row] = (TuiCmd){ name.n ? name : mp->names[i], desc };
+    mp->rows[row] = (TuiCmd){ name, desc };
 }
 
+// The entry holding a pair, SIZE_MAX when none does or it was unpinned.
+static size_t model_entry(const ModelPick *mp, Str provider, Str model) {
+    for (size_t i = 0; i < mp->cat->n; i++)
+        if (mp->cat->model[i].n && str_eq(mp->cat->model[i], model)
+            && str_eq(mp->cat->provider[i], provider)) return i;
+    return SIZE_MAX;
+}
+
+/* Pins first, in the order they were pinned, then everything else in the
+ * order its provider served it. */
 static size_t model_build(void *ud) {
     ModelPick *mp = ud;
     size_t row = 0;
-    for (size_t f = 0; f < mp->fav.n; f++)
-        for (size_t i = 0; i < mp->live; i++)
-            if (str_eq(mp->names[i], mp->fav.model[f]))
-                model_row(mp, row++, i, true);
-    for (size_t i = mp->live; i < mp->n; i++)
-        if (mp->names[i].n) model_row(mp, row++, i, true);
-    for (size_t i = 0; i < mp->live; i++)
-        if (!favorites_has(&mp->fav, mp->names[i]))
+    for (size_t f = 0; f < mp->fav.n; f++) {
+        size_t i = model_entry(mp, mp->fav.provider[f], mp->fav.model[f]);
+        if (i != SIZE_MAX) model_row(mp, row++, i, true);
+    }
+    for (size_t i = 0; i < mp->cat->n; i++)
+        if (mp->cat->model[i].n
+            && !favorites_has(&mp->fav, mp->cat->provider[i],
+                              mp->cat->model[i]))
             model_row(mp, row++, i, false);
     return row;
-}
-
-/* Unpinning another provider's model, which is all the picker changes about
- * a provider it did not switch to. The row goes with the pin, since a pin is
- * the only reason it was listed. */
-static void model_unpin_other(ModelPick *mp, size_t i) {
-    Favorites f;
-    Str owner = mp->owner[i], model = mp->names[i];
-    favorites_load(&f, owner, mp->arena);
-    char err[128] = {0};
-    if (favorites_has(&f, model)
-        && !favorites_toggle(&f, owner, model, mp->arena, NULL, err,
-                             sizeof err)) {
-        snprintf(mp->msg, sizeof mp->msg, "%s", err[0] ? err
-                 : "could not save the favorites");
-        return;
-    }
-    mp->names[i] = (Str){0};
 }
 
 static size_t model_favorite(void *ud, size_t row, size_t *moved) {
     ModelPick *mp = ud;
     if (row == SIZE_MAX) { *moved = 0; return model_build(mp); }
     size_t i = mp->order[row];
-    if (mp->owner[i].n) {
-        model_unpin_other(mp, i);
-        size_t left = model_build(mp);
-        *moved = row < left ? row : left ? left - 1 : 0;
-        return left;
-    }
     b8 on = false;
     char err[128] = {0};
     /* The list is written as it is toggled: pinning is its own action, so it
      * survives a picker the user then cancels. */
-    if (!favorites_toggle(&mp->fav, mp->provider, mp->names[i], mp->arena,
-                          &on, err, sizeof err))
+    if (!favorites_toggle(&mp->fav, mp->cat->provider[i], mp->cat->model[i],
+                          mp->arena, &on, err, sizeof err))
         snprintf(mp->msg, sizeof mp->msg, "%s", err[0] ? err
                  : "could not save the favorites");
+    /* A pin was the only reason an unlisted model was a row, so unpinning one
+     * takes the row with it. A listed model stays: its provider said it is
+     * there. */
+    if (!on && i >= mp->live) mp->cat->model[i] = (Str){0};
     size_t rows = model_build(mp);
-    *moved = row;
+    *moved = row < rows ? row : rows ? rows - 1 : 0;
     for (size_t r = 0; r < rows; r++)
         if (mp->order[r] == i) { *moved = r; break; }
     return rows;
@@ -1595,31 +1587,32 @@ static size_t model_manual_action(void *ud, size_t row, size_t *moved) {
     return 0;
 }
 
+/* The row's own pair is configured, not the session's: a model is set up
+ * wherever it is read about. */
 static size_t model_configure_action(void *ud, size_t row, size_t *moved) {
     ModelPick *mp = ud;
-    (void)row;
     *moved = 0;
+    mp->acted = row == SIZE_MAX ? SIZE_MAX : mp->order[row];
     mp->requested = MODEL_ACTION_CONFIGURE;
     return 0;
 }
 
 /* One small model for the whole run, wherever it is served: the pair goes to
- * the state file, so a pin of another provider can be the model arqan runs
- * its own errands through while the conversation stays here. Like pinning, it
- * is its own action and survives a cancelled picker. */
+ * the state file, so a model of another provider can run arqan's own errands
+ * while the conversation stays where it is. Like pinning, it is its own action
+ * and survives a cancelled picker. */
 static size_t model_small_action(void *ud, size_t row, size_t *moved) {
     ModelPick *mp = ud;
     if (row == SIZE_MAX) { *moved = 0; return model_build(mp); }
     size_t i = mp->order[row];
     b8 on = model_is_small(mp, i);
-    Str next = on ? (Str){0} : mp->names[i];
-    /* An unnamed active provider has no endpoint to record, so the pair holds
-     * the model alone and whatever the run points at serves it. */
-    Str owner = on ? (Str){0} : model_row_provider(mp, i);
+    Str next = on ? (Str){0} : mp->cat->model[i];
+    Str owner = on ? (Str){0} : mp->cat->provider[i];
     b8 saved = conf_remember_pair(CONF_SMALL_MODEL, next,
                                   CONF_SMALL_PROVIDER, owner, mp->arena);
     if (!config_set_small_model(mp->cfg, next, owner))
-        snprintf(mp->msg, sizeof mp->msg, "out of memory storing the small model");
+        snprintf(mp->msg, sizeof mp->msg,
+                 "out of memory storing the small model");
     else if (!saved)
         snprintf(mp->msg, sizeof mp->msg, "could not save the small model");
     mp->small = mp->cfg->small_model;
@@ -1628,58 +1621,157 @@ static size_t model_small_action(void *ud, size_t row, size_t *moved) {
     return model_build(mp);
 }
 
-/* `switch_to` names the provider the pick belongs to, empty when it is the
- * active one. A caller that passes NULL is choosing a model for one endpoint
- * only, and is offered no other provider's pins. */
-static b8 pick_model(Config *cfg, Arena *scratch, Str *out, b8 *verified,
-                     Str *switch_to) {
+/* The endpoints a model may be entered by hand for, which are the ones the
+ * catalog draws from: a typed id still belongs to a provider. */
+static b8 manual_provider(const Config *cfg, const Endpoints *eps,
+                          Arena *scratch, Str *out) {
+    Str names[AGENT_MAX_ENDPOINTS + 1];
+    size_t n = catalog_endpoints(cfg, eps, names, AGENT_MAX_ENDPOINTS + 1);
+    if (!n) return false;
+    if (n == 1) { *out = names[0]; return true; }
+    TuiCmd *items = arena_new(scratch, TuiCmd, n);
+    if (!items) return false;
+    size_t at = 0;
+    for (size_t i = 0; i < n; i++) {
+        items[i] = (TuiCmd){ names[i].n ? names[i]
+                                        : STR("(the configured base URL)"),
+                             (Str){0} };
+        if (str_eq(names[i], cfg->provider)) at = i;
+    }
+    size_t pick = 0;
+    if (!tui_pick(STR("which provider serves it"), items, n, TUI_PICK_FIRST,
+                  at, &pick))
+        return false;
+    *out = names[pick];
+    return true;
+}
+
+/* An id typed in rather than picked from a listing, for a provider the caller
+ * has already settled. The id points into `scratch`, so a caller that keeps it
+ * copies it out before resetting. False when nothing was entered. */
+static b8 manual_model_id(Arena *scratch, const char *why, Str *model) {
+    char question[256];
+    if (why && *why)
+        snprintf(question, sizeof question, "%s; enter a model manually", why);
+    else
+        snprintf(question, sizeof question, "model id (not verified)");
+    char id[AGENT_MAX_MODEL_NAME + 1];
+    if (!tui_ask(str_c(question), false, id, sizeof id)) return false;
+    Str saved = str_dup(scratch, str_c(id));
+    if (!saved.p) {
+        tui_notice(STR("out of memory storing the model"));
+        return false;
+    }
+    *model = saved;
+    return true;
+}
+
+/* The same, for a run that has every configured endpoint to choose between:
+ * a typed id still belongs to one of them. */
+static b8 manual_model(const Config *cfg, const Endpoints *eps, Arena *scratch,
+                       const char *why, Str *provider, Str *model) {
+    return manual_provider(cfg, eps, scratch, provider)
+        && manual_model_id(scratch, why, model);
+}
+
+/* What the list is missing, in one line: the providers that did not answer,
+ * with the reason when there is one of them to give it for, and the cap if it
+ * was reached. Their pinned models are still offered, so this is a missing
+ * part of the list rather than a failed command. */
+static void catalog_report(const Catalog *cat, Arena *scratch) {
+    if (!cat->n_failed && !cat->full) return;
+    size_t mark = scratch->off;
+    Buf b;
+    buf_init(&b, scratch,
+             AGENT_MAX_ENDPOINTS * (AGENT_MAX_ENDPOINT_NAME + 2) + 256);
+    if (cat->n_failed == 1) {
+        buf_puts(&b, STR("could not list "));
+        if (cat->failed[0].n) {
+            buf_puts(&b, cat->failed[0]);
+            buf_puts(&b, STR(": "));
+        } else {
+            buf_puts(&b, STR("models: "));
+        }
+        buf_puts(&b, cat->reason[0].n ? cat->reason[0]
+                                      : STR("no models returned"));
+    } else if (cat->n_failed) {
+        char head[64];
+        snprintf(head, sizeof head, "could not list %zu providers: ",
+                 cat->n_failed);
+        buf_puts(&b, str_c(head));
+        for (size_t i = 0; i < cat->n_failed; i++) {
+            if (i) buf_puts(&b, STR(", "));
+            buf_puts(&b, cat->failed[i].n ? cat->failed[i]
+                                          : STR("the configured base URL"));
+        }
+    }
+    if (cat->full) {
+        char cap[64];
+        snprintf(cap, sizeof cap, "only the first %d models are listed",
+                 AGENT_MAX_MODELS);
+        if (cat->n_failed) buf_puts(&b, STR("; "));
+        buf_puts(&b, str_c(cap));
+    }
+    if (buf_ok(&b)) tui_notice(buf_finish(&b));
+    scratch->off = mark;
+}
+
+/* Whether a provider's listing arrived. A pin of one that did not is still
+ * offered; a pin of one that answered is not, since the listing is then what
+ * that provider serves. */
+static b8 catalog_missed(const Catalog *cat, Str provider) {
+    for (size_t i = 0; i < cat->n_failed; i++)
+        if (str_eq(cat->failed[i], provider)) return true;
+    return false;
+}
+
+/* The picker over `cat`. `*provider` and `*model` name the pick and point
+ * into `scratch`; `*verified` is false for an id entered by hand. `cat` is
+ * appended to and its entries are edited, so it belongs to this call. */
+static b8 pick_model(Config *cfg, const Endpoints *eps, Catalog *cat,
+                     Arena *scratch, Str *provider, Str *model,
+                     b8 *verified) {
     *verified = false;
-    if (switch_to) *switch_to = (Str){0};
-    tui_set_status("loading models");
-    size_t cap = AGENT_MAX_MODELS + AGENT_MAX_FOREIGN_PINS;
-    Str *names = arena_new(scratch, Str, cap);
-    Str *owner = arena_new(scratch, Str, cap);
-    if (!names || !owner) {
-        tui_set_status("ready");
+    ModelPick mp = {0};
+    mp.cat = cat;
+    mp.live = cat->n;
+    mp.arena = scratch;
+    favorites_load(&mp.fav, eps, scratch);
+    /* Pins of a provider that could not be listed become entries of their
+     * own: local state is all an endpoint that is down leaves to offer. */
+    for (size_t f = 0; f < mp.fav.n; f++) {
+        if (model_entry(&mp, mp.fav.provider[f], mp.fav.model[f]) != SIZE_MAX)
+            continue;
+        if (!catalog_missed(cat, mp.fav.provider[f])) continue;
+        catalog_add(cat, mp.fav.provider[f], mp.fav.model[f]);
+    }
+    if (!cat->n) {
+        const char *why = cat->n_failed && cat->reason[0].n
+                        ? cat->reason[0].p : "no models returned";
+        return manual_model(cfg, eps, scratch, why, provider, model);
+    }
+
+    /* The provider is named in a row only when more than one serves the list:
+     * with one, every row would carry the same name for no reader. */
+    for (size_t i = 1; i < cat->n && !mp.named; i++)
+        mp.named = !str_eq(cat->provider[i], cat->provider[0]);
+    mp.label    = arena_new(scratch, Str, cat->n);
+    mp.starred  = arena_new(scratch, Str, cat->n);
+    mp.order    = arena_new(scratch, size_t, cat->n);
+    mp.rows     = arena_new(scratch, TuiCmd, cat->n);
+    if (!mp.label || !mp.starred || !mp.order || !mp.rows) {
         tui_notice(STR("out of memory listing models"));
         return false;
     }
-    char err[128] = {0};
-    size_t n = provider_models(cfg, scratch, names, AGENT_MAX_MODELS, err,
-                               sizeof err);
-    tui_set_status("ready");
-    if (!n) {
-        const char *why = err[0] ? err : "no models returned";
-        tui_notice(str_c(why));
-        return manual_model(scratch, why, out);
-    }
-    size_t live = n;
-    memset(owner, 0, live * sizeof *owner);
-    /* Local state, so this costs no request and no key: a pin was already
-     * verified against its own provider when it was made. */
-    if (switch_to)
-        n += favorites_others(cfg->provider, scratch, owner + live,
-                              names + live, AGENT_MAX_FOREIGN_PINS);
-    ModelPick mp = {0};
-    mp.names    = names;
-    mp.owner    = owner;
-    mp.starred  = arena_new(scratch, Str, n);
-    mp.order    = arena_new(scratch, size_t, n);
-    mp.rows     = arena_new(scratch, TuiCmd, n);
-    mp.live     = live;
-    mp.n        = n;
+    memset(mp.label, 0, cat->n * sizeof *mp.label);      // built on first use
+    memset(mp.starred, 0, cat->n * sizeof *mp.starred);
     mp.provider = cfg->provider;
     mp.current  = cfg->model;
     mp.small    = cfg->small_model;
     mp.small_owner = cfg->small_provider;
     mp.cfg      = cfg;
-    mp.arena    = scratch;
-    if (!mp.starred || !mp.order || !mp.rows) {
-        tui_notice(STR("out of memory listing models"));
-        return false;
-    }
-    memset(mp.starred, 0, n * sizeof *mp.starred);   // built on first use
-    favorites_load(&mp.fav, cfg->provider, scratch);
+    mp.acted    = SIZE_MAX;
+
     size_t rows = model_build(&mp);
     TuiPickBinding bindings[] = {
         { model_favorite, &mp, 0x06 },
@@ -1691,30 +1783,31 @@ static b8 pick_model(Config *cfg, Arena *scratch, Str *out, b8 *verified,
     };
     /* Four keys have to fit one 80-column row, so each is named as briefly
      * as it can be and still be found. */
-    TuiPickAction act = { mp.rows, n, bindings, 4,
-        STR("Ctrl-F pins · Ctrl-O manual entry · Ctrl-E configures · "
-            "Ctrl-S small model") };
+    TuiPickAction act = { mp.rows, cat->n, bindings, 4,
+        STR("Ctrl-F pins \xc2\xb7 Ctrl-O manual entry \xc2\xb7 "
+            "Ctrl-E configures \xc2\xb7 Ctrl-S small model") };
     size_t pick = 0;
-    /* The cursor opens on a model of the active provider: Enter is a model
-     * change here, and another provider's pin under it would make the first
-     * keystroke a provider switch. */
+    /* The cursor opens on the model the session is on when it is a row, so
+     * the first keystroke is a move rather than a change. */
     size_t start = 0;
-    while (start < rows && mp.owner[mp.order[start]].n) start++;
-    if (start >= rows) start = 0;
-    b8 chosen = tui_pick_action(STR("pick a model"), rows, n, TUI_PICK_FIRST,
-                                start, &act, &pick);
+    for (size_t r = 0; r < rows; r++)
+        if (model_is_current(&mp, mp.order[r])) { start = r; break; }
+    b8 chosen = tui_pick_action(STR("pick a model"), rows, cat->n,
+                                TUI_PICK_FIRST, start, &act, &pick);
     if (mp.msg[0]) tui_notice(str_c(mp.msg));
     if (mp.requested == MODEL_ACTION_MANUAL)
-        return manual_model(scratch, NULL, out);
+        return manual_model(cfg, eps, scratch, NULL, provider, model);
     if (mp.requested == MODEL_ACTION_CONFIGURE) {
-        (void)edit_model_profile(cfg, scratch);
+        if (mp.acted < cat->n)
+            (void)edit_model_profile(cfg, cat->provider[mp.acted],
+                                     cat->model[mp.acted], scratch);
         return false;
     }
     if (!chosen) return false;
-    size_t i = pick < rows ? mp.order[pick] : n;
-    if (i >= n || !names[i].n) return false;
-    if (switch_to) *switch_to = owner[i];
-    *out = names[i];
+    size_t i = pick < rows ? mp.order[pick] : cat->n;
+    if (i >= cat->n || !cat->model[i].n) return false;
+    *provider = cat->provider[i];
+    *model = cat->model[i];
     *verified = true;
     return true;
 }
@@ -1725,91 +1818,68 @@ static b8 apply_model_profile(Config *cfg, Arena *scratch) {
     return config_set_model_profile(cfg, &p);
 }
 
-/* Defined with the provider commands below, and used here because a pinned
- * model reaches the endpoint that serves it. */
-static b8 use_endpoint(Config *cfg, Str name, Str base_url, Str model,
-                       ApiKind api, Str key, Arena *scratch);
-static void provider_chosen(const Config *cfg, Arena *scratch);
-
-/* Following a pinned model to the provider that serves it. The endpoint is
- * taken as it is stored, with `model` in place of the model it remembers. */
-static b8 model_follow_provider(Config *cfg, Str name, Str model,
-                                Arena *persist, Arena *scratch) {
-    Endpoints eps;
-    endpoints_load(&eps, scratch);
-    size_t i = endpoints_find(&eps, name);
-    if (i == ENDPOINT_NONE) {
-        notice_fmt("provider %.*s is no longer configured",
-                   (i32)name.n, name.p);
-        return false;
-    }
-    char err[AGENT_MAX_PATH + 64] = {0};
-    Str key = endpoints_key(name, persist, scratch, err, sizeof err);
-    if (err[0]) {
-        tui_notice(str_c(err));
-        return false;
-    }
-    if (!use_endpoint(cfg, eps.name[i], eps.base_url[i], model, eps.api[i],
-                      key, scratch)) {
-        tui_notice(STR("out of memory switching provider"));
-        return false;
-    }
-    provider_chosen(cfg, scratch);
-    return true;
-}
-
-/* Switch model for this session and remember it for the next. The
- * conversation is untouched: a model change is not part of it. A pin of
- * another provider carries its endpoint, so choosing one switches provider
- * first and the model is then set on that provider. */
-static void choose_model(Config *cfg, Arena *persist, Arena *scratch) {
-    arena_reset(scratch);
-    Str picked = {0}, provider = {0};
-    b8 verified = false;
-    if (!pick_model(cfg, scratch, &picked, &verified, &provider)) return;
-    if (provider.n && !str_eq(provider, cfg->provider)
-        && !model_follow_provider(cfg, provider, picked, persist, scratch))
-        return;
-    if (!config_set_model(cfg, picked)) {
-        tui_notice(STR("out of memory storing the model"));
-        return;
-    }
-    Str chosen = cfg->model;
-    if (!apply_model_profile(cfg, scratch)) {
-        tui_notice(STR("out of memory storing model settings"));
-        return;
-    }
-    tui_set_model(chosen);
-    ctx_model_changed(&g_ctx);
-    ctx_set_window(&g_ctx, cfg->context_window);
-    tui_set_reasoning(cfg->reasoning_effort, cfg->thinking_budget);
-    TelEvent e;
-    tel_open(&e, "model");
-    tel_str(&e, "name", chosen);
-    tel_send(&e);
-    b8 saved = cfg->provider.n
-             ? endpoints_remember_model(cfg->provider, chosen, scratch)
-             : config_remember_model(chosen, scratch);
-    notice_fmt("model: %.*s%s%s", (i32)chosen.n, chosen.p,
-               verified ? "" : " (entered manually; not verified)",
-               saved ? "" : " (not remembered: could not write state)");
-}
-
-/* No key and no endpoint from a flag, the environment, a config file or the
- * store. The default base URL is a placeholder here, not a destination. */
+/* No key and no endpoint from a flag, the environment, a config file or a
+ * chosen model. The default base URL is a placeholder here, not a
+ * destination. */
 static b8 no_provider(const Config *cfg) {
     return !cfg->api_key.p && !cfg->base_url_set;
 }
 
-static b8 use_endpoint(Config *cfg, Str name, Str base_url, Str model,
-                       ApiKind api, Str key, Arena *scratch) {
-    if (!config_set_endpoint(cfg, name, base_url, model, api, key)
-        || !apply_model_profile(cfg, scratch))
+/* What a run with nothing to talk to is missing. Providers with no model
+ * chosen is its own state: there is somewhere to list models from, and
+ * nowhere to send a turn yet. */
+static Str setup_hint(const Config *cfg, Arena *scratch) {
+    if (!no_provider(cfg)) return (Str){0};
+    size_t mark = scratch->off;
+    Endpoints eps;
+    size_t n = endpoints_load(&eps, scratch);
+    scratch->off = mark;
+    return n ? NO_MODEL_HINT : NO_PROVIDER_HINT;
+}
+
+/* The one path that changes what the session talks to. A pair names a model
+ * and the connection that serves it: an empty provider is the endpoint this
+ * run was pointed at, whose URL and key stay as they are. Everything a choice
+ * implies happens here, which is why nothing else selects an endpoint.
+ * `*saved` reports whether the pair was remembered for the next run. */
+static b8 use_model(Config *cfg, const Endpoints *eps, Str provider,
+                    Str model, Arena *scratch, b8 remember, b8 *saved) {
+    size_t mark = scratch->off;
+    if (provider.n) {
+        size_t i = endpoints_find(eps, provider);
+        if (i == ENDPOINT_NONE) {
+            notice_fmt("provider %.*s is no longer configured",
+                       (i32)provider.n, provider.p);
+            return false;
+        }
+        char err[AGENT_MAX_PATH + 96] = {0};
+        Str key = endpoints_key(provider, scratch, scratch, err, sizeof err);
+        if (err[0]) {
+            tui_notice(str_c(err));
+            scratch->off = mark;
+            return false;
+        }
+        /* The key is copied into the Config's own storage, so it outlives the
+         * arena it was read into. */
+        b8 ok = config_set_endpoint(cfg, provider, eps->base_url[i], model,
+                                    eps->api[i], key);
+        scratch->off = mark;
+        if (!ok) {
+            tui_notice(STR("out of memory storing the model"));
+            return false;
+        }
+    } else if (!config_set_model(cfg, model)) {
+        tui_notice(STR("out of memory storing the model"));
         return false;
-    /* A small model chosen with its provider is served by that provider from
-     * anywhere, so a switch leaves it alone. One with no provider of its own
-     * is the active endpoint's, which is what the provider's `small_model`
-     * key is: it goes with the endpoint, and clears when the new one names
+    }
+    if (!apply_model_profile(cfg, scratch)) {
+        tui_notice(STR("out of memory storing model settings"));
+        return false;
+    }
+    /* A small model chosen with its provider is served from there wherever
+     * the conversation is, so it is left alone. One with no provider of its
+     * own is this endpoint's, which is what a provider's `small_model` key
+     * names: it goes with the connection, and clears when the new one names
      * none. */
     if (!cfg->small_provider.n)
         config_set_small_model(cfg, endpoints_small_model(cfg->provider,
@@ -1819,23 +1889,75 @@ static b8 use_endpoint(Config *cfg, Str name, Str base_url, Str model,
     ctx_model_changed(&g_ctx);
     ctx_set_window(&g_ctx, cfg->context_window);
     tui_set_reasoning(cfg->reasoning_effort, cfg->thinking_budget);
-    tui_needs_provider(false);
+    tui_set_setup_hint((Str){0});
     tui_set_setup(false);
+    b8 wrote = !remember
+            || config_remember_model(cfg->provider, cfg->model, scratch);
+    if (saved) *saved = wrote;
     TelEvent e;
-    tel_open(&e, "provider");
-    tel_str(&e, "name", cfg->provider);
-    tel_str(&e, "api", api_name(api));
-    tel_bool(&e, "has_key", key.p != NULL);
+    tel_open(&e, "model");
+    tel_str(&e, "name", cfg->model);
+    tel_str(&e, "provider", cfg->provider);
+    tel_str(&e, "api", api_name(cfg->api));
+    tel_bool(&e, "has_key", cfg->api_key.p != NULL);
     tel_send(&e);
     return true;
 }
 
-/* Remembered for the next run and said in a notice: the two things every path
- * that switches provider ends with. */
-static void provider_chosen(const Config *cfg, Arena *scratch) {
-    endpoints_remember_active(cfg->provider, scratch);
-    notice_fmt("provider: %.*s", (i32)cfg->provider.n, cfg->provider.p);
+// "model: <id>" while one provider serves the list, "<id> @ <provider>" past it.
+static void model_chosen_notice(Str provider, Str model, b8 verified,
+                                b8 saved) {
+    notice_fmt("model: %.*s%s%.*s%s%s", (i32)model.n, model.p,
+               provider.n ? " @ " : "", (i32)(provider.n ? provider.n : 0),
+               provider.n ? provider.p : "",
+               verified ? "" : " (entered manually; not verified)",
+               saved ? "" : " (not remembered: could not write state)");
 }
+
+static void model_status(Str provider, void *ud) {
+    (void)ud;
+    char status[AGENT_MAX_ENDPOINT_NAME + 32];
+    if (provider.n)
+        snprintf(status, sizeof status, "listing models: %.*s",
+                 (i32)provider.n, provider.p);
+    else
+        snprintf(status, sizeof status, "loading models");
+    tui_set_status(status);
+}
+
+/* Every provider's models, listed where the picker opens. The conversation is
+ * untouched: a model change is not part of it. */
+static void choose_model(Config *cfg, Arena *scratch) {
+    arena_reset(scratch);
+    Endpoints eps;
+    endpoints_load(&eps, scratch);
+    Str names[AGENT_MAX_ENDPOINTS + 1];
+    /* Nothing to list from is the first-run state, not an empty list: the
+     * answer is a provider, which /model cannot give. */
+    if (!catalog_endpoints(cfg, &eps, names, AGENT_MAX_ENDPOINTS + 1)) {
+        tui_notice(NO_PROVIDER_HINT);
+        return;
+    }
+    Catalog cat;
+    catalog_load(&cat, cfg, &eps, AGENT_MAX_MODELS, scratch, model_status,
+                 NULL);
+    tui_set_status("ready");
+    catalog_report(&cat, scratch);
+
+    Str provider = {0}, model = {0};
+    b8 verified = false, saved = false;
+    if (!pick_model(cfg, &eps, &cat, scratch, &provider, &model, &verified))
+        return;
+    if (!use_model(cfg, &eps, provider, model, scratch, true, &saved)) return;
+    model_chosen_notice(provider, model, verified, saved);
+}
+
+/* ---- /provider -----------------------------------------------------------
+ * A provider is a connection: a name, a base URL, the API it speaks and a
+ * key. This screen creates, edits and removes them, and changes nothing about
+ * the session: the models of every provider are offered together in /model,
+ * and choosing one there is what selects a connection.
+ */
 
 /* Where the key is kept. The file is offered first because it always works:
  * a keyring needs its daemon and its helper installed, and a run with no
@@ -1857,8 +1979,8 @@ static b8 pick_key_source(SecretSource *out) {
     return true;
 }
 
-/* Which wire format a new endpoint speaks. The default is offered first,
- * since it is what most of them are. */
+/* Which wire format an endpoint speaks. The default is offered first, since
+ * it is what most of them are. */
 static b8 pick_api(ApiKind *out) {
     const TuiCmd apis[] = {
         { STR("openai"),    STR("OpenAI-compatible chat completions") },
@@ -1872,12 +1994,58 @@ static b8 pick_api(ApiKind *out) {
     return true;
 }
 
+/* The connection, asked of the endpoint itself: listing its models is the
+ * check that the URL and the key work, so a typo is answered here rather than
+ * on the first turn. `out` receives the ids, which live in `scratch`. Zero
+ * with `err` set when the listing did not arrive. */
+static size_t probe_endpoint(const Config *cfg, Str base_url, ApiKind api,
+                             Str key, Arena *scratch, Str *out, size_t max,
+                             char *err, size_t err_cap) {
+    Config probe = *cfg;
+    probe.base_url = base_url;
+    probe.api = api;
+    probe.api_key = key;
+    probe.provider = (Str){0};
+    probe.model = (Str){0};
+    tui_set_status("checking the provider");
+    size_t n = provider_models(&probe, scratch, out, max, err, err_cap);
+    tui_set_status("ready");
+    return n;
+}
+
+/* A listing that did not arrive is said and asked about rather than refused:
+ * an endpoint may be down, or may not serve /models at all, and the user is
+ * the one who knows which. */
+static b8 keep_unlisted_endpoint(Str name, const char *why, Arena *scratch) {
+    const TuiCmd actions[] = {
+        { STR("Cancel"), STR("Change nothing; the provider is not stored") },
+        { STR("Store anyway"), STR("Keep it; /model says if it stays silent") },
+    };
+    Buf title;
+    buf_init(&title, scratch, name.n + strlen(why) + 32);
+    buf_puts(&title, name);
+    buf_puts(&title, STR(" could not be listed: "));
+    buf_puts(&title, str_c(why));
+    size_t action = 0;
+    return tui_pick(buf_ok(&title) ? buf_finish(&title)
+                                   : STR("the provider could not be listed"),
+                    actions, 2, TUI_PICK_FIRST, 0, &action)
+        && action == 1;
+}
+
+/* What a stored connection answered with, which is the check that it works. */
+static void notice_models(Str name, size_t n) {
+    notice_fmt("provider: %.*s (%zu model%s)", (i32)name.n, name.p, n,
+               n == 1 ? "" : "s");
+}
+
 /* Ask for a provider and store it: a name, the API it speaks, its base URL
- * and a key, then the model, which is picked from what that endpoint actually
- * lists. Listing is also the check that the URL and the key work, so a typo
- * is answered here rather than on the first turn, and nothing is written
- * until it succeeds. Returns false when the form was cancelled or refused. */
-static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
+ * and a key, checked by listing its models. Nothing is written until the check
+ * has been answered one way or the other. A run that has no model yet is
+ * offered the ones this provider just listed, which is the whole of first-run
+ * setup; a session already talking to a model is left alone, since adding a
+ * connection is not choosing one. */
+static b8 add_endpoint(Config *cfg, Arena *scratch) {
     arena_reset(scratch);
     char name[AGENT_MAX_ENDPOINT_NAME + 1];
     char url[AGENT_MAX_URL + 1];
@@ -1914,20 +2082,24 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
     SecretSource key_source = SECRET_STORED;
     if (key[0] && !pick_key_source(&key_source)) return false;
 
-    Config probe = *cfg;
-    probe.base_url = str_c(url);
-    probe.api = api;
-    probe.api_key = key[0] ? str_c(key) : (Str){0};
-    probe.provider = (Str){0};
-    probe.model = (Str){0};
-    Str model = {0};
-    b8 verified = false;
-    // A provider being created lists its own models and nothing else.
-    if (!pick_model(&probe, scratch, &model, &verified, NULL)) return false;
+    Str *listed = arena_new(scratch, Str, AGENT_MAX_MODELS);
+    if (!listed) {
+        tui_notice(STR("out of memory listing models"));
+        return false;
+    }
+    char list_err[192] = {0};
+    size_t n_listed = probe_endpoint(cfg, str_c(url), api,
+                                     key[0] ? str_c(key) : (Str){0}, scratch,
+                                     listed, AGENT_MAX_MODELS, list_err,
+                                     sizeof list_err);
+    if (!n_listed && !keep_unlisted_endpoint(str_c(name), list_err[0]
+                                             ? list_err : "no models returned",
+                                             scratch))
+        return false;
 
     char err[AGENT_MAX_PATH + 64] = {0};
-    if (!endpoints_put(&eps, str_c(name), str_c(url), model, api, scratch)
-        || !endpoints_save_one(str_c(name), str_c(url), model, api, scratch)) {
+    if (!endpoints_put(&eps, str_c(name), str_c(url), api, scratch)
+        || !endpoints_save_one(str_c(name), str_c(url), api, scratch)) {
         tui_notice(STR("could not write the provider store"));
         return false;
     }
@@ -1939,32 +2111,56 @@ static b8 add_endpoint(Config *cfg, Arena *persist, Arena *scratch) {
         tui_notice(str_c(err[0] ? err : "could not store the API key"));
         return false;
     }
-    Str stored_key = str_dup_opt(persist, str_c(key));
-    if (key[0] && !stored_key.p) {
-        tui_notice(STR("out of memory storing the provider"));
-        return false;
+    size_t at = endpoints_find(&eps, str_c(name));
+    if (at == ENDPOINT_NONE) return false;
+    Str stored = eps.name[at];
+    if (!no_provider(cfg)) {
+        notice_models(stored, n_listed);
+        return true;
     }
-    if (!use_endpoint(cfg, str_c(name), str_c(url), model, api, stored_key,
-                      scratch)) {
-        tui_notice(STR("out of memory storing the provider"));
-        return false;
+    /* First-run setup ends in a model: the listing that verified the provider
+     * is the list it is picked from, so no second request is made, and one
+     * that would not list at all is asked for an id instead. */
+    Str provider = stored, model = {0};
+    b8 verified = false, saved = false;
+    if (n_listed) {
+        Catalog cat;
+        if (catalog_init(&cat, n_listed, scratch)) {
+            for (size_t i = 0; i < n_listed; i++)
+                catalog_add(&cat, stored, listed[i]);
+            if (!pick_model(cfg, &eps, &cat, scratch, &provider, &model,
+                            &verified))
+                model = (Str){0};
+        } else {
+            tui_notice(STR("out of memory listing models"));
+        }
+    } else if (!manual_model_id(scratch, list_err[0] ? list_err
+                                : "no models returned", &model)) {
+        model = (Str){0};
     }
-    if (verified) provider_chosen(cfg, scratch);
-    else notice_fmt("provider: %.*s (model entered manually; not verified)",
-                    (i32)cfg->provider.n, cfg->provider.p);
+    /* Stored either way: the connection is the answer to /provider, and a run
+     * that stopped before choosing a model says which step is left. */
+    if (!model.n
+        || !use_model(cfg, &eps, provider, model, scratch, true, &saved)) {
+        notice_fmt("provider: %.*s (no model chosen yet: type /model)",
+                   (i32)stored.n, stored.p);
+        tui_set_setup_hint(setup_hint(cfg, scratch));
+        return true;
+    }
+    model_chosen_notice(provider, model, verified, saved);
     return true;
 }
 
-/* Existing provider names are identities: editing changes its fields, never
- * the section name. Model capabilities are edited from /model instead. */
+/* Existing provider names are identities: editing changes its connection,
+ * never the section name. Which models it serves is not its setting, and
+ * their capabilities are edited from /model. */
 static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
                         Arena *persist, Arena *scratch) {
-    char url[AGENT_MAX_URL + 1], model[AGENT_MAX_MODEL_NAME + 1];
+    char url[AGENT_MAX_URL + 1];
     char key[AGENT_MAX_API_KEY + 1];
-    snprintf(url, sizeof url, "%.*s", (i32)eps->base_url[i].n, eps->base_url[i].p);
-    snprintf(model, sizeof model, "%.*s", (i32)eps->model[i].n, eps->model[i].p);
-    if (!tui_ask_edit(STR("base URL"), false, url, sizeof url)
-        || !tui_ask_edit(STR("model"), false, model, sizeof model)) return false;
+    snprintf(url, sizeof url, "%.*s", (i32)eps->base_url[i].n,
+             eps->base_url[i].p);
+    if (!tui_ask_edit(STR("base URL"), false, url, sizeof url)) return false;
     if (!str_starts(str_c(url), STR("http://"))
         && !str_starts(str_c(url), STR("https://"))) {
         tui_notice(STR("a base URL starts with http:// or https://"));
@@ -2016,44 +2212,49 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
             return false;
         }
     }
-    b8 changed_connection = !str_eq(str_c(url), eps->base_url[i]) || api != eps->api[i]
-                         || !str_eq(str_c(model), eps->model[i]);
-    b8 verified = true;
-    if (changed_connection) {
-        Config probe = *cfg; probe.base_url = str_c(url); probe.api = api;
-        probe.api_key = saved_key;
-        Str listed[AGENT_MAX_MODELS]; char model_err[160] = {0};
-        size_t listed_n = provider_models(&probe, scratch, listed,
-                                          AGENT_MAX_MODELS, model_err,
-                                          sizeof model_err);
-        verified = false;
-        for (size_t j = 0; j < listed_n; j++)
-            if (str_eq(listed[j], str_c(model))) {
-                verified = true;
-                break;
-            }
-        if (!verified)
-            tui_notice(str_c(model_err[0] ? model_err
-                                         : "model was not listed by /models"));
+
+    b8 changed = !str_eq(str_c(url), eps->base_url[i]) || api != eps->api[i]
+              || key_action != KEY_KEEP;
+    size_t n_listed = 0;
+    char list_err[192] = {0};
+    if (changed) {
+        Str *listed = arena_new(scratch, Str, AGENT_MAX_MODELS);
+        if (!listed) {
+            tui_notice(STR("out of memory listing models"));
+            return false;
+        }
+        n_listed = probe_endpoint(cfg, str_c(url), api, saved_key, scratch,
+                                  listed, AGENT_MAX_MODELS, list_err,
+                                  sizeof list_err);
+        if (!n_listed
+            && !keep_unlisted_endpoint(eps->name[i], list_err[0] ? list_err
+                                       : "no models returned", scratch))
+            return false;
     }
-    if (!endpoints_put(eps, eps->name[i], str_c(url), str_c(model), api,
-                       scratch)
-        || !endpoints_save_one(eps->name[i], str_c(url), str_c(model), api,
-                               scratch)) {
-        tui_notice(STR("invalid provider settings")); return false;
+    if (!endpoints_put(eps, eps->name[i], str_c(url), api, scratch)
+        || !endpoints_save_one(eps->name[i], str_c(url), api, scratch)) {
+        tui_notice(STR("invalid provider settings"));
+        return false;
     }
     if (key_action != KEY_KEEP
         && !endpoints_set_key(eps->name[i],
             key_action == KEY_CLEAR ? (Str){0}
           : key_action == KEY_MOVE ? saved_key : str_c(key),
             key_source, scratch, err, sizeof err)) {
-        tui_notice(str_c(err[0] ? err : "could not store the API key")); return false;
+        tui_notice(str_c(err[0] ? err : "could not store the API key"));
+        return false;
     }
-    if (!use_endpoint(cfg, eps->name[i], str_c(url), str_c(model), api,
-                      saved_key, scratch)) return false;
-    if (verified) provider_chosen(cfg, scratch);
-    else notice_fmt("provider: %.*s (model entered manually; not verified)",
-                    (i32)cfg->provider.n, cfg->provider.p);
+    /* The session follows the connection it is already on: the model is the
+     * same one, served over what was just edited. */
+    if (str_eq(eps->name[i], cfg->provider) && cfg->model.n
+        && !use_model(cfg, eps, eps->name[i], cfg->model, scratch, false,
+                      NULL))
+        return false;
+    if (changed && n_listed)
+        notice_models(eps->name[i], n_listed);
+    else
+        notice_fmt("provider: %.*s updated", (i32)eps->name[i].n,
+                   eps->name[i].p);
     return true;
 }
 
@@ -2075,14 +2276,18 @@ static b8 delete_endpoint(Config *cfg, const Endpoints *eps, size_t i,
         return false;
 
     Str name = eps->name[i];
-    b8 active = str_eq(name, cfg->provider);
+    b8 serving = str_eq(name, cfg->provider);
     char err[AGENT_MAX_PATH + 64] = {0};
     if (!endpoints_delete(name, scratch, err, sizeof err)) {
         tui_notice(str_c(err[0] ? err : "could not delete the provider"));
         return false;
     }
-    if (active) {
-        endpoints_remember_active((Str){0}, scratch);
+    // Pins of a provider that is gone are rows of a list nothing can serve.
+    favorites_forget(name, scratch);
+    if (serving) {
+        /* The model went with the connection, so the choice is forgotten
+         * rather than left naming an endpoint that is not there. */
+        config_remember_model((Str){0}, (Str){0}, scratch);
         cfg->provider = (Str){0};
         cfg->api_key = (Str){0};
         cfg->base_url_set = false;
@@ -2093,23 +2298,25 @@ static b8 delete_endpoint(Config *cfg, const Endpoints *eps, size_t i,
         cfg->reasoning_template = (Str){0};
         tui_set_reasoning((Str){0}, (Str){0});
         tui_set_setup(true);
-        tui_needs_provider(true);
+        tui_set_setup_hint(setup_hint(cfg, scratch));
     }
     notice_fmt("deleted provider: %.*s", (i32)name.n, name.p);
     return true;
 }
 
-/* The providers already stored, plus the entry that creates one. With none
- * stored there is nothing to pick from, so the form opens straight away. */
-static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
+/* The providers already stored, with the one serving the chosen model marked.
+ * Enter edits a provider, since editing is the only thing left to do to one.
+ * With none stored there is nothing to list, so the form opens straight
+ * away. */
+static void manage_providers(Config *cfg, Arena *persist, Arena *scratch) {
     arena_reset(scratch);
     Endpoints eps;
     size_t n = endpoints_load(&eps, scratch);
     if (!n) {
-        add_endpoint(cfg, persist, scratch);
+        add_endpoint(cfg, scratch);
         return;
     }
-    TuiCmd *items = arena_new(scratch, TuiCmd, n + 3);
+    TuiCmd *items = arena_new(scratch, TuiCmd, n + 2);
     if (!items) {
         tui_notice(STR("out of memory listing providers"));
         return;
@@ -2118,12 +2325,12 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
         Str desc = eps.base_url[i];
         /* The API is named only where it is not the default one, so a line
          * says what the reader could not have assumed. */
-        b8 current = str_eq(eps.name[i], cfg->provider);
+        b8 serving = str_eq(eps.name[i], cfg->provider);
         b8 anth = eps.api[i] == API_ANTHROPIC;
-        if (current || anth) {
+        if (serving || anth) {
             Buf b; buf_init(&b, scratch, desc.n + 32);
-            if (current) buf_puts(&b, STR("current · "));
-            if (anth) buf_puts(&b, STR("anthropic · "));
+            if (serving) buf_puts(&b, STR("in use \xc2\xb7 "));
+            if (anth) buf_puts(&b, STR("anthropic \xc2\xb7 "));
             buf_puts(&b, eps.base_url[i]);
             if (buf_ok(&b)) desc = buf_finish(&b);
         }
@@ -2131,45 +2338,25 @@ static void choose_provider(Config *cfg, Arena *persist, Arena *scratch) {
     }
     items[n] = (TuiCmd){ STR("+ add a provider"),
                          STR("An OpenAI- or Anthropic-compatible endpoint") };
-    items[n + 1] = (TuiCmd){ STR("+ edit a provider"),
-                             STR("Connection and credential settings") };
-    items[n + 2] = (TuiCmd){ STR("+ delete a provider"),
+    items[n + 1] = (TuiCmd){ STR("+ delete a provider"),
                              STR("Remove its settings and stored credential") };
 
     size_t pick = 0;
-    if (!tui_pick(STR("pick a provider"), items, n + 3, TUI_PICK_FIRST,
+    if (!tui_pick(STR("providers"), items, n + 2, TUI_PICK_FIRST,
                   TUI_PICK_NONE, &pick))
         return;
     if (pick == n) {
-        add_endpoint(cfg, persist, scratch);
+        add_endpoint(cfg, scratch);
         return;
     }
     if (pick == n + 1) {
-        size_t edit = 0;
-        if (tui_pick(STR("edit a provider"), items, n, TUI_PICK_FIRST,
-                     TUI_PICK_NONE, &edit))
-            edit_endpoint(cfg, &eps, edit, persist, scratch);
-        return;
-    }
-    if (pick == n + 2) {
         size_t del = 0;
         if (tui_pick(STR("delete a provider"), items, n, TUI_PICK_FIRST,
                      TUI_PICK_NONE, &del))
             delete_endpoint(cfg, &eps, del, scratch);
         return;
     }
-    char err[AGENT_MAX_PATH + 64] = {0};
-    Str key = endpoints_key(eps.name[pick], persist, scratch, err, sizeof err);
-    if (err[0]) {
-        tui_notice(str_c(err));
-        return;
-    }
-    if (!use_endpoint(cfg, eps.name[pick], eps.base_url[pick], eps.model[pick],
-                      eps.api[pick], key, scratch)) {
-        tui_notice(STR("out of memory switching provider"));
-        return;
-    }
-    provider_chosen(cfg, scratch);
+    edit_endpoint(cfg, &eps, pick, persist, scratch);
 }
 
 /* ---- /settings -----------------------------------------------------------
@@ -2850,7 +3037,7 @@ static void compact_session(Agent *ag) {
         return;
     }
     if (no_provider(ag->cfg)) {
-        tui_notice(NO_PROVIDER_HINT);
+        tui_notice(setup_hint(ag->cfg, ag->scratch));
         return;
     }
 
@@ -3034,7 +3221,7 @@ static b8 name_session(Agent *ag, b8 manual) {
         return false;
     }
     if (no_provider(cfg)) {
-        if (manual) tui_notice(NO_PROVIDER_HINT);
+        if (manual) tui_notice(setup_hint(cfg, ag->scratch));
         return false;
     }
     if (!cfg->small_model.n) {
@@ -3559,10 +3746,10 @@ i32 main(i32 argc, char **argv) {
      * the turn completed. */
     if (opts.have_prompt) {
         if (no_provider(&cfg)) {
+            Str hint = setup_hint(&cfg, &scratch);
             tui_stop();
-            fprintf(stderr, AGENT_NAME ": no provider configured; run " AGENT_NAME
-                            " without "
-                            "-p and use /provider to add one\n");
+            fprintf(stderr, AGENT_NAME ": nothing to talk to; run " AGENT_NAME
+                            " without -p, then %.*s\n", (i32)hint.n, hint.p);
             return 1;
         }
         b8 ok = agent_turn(&agent, opts.prompt);
@@ -3573,8 +3760,7 @@ i32 main(i32 argc, char **argv) {
 
     /* The welcome screen names the command instead of a form opening unasked
      * over an empty screen. */
-    if (no_provider(&cfg) && tui_is_fullscreen())
-        tui_needs_provider(true);
+    if (tui_is_fullscreen()) tui_set_setup_hint(setup_hint(&cfg, &scratch));
 
     /* Static, not automatic: a megabyte of stack for a line the composer
      * already holds is a frame that turns a deep call into a crash. */
@@ -3686,11 +3872,11 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
         if (!strcmp(line, "/model")) {
-            choose_model(&cfg, &persist, &scratch);
+            choose_model(&cfg, &scratch);
             continue;
         }
         if (!strcmp(line, "/provider")) {
-            choose_provider(&cfg, &persist, &scratch);
+            manage_providers(&cfg, &persist, &scratch);
             continue;
         }
         if (!strcmp(line, "/resume")) {
@@ -3704,7 +3890,7 @@ i32 main(i32 argc, char **argv) {
         }
 send_message:
         if (no_provider(&cfg)) {
-            tui_notice(NO_PROVIDER_HINT);
+            tui_notice(setup_hint(&cfg, &scratch));
             continue;
         }
         agent_turn_interactive(&agent, (Str){ line, ln });

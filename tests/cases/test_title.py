@@ -314,20 +314,19 @@ def test_the_errand_follows_the_small_models_provider(ctx):
     assert s.status_field(3) == "mock", "the session stays on its provider"
 
 
-def test_switching_provider_keeps_the_chosen_small_model(ctx):
-    """The pair names its own endpoint, so a switch does not replace it."""
+def test_moving_the_conversation_keeps_the_chosen_small_model(ctx):
+    """The pair names its own endpoint, so another provider's key is not it."""
     ctx.scenario("text=noted")
     s = stored_providers(
         ctx, [("mock", "alpha", None), ("spare", "gamma", None),
               ("other", "delta", "others-small")],
         "provider = mock\nsmall_model = tiny\nsmall_provider = spare\n")
-    s.submit("/provider")
-    s.wait_status("pick a provider")
-    s.key("down").sync()
-    s.key("down").sync()
-    assert "other" in s.popup_selected(), s.popup_selected()
+    s.submit("/model")
+    s.wait_status("pick a model")
+    s.key("down", "down").sync()
+    assert "@ other" in s.popup_selected(), s.popup_selected()
     s.key("enter")
-    s.wait_text("provider: other")
+    s.wait_text("@ other")
 
     s.submit("remember the cat")
     s.wait_text("noted")

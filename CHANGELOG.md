@@ -7,19 +7,27 @@
 - Name a saved session: set or edit the name with `/title`, see it in
   `/resume`, and let a configured small model name a session after its first
   turn.
-- Pick the small model with `Ctrl-S` in `/model`, including a model pinned on
+- Pick the small model with `Ctrl-S` in `/model`, including one served by
   another provider: the choice is one model at one endpoint, and errands such
   as naming a session are sent there with that provider's key while the
   conversation stays where it is. Turn automatic session naming off with the
   `Name sessions` setting.
-- List the models pinned on other configured providers in `/model`, below the
-  active provider's own pins, each named `<model> @ <provider>` so one id
-  served by several endpoints stays several rows and can be searched for by
-  provider; choosing one switches to that provider. The rows come from local
-  state, so no endpoint is asked for a list the user did not choose.
+- Offer every configured provider's models in one `/model` list. An entry is a
+  model at a provider, named `<model> @ <provider>` when more than one
+  provider serves the list, so one id offered by several endpoints stays
+  several rows and can be searched for by provider name. Each open asks every
+  provider for its models; one that cannot answer is named with the reason,
+  and the models pinned on it are still offered.
 
 ### Changed
 
+- Make a provider a connection and nothing else. `/provider` adds, edits and
+  removes endpoints and no longer switches between them, and `/model` is the
+  one place a model is chosen: picking one selects the connection that serves
+  it, with its URL, API and key. The choice is remembered as a `provider` and
+  `model` pair in the state file, so a `model` line under a
+  `[providers.<name>]` section is now only a default for a run that has chosen
+  none, and pinned models are pinned per provider.
 - Keep the block a modal screen asks about on screen: the question of
   `ask_user`, a submitted plan, and the call awaiting approval lift the
   transcript out from under their options instead of being covered by them.

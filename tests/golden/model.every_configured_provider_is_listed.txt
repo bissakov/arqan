@@ -1,8 +1,5 @@
 --- screen 80x24 ---
 |
-|
-|
-|
 |                           __ _ _ __ __ _  __ _ _ __
 |                          / _` | '__/ _` |/ _` | '_ \
 |                         | (_| | | | (_| | (_| | | | |
@@ -15,12 +12,15 @@
 |
 |
 |    Ctrl-F pins · Ctrl-O manual entry · Ctrl-E configures · Ctrl-S small model
-|    alpha
-|  › beta   current
-|    gamma
+|  › alpha @ mock   current
+|    beta @ mock
+|    gamma @ mock
+|    alpha @ spare
+|    beta @ spare
+|    gamma @ spare
 |
 |  › Message arqan...
 |
 |
-|  ● pick a model · beta · build · local · ~/work · - · free
+|  ● pick a model · alpha · build · mock · ~/work · - · free
 --- cursor row=21 col=5 visible=yes ---

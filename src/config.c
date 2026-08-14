@@ -25,6 +25,8 @@ _Static_assert(AGENT_STATUS_FIELDS == 10,
                "the status_fields default is 1023");
 
 static const ConfSpec k_conf[CONF_N] = {
+    /* Which provider serves `model`. The two are one choice: an id belongs to
+     * the endpoint that lists it, and /model writes them together. */
     [CONF_PROVIDER] = { "provider", "", NULL, CV_STR, 0, 0,
                         AGENT_MAX_ENDPOINT_NAME, true },
     [CONF_BASE_URL] = { "base_url", "", NULL, CV_STR, 0, 0,
@@ -242,10 +244,11 @@ static void conf_apply_env(Conf *c, Arena *persist) {
     }
 }
 
-/* The active provider's own settings. They sit above the state file and below
- * the environment: the endpoint is what /provider last configured, while a
- * variable is a statement about this one run. A `provider` naming nothing is
- * cleared, since a name with no endpoint behind it is not a selection. */
+/* The connection of the provider serving the chosen model. It sits above the
+ * state file and below the environment: the endpoint is what /provider
+ * configured, while a variable is a statement about this one run. A `provider`
+ * naming nothing is cleared, since a name with no endpoint behind it is not a
+ * selection. */
 static void conf_apply_endpoint(Conf *c, Arena *persist, Arena *scratch) {
     Str name = conf_str(c, CONF_PROVIDER);
     if (!name.n) return;
@@ -265,13 +268,17 @@ static void conf_apply_endpoint(Conf *c, Arena *persist, Arena *scratch) {
               persist);
     conf_take(c, CONF_API, api_name(e.api[i]), CONF_FROM_ENDPOINT, where,
               persist);
-    if (e.model[i].n)
+    /* The provider's own `model` line is a default under everything the user
+     * has actually chosen: /model records its pick as the state file's
+     * `provider` and `model` pair, so this only speaks for a config file that
+     * names a model nowhere else. */
+    if (e.model[i].n && c->origin[CONF_MODEL] == CONF_FROM_DEFAULT)
         conf_take(c, CONF_MODEL, e.model[i], CONF_FROM_ENDPOINT, where,
                   persist);
     /* A provider's own small model outranks the config files and is still
      * overridden by the environment. It is a fallback under the chosen pair,
-     * though: /model records one small model for every provider, so a state
-     * file that names one is not undone by switching endpoint. */
+     * though: the small model chosen in /model names the provider serving it,
+     * so it is not undone by a provider that names one of its own. */
     if (e.small_model[i].n && c->origin[CONF_SMALL_MODEL] < CONF_FROM_STATE)
         conf_take(c, CONF_SMALL_MODEL, e.small_model[i], CONF_FROM_ENDPOINT,
                   where, persist);
@@ -348,8 +355,9 @@ void ui_prefs_load(UiPrefs *p, const Conf *conf) {
 
 // ---- Config --------------------------------------------------------------
 
-b8 config_remember_model(Str model, Arena *scratch) {
-    return conf_remember(CONF_MODEL, model, scratch);
+b8 config_remember_model(Str provider, Str model, Arena *scratch) {
+    return conf_remember_pair(CONF_PROVIDER, provider, CONF_MODEL, model,
+                              scratch);
 }
 
 static Str config_owned(char *dst, size_t cap, Str src) {

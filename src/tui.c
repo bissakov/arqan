@@ -249,7 +249,9 @@ typedef struct {
      * for none. Set only while that screen is up, and the frame lifts the
      * transcript out from under it rather than covering the block. */
     size_t keep_off;
-    b8 needs_provider;
+    /* What a run with nothing to talk to is missing, empty when it wants for
+     * nothing. Not owned: the caller passes a literal. */
+    Str setup_hint;
     /* Prompt history recall: `g_bulk.draft` holds the text the first Up
      * displaced. */
     History *hist;
@@ -2382,8 +2384,8 @@ static const WelcomeLine k_welcome[] = {
 #define WELCOME_LINES (sizeof k_welcome / sizeof k_welcome[0])
 
 static Str welcome_text(size_t i) {
-    if (g_tui.needs_provider && i + 1 == WELCOME_LINES)
-        return NO_PROVIDER_HINT;
+    if (g_tui.setup_hint.n && i + 1 == WELCOME_LINES)
+        return g_tui.setup_hint;
     return k_welcome[i].text;
 }
 
@@ -3168,8 +3170,8 @@ void tui_set_permissions(PermissionPolicy policy) {
     repaint();
 }
 
-void tui_needs_provider(b8 on) {
-    g_tui.needs_provider = on;
+void tui_set_setup_hint(Str hint) {
+    g_tui.setup_hint = hint;
     repaint();
 }
 
@@ -5938,7 +5940,7 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
     if (g_pick.active && !g_pick.modal) pick_run();
 
     g_tui.editing = true;
-    tui_set_status(g_tui.needs_provider ? "setup" : "ready"); // repaints
+    tui_set_status(g_tui.setup_hint.n ? "setup" : "ready"); // repaints
 
     for (;;) {
         paste_retire_if_drained();

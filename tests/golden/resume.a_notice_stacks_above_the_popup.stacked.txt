@@ -14,8 +14,8 @@
 |    /resume      Resume a saved session from this directory, or delete one
 |    /fork        Continue in a copy, leaving this session as it is
 |    /compact     Summarize this session and continue in a new one
-|    /model       Pick the model
-|    /provider    Switch provider, or add one
+|    /model       Pick the model, from any provider
+|    /provider    Add, edit or remove a provider
 |    /mode        Switch between Build and Plan mode (Shift+Tab)
 |    /rewind      Go back to an earlier message and edit it
 |

@@ -30,8 +30,8 @@ static const char g_usage[] =
     AGENT_ENV_PREFIX "SYSTEM_PROMPT.\n"
     "Config: $XDG_CONFIG_HOME/" AGENT_NAME "/config.toml, overridden by\n"
     "$PWD/." AGENT_NAME "/config.toml.\n"
-    "Without any of them, " AGENT_NAME " asks for a provider; /provider adds and "
-    "switches later.\n";
+    "Without any of them, " AGENT_NAME " asks for a provider; /provider stores\n"
+    "connections and /model picks a model from any of them.\n";
 
 static void cli_bad(const char *fmt, const char *arg) {
     fprintf(stderr, AGENT_NAME ": ");

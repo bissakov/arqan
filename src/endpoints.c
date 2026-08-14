@@ -71,12 +71,14 @@ static void endpoints_collect(Endpoints *e, const Settings *s, Arena *a) {
         Str small = endpoint_field(s, sections[i], STR("small_model"),
                                    AGENT_MAX_MODEL_NAME);
         ApiKind api = api_from_str(settings_get(s, sections[i], STR("api")));
-        if (!endpoints_put(e, name, url, model, api, a)) continue;
+        if (!endpoints_put(e, name, url, api, a)) continue;
         /* Kept beside the entry rather than in endpoints_put's signature:
-         * every caller that writes an endpoint writes the three fields that
-         * name the service, and this one does not name it. */
+         * both are models a config file may name for this provider, and a
+         * caller that stores a connection names neither. */
         size_t at = endpoints_find(e, name);
-        if (at != ENDPOINT_NONE) e->small_model[at] = str_dup_opt(a, small);
+        if (at == ENDPOINT_NONE) continue;
+        e->model[at] = str_dup_opt(a, model);
+        e->small_model[at] = str_dup_opt(a, small);
     }
 }
 
@@ -104,11 +106,9 @@ size_t endpoints_find(const Endpoints *e, Str name) {
     return ENDPOINT_NONE;
 }
 
-b8 endpoints_put(Endpoints *e, Str name, Str base_url, Str model, ApiKind api,
-                 Arena *a) {
+b8 endpoints_put(Endpoints *e, Str name, Str base_url, ApiKind api, Arena *a) {
     if (!endpoint_name_ok(name)) return false;
     if (!base_url.n || base_url.n > AGENT_MAX_URL) return false;
-    if (model.n > AGENT_MAX_MODEL_NAME) return false;
     size_t i = endpoints_find(e, name);
     if (i == ENDPOINT_NONE) {
         if (e->n >= AGENT_MAX_ENDPOINTS) return false;
@@ -116,22 +116,22 @@ b8 endpoints_put(Endpoints *e, Str name, Str base_url, Str model, ApiKind api,
         Str dup = str_dup(a, name);
         if (!dup.p) return false;
         e->name[i] = dup;
+        e->model[i] = (Str){0};
         e->small_model[i] = (Str){0};
         e->n++;
     }
     Str url = str_dup(a, base_url);
-    Str mdl = str_dup_opt(a, model);
-    if (!url.p || (model.n && !mdl.p)) return false;
+    if (!url.p) return false;
     e->base_url[i] = url;
-    e->model[i] = mdl;
     e->api[i] = api;
     return true;
 }
 
 /* One endpoint at a time, since the rest of the config file is the user's and
- * a rewrite would cost them their comments and their order. */
-b8 endpoints_save_one(Str name, Str base_url, Str model, ApiKind api,
-                      Arena *scratch) {
+ * a rewrite would cost them their comments and their order. Only the two keys
+ * that name the connection are written: a `model` line under the section is
+ * the user's own default and is left exactly as they wrote it. */
+b8 endpoints_save_one(Str name, Str base_url, ApiKind api, Arena *scratch) {
     size_t mark = scratch->off;
     Str dir  = paths_dir(AGENT_DIR_CONFIG, scratch);
     Str path = paths_file(AGENT_DIR_CONFIG, AGENT_CONFIG_NAME, scratch);
@@ -140,20 +140,9 @@ b8 endpoints_save_one(Str name, Str base_url, Str model, ApiKind api,
         scratch->off = mark;
         return false;
     }
-    Str keys[3] = { STR("base_url"), STR("model"), STR("api") };
-    Str vals[3] = { base_url, model, api_name(api) };
-    b8 ok = settings_set(path, section, keys, vals, 3, 0600, scratch);
-    scratch->off = mark;
-    return ok;
-}
-
-b8 endpoints_remember_model(Str name, Str model, Arena *scratch) {
-    Endpoints e;
-    size_t mark = scratch->off;
-    endpoints_load(&e, scratch);
-    size_t i = endpoints_find(&e, name);
-    b8 ok = i != ENDPOINT_NONE
-         && endpoints_save_one(name, e.base_url[i], model, e.api[i], scratch);
+    Str keys[2] = { STR("base_url"), STR("api") };
+    Str vals[2] = { base_url, api_name(api) };
+    b8 ok = settings_set(path, section, keys, vals, 2, 0600, scratch);
     scratch->off = mark;
     return ok;
 }
@@ -309,9 +298,4 @@ b8 endpoints_delete(Str name, Arena *scratch, char *err, size_t err_cap) {
                  "be removed from %.*s", (i32)config_path.n, config_path.p);
     scratch->off = mark;
     return erased && cleared && profiles_removed && removed;
-}
-
-b8 endpoints_remember_active(Str name, Arena *scratch) {
-    if (name.n && !endpoint_name_ok(name)) return false;
-    return state_set(STR("provider"), name, scratch);
 }

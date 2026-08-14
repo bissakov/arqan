@@ -67,7 +67,7 @@ def test_help_starts_with_a_user_message_and_waits(ctx):
         "ignored files in picker: on",
         "text wrap: justified",
         "bash: disabled",
-        "/provider: Switch provider, or add one",
+        "/provider: Add, edit or remove a provider",
         "configured-one",
         "https://one.example/v1",
         "configured-two",

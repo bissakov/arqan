@@ -1,4 +1,9 @@
-"""The /provider command: user-defined endpoints, in either API."""
+"""The /provider command: connections, in either API.
+
+A provider is a connection and nothing else: what it serves is chosen in
+/model, so these cases are about storing, editing and removing one, and about
+what a session does not do when the set of connections changes.
+"""
 
 import stat
 
@@ -36,7 +41,7 @@ def active(ctx):
 
 def write_provider(ctx, name, base_url, model="mock-model", key="stored-key",
                    api=None):
-    """Seed a stored provider, the way an earlier session would have left it."""
+    """Seed a stored provider, plus the `model` default of a hand-written one."""
     p = ctx.config_file()
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a") as f:
@@ -51,15 +56,23 @@ def write_provider(ctx, name, base_url, model="mock-model", key="stored-key",
         c.chmod(0o600)
 
 
-def select_provider(ctx, name):
+def select_provider(ctx, name, model=None):
+    """The state pair: which provider serves the chosen model, and which."""
     p = ctx.state_file()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(f"provider = {name}\n")
+    p.write_text(f"provider = {name}\n"
+                 + (f"model = {model}\n" if model else ""))
+
+
+def first_run(ctx, **env):
+    """A session with nothing to talk to: no endpoint from the environment."""
+    return ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None,
+                     **env)
 
 
 def add_provider(s, ctx, name, url=None, key="sk-secret", api="openai",
                  submit_key=True):
-    """Drive the creation form to the model picker.
+    """Drive the creation form to its last answer.
 
     A key is followed by the store to keep it in; the default answer is the
     credentials file. `submit_key=False` stops with the key typed but not
@@ -94,43 +107,69 @@ def test_the_form_opens_when_nothing_is_stored(ctx):
     s = ctx.spawn()
     s.submit("/provider")
     s.wait_text("a name for this provider")
-    assert "pick a provider" not in s.text(), s.text()
+    assert "+ add a provider" not in s.text(), s.text()
     ctx.check_screen(s)
 
 
-def test_creating_a_provider_stores_it_and_switches_to_it(ctx):
-    """The form ends on the model picker and the entry lands in both files."""
+def test_creating_the_first_provider_ends_on_the_model_picker(ctx):
+    """A run with nothing to talk to is set up in one pass: connection, model.
+
+    The connection lands in the config file and its key in the credentials
+    file; the model is the state pair, since an id belongs to the endpoint
+    that listed it rather than to the section that connects to it.
+    """
     ctx.scenario("models=alpha|beta")
-    s = ctx.spawn()
+    s = first_run(ctx)
     s.submit("/provider")
     add_provider(s, ctx, "work")
     s.wait_status("pick a model")
     s.key("enter")
-    s.wait_text("provider: work")
+    s.wait_text("model: alpha @ work")
     assert s.status_field(1) == "alpha", s.status_line()
     assert s.status_field(3) == "work", s.status_line()
 
     assert store(ctx) == [
-        {"name": "work", "base_url": ctx.mock.base_url, "model": "alpha",
-         "api": "openai"}
+        {"name": "work", "base_url": ctx.mock.base_url, "api": "openai"}
     ], store(ctx)
     assert creds(ctx) == {"work": "sk-secret"}, creds(ctx)
     assert active(ctx) == "work", ctx.state()
+    assert ctx.state().get("model") == "alpha", ctx.state()
+
+
+def test_adding_a_provider_leaves_the_session_where_it_is(ctx):
+    """A connection is not a choice: the turn still goes where it went."""
+    write_provider(ctx, "work", ctx.mock.base_url, model="alpha", key="sk-work")
+    select_provider(ctx, "work", model="alpha")
+    ctx.scenario("models=alpha|beta,text=hi")
+    s = first_run(ctx)
+    s.submit("/provider")
+    s.key("down").sync()
+    assert "add a provider" in s.popup_selected(), s.popup_selected()
+    s.key("enter")
+    add_provider(s, ctx, "home", key="sk-home")
+    s.wait_text("provider: home (2 models)")
+    assert "pick a model" not in s.status_line(), s.status_line()
+    assert s.status_field(1) == "alpha", s.status_line()
+    assert s.status_field(3) == "work", s.status_line()
+    assert active(ctx) == "work", ctx.state()
+
+    s.submit("hello")
+    s.wait_turn_done()
+    assert ctx.mock.auth[-1] == "Bearer sk-work", ctx.mock.auth
 
 
 def test_provider_creation_does_not_ask_for_model_capabilities(ctx):
     """Provider setup owns transport; model capabilities are configured later."""
     ctx.scenario("models=alpha")
-    s = ctx.spawn(cols=160)
+    s = first_run(ctx, cols=160)
     s.submit("/provider")
     add_provider(s, ctx, "work")
     s.wait_status("pick a model")
     assert "reasoning efforts" not in s.text(), s.text()
     s.key("enter")
-    s.wait_text("provider: work")
+    s.wait_text("model: alpha @ work")
     assert store(ctx) == [{
-        "name": "work", "base_url": ctx.mock.base_url, "model": "alpha",
-        "api": "openai",
+        "name": "work", "base_url": ctx.mock.base_url, "api": "openai",
     }], store(ctx)
 
 
@@ -141,11 +180,11 @@ def test_a_provider_can_be_deleted_from_the_tui(ctx):
     with ctx.config_file().open("a") as f:
         f.write('[providers.home.models."mock-model"]\n'
                 'context_window = 12345\n')
-    select_provider(ctx, "work")
-    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
+    select_provider(ctx, "work", model="mock-model")
+    s = first_run(ctx)
     s.submit("/provider")
-    s.wait_status("pick a provider")
-    s.key(*(["down"] * 4), "enter")
+    s.wait_status("providers")
+    s.key(*(["down"] * 3), "enter")
     s.wait_status("delete a provider")
     s.key("down", "enter")
     s.wait_status("delete provider home?")
@@ -157,16 +196,36 @@ def test_a_provider_can_be_deleted_from_the_tui(ctx):
         ctx.settings(ctx.config_file())
     assert creds(ctx) == {"work": "sk-work"}, creds(ctx)
     assert active(ctx) == "work", ctx.state()
+    assert ctx.state().get("model") == "mock-model", ctx.state()
+
+
+def test_deleting_a_provider_forgets_its_pins(ctx):
+    """A pin names an endpoint, so one that is gone leaves no row behind."""
+    write_provider(ctx, "work", ctx.mock.base_url, key="sk-work")
+    p = ctx.state_file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("[favorites.work]\nmodels = alpha, beta\n")
+    s = first_run(ctx)
+    s.submit("/provider")
+    s.wait_status("providers")
+    s.key("down", "down", "enter")
+    s.wait_status("delete a provider")
+    s.key("enter")
+    s.wait_status("delete provider work?")
+    s.key("down", "enter")
+    s.wait_text("deleted provider: work")
+    assert "favorites.work" not in ctx.settings(ctx.state_file()), \
+        ctx.settings(ctx.state_file())
 
 
 def test_deleting_the_active_provider_leaves_no_stale_selection(ctx):
     """The removed current provider is forgotten and cannot receive a turn."""
     write_provider(ctx, "work", ctx.mock.base_url, key="sk-work")
-    select_provider(ctx, "work")
-    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
+    select_provider(ctx, "work", model="mock-model")
+    s = first_run(ctx)
     s.submit("/provider")
-    s.wait_status("pick a provider")
-    s.key("down", "down", "down", "enter")
+    s.wait_status("providers")
+    s.key("down", "down", "enter")
     s.wait_status("delete a provider")
     s.key("enter")
     s.wait_status("delete provider work?")
@@ -176,6 +235,7 @@ def test_deleting_the_active_provider_leaves_no_stale_selection(ctx):
     assert store(ctx) == [], store(ctx)
     assert creds(ctx) == {}, creds(ctx)
     assert active(ctx) is None, ctx.state()
+    assert "model" not in ctx.state(), "the pair goes with its endpoint"
     assert s.status_kind() == "setup", s.status_line()
     assert "mock-model" not in s.status_line(), s.status_line()
     assert "local" not in s.status_line(), s.status_line()
@@ -187,12 +247,12 @@ def test_deleting_the_active_provider_leaves_no_stale_selection(ctx):
 def test_the_key_never_lands_in_the_config_directory(ctx):
     """The settings are shareable; the secret is not, so they live apart."""
     ctx.scenario("models=alpha")
-    s = ctx.spawn()
+    s = first_run(ctx)
     s.submit("/provider")
     add_provider(s, ctx, "work", key="sk-topsecret")
     s.wait_status("pick a model")
     s.key("enter")
-    s.wait_text("provider: work")
+    s.wait_text("model: alpha @ work")
 
     for path in ctx.xdg.rglob("*"):
         if path.is_file():
@@ -248,23 +308,43 @@ def test_a_url_without_a_scheme_is_refused(ctx):
 def test_provider_creation_allows_an_unverified_manual_model(ctx):
     """A provider without /models support can still be configured explicitly."""
     ctx.scenario("models_status=401")
-    s = ctx.spawn()
+    s = first_run(ctx)
     s.submit("/provider")
     add_provider(s, ctx, "work")
+    s.wait_text("could not be listed")
+    s.key("down", "enter")               # store it anyway
     s.wait_text("models: HTTP 401; enter a model manually")
     s.type("manual-model").sync()
     s.key("enter")
-    s.wait_text("model entered manually; not verified")
-    assert store(ctx)[0]["model"] == "manual-model", store(ctx)
+    s.wait_text("entered manually; not verified")
+    assert "model" not in store(ctx)[0], store(ctx)
+    assert active(ctx) == "work", ctx.state()
+    assert ctx.state().get("model") == "manual-model", ctx.state()
     assert creds(ctx) == {"work": "sk-secret"}, creds(ctx)
 
 
+def test_a_provider_stored_without_a_model_says_which_step_is_left(ctx):
+    """Two steps, so the hint names the one that has not been taken."""
+    ctx.scenario("models=alpha|beta")
+    s = first_run(ctx)
+    s.submit("/provider")
+    add_provider(s, ctx, "work")
+    s.wait_status("pick a model")
+    s.key("esc")
+    s.wait_text("no model chosen yet")
+    s.wait_status("setup")
+    assert store(ctx)[0]["name"] == "work", store(ctx)
+    assert active(ctx) is None, ctx.state()
+    s.wait_text("no model yet")
+    assert "no provider yet" not in s.text(), s.text()
+
+
 def test_a_stored_provider_configures_the_next_run(ctx):
-    """The active entry outranks the config file: URL, model and key."""
-    write_provider(ctx, "work", ctx.mock.base_url, model="beta", key="sk-work")
-    select_provider(ctx, "work")
+    """The state pair names the endpoint, which brings its URL and key."""
+    write_provider(ctx, "work", ctx.mock.base_url, model="alpha", key="sk-work")
+    select_provider(ctx, "work", model="beta")
     ctx.scenario("text=hi")
-    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
+    s = first_run(ctx)
     assert s.status_field(1) == "beta", s.status_line()
     assert s.status_field(3) == "work", s.status_line()
     s.submit("hello")
@@ -273,38 +353,50 @@ def test_a_stored_provider_configures_the_next_run(ctx):
     assert ctx.mock.auth[-1] == "Bearer sk-work", ctx.mock.auth[-1]
 
 
-def test_switching_provider_picks_up_its_model_and_key(ctx):
-    """Two entries, and the picker moves the whole configuration at once."""
+def test_a_providers_model_line_is_only_a_default(ctx):
+    """A hand-written `model` speaks for a run that chose none of its own."""
     write_provider(ctx, "work", ctx.mock.base_url, model="alpha", key="sk-work")
-    write_provider(ctx, "home", ctx.mock.base_url, model="beta", key="sk-home")
     select_provider(ctx, "work")
     ctx.scenario("text=hi")
-    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
-    s.submit("/provider")
-    s.wait_status("pick a provider")
-    assert "current" in s.text(), s.text()
-    s.key("down").sync()
+    s = first_run(ctx)
+    assert s.status_field(1) == "alpha", s.status_line()
+
+
+def test_choosing_a_model_elsewhere_moves_the_whole_connection(ctx):
+    """The pick names an endpoint, so its URL, API and key come with it."""
+    write_provider(ctx, "work", ctx.mock.base_url, model="alpha", key="sk-work")
+    write_provider(ctx, "home", ctx.mock.base_url, model="beta", key="sk-home")
+    select_provider(ctx, "work", model="alpha")
+    ctx.scenario("models=alpha|beta,text=hi")
+    s = first_run(ctx)
+    s.submit("/model")
+    s.wait_status("pick a model")
+    assert "alpha @ work" in s.popup_selected(), s.popup_selected()
+    s.key("down", "down", "down").sync()
+    assert "beta @ home" in s.popup_selected(), s.popup_selected()
     s.key("enter")
-    s.wait_text("provider: home")
+    s.wait_text("model: beta @ home")
     assert s.status_field(1) == "beta", s.status_line()
+    assert s.status_field(3) == "home", s.status_line()
     s.submit("hello")
     s.wait_turn_done()
     assert ctx.mock.auth[-1] == "Bearer sk-home", ctx.mock.auth[-1]
     assert active(ctx) == "home", ctx.state()
+    assert ctx.state().get("model") == "beta", ctx.state()
 
 
-def test_switched_provider_survives_clearing_the_conversation(ctx):
+def test_the_chosen_connection_survives_clearing_the_conversation(ctx):
     """Clearing message storage must not reclaim the active connection."""
     write_provider(ctx, "work", ctx.mock.base_url, model="alpha", key="sk-work")
     write_provider(ctx, "home", ctx.mock.base_url, model="beta", key="sk-home")
-    select_provider(ctx, "work")
-    ctx.scenario("text=configuration+survived")
-    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
+    select_provider(ctx, "work", model="alpha")
+    ctx.scenario("models=alpha|beta,text=configuration+survived")
+    s = first_run(ctx)
 
-    s.submit("/provider")
-    s.wait_status("pick a provider")
-    s.key("down", "enter")
-    s.wait_text("provider: home")
+    s.submit("/model")
+    s.wait_status("pick a model")
+    s.key("down", "down", "down", "enter")
+    s.wait_text("model: beta @ home")
     s.submit("/clear")
     s.submit("overwrite reclaimed persistent storage with this prompt")
     s.wait_text("configuration survived")
@@ -316,35 +408,36 @@ def test_switched_provider_survives_clearing_the_conversation(ctx):
     assert s.status_field(3) == "home", s.status_line()
 
 
-def test_the_model_picker_writes_to_the_active_provider(ctx):
-    """A model id belongs to the endpoint that served it, not to the state."""
+def test_the_model_picker_writes_the_pair_and_not_the_config(ctx):
+    """The choice is a pair in state; the config file keeps what was written."""
     write_provider(ctx, "work", ctx.mock.base_url, model="alpha", key="sk-work")
-    select_provider(ctx, "work")
+    select_provider(ctx, "work", model="alpha")
     ctx.scenario("models=alpha|beta")
-    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
+    s = first_run(ctx)
     s.submit("/model")
     s.wait_status("pick a model")
     s.key("down").sync()
     s.key("enter")
     s.wait_text("model: beta")
-    assert store(ctx)[0]["model"] == "beta", store(ctx)
-    assert "model" not in ctx.state(), ctx.state()
+    assert store(ctx)[0]["model"] == "alpha", "the default is the user's line"
+    assert ctx.state().get("model") == "beta", ctx.state()
+    assert active(ctx) == "work", ctx.state()
 
 
 def test_creating_an_anthropic_provider_records_the_api(ctx):
     """The form asks which API a URL speaks, and the answer is stored with it."""
     ctx.scenario("models=claude-a|claude-b,text=hello+from+anthropic")
-    s = ctx.spawn()
+    s = first_run(ctx)
     s.submit("/provider")
     add_provider(s, ctx, "anth", key="sk-ant", api="anthropic")
     s.wait_status("pick a model")
     s.key("enter")
-    s.wait_text("provider: anth")
+    s.wait_text("model: claude-a @ anth")
 
     assert store(ctx) == [
-        {"name": "anth", "base_url": ctx.mock.base_url, "model": "claude-a",
-         "api": "anthropic"}
+        {"name": "anth", "base_url": ctx.mock.base_url, "api": "anthropic"}
     ], store(ctx)
+    assert ctx.state().get("model") == "claude-a", ctx.state()
 
     s.submit("hello")
     s.wait_text("hello from anthropic")
@@ -395,9 +488,9 @@ def test_an_unconfigured_model_does_not_inherit_reasoning(ctx):
     with ctx.config_file().open("a") as f:
         f.write('[providers.open.models."alpha"]\n'
                 "reasoning_efforts = low,high\nreasoning_effort = high\n")
-    select_provider(ctx, "open")
+    select_provider(ctx, "open", model="alpha")
     ctx.scenario("models=alpha|beta,text=ok")
-    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
+    s = first_run(ctx)
     s.submit("/model")
     s.wait_status("pick a model")
     s.key("down", "enter")
@@ -425,31 +518,32 @@ def test_anthropic_effort_enables_visible_adaptive_thinking(ctx):
 
 
 def test_provider_answers_take_the_composer_editing_keys(ctx):
-    """A question borrows the composer, so it answers the same editing keys."""
+    """A question borrows the composer, so it answers the same editing keys.
+
+    The keys are exercised on the base URL and then undone, so what the editor
+    stores is the URL that was already there.
+    """
     write_provider(ctx, "work", ctx.mock.base_url, key="sk-kept", api="openai")
-    select_provider(ctx, "work")
-    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
+    select_provider(ctx, "work", model="mock-model")
+    s = first_run(ctx)
     s.submit("/provider")
-    s.wait_status("pick a provider")
-    s.key("down", "down", "enter")
-    s.wait_status("edit a provider")
-    s.key("enter")
-
+    s.wait_status("providers")
+    s.key("enter")                             # Enter edits the connection
     s.wait_text("base URL  (Esc cancels)")
-    s.key("enter").sync()                      # keep the URL, on to the model
-    assert s.composer_text() == "mock-model", s.composer_text()
-
+    assert s.composer_text() == ctx.mock.base_url, s.composer_text()
     s.key("home").sync()
     s.type("x").sync()
-    assert s.composer_text() == "xmock-model", s.composer_text()
+    assert s.composer_text() == "x" + ctx.mock.base_url, s.composer_text()
     s.key("delete").sync()                     # the glyph at the cursor goes
-    assert s.composer_text() == "xock-model", s.composer_text()
+    assert s.composer_text() == "x" + ctx.mock.base_url[1:], s.composer_text()
     s.key("ctrl-k").sync()                     # kill the tail
     assert s.composer_text() == "x", s.composer_text()
     s.key("ctrl-y").sync()                     # and put it back
-    assert s.composer_text() == "xock-model", s.composer_text()
-    s.key("end").sync()
-    s.type("-2").sync()
+    assert s.composer_text() == "x" + ctx.mock.base_url[1:], s.composer_text()
+    s.key("home").sync()
+    s.key("delete").sync()                     # drop the x that was typed
+    s.type(ctx.mock.base_url[0]).sync()
+    assert s.composer_text() == ctx.mock.base_url, s.composer_text()
     s.key("enter").sync()
 
     s.wait_status("which API does it speak")
@@ -459,8 +553,8 @@ def test_provider_answers_take_the_composer_editing_keys(ctx):
     s.wait_text("provider: work")
 
     assert store(ctx) == [{
-        "name": "work", "base_url": ctx.mock.base_url,
-        "model": "xock-model-2", "api": "openai",
+        "name": "work", "base_url": ctx.mock.base_url, "model": "mock-model",
+        "api": "openai",
     }], store(ctx)
     assert creds(ctx) == {"work": "sk-kept"}, creds(ctx)
 
@@ -468,15 +562,13 @@ def test_provider_answers_take_the_composer_editing_keys(ctx):
 def test_provider_editor_can_clear_the_stored_key(ctx):
     """Clearing a credential is explicit and does not overload an empty answer."""
     write_provider(ctx, "work", ctx.mock.base_url, key="sk-remove", api="openai")
-    select_provider(ctx, "work")
-    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
+    select_provider(ctx, "work", model="mock-model")
+    s = first_run(ctx)
     s.submit("/provider")
-    s.wait_status("pick a provider")
-    s.key("down", "down", "enter")
-    s.wait_status("edit a provider")
+    s.wait_status("providers")
     s.key("enter")
     s.wait_text("base URL  (Esc cancels)")
-    s.key("enter", "enter")
+    s.key("enter")
     s.wait_status("which API does it speak")
     s.key("enter")
     s.wait_status("API key")
@@ -530,14 +622,17 @@ def test_reasoning_template_rejects_trailing_garbage(ctx):
 
 
 def test_credentials_readable_by_others_are_refused(ctx):
-    """A key anyone can read is one to rotate, so it is not loaded silently."""
+    """A key anyone can read is one to rotate, so it is not loaded silently.
+
+    The picker lists every provider, so the refusal is what that provider
+    contributes to the list instead of models.
+    """
     write_provider(ctx, "work", ctx.mock.base_url, model="alpha", key="sk-work")
     credentials_file(ctx).chmod(0o644)
     s = ctx.spawn()
-    s.submit("/provider")
-    s.wait_status("pick a provider")
-    s.key("enter")
+    s.submit("/model")
     s.wait_text("readable by others")
+    assert "could not list work" in s.text(), s.text()
     assert active(ctx) is None, ctx.state()
 
 
@@ -563,16 +658,17 @@ def test_a_message_without_a_provider_is_refused(ctx):
 
 
 def test_the_welcome_hint_goes_away_once_a_provider_exists(ctx):
-    """The line is a missing endpoint, so naming one retires it."""
+    """The line is a missing endpoint and model, so setting both retires it."""
     ctx.scenario("models=alpha")
-    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
+    s = first_run(ctx)
     s.wait_text("+ add a provider")
     s.submit("/provider")
     add_provider(s, ctx, "work")
     s.wait_status("pick a model")
     s.key("enter")
-    s.wait_text("provider: work")
+    s.wait_text("model: alpha @ work")
     assert "no provider yet" not in s.text(), s.text()
+    assert "no model yet" not in s.text(), s.text()
 
 
 def test_a_configured_endpoint_starts_a_conversation(ctx):
@@ -598,8 +694,8 @@ def test_deleting_removes_the_key_even_when_the_config_cannot_be_written(ctx):
     try:
         s = ctx.spawn()
         s.submit("/provider")
-        s.wait_status("pick a provider")
-        s.key("down", "down", "down", "enter")
+        s.wait_status("providers")
+        s.key("down", "down", "enter")
         s.wait_status("delete a provider")
         s.key("enter")
         s.wait_status("delete provider work?")
@@ -623,12 +719,12 @@ def test_a_new_provider_never_inherits_a_leftover_key(ctx):
     c.write_text("[providers.work]\nkey = sk-leftover\n")
     c.chmod(0o600)
 
-    s = ctx.spawn()
+    s = first_run(ctx)
     s.submit("/provider")
     add_provider(s, ctx, "work", key="")     # this endpoint needs no key
     s.wait_status("pick a model")
     s.key("enter")
-    s.wait_text("provider: work")
+    s.wait_text("model: alpha @ work")
     assert creds(ctx) == {}, creds(ctx)
 
 
@@ -637,14 +733,15 @@ def test_the_new_provider_form_lists_only_its_own_models(ctx):
     write_provider(ctx, "home", ctx.mock.base_url, model="beta", key="sk-home")
     p = ctx.state_file()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text("provider = home\n\n[favorites.home]\nmodels = beta\n")
+    p.write_text("[favorites.home]\nmodels = beta\n")
     ctx.scenario("models=alpha|beta")
-    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
+    s = first_run(ctx)
     s.submit("/provider")
-    s.wait_status("pick a provider")
+    s.wait_status("providers")
     s.key("down").sync()
     assert "add a provider" in s.popup_selected(), s.popup_selected()
     s.key("enter")
     add_provider(s, ctx, "work")
     s.wait_status("pick a model")
+    assert "@" not in s.text(), "one provider serves the list, so no row names one"
     assert "* beta" not in s.text(), s.text()

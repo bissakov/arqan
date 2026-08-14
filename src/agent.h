@@ -117,10 +117,9 @@ typedef bool     b8;
  * hundreds of models is the reason it is not the row count. */
 #define AGENT_MAX_POPUP        4096
 #define AGENT_MAX_MODELS       AGENT_MAX_POPUP
-#define AGENT_MAX_FAVORITES    16
-/* Pins from other providers the model picker offers below the active
- * provider's own, bounding what favorites_others reports. */
-#define AGENT_MAX_FOREIGN_PINS 64
+/* Pinned models, counted across every provider: the picker's rows are pairs,
+ * so one pin is one (provider, model). */
+#define AGENT_MAX_FAVORITES    64
 #define AGENT_MAX_KEY_ROWS     128
 #define AGENT_MAX_ENDPOINTS    32
 #define AGENT_MAX_ENDPOINT_NAME 64
@@ -409,36 +408,6 @@ b8     state_set_many(const Str *keys, const Str *vals, size_t n,
 // The same file, under a named section; an empty section names its head.
 b8     state_set_in(Str section, Str key, Str val, Arena *scratch);
 
-/* ---- favorite models -----------------------------------------------------
- * The models pinned to the top of the /model picker, kept in the state file
- * per provider. Order is the order they were pinned in.
- */
-typedef struct {
-    Str    model[AGENT_MAX_FAVORITES];
-    size_t n;
-} Favorites;
-
-/* Reads the list for `provider` (empty for a run with no named provider).
- * Every Str points into `a` and lives as long as it does. */
-size_t favorites_load(Favorites *f, Str provider, Arena *a);
-b8     favorites_has(const Favorites *f, Str model);
-/* The pins of every configured provider except `skip`, as pairs written to
- * `provider[i]` and `model[i]`, at most `max` of them and in the order the
- * providers are stored. This reads state and config files, never the
- * network, so a provider that is unreachable still contributes its pins.
- * Every Str points into `a` and lives as long as it does. */
-size_t favorites_others(Str skip, Arena *a, Str *provider, Str *model,
-                        size_t max);
-/* Pins `model` when it is not pinned and unpins it when it is, then writes
- * the list back. `*on` is the state the model ends in, whether or not the
- * write succeeded; false is returned with `err` filled in when the list is
- * full, the id cannot be stored or the file could not be written. `model` is
- * kept by reference, so it must outlive `f`; `scratch` is rewound before
- * returning, so anything `f` already holds must be allocated before the
- * call. */
-b8     favorites_toggle(Favorites *f, Str provider, Str model, Arena *scratch,
-                        b8 *on, char *err, size_t err_cap);
-
 /* ---- prompt history ------------------------------------------------------
  * A ring of past prompts, mirrored to $XDG_STATE_HOME/arqan/history as they
  * are submitted. `cursor` is the browse position; cursor == n is the live
@@ -521,22 +490,30 @@ b8  secret_store(SecretSource src, Str account, Str key,
 b8  secret_erase(SecretSource src, Str account, char *err, size_t err_cap);
 
 /* ---- endpoints -----------------------------------------------------------
- * The providers /provider creates and switches between: a name, a base URL,
- * the API that URL speaks and the model last used against it. Each is a
- * "[providers.<name>]" section of a config file, and its key alone lives
- * under the same section of $XDG_STATE_HOME/arqan/credentials.toml, so a
- * shared configuration cannot carry a secret; the `provider` setting names
- * the active one. An oversized field is dropped on load rather than
- * truncated, since a cut URL names a different service.
+ * The providers /provider creates: a name, a base URL and the API that URL
+ * speaks. A provider is a connection and nothing else. It is not switched
+ * between and it does not own the conversation: /model offers the models of
+ * every provider at once, and choosing one selects the connection that serves
+ * it. The `provider` setting records which provider serves the chosen model,
+ * beside the `model` that names it.
+ *
+ * Each is a "[providers.<name>]" section of a config file, and its key alone
+ * lives under the same section of $XDG_STATE_HOME/arqan/credentials.toml, so
+ * a shared configuration cannot carry a secret. An oversized field is dropped
+ * on load rather than truncated, since a cut URL names a different service.
  */
 typedef struct {
     Str     name[AGENT_MAX_ENDPOINTS];
     Str     base_url[AGENT_MAX_ENDPOINTS];
+    /* The model this provider names for itself, empty when it names none.
+     * Read and never written: /model records its choice as the `provider`
+     * and `model` pair in the state file, and this is the default a
+     * hand-written or pre-0.3 config file leaves under the section. */
     Str     model[AGENT_MAX_ENDPOINTS];
     /* The cheap model this provider names for arqan's own errands, naming a
      * session among them. Empty when it names none. A fallback only: the
-     * small model chosen in /model is one pair for every provider, and it
-     * sits above this. */
+     * small model chosen in /model carries the provider that serves it, and
+     * it sits above this. */
     Str     small_model[AGENT_MAX_ENDPOINTS];
     ApiKind api[AGENT_MAX_ENDPOINTS];
     size_t  n;
@@ -550,14 +527,14 @@ size_t endpoints_find(const Endpoints *e, Str name);
 /* A name that is a TOML bare key, which is what "[providers.<name>]" needs
  * to stay a header a TOML reader and arqan agree on. */
 b8     endpoint_name_ok(Str name);
-// False when the store is full or a field is past its cap.
-b8     endpoints_put(Endpoints *e, Str name, Str base_url, Str model,
-                     ApiKind api, Arena *a);
-// Writes one endpoint's section, leaving the rest of the config file alone.
-b8     endpoints_save_one(Str name, Str base_url, Str model, ApiKind api,
-                          Arena *scratch);
-// Where /model writes while a provider is active.
-b8     endpoints_remember_model(Str name, Str model, Arena *scratch);
+/* False when the store is full or a field is past its cap. The model fields
+ * of a new entry are empty: they are the provider's own defaults, which only
+ * a config file sets. */
+b8     endpoints_put(Endpoints *e, Str name, Str base_url, ApiKind api,
+                     Arena *a);
+/* Writes one endpoint's connection keys, leaving the rest of the config file
+ * alone. */
+b8     endpoints_save_one(Str name, Str base_url, ApiKind api, Arena *scratch);
 /* The provider's own small model, allocated in `scratch`. Empty when it has
  * none. */
 Str    endpoints_small_model(Str name, Arena *scratch);
@@ -575,8 +552,39 @@ b8     endpoints_set_key(Str name, Str key, SecretSource src, Arena *scratch,
                          char *err, size_t err_cap);
 // Removes the provider's config and credential sections.
 b8     endpoints_delete(Str name, Arena *scratch, char *err, size_t err_cap);
-// An empty name forgets the active provider.
-b8     endpoints_remember_active(Str name, Arena *scratch);
+
+/* ---- favorite models -----------------------------------------------------
+ * The models pinned to the top of the /model picker: (provider, model) pairs
+ * kept in the state file as one "[favorites.<provider>]" section per
+ * provider, and "[favorites]" for the endpoint a run names with a base URL
+ * alone. A pin is a pair because a model is: the same id at two providers is
+ * two models, and only one of them may be pinned.
+ *
+ * Order is the order they were pinned in, provider by provider.
+ */
+typedef struct {
+    Str    provider[AGENT_MAX_FAVORITES];   // empty for the unnamed endpoint
+    Str    model[AGENT_MAX_FAVORITES];
+    size_t n;
+} Favorites;
+
+/* Every pin of the unnamed endpoint and of each provider in `e`, which is
+ * what makes a pin of a provider that cannot be listed still reachable: this
+ * reads local state and never the network. Every Str points into `a` and
+ * lives as long as it does. */
+size_t favorites_load(Favorites *f, const Endpoints *e, Arena *a);
+b8     favorites_has(const Favorites *f, Str provider, Str model);
+/* Pins the pair when it is not pinned and unpins it when it is, then writes
+ * that provider's section back. `*on` is the state the pair ends in, whether
+ * or not the write succeeded; false is returned with `err` filled in when the
+ * list is full, the id cannot be stored or the file could not be written.
+ * Both strings are kept by reference, so they must outlive `f`; `scratch` is
+ * rewound before returning, so anything `f` already holds must be allocated
+ * before the call. */
+b8     favorites_toggle(Favorites *f, Str provider, Str model, Arena *scratch,
+                        b8 *on, char *err, size_t err_cap);
+// Drops a deleted provider's whole section, pins and all.
+b8     favorites_forget(Str provider, Arena *scratch);
 
 /* Optional user-owned capabilities for one exact (provider, model) pair.
  * Missing fields stay unavailable rather than being inferred from names. */
@@ -643,7 +651,7 @@ typedef struct {
  *   $XDG_CONFIG_HOME/arqan/config.toml   the user's; what /provider writes
  *   <dir>/.arqan/config.toml             the project's, nearest last
  *   $XDG_STATE_HOME/arqan/state.toml     what the UI last chose
- *   [providers.<name>]                  the active provider's own settings
+ *   [providers.<name>]                  the chosen model's provider
  *   ARQAN_<NAME>                         per invocation
  *   command-line options                applied to Config by cli_apply
  */
@@ -763,14 +771,16 @@ typedef struct {
     Str model;
     Str api_key;
     ApiKind api;
+    /* The provider serving `model`, empty when a base URL from a flag, the
+     * environment or a config file names the endpoint instead. */
     Str provider;
     /* A cheap model for arqan's own short errands, empty when none is
      * configured. Naming a session is the only one so far. */
     Str small_model;
-    /* Which endpoint serves `small_model`, empty for the active one. A
-     * named provider here is followed for the errand alone: the request
+    /* Which provider serves `small_model`, empty for this run's own endpoint.
+     * A named provider here is followed for the errand alone: the request
      * takes that endpoint's URL, API and key, and the conversation stays
-     * with the provider the session is on. */
+     * where it is. */
     Str small_provider;
     Str reasoning_efforts, thinking_budgets;
     Str reasoning_effort, thinking_budget;
@@ -815,13 +825,16 @@ typedef struct {
 
 // Fills `c` from resolved settings. `persist` holds what it copies.
 b8    config_load(Config *c, const Conf *conf, Arena *persist);
-/* Writes the state file's `model` key, which conf_resolve applies above the
- * config files and below ARQAN_MODEL. */
-b8    config_remember_model(Str model, Arena *scratch);
+/* Writes the state file's `provider` and `model` keys together, since the two
+ * name one model: an id belongs to the endpoint that serves it. An empty
+ * provider is the endpoint a base URL names on its own, and an empty model
+ * forgets the choice. conf_resolve applies both above the config files and
+ * below the environment. */
+b8    config_remember_model(Str provider, Str model, Arena *scratch);
 // Runtime choices are copied into Config itself and survive /clear.
 b8    config_set_model(Config *c, Str model);
 /* The small model and the provider that serves it, together: an empty model
- * clears both, and an empty provider means the active one. */
+ * clears both, and an empty provider means this run's own endpoint. */
 b8    config_set_small_model(Config *c, Str model, Str provider);
 b8    config_set_endpoint(Config *c, Str name, Str base_url, Str model,
                           ApiKind api, Str key);
@@ -1249,6 +1262,58 @@ i32     provider_run(Provider *p, char *err, size_t err_cap);
 size_t  provider_models(const Config *cfg, Arena *scratch, Str *out,
                         size_t max, char *err, size_t err_cap);
 
+/* ---- model catalog -------------------------------------------------------
+ * Every model every configured provider serves, in one list: what /model
+ * offers. An entry is a (provider, model) pair, because that is what a choice
+ * is. One id may be served by several providers, and picking an entry picks
+ * the connection that serves it.
+ *
+ * `provider` is empty for this run's own endpoint, which a base URL from a
+ * flag, the environment or a config file names without naming a provider.
+ * That endpoint is listed only when no provider was chosen, so a session
+ * never sees the same models twice under two labels.
+ *
+ * Listing is one request per provider, made where the picker opens rather
+ * than at startup: nothing is asked of an endpoint until the user asks for
+ * the list. A provider that cannot be listed lands in `failed` with the
+ * reason, and keeps whatever was pinned from it, since pins are local state.
+ *
+ * Entry providers are the names of `e`, kept by reference, so the Endpoints a
+ * catalog was built from must outlive it.
+ */
+typedef struct {
+    Str   *provider;
+    Str   *model;
+    size_t n, cap;
+    Str    failed[AGENT_MAX_ENDPOINTS];
+    Str    reason[AGENT_MAX_ENDPOINTS];
+    size_t n_failed;
+    // Entries were dropped because `cap` was reached, which a caller says.
+    b8     full;
+} Catalog;
+
+/* Room for `cap` entries, allocated in `a`. False when there is none. */
+b8     catalog_init(Catalog *c, size_t cap, Arena *a);
+/* Both strings are kept by reference, so they must outlive `c`. False when
+ * the catalog is full, which also sets `full`. */
+b8     catalog_add(Catalog *c, Str provider, Str model);
+/* The endpoints a catalog draws from, as provider names written to `out`: this
+ * run's own endpoint first when it names no provider, then every stored
+ * provider in the order they are stored. An empty name is the run's own. */
+size_t catalog_endpoints(const Config *cfg, const Endpoints *e, Str *out,
+                         size_t max);
+/* Named before each endpoint is asked, since one request per provider is a
+ * wait worth narrating. An empty name is the run's own endpoint. */
+typedef void (*CatalogProgress)(Str provider, void *ud);
+
+/* Lists each of those endpoints in turn. Model ids, `failed` and `reason` are
+ * copied into `out`; each reply is read and parsed in a region carved from
+ * `out` and reused, so listing every provider costs what listing the largest
+ * one does. Returns the number of entries. */
+size_t catalog_load(Catalog *c, const Config *cfg, const Endpoints *e,
+                    size_t cap, Arena *out, CatalogProgress progress,
+                    void *ud);
+
 /* ---- context gauge ------------------------------------------------------
  * What the status line's context field reports.
  *
@@ -1474,11 +1539,18 @@ void tui_set_setup(b8 on);
 // Visibility is remembered by /statusline.
 b8   tui_status_visible(TuiStatusItem item);
 void tui_set_status_visible(TuiStatusItem item, b8 visible);
-/* What a run with no endpoint says, on the welcome screen and again if a
- * message is submitted anyway. */
+/* What a run with nothing to talk to says, on the welcome screen and again if
+ * a message is submitted anyway. Which one applies is a question about the
+ * store: with no provider there is nothing to pick a model from, and with
+ * providers but no chosen model there is nothing to send a turn to. */
 #define NO_PROVIDER_HINT \
     STR("no provider yet: type /provider, then \"+ add a provider\"")
-void tui_needs_provider(b8 on);
+#define NO_MODEL_HINT \
+    STR("no model yet: type /model and pick one")
+/* The hint the welcome screen ends with, and the reason the status line reads
+ * "setup". Empty clears it. The text is not copied, so it must outlive the
+ * run; both hints above are literals. */
+void tui_set_setup_hint(Str hint);
 /* Hand `text` to the terminal's clipboard over OSC 52 and acknowledge it on
  * the status line. False for an empty payload or one past the sequence cap,
  * which is refused rather than truncated. */

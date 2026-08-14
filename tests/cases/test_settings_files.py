@@ -41,25 +41,32 @@ def test_a_hand_written_provider_section_configures_the_run(ctx):
 
 
 def test_writing_a_provider_keeps_the_rest_of_the_config(ctx):
-    """/model rewrites one key, not the file: comments and order survive."""
+    """/provider rewrites its own keys, not the file: comments and order survive."""
     ctx.write_config(
         CONFIG.format(url=ctx.mock.base_url).replace(
             "max_tokens = 1234", "max_tokens = 1234\nunknown_key = 1"))
     select_provider(ctx, "work")
-    ctx.scenario("models=alpha|beta")
+    ctx.scenario("models=alpha")
     s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
-    s.submit("/model")
-    s.wait_status("pick a model")
-    s.key("down").sync()
+    s.submit("/provider")
+    s.wait_status("providers")
+    s.key("enter")                       # Enter edits the connection
+    s.wait_text("base URL")
     s.key("enter")
-    s.wait_text("model: beta")
+    s.wait_status("which API does it speak")
+    s.key("down", "enter")               # anthropic, so a key does change
+    s.wait_status("API key")
+    s.key("enter")
+    s.wait_text("provider: work")
 
     text = ctx.config_file().read_text()
     assert "# my endpoints" in text, text
     settings = ctx.settings(ctx.config_file())
     assert settings[""]["max_tokens"] == "1234", settings
     assert settings[""]["unknown_key"] == "1", settings
-    assert settings["providers.work"]["model"] == "beta", settings
+    assert settings["providers.work"]["api"] == "anthropic", settings
+    assert settings["providers.work"]["model"] == "alpha", \
+        "a model line is the user's own default"
     assert settings["providers.work"]["base_url"] == ctx.mock.base_url, settings
 
 
@@ -82,8 +89,8 @@ def test_what_arqan_writes_is_toml(ctx):
     s.submit("/exit")
     s.wait_exit()
 
-    assert 'model = "beta"' in ctx.config_file().read_text()
     state = ctx.state_file().read_text()
+    assert 'model = "beta"' in state, state
     assert 'provider = "work"' in state, state
     assert "verbose_tools = true" in state, state
 
@@ -107,7 +114,7 @@ def test_a_provider_in_the_config_dirs_is_offered(ctx):
     )
     s = ctx.spawn(XDG_CONFIG_DIRS=str(etc))
     s.submit("/provider")
-    s.wait_status("pick a provider")
+    s.wait_status("providers")
     assert "sitewide" in s.text(), s.text()
     s.key("esc")
 

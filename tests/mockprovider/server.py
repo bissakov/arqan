@@ -736,6 +736,8 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "requests": len(srv.requests)})
         elif self.path.startswith("/v1/models"):
             scenario = srv.scenario
+            srv.listings.append(self.headers.get("Authorization")
+                                or self.headers.get("x-api-key"))
             if scenario.models_status != 200:
                 self._json(
                     scenario.models_status,
@@ -760,6 +762,7 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             srv.auth.clear()
             srv.keys.clear()
             srv.versions.clear()
+            srv.listings.clear()
             self._json(200, {"ok": True})
             return
         if self.path.startswith("/__scenario"):
@@ -1092,6 +1095,7 @@ class MockProvider:
         self.httpd.auth = []               # type: ignore[attr-defined]
         self.httpd.keys = []               # type: ignore[attr-defined]
         self.httpd.versions = []           # type: ignore[attr-defined]
+        self.httpd.listings = []           # type: ignore[attr-defined]
         self.httpd.web_user_agents = []     # type: ignore[attr-defined]
         self.httpd.web_request_times = []   # type: ignore[attr-defined]
         self.httpd.web_calls = []           # type: ignore[attr-defined]
@@ -1158,6 +1162,15 @@ class MockProvider:
         return self.httpd.versions  # type: ignore[attr-defined]
 
     @property
+    def listings(self) -> list:
+        """One entry per GET /v1/models, holding the key it carried.
+
+        The model picker lists every configured provider on each open, so a
+        case can count the requests and see whose key each one used.
+        """
+        return self.httpd.listings  # type: ignore[attr-defined]
+
+    @property
     def web_user_agents(self) -> list:
         """The User-Agent header of each fixture web request, if present."""
         return self.httpd.web_user_agents  # type: ignore[attr-defined]
@@ -1178,6 +1191,7 @@ class MockProvider:
         self.auth.clear()
         self.keys.clear()
         self.versions.clear()
+        self.listings.clear()
         self.web_user_agents.clear()
         self.web_request_times.clear()
         self.web_calls.clear()
