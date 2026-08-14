@@ -2429,6 +2429,57 @@ static void choose_settings(Agent *ag) {
     tui_settings(STR("settings"), settings_screen(ag));
 }
 
+/* Open all text behind block `i`. The view copies it before returning, so a
+ * decoded argument may live in the running request's scratch tail without
+ * making that tail part of the window's lifetime. */
+static b8 open_block_view(Agent *ag, size_t i) {
+    const Conv *c = ag->conv;
+    Str parts[2] = {0};
+    size_t shown[2] = {0};
+    size_t part_n = 0;
+    char name_buf[64];
+    i32 len = 0;
+    size_t scratch_mark = ag->scratch->off;
+    if (c->role[i] == M_USER && conv_is_shell(c, i)) {
+        parts[part_n] = render_shell_text(c->text[i], &shown[part_n]);
+        part_n++;
+        parts[part_n] = render_result_text(STR("shell"), c->shell_out[i],
+                                           &shown[part_n]);
+        part_n++;
+        len = snprintf(name_buf, 32, "shell run");
+    } else if (c->role[i] == M_ASSISTANT && conv_is_call(c, i)) {
+        Str name = c->tool_name[i];
+        parts[part_n] = render_call_text(name, c->text[i], ag->scratch,
+                                         &shown[part_n]);
+        part_n++;
+        len = snprintf(name_buf, sizeof name_buf, "%.*s input", (i32)name.n,
+                       name.p);
+    } else if (c->role[i] == M_TOOL) {
+        size_t call = call_slot(c, i);
+        Str name = call == CONV_NONE ? (Str){0} : c->tool_name[call];
+        parts[part_n] = render_result_text(name, c->text[i], &shown[part_n]);
+        part_n++;
+        len = snprintf(name_buf, sizeof name_buf, "%.*s output", (i32)name.n,
+                       name.p);
+    } else {
+        return false;
+    }
+    Str title = { name_buf, len > 0 && (size_t)len < sizeof name_buf
+                            ? (size_t)len : 0 };
+    size_t start = 0, lines = 0;
+    for (size_t p = 0; p < part_n; p++) {
+        if (!parts[p].n) continue;
+        if (lines) lines++;             // blank row between shell input/output
+        size_t part_top = lines;
+        size_t part_lines = str_lines(parts[p]);
+        lines += part_lines;
+        if (part_lines > shown[p]) start = part_top + shown[p];
+    }
+    b8 opened = lines && tui_view_open(title, parts, part_n, start);
+    ag->scratch->off = scratch_mark;
+    return opened;
+}
+
 /* Enter while the assistant is working. Only the commands that leave the
  * conversation, the request in flight and the streaming transcript alone run
  * where they stand; the screens they open are driven by the same poll that
@@ -2440,16 +2491,19 @@ static b8 on_busy_command(Str line, void *ud) {
     if (!line.n || line.n >= sizeof cmd) return false;
     memcpy(cmd, line.p, line.n);
     cmd[line.n] = '\0';
-    /* A click on a block's tail folds what is already on screen, so it is
-     * taken where it lands. The transcript itself is rebuilt once the turn
-     * has stopped writing to it, since a rebuild now would drop the reply
-     * still streaming into it. */
+    /* A click on a block's tail is answered where it lands: with a window
+     * over the block while the turn owns the transcript, and by folding the
+     * block itself once the turn has stopped writing to it. */
     if (!strncmp(cmd, "/expand ", 8)) {
         unsigned long id = strtoul(cmd + 8, NULL, 10);
         if (!id || id > ag->conv->n) return false;
+        if (tui_busy()) {
+            if (!open_block_view(ag, id - 1))
+                tui_notice(STR("could not open that block in a window"));
+            return true;
+        }
         ag->conv->expanded[id - 1] = !ag->conv->expanded[id - 1];
         rerender_or_defer(ag);
-        if (tui_busy()) tui_notice(STR("the block folds when the turn ends"));
         return true;
     }
     Str name = { cmd, resolve_alias(cmd, line.n, sizeof cmd) };
@@ -3120,7 +3174,13 @@ i32 main(i32 argc, char **argv) {
             persist.off = session_mark;
             arena_reset(&scratch);
             session_begin(&sess);   // the next message starts a new file
+            /* Do not expose the clear operation's transient unknown context
+             * frame: the cleared screen and the estimate the empty
+             * conversation already has are one paint. */
+            tui_batch_begin();
             tui_clear();
+            ctx_sync(&g_ctx, &conv);
+            tui_batch_end();
             continue;
         }
         if (!strcmp(line, "/mode")) {

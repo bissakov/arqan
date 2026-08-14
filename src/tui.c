@@ -23,6 +23,7 @@
 #define TUI_SEL_ROWS 512         // screen rows mirrored for selection
 #define TUI_SEL_ROW_BYTES 2048   // visible bytes kept per screen row
 #define TUI_SEL_BYTES (1u << 16) // clipboard payload cap
+#define TUI_VIEW_BYTES AGENT_RESP_BUF // copied text of one complete tool block
 #define TUI_POPUP_ROWS 8         // visual popup rows shown at once
 #define TUI_PICK_SEARCH_MIN 10   // entries above which a picker searches
 #define TUI_PATH_ENTS 256        // paths the '@' popup keeps for one word
@@ -305,12 +306,50 @@ typedef struct {
     char queued[AGENT_LINE_BUF];            // to g_tui.queued_n
     char draft[AGENT_LINE_BUF];             // to g_tui.draft_n
     char kill[AGENT_LINE_BUF];              // to g_tui.kill_n
+    char view[TUI_VIEW_BYTES];               // independent tool-block window
     char row_text[TUI_SEL_ROWS][TUI_SEL_ROW_BYTES];  // g_tui.row_text_n[r]
 } TuiBulk;
 
 static TuiState g_tui;
 static TuiBulk g_bulk;
 static volatile sig_atomic_t g_winch = 0;
+
+typedef struct {
+    b8 active;
+    b8 modal;
+    b8 close_down;
+    char title[128];
+    size_t title_n;
+    size_t text_n;
+    size_t start_line;
+    size_t top;
+    size_t wrap_cols;
+    size_t total_rows;
+    size_t ckpt_off[TUI_CKPTS];
+    size_t ckpt_n;
+    size_t ckpt_step;
+    size_t top_row, left_col, right_col, bottom_row;
+} View;
+
+static View g_view;
+
+/* Set while the window paints its own rows. Every other painter is locked out
+ * of them: the transcript erases a whole row before it writes, so a turn
+ * streaming behind the window would otherwise trade the same cells with it
+ * frame after frame. */
+static b8 g_view_paint;
+
+static b8 view_locks_row(size_t row) {
+    return g_view.active && !g_view_paint
+        && row >= g_view.top_row && row <= g_view.bottom_row;
+}
+
+/* Called on the frames the window is not laid out for, so its old rectangle
+ * cannot keep rows from painting. */
+static void view_unlock(void) {
+    g_view.top_row = 1;
+    g_view.bottom_row = 0;
+}
 
 static void on_winch(i32 sig) { (void)sig; g_winch = 1; }
 
@@ -861,6 +900,7 @@ static u64 row_hash(Str prefix, Str text, u8 kind) {
 }
 
 static b8 row_changed(size_t row, u64 hash, b8 force) {
+    if (view_locks_row(row)) return false;
     size_t index = row - 1;
     if (!force && g_tui.row_hash[index] == hash) return false;
     g_tui.row_hash[index] = hash;
@@ -1884,6 +1924,211 @@ static void update_notice_row(size_t screen_row, Str text, size_t screen_col,
     style(S_RESET);
 }
 
+static void view_ckpt_record(size_t row, size_t off) {
+    if (row % g_view.ckpt_step
+        || row / g_view.ckpt_step != g_view.ckpt_n)
+        return;
+    if (g_view.ckpt_n == TUI_CKPTS) {
+        for (size_t i = 0; i * 2 < g_view.ckpt_n; i++)
+            g_view.ckpt_off[i] = g_view.ckpt_off[i * 2];
+        g_view.ckpt_n = (g_view.ckpt_n + 1) / 2;
+        g_view.ckpt_step *= 2;
+        if (row % g_view.ckpt_step
+            || row / g_view.ckpt_step != g_view.ckpt_n)
+            return;
+    }
+    g_view.ckpt_off[g_view.ckpt_n++] = off;
+}
+
+/* Re-index only when resize changes wrapping. Streaming behind the window
+ * then repaints a visible page without rescanning the complete tool text. */
+static void view_reindex(size_t cols) {
+    Str text = { g_bulk.view, g_view.text_n };
+    g_view.wrap_cols = cols;
+    g_view.ckpt_n = 0;
+    g_view.ckpt_step = 64;
+    size_t row = 0, off = 0;
+    view_ckpt_record(row, off);
+    for (;;) {
+        Row r = row_break(text, off, cols, 0);
+        if (r.hard && r.end >= text.n) break;
+        off = r.next;
+        row++;
+        view_ckpt_record(row, off);
+    }
+    g_view.total_rows = row + 1;
+}
+
+static size_t view_line_row(size_t line, size_t cols) {
+    Str text = { g_bulk.view, g_view.text_n };
+    size_t row = 0, logical = 0;
+    for (size_t off = 0;;) {
+        if (logical >= line) return row;
+        Row r = row_break(text, off, cols, 0);
+        if (r.hard) logical++;
+        if (r.hard && r.end >= text.n) return row;
+        off = r.next;
+        row++;
+    }
+}
+
+static size_t view_seek_row(size_t want, size_t cols) {
+    Str text = { g_bulk.view, g_view.text_n };
+    size_t slot = want / g_view.ckpt_step;
+    if (slot >= g_view.ckpt_n) slot = g_view.ckpt_n - 1;
+    size_t row = slot * g_view.ckpt_step;
+    size_t off = g_view.ckpt_off[slot];
+    while (row < want) {
+        Row r = row_break(text, off, cols, 0);
+        if (r.hard && r.end >= text.n) break;
+        off = r.next;
+        row++;
+    }
+    return off;
+}
+
+static void paint_view_border(size_t row, size_t col, size_t width,
+                              size_t screen_cols, Str left, Str fill,
+                              Str right, b8 force) {
+    u64 hash = row_hash(left, right, ROW_POPUP);
+    hash = hash_add(hash, &width, sizeof width);
+    hash = hash_add(hash, &g_view.top, sizeof g_view.top);
+    size_t c0, c1;
+    sel_row_range(row, &c0, &c1);
+    hash = hash_add(hash, &c0, sizeof c0);
+    hash = hash_add(hash, &c1, sizeof c1);
+    if (!row_changed(row, hash, force)) return;
+    // The erase takes the scrollbar cell with it.
+    g_tui.bar_valid = false;
+    cup(row, 1);
+    put_str(S_RESET "\033[2K");
+    cup(row, col);
+    style(S_POPUP_BG S_MUTED);
+    put_text(left.p, left.n);
+    for (size_t i = 2; i < width; i++) put_text(fill.p, fill.n);
+    put_text(right.p, right.n);
+    style(S_RESET);
+    paint_sel_tail(row, screen_cols);
+    style(S_RESET);
+}
+
+static void paint_view_header(size_t row, size_t col, size_t width,
+                              size_t screen_cols, b8 force) {
+    Str title = { g_view.title, g_view.title_n };
+    u64 hash = row_hash(title, STR("[x]"), ROW_POPUP);
+    hash = hash_add(hash, &width, sizeof width);
+    size_t c0, c1;
+    sel_row_range(row, &c0, &c1);
+    hash = hash_add(hash, &c0, sizeof c0);
+    hash = hash_add(hash, &c1, sizeof c1);
+    if (!row_changed(row, hash, force)) return;
+    g_tui.bar_valid = false;
+    cup(row, 1);
+    put_str(S_RESET "\033[2K");
+    cup(row, col);
+    style(S_POPUP_BG S_CYAN);
+    put_text("│", sizeof "│" - 1);
+    size_t inner = width > 2 ? width - 2 : 0;
+    size_t used = 0;
+    if (inner) put_safe_clipped(STR(" "), inner, &used);
+    style(S_POPUP_BG S_BOLD S_TEXT);
+    size_t title_room = inner > used + 5 ? inner - used - 5 : 0;
+    put_safe_clipped(title, title_room, &used);
+    style(S_POPUP_BG S_MUTED);
+    while (used + 4 < inner) { put_text(" ", 1); used++; }
+    if (used < inner) put_safe_clipped(STR("[x]"), inner - used, &used);
+    while (used < inner) { put_text(" ", 1); used++; }
+    style(S_POPUP_BG S_CYAN);
+    put_text("│", sizeof "│" - 1);
+    style(S_RESET);
+    paint_sel_tail(row, screen_cols);
+    style(S_RESET);
+}
+
+static void paint_view_body_row(size_t screen_row, size_t col, size_t width,
+                                size_t screen_cols, Str text, b8 force) {
+    u64 hash = row_hash(text, STR("view"), ROW_POPUP);
+    hash = hash_add(hash, &g_view.top, sizeof g_view.top);
+    size_t c0, c1;
+    sel_row_range(screen_row, &c0, &c1);
+    hash = hash_add(hash, &c0, sizeof c0);
+    hash = hash_add(hash, &c1, sizeof c1);
+    if (!row_changed(screen_row, hash, force)) return;
+    g_tui.bar_valid = false;
+    cup(screen_row, 1);
+    put_str(S_RESET "\033[2K");
+    cup(screen_row, col);
+    style(S_POPUP_BG S_CYAN);
+    put_text("│", sizeof "│" - 1);
+    style(S_POPUP_BG S_TEXT);
+    size_t inner = width > 2 ? width - 2 : 0;
+    size_t used = 0;
+    if (inner) put_safe_clipped(text, inner, &used);
+    while (used < inner) { put_text(" ", 1); used++; }
+    style(S_POPUP_BG S_CYAN);
+    put_text("│", sizeof "│" - 1);
+    style(S_RESET);
+    paint_sel_tail(screen_row, screen_cols);
+    style(S_RESET);
+}
+
+/* The rectangle is measured before anything else paints, so the rows the
+ * window owns are known while the transcript beneath it is still deciding
+ * what to write. */
+static void view_layout(size_t rows, size_t cols) {
+    if (!g_view.active || rows < 7 || cols < 20) { view_unlock(); return; }
+    size_t width = cols * 4 / 5;
+    if (width < 20) width = 20;
+    if (width > cols - 2) width = cols - 2;
+    size_t height = rows * 2 / 3;
+    if (height < 7) height = 7;
+    if (height > rows - 2) height = rows - 2;
+    size_t left = (cols - width) / 2 + 1;
+    size_t top = (rows - height) / 2 + 1;
+    size_t inner_cols = width - 2;
+    size_t body_rows = height - 3;
+    if (g_view.wrap_cols != inner_cols) {
+        view_reindex(inner_cols);
+        g_view.top = view_line_row(g_view.start_line, inner_cols);
+    }
+    size_t total = g_view.total_rows;
+    size_t max_top = total > body_rows ? total - body_rows : 0;
+    if (g_view.top > max_top) g_view.top = max_top;
+    g_view.top_row = top;
+    g_view.left_col = left;
+    g_view.right_col = left + width - 1;
+    g_view.bottom_row = top + height - 1;
+}
+
+static void paint_view(size_t cols, b8 force) {
+    if (!g_view.active || g_view.bottom_row < g_view.top_row) return;
+    size_t top = g_view.top_row;
+    size_t left = g_view.left_col;
+    size_t width = g_view.right_col - g_view.left_col + 1;
+    size_t height = g_view.bottom_row - g_view.top_row + 1;
+    size_t inner_cols = width - 2;
+    size_t body_rows = height - 3;
+    size_t total = g_view.total_rows;
+    g_view_paint = true;
+    paint_view_border(top, left, width, cols,
+                      STR("┌"), STR("─"), STR("┐"), force);
+    paint_view_header(top + 1, left, width, cols, force);
+    Str all = { g_bulk.view, g_view.text_n };
+    size_t off = view_seek_row(g_view.top, inner_cols);
+    for (size_t r = 0; r < body_rows; r++) {
+        Str line = {0};
+        if (g_view.top + r < total) {
+            Row br = row_break(all, off, inner_cols, 0);
+            line = (Str){ all.p + off, br.end - off };
+            off = br.next;
+        }
+        paint_view_body_row(top + 2 + r, left, width, cols, line, force);
+    }
+    paint_view_border(top + height - 1, left, width, cols,
+                      STR("└"), STR("─"), STR("┘"), force);
+    g_view_paint = false;
+}
+
 /* The search box, and the cells its caret sits at. It is an overlay of its
  * own rather than a notice: a notice answers the last command and is retired
  * by the next keystroke, while a search survives every keystroke it is being
@@ -2087,7 +2332,8 @@ static void paint_completions(size_t top_row, size_t rows, size_t screen_col,
             update_popup_row(top_row + painted,
                              (Str){ name, nr.end - name_start },
                              (Str){ desc, dr.end - desc_start }, mark,
-                             i == g_tui.comp_sel, first_line, false,
+                             i == g_tui.comp_sel,
+                             first_line, false,
                              name_cells, screen_col, screen_cols, body_cols,
                              force);
             painted++;
@@ -2250,6 +2496,7 @@ static void paint_scrollbar(size_t first_row, size_t total_rows,
         thumb_top = scroll_range ? first_row * travel / scroll_range : 0;
     }
     for (size_t i = 0; i < visible_rows; i++) {
+        if (view_locks_row(i + 1)) continue;
         cup(i + 1, screen_col);
         style(S_RESET);
         if (!scrollable) {
@@ -2324,6 +2571,7 @@ static void repaint(void) {
     size_t physical_rows, physical_cols;
     terminal_size(&physical_rows, &physical_cols);
     if (physical_rows < TUI_MIN_ROWS || physical_cols < TUI_MIN_COLS) {
+        view_unlock();
         size_t paint_rows = physical_rows ? physical_rows : 24;
         size_t paint_cols = physical_cols ? physical_cols : 80;
         if (paint_rows > TUI_MAX_ROWS) paint_rows = TUI_MAX_ROWS;
@@ -2358,6 +2606,10 @@ static void repaint(void) {
     screen_size(&rows, &cols);
     b8 force = !g_tui.frame_valid || g_tui.size_warning || g_winch
              || rows != g_tui.painted_rows || cols != g_tui.painted_cols;
+    /* Measured here rather than where it paints: the rows it covers neither
+     * paint nor invalidate from the transcript, and that has to be known
+     * before the transcript writes them. */
+    view_layout(rows, cols);
     /* Rows not painted from the transcript carry no offset, so the mapping is
      * rebuilt rather than aged. */
     memset(g_tui.row_src, 0xff, sizeof g_tui.row_src);
@@ -2411,7 +2663,8 @@ static void repaint(void) {
      * transcript rather than pushing it up, so opening one hides the last
      * rows and leaves every other where the reader last saw it. One row
      * always stays uncovered. */
-    size_t popup_rows = popup_visual_rows(body_cols, TUI_POPUP_ROWS);
+    size_t popup_cap = TUI_POPUP_ROWS;
+    size_t popup_rows = popup_visual_rows(body_cols, popup_cap);
     size_t notice_rows = g_tui.notice_n ? 1 : 0;
     size_t pick_notice_rows = g_tui.pick_notice_n ? 1 : 0;
     size_t find_rows = g_tui.find_open ? 1 : 0;
@@ -2647,7 +2900,12 @@ static void repaint(void) {
         style(S_RESET);
     }
 
-    if (g_tui.editing) {
+    /* Unlike completion and settings, this is a real centered window. It is
+     * painted last, over transcript and chrome alike, and owns no picker or
+     * completion state. */
+    paint_view(cols, force);
+
+    if (g_tui.editing && !g_view.active) {
         /* The caret belongs to whatever is being typed into: while the search
          * box holds the keyboard, that is the query rather than the draft. */
         size_t screen_cursor_row = find_rows
@@ -2686,6 +2944,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
     /* The control block alone: g_bulk is addressed through the counters this
      * clears, so its bytes are already unreachable. */
     memset(&g_tui, 0, sizeof g_tui);
+    memset(&g_view, 0, sizeof g_view);
     keys_selfcheck();
     for (size_t i = 0; i < TUI_STATUS_N; i++)
         g_tui.status_visible[i] = (status_fields & ((u64)1 << i)) != 0;
@@ -2767,6 +3026,7 @@ void tui_stop(void) {
         flush_out();
     }
     if (!g_tui.raw) return;
+    g_view.active = false;
     agent_log_set_sink(NULL, NULL);
     if (g_tui.fullscreen) {
         put_str("\033[?2004l\033[?1006l\033[?1003l\033[?25h\033[?7h"
@@ -3244,9 +3504,9 @@ void tui_clear(void) {
  * on, since those are held in `pend_nl` until content follows them. */
 static void transcript_put(Str s) {
     g_tui.notice_n = 0;
-    /* New output shifts the rows a highlight was drawn over; only a live drag
-     * keeps it, since the pointer is still choosing the range. */
-    if (!g_tui.sel_drag) sel_clear();
+    /* New output shifts a transcript highlight, but not a range in the
+     * independent window painted over it. */
+    if (!g_tui.sel_drag && !g_view.active) sel_clear();
 
     if (s.n >= TUI_TRANSCRIPT_CAP) {
         s.p += s.n - (TUI_TRANSCRIPT_CAP - 1);
@@ -4183,6 +4443,94 @@ static b8 scroll_key(i32 key) {
     return true;
 }
 
+static void view_close(void) {
+    if (!g_view.active) return;
+    g_view.active = false;
+    g_view.modal = false;
+    g_view.close_down = false;
+    /* Rows under the rectangle have stale hashes from before it opened; the
+     * next frame must restore all of them, not only rows whose source moved. */
+    g_tui.frame_valid = false;
+    sel_clear();
+    repaint();
+}
+
+static size_t view_visible_rows(void) {
+    return g_view.bottom_row > g_view.top_row + 2
+         ? g_view.bottom_row - g_view.top_row - 2 : 1;
+}
+
+static void view_move(i32 delta) {
+    size_t visible = view_visible_rows();
+    size_t max_top = g_view.total_rows > visible
+                   ? g_view.total_rows - visible : 0;
+    if (delta < 0) {
+        size_t step = (size_t)(-delta);
+        g_view.top = g_view.top > step ? g_view.top - step : 0;
+    } else {
+        size_t step = (size_t)delta;
+        g_view.top = step > max_top - (g_view.top < max_top ? g_view.top
+                                                            : max_top)
+                   ? max_top : g_view.top + step;
+    }
+}
+
+static b8 view_close_cell(i32 row, i32 col) {
+    if (row < 1 || col < 1) return false;
+    size_t r = (size_t)row, c = (size_t)col;
+    return r == g_view.top_row + 1 && c >= g_view.right_col - 4
+        && c < g_view.right_col;
+}
+
+/* One byte for the independent tool-text window. False closes it. Mouse
+ * selection uses the same screen snapshot and OSC 52 path as the transcript. */
+static b8 view_feed(i32 c) {
+    if (!g_view.active) return false;
+    if (c == -3) { repaint(); return true; }
+    if (c < 0) return false;
+    if (c == 0x03 || c == 0x04 || c == '\r' || c == '\n' || c == 'q')
+        return false;
+    if (c == 0x0c) { g_tui.frame_valid = false; repaint(); return true; }
+    if (c != 0x1b) return true;
+
+    i32 key = read_escape();
+    size_t page = view_visible_rows();
+    if (page > 1) page--;
+    if (key == KEY_NONE) return false;
+    if (key == KEY_UP) view_move(-1);
+    else if (key == KEY_DOWN) view_move(1);
+    else if (key == KEY_PAGE_UP) view_move(-(i32)page);
+    else if (key == KEY_PAGE_DOWN) view_move((i32)page);
+    else if (key == KEY_WHEEL_UP) view_move(-3);
+    else if (key == KEY_WHEEL_DOWN) view_move(3);
+    else if (key == KEY_TOP || key == KEY_HOME) g_view.top = 0;
+    else if (key == KEY_BOTTOM || key == KEY_END) {
+        size_t visible = view_visible_rows();
+        g_view.top = g_view.total_rows > visible
+                   ? g_view.total_rows - visible : 0;
+    } else if (key == KEY_MOUSE_DOWN) {
+        g_view.close_down = view_close_cell(g_mouse_row, g_mouse_col);
+        if (!g_view.close_down) sel_begin(g_mouse_row, g_mouse_col);
+    } else if (key == KEY_MOUSE_DRAG) {
+        g_view.close_down = false;
+        sel_extend(g_mouse_row, g_mouse_col);
+    } else if (key == KEY_MOUSE_UP) {
+        b8 close = g_view.close_down
+                && view_close_cell(g_mouse_row, g_mouse_col);
+        g_view.close_down = false;
+        sel_finish();
+        if (close) return false;
+    }
+    repaint();
+    return true;
+}
+
+static void view_run(void) {
+    g_view.modal = true;
+    while (g_view.active && view_feed(rbyte())) { }
+    view_close();
+}
+
 /* The search box is the notice row, which already sits above the popup. A
  * settings screen is acted on rather than chosen from, so an empty box also
  * carries the keys that act. */
@@ -4201,7 +4549,8 @@ static void pick_search_row(Str query, b8 settings) {
 
 /* A picker is answered by choosing a row, so Enter takes it and Escape
  * declines; a settings screen is acted on, so Space, Enter and the arrows act
- * on the selected row and Escape closes it. */
+ * on the selected row and Escape closes it. An info page is only read, so its
+ * rows answer nothing and Enter closes it the way Escape does. */
 typedef enum { PICK_CHOOSE, PICK_SETTINGS, PICK_INFO } PickKind;
 
 /* A modal list over the same popup the composer completes with; only the
@@ -4285,6 +4634,8 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
     /* A screen left open during a turn yields to a modal caller, whose answer
      * the agent loop is waiting for. Two screens have no keyboard to share,
      * so anything else is refused. */
+    if (g_view.active && modal && !g_view.modal) view_close();
+    if (g_view.active) return false;
     if (g_pick.active && modal && !g_pick.modal) pick_close();
     if (g_pick.active) return false;
     if (n > AGENT_MAX_POPUP) n = AGENT_MAX_POPUP;
@@ -4601,7 +4952,55 @@ b8 tui_info_open(Str title, const TuiCmd *rows, size_t n) {
                      NULL, (Str){0}, false);
 }
 
-b8 tui_screen_open(void) { return g_pick.active; }
+b8 tui_view_open(Str title, const Str *parts, size_t n, size_t start) {
+    if (!g_tui.fullscreen || !parts || !n || g_pick.active || g_view.active
+        || terminal_too_small())
+        return false;
+    size_t need = 0, nonempty = 0;
+    for (size_t p = 0; p < n; p++) {
+        if (!parts[p].n) continue;
+        if (nonempty && need == TUI_VIEW_BYTES) return false;
+        if (nonempty) need++;
+        for (size_t i = 0; i < parts[p].n; i++) {
+            u8 c = (u8)parts[p].p[i];
+            size_t add = c == '\t' ? 4 : c == '\r' || (c < 0x20 && c != '\n')
+                                              || c == 0x7f ? 0 : 1;
+            if (add > TUI_VIEW_BYTES - need) return false;
+            need += add;
+        }
+        nonempty++;
+    }
+    if (!need || !nonempty) return false;
+
+    size_t out = 0;
+    nonempty = 0;
+    for (size_t p = 0; p < n; p++) {
+        if (!parts[p].n) continue;
+        if (nonempty) g_bulk.view[out++] = '\n';
+        for (size_t i = 0; i < parts[p].n; i++) {
+            u8 c = (u8)parts[p].p[i];
+            if (c == '\t') {
+                memcpy(g_bulk.view + out, "    ", 4);
+                out += 4;
+            } else if (c == '\n' || c >= 0x20) {
+                if (c != 0x7f) g_bulk.view[out++] = (char)c;
+            }
+        }
+        nonempty++;
+    }
+    memset(&g_view, 0, sizeof g_view);
+    g_view.active = true;
+    g_view.start_line = start;
+    g_view.text_n = out;
+    g_view.title_n = title.n < sizeof g_view.title ? title.n
+                                                   : sizeof g_view.title - 1;
+    if (g_view.title_n) memcpy(g_view.title, title.p, g_view.title_n);
+    sel_clear();
+    repaint();
+    return true;
+}
+
+b8 tui_screen_open(void) { return g_pick.active || g_view.active; }
 
 /* Remember what a kill key removed, so Ctrl-Y can put it back. Text longer
  * than the buffer is dropped rather than truncated: half a kill is not what
@@ -4743,6 +5142,7 @@ static b8 ask_impl(Str question, b8 secret, char *out, size_t cap,
                    b8 edit, b8 allow_empty) {
     if (!g_tui.fullscreen || !out || cap < 2) return false;
     if (g_tui.find_open) find_close();
+    if (g_view.active && !g_view.modal) view_close();
     /* The question owns the composer, which a screen opened during the turn
      * is drawn over. */
     if (g_pick.active && !g_pick.modal) pick_close();
@@ -5409,6 +5809,22 @@ static void busy_expand(void) {
  * commands a running turn can afford and queues one ordinary follow-up. */
 void tui_poll_input(void) {
     if (!g_tui.fullscreen) return;
+    if (g_view.active && !g_view.modal) {
+        while (g_view.active && !g_tui.input_eof && input_ready(0)) {
+            i32 c = rbyte();
+            if (c == -2) continue;
+            if (c < 0 && c != -3) {
+                g_tui.input_eof = true;
+                view_close();
+                return;
+            }
+            if (!view_feed(c)) view_close();
+        }
+        if (g_view.active || !input_buffered()) {
+            if (g_winch != 0) repaint();
+            return;
+        }
+    }
     /* A screen opened mid-turn owns the keyboard, and reading it here is what
      * keeps it live: nothing below it may take a byte from under it. */
     if (g_pick.active && !g_pick.modal) {
@@ -5463,6 +5879,7 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
 
     /* A screen the user opened mid-turn stays up when the turn ends; the
      * prompt waits behind it rather than reading keys meant for it. */
+    if (g_view.active && !g_view.modal) view_run();
     if (g_pick.active && !g_pick.modal) pick_run();
 
     g_tui.editing = true;

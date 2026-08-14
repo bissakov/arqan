@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Answer a click on a folded tool block mid-turn with a separate centered,
+  scrollable and selectable window containing the complete block text,
+  instead of deferring the fold until the turn ends.
+
 ## [0.2.0] - 2026-08-14
 
 ### Added

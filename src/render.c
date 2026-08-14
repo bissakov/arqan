@@ -619,3 +619,53 @@ void render_tool_result(Str name, Str args, Str result, Arena *scratch,
     }
     block_end();
 }
+
+/* The window includes text summarized in a block header as well as the body
+ * below it. `shown` counts both, so it still opens on the first folded line.
+ * Keep these branches paired with the renderers above. */
+Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown) {
+    if (shown) *shown = R_ARG_LINES;
+    if (!scratch) return args;
+    JVal *j = json_parse(scratch, args);
+    Str path = json_str(j, STR("path"));
+    if (str_eq(name, STR("page_fetch"))) path = json_str(j, STR("url"));
+    Str cmd = json_str(j, STR("command"));
+    Str content = json_str(j, STR("content"));
+    Str patch = json_str(j, STR("patch"));
+    Str query = str_eq(name, STR("grep")) ? json_str(j, STR("pattern"))
+              : str_eq(name, STR("find")) ? json_str(j, STR("name"))
+              : str_eq(name, STR("internet_search")) ? json_str(j, STR("query"))
+              : (Str){0};
+    Str body;
+    if (str_eq(name, STR("write"))) {
+        body = content;
+    } else if (patch.n) {
+        // Twice a call's usual allowance, as the block writes it.
+        if (shown) *shown = R_ARG_LINES * 2;
+        body = patch;
+    } else if (cmd.n) {
+        if (shown) *shown = R_ARG_LINES + 1; // first line is in the header
+        body = cmd;
+    } else if (!path.n && !query.n) {
+        body = args;
+    } else {
+        body = (Str){0};
+    }
+    return body;
+}
+
+Str render_result_text(Str name, Str result, size_t *shown) {
+    if (shown) *shown = R_RESULT_LINES;
+    if (str_starts(result, STR("ERROR: "))) return str_drop(result, 7);
+    Str body = result, status = {0};
+    b8 shell = str_eq(name, STR("bash")) || str_eq(name, STR("shell"));
+    if (shell && split_status(result, &body, &status)) return body;
+    if (str_eq(name, STR("read")) || str_eq(name, STR("grep"))) return result;
+    if (shown) *shown = R_RESULT_LINES + 1; // first line is in the header
+    return body;
+}
+
+Str render_shell_text(Str cmd, size_t *shown) {
+    if (shown) *shown = R_ARG_LINES + 1; // first line is in the header
+    return cmd;
+}

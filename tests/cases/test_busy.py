@@ -6,6 +6,7 @@ the ones that would change what the agent is doing wait for the prompt.
 """
 
 import json
+import time
 
 PLAN = "## Steps\n\n1. Read the file\n2. Change the line"
 
@@ -207,21 +208,275 @@ def test_a_screen_left_open_survives_the_end_of_the_turn(ctx):
     assert "[x] Display raw" in s.text(), s.text()
 
 
-def test_clicking_a_block_tail_mid_turn_is_taken_and_applied_after(ctx):
-    """A fold is the reader's, not the turn's: the click lands where it was
-    made and the transcript is rebuilt once the turn stops writing to it."""
+def folded_read(ctx, delay=4):
+    """A turn still running, with one folded block already on screen."""
     body = "\n".join(f"line {i:04d} of output" for i in range(40))
     ctx.write_file("big.txt", body)
-    ctx.scenario('tool=read:{"path":"big.txt"},first_delay=4,final_text=done')
+    ctx.scenario('tool=read:{"path":"big.txt"},'
+                 f'first_delay={delay},final_text=done')
     s = ctx.spawn()
     s.submit("read big.txt")
     s.wait_text("\u25be 28 more lines")
+    return s
 
-    row = s.screen.find_row("\u25be 28 more lines") + 1
+
+def click_tail(s, needle="\u25be 28 more lines"):
+    row = s.screen.find_row(needle) + 1
     s.mouse("down", row, 6)
-    s.mouse("up", row, 6).sync()
-    s.wait_text("when the turn ends")
+    return s.mouse("up", row, 6).sync()
+
+
+def test_clicking_a_block_tail_mid_turn_opens_a_window_over_it(ctx):
+    """The transcript belongs to the turn while it streams, so the block's
+    own lines are shown over it rather than folded into it."""
+    s = folded_read(ctx)
+    click_tail(s)
+    # The window opens on the first line the block itself did not show.
+    s.wait_text("line 0012 of output")
+    text = s.text()
+    # The block is still up there, unchanged, under a window that covers the
+    # transcript's last rows rather than rebuilding it.
+    assert "\u25c6  read big.txt" in text, text
+    assert "read output" in text, text
+    assert "[x]" in text, text
+
+
+def test_the_window_is_not_the_completion_picker(ctx):
+    """The text view is a centered rectangle of its own and does not reuse
+    the composer's command/picker rows."""
+    s = folded_read(ctx)
+    click_tail(s)
+    s.wait_text("line 0012 of output")
+    lines = s.screen.lines()
+    top = next(i for i, line in enumerate(lines) if "┌" in line and "┐" in line)
+    bottom = next(i for i, line in enumerate(lines[top + 1:], top + 1)
+                  if "└" in line and "┘" in line)
+    left = lines[top].index("┌")
+    right = lines[top].index("┐")
+    assert top > 0 and bottom < s.screen.rows - 1, s.text()
+    assert left > 0 and right < s.screen.cols - 1, s.text()
+
+
+def test_window_text_is_selectable_and_copyable(ctx):
+    """Window body rows use the ordinary screen capture, selection and OSC
+    52 clipboard path."""
+    s = folded_read(ctx)
+    click_tail(s)
+    s.wait_text("line 0012 of output")
+    row = s.screen.find_row("line 0012 of output") + 1
+    col = s.screen.row_text(row - 1).index("line 0012 of output") + 1
+    s.mouse("down", row, col)
+    s.mouse("drag", row, col + len("line 0012 of output") - 1)
+    s.mouse("up", row, col + len("line 0012 of output") - 1).sync()
+    assert s.screen.clipboard == "line 0012 of output", repr(s.screen.clipboard)
+
+
+def test_streaming_does_not_drop_a_window_selection(ctx):
+    """Transcript bytes arriving behind the independent window do not move
+    or clear a selection in its body."""
+    s = folded_read(ctx, delay=8)
+    click_tail(s)
+    s.wait_text("line 0012 of output")
+    row = s.screen.find_row("line 0012 of output") + 1
+    col = s.screen.row_text(row - 1).index("line 0012 of output") + 1
+    s.mouse("down", row, col)
+    s.mouse("drag", row, col + len("line 0012 of output") - 1).sync()
+    assert all(s.screen.attr_at(row - 1, c).reverse
+               for c in range(col - 1,
+                              col - 1 + len("line 0012 of output")))
+    s.wait_turn_done()
+    assert all(s.screen.attr_at(row - 1, c).reverse
+               for c in range(col - 1,
+                              col - 1 + len("line 0012 of output")))
+    s.mouse("up", row, col + len("line 0012 of output") - 1).sync()
+    assert s.screen.clipboard == "line 0012 of output", repr(s.screen.clipboard)
+
+
+def test_the_window_closes_and_leaves_the_block_folded(ctx):
+    """The window is a way of reading the block, not a change to it: the
+    turn ends with the transcript exactly as the click found it."""
+    s = folded_read(ctx)
+    click_tail(s)
+    s.wait_text("line 0012 of output")
+    s.key("esc").sync()
+    s.wait_gone("line 0012 of output")
 
     s.wait_turn_done()
-    s.wait_text("\u25b4 show less")
+    text = s.text()
+    assert "\u25be 28 more lines" in text, text
+    assert "\u25b4 show less" not in text, text
+
+
+def test_the_visible_close_control_closes_the_window(ctx):
+    """The title bar has a clickable close affordance in addition to Esc."""
+    s = folded_read(ctx)
+    click_tail(s)
+    s.wait_text("line 0012 of output")
+    row = s.screen.find_row("[x]") + 1
+    col = s.screen.row_text(row - 1).index("[x]") + 2
+    s.mouse("down", row, col)
+    s.mouse("up", row, col).sync()
+    s.wait_gone("line 0012 of output")
+
+
+def test_the_window_scrolls_through_the_whole_block(ctx):
+    """Every folded line is reachable, not just the ones the first page of
+    the window happened to hold."""
+    s = folded_read(ctx, delay=8)
+    click_tail(s)
+    s.wait_text("line 0012 of output")
+    for _ in range(28):
+        s.key("down")
+    s.sync()
     assert "line 0039 of output" in s.text(), s.text()
+    # A page stops at its ends rather than wrapping back to the first line.
+    s.key("down", "down").sync()
+    assert "line 0039 of output" in s.text(), s.text()
+
+
+def test_the_window_keeps_the_full_tool_result(ctx):
+    """A long block still exposes its final output; only the centered
+    viewport is clipped, not the text it scrolls over."""
+    body = "\n".join(["x"] * 1499 + ["LAST LINE"])
+    ctx.write_file("long.txt", body)
+    ctx.scenario('tool=read:{"path":"long.txt","limit":2000},'
+                 'first_delay=4,final_delay=12,final_text=done')
+    s = ctx.spawn()
+    s.submit("read long.txt")
+    s.wait_text("\u25be 1488 more lines")
+    click_tail(s, "\u25be 1488 more lines")
+    s.key("end").sync()
+    assert "LAST LINE" in s.text(), s.text()
+
+
+def test_the_window_keeps_the_tool_input_header_line(ctx):
+    """A long tool input opens as the complete input, including the command
+    line that the folded transcript summarizes in its header."""
+    command = "printf first\\n\n" + "\n".join(
+        f"# input {i:02d}" for i in range(20))
+    ctx.scenario("tool=bash:" + json.dumps({"command": command})
+                 + ",first_delay=4,final_text=done")
+    s = ctx.spawn()
+    s.submit("run a long command")
+    s.wait_text("\u25be 12 more lines")
+    click_tail(s, "\u25be 12 more lines")
+    s.key("home").sync()
+    assert "printf first" in s.text(), s.text()
+
+
+def test_the_window_contains_a_shell_command_and_all_its_output(ctx):
+    """A direct shell block is one window: its command is at the top and the
+    last output line remains reachable at the bottom."""
+    ctx.scenario("first_delay=8,text=done")
+    s = ctx.spawn()
+    command = "for i in $(seq 0 39); do printf 'shell %04d\\n' \"$i\"; done"
+    s.submit("!" + command)
+    s.wait_text("\u25be 28 more lines")
+    click_tail(s)
+    s.key("home").sync()
+    assert command in s.text(), s.text()
+    s.key("end").sync()
+    assert "shell 0039" in s.text(), s.text()
+
+
+def test_the_window_reflows_on_a_narrow_terminal(ctx):
+    """The centered rectangle stays inset, wraps its text, and preserves its
+    scroll range after a resize."""
+    s = folded_read(ctx, delay=8)
+    click_tail(s)
+    s.wait_text("line 0012 of output")
+    s.resize(42, 16).sync()
+    lines = s.screen.lines()
+    top = next(i for i, line in enumerate(lines) if "┌" in line and "┐" in line)
+    left = lines[top].index("┌")
+    right = lines[top].index("┐")
+    assert top > 0 and left > 0 and right < s.screen.cols - 1, s.text()
+    s.key("end").sync()
+    assert "line 0039 of output" in s.text(), s.text()
+
+
+def test_the_turn_streams_on_under_the_window(ctx):
+    """A screen opened mid-turn is driven by the poll that keeps the turn
+    alive, so the reply lands behind it."""
+    s = folded_read(ctx)
+    click_tail(s)
+    s.wait_text("line 0012 of output")
+    s.wait_turn_done()
+    s.key("esc").sync()
+    assert "done" in s.text(), s.text()
+
+
+def test_the_window_does_not_flicker_behind_a_streaming_turn(ctx):
+    """The window owns the rows it covers. A reply landing behind it neither
+    erases nor repaints them, so the two never trade the same cells frame
+    after frame."""
+    body = "\n".join(f"line {i:04d} of output" for i in range(40))
+    ctx.write_file("big.txt", body)
+    reply = " ".join(f"w{i:03d}" for i in range(60))
+    ctx.scenario('tool=read:{"path":"big.txt"},'
+                 f'chunk=1,delay=0.03,final_text={reply}')
+    s = ctx.spawn()
+    s.submit("read big.txt")
+    s.wait_text("\u25be 28 more lines")
+    click_tail(s)
+    s.wait_text("line 0012 of output")
+    # The reply lands in the transcript rows the window covers, so the sample
+    # holds the frames the turn kept painting while it was open.
+    mark = len(s.raw)
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        s.pump(0.05)
+    written = s.raw[mark:]
+    assert b"\x1b[" in written, "the turn painted no frame at all"
+    repaints = written.count(b"line 0012 of output")
+    assert repaints == 0, f"the window repainted {repaints} times"
+
+    s.wait_turn_done()
+    s.key("esc").sync()
+    assert "w059" in s.text(), "the turn was not streaming behind the window"
+
+
+def test_the_window_outlives_a_turn_that_fails(ctx):
+    """A stream that dies behind the window neither disturbs it nor loses
+    what it reported: closing shows the error over the block, still folded."""
+    body = "\n".join(f"line {i:04d} of output" for i in range(40))
+    ctx.write_file("big.txt", body)
+    ctx.scenario('tool=read:{"path":"big.txt"},chunk=1,delay=0.05,'
+                 'abort_after=2,final_text=one two three four five')
+    s = ctx.spawn()
+    s.submit("read big.txt")
+    s.wait_text("\u25be 28 more lines")
+    click_tail(s)
+    s.wait_text("line 0012 of output")
+    s.wait_turn_done()
+    assert "line 0024 of output" in s.text(), s.text()
+
+    s.key("esc").sync()
+    text = s.text()
+    assert "[provider error:" in text, text
+    assert "\u25be 28 more lines" in text, text
+    s.type("still alive").sync()
+    assert s.composer_text() == "still alive", s.composer_lines()
+
+
+def test_a_question_the_turn_asks_takes_the_window(ctx):
+    """The window is a way of reading, not a keyboard the agent can be stuck
+    behind: an approval the next round needs closes it and is asked at once."""
+    command = "for i in $(seq 0 39); do printf 'shell %04d\\n' \"$i\"; done"
+    ctx.scenario("tool=bash:" + json.dumps({"command": command})
+                 + ",tool_rounds=2,first_delay=2,final_text=done")
+    s = ctx.spawn(ARQAN_PERMISSIONS="ask")
+    s.submit("run it")
+    s.wait_status("allow bash?")
+    s.key("enter")
+    s.wait_text("\u25be 28 more lines")
+    click_tail(s)
+    s.wait_text("shell 0012")
+
+    s.wait_status("allow bash?")
+    text = s.text()
+    assert "Yes and remember" in text, text
+    assert "shell 0012" not in text, "the window kept the question's keyboard"
+    s.key("enter")
+    s.wait_turn_done()
+    assert "done" in s.text(), s.text()
