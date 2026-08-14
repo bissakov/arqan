@@ -7,8 +7,11 @@
 - Name a saved session: set or edit the name with `/title`, see it in
   `/resume`, and let a configured small model name a session after its first
   turn.
-- Pick a provider's small model with `Ctrl-S` in `/model`, and turn automatic
-  session naming off with the `Name sessions` setting.
+- Pick the small model with `Ctrl-S` in `/model`, including a model pinned on
+  another provider: the choice is one model at one endpoint, and errands such
+  as naming a session are sent there with that provider's key while the
+  conversation stays where it is. Turn automatic session naming off with the
+  `Name sessions` setting.
 - List the models pinned on other configured providers in `/model`, below the
   active provider's own pins, each named `<model> @ <provider>` so one id
   served by several endpoints stays several rows and can be searched for by

@@ -208,8 +208,8 @@ def test_a_fork_keeps_the_name(ctx):
 
 
 # ---- /model ---------------------------------------------------------------
-def test_ctrl_s_sets_and_clears_the_providers_small_model(ctx):
-    """The small model belongs to the provider, so it lands in its section."""
+def test_ctrl_s_sets_and_clears_the_small_model(ctx):
+    """The choice is one pair in the state file: the model and its provider."""
     ctx.scenario("models=alpha|beta|gamma")
     ctx.write_config(
         f'provider = "mock"\n\n[providers.mock]\n'
@@ -223,12 +223,131 @@ def test_ctrl_s_sets_and_clears_the_providers_small_model(ctx):
 
     s.key("ctrl-s").sync()
     s.wait_for(lambda t: "small" in row_with(s, "beta"), "the row to be marked")
+    assert ctx.state().get("small_model") == "beta", ctx.state()
+    assert ctx.state().get("small_provider") == "mock", ctx.state()
     section = ctx.settings(ctx.config_file()).get("providers.mock", {})
-    assert section.get("small_model") == "beta", section
-    assert section.get("model") == "alpha", "only the one key is written"
+    assert "small_model" not in section, "the user's own file is left alone"
+    assert section.get("model") == "alpha", section
 
     s.key("ctrl-s").sync()
     s.wait_for(lambda t: "small" not in row_with(s, "beta"), "the mark to go")
-    section = ctx.settings(ctx.config_file()).get("providers.mock", {})
-    assert "small_model" not in section, section
-    assert section.get("base_url") == ctx.mock.base_url, section
+    assert "small_model" not in ctx.state(), ctx.state()
+    assert "small_provider" not in ctx.state(), ctx.state()
+
+
+def test_a_provider_section_still_names_a_small_model(ctx):
+    """The per-provider key stays readable: it is the fallback under the pair."""
+    ctx.scenario("text=noted")
+    ctx.write_config(
+        f'provider = "mock"\n\n[providers.mock]\n'
+        f'base_url = "{ctx.mock.base_url}"\napi = "openai"\n'
+        f'model = "alpha"\nsmall_model = "mock-small"\n'
+    )
+    s = ctx.spawn(ARQAN_MODEL=None, ARQAN_BASE_URL=None)
+    s.submit("remember the cat")
+    s.wait_text("noted")
+    s.wait_turn_done()
+    s.wait_text("session named: noted")
+    assert ctx.mock.requests[-1]["model"] == "mock-small", ctx.mock.requests[-1]
+
+
+def test_the_state_pair_outranks_the_active_providers_own_key(ctx):
+    """A model chosen in /model is the one errands use, wherever it is served."""
+    ctx.scenario("text=noted")
+    ctx.write_config(
+        f'[providers.mock]\nbase_url = "{ctx.mock.base_url}"\n'
+        f'api = "openai"\nmodel = "alpha"\nsmall_model = "section-small"\n'
+    )
+    p = ctx.state_file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("provider = mock\nsmall_model = chosen-small\n"
+                 "small_provider = mock\n")
+    s = ctx.spawn(ARQAN_MODEL=None, ARQAN_BASE_URL=None)
+    s.submit("remember the cat")
+    s.wait_text("noted")
+    s.wait_turn_done()
+    s.wait_text("session named: noted")
+    assert ctx.mock.requests[-1]["model"] == "chosen-small", \
+        ctx.mock.requests[-1]
+
+
+# ---- a small model at another provider ------------------------------------
+def stored_providers(ctx, sections, state, **env):
+    """Endpoints with a key each, all served by the mock.
+
+    The URL is shared, so what a request proves about its endpoint is the key
+    it carried and the model it named.
+    """
+    ctx.write_config("".join(
+        f'[providers.{name}]\nbase_url = "{ctx.mock.base_url}"\n'
+        f'api = "openai"\nmodel = "{model}"\n'
+        + (f'small_model = "{small}"\n' if small else "") + "\n"
+        for name, model, small in sections))
+    creds = ctx.home / ".local" / "state" / "arqan" / "credentials.toml"
+    creds.parent.mkdir(parents=True, exist_ok=True)
+    creds.write_text("".join(f"[providers.{name}]\nkey = sk-{name}\n\n"
+                             for name, _, _ in sections))
+    creds.chmod(0o600)
+    p = ctx.state_file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(state)
+    return ctx.spawn(ARQAN_MODEL=None, ARQAN_BASE_URL=None, ARQAN_API_KEY=None,
+                     **env)
+
+
+def test_the_errand_follows_the_small_models_provider(ctx):
+    """The naming request takes that endpoint's key; the turn keeps its own."""
+    ctx.scenario("text=noted")
+    s = stored_providers(
+        ctx, [("mock", "alpha", None), ("spare", "gamma", None)],
+        "provider = mock\nsmall_model = tiny\nsmall_provider = spare\n")
+    s.submit("remember the cat")
+    s.wait_text("noted")
+    s.wait_turn_done()
+    s.wait_text("session named: noted")
+
+    turn, naming = ctx.mock.requests[0], ctx.mock.requests[-1]
+    assert turn["model"] == "alpha" and naming["model"] == "tiny", \
+        (turn["model"], naming["model"])
+    assert ctx.mock.auth[0] == "Bearer sk-mock", ctx.mock.auth
+    assert ctx.mock.auth[-1] == "Bearer sk-spare", ctx.mock.auth
+    assert s.status_field(3) == "mock", "the session stays on its provider"
+
+
+def test_switching_provider_keeps_the_chosen_small_model(ctx):
+    """The pair names its own endpoint, so a switch does not replace it."""
+    ctx.scenario("text=noted")
+    s = stored_providers(
+        ctx, [("mock", "alpha", None), ("spare", "gamma", None),
+              ("other", "delta", "others-small")],
+        "provider = mock\nsmall_model = tiny\nsmall_provider = spare\n")
+    s.submit("/provider")
+    s.wait_status("pick a provider")
+    s.key("down").sync()
+    s.key("down").sync()
+    assert "other" in s.popup_selected(), s.popup_selected()
+    s.key("enter")
+    s.wait_text("provider: other")
+
+    s.submit("remember the cat")
+    s.wait_text("noted")
+    s.wait_turn_done()
+    s.wait_text("session named: noted")
+    naming = ctx.mock.requests[-1]
+    assert naming["model"] == "tiny", naming["model"]
+    assert ctx.mock.auth[-1] == "Bearer sk-spare", ctx.mock.auth
+
+
+def test_a_small_provider_that_is_gone_is_reported_on_demand(ctx):
+    """No endpoint, no errand: the excerpt is not sent somewhere else."""
+    ctx.scenario("text=noted")
+    s = stored_providers(
+        ctx, [("mock", "alpha", None)],
+        "provider = mock\nsmall_model = tiny\nsmall_provider = spare\n")
+    s.submit("remember the cat")
+    s.wait_text("noted")
+    s.wait_turn_done()
+    s.submit("/title auto")
+    s.wait_text("provider spare is not usable")
+    assert len(ctx.mock.requests) == 1, [r["model"] for r in ctx.mock.requests]
+    assert session_files(ctx, ".title") == [], session_files(ctx, ".title")

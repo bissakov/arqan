@@ -402,6 +402,10 @@ b8     settings_write(Str path, Str data, u32 mode);
  * Keys are the configuration keys of config.c, so what the UI writes reads
  * back through the same table the config files feed. */
 b8     state_set(Str key, Str val, Arena *scratch);
+/* Several head keys in one write, for a choice no half of which stands on
+ * its own. */
+b8     state_set_many(const Str *keys, const Str *vals, size_t n,
+                      Arena *scratch);
 // The same file, under a named section; an empty section names its head.
 b8     state_set_in(Str section, Str key, Str val, Arena *scratch);
 
@@ -530,7 +534,9 @@ typedef struct {
     Str     base_url[AGENT_MAX_ENDPOINTS];
     Str     model[AGENT_MAX_ENDPOINTS];
     /* The cheap model this provider names for arqan's own errands, naming a
-     * session among them. Empty when it names none. */
+     * session among them. Empty when it names none. A fallback only: the
+     * small model chosen in /model is one pair for every provider, and it
+     * sits above this. */
     Str     small_model[AGENT_MAX_ENDPOINTS];
     ApiKind api[AGENT_MAX_ENDPOINTS];
     size_t  n;
@@ -555,9 +561,6 @@ b8     endpoints_remember_model(Str name, Str model, Arena *scratch);
 /* The provider's own small model, allocated in `scratch`. Empty when it has
  * none. */
 Str    endpoints_small_model(Str name, Arena *scratch);
-/* Writes only the `small_model` key of the provider's section, leaving the
- * rest of it alone. An empty model removes the key. */
-b8     endpoints_remember_small_model(Str name, Str model, Arena *scratch);
 /* The key stored for `name`, allocated in `out`. Empty when there is none,
  * and empty with `err` filled in when the credentials file is readable by
  * anyone but its owner: that is a key to rotate rather than one to load. */
@@ -654,7 +657,7 @@ typedef enum {
     CONF_NOTIFY, CONF_NOTIFY_COMMAND, CONF_NOTIFY_MIN_MS,
     CONF_SEARCH_BACKEND, CONF_SEARCH_ENDPOINT, CONF_SEARCH_API_KEY,
     CONF_SEARCH_ENGINE_ID,
-    CONF_SMALL_MODEL, CONF_AUTO_TITLE,
+    CONF_SMALL_MODEL, CONF_SMALL_PROVIDER, CONF_AUTO_TITLE,
     CONF_N
 } ConfKey;
 
@@ -686,6 +689,10 @@ b8     conf_bool(const Conf *c, ConfKey k);
 b8     conf_value_ok(ConfKey k, Str val);
 // Records a choice in the state file under this key's name.
 b8     conf_remember(ConfKey k, Str val, Arena *scratch);
+/* Two keys in one state-file write. Neither is written when either value is
+ * one its key refuses. */
+b8     conf_remember_pair(ConfKey a, Str va, ConfKey b, Str vb,
+                          Arena *scratch);
 b8     conf_remember_bool(ConfKey k, b8 on, Arena *scratch);
 
 /* Presentation choices remembered by /settings and /statusline, read from the
@@ -760,6 +767,11 @@ typedef struct {
     /* A cheap model for arqan's own short errands, empty when none is
      * configured. Naming a session is the only one so far. */
     Str small_model;
+    /* Which endpoint serves `small_model`, empty for the active one. A
+     * named provider here is followed for the errand alone: the request
+     * takes that endpoint's URL, API and key, and the conversation stays
+     * with the provider the session is on. */
+    Str small_provider;
     Str reasoning_efforts, thinking_budgets;
     Str reasoning_effort, thinking_budget;
     Str reasoning_template;
@@ -791,6 +803,7 @@ typedef struct {
     char owned_base_url[AGENT_MAX_URL + 1];
     char owned_model[AGENT_MAX_MODEL_NAME + 1];
     char owned_small_model[AGENT_MAX_MODEL_NAME + 1];
+    char owned_small_provider[AGENT_MAX_ENDPOINT_NAME + 1];
     char owned_api_key[AGENT_MAX_API_KEY + 1];
     char owned_provider[AGENT_MAX_ENDPOINT_NAME + 1];
     char owned_reasoning_efforts[AGENT_MAX_REASONING_LIST + 1];
@@ -807,9 +820,9 @@ b8    config_load(Config *c, const Conf *conf, Arena *persist);
 b8    config_remember_model(Str model, Arena *scratch);
 // Runtime choices are copied into Config itself and survive /clear.
 b8    config_set_model(Config *c, Str model);
-/* An empty model clears the field, which is what switching to a provider
- * that names no small model must do. */
-b8    config_set_small_model(Config *c, Str model);
+/* The small model and the provider that serves it, together: an empty model
+ * clears both, and an empty provider means the active one. */
+b8    config_set_small_model(Config *c, Str model, Str provider);
 b8    config_set_endpoint(Config *c, Str name, Str base_url, Str model,
                           ApiKind api, Str key);
 b8    config_set_model_profile(Config *c, const ModelProfile *p);

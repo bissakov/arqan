@@ -166,20 +166,6 @@ Str endpoints_small_model(Str name, Arena *scratch) {
     return i == ENDPOINT_NONE ? (Str){0} : e.small_model[i];
 }
 
-/* Only the one key: remembering a small model must not rewrite the base URL,
- * the model or the API of a section the user wrote. */
-b8 endpoints_remember_small_model(Str name, Str model, Arena *scratch) {
-    size_t mark = scratch->off;
-    Str dir  = paths_dir(AGENT_DIR_CONFIG, scratch);
-    Str path = paths_file(AGENT_DIR_CONFIG, AGENT_CONFIG_NAME, scratch);
-    Str section = endpoint_section(name, scratch);
-    b8 ok = dir.n && path.n && section.n && paths_ensure_dir(dir)
-         && settings_set_one(path, section, STR("small_model"), model, 0600,
-                             scratch);
-    scratch->off = mark;
-    return ok;
-}
-
 /* The credentials file, refused when anyone but the owner can read it: a key
  * left world-readable is a key to rotate, not one to load. */
 static b8 creds_open(Settings *s, Arena *a, Str *path_out,

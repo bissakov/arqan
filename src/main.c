@@ -1388,7 +1388,8 @@ typedef struct {
     Favorites  fav;
     Str        provider;
     Str        current;
-    Str        small;      // the provider's small model, marked like `current`
+    Str        small;      // the chosen small model, marked like `current`
+    Str        small_owner; // the provider serving it, empty for the active one
     Config    *cfg;        // what Ctrl-S applies the small model to
     Arena     *arena;
     u8         requested;
@@ -1495,6 +1496,20 @@ static Str model_starred(ModelPick *mp, size_t i) {
     return mp->starred[i];
 }
 
+/* Which endpoint serves the row: its own provider for a pin of another one,
+ * and the active provider otherwise. */
+static Str model_row_provider(const ModelPick *mp, size_t i) {
+    return mp->owner[i].n ? mp->owner[i] : mp->provider;
+}
+
+/* The small model is one model at one endpoint, so a row matches it only
+ * when both agree: the same id served by another provider is not it. */
+static b8 model_is_small(const ModelPick *mp, size_t i) {
+    if (!mp->small.n || !str_eq(mp->names[i], mp->small)) return false;
+    Str owner = mp->small_owner.n ? mp->small_owner : mp->provider;
+    return str_eq(model_row_provider(mp, i), owner);
+}
+
 static void model_row(ModelPick *mp, size_t row, size_t i, b8 fav) {
     mp->order[row] = i;
     Str name = fav ? model_starred(mp, i) : (Str){0};
@@ -1502,12 +1517,13 @@ static void model_row(ModelPick *mp, size_t row, size_t i, b8 fav) {
         /* A row of another provider is never the current model, whatever its
          * id matches here. The column carries the provider only when the
          * name could not be built to hold it. */
-        mp->rows[row] = name.n ? (TuiCmd){ name, (Str){0} }
+        Str desc = model_is_small(mp, i) ? STR("small") : (Str){0};
+        mp->rows[row] = name.n ? (TuiCmd){ name, desc }
                                : (TuiCmd){ mp->names[i], mp->owner[i] };
         return;
     }
     b8 current = str_eq(mp->names[i], mp->current);
-    b8 small = mp->small.n && str_eq(mp->names[i], mp->small);
+    b8 small = model_is_small(mp, i);
     Str desc = current && small ? STR("current \xc2\xb7 small")
              : current ? STR("current") : small ? STR("small") : (Str){0};
     mp->rows[row] = (TuiCmd){ name.n ? name : mp->names[i], desc };
@@ -1587,32 +1603,27 @@ static size_t model_configure_action(void *ud, size_t row, size_t *moved) {
     return 0;
 }
 
-/* The small model is a property of the endpoint, so it is written where the
- * endpoint is: a named provider's own section, and the state file otherwise.
- * Like pinning, it is its own action and survives a cancelled picker. */
+/* One small model for the whole run, wherever it is served: the pair goes to
+ * the state file, so a pin of another provider can be the model arqan runs
+ * its own errands through while the conversation stays here. Like pinning, it
+ * is its own action and survives a cancelled picker. */
 static size_t model_small_action(void *ud, size_t row, size_t *moved) {
     ModelPick *mp = ud;
     if (row == SIZE_MAX) { *moved = 0; return model_build(mp); }
     size_t i = mp->order[row];
-    if (mp->owner[i].n) {
-        /* The endpoint that serves it is the one that owns it, and it is not
-         * the active one here. */
-        snprintf(mp->msg, sizeof mp->msg,
-                 "switch to %.*s to set its small model",
-                 (i32)mp->owner[i].n, mp->owner[i].p);
-        *moved = row;
-        return model_build(mp);
-    }
-    b8 on = mp->small.n && str_eq(mp->names[i], mp->small);
+    b8 on = model_is_small(mp, i);
     Str next = on ? (Str){0} : mp->names[i];
-    b8 saved = mp->provider.n
-             ? endpoints_remember_small_model(mp->provider, next, mp->arena)
-             : conf_remember(CONF_SMALL_MODEL, next, mp->arena);
-    if (!config_set_small_model(mp->cfg, next))
+    /* An unnamed active provider has no endpoint to record, so the pair holds
+     * the model alone and whatever the run points at serves it. */
+    Str owner = on ? (Str){0} : model_row_provider(mp, i);
+    b8 saved = conf_remember_pair(CONF_SMALL_MODEL, next,
+                                  CONF_SMALL_PROVIDER, owner, mp->arena);
+    if (!config_set_small_model(mp->cfg, next, owner))
         snprintf(mp->msg, sizeof mp->msg, "out of memory storing the small model");
     else if (!saved)
         snprintf(mp->msg, sizeof mp->msg, "could not save the small model");
     mp->small = mp->cfg->small_model;
+    mp->small_owner = mp->cfg->small_provider;
     *moved = row;
     return model_build(mp);
 }
@@ -1660,6 +1671,7 @@ static b8 pick_model(Config *cfg, Arena *scratch, Str *out, b8 *verified,
     mp.provider = cfg->provider;
     mp.current  = cfg->model;
     mp.small    = cfg->small_model;
+    mp.small_owner = cfg->small_provider;
     mp.cfg      = cfg;
     mp.arena    = scratch;
     if (!mp.starred || !mp.order || !mp.rows) {
@@ -1794,9 +1806,14 @@ static b8 use_endpoint(Config *cfg, Str name, Str base_url, Str model,
     if (!config_set_endpoint(cfg, name, base_url, model, api, key)
         || !apply_model_profile(cfg, scratch))
         return false;
-    /* The small model belongs to the endpoint that serves it, so switching
-     * provider takes that provider's and clears it when it has none. */
-    config_set_small_model(cfg, endpoints_small_model(cfg->provider, scratch));
+    /* A small model chosen with its provider is served by that provider from
+     * anywhere, so a switch leaves it alone. One with no provider of its own
+     * is the active endpoint's, which is what the provider's `small_model`
+     * key is: it goes with the endpoint, and clears when the new one names
+     * none. */
+    if (!cfg->small_provider.n)
+        config_set_small_model(cfg, endpoints_small_model(cfg->provider,
+                                                         scratch), (Str){0});
     tui_set_provider(cfg->provider);
     tui_set_model(cfg->model);
     ctx_model_changed(&g_ctx);
@@ -2965,6 +2982,30 @@ static void compact_session(Agent *ag) {
  * than from everything it grew into. */
 #define TITLE_EXCERPT_BYTES 1024
 
+/* Point `small` at the endpoint that serves the small model, which may not be
+ * the one the conversation is on: the URL, the API and the key all come from
+ * the stored provider, and only this request goes there. False when that
+ * provider is gone or its key cannot be read, which leaves the session
+ * unnamed rather than sending the excerpt somewhere else. */
+static b8 small_model_endpoint(Config *small, Str name, Str model, b8 manual,
+                               Arena *scratch) {
+    size_t mark = scratch->off;
+    Endpoints eps;
+    endpoints_load(&eps, scratch);
+    size_t i = endpoints_find(&eps, name);
+    char err[AGENT_MAX_PATH + 96] = {0};
+    Str key = i == ENDPOINT_NONE ? (Str){0}
+            : endpoints_key(name, scratch, scratch, err, sizeof err);
+    b8 ok = i != ENDPOINT_NONE && !err[0]
+         && config_set_endpoint(small, name, eps.base_url[i], model,
+                                eps.api[i], key);
+    scratch->off = mark;
+    if (!ok && manual)
+        notice_fmt("the small model's provider %.*s is not usable",
+                   (i32)name.n, name.p);
+    return ok;
+}
+
 /* Name the session from its first exchange, through the small model. Built
  * the way /compact builds its request: a conversation of its own in a part
  * of the persistent arena that is rewound either way, so a name that does
@@ -3030,6 +3071,15 @@ static b8 name_session(Agent *ag, b8 manual) {
     if (!config_set_model(&small, cfg->small_model)) {
         persist->off = mark;
         if (manual) tui_notice(STR("could not use the small model"));
+        return false;
+    }
+    /* The small model may be served by another provider, and the errand
+     * follows it there. The session's own endpoint is untouched: `small` is
+     * this request's configuration and nothing else's. */
+    if (cfg->small_provider.n && !str_eq(cfg->small_provider, cfg->provider)
+        && !small_model_endpoint(&small, cfg->small_provider, cfg->small_model,
+                                 manual, ag->scratch)) {
+        persist->off = mark;
         return false;
     }
     small.reasoning_effort = (Str){0};

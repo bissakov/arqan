@@ -474,17 +474,39 @@ def test_ctrl_f_unpins_another_providers_pin(ctx):
     assert ctx.state().get("provider") == "mock", "unpinning does not switch"
 
 
-def test_ctrl_s_refuses_a_pin_of_another_provider(ctx):
-    """The small model belongs to the endpoint that serves it."""
+def test_ctrl_s_takes_a_pin_of_another_provider_as_the_small_model(ctx):
+    """Errands may run at another endpoint, so the pair names the provider."""
     s = open_two_provider_picker(ctx)
     s.key("up").sync()
+    assert "* delta" in s.popup_selected(), s.popup_selected()
     s.key("ctrl-s").sync()
-    assert "* delta" in s.text(), "the row is unchanged"
-    s.key("esc")
-    s.wait_text("switch to spare to set its small model")
+    s.wait_for(lambda t: "small" in pinned_row(s, "delta"), "the row to mark")
+    assert ctx.state().get("small_model") == "delta", ctx.state()
+    assert ctx.state().get("small_provider") == "spare", ctx.state()
+    assert ctx.state().get("provider") == "mock", "the session stays here"
     stored = ctx.settings(ctx.config_file())
     assert "small_model" not in stored["providers.spare"], stored
     assert "small_model" not in stored["providers.mock"], stored
+
+    s.key("ctrl-s").sync()
+    s.wait_for(lambda t: "small" not in pinned_row(s, "delta"), "it to clear")
+    assert "small_model" not in ctx.state(), ctx.state()
+
+
+def test_one_id_on_two_providers_marks_only_the_small_ones_row(ctx):
+    """The small model is a model at an endpoint, not an id."""
+    ctx.scenario("models=alpha|beta|gamma")
+    two_providers(ctx, pins="beta")
+    s = ctx.spawn(ARQAN_MODEL=None, ARQAN_BASE_URL=None, ARQAN_API_KEY=None)
+    open_picker(ctx, s)
+    s.key("up").sync()
+    assert "* beta @ spare" in s.popup_selected(), s.popup_selected()
+    s.key("ctrl-s").sync()
+    s.wait_for(lambda t: "small" in pinned_row(s, "beta"), "the pin to mark")
+    rows = [line for line in s.text().splitlines()
+            if "beta" in line and "small" in line]
+    assert len(rows) == 1 and "spare" in rows[0], s.text()
+    assert ctx.state().get("small_provider") == "spare", ctx.state()
 
 
 def three_providers(ctx, pins):

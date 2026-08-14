@@ -100,6 +100,10 @@ static const ConfSpec k_conf[CONF_N] = {
      * one it wants beside it. */
     [CONF_SMALL_MODEL] = { "small_model", "", NULL, CV_STR, 0, 0,
                            AGENT_MAX_MODEL_NAME, true },
+    /* Never from a project file: it names the endpoint an errand is sent to
+     * and the key that pays for it, which is not a repository's choice. */
+    [CONF_SMALL_PROVIDER] = { "small_provider", "", NULL, CV_STR, 0, 0,
+                              AGENT_MAX_ENDPOINT_NAME, false },
     /* Inert while no small model is configured, which is why it is on: a
      * user who names one asked for the errands it pays for. */
     [CONF_AUTO_TITLE]  = { "auto_title", "true", NULL, CV_BOOL, 0, 0, 0,
@@ -265,8 +269,10 @@ static void conf_apply_endpoint(Conf *c, Arena *persist, Arena *scratch) {
         conf_take(c, CONF_MODEL, e.model[i], CONF_FROM_ENDPOINT, where,
                   persist);
     /* A provider's own small model outranks the config files and is still
-     * overridden by the environment. */
-    if (e.small_model[i].n)
+     * overridden by the environment. It is a fallback under the chosen pair,
+     * though: /model records one small model for every provider, so a state
+     * file that names one is not undone by switching endpoint. */
+    if (e.small_model[i].n && c->origin[CONF_SMALL_MODEL] < CONF_FROM_STATE)
         conf_take(c, CONF_SMALL_MODEL, e.small_model[i], CONF_FROM_ENDPOINT,
                   where, persist);
 
@@ -316,6 +322,14 @@ b8 conf_remember(ConfKey k, Str val, Arena *scratch) {
     return state_set(conf_key_name(k), val, scratch);
 }
 
+b8 conf_remember_pair(ConfKey a, Str va, ConfKey b, Str vb, Arena *scratch) {
+    if (a >= CONF_N || b >= CONF_N) return false;
+    if (!conf_value_ok(a, va) || !conf_value_ok(b, vb)) return false;
+    Str keys[2] = { conf_key_name(a), conf_key_name(b) };
+    Str vals[2] = { va, vb };
+    return state_set_many(keys, vals, 2, scratch);
+}
+
 b8 conf_remember_bool(ConfKey k, b8 on, Arena *scratch) {
     return conf_remember(k, on ? STR("true") : STR("false"), scratch);
 }
@@ -353,12 +367,16 @@ b8 config_set_model(Config *c, Str model) {
     return true;
 }
 
-b8 config_set_small_model(Config *c, Str model) {
-    if (model.n > AGENT_MAX_MODEL_NAME) return false;
+b8 config_set_small_model(Config *c, Str model, Str provider) {
+    if (model.n > AGENT_MAX_MODEL_NAME
+        || provider.n > AGENT_MAX_ENDPOINT_NAME) return false;
     Str saved = config_owned(c->owned_small_model,
                              sizeof c->owned_small_model, model);
-    if (!saved.p) return false;
+    Str owner = config_owned(c->owned_small_provider,
+                             sizeof c->owned_small_provider, provider);
+    if (!saved.p || !owner.p) return false;
     c->small_model = model.n ? saved : (Str){0};
+    c->small_provider = model.n && provider.n ? owner : (Str){0};
     return true;
 }
 
@@ -435,6 +453,11 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
     c->base_url_set = c->base_url.n != 0;
     c->model    = conf_str(conf, CONF_MODEL);
     c->small_model = conf_str(conf, CONF_SMALL_MODEL);
+    /* Only a pair: a provider named with no small model beside it selects
+     * nothing, and would otherwise send the errand to a model it never
+     * chose. */
+    c->small_provider = c->small_model.n ? conf_str(conf, CONF_SMALL_PROVIDER)
+                                         : (Str){0};
     c->api_key  = conf_str(conf, CONF_API_KEY);
     c->api = str_eq(conf_str(conf, CONF_API), STR("anthropic"))
            ? API_ANTHROPIC : API_OPENAI;
