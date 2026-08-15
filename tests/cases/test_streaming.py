@@ -273,7 +273,7 @@ def test_interrupt_stops_the_turn(ctx):
     ctx.scenario("words=200,chunk=1,delay=0.05")
     s = ctx.spawn()
     s.submit("go on forever")
-    s.wait_activity("thinking")
+    s.wait_turn_underway()
     s.wait_for(lambda t: len(reply_text(s, "go on forever")) > 20,
                "streaming started")
     s.key("ctrl-c")
@@ -289,7 +289,7 @@ def test_escape_stops_the_turn(ctx):
     ctx.scenario("words=200,chunk=1,delay=0.05")
     s = ctx.spawn()
     s.submit("go on forever")
-    s.wait_activity("thinking")
+    s.wait_turn_underway()
     s.wait_for(lambda t: len(reply_text(s, "go on forever")) > 20,
                "streaming started")
     s.type("draft kept")
