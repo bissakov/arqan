@@ -8,10 +8,17 @@
   `arqan-X.Y.Z-1-x86_64.pkg.tar.zst` next to the `.deb`, the `.rpm` and the
   portable archive, so Arch and its derivatives install with `pacman -U`
   and remove with `pacman -R`. It carries the same binaries as the `.rpm`,
-  which link an unversioned libcurl, and a file manifest `pacman -Qkk`
-  verifies.
+  and a file manifest `pacman -Qkk` verifies.
 
 ### Changed
+
+- Start about 1.5 ms sooner. libcurl's dependency tree - OpenSSL, krb5,
+  nghttp2, brotli, zstd and a dozen others - was loaded at exec, which cost
+  some four times everything else the program did before its first frame, and
+  a session that never asks a provider anything never needs it. It is now
+  opened at the first request, and a machine without it is told so there
+  rather than refusing to start. What must be installed is unchanged: every
+  package names libcurl itself.
 
 - Mark a user turn on every row. What the reader wrote was told from what the
   model answered by a background one shade off the transcript's, and a fenced

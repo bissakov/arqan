@@ -882,6 +882,77 @@ CliStatus cli_parse(i32 argc, char **argv, CliOpts *out);
 void      cli_apply(const CliOpts *o, Config *c);
 
 // ---- HTTP (libcurl) -----------------------------------------------------
+#include <curl/curl.h>
+
+/* libcurl is opened at the first request rather than at exec. Loading its
+ * dependency tree costs about 1.5ms, some four times everything else this
+ * program does before its first frame, and a session that asks nothing of a
+ * provider never needs it. Calls go through the table, which the macros below
+ * put in the way of the ordinary names; a static build has no dynamic loader
+ * and links libcurl directly instead.
+ *
+ * curl_load fills the table on its first success and is idempotent after it.
+ * Every entry point that reaches libcurl must call it and refuse the work
+ * when it reports false: the pointers are null until it succeeds. */
+#if AGENT_CURL_DLOPEN
+typedef struct {
+    CURL              *(*easy_init)(void);
+    CURLcode           (*easy_setopt)(CURL *, CURLoption, ...);
+    CURLcode           (*easy_getinfo)(CURL *, CURLINFO, ...);
+    CURLcode           (*easy_perform)(CURL *);
+    void               (*easy_cleanup)(CURL *);
+    const char        *(*easy_strerror)(CURLcode);
+    struct curl_slist *(*slist_append)(struct curl_slist *, const char *);
+    void               (*slist_free_all)(struct curl_slist *);
+    CURLU             *(*url)(void);
+    CURLUcode          (*url_set)(CURLU *, CURLUPart, const char *, unsigned);
+    CURLUcode          (*url_get)(CURLU *, CURLUPart, char **, unsigned);
+    void               (*url_cleanup)(CURLU *);
+    void               (*free)(void *);
+    CURLM             *(*multi_init)(void);
+    CURLMcode          (*multi_add_handle)(CURLM *, CURL *);
+    CURLMcode          (*multi_remove_handle)(CURLM *, CURL *);
+    CURLMcode          (*multi_perform)(CURLM *, i32 *);
+    CURLMcode          (*multi_poll)(CURLM *, struct curl_waitfd *, unsigned,
+                                     i32, i32 *);
+    CURLMsg           *(*multi_info_read)(CURLM *, i32 *);
+    CURLMcode          (*multi_cleanup)(CURLM *);
+    const char        *(*multi_strerror)(CURLMcode);
+} CurlApi;
+
+extern CurlApi g_curl;
+b8 curl_load(char *err, size_t err_cap);
+
+/* curl.h defines type-checking macros over some of these names under GCC.
+ * The undef drops them, so the checked build is the one that links libcurl
+ * directly: `make check-curl-types`. */
+#undef curl_easy_setopt
+#undef curl_easy_getinfo
+#define curl_easy_init         g_curl.easy_init
+#define curl_easy_setopt       g_curl.easy_setopt
+#define curl_easy_getinfo      g_curl.easy_getinfo
+#define curl_easy_perform      g_curl.easy_perform
+#define curl_easy_cleanup      g_curl.easy_cleanup
+#define curl_easy_strerror     g_curl.easy_strerror
+#define curl_slist_append      g_curl.slist_append
+#define curl_slist_free_all    g_curl.slist_free_all
+#define curl_url               g_curl.url
+#define curl_url_set           g_curl.url_set
+#define curl_url_get           g_curl.url_get
+#define curl_url_cleanup       g_curl.url_cleanup
+#define curl_free              g_curl.free
+#define curl_multi_init        g_curl.multi_init
+#define curl_multi_add_handle  g_curl.multi_add_handle
+#define curl_multi_remove_handle g_curl.multi_remove_handle
+#define curl_multi_perform     g_curl.multi_perform
+#define curl_multi_poll        g_curl.multi_poll
+#define curl_multi_info_read   g_curl.multi_info_read
+#define curl_multi_cleanup     g_curl.multi_cleanup
+#define curl_multi_strerror    g_curl.multi_strerror
+#else
+#define curl_load(err, cap)    ((void)(err), (void)(cap), true)
+#endif
+
 typedef struct {
     const char *base_url;
     const char *api_key;

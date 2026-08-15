@@ -12,6 +12,23 @@ LIBS    ?= -lcurl
 # which carry their own flags and are not ours to fix.
 CFLAGS += $(EXTRA_CFLAGS)
 
+# libcurl is opened at the first request rather than at exec, which keeps its
+# dependency tree off the startup path. A static build has no dynamic loader,
+# so CURL_MODE=link restores the ordinary link; that build is also where
+# curl.h's type-checking macros still apply, since the table displaces them.
+#
+# The define stays out of CFLAGS: a variant recipe passes its own CFLAGS down,
+# and a copy of this one folded into it would outlive the CURL_MODE the
+# sub-make was given. Only the unity source needs it.
+CURL_MODE ?= dlopen
+CURL_CFLAGS :=
+ifeq ($(CURL_MODE),dlopen)
+CURL_CFLAGS := -DAGENT_CURL_DLOPEN=1
+# Nothing links libcurl in this mode; dlopen lives in libc on glibc 2.34 and
+# later, and -ldl remains an empty archive there for the older ones.
+LIBS := -ldl
+endif
+
 # The same suite against an instrumented binary: `make test-asan`. The
 # sanitizer build lives in its own object and binary directories, so it never
 # overwrites the shipped one and the two can coexist without a rebuild.
@@ -82,7 +99,7 @@ PYTHON  ?= python3
         clean-fil fil test-fil clean-static static test-static \
         clean-el9 el9 test-el9 \
         bench bench-slow bench-baseline \
-        bench-guard \
+        bench-guard check-curl-types \
         package-linux test-package-linux release-linux
 
 all: $(BIN) $(HL_BIN)
@@ -95,7 +112,7 @@ $(BIN): $(OBJ) $(LEXBOR_OBJ)
 
 $(OBJ): $(SRC) $(wildcard src/*.c) $(wildcard src/*.h)
 	@mkdir -p $(BUILDDIR)
-	$(CC) $(CFLAGS) -c $(SRC) -o $@
+	$(CC) $(CFLAGS) $(CURL_CFLAGS) -c $(SRC) -o $@
 
 $(LEXBOR_OBJ): vendor/lexbor/bridge.c vendor/lexbor/bridge.h \
                vendor/lexbor/lexbor.c
@@ -104,7 +121,7 @@ $(LEXBOR_OBJ): vendor/lexbor/bridge.c vendor/lexbor/bridge.h \
 
 $(TEST_OBJ): $(SRC) $(wildcard src/*.c) $(wildcard src/*.h)
 	@mkdir -p $(BUILDDIR)
-	$(CC) $(CFLAGS) -DAGENT_TESTING -c $(SRC) -o $@
+	$(CC) $(CFLAGS) $(CURL_CFLAGS) -DAGENT_TESTING -c $(SRC) -o $@
 
 $(TEST_BIN): $(TEST_OBJ) $(LEXBOR_OBJ)
 	@mkdir -p $(BINDIR)
@@ -204,10 +221,16 @@ static:
 	$(MAKE) all $(STATIC_BIN)/arqan-test \
 	    BUILDDIR='$(STATIC_BUILD)' BINDIR='$(STATIC_BIN)' \
 	    CFLAGS='$(CFLAGS) -static-pie' LDFLAGS='$(LDFLAGS) -static-pie' \
-	    LIBS='$(STATIC_LIBS)'
+	    CURL_MODE=link LIBS='$(STATIC_LIBS)'
 
 test-static: static
 	ARQAN_TEST_BIN=$(STATIC_BIN)/arqan-test $(PYTHON) tests/run.py $(T)
+
+# The table displaces curl.h's type-checking macros, so a wrong setopt
+# argument is caught in the linked build and nowhere else. Build it here, as
+# every static release does for real.
+check-curl-types:
+	$(MAKE) bin/link/arqan CURL_MODE=link BUILDDIR=build/link BINDIR=bin/link
 
 # Same variant layout again, under build/el9 and bin/el9. Nothing but the
 # toolchain and the libraries differ from the shipped build, so this target

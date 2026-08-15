@@ -336,6 +336,7 @@ static AgentHtmlNode *find_tag(AgentHtmlNode *root, const char *tag, b8 qualify)
 }
 
 static b8 http_url_ok(const char *url) {
+    if (!curl_load(NULL, 0)) return false;
     CURLU *u = curl_url();
     if (!u) return false;
     CURLUcode rc = curl_url_set(u, CURLUPART_URL, url, 0);
@@ -359,6 +360,7 @@ static b8 resolve_url(const char *base, Str ref, char out[AGENT_WEB_URL_BYTES]) 
     char z[AGENT_WEB_URL_BYTES];
     memcpy(z, ref.p, ref.n);
     z[ref.n] = '\0';
+    if (!curl_load(NULL, 0)) return false;
     CURLU *u = curl_url();
     if (!u) return false;
     CURLUcode rc = curl_url_set(u, CURLUPART_URL, base, 0);

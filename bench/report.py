@@ -151,6 +151,68 @@ METRICS = (
 # its memory, which does not swing, still is.
 UNTIMED_GROUPS = ("stress.",)
 
+ACCEPTED_FILE = Path(__file__).resolve().parent / "accepted.txt"
+
+
+@dataclass(frozen=True)
+class Accepted:
+    """One regression a commit has argued for in review.
+
+    The cap is what was accepted, not a licence: a row that grows past it
+    fails as any other would. Entries are reported when they are used and
+    when they are not, since a merged cost belongs to the baseline from the
+    next commit on and the entry should then be deleted.
+
+    A bare cap is a ratio and a `+` cap is an absolute rise in the metric's
+    own units. Which one carries follows the cost: a slower machine takes
+    proportionally longer to do the same extra work, so time is a ratio,
+    while a mapping is the same megabyte wherever it lands and its ratio says
+    only how small the step it landed in was.
+    """
+
+    case: str
+    label: str
+    metric: str
+    cap: float
+    reason: str
+    absolute: bool = False
+
+    def covers(self, case: str, label: str, metric: str) -> bool:
+        return (self.case == case and self.metric == metric
+                and self.label in ("*", label))
+
+    def allows(self, was: float, now: float) -> bool:
+        if self.absolute:
+            return now - was <= self.cap
+        return was > 0 and now / was <= self.cap
+
+    def describe(self) -> str:
+        return f"+{self.cap:g}" if self.absolute else f"x{self.cap:g}"
+
+
+def load_accepted(path: Path = ACCEPTED_FILE) -> list[Accepted]:
+    """Read the accepted-regression list; an absent file accepts nothing."""
+    out: list[Accepted] = []
+    try:
+        text = path.read_text()
+    except OSError:
+        return out
+    for n, raw in enumerate(text.splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) != 5:
+            raise ValueError(f"{path}:{n}: want case|label|metric|cap|reason")
+        case, label, metric, cap, reason = parts
+        if metric not in {m.key for m in METRICS}:
+            raise ValueError(f"{path}:{n}: unknown metric {metric!r}")
+        if not reason:
+            raise ValueError(f"{path}:{n}: an entry must give a reason")
+        absolute = cap.startswith("+")
+        out.append(Accepted(case, label, metric, float(cap), reason, absolute))
+    return out
+
 
 @dataclass
 class CaseResult:
@@ -295,7 +357,9 @@ class Run:
                 seen[key] = nth + 1
                 previous[(*key, nth)] = row
 
-        regressions, improvements, missing = [], [], 0
+        accepted = load_accepted()
+        used: set[int] = set()
+        regressions, improvements, allowed, missing = [], [], [], 0
         seen.clear()
         for result in self.results:
             for row in result.rows:
@@ -323,6 +387,16 @@ class Run:
                         f" (x{ratio:.2f})"
                     )
                     if ratio > limit:
+                        excuse = next(
+                            (a for a in accepted
+                             if a.covers(result.name, row.label, metric.key)),
+                            None)
+                        if excuse and excuse.allows(was, now):
+                            used.add(id(excuse))
+                            allowed.append(
+                                f"{line} <= {excuse.describe()}"
+                                f"  [{excuse.reason}]")
+                            continue
                         regressions.append((metric.worse, line))
                         if result.name not in self.regressed:
                             self.regressed.append(result.name)
@@ -337,6 +411,13 @@ class Run:
             print(self.c.green(f"  {word:<7} {line}"))
         for word, line in regressions:
             print(self.c.red(f"  {word:<7} {line}"))
+        for line in allowed:
+            print(self.c.yellow(f"  accepted {line}"))
+        stale = [a for a in accepted if id(a) not in used]
+        for a in stale:
+            print(self.c.dim(
+                f"  unused   {a.case} / {a.label} {a.metric}: delete the entry"
+                f" once the baseline carries the cost"))
         if missing:
             print(self.c.dim(f"  {missing} step(s) absent from the baseline"))
         if not regressions:
