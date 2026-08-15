@@ -71,6 +71,20 @@ def test_copy_shows_a_status_notice(ctx):
     assert "copied" in s.status_line(), s.status_line()
 
 
+def test_a_drag_under_tmux_says_what_carries_the_copy_once(ctx):
+    """tmux drops the sequence by default; the caveat is said on the first
+    drag and not on every one after it."""
+    s = ctx.spawn(TMUX="/tmp/tmux-1000/default,4242,0")
+    transcript_turn(ctx, s)
+    row = row_of(s, "alpha beta gamma delta")
+    drag(s, row, 3, 12)
+    s.wait_text("set-clipboard on")
+    s.key("esc")           # Esc retires the notice
+    s.wait_gone("set-clipboard on")
+    drag(s, row, 3, 12)
+    assert "set-clipboard on" not in s.text(), s.text()
+
+
 def test_multi_row_selection_joins_with_newlines(ctx):
     """Dragging across rows copies them separated by line breaks.
 

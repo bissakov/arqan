@@ -299,6 +299,7 @@ typedef struct {
     size_t sel_br, sel_bc;   // head cell
     char sel_text[TUI_SEL_BYTES];
     f64 copy_notice;  // status hint deadline after an OSC 52 copy
+    b8 tmux_copy_hinted;  // the tmux clipboard caveat, said once per run
     char out[TUI_OUT_CAP];
     size_t out_n;
 } TuiState;
@@ -651,6 +652,18 @@ static void b64_put(const u8 *p, size_t n) {
     }
 }
 
+b8 tui_clipboard_via_tmux(void) { return getenv("TMUX") != NULL; }
+
+/* The clipboard is written blind: OSC 52 carries no reply, so nothing here
+ * learns whether it landed. Under tmux the odds are worth saying out loud,
+ * once per run, since a drag-select is a gesture the user repeats. */
+static void copy_acknowledge(void) {
+    g_tui.copy_notice = agent_now_seconds() + 2.0;
+    if (!tui_clipboard_via_tmux() || g_tui.tmux_copy_hinted) return;
+    g_tui.tmux_copy_hinted = true;
+    tui_notice(AGENT_TMUX_COPY_NOTICE);
+}
+
 /* OSC 52 lands the copy in the user's own clipboard even across ssh, with no
  * helper process. */
 static void sel_copy(void) {
@@ -660,7 +673,7 @@ static void sel_copy(void) {
     b64_put((const u8 *)g_tui.sel_text, n);
     put_str("\a");
     flush_out();
-    g_tui.copy_notice = agent_now_seconds() + 2.0;
+    copy_acknowledge();
 }
 
 static void sel_clear(void) {

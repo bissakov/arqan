@@ -141,6 +141,25 @@ to the user's config and keys to `$XDG_STATE_HOME/arqan/credentials.toml`
 (mode 0600); `/model` remembers the chosen pair in the state file. Run
 `arqan --help` for all options.
 
+## tmux
+
+arqan copies (`/copy` and a drag-select) with OSC 52 and notifies with OSC 9,
+which is what makes both work over ssh with no helper process. tmux stands
+between arqan and the terminal for each of them and drops both by default:
+
+```sh
+set -s set-clipboard on        # let arqan set the clipboard
+set -g allow-passthrough all   # let desktop notifications through, from any
+                               # pane, visible or not (tmux 3.4+; 'on' covers
+                               # only the visible ones)
+```
+
+`set-clipboard` also needs the `Ms` capability for the terminal outside tmux,
+which tmux adds by itself only for `TERM` matching `xterm*`; otherwise add
+`set -as terminal-features ',<term>:clipboard'`. A copy is written blind, so
+arqan cannot report whether it landed: under tmux it says which option
+carries it rather than claiming success.
+
 ## Performance
 
 Measured at `1566515` on Linux 7.1.8 with GCC 16.2.1 and a Ryzen 7 7800X3D.

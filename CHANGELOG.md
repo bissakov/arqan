@@ -12,6 +12,13 @@
 
 ### Fixed
 
+- Stop claiming a copy under tmux succeeded. tmux ships with `set-clipboard
+  external`, which forbids an application inside it from setting the
+  clipboard and answers nothing, so `/copy` and a drag-select reported
+  "copied" for text that never left tmux. Both now name the option that
+  carries it, and the README says what to set for the clipboard and for
+  desktop notifications.
+
 - Stop the `libcurl.so.4: no version information available` warning the rpm
   printed on every run. Debian versions libcurl's symbols and the rpm
   distributions do not, so the package's binaries, built on Debian 11, asked

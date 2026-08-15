@@ -1592,6 +1592,13 @@ void tui_set_setup_hint(Str hint);
  * the status line. False for an empty payload or one past the sequence cap,
  * which is refused rather than truncated. */
 b8 tui_copy(Str text);
+/* True when a clipboard write has to pass through tmux, which with its
+ * default `set-clipboard external` forbids an application inside it from
+ * setting the clipboard and answers nothing either way. A copy is sent
+ * hopefully there, so what is said about it says so too. */
+b8 tui_clipboard_via_tmux(void);
+#define AGENT_TMUX_COPY_NOTICE \
+    STR("copied; tmux needs `set -s set-clipboard on` to pass it on")
 /* Ask the terminal to raise a desktop notification (OSC 9), wrapping the
  * sequence for tmux when running under it, and ring the bell. `text` must
  * already be free of control bytes; both are no-ops off a terminal. */

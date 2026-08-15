@@ -97,3 +97,32 @@ def test_copy_after_clear_has_nothing_to_copy(ctx):
     s.wait_gone("alpha beta")
     s.submit("/copy")
     s.wait_text("no response to copy")
+
+
+TMUX = "/tmp/tmux-1000/default,4242,0"
+
+
+def test_copy_under_tmux_names_the_option_that_carries_it(ctx):
+    """tmux drops an OSC 52 from inside it by default, so the copy is not
+    claimed as done: the notice says what would make it land."""
+    ctx.scenario("text=alpha+beta")
+    s = ctx.spawn(TMUX=TMUX)
+    s.submit("say something")
+    s.wait_text("alpha beta")
+    s.wait_turn_done()
+    s.submit("/copy")
+    s.wait_text("set-clipboard on")
+    assert "copied the last response" not in s.text(), s.text()
+
+
+def test_copy_outside_tmux_keeps_its_plain_acknowledgement(ctx):
+    """The caveat belongs to tmux alone; a bare terminal answers as before."""
+    ctx.scenario("text=alpha+beta")
+    s = ctx.spawn(TMUX=None)
+    s.submit("say something")
+    s.wait_text("alpha beta")
+    s.wait_turn_done()
+    s.submit("/copy")
+    s.wait_text("copied the last response")
+    assert "set-clipboard" not in s.text(), s.text()
+    assert s.screen.clipboard == "alpha beta", repr(s.screen.clipboard)
