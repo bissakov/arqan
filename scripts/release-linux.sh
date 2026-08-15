@@ -9,6 +9,7 @@ DEBIAN_IMAGE=debian:11-slim@sha256:4a2e40d0d34f8f86f60ef0d79c14d3b6b3d2620825dcd
 UBUNTU_IMAGE=ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
 FEDORA_IMAGE=fedora:43@sha256:762d73ba1c455232b0272c5d445a34f36c4b9f421cbc05ce8102552325b6a222
 ALPINE_IMAGE=alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+ARCH_IMAGE=archlinux:base@sha256:b0deabeb3d283da2c7f7dbf0eea051b7b2cd0554e0b737cc457fd21683bdcdd1
 
 fail() {
     printf '%s\n' "$PROGRAM release: $*" >&2
@@ -26,6 +27,7 @@ uid=$(id -u)
 gid=$(id -g)
 deb=arqan_${version}-1_amd64.deb
 rpm=arqan-${version}-1.x86_64.rpm
+pkg=arqan-${version}-1-x86_64.pkg.tar.zst
 archive=arqan-${version}-linux-x86_64.tar.gz
 top=arqan-${version}-linux-x86_64
 
@@ -124,6 +126,44 @@ docker run --rm --platform linux/amd64 \
         grep -qx "$sentinel" /project/.arqan/config.toml
     '
 
+# The pacman package carries its own file manifest, so this run also asks
+# pacman to verify every installed file against it. The image trims what it
+# unpacks, and its NoExtract list would drop the documentation and report it
+# as altered, so the smoke test installs the package whole.
+docker run --rm --platform linux/amd64 \
+    -v "$ROOT/dist:/packages:ro" \
+    "$ARCH_IMAGE" sh -ec '
+        sentinel=${ARQAN_SMOKE_SENTINEL:-arqan-package-sentinel}
+        sed -i "/^NoExtract/d" /etc/pacman.conf
+        pacman -U --noconfirm "/packages/'"$pkg"'" >/dev/null
+        for exe in arqan arqan-highlight; do
+            noise=$($exe --version 2>&1 >/dev/null)
+            [ -z "$noise" ] || { printf "%s: %s\n" "$exe" "$noise" >&2; exit 1; }
+        done
+        arqan --version
+        arqan-highlight --version
+        pacman -Qkk arqan
+        mkdir -p /root/.config/arqan /root/.local/state/arqan \
+            /root/.local/share/arqan/sessions /project/.arqan
+        printf "%s\n" "$sentinel" >/root/.config/arqan/config.toml
+        printf "%s\n" "$sentinel" >/root/.local/state/arqan/state.toml
+        printf "%s\n" "$sentinel" >/root/.local/state/arqan/credentials.toml
+        printf "%s\n" "$sentinel" >/root/.local/share/arqan/sessions/keep.json
+        printf "%s\n" "$sentinel" >/project/.arqan/config.toml
+        pacman -U --noconfirm "/packages/'"$pkg"'" >/dev/null
+        arqan --version
+        arqan-highlight --version
+        pacman -R --noconfirm arqan >/dev/null
+        test ! -e /usr/bin/arqan && test ! -e /usr/bin/arqan-highlight
+        test -z "$(find /usr/share/doc/arqan /usr/share/licenses/arqan \
+            -type f -print -quit 2>/dev/null)"
+        grep -qx "$sentinel" /root/.config/arqan/config.toml
+        grep -qx "$sentinel" /root/.local/state/arqan/state.toml
+        grep -qx "$sentinel" /root/.local/state/arqan/credentials.toml
+        grep -qx "$sentinel" /root/.local/share/arqan/sessions/keep.json
+        grep -qx "$sentinel" /project/.arqan/config.toml
+    '
+
 # The archive claims to need nothing, so prove it on a musl distribution and
 # on the oldest glibc the packages target.
 smoke_archive() {
@@ -140,10 +180,11 @@ smoke_archive "$ALPINE_IMAGE"
 smoke_archive "$DEBIAN_IMAGE"
 
 set -- "$ROOT"/dist/*
-[ "$#" -eq 4 ] || fail 'release build did not produce exactly four assets'
+[ "$#" -eq 5 ] || fail 'release build did not produce exactly five assets'
 [ -f "$ROOT/dist/arqan-$version-linux-x86_64.tar.gz" ] || fail 'missing portable archive'
 [ -f "$ROOT/dist/$deb" ] || fail 'missing Debian package'
 [ -f "$ROOT/dist/$rpm" ] || fail 'missing RPM package'
+[ -f "$ROOT/dist/$pkg" ] || fail 'missing pacman package'
 [ -f "$ROOT/dist/SHA256SUMS" ] || fail 'missing checksum manifest'
 (
     cd "$ROOT/dist"

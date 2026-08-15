@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Ship an Arch Linux package. The release now carries a
+  `arqan-X.Y.Z-1-x86_64.pkg.tar.zst` next to the `.deb`, the `.rpm` and the
+  portable archive, so Arch and its derivatives install with `pacman -U`
+  and remove with `pacman -R`. It carries the same binaries as the `.rpm`,
+  which link an unversioned libcurl, and a file manifest `pacman -Qkk`
+  verifies.
+
 ### Changed
 
 - Lift the transcript for a notice. A one-line answer to a command that

@@ -44,6 +44,7 @@ jobs:
             dist/*.tar.gz
             dist/*.deb
             dist/*.rpm
+            dist/*.pkg.tar.zst
             dist/SHA256SUMS
           if-no-files-found: error
 
@@ -68,5 +69,6 @@ jobs:
             dist/*.tar.gz
             dist/*.deb
             dist/*.rpm
+            dist/*.pkg.tar.zst
             dist/SHA256SUMS
           fail_on_unmatched_files: true

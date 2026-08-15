@@ -1,0 +1,17 @@
+pkgname = arqan
+pkgbase = arqan
+pkgver = @VERSION@-1
+pkgdesc = Terminal coding agent
+url = https://github.com/bissakov/arqan
+builddate = @BUILDDATE@
+packager = Alikhan Bissakov <bissakov@users.noreply.github.com>
+size = @SIZE@
+arch = x86_64
+license = MPL-2.0
+license = Apache-2.0
+license = MIT
+license = ICU
+license = BSD-3-Clause
+depend = glibc
+depend = curl
+depend = ca-certificates

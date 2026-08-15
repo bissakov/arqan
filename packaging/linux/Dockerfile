@@ -4,6 +4,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       binutils ca-certificates coreutils file findutils gcc grep gzip \
-      cpio dpkg-dev libc6-dev libcurl4 libcurl4-openssl-dev make python3 \
-      rpm rpm2cpio sed tar \
+      cpio dpkg-dev libarchive-tools libc6-dev libcurl4 libcurl4-openssl-dev \
+      make python3 rpm rpm2cpio sed tar zstd \
  && rm -rf /var/lib/apt/lists/*

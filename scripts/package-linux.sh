@@ -16,7 +16,8 @@ case $(uname -m) in
     *) fail 'x86_64 host required' ;;
 esac
 
-for command in awk cpio dpkg-deb file find gzip readelf rpmbuild rpm sha256sum strip tar; do
+for command in awk bsdtar cpio dpkg-deb du file find gzip readelf rpmbuild \
+    rpm sha256sum strip tar zstd; do
     command -v "$command" >/dev/null 2>&1 || fail "missing required command: $command"
 done
 
@@ -42,11 +43,13 @@ export SOURCE_DATE_EPOCH
 archive=$PROGRAM-$version-linux-x86_64.tar.gz
 deb=${PROGRAM}_${version}-1_amd64.deb
 rpm=$PROGRAM-$version-1.x86_64.rpm
+pkg=$PROGRAM-$version-1-x86_64.pkg.tar.zst
 top=$PROGRAM-$version-linux-x86_64
 work=${TMPDIR:-/tmp}/$PROGRAM-package.$$
 payload=$work/payload
 tar_stage=$work/$top
 deb_stage=$work/deb
+arch_stage=$work/arch
 rpm_top=$PROGRAM-$version-package
 rpm_source=$work/rpmbuild/SOURCES/$rpm_top
 rpm_source_archive=$work/rpmbuild/SOURCES/v$version.tar.gz
@@ -208,22 +211,40 @@ mv -- "$deb_stage/usr/share/doc/$PROGRAM/LICENSE" \
 sed "s/@VERSION@/$version/g" packaging/linux/debian/control.in >"$deb_stage/DEBIAN/control"
 chmod 0644 "$deb_stage/DEBIAN/control"
 
-mkdir -p -- "$rpm_source/usr/bin" "$rpm_source/usr/share/doc/$PROGRAM" \
-    "$rpm_source/usr/share/licenses/$PROGRAM"
-cp -a -- "$payload/el9/." "$rpm_source/usr/bin/"
-for name in README.md CHANGELOG.md THIRD_PARTY_NOTICES.md; do
-    cp -a -- "$payload/doc/$name" "$rpm_source/usr/share/doc/$PROGRAM/$name"
-done
-mkdir -p -- "$rpm_source/usr/share/doc/$PROGRAM/vendor/lexbor"
-cp -a -- "$payload/doc/vendor/lexbor/NOTICE" \
-    "$rpm_source/usr/share/doc/$PROGRAM/vendor/lexbor/NOTICE"
-cp -a -- "$payload/doc/LICENSE" "$rpm_source/usr/share/licenses/$PROGRAM/LICENSE"
-mkdir -p -- "$rpm_source/usr/share/licenses/$PROGRAM/vendor"
-cp -a -- "$payload/doc/vendor/lexbor" \
-    "$rpm_source/usr/share/licenses/$PROGRAM/vendor/lexbor"
-rm -- "$rpm_source/usr/share/licenses/$PROGRAM/vendor/lexbor/NOTICE"
-cp -a -- "$payload/doc/vendor/tree-sitter" \
-    "$rpm_source/usr/share/licenses/$PROGRAM/vendor/tree-sitter"
+# The rpm and the pacman package ship the same tree: the same EL9 pair, whose
+# libcurl symbols are unversioned the way every non-Debian family's are, and
+# the same split of documentation from licence texts.
+stage_usr_layout() {
+    root=$1
+    mkdir -p -- "$root/usr/bin" "$root/usr/share/doc/$PROGRAM" \
+        "$root/usr/share/licenses/$PROGRAM"
+    cp -a -- "$payload/el9/." "$root/usr/bin/"
+    for name in README.md CHANGELOG.md THIRD_PARTY_NOTICES.md; do
+        cp -a -- "$payload/doc/$name" "$root/usr/share/doc/$PROGRAM/$name"
+    done
+    mkdir -p -- "$root/usr/share/doc/$PROGRAM/vendor/lexbor"
+    cp -a -- "$payload/doc/vendor/lexbor/NOTICE" \
+        "$root/usr/share/doc/$PROGRAM/vendor/lexbor/NOTICE"
+    cp -a -- "$payload/doc/LICENSE" "$root/usr/share/licenses/$PROGRAM/LICENSE"
+    mkdir -p -- "$root/usr/share/licenses/$PROGRAM/vendor"
+    cp -a -- "$payload/doc/vendor/lexbor" \
+        "$root/usr/share/licenses/$PROGRAM/vendor/lexbor"
+    rm -- "$root/usr/share/licenses/$PROGRAM/vendor/lexbor/NOTICE"
+    cp -a -- "$payload/doc/vendor/tree-sitter" \
+        "$root/usr/share/licenses/$PROGRAM/vendor/tree-sitter"
+}
+
+stage_usr_layout "$rpm_source"
+stage_usr_layout "$arch_stage"
+
+# pacman reads a package's metadata from leading dot-files in a plain tar, so
+# libarchive writes one here and this image needs none of Arch's tooling. The
+# installed size is what makepkg records: apparent size rounded to whole KiB.
+arch_size=$(cd "$arch_stage" && du --apparent-size --block-size=1024 -s . | \
+    awk '{ print $1 * 1024 }')
+sed -e "s/@VERSION@/$version/g" -e "s/@BUILDDATE@/$SOURCE_DATE_EPOCH/g" \
+    -e "s/@SIZE@/$arch_size/g" \
+    packaging/linux/arch/PKGINFO.in >"$arch_stage/.PKGINFO"
 
 # Fix all input metadata before invoking the format-specific archivers.
 find "$work" -type d -exec chmod 0755 {} +
@@ -231,7 +252,7 @@ find "$work" -type f ! -path '*/bin/arqan' ! -path '*/bin/arqan-highlight' -exec
 find "$work" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 
 mkdir -p -- "$DIST"
-rm -f -- "$DIST"/*.tar.gz "$DIST"/*.deb "$DIST"/*.rpm \
+rm -f -- "$DIST"/*.tar.gz "$DIST"/*.deb "$DIST"/*.rpm "$DIST"/*.pkg.tar.zst \
     "$DIST"/*.sha256 "$DIST/SHA256SUMS"
 TZ=UTC tar --sort=name --format=ustar --owner=0 --group=0 --numeric-owner \
     --mtime="@$SOURCE_DATE_EPOCH" --mode='u+rwX,go+rX,go-w' \
@@ -259,8 +280,24 @@ built_rpm=$(find "$work/rpmbuild/RPMS" -type f -name '*.rpm')
 [ "$(printf '%s\n' "$built_rpm" | wc -l)" -eq 1 ] || fail 'rpmbuild produced an unexpected artifact set'
 cp -- "$built_rpm" "$DIST/$rpm"
 
+# .MTREE describes the payload and .PKGINFO alongside it, so it is written
+# once both are final. pacman stops reading metadata at the first entry whose
+# name does not begin with a dot, and C-sorted names put those entries first.
+(
+    cd "$arch_stage"
+    LC_ALL=C bsdtar -cf - --format=mtree --uid 0 --gid 0 \
+        --options='!all,use-set,type,uid,gid,mode,time,size,md5,sha256,link' \
+        .PKGINFO usr | gzip -n >.MTREE
+    touch -h -d "@$SOURCE_DATE_EPOCH" .MTREE
+    LC_ALL=C TZ=UTC tar --sort=name --format=gnu --owner=0 --group=0 \
+        --numeric-owner --mtime="@$SOURCE_DATE_EPOCH" \
+        --mode='u+rwX,go+rX,go-w' -cf - .PKGINFO .MTREE usr | \
+        zstd -19 -T1 -q -c
+) >"$DIST/$pkg"
+
 (
     cd "$DIST"
-    sha256sum "$archive" "$deb" "$rpm" | LC_ALL=C sort -k2 >SHA256SUMS
+    sha256sum "$archive" "$deb" "$rpm" "$pkg" | LC_ALL=C sort -k2 >SHA256SUMS
 )
-printf '%s\n' "$DIST/$archive" "$DIST/$deb" "$DIST/$rpm" "$DIST/SHA256SUMS"
+printf '%s\n' "$DIST/$archive" "$DIST/$deb" "$DIST/$rpm" "$DIST/$pkg" \
+    "$DIST/SHA256SUMS"

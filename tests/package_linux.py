@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import hashlib
+import gzip
 import io
+import itertools
 import os
 import platform
 import re
@@ -177,12 +179,13 @@ def check_executables(root: Path) -> None:
         check_elf(binary, dependencies)
 
 
-def check_rpm_executables(root: Path) -> None:
-    """The rpm's binaries come from EL9, so this host may not be able to run
-    them; the release script's Fedora smoke test does that. What matters here
-    is that they ask an rpm host for nothing it lacks: glibc no newer than
-    EL9's 2.34, and no versioned libcurl symbol, which only Debian's libcurl
-    defines and whose absence makes the loader warn on every startup."""
+def check_el9_executables(root: Path) -> None:
+    """The rpm and the pacman package share the EL9 binaries, so this host may
+    not be able to run them; the release script's Fedora and Arch smoke tests
+    do that. What matters here is that they ask a non-Debian host for nothing
+    it lacks: glibc no newer than EL9's 2.34, and no versioned libcurl symbol,
+    which only Debian's libcurl defines and whose absence makes the loader
+    warn on every startup."""
     checks = {
         "arqan": {"libc.so.6", "libcurl.so.4"},
         "arqan-highlight": {"libc.so.6"},
@@ -335,14 +338,129 @@ def check_rpm(package: Path, ver: str, epoch: int, temp: Path) -> None:
                  for path in root.rglob("*") if path.is_file()}
     if extracted != expected_files:
         fail("RPM extraction disagrees with its file metadata")
-    check_rpm_executables(root)
+    check_el9_executables(root)
+
+
+def pkg_expected_files() -> set[str]:
+    return {name.removeprefix("/") for name in rpm_expected_files()}
+
+
+def parse_pkginfo(text: str) -> dict[str, list[str]]:
+    fields: dict[str, list[str]] = {}
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        key, separator, value = line.partition(" = ")
+        if not separator:
+            fail(f"malformed .PKGINFO line: {line}")
+        fields.setdefault(key, []).append(value)
+    return fields
+
+
+def parse_mtree(data: bytes) -> dict[str, dict[str, str]]:
+    """Rebuild the records pacman checks installed files against.
+
+    Only the subset the packaging script emits is understood: a gzip-compressed
+    mtree whose defaults come from /set and whose paths need no unescaping.
+    """
+    defaults: dict[str, str] = {}
+    records: dict[str, dict[str, str]] = {}
+    for line in gzip.decompress(data).decode().splitlines():
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split()
+        keywords = dict(item.split("=", 1) for item in fields[1:] if "=" in item)
+        if fields[0] == "/set":
+            defaults.update(keywords)
+        elif fields[0] == "/unset":
+            for keyword in fields[1:]:
+                defaults.pop(keyword, None)
+        else:
+            records[fields[0].removeprefix("./")] = {**defaults, **keywords}
+    return records
+
+
+def check_pkg(package: Path, ver: str, epoch: int, temp: Path) -> None:
+    """The pacman package is assembled without Arch tooling, so this checks
+    what makepkg would otherwise guarantee: the metadata dot-files pacman
+    stops reading at, root ownership, and an .MTREE that describes exactly the
+    files the package installs."""
+    data = run("zstd", "-dc", package, text=False).stdout
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as tf:
+        members = tf.getmembers()
+        names = [member.name.rstrip("/") for member in members]
+        metadata = {".PKGINFO", ".MTREE"}
+        expected = paths_with_dirs(pkg_expected_files())
+        payload = set(names) - metadata
+        if payload != expected:
+            fail(f"pacman payload mismatch\nmissing: {sorted(expected - payload)}\n"
+                 f"extra: {sorted(payload - expected)}")
+        leading = set(itertools.takewhile(lambda name: name.startswith("."), names))
+        if leading != metadata:
+            fail(f"pacman metadata must precede the payload: {sorted(leading)}")
+        for member in members:
+            executable = member.name in {"usr/bin/arqan", "usr/bin/arqan-highlight"}
+            check_member(member, epoch, executable)
+        pkginfo = tf.extractfile(".PKGINFO").read().decode()
+        mtree = tf.extractfile(".MTREE").read()
+        root = temp / "pkg-root"
+        root.mkdir()
+        # Paths and entry types were validated before extraction.
+        tf.extractall(root)
+
+    fields = parse_pkginfo(pkginfo)
+    expected_fields = {
+        "pkgname": ["arqan"],
+        "pkgbase": ["arqan"],
+        "pkgver": [f"{ver}-1"],
+        "arch": ["x86_64"],
+        "url": ["https://github.com/bissakov/arqan"],
+        "packager": ["Alikhan Bissakov <bissakov@users.noreply.github.com>"],
+        "builddate": [str(epoch)],
+        "license": ["MPL-2.0", "Apache-2.0", "MIT", "ICU", "BSD-3-Clause"],
+        "depend": ["glibc", "curl", "ca-certificates"],
+    }
+    for key, value in expected_fields.items():
+        if fields.get(key) != value:
+            fail(f"wrong .PKGINFO {key}: {fields.get(key)}")
+    size = fields.get("size", ["0"])[0]
+    if not size.isdigit() or int(size) <= 0:
+        fail(f"pacman package reports no installed size: {size}")
+
+    records = parse_mtree(mtree)
+    expected_records = expected | {".PKGINFO"}
+    if set(records) != expected_records:
+        fail(f"mtree mismatch\nmissing: {sorted(expected_records - set(records))}\n"
+             f"extra: {sorted(set(records) - expected_records)}")
+    for name, record in records.items():
+        path = root / name
+        if (record.get("uid"), record.get("gid")) != ("0", "0"):
+            fail(f"non-root mtree ownership: {name}")
+        if record.get("time") != f"{epoch}.0":
+            fail(f"non-normalized mtree timestamp: {name}")
+        if record.get("type") == "dir":
+            if not path.is_dir():
+                fail(f"mtree names a directory the package lacks: {name}")
+            if record.get("mode") != "755":
+                fail(f"wrong mtree mode for {name}: {record.get('mode')}")
+            continue
+        expected_mode = "755" if name.startswith("usr/bin/") else "644"
+        if record.get("mode") != expected_mode:
+            fail(f"wrong mtree mode for {name}: {record.get('mode')}")
+        content = path.read_bytes()
+        if record.get("size") != str(len(content)):
+            fail(f"mtree size disagrees with the payload: {name}")
+        if record.get("sha256digest") != hashlib.sha256(content).hexdigest():
+            fail(f"mtree digest disagrees with the payload: {name}")
+    check_el9_executables(root)
 
 
 def main() -> int:
     if platform.system() != "Linux" or platform.machine() not in {"x86_64", "amd64"}:
         print("package-linux tests require Linux x86_64", file=sys.stderr)
         return 2
-    requirements = ("cpio", "dpkg-deb", "file", "readelf", "rpm", "rpm2cpio", "sha256sum", "tar")
+    requirements = ("cpio", "dpkg-deb", "file", "readelf", "rpm", "rpm2cpio",
+                    "sha256sum", "tar", "zstd")
     for command in requirements:
         if shutil.which(command) is None:
             print(f"missing test requirement: {command}", file=sys.stderr)
@@ -358,6 +476,7 @@ def main() -> int:
         f"arqan-{ver}-linux-x86_64.tar.gz",
         f"arqan_{ver}-1_amd64.deb",
         f"arqan-{ver}-1.x86_64.rpm",
+        f"arqan-{ver}-1-x86_64.pkg.tar.zst",
     ])
     dist = ROOT / "dist"
     assets = [dist / name for name in names]
@@ -367,9 +486,10 @@ def main() -> int:
         fail(f"unexpected release asset set: {sorted(actual_files)}")
     lines = manifest.read_text().splitlines()
     expected_pattern = [rf"[0-9a-f]{{64}}  {re.escape(name)}" for name in names]
-    if len(lines) != 3 or any(not re.fullmatch(pattern, line)
-                              for pattern, line in zip(expected_pattern, lines)):
-        fail("SHA256SUMS must contain exactly the three sorted versioned artifacts")
+    if len(lines) != len(names) or any(
+            not re.fullmatch(pattern, line)
+            for pattern, line in zip(expected_pattern, lines)):
+        fail("SHA256SUMS must contain exactly the four sorted versioned artifacts")
     run("sha256sum", "--ignore-missing", "-c", manifest.name, cwd=dist)
 
     epoch_text = os.environ.get("SOURCE_DATE_EPOCH")
@@ -384,6 +504,7 @@ def main() -> int:
         )
         check_deb(dist / f"arqan_{ver}-1_amd64.deb", ver, epoch, temp)
         check_rpm(dist / f"arqan-{ver}-1.x86_64.rpm", ver, epoch, temp)
+        check_pkg(dist / f"arqan-{ver}-1-x86_64.pkg.tar.zst", ver, epoch, temp)
 
     first = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
              for path in assets + [manifest]}
@@ -396,7 +517,7 @@ def main() -> int:
         changed = sorted(name for name in first if first[name] != second[name])
         fail(f"packaging identical inputs produced different bytes: {changed}")
 
-    print("package-linux: verified tar, deb, rpm, and SHA256SUMS")
+    print("package-linux: verified tar, deb, rpm, pkg.tar.zst, and SHA256SUMS")
     return 0
 
 
