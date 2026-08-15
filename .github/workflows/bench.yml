@@ -1,0 +1,50 @@
+name: Benchmarks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source and history
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libcurl4-openssl-dev
+      - name: Resolve the reference commit
+        id: ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            base=$(git rev-parse "HEAD^")
+          fi
+          echo "sha=$base" >> "$GITHUB_OUTPUT"
+      # CPU is read from the child's schedstat, so a noisy neighbour costs wall
+      # time and not the verdict. The tolerance still allows for a shared vCPU.
+      - name: Measure the reference and this change
+        run: scripts/bench-guard.sh ${{ steps.ref.outputs.sha }} --tolerance 1.5
+      - name: Retain both reports
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: bench-${{ github.run_id }}
+          path: |
+            bench-base.json
+            bench-head.json
+          if-no-files-found: warn

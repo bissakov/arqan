@@ -7,6 +7,11 @@ CFLAGS  ?= -std=c17 -O2 -Wall -Wextra -Wpedantic -Wconversion \
 LDFLAGS ?= -flto
 LIBS    ?= -lcurl
 
+# A warning is a failure, so CI builds with EXTRA_CFLAGS=-Werror. It appends
+# to whichever CFLAGS are in force and never reaches the vendored sources,
+# which carry their own flags and are not ours to fix.
+CFLAGS += $(EXTRA_CFLAGS)
+
 # The same suite against an instrumented binary: `make test-asan`. The
 # sanitizer build lives in its own object and binary directories, so it never
 # overwrites the shipped one and the two can coexist without a rebuild.

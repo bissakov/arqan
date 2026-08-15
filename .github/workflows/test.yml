@@ -1,0 +1,29 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libcurl4-openssl-dev
+      # The suite drives a pty against a mock provider on loopback and needs
+      # no network. A warning is a failure here, as it is in the guidelines.
+      - name: Build and run the end-to-end suite
+        run: make test EXTRA_CFLAGS=-Werror

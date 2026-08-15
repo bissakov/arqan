@@ -7,19 +7,30 @@ read, write, bash, patch, grep, and find tools.
 ## Build and test
 
 ```sh
-make            # build bin/arqan
-make run        # build and run
-make test       # end-to-end TUI suite
-make test-asan  # ASan + UBSan suite
-make test-fil   # Fil-C memory-safety suite (needs /opt/fil)
-make clean      # remove build/ and bin/
+make             # build bin/arqan
+make run         # build and run
+make test        # end-to-end TUI suite
+make bench       # benchmark and stress suite
+make bench-guard # measure this tree against the commit under it
+make test-asan   # ASan + UBSan suite
+make test-fil    # Fil-C memory-safety suite (needs /opt/fil)
+make clean       # remove build/ and bin/
 ```
 
 `CFLAGS` already enables `-Wall -Wextra -Wpedantic -Wconversion`; new warnings
-are failures. After every change under `src/`, run `make test`. Behavioural
-changes need a focused end-to-end case in `tests/cases/`; write bug regressions
-first. Do not weaken assertions or update golden files merely to hide a
-failure. For suspected flakes, use `python3 tests/run.py --repeat 5`.
+are failures, and CI builds with `EXTRA_CFLAGS=-Werror`. After every change
+under `src/`, run `make test`. Behavioural changes need a focused end-to-end
+case in `tests/cases/`; write bug regressions first. Do not weaken assertions
+or update golden files merely to hide a failure. For suspected flakes, use
+`python3 tests/run.py --repeat 5`.
+
+Startup time, throughput and footprint are user-visible behaviour: a change
+that costs any of them is a regression. `make bench-guard` builds and measures
+the commit under this tree, then this tree against it, and fails when CPU per
+operation grows past 1.4x or private memory past 1.15x. CI runs it on every
+pull request. Run it before proposing a change to the startup path, the render
+path, tool output, or session replay. Do not widen a tolerance or a budget to
+pass one. `bench/README.md` records what is measured and how.
 
 `make test-asan` and `make test-fil` are not per-change gates; run one when the
 change touches memory. Prefer `make test-fil` for arena, buffer, bounds and
