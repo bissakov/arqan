@@ -10,6 +10,72 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 
+#if AGENT_CURL_DLOPEN
+#include <dlfcn.h>
+
+CurlApi g_curl;
+
+/* The soname, not the linker name: libcurl.so is a development symlink and is
+ * absent from a machine that only runs the program. */
+#define AGENT_CURL_SONAME "libcurl.so.4"
+
+b8 curl_load(char *err, size_t err_cap) {
+    static b8 loaded, tried;
+    static char why[256];
+    if (!tried) {
+        tried = true;
+        void *lib = dlopen(AGENT_CURL_SONAME, RTLD_LAZY | RTLD_LOCAL);
+        if (!lib) {
+            const char *e = dlerror();
+            snprintf(why, sizeof why, "cannot load " AGENT_CURL_SONAME ": %s",
+                     e ? e : "unknown error");
+        } else {
+            /* One miss leaves the table unusable, so the whole set is
+             * resolved before anything may call through it. */
+            struct { void **slot; const char *name; } wanted[] = {
+                {(void **)&g_curl.easy_init,      "curl_easy_init"},
+                {(void **)&g_curl.easy_setopt,    "curl_easy_setopt"},
+                {(void **)&g_curl.easy_getinfo,   "curl_easy_getinfo"},
+                {(void **)&g_curl.easy_perform,   "curl_easy_perform"},
+                {(void **)&g_curl.easy_cleanup,   "curl_easy_cleanup"},
+                {(void **)&g_curl.easy_strerror,  "curl_easy_strerror"},
+                {(void **)&g_curl.slist_append,   "curl_slist_append"},
+                {(void **)&g_curl.slist_free_all, "curl_slist_free_all"},
+                {(void **)&g_curl.url,            "curl_url"},
+                {(void **)&g_curl.url_set,        "curl_url_set"},
+                {(void **)&g_curl.url_get,        "curl_url_get"},
+                {(void **)&g_curl.url_cleanup,    "curl_url_cleanup"},
+                {(void **)&g_curl.free,           "curl_free"},
+                {(void **)&g_curl.multi_init,     "curl_multi_init"},
+                {(void **)&g_curl.multi_add_handle,    "curl_multi_add_handle"},
+                {(void **)&g_curl.multi_remove_handle, "curl_multi_remove_handle"},
+                {(void **)&g_curl.multi_perform,  "curl_multi_perform"},
+                {(void **)&g_curl.multi_poll,     "curl_multi_poll"},
+                {(void **)&g_curl.multi_info_read, "curl_multi_info_read"},
+                {(void **)&g_curl.multi_cleanup,  "curl_multi_cleanup"},
+                {(void **)&g_curl.multi_strerror, "curl_multi_strerror"},
+            };
+            loaded = true;
+            for (size_t i = 0; i < sizeof wanted / sizeof *wanted; i++) {
+                *wanted[i].slot = dlsym(lib, wanted[i].name);
+                if (*wanted[i].slot) continue;
+                snprintf(why, sizeof why, AGENT_CURL_SONAME
+                         " has no %s", wanted[i].name);
+                loaded = false;
+                break;
+            }
+            if (!loaded) {
+                CurlApi empty = {0};
+                g_curl = empty;
+                dlclose(lib);
+            }
+        }
+    }
+    if (!loaded && err && err_cap) snprintf(err, err_cap, "%s", why);
+    return loaded;
+}
+#endif
+
 typedef struct {
     const HttpReq *r;
     Buf    line;      // the event being accumulated, grown rather than clipped
@@ -340,6 +406,8 @@ static void http_apply_ca(CURL *curl) {
 
 #ifdef AGENT_TESTING
 void http_print_ca_trust(void) {
+    char err[256];
+    if (!curl_load(err, sizeof err)) { printf("ca-load: %s\n", err); return; }
     const CaTrust *t = ca_trust();
     printf("ca-file: %s\n", t->file ? t->file : "-");
     printf("ca-dir: %s\n", t->dir ? t->dir : "-");
@@ -428,6 +496,7 @@ static void http_record(const char *method, const char *path, const char *url,
 i32 http_get(const char *base_url, const char *path, const char *api_key,
              ApiKind api, Buf *out, char *fail_out, size_t fail_cap) {
     if (fail_out && fail_cap) fail_out[0] = 0;
+    if (!curl_load(fail_out, fail_cap)) return 1;
     char url[2048];
     if (!build_url(url, sizeof url, base_url, path)) {
         if (fail_out && fail_cap)
@@ -518,6 +587,7 @@ i32 http_url_get(HttpUrlReq *r) {
     r->content_type[0] = '\0';
     r->failure[0] = '\0';
     r->status = 0;
+    if (!curl_load(r->failure, sizeof r->failure)) return 1;
     if (!http_url_input_ok(r->url, r->failure, sizeof r->failure)) return 2;
 
     CURL *curl = curl_easy_init();
@@ -665,6 +735,13 @@ i32 http_url_get(HttpUrlReq *r) {
 i32 http_post(const HttpReq *r) {
     if (r->body_out == NULL && !r->line_arena) {
         agent_log(AGENT_LOG_ERROR, "streaming request without a line arena");
+        return 1;
+    }
+    char load_err[256];
+    if (!curl_load(load_err, sizeof load_err)) {
+        if (r->fail_out && r->fail_cap)
+            snprintf(r->fail_out, r->fail_cap, "%s", load_err);
+        agent_log(AGENT_LOG_ERROR, "%s", load_err);
         return 1;
     }
     CURL *curl = curl_easy_init();

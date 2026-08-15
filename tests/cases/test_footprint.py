@@ -38,6 +38,12 @@ def private_dirty_kb(pid: int) -> int:
     return total
 
 
+def maps_libcurl(pid: int) -> bool:
+    """Whether libcurl and its dependency tree are mapped into the process."""
+    text = Path(f"/proc/{pid}/maps").read_text()
+    return "libcurl.so" in text
+
+
 def test_idle_footprint_excludes_bulk_buffers(ctx):
     """A session that wrote nothing has not paid for the scrollback."""
     if unmeasurable():
@@ -50,6 +56,28 @@ def test_idle_footprint_excludes_bulk_buffers(ctx):
     # The bulk buffers are 12 MiB. Clearing them would land here; the control
     # block plus libcurl's own allocations sit far below it.
     assert kb < 8192, f"idle private footprint {kb} KB: bulk buffers resident?"
+
+
+def test_libcurl_is_absent_until_the_first_request(ctx):
+    """The loader does no TLS or resolver work for a session that never asks.
+
+    libcurl pulls in a dependency tree that costs more to map than the rest
+    of startup does, so it is opened at the first request rather than named
+    in the binary. Linking it again would paint the first frame behind that
+    load, which is what this measures.
+    """
+    if not Path("/proc/self/maps").exists():
+        return   # not Linux; there is nothing to read
+    ctx.scenario("text=ok")
+    s = ctx.spawn()
+    s.settle()
+
+    assert not maps_libcurl(s.proc.pid), "libcurl mapped before any request"
+
+    s.submit("say something")
+    s.wait_turn_done()
+    s.settle()
+    assert maps_libcurl(s.proc.pid), "the turn did not load libcurl"
 
 
 def test_footprint_tracks_use_not_capacity(ctx):

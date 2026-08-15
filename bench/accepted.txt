@@ -1,0 +1,71 @@
+# Regressions this tree has argued for, one per line:
+#
+#   case | label | metric | cap | reason
+#
+# A label of * covers every step of the case. The cap is what review accepted,
+# so a row that grows past it fails as any other would, and an entry that
+# stops matching is reported as unused: once a cost is in the baseline the
+# entry is dead and belongs deleted. Metrics are the names a report carries:
+# cpu_per_unit_ms, priv_kb, growth_kb.
+#
+# A bare cap is a ratio and a `+` cap is an absolute rise in the metric's own
+# units. Take whichever the cost is: a slower machine takes proportionally
+# longer to do the same extra work, so the time caps below are the worst ratio
+# measured against the parent commit times 1.2, the room a step needs to
+# repeat on a loaded machine and no more. Worst means worst of every machine
+# the gate runs on: the load and the step it lands in do not slow down by the
+# same factor, so a runner half the speed of a workstation does not report
+# half the ratio, and a cap read off one machine is a cap for one machine.
+#
+# The exception is a step whose own cost is under the floor, where there is no
+# denominator worth dividing by: a tenth of a millisecond is the machine, and
+# a ratio against it reports the machine. Those are absolute too.
+#
+# libcurl is opened at the first request instead of at exec, which halves the
+# time to a painted composer and leaves 0.9 MB unmapped in a session that
+# never calls a provider. The work is the same and it did not grow: a one-shot
+# run measures 3.32 ms of CPU against 3.37 ms before it. What changed is where
+# it lands, so every case whose measured step makes the first request now
+# carries the load that used to happen before the process reached main. No
+# case grew in resident memory: priv_kb fell everywhere, and growth_kb rose
+# because that mapping now happens inside the measured step.
+#
+# The mapping is one fixed size, so its cap is absolute. As a ratio it would
+# describe the machine that measured it and nothing else: the same 1.1 MB is
+# x2.4 over a step that grew 0.7 MB by itself and x5.5 over one that grew
+# 0.25 MB, and which of those a runner reports is a matter of its page size,
+# its allocator and how much of the work it had already done. 1.25 MB is the
+# largest libcurl and its dependency tree have been seen to want.
+
+provider.model_picker          | * | cpu_per_unit_ms |   3.34 | the first request loads libcurl, which exec used to do
+provider.model_picker          | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+provider.non_streaming_turn    | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+provider.retry_and_recover     | * | cpu_per_unit_ms |   2.99 | the first request loads libcurl, which exec used to do
+provider.retry_and_recover     | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+render.many_inline_styles      | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+render.one_enormous_code_block | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+render.syntax_highlighting     | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+session.persisting_turns       | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+stream.interrupted_stream      | interrupt | cpu_per_unit_ms |   +3.0 | as above, over a step that cost 0.10 ms to begin with; the load is 1.6 to 2.2 ms of CPU wherever it lands
+stream.long_reply              | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+stream.many_turns              | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+stream.markdown_reply          | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+stream.one_unbroken_line       | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+stream.reasoning_then_answer   | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+stream.single_word_deltas      | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+stream.wide_glyph_reply        | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+stress.hostile_provider        | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+stress.hostile_tool_arguments  | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+stress.invalid_utf8            | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+stress.rapid_interrupts        | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+tools.bash_output              | * | cpu_per_unit_ms |   1.86 | the first request loads libcurl, which exec used to do
+tools.bash_output              | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+tools.find_a_tree              | * | cpu_per_unit_ms |   1.94 | the first request loads libcurl, which exec used to do
+tools.find_a_tree              | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+tools.grep_a_tree              | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+tools.read_a_large_file        | * | cpu_per_unit_ms |   1.70 | the first request loads libcurl, which exec used to do
+tools.read_a_large_file        | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+tools.read_a_wide_file         | * | cpu_per_unit_ms |   2.01 | the first request loads libcurl, which exec used to do
+tools.read_a_wide_file         | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+tools.tool_rounds              | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec
+tools.write_and_patch          | * | growth_kb       |  +1280 | libcurl is mapped at the first request, not at exec

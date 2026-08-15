@@ -117,9 +117,13 @@ verify_arch() {
 }
 
 # A native package's binaries: needs_curl says whether this one links libcurl,
-# max_allowed is the newest glibc symbol version the target distribution has,
-# and resolvable says whether this image can load the result at all. The rpm's
-# pair comes from EL9 and is neither loadable nor lddable here.
+# which nothing shipped does any more. libcurl is opened at the first request,
+# so its dependency tree stays off the startup path; the packages name it
+# themselves, and a binary that starts needing it again has lost that and
+# fails here. max_allowed is the newest glibc symbol version the target
+# distribution has, and resolvable says whether this image can load the result
+# at all. The rpm's pair comes from EL9 and is neither loadable nor lddable
+# here.
 verify_elf() {
     binary=$1
     label=$2
@@ -189,9 +193,9 @@ verify_static_elf() {
         fail "$label carries glibc versioned symbols"
     fi
 }
-verify_elf "$payload/bin/arqan" 'deb arqan' yes 2.31 yes
+verify_elf "$payload/bin/arqan" 'deb arqan' no 2.31 yes
 verify_elf "$payload/bin/arqan-highlight" 'deb arqan-highlight' no 2.31 yes
-verify_elf "$payload/el9/arqan" 'rpm arqan' yes 2.34 no
+verify_elf "$payload/el9/arqan" 'rpm arqan' no 2.34 no
 verify_elf "$payload/el9/arqan-highlight" 'rpm arqan-highlight' no 2.34 no
 verify_unversioned_curl "$payload/el9/arqan" 'rpm arqan'
 verify_unversioned_curl "$payload/el9/arqan-highlight" 'rpm arqan-highlight'
