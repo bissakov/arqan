@@ -6,9 +6,6 @@
 |
 |
 |
-|
-|
-|
 |    search:  · Space or Left/Right changes the selected row · Esc closes
 |  › [ ] Verbose tool output  Every line a tool printed, untruncated
 |    [ ] Display raw          Markdown and syntax highlighting
@@ -18,6 +15,9 @@
 |    [ ] Show instructions    Reveal the active system and project instructions
 |                             in the transcript
 |    [x] Name sessions        Name a session after its first turn, with a small
+|                             model configured
+|    [x] read                 Read a page of a file
+|    [x] grep                 Search file contents
 |
 |  › Message arqan...
 |

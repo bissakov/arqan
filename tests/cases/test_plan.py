@@ -363,6 +363,49 @@ def test_ask_user_keeps_the_question_above_a_tall_picker(ctx):
     assert row < next(i for i, text in enumerate(rows) if "target-" in text), rows
 
 
+def test_ask_user_grows_the_picker_on_a_tall_terminal(ctx):
+    """A screen with room shows the options at once instead of scrolling."""
+    options = [
+        {"label": f"target-{i:02d}", "detail": f"deployment option {i}"}
+        for i in range(12)
+    ]
+    ctx.scenario(ask("Which deployment target?", options))
+    s = ctx.spawn(cols=80, rows=40)
+    to_plan(s)
+    s.submit("plan the deployment")
+    s.wait_status("pick an answer")
+
+    rows = s.screen.lines()
+    shown = [i for i in range(12) if any(f"target-{i:02d}" in r for r in rows)]
+    assert len(shown) == 12, "\n".join(rows)
+    assert any("+ something else" in r for r in rows), "\n".join(rows)
+
+
+def test_ask_user_wraps_a_long_question_over_several_rows(ctx):
+    """A question too wide for one row keeps its tail instead of losing it."""
+    question = (
+        "Should the migration keep the existing table names, "
+        "or rename every one of them to the new scheme "
+        "before the first deployment runs?"
+    )
+    options = [
+        {"label": f"target-{i}", "detail": f"deployment option {i}"}
+        for i in range(12)
+    ]
+    ctx.scenario(ask(question, options))
+    s = ctx.spawn(cols=80, rows=16)
+    to_plan(s)
+    s.submit("plan the migration")
+    s.wait_status("pick an answer")
+
+    rows = s.screen.lines()
+    head = next(i for i, row in enumerate(rows) if "Should the migration" in row)
+    tail = next(i for i, row in enumerate(rows) if "first deployment runs?" in row)
+    assert tail > head, "\n".join(rows)
+    assert s.screen.attr_at(tail, 4).fg == 221, "the whole question is a notice"
+    assert head < next(i for i, r in enumerate(rows) if "target-" in r), rows
+
+
 def test_ask_user_takes_an_answer_of_its_own(ctx):
     """The last row hands the composer over for something not on the list."""
     ctx.scenario(

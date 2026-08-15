@@ -23,6 +23,7 @@
 #define TUI_SEL_BYTES (1u << 16) // clipboard payload cap
 #define TUI_VIEW_BYTES AGENT_RESP_BUF // copied text of one complete tool block
 #define TUI_POPUP_ROWS 8         // visual popup rows shown at once
+#define TUI_PICK_NOTICE_ROWS 4   // rows a picker's question may wrap over
 #define TUI_PICK_SEARCH_MIN 10   // entries above which a picker searches
 #define TUI_PATH_ENTS 256        // paths the '@' popup keeps for one word
 #define TUI_PATH_SLOT 512        // longest path one of them holds
@@ -241,8 +242,11 @@ typedef struct {
     size_t notice_n;
     /* Context for a modal picker, separate so a searchable picker can use the
      * ordinary notice row for its query. */
-    char pick_notice[160];
+    char pick_notice[512];
     size_t pick_notice_n;
+    /* A modal picker owns the frame until it is answered, so the popup is
+     * given the room the composer's own completions do not need. */
+    b8 picking;
     /* The transcript block the open modal screen is asking about, SIZE_MAX
      * for none. Set only while that screen is up, and the frame lifts the
      * transcript out from under it rather than covering the block. */
@@ -1929,6 +1933,46 @@ static void update_notice_row(size_t screen_row, Str text, size_t screen_col,
     style(S_RESET);
 }
 
+/* A picker's question is what its rows are chosen from, so it wraps over a
+ * few rows instead of being cut at the width of one. The text is laid out
+ * inside the same two-cell indent update_notice_row paints. */
+static size_t notice_text_cols(size_t body_cols) {
+    return body_cols > 2 ? body_cols - 2 : body_cols;
+}
+
+static size_t notice_visual_rows(Str text, size_t body_cols, size_t cap) {
+    size_t cols = notice_text_cols(body_cols);
+    size_t rows = 0;
+    for (size_t start = 0; rows < cap;) {
+        Row r = row_break(text, start, cols, 0);
+        rows++;
+        if (r.hard && r.end >= text.n) break;
+        start = r.next;
+    }
+    return rows;
+}
+
+static void update_notice_rows(size_t screen_row, Str text, size_t rows,
+                               size_t screen_col, size_t screen_cols,
+                               size_t body_cols, b8 force) {
+    size_t cols = notice_text_cols(body_cols);
+    size_t painted = 0;
+    for (size_t start = 0; painted < rows;) {
+        Row r = row_break(text, start, cols, 0);
+        Str line = { text.p + start, r.end - start };
+        update_notice_row(screen_row + painted, line, screen_col, screen_cols,
+                          body_cols, force);
+        painted++;
+        if (r.hard && r.end >= text.n) break;
+        start = r.next;
+    }
+    while (painted < rows) {
+        update_notice_row(screen_row + painted, (Str){0}, screen_col,
+                          screen_cols, body_cols, force);
+        painted++;
+    }
+}
+
 static void view_ckpt_record(size_t row, size_t off) {
     if (row % g_view.ckpt_step
         || row / g_view.ckpt_step != g_view.ckpt_n)
@@ -2669,16 +2713,34 @@ static void repaint(void) {
      * transcript rather than pushing it up, so opening one hides the last
      * rows and leaves every other where the reader last saw it. One row
      * always stays uncovered. */
+    size_t overlay_cap = body_rows > 1 ? body_rows - 1 : 0;
+    /* A modal picker holds the frame until it is answered, so its list is
+     * given most of the screen: a page of options read at once is a page
+     * nobody has to walk through with the arrow keys. The composer's own
+     * completions keep the fixed height, since the draft under them is what
+     * the reader is working on. */
     size_t popup_cap = TUI_POPUP_ROWS;
+    if (g_tui.picking && overlay_cap * 2 / 3 > popup_cap)
+        popup_cap = overlay_cap * 2 / 3;
     size_t popup_rows = popup_visual_rows(body_cols, popup_cap);
     size_t notice_rows = g_tui.notice_n ? 1 : 0;
-    size_t pick_notice_rows = g_tui.pick_notice_n ? 1 : 0;
+    /* The question wraps, but never past a third of the screen the options
+     * below it are chosen from. */
+    size_t pick_notice_cap = overlay_cap / 3;
+    if (pick_notice_cap > TUI_PICK_NOTICE_ROWS)
+        pick_notice_cap = TUI_PICK_NOTICE_ROWS;
+    if (pick_notice_cap < 1) pick_notice_cap = 1;
+    size_t pick_notice_rows =
+        g_tui.pick_notice_n
+            ? notice_visual_rows((Str){ g_tui.pick_notice,
+                                        g_tui.pick_notice_n },
+                                 body_cols, pick_notice_cap)
+            : 0;
     size_t find_rows = g_tui.find_open ? 1 : 0;
     /* The spinner row reads as the next line of the conversation, so it sits
      * against the transcript with a block's row of air above it rather than
      * among the overlays below. */
     size_t activity_rows = g_tui.activity_n ? 2 : 0;
-    size_t overlay_cap = body_rows > 1 ? body_rows - 1 : 0;
     /* An extremely short terminal still needs one row to answer from. */
     if (popup_rows && pick_notice_rows && overlay_cap < 2)
         pick_notice_rows = 0;
@@ -2764,9 +2826,9 @@ static void repaint(void) {
     if (find_rows)
         update_find_row(overlay_top, body_col, cols, body_cols, force);
     if (pick_notice_rows)
-        update_notice_row(overlay_top + find_rows,
-                          (Str){ g_tui.pick_notice, g_tui.pick_notice_n },
-                          body_col, cols, body_cols, force);
+        update_notice_rows(overlay_top + find_rows,
+                           (Str){ g_tui.pick_notice, g_tui.pick_notice_n },
+                           pick_notice_rows, body_col, cols, body_cols, force);
     if (notice_rows)
         update_notice_row(overlay_top + find_rows + pick_notice_rows,
                           (Str){ g_tui.notice, g_tui.notice_n }, body_col, cols,
@@ -4710,6 +4772,7 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
     g_tui.marks = marks;
     g_tui.cmd_n = n;
     g_tui.path_mode = false;   // the popup is the picker's now
+    g_tui.picking = true;
     g_tui.comp_n = n;
     g_tui.pick_end = anchor == TUI_PICK_LAST;
     g_tui.comp_sel = start < n ? start : (g_tui.pick_end ? n - 1 : 0);
@@ -4896,6 +4959,7 @@ static void pick_close(void) {
     g_tui.comp_n = 0;
     g_tui.comp_sel = 0;
     g_tui.pick_end = false;
+    g_tui.picking = false;
     g_tui.comp_dismissed = g_pick.saved_dismissed;
     memcpy(g_tui.notice, g_pick.saved_notice, sizeof g_tui.notice);
     g_tui.notice_n = g_pick.saved_notice_n;

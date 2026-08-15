@@ -4,6 +4,13 @@
 
 ### Changed
 
+- Give a picker the room the terminal has. A modal list - the question the
+  agent asks, `/model`, `/resume`, the settings screen - now grows to about
+  two thirds of the body instead of the eight rows the composer's completion
+  popup uses, and a question too long for one row wraps over as many as four
+  rather than being cut. A page of answers is read at once where before every
+  question past the third had to be scrolled through.
+
 - Name a session from its first response instead of at the end of the turn.
   A build that runs tools for minutes was unnamed until it finished, and one
   that was interrupted was never named at all. The naming now happens as soon
