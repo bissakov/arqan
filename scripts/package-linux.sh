@@ -53,7 +53,7 @@ rpm_source_archive=$work/rpmbuild/SOURCES/v$version.tar.gz
 trap 'rm -rf -- "$work"' EXIT
 trap 'exit 1' HUP INT TERM
 rm -rf -- "$work"
-mkdir -p -- "$payload/bin" "$payload/doc/vendor/lexbor" \
+mkdir -p -- "$payload/bin" "$payload/static" "$payload/doc/vendor/lexbor" \
     "$payload/doc/vendor/tree-sitter/licenses" \
     "$payload/doc/vendor/tree-sitter/runtime/unicode"
 
@@ -62,6 +62,16 @@ for exe in arqan arqan-highlight; do
     cp -- "bin/$exe" "$payload/bin/$exe"
     chmod 0755 "$payload/bin/$exe"
     strip --strip-unneeded "$payload/bin/$exe"
+done
+# The native packages link against the distribution's libc and libcurl; the
+# portable archive cannot, so it ships the musl static-pie build instead.
+# scripts/build-musl.sh produces bin/musl from the Alpine builder image.
+for exe in arqan arqan-highlight; do
+    [ -x "bin/musl/$exe" ] || \
+        fail "missing bin/musl/$exe; run scripts/build-musl.sh first"
+    cp -- "bin/musl/$exe" "$payload/static/$exe"
+    chmod 0755 "$payload/static/$exe"
+    strip --strip-unneeded "$payload/static/$exe"
 done
 for path in README.md CHANGELOG.md LICENSE THIRD_PARTY_NOTICES.md \
     vendor/lexbor/LICENSE vendor/lexbor/NOTICE \
@@ -74,8 +84,11 @@ done
 
 "$payload/bin/arqan" --version >/dev/null || fail 'staged arqan diagnostic failed'
 "$payload/bin/arqan-highlight" --version >/dev/null || fail 'staged arqan-highlight diagnostic failed'
+"$payload/static/arqan" --version >/dev/null || fail 'staged static arqan diagnostic failed'
+"$payload/static/arqan-highlight" --version >/dev/null || \
+    fail 'staged static arqan-highlight diagnostic failed'
 
-verify_elf() {
+verify_arch() {
     binary=$1
     label=$2
     file -L "$binary" | grep -Eq 'ELF 64-bit LSB.*x86-64' || fail "$label is not an x86_64 ELF"
@@ -84,6 +97,12 @@ verify_elf() {
     if readelf -dW "$binary" | grep -Eq '\((RPATH|RUNPATH)\)'; then
         fail "$label contains RPATH or RUNPATH"
     fi
+}
+
+verify_elf() {
+    binary=$1
+    label=$2
+    verify_arch "$binary" "$label"
     needed=$(readelf -dW "$binary" | awk '/\(NEEDED\)/ { line=$0; sub(/^.*\[/, "", line); sub(/\].*$/, "", line); print line }')
     [ -n "$needed" ] || fail "$label has no shared-library dependencies"
     printf '%s\n' "$needed" | while IFS= read -r library; do
@@ -112,12 +131,35 @@ verify_elf() {
         ! grep -q 'not found' "$work/ldd" || fail "$label has unresolved dynamic libraries"
     fi
 }
+
+# The portable archive must run on any x86_64 Linux: no interpreter, no
+# NEEDED entry, no versioned symbol floor, and still position independent.
+# Ask readelf, not file: file 5.39 calls a static-pie binary "dynamically
+# linked" because it is an ET_DYN object.
+verify_static_elf() {
+    binary=$1
+    label=$2
+    verify_arch "$binary" "$label"
+    readelf -hW "$binary" | grep -Eq '^[[:space:]]*Type:[[:space:]]+DYN' || \
+        fail "$label is not position independent"
+    if readelf -dW "$binary" | grep -q '(NEEDED)'; then
+        fail "$label still needs a shared library"
+    fi
+    if readelf -lW "$binary" | grep -q 'INTERP'; then
+        fail "$label still names a program interpreter"
+    fi
+    if readelf --version-info -W "$binary" | grep -q 'GLIBC_'; then
+        fail "$label carries glibc versioned symbols"
+    fi
+}
 verify_elf "$payload/bin/arqan" arqan
 verify_elf "$payload/bin/arqan-highlight" arqan-highlight
+verify_static_elf "$payload/static/arqan" 'static arqan'
+verify_static_elf "$payload/static/arqan-highlight" 'static arqan-highlight'
 
 # Derive every format from the same stripped binaries and authoritative texts.
 mkdir -p -- "$tar_stage/bin"
-cp -a -- "$payload/bin/." "$tar_stage/bin/"
+cp -a -- "$payload/static/." "$tar_stage/bin/"
 cp -a -- "$payload/doc/." "$tar_stage/"
 
 mkdir -p -- "$deb_stage/DEBIAN" "$deb_stage/usr/bin" "$deb_stage/usr/share/doc/$PROGRAM"

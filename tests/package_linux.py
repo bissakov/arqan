@@ -93,15 +93,7 @@ def needed(binary: Path) -> set[str]:
 
 
 def check_elf(binary: Path, expected: set[str]) -> None:
-    file_out = run("file", "-L", binary).stdout
-    if not re.search(r"ELF 64-bit LSB.*x86-64", file_out):
-        fail(f"wrong ELF architecture: {file_out.strip()}")
-    header = run("readelf", "-hW", binary).stdout
-    if not re.search(r"Machine:\s+Advanced Micro Devices X86-64", header):
-        fail(f"wrong ELF machine: {binary}")
-    dynamic = run("readelf", "-dW", binary).stdout
-    if re.search(r"\((?:RPATH|RUNPATH)\)", dynamic):
-        fail(f"RPATH/RUNPATH found in {binary}")
+    check_arch(binary)
     actual = needed(binary)
     if actual != expected:
         fail(f"unexpected dependencies for {binary}: {actual}")
@@ -111,6 +103,36 @@ def check_elf(binary: Path, expected: set[str]) -> None:
     ldd = run("ldd", binary)
     if "not found" in ldd.stdout + ldd.stderr:
         fail(f"missing shared library for {binary}")
+
+
+def check_arch(binary: Path) -> None:
+    file_out = run("file", "-L", binary).stdout
+    if not re.search(r"ELF 64-bit LSB.*x86-64", file_out):
+        fail(f"wrong ELF architecture: {file_out.strip()}")
+    header = run("readelf", "-hW", binary).stdout
+    if not re.search(r"Machine:\s+Advanced Micro Devices X86-64", header):
+        fail(f"wrong ELF machine: {binary}")
+    dynamic = run("readelf", "-dW", binary).stdout
+    if re.search(r"\((?:RPATH|RUNPATH)\)", dynamic):
+        fail(f"RPATH/RUNPATH found in {binary}")
+
+
+def check_static_elf(binary: Path) -> None:
+    """The archive runs on any x86_64 Linux, so it may borrow nothing.
+
+    readelf answers, not file: file 5.39 calls a static-pie binary
+    "dynamically linked" because it is an ET_DYN object.
+    """
+    check_arch(binary)
+    header = run("readelf", "-hW", binary).stdout
+    if not re.search(r"^\s*Type:\s+DYN", header, re.MULTILINE):
+        fail(f"archive binary is not position independent: {binary}")
+    if needed(binary):
+        fail(f"archive binary needs shared libraries: {needed(binary)}")
+    if re.search(r"INTERP", run("readelf", "-lW", binary).stdout):
+        fail(f"archive binary names an interpreter: {binary}")
+    if glibc_versions(binary):
+        fail(f"archive binary carries glibc versioned symbols: {binary}")
 
 
 def check_member(
@@ -167,8 +189,8 @@ def check_tarball(archive: Path, top: str, epoch: int, temp: Path) -> None:
         # Paths and entry types were validated before extraction.
         tf.extractall(temp)
     root = temp / top
-    check_elf(root / "bin/arqan", {"libc.so.6", "libcurl.so.4"})
-    check_elf(root / "bin/arqan-highlight", {"libc.so.6"})
+    check_static_elf(root / "bin/arqan")
+    check_static_elf(root / "bin/arqan-highlight")
     run(root / "bin/arqan", "--version")
     run(root / "bin/arqan-highlight", "--version")
 

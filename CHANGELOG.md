@@ -4,6 +4,14 @@
 
 ### Changed
 
+- Ship the portable archive as one relocatable executable. `arqan` and
+  `arqan-highlight` in `arqan-X.Y.Z-linux-x86_64.tar.gz` are now static-pie
+  musl builds that borrow no shared library and name no interpreter, so the
+  archive runs on a musl distribution, on a glibc older than the packages
+  ask for, and in a container with no libcurl installed. The `.deb` and
+  `.rpm` still link the distribution's libc and libcurl and are the better
+  choice where they install.
+
 - Give a picker the room the terminal has. A modal list - the question the
   agent asks, `/model`, `/resume`, the settings screen - now grows to about
   two thirds of the body instead of the eight rows the composer's completion

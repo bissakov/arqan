@@ -28,12 +28,13 @@ arqan --disable-tools internet_search,page_fetch
 
 ## Linux installation
 
-The project release is for Linux x86_64 systems with glibc 2.31 or newer,
-`libcurl.so.4` from libcurl 7.66 or newer, and a system CA certificate bundle.
-macOS, Windows, aarch64, fully static builds, hosted apt/dnf repositories, and
-package signing are not part of this release milestone. Release packages are
-downloaded directly from the GitHub release rather than from a configured
-package repository.
+The project release is for Linux x86_64 systems. The `.deb` and `.rpm` link
+the distribution's libraries and want glibc 2.31 or newer and `libcurl.so.4`
+from libcurl 7.66 or newer; the portable archive borrows nothing and wants
+only the kernel. All three read a CA certificate bundle at run time. macOS,
+Windows, aarch64, hosted apt/dnf repositories, and package signing are not
+part of this release milestone. Release packages are downloaded directly from
+the GitHub release rather than from a configured package repository.
 
 Download `SHA256SUMS` and the package for your system, then verify and install
 it. Debian and Ubuntu users can install the native package with:
@@ -64,8 +65,13 @@ and credentials under `${XDG_STATE_HOME:-$HOME/.local/state}/arqan`, sessions
 under `${XDG_DATA_HOME:-$HOME/.local/share}/arqan`, and project `.arqan`
 directories.
 
-The portable archive is an installer-free fallback. Verify it with the same
-manifest, extract it, and run it in place:
+The portable archive is an installer-free fallback and the choice where the
+native packages do not install. Its two programs are static-pie musl builds:
+they name no interpreter, need no shared library, and so run on a musl
+distribution, on a glibc older than the packages ask for, and in a container
+with no libcurl. They still find the system CA store at run time, and
+`SSL_CERT_FILE` or `SSL_CERT_DIR` names one elsewhere. Verify the archive
+with the same manifest, extract it, and run it in place:
 
 ```sh
 sha256sum --ignore-missing -c SHA256SUMS
@@ -78,13 +84,17 @@ On first launch, use `/provider` to add a connection and `/model` to pick a
 model. A source checkout can instead be built and run with `make` and
 `./bin/arqan`.
 
-Maintainers can run `make package-linux` to produce the tarball, `.deb`, `.rpm`,
-and checksum manifest from binaries built on the local Linux x86_64 host.
-`make test-package-linux` checks all three formats and reproducibility.
-`make release-linux` (or `scripts/release-linux.sh`) performs a clean build, all
-tests, and packaging in the pinned Debian 11 compatibility container, then
-tests native install, reinstall, and removal in disposable Debian, Ubuntu, and
-Fedora-family containers.
+Maintainers can run `scripts/build-musl.sh`, which builds and tests the static
+pair in the pinned Alpine container and leaves it in `bin/musl`, then
+`make package-linux` to produce the tarball, `.deb`, `.rpm`, and checksum
+manifest. The native packages take the host binaries from `bin`, the archive
+takes the static ones, and packaging fails rather than shipping an archive
+that borrows a library. `make test-package-linux` checks all three formats and
+reproducibility. `make release-linux` (or `scripts/release-linux.sh`) performs
+a clean build, all tests, both builds, and packaging in the pinned Debian 11
+and Alpine containers, then tests native install, reinstall, and removal in
+disposable Debian, Ubuntu, and Fedora-family containers and runs the archive
+in Alpine and Debian 11.
 
 ## Configure
 

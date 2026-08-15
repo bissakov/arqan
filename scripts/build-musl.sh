@@ -34,10 +34,12 @@ docker run --rm --platform linux/amd64 \
 for exe in arqan arqan-highlight; do
     binary=$ROOT/bin/musl/$exe
     [ -x "$binary" ] || fail "missing bin/musl/$exe"
-    file -L "$binary" | grep -q 'static-pie linked' || \
-        fail "$exe is not statically linked as PIE"
+    readelf -hW "$binary" | grep -Eq '^[[:space:]]*Type:[[:space:]]+DYN' || \
+        fail "$exe is not position independent"
     ! readelf -dW "$binary" 2>/dev/null | grep -q '(NEEDED)' || \
         fail "$exe still needs a shared library"
+    ! readelf -lW "$binary" 2>/dev/null | grep -q 'INTERP' || \
+        fail "$exe still names a program interpreter"
     "$binary" --version >/dev/null || fail "$exe does not run"
 done
 

@@ -8,6 +8,7 @@ IMAGE=${ARQAN_RELEASE_IMAGE:-arqan-linux-release:debian11}
 DEBIAN_IMAGE=debian:11-slim@sha256:4a2e40d0d34f8f86f60ef0d79c14d3b6b3d2620825dcdf93152535b5efbaf490
 UBUNTU_IMAGE=ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
 FEDORA_IMAGE=fedora:43@sha256:762d73ba1c455232b0272c5d445a34f36c4b9f421cbc05ce8102552325b6a222
+ALPINE_IMAGE=alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
 
 fail() {
     printf '%s\n' "$PROGRAM release: $*" >&2
@@ -25,6 +26,8 @@ uid=$(id -u)
 gid=$(id -g)
 deb=arqan_${version}-1_amd64.deb
 rpm=arqan-${version}-1.x86_64.rpm
+archive=arqan-${version}-linux-x86_64.tar.gz
+top=arqan-${version}-linux-x86_64
 
 rm -rf -- "$ROOT/dist"
 complete=false
@@ -34,15 +37,24 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
+release_in() {
+    docker run --rm --platform linux/amd64 \
+        --user "$uid:$gid" \
+        -e HOME=/tmp/arqan-home \
+        -e SOURCE_DATE_EPOCH="$epoch" \
+        -v "$ROOT:/work" \
+        -w /work \
+        "$IMAGE" \
+        sh -ec "$1"
+}
+
 docker build --platform linux/amd64 -f "$DOCKERFILE" -t "$IMAGE" "$ROOT/packaging/linux"
-docker run --rm --platform linux/amd64 \
-    --user "$uid:$gid" \
-    -e HOME=/tmp/arqan-home \
-    -e SOURCE_DATE_EPOCH="$epoch" \
-    -v "$ROOT:/work" \
-    -w /work \
-    "$IMAGE" \
-    sh -ec 'make clean && make test && make package-linux && make test-package-linux'
+release_in 'make clean && make test'
+# The native packages come from the glibc image, the portable archive from the
+# musl one. Build the static pair between the two runs: `make clean` above
+# would otherwise remove it, and packaging below requires it.
+"$ROOT/scripts/build-musl.sh"
+release_in 'make package-linux && make test-package-linux'
 
 smoke_deb() {
     image=$1
@@ -105,6 +117,21 @@ docker run --rm --platform linux/amd64 \
         grep -qx "$sentinel" /root/.local/share/arqan/sessions/keep.json
         grep -qx "$sentinel" /project/.arqan/config.toml
     '
+
+# The archive claims to need nothing, so prove it on a musl distribution and
+# on the oldest glibc the packages target.
+smoke_archive() {
+    docker run --rm --platform linux/amd64 \
+        -v "$ROOT/dist:/packages:ro" \
+        "$1" sh -ec '
+            tar -xzf "/packages/'"$archive"'" -C /tmp
+            /tmp/'"$top"'/bin/arqan --version
+            /tmp/'"$top"'/bin/arqan-highlight --version
+        '
+}
+
+smoke_archive "$ALPINE_IMAGE"
+smoke_archive "$DEBIAN_IMAGE"
 
 set -- "$ROOT"/dist/*
 [ "$#" -eq 4 ] || fail 'release build did not produce exactly four assets'

@@ -203,6 +203,9 @@ bench-slow: all
 bench-baseline: all
 	$(PYTHON) -m bench.run --slow --json bench-baseline.json $(B)
 
+# The native packages take the glibc binaries from bin/; the portable archive
+# takes the relocatable ones from bin/musl, which scripts/build-musl.sh
+# produces. Packaging fails rather than shipping a dynamic archive.
 package-linux: all
 	./scripts/package-linux.sh
 
