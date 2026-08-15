@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Stop the `libcurl.so.4: no version information available` warning the rpm
+  printed on every run. Debian versions libcurl's symbols and the rpm
+  distributions do not, so the package's binaries, built on Debian 11, asked
+  each rpm host for a `CURL_OPENSSL_4` that is not defined there. The rpm is
+  now built on EL9 against its own family's libcurl and its dependencies are
+  no longer filtered, so it declares what it actually needs: glibc 2.34 or
+  newer. Hosts below that take the portable archive, which needs nothing.
+
 ## [0.4.0] - 2026-08-15
 
 ### Changed

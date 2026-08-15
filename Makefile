@@ -33,10 +33,20 @@ FIL_DROP := -flto -fstack-protector-strong -D_FORTIFY_SOURCE=2
 # rather than inheriting the builder's.
 STATIC_BUILD := build/musl
 STATIC_BIN := bin/musl
-# libcurl.a does not describe what it needs. curl-config lists most of it and
-# omits the two transitive archives: libidn2 wants libunistring, libbrotlidec
-# wants libbrotlicommon. Deferred, so no other target pays for the lookup.
-STATIC_LIBS ?= $(shell curl-config --static-libs) -lunistring -lbrotlicommon
+# libcurl.a does not describe what it needs, and curl-config --static-libs
+# names only libcurl's own dependencies: it omits their dependencies in turn,
+# so libidn2 arrives without libunistring and libbrotlidec without
+# libbrotlicommon. pkg-config walks Requires.private to a fixed point, so the
+# list follows whatever the distribution's curl was built against instead of a
+# hand-kept tail that the next curl rebuild invalidates at release time.
+# Deferred, so no other target pays for the lookup.
+STATIC_LIBS ?= $(shell pkg-config --static --libs libcurl)
+
+# The rpm's pair: the shipped build, linked against the libcurl the rpm
+# distributions ship rather than Debian's, whose versioned symbols no rpm host
+# provides. Built from inside the EL9 image `scripts/build-el9.sh` provides.
+EL9_BUILD := build/el9
+EL9_BIN := bin/el9
 
 # BUILDDIR and BINDIR select a build variant; the sanitizer recipe overrides
 # both. Everything below derives from them, so no rule writes a fixed path.
@@ -65,6 +75,7 @@ PYTHON  ?= python3
 
 .PHONY: all minimal clean clean-asan run test test-update asan test-asan mock \
         clean-fil fil test-fil clean-static static test-static \
+        clean-el9 el9 test-el9 \
         bench bench-slow bench-baseline \
         package-linux test-package-linux release-linux
 
@@ -180,6 +191,10 @@ static:
 	    echo "scripts/build-musl.sh, which builds and enters the builder"; \
 	    echo "image this target expects."; \
 	    exit 1 ;; esac
+	@pkg-config --exists libcurl 2>/dev/null || { \
+	    echo "pkg-config cannot describe libcurl. Install its development"; \
+	    echo "package, or pass the full archive list as STATIC_LIBS."; \
+	    exit 1; }
 	$(MAKE) all $(STATIC_BIN)/arqan-test \
 	    BUILDDIR='$(STATIC_BUILD)' BINDIR='$(STATIC_BIN)' \
 	    CFLAGS='$(CFLAGS) -static-pie' LDFLAGS='$(LDFLAGS) -static-pie' \
@@ -187,6 +202,16 @@ static:
 
 test-static: static
 	ARQAN_TEST_BIN=$(STATIC_BIN)/arqan-test $(PYTHON) tests/run.py $(T)
+
+# Same variant layout again, under build/el9 and bin/el9. Nothing but the
+# toolchain and the libraries differ from the shipped build, so this target
+# only redirects the output; run it where an rpm distribution's libcurl is.
+el9:
+	$(MAKE) all $(EL9_BIN)/arqan-test \
+	    BUILDDIR='$(EL9_BUILD)' BINDIR='$(EL9_BIN)'
+
+test-el9: el9
+	ARQAN_TEST_BIN=$(EL9_BIN)/arqan-test $(PYTHON) tests/run.py $(T)
 
 mock:
 	$(PYTHON) -m tests.mockprovider.server $(MOCK_ARGS)
@@ -230,3 +255,7 @@ clean-fil:
 # Drop only the static tree; the shipped build survives.
 clean-static:
 	rm -rf $(STATIC_BUILD) $(STATIC_BIN)
+
+# Drop only the rpm tree; the shipped build survives.
+clean-el9:
+	rm -rf $(EL9_BUILD) $(EL9_BIN)

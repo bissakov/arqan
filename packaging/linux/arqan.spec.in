@@ -8,7 +8,6 @@ Source0: https://github.com/bissakov/arqan/archive/refs/tags/v%{version}.tar.gz
 Packager: Alikhan Bissakov <bissakov@users.noreply.github.com>
 BuildArch: x86_64
 Requires: ca-certificates
-%global __requires_exclude ^libcurl\\.so\\.4\\(CURL_.*
 
 %description
 arqan is a terminal coding agent for OpenAI-compatible Chat Completions

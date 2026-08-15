@@ -92,14 +92,24 @@ def needed(binary: Path) -> set[str]:
     return set(re.findall(r"\(NEEDED\).*\[([^]]+)\]", text))
 
 
-def check_elf(binary: Path, expected: set[str]) -> None:
+def curl_versions(binary: Path) -> list[str]:
+    text = run("readelf", "--version-info", "-W", binary).stdout
+    return re.findall(r"CURL_[A-Za-z0-9_]+", text)
+
+
+def check_elf(
+    binary: Path, expected: set[str], max_glibc: tuple[int, ...] = (2, 31),
+    resolvable: bool = True,
+) -> None:
     check_arch(binary)
     actual = needed(binary)
     if actual != expected:
         fail(f"unexpected dependencies for {binary}: {actual}")
     versions = glibc_versions(binary)
-    if not versions or max(versions) > (2, 31):
+    if not versions or max(versions) > max_glibc:
         fail(f"GLIBC ceiling exceeded by {binary}: {max(versions, default=())}")
+    if not resolvable:
+        return
     ldd = run("ldd", binary)
     if "not found" in ldd.stdout + ldd.stderr:
         fail(f"missing shared library for {binary}")
@@ -165,6 +175,24 @@ def check_executables(root: Path) -> None:
         binary = root / "usr/bin" / name
         run(binary, "--version")
         check_elf(binary, dependencies)
+
+
+def check_rpm_executables(root: Path) -> None:
+    """The rpm's binaries come from EL9, so this host may not be able to run
+    them; the release script's Fedora smoke test does that. What matters here
+    is that they ask an rpm host for nothing it lacks: glibc no newer than
+    EL9's 2.34, and no versioned libcurl symbol, which only Debian's libcurl
+    defines and whose absence makes the loader warn on every startup."""
+    checks = {
+        "arqan": {"libc.so.6", "libcurl.so.4"},
+        "arqan-highlight": {"libc.so.6"},
+    }
+    for name, dependencies in checks.items():
+        binary = root / "usr/bin" / name
+        check_elf(binary, dependencies, max_glibc=(2, 34), resolvable=False)
+        if curl_versions(binary):
+            fail(f"versioned libcurl symbols required by {binary}: "
+                 f"{sorted(set(curl_versions(binary)))}")
 
 
 def check_tarball(archive: Path, top: str, epoch: int, temp: Path) -> None:
@@ -281,6 +309,10 @@ def check_rpm(package: Path, ver: str, epoch: int, temp: Path) -> None:
     for pattern in (r"^libc\.so\.6", r"^libcurl\.so\.4"):
         if not any(re.search(pattern, item) for item in requires):
             fail(f"RPM lacks generated dependency {pattern}")
+    # Nothing filters the generated dependencies any more, so a versioned
+    # libcurl requirement would reach the host resolver and fail the install.
+    if any(re.search(r"^libcurl\.so\.4\(CURL_", item) for item in requires):
+        fail(f"RPM requires versioned libcurl symbols: {sorted(requires)}")
     scripts = run("rpm", "-qp", "--scripts", package).stdout.strip()
     if scripts:
         fail(f"RPM contains scriptlets: {scripts}")
@@ -303,7 +335,7 @@ def check_rpm(package: Path, ver: str, epoch: int, temp: Path) -> None:
                  for path in root.rglob("*") if path.is_file()}
     if extracted != expected_files:
         fail("RPM extraction disagrees with its file metadata")
-    check_executables(root)
+    check_rpm_executables(root)
 
 
 def main() -> int:

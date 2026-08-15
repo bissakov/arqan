@@ -1,0 +1,14 @@
+FROM almalinux:9@sha256:d2515c769e7b73f95c4fde38c0a505336ff38f14990c0b7253b77060a049a743
+
+# The rpm is built against its own family's libcurl. Debian versions libcurl's
+# symbols and the rpm distributions do not, so a Debian-linked binary asks
+# every rpm host for a CURL_OPENSSL_4 that is not there and the loader says so
+# on every run. EL9 is the oldest rpm base that can build this tree: EL8 ships
+# libcurl 7.61, which predates curl_multi_poll.
+#
+# coreutils is left out on purpose: the base image ships coreutils-single,
+# which provides the same utilities and conflicts with the split package.
+RUN dnf -y install --setopt=install_weak_deps=False \
+      binutils ca-certificates diffutils file findutils gcc grep gzip \
+      libcurl-devel make ncurses python3 sed tar util-linux \
+ && dnf clean all

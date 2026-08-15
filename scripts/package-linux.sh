@@ -53,7 +53,8 @@ rpm_source_archive=$work/rpmbuild/SOURCES/v$version.tar.gz
 trap 'rm -rf -- "$work"' EXIT
 trap 'exit 1' HUP INT TERM
 rm -rf -- "$work"
-mkdir -p -- "$payload/bin" "$payload/static" "$payload/doc/vendor/lexbor" \
+mkdir -p -- "$payload/bin" "$payload/static" "$payload/el9" \
+    "$payload/doc/vendor/lexbor" \
     "$payload/doc/vendor/tree-sitter/licenses" \
     "$payload/doc/vendor/tree-sitter/runtime/unicode"
 
@@ -62,6 +63,17 @@ for exe in arqan arqan-highlight; do
     cp -- "bin/$exe" "$payload/bin/$exe"
     chmod 0755 "$payload/bin/$exe"
     strip --strip-unneeded "$payload/bin/$exe"
+done
+# The rpm links the libcurl its own family ships. Debian versions libcurl's
+# symbols and the rpm distributions do not, so the deb's binaries would ask
+# every rpm host for a CURL_OPENSSL_4 it cannot provide. scripts/build-el9.sh
+# produces bin/el9 from the EL9 builder image.
+for exe in arqan arqan-highlight; do
+    [ -x "bin/el9/$exe" ] || \
+        fail "missing bin/el9/$exe; run scripts/build-el9.sh first"
+    cp -- "bin/el9/$exe" "$payload/el9/$exe"
+    chmod 0755 "$payload/el9/$exe"
+    strip --strip-unneeded "$payload/el9/$exe"
 done
 # The native packages link against the distribution's libc and libcurl; the
 # portable archive cannot, so it ships the musl static-pie build instead.
@@ -87,6 +99,8 @@ done
 "$payload/static/arqan" --version >/dev/null || fail 'staged static arqan diagnostic failed'
 "$payload/static/arqan-highlight" --version >/dev/null || \
     fail 'staged static arqan-highlight diagnostic failed'
+# The rpm's pair is not run here: it wants a newer glibc than this image has.
+# The Fedora smoke test in scripts/release-linux.sh proves it runs.
 
 verify_arch() {
     binary=$1
@@ -99,36 +113,56 @@ verify_arch() {
     fi
 }
 
+# A native package's binaries: needs_curl says whether this one links libcurl,
+# max_allowed is the newest glibc symbol version the target distribution has,
+# and resolvable says whether this image can load the result at all. The rpm's
+# pair comes from EL9 and is neither loadable nor lddable here.
 verify_elf() {
     binary=$1
     label=$2
+    needs_curl=$3
+    max_allowed=$4
+    resolvable=$5
     verify_arch "$binary" "$label"
     needed=$(readelf -dW "$binary" | awk '/\(NEEDED\)/ { line=$0; sub(/^.*\[/, "", line); sub(/\].*$/, "", line); print line }')
     [ -n "$needed" ] || fail "$label has no shared-library dependencies"
     printf '%s\n' "$needed" | while IFS= read -r library; do
         case $library in
             libc.so.6) ;;
-            libcurl.so.4) [ "$label" = arqan ] || fail "$label unexpectedly needs $library" ;;
+            libcurl.so.4) [ "$needs_curl" = yes ] || fail "$label unexpectedly needs $library" ;;
             *) fail "$label unexpectedly needs $library" ;;
         esac
     done
     [ "$(printf '%s\n' "$needed" | grep -c '^libc\.so\.6$')" -eq 1 ] || fail "$label must directly need libc.so.6"
-    if [ "$label" = arqan ]; then
-        [ "$(printf '%s\n' "$needed" | grep -c '^libcurl\.so\.4$')" -eq 1 ] || fail 'arqan must directly need libcurl.so.4'
+    if [ "$needs_curl" = yes ]; then
+        [ "$(printf '%s\n' "$needed" | grep -c '^libcurl\.so\.4$')" -eq 1 ] || \
+            fail "$label must directly need libcurl.so.4"
     fi
 
     max_glibc=$(readelf --version-info -W "$binary" | \
         grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/^GLIBC_//' | sort -Vu | tail -1)
     [ -n "$max_glibc" ] || fail "$label has no GLIBC symbol requirements"
-    newest=$(printf '%s\n%s\n' "$max_glibc" 2.31 | sort -Vu | tail -1)
-    [ "$newest" = 2.31 ] || fail "$label requires GLIBC_$max_glibc (maximum is GLIBC_2.31)"
+    newest=$(printf '%s\n%s\n' "$max_glibc" "$max_allowed" | sort -Vu | tail -1)
+    [ "$newest" = "$max_allowed" ] || \
+        fail "$label requires GLIBC_$max_glibc (maximum is GLIBC_$max_allowed)"
 
-    if command -v ldd >/dev/null 2>&1; then
+    if [ "$resolvable" = yes ] && command -v ldd >/dev/null 2>&1; then
         if ! ldd "$binary" >"$work/ldd" 2>&1; then
             cat "$work/ldd" >&2
             fail "$label has unresolved dynamic libraries"
         fi
         ! grep -q 'not found' "$work/ldd" || fail "$label has unresolved dynamic libraries"
+    fi
+}
+
+# The whole reason the rpm has its own builder: an rpm host's libcurl exports
+# no versioned symbols, so a binary that asks for one makes its loader complain
+# on every startup even though the call resolves.
+verify_unversioned_curl() {
+    binary=$1
+    label=$2
+    if readelf --version-info -W "$binary" | grep -q 'CURL_'; then
+        fail "$label requires versioned libcurl symbols"
     fi
 }
 
@@ -152,8 +186,12 @@ verify_static_elf() {
         fail "$label carries glibc versioned symbols"
     fi
 }
-verify_elf "$payload/bin/arqan" arqan
-verify_elf "$payload/bin/arqan-highlight" arqan-highlight
+verify_elf "$payload/bin/arqan" 'deb arqan' yes 2.31 yes
+verify_elf "$payload/bin/arqan-highlight" 'deb arqan-highlight' no 2.31 yes
+verify_elf "$payload/el9/arqan" 'rpm arqan' yes 2.34 no
+verify_elf "$payload/el9/arqan-highlight" 'rpm arqan-highlight' no 2.34 no
+verify_unversioned_curl "$payload/el9/arqan" 'rpm arqan'
+verify_unversioned_curl "$payload/el9/arqan-highlight" 'rpm arqan-highlight'
 verify_static_elf "$payload/static/arqan" 'static arqan'
 verify_static_elf "$payload/static/arqan-highlight" 'static arqan-highlight'
 
@@ -172,7 +210,7 @@ chmod 0644 "$deb_stage/DEBIAN/control"
 
 mkdir -p -- "$rpm_source/usr/bin" "$rpm_source/usr/share/doc/$PROGRAM" \
     "$rpm_source/usr/share/licenses/$PROGRAM"
-cp -a -- "$payload/bin/." "$rpm_source/usr/bin/"
+cp -a -- "$payload/el9/." "$rpm_source/usr/bin/"
 for name in README.md CHANGELOG.md THIRD_PARTY_NOTICES.md; do
     cp -a -- "$payload/doc/$name" "$rpm_source/usr/share/doc/$PROGRAM/$name"
 done

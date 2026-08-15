@@ -50,9 +50,11 @@ release_in() {
 
 docker build --platform linux/amd64 -f "$DOCKERFILE" -t "$IMAGE" "$ROOT/packaging/linux"
 release_in 'make clean && make test'
-# The native packages come from the glibc image, the portable archive from the
-# musl one. Build the static pair between the two runs: `make clean` above
-# would otherwise remove it, and packaging below requires it.
+# The deb comes from the Debian image, the rpm from the EL9 one and the
+# portable archive from the musl one. Build those two pairs between the runs:
+# `make clean` above would otherwise remove them, and packaging below requires
+# them.
+"$ROOT/scripts/build-el9.sh"
 "$ROOT/scripts/build-musl.sh"
 release_in 'make package-linux && make test-package-linux'
 
@@ -95,8 +97,12 @@ docker run --rm --platform linux/amd64 \
     "$FEDORA_IMAGE" sh -ec '
         sentinel=${ARQAN_SMOKE_SENTINEL:-arqan-package-sentinel}
         dnf install -y "/packages/'"$rpm"'" >/dev/null
-        arqan --version
-        arqan-highlight --version
+        # A Debian-linked binary asks for versioned libcurl symbols this host
+        # does not have, and the loader says so here. Nothing may reach stderr.
+        for exe in arqan arqan-highlight; do
+            noise=$($exe --version 2>&1 >/dev/null)
+            [ -z "$noise" ] || { printf "%s: %s\n" "$exe" "$noise" >&2; exit 1; }
+        done
         mkdir -p /root/.config/arqan /root/.local/state/arqan \
             /root/.local/share/arqan/sessions /project/.arqan
         printf "%s\n" "$sentinel" >/root/.config/arqan/config.toml

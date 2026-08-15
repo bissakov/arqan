@@ -1,10 +1,10 @@
 FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
 
-# The static archives libcurl.a needs, plus the toolchain and the packages the
-# end-to-end suite shells out to: BusyBox setsid takes no --ctty, and the cases
-# read GNU diff, find and grep output.
+# The static archives libcurl.a needs, pkgconf to enumerate them, plus the
+# toolchain and the packages the end-to-end suite shells out to: BusyBox setsid
+# takes no --ctty, and the cases read GNU diff, find and grep output.
 RUN apk add --no-cache \
       bash binutils brotli-static c-ares-dev coreutils curl-dev curl-static \
       diffutils file findutils gcc grep libidn2-static libpsl-static \
-      libunistring-static make musl-dev ncurses nghttp2-static \
+      libunistring-static make musl-dev ncurses nghttp2-static pkgconf \
       openssl-libs-static python3 sed tar util-linux zlib-static zstd-static

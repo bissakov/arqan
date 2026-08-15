@@ -29,12 +29,13 @@ arqan --disable-tools internet_search,page_fetch
 ## Linux installation
 
 The project release is for Linux x86_64 systems. The `.deb` and `.rpm` link
-the distribution's libraries and want glibc 2.31 or newer and `libcurl.so.4`
-from libcurl 7.66 or newer; the portable archive borrows nothing and wants
-only the kernel. All three read a CA certificate bundle at run time. macOS,
-Windows, aarch64, hosted apt/dnf repositories, and package signing are not
-part of this release milestone. Release packages are downloaded directly from
-the GitHub release rather than from a configured package repository.
+the distribution's libraries: the `.deb` wants glibc 2.31 or newer, the
+`.rpm` glibc 2.34 or newer, and both `libcurl.so.4` from libcurl 7.66 or
+newer; the portable archive borrows nothing and wants only the kernel. All
+three read a CA certificate bundle at run time. macOS, Windows, aarch64,
+hosted apt/dnf repositories, and package signing are not part of this release
+milestone. Release packages are downloaded directly from the GitHub release
+rather than from a configured package repository.
 
 Download `SHA256SUMS` and the package for your system, then verify and install
 it. Debian and Ubuntu users can install the native package with:
