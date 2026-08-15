@@ -1,5 +1,8 @@
 """Shell mode: a composed line starting with '!' runs locally, not remotely."""
 
+import time
+from pathlib import Path
+
 
 def composer_marker(s):
     """The composer's prompt marker and its colour, as painted."""
@@ -123,3 +126,87 @@ def test_a_run_reaches_the_next_request(ctx):
     roles = [m["role"] for m in messages]
     assert roles == ["system", "user", "user"], roles
     assert messages[1]["content"] == "!echo context-line\ncontext-line\n\n[exit 0]"
+
+
+def test_a_run_cannot_write_to_the_terminal(ctx):
+    """The child has no controlling terminal, so /dev/tty will not open.
+
+    A command that reaches the terminal directly paints over the frame the
+    TUI owns; `sudo` prompting for a password is the usual way to see it.
+    """
+    s = ctx.spawn()
+    s.submit("!echo tty-marker > /dev/tty")
+    s.wait_text("\u2514\u2500 exit")
+    s.wait_status("ready")
+
+    # the command is echoed into the transcript, so the status is the check:
+    # the open failed rather than the write landing on the screen
+    text = s.text()
+    assert "\u2514\u2500 exit 0" not in text, text
+    assert s.composer_text() == "", s.composer_lines()
+
+
+def test_a_run_cannot_read_the_terminal(ctx):
+    """A command reading the terminal fails instead of stealing keystrokes.
+
+    With a controlling terminal the read stops the background child on
+    SIGTTIN and the run never finishes; without one the open fails at once.
+    """
+    s = ctx.spawn()
+    s.submit("!read reply < /dev/tty")
+    s.wait_text("\u2514\u2500 exit", timeout=5.0)
+    s.wait_status("ready")
+    assert "\u2514\u2500 exit 0" not in s.text(), s.text()
+
+
+def test_an_interrupt_ends_the_children_of_a_run(ctx):
+    """Ctrl-C kills the run's whole process group, not only its shell."""
+    if not Path("/proc/self/cmdline").exists():
+        return                                  # not Linux; no process list
+    marker = str(ctx.work / "survivor")         # unique to this case
+    s = ctx.spawn()
+    s.submit(f"!(sleep 300; touch {marker}) & wait")
+    s.wait_activity("running shell")
+    s.key("ctrl-c")
+    s.wait_text("[interrupted]")
+    s.wait_status("ready")
+
+    # the signal goes to the group, so the backgrounded sleep dies with the
+    # shell that started it; reaping is asynchronous, so give it a moment
+    deadline = time.monotonic() + 5.0
+    while (found := processes_matching(marker)) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not found, f"a child outlived the interrupt: {found}"
+
+
+def test_a_spent_interrupt_does_not_end_the_next_run(ctx):
+    """The Ctrl-C belonged to the run it stopped, not to the one after it."""
+    s = ctx.spawn()
+    s.submit("!sleep 300")
+    s.wait_activity("running shell")
+    s.key("ctrl-c")
+    s.wait_text("[interrupted]")
+    s.wait_status("ready")
+
+    s.submit("!echo second-run")
+    s.wait_text("\u2514\u2500 exit 0")
+    s.wait_status("ready")
+    # the first run owns the only interruption on screen
+    text = s.text()
+    assert text.count("[interrupted]") == 1, text
+    assert text.count("exit 130") == 1, text
+
+
+def processes_matching(needle: str) -> list[str]:
+    """Command lines of the live processes mentioning `needle`."""
+    out = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes().decode("utf-8", "replace")
+        except OSError:
+            continue                            # exited while we looked
+        if needle in cmdline:
+            out.append(cmdline.replace("\0", " ").strip())
+    return out

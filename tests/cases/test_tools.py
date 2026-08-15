@@ -228,6 +228,26 @@ def test_bash_tool_runs_a_command(ctx):
     assert any("tool-output-marker" in r for r in ctx.mock.tool_results())
 
 
+def test_bash_tool_cannot_reach_the_terminal(ctx):
+    """A tool command gets no controlling terminal, so /dev/tty will not open.
+
+    Otherwise a `sudo` password prompt lands in the frame the TUI owns and
+    its read races the composer for keystrokes.
+    """
+    args = json.dumps(
+        {"command": "echo tty-marker > /dev/tty && echo TTY-WRITABLE || echo NO-TTY"}
+    )
+    ctx.scenario(f"tool=bash:{args},final_text=no+terminal")
+    s = ctx.spawn()
+    s.submit("try the terminal")
+    s.wait_text("no terminal")
+    s.wait_turn_done()
+
+    results = ctx.mock.tool_results()
+    assert any("NO-TTY" in r for r in results), results
+    assert not any("TTY-WRITABLE" in r for r in results), results
+
+
 def test_failing_tool_reports_an_error(ctx):
     """A tool that fails feeds its error back instead of aborting the turn."""
     ctx.scenario('tool=read:{"path":"missing.txt"},final_text=that+file+is+gone')

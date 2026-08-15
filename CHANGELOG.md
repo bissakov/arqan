@@ -28,6 +28,19 @@
 
 ### Fixed
 
+- Keep a command's password prompt off the screen. A command that wanted a
+  human, `sudo` above all, opened the terminal behind the closed standard
+  streams: its `[sudo] password for ...` was painted into the composer box
+  and its read of the keyboard either raced the composer or stopped the
+  command until Ctrl-C. Commands now run in a session of their own with no
+  terminal to open, so `sudo` reports that it cannot ask for a password and
+  exits, and the agent is told as much. Run `arqan` itself under `sudo` if
+  that is what the work needs.
+
+- Stop a Ctrl-C from ending the next `!` command as well. Interrupting a
+  local run left the interrupt pending, so the command after it reported
+  itself interrupted without running.
+
 - Stop claiming a copy under tmux succeeded. tmux ships with `set-clipboard
   external`, which forbids an application inside it from setting the
   clipboard and answers nothing, so `/copy` and a drag-select reported

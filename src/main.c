@@ -3023,6 +3023,9 @@ static void run_shell(Agent *ag, Str cmd) {
         say_conv_full();
         return;
     }
+    /* A Ctrl-C that ended the previous run is spent: leaving it set would
+     * make this command report itself interrupted without running. */
+    g_got_sigint = 0;
     say_busy("running shell");
     render_shell_call(stored, (u32)(slot + 1), false);
     f64 started = agent_now_seconds();

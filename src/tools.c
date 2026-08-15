@@ -185,7 +185,16 @@ static b8 tool_write(Str args, Arena *scratch, Buf *out, char *err, size_t err_c
  * The child is spawned rather than popen'd because both of its output streams
  * belong in the result and neither belongs on the terminal: inherited stderr
  * would paint over the frame the TUI owns, and inherited stdin would race the
- * composer for keystrokes. */
+ * composer for keystrokes.
+ *
+ * For the same reason the child gets its own session with setsid(): closing
+ * the standard streams is not enough, since a program that wants a human
+ * opens /dev/tty behind them. Without a controlling terminal that open fails,
+ * so `sudo` reports that it has no way to ask for a password and exits
+ * instead of painting a prompt into the frame or stopping on SIGTTIN forever.
+ * setsid() also makes the child a process-group leader, which is what the
+ * kill(-pid, ...) below needs, so the parent must not race it with setpgid():
+ * a group the parent creates first would make the child's setsid() fail. */
 /* A ring holding the last `cap` bytes written: `head` is the oldest, `len`
  * how many are live. */
 static void ring_put(char *ring, size_t cap, size_t *head, size_t *len,
@@ -238,7 +247,7 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
         return false;
     }
     if (pid == 0) {
-        setpgid(0, 0);
+        if (setsid() < 0) setpgid(0, 0);
         i32 null_fd = open("/dev/null", O_RDONLY);
         if (null_fd >= 0) { dup2(null_fd, 0); close(null_fd); }
         dup2(fds[1], 1);
@@ -247,7 +256,6 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
         execl("/bin/sh", "sh", "-c", z, (char *)NULL);
         _exit(127);
     }
-    setpgid(pid, pid);
     close(fds[1]);
 
     static char ring[AGENT_SHELL_OUT_BYTES];
@@ -356,7 +364,7 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit, Buf *out,
         return false;
     }
     if (pid == 0) {
-        setpgid(0, 0);
+        if (setsid() < 0) setpgid(0, 0);
         i32 null_fd = open("/dev/null", O_RDONLY);
         if (null_fd >= 0) { dup2(null_fd, 0); close(null_fd); }
         dup2(fds[1], 1); dup2(fds[1], 2);
@@ -364,7 +372,6 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit, Buf *out,
         execl("/bin/sh", "sh", "-c", z, (char *)NULL);
         _exit(127);
     }
-    setpgid(pid, pid);
     close(fds[1]);
 
     size_t total = 0, shown = 0, first = offset - 1;
@@ -1274,7 +1281,9 @@ void tools_init(ToolRegistry *r, Arena *persist) {
     ADD("bash", "Run a shell command; returns one page of up to 8KB of its "
         "stdout and stderr. Use offset and limit to page output, and prefer "
         "head, tail, sed -n or grep to target the lines you need. The harness "
-        "may pause for approval; do not ask in prose or retry a denial blindly.",
+        "may pause for approval; do not ask in prose or retry a denial "
+        "blindly. Commands run without a terminal, so anything that prompts "
+        "for input, sudo included, fails rather than waits.",
         "Run a shell command", TOOL_IN_BUILD, TOOL_APPROVAL_BASH,
         "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\",\"description\":\"first output byte, 1-based\"},\"limit\":{\"type\":\"integer\",\"description\":\"at most 8KB\"}},\"required\":[\"command\"]}",
         tool_bash);
