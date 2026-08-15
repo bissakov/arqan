@@ -152,8 +152,8 @@ test-update: all $(TEST_BIN)
 	ARQAN_TEST_BIN=$(TEST_BIN) $(PYTHON) tests/run.py --update $(T)
 
 # The instrumented tree is built and run entirely under build/asan and
-# bin/asan, so bin/arqan stays the shipped binary and a bare
-# `python3 tests/run.py` keeps testing it.
+# bin/asan, so bin/arqan stays the shipped binary, bin/arqan-test the one the
+# suite drives, and `make test` keeps testing them.
 asan:
 	$(MAKE) all $(ASAN_BIN)/arqan-test \
 	    BUILDDIR='$(ASAN_BUILD)' BINDIR='$(ASAN_BIN)' \

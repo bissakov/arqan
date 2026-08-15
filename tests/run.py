@@ -15,7 +15,11 @@ outside `--update` and written per case.
 
 No third-party dependencies: discovery, isolation and reporting are all here
 so `make test` works on a bare checkout with nothing but Python 3 and a built
-`bin/arqan`.
+`bin/arqan-test`.
+
+ARQAN_TEST_BIN selects the binary under test and `make test` sets it to
+`bin/arqan-test`, the -DAGENT_TESTING build. The trust store and the web
+endpoints reach their fixtures through hooks compiled in only there.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -93,6 +98,24 @@ def load_cases():
     return found
 
 
+def testing_build(binary) -> bool:
+    """Whether `binary` carries the -DAGENT_TESTING hooks the cases need.
+
+    `--ca-trust` exists only in that build and needs no pty, mock or temp dir.
+    A binary that cannot be executed fails the probe.
+    """
+    try:
+        done = subprocess.run(
+            [str(binary), "--ca-trust"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("-k", "--filter", default="", help="substring match on case name")
@@ -127,6 +150,15 @@ def main(argv=None):
 
     if not BIN.exists():
         print(c.red(f"missing {BIN}, run `make` first"))
+        return 2
+    if not testing_build(BIN):
+        print(c.red(f"{BIN} is not a test build"))
+        print(
+            "The cases reach the mock provider, the trust store and the web\n"
+            "endpoints through hooks compiled in only under -DAGENT_TESTING.\n"
+            "Run `make test`, or build bin/arqan-test and set\n"
+            "ARQAN_TEST_BIN=bin/arqan-test."
+        )
         return 2
 
     jobs = args.jobs if args.jobs > 0 else auto_jobs(len(cases) * args.repeat)

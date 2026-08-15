@@ -1,8 +1,13 @@
 # Tests
 
-End-to-end tests run `bin/arqan` in a pseudo-terminal against a local mock
+End-to-end tests run `bin/arqan-test` in a pseudo-terminal against a local mock
 provider. They assert on an emulated terminal screen, not escape sequences.
 Python 3 is the only test dependency.
+
+`bin/arqan-test` is the `-DAGENT_TESTING` build. The trust store and the web
+endpoints reach their fixtures through hooks compiled in only there, so the
+suite needs that binary and refuses any other. `make test` builds it and sets
+`ARQAN_TEST_BIN`; `tests/run.py` reads the same variable.
 
 ```sh
 make test                       # all cases
@@ -11,16 +16,22 @@ make test T=--list              # list cases
 make test-update                # update intended golden screens
 make test-asan                  # ASan + UBSan suite
 make test-fil                   # Fil-C memory-safety suite
-python3 tests/run.py -v -x      # verbose; stop on failure
-python3 tests/run.py --repeat 5 # check a suspected flake
-python3 tests/run.py -j 1       # serial debugging
+make test T="-v -x"             # verbose; stop on failure
+make test T="--repeat 5"        # check a suspected flake
+make test T="-j 1"              # serial debugging
+```
+
+Options `T` cannot express go to the script directly:
+
+```sh
+ARQAN_TEST_BIN=bin/arqan-test python3 tests/run.py --repeat 5 -k composer
 ```
 
 The sanitizer build is a separate tree: `make test-asan` compiles into
 `build/asan/` and `bin/asan/` and never touches `bin/arqan`, so a plain `make`
-stays valid afterwards and a bare `python3 tests/run.py` keeps driving the
-shipped binary. To run part of the suite against the instrumented build, build
-it once with `make asan` and point the runner at it:
+stays valid afterwards and `make test` keeps driving the uninstrumented build.
+To run part of the suite against the instrumented build, build it once with
+`make asan` and point the runner at it:
 
 ```sh
 make asan
