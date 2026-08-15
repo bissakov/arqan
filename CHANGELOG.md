@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Leave a reasoning small model room to answer when it names a session. The
+  naming request was capped at a line's worth of tokens, which a model that
+  thinks first spent entirely on reasoning, so the session was never named.
+
 ## [0.3.0] - 2026-08-14
 
 ### Added

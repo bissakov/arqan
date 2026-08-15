@@ -3199,6 +3199,13 @@ static void compact_session(Agent *ag) {
  * than from everything it grew into. */
 #define TITLE_EXCERPT_BYTES 1024
 
+/* The budget the naming request is capped to. A title is one line, but a
+ * small model may be a reasoning one that spends its budget thinking before
+ * it writes anything: a cap of a line's worth comes back as reasoning and no
+ * name at all. Most of this is room to think, not room for the title, which
+ * is cut to AGENT_MAX_TITLE whatever arrives. */
+#define TITLE_MAX_TOKENS 1024
+
 /* Point `small` at the endpoint that serves the small model, which may not be
  * the one the conversation is on: the URL, the API and the key all come from
  * the stored provider, and only this request goes there. False when that
@@ -3302,7 +3309,8 @@ static b8 name_session(Agent *ag, b8 manual) {
     small.reasoning_effort = (Str){0};
     small.thinking_budget = (Str){0};
     small.reasoning_template = (Str){0};
-    if (small.max_tokens > 64) small.max_tokens = 64;
+    if (small.max_tokens > TITLE_MAX_TOKENS)
+        small.max_tokens = TITLE_MAX_TOKENS;
 
     say_busy("naming");
     /* No tools and no text callbacks: the answer is read from `tmp` once the

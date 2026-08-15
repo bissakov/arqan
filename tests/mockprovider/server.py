@@ -239,6 +239,30 @@ def _split_fields(spec: str) -> list[str]:
     return out
 
 
+class Budget:
+    """A request's `max_tokens`, counted in characters at four to the token.
+
+    A real provider stops there and spends the budget on its reasoning before
+    any content, so a cap that leaves no room after the thinking ends the turn
+    on "length" with nothing said. A request naming no cap is unlimited.
+    """
+
+    def __init__(self, max_tokens=None):
+        self.left = int(max_tokens) * 4 if max_tokens else None
+
+    def take(self, text: str) -> str:
+        """As much of `text` as the budget still pays for."""
+        if self.left is None:
+            return text
+        out = text[: max(self.left, 0)]
+        self.left -= len(out)
+        return out
+
+    @property
+    def spent(self) -> bool:
+        return self.left is not None and self.left <= 0
+
+
 def chunks(text: str, words_per_chunk: int) -> list[str]:
     """Split on word boundaries, keeping every separator byte."""
     if words_per_chunk <= 0:
@@ -888,10 +912,14 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
         if scenario.first_delay:
             time.sleep(scenario.first_delay)
 
+        budget = Budget(body.get("max_tokens"))
         completion_chars = 0
         if scenario.reasoning_summaries and tool_replies == 0:
             for index, summary in enumerate(scenario.reasoning_summaries):
                 for piece in chunks(summary, scenario.chunk):
+                    piece = budget.take(piece)
+                    if not piece:
+                        break
                     detail = {
                         "type": "reasoning.summary",
                         "summary": piece,
@@ -908,12 +936,18 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
                         time.sleep(scenario.delay)
         elif scenario.reasoning and tool_replies == 0:
             for piece in chunks(scenario.reasoning, scenario.chunk):
+                piece = budget.take(piece)
+                if not piece:
+                    break
                 if not self._sse(frame({scenario.reasoning_field: piece})):
                     return
                 if scenario.delay:
                     time.sleep(scenario.delay)
 
-        if emit_tools:
+        if budget.spent:
+            # The thinking took it all: the turn ends where the cap does.
+            finish = "length"
+        elif emit_tools:
             for index, (name, args) in enumerate(scenario.tools):
                 call = {
                     "index": index,
@@ -946,18 +980,26 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             finish = "tool_calls"
         else:
             text = scenario.body_text() if tool_replies == 0 else scenario.follow_up_text()
-            completion_chars = len(text)
             sent = 0
+            finish = "stop"
             for piece in chunks(text, scenario.chunk):
+                whole = piece
+                piece = budget.take(piece)
+                if not piece:
+                    finish = "length"
+                    break
                 if not self._sse(frame({"content": piece})):
                     return
+                completion_chars += len(piece)
                 sent += 1
                 if scenario.abort_after and sent >= scenario.abort_after:
                     self._reset()
                     return
                 if scenario.delay:
                     time.sleep(scenario.delay)
-            finish = "stop"
+                if len(piece) < len(whole):
+                    finish = "length"
+                    break
 
         if not self._sse(frame({}, finish)):
             return

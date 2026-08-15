@@ -119,6 +119,29 @@ def test_the_first_turn_asks_the_small_model_for_a_name(ctx):
     assert titles[0].read_text() == "noted", titles[0].read_text()
 
 
+def test_a_reasoning_small_model_is_left_room_to_answer(ctx):
+    """A small model that thinks first must still reach its own answer.
+
+    The mock spends the request's `max_tokens` on reasoning before content,
+    the way a provider does, so a naming request capped at a line's worth of
+    tokens comes back as thinking and no name at all.
+    """
+    thinking = "+".join(["weighing", "what", "to", "call", "this"] * 20)
+    # Longer than the 64 tokens the naming request was once capped to, so the
+    # case cannot stop covering the bug without failing.
+    assert len(thinking) > 64 * 4, len(thinking)
+
+    ctx.scenario(f"text=Cat+memory+notes,reasoning={thinking}")
+    s = ctx.spawn(ARQAN_SMALL_MODEL="mock-small")
+    s.submit("remember the cat")
+    s.wait_turn_done()
+    s.wait_text("session named: Cat memory notes")
+
+    naming = ctx.mock.requests[-1]
+    assert naming["model"] == "mock-small", naming["model"]
+    assert session_files(ctx, ".title")[0].read_text() == "Cat memory notes"
+
+
 def test_a_named_session_is_not_named_again(ctx):
     """One name per session: the second turn spends no request on it."""
     s = one_turn(ctx, ARQAN_SMALL_MODEL="mock-small")
