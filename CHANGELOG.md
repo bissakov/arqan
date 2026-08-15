@@ -13,6 +13,13 @@
 
 ### Changed
 
+- Show a command instead of summarising it. A tool call's header used to cut
+  its command at a row's worth of bytes, which hid the tail of most pipelines
+  and every quoted argument past it; it now shows what will run. A command
+  longer than the new width still ends in an ellipsis, and the block offers a
+  "show in full" row that expands it in one click, so nothing a call does is
+  out of reach without turning verbose output on. Tool *output* is unchanged.
+
 - Lift the transcript for a notice. A one-line answer to a command that
   opens nothing - "copied the last response", "exported session to ..." -
   used to cover the newest transcript row for as long as it stayed up, which

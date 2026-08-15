@@ -349,7 +349,7 @@ def test_verbose_shows_every_line_of_a_result(ctx):
 
 def test_verbose_shows_a_long_command_whole(ctx):
     """A call header is clipped only while verbose is off."""
-    marker = "x" * 200
+    marker = "x" * 1500
     args = json.dumps({"command": f"echo {marker}"})
     ctx.scenario(f"tool=bash:{args},final_text=ran")
     s = ctx.spawn()
@@ -362,6 +362,17 @@ def test_verbose_shows_a_long_command_whole(ctx):
     ctx.scenario(f"tool=bash:{args},tool_rounds=2,final_text=ran+again")
     s.submit("run it again")
     s.wait_text("ran again")
+    s.wait_turn_done()
+    assert " ..." not in s.text(), s.text()
+
+
+def test_a_command_is_shown_past_one_row_of_bytes(ctx):
+    """A command the header once cut at 120 bytes is now shown whole."""
+    args = json.dumps({"command": "echo hi #" + "x" * 400})
+    ctx.scenario(f"tool=bash:{args},final_text=ran")
+    s = ctx.spawn()
+    s.submit("run it")
+    s.wait_text("ran")
     s.wait_turn_done()
     assert " ..." not in s.text(), s.text()
 
@@ -419,6 +430,26 @@ def test_clicking_a_truncated_block_expands_and_folds_it(ctx):
     click(s, "\u25b4 show less")
     s.wait_text("\u25be 28 more lines")
     assert "line 0039 of output" not in s.text(), s.text()
+
+
+def test_a_cut_command_header_offers_the_rest_in_one_click(ctx):
+    """A one-line command too long even for the command width is reachable."""
+    args = json.dumps({"command": "echo hi #" + "x" * 1500})
+    ctx.scenario(f"tool=bash:{args},final_text=ran")
+    s = ctx.spawn()
+    s.submit("run it")
+    s.wait_text("ran")
+    s.wait_turn_done()
+    assert " ..." in s.text(), s.text()
+    assert "\u25be show in full" in s.text(), s.text()
+
+    click(s, "\u25be show in full")
+    s.wait_text("\u25b4 show less")
+    assert " ..." not in s.text(), s.text()
+
+    click(s, "\u25b4 show less")
+    s.wait_text("\u25be show in full")
+    assert " ..." in s.text(), s.text()
 
 
 def test_expanding_one_block_leaves_the_other_truncated(ctx):

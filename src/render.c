@@ -7,12 +7,17 @@ enum {
     R_ARG_LINES    = 8,    // input lines shown under a call's header
     R_RESULT_LINES = 12,   // output lines shown under a result
     R_LINE_BYTES   = 200,  // a single line's share of the transcript
-    R_TARGET_BYTES = 120   // the header's path or command
+    R_TARGET_BYTES = 120,  // the header's path or query
+    /* A command is what the agent is about to run, so it is shown rather
+     * than summarised; the bound is only against a generated one-liner
+     * taking the screen, and what it cuts is one click away. */
+    R_CMD_BYTES    = 1024
 };
 
 static b8 g_verbose;
 
 static b8 g_expanded;
+static b8 g_head_more;   // the header was cut, so the block owes a way to it
 static u32 g_zone;
 
 void render_set_verbose(b8 on) { g_verbose = on; }
@@ -32,7 +37,8 @@ static void add_line_syntax(const YhlResult *hl, Str source,
                             size_t source_off, Str shown,
                             size_t transcript_off);
 static void write_syntax_lines(Str body, Str source, b8 grep,
-                               const YhlResult *hl, Str gutter, size_t max);
+                               const YhlResult *hl, Str gutter, size_t max,
+                               size_t bytes);
 static size_t patch_batch(Str patch, char *out, size_t cap);
 static void write_patch_lines(Str patch, Str source, const YhlResult *hl,
                               Str gutter, size_t max);
@@ -52,10 +58,12 @@ static void block_begin(u32 id, b8 expanded) {
     tui_pin(id);
     g_zone = id;
     g_expanded = expanded;
+    g_head_more = false;
 }
 static void block_end(void) {
     g_zone = 0;
     g_expanded = false;
+    g_head_more = false;
 }
 
 static size_t num_arg(const JVal *args, Str key) {
@@ -107,29 +115,24 @@ static void write_elapsed(u32 ms) {
  * alike; NULL means the block's own. */
 typedef Sink (*LineStyle)(Str line);
 
-/* At most `max` lines of `body`, each behind `gutter`, then a tail row saying
- * what was left out. That row is the block's click target, so a block whose
- * lines all fit gets no tail either way. */
-static void write_styled(Str body, Str gutter, size_t max, Sink sink,
-                         LineStyle style) {
-    size_t cap = line_cap(max);
-    size_t off = 0, shown = 0;
-    Str line;
-    while (shown < cap && str_line(body, &off, &line)) {
-        Sink put = style ? style(line) : sink;
-        put(gutter);
-        write_clipped(line, R_LINE_BYTES, put);
-        put(STR("\n"));
-        shown++;
-    }
-    size_t rest = str_lines(str_drop(body, off));
+/* The row that closes a block: what it left out, or the way back from an
+ * expansion. It is the block's click target, so a block that left nothing
+ * out and can fold nothing back gets no row. A cut header counts as left
+ * out even when every line fit, since otherwise nothing would offer it. */
+static void write_tail(Str gutter, size_t rest, size_t shown, size_t max,
+                       Sink sink) {
     char buf[64];
     i32 len;
     if (rest) {
         len = snprintf(buf, sizeof buf, "\u25be %zu more line%s\n",
                        rest, rest == 1 ? "" : "s");
-    } else if (g_expanded && !g_verbose && shown > max) {
+    } else if (g_verbose) {
+        return;
+    } else if (g_expanded) {
+        if (shown <= max && !g_head_more) return;
         len = snprintf(buf, sizeof buf, "\u25b4 show less\n");
+    } else if (g_head_more) {
+        len = snprintf(buf, sizeof buf, "\u25be show in full\n");
     } else {
         return;
     }
@@ -139,8 +142,26 @@ static void write_styled(Str body, Str gutter, size_t max, Sink sink,
     tui_zone_end();
 }
 
-static void write_lines(Str body, Str gutter, size_t max, Sink sink) {
-    write_styled(body, gutter, max, sink, NULL);
+/* At most `max` lines of `body`, each behind `gutter` and each up to `bytes`
+ * long, then whatever tail row the block earned. */
+static void write_styled(Str body, Str gutter, size_t max, size_t bytes,
+                         Sink sink, LineStyle style) {
+    size_t cap = line_cap(max);
+    size_t off = 0, shown = 0;
+    Str line;
+    while (shown < cap && str_line(body, &off, &line)) {
+        Sink put = style ? style(line) : sink;
+        put(gutter);
+        write_clipped(line, bytes, put);
+        put(STR("\n"));
+        shown++;
+    }
+    write_tail(gutter, str_lines(str_drop(body, off)), shown, max, sink);
+}
+
+static void write_lines(Str body, Str gutter, size_t max, size_t bytes,
+                        Sink sink) {
+    write_styled(body, gutter, max, bytes, sink, NULL);
 }
 
 /* The file a patch is about, taken from its first header, plus how many more
@@ -185,7 +206,8 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
               : (Str){0};
     Str target = query.n ? query : path.n ? path : cmd;
     size_t cmd_off = 0;
-    if (!path.n && cmd.n) str_line(cmd, &cmd_off, &target);
+    b8 target_cmd = !path.n && cmd.n;
+    if (target_cmd) str_line(cmd, &cmd_off, &target);
     static YhlResult syntax;
     static char patch_source[YHL_SOURCE_MAX];
     syntax.n = 0;
@@ -212,7 +234,9 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
     tui_write_tool(name);
     if (target.n) {
         tui_write_tool(STR(" "));
-        Str shown = clip(target, R_TARGET_BYTES);
+        size_t bytes = target_cmd ? R_CMD_BYTES : R_TARGET_BYTES;
+        g_head_more = target.n > bytes;
+        Str shown = clip(target, bytes);
         size_t at = tui_transcript_pos();
         if (source_code && cmd.n) {
             tui_write_source(shown);
@@ -229,10 +253,10 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
     if (str_eq(name, STR("write"))) {
         if (source_code)
             write_syntax_lines(content, syntax_source, false, &syntax,
-                               STR("\u2502 "), R_ARG_LINES);
+                               STR("\u2502 "), R_ARG_LINES, R_LINE_BYTES);
         else
             write_lines(content, STR("\u2502 "), R_ARG_LINES,
-                        tui_write_muted);
+                        R_LINE_BYTES, tui_write_muted);
     } else if (patch.n) {
         /* Twice a call's usual allowance: a hunk spends most of its lines on
          * the context that locates it. */
@@ -242,13 +266,17 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
         if (source_code)
             write_syntax_lines(str_drop(cmd, cmd_off), syntax_source, false,
                                &syntax,
-                               STR("\u2502 "), R_ARG_LINES);
+                               STR("\u2502 "), R_ARG_LINES, R_CMD_BYTES);
         else
             write_lines(str_drop(cmd, cmd_off), STR("\u2502 "),
-                        R_ARG_LINES, tui_write_muted);
+                        R_ARG_LINES, R_CMD_BYTES, tui_write_muted);
     } else if (!path.n && !query.n) {
-        write_lines(args, STR("\u2502 "), R_ARG_LINES,
+        write_lines(args, STR("\u2502 "), R_ARG_LINES, R_LINE_BYTES,
                     tui_write_muted);
+    } else {
+        /* A call whose arguments are all in its header still owes the way to
+         * a target the header cut. */
+        write_tail(STR("\u2502 "), 0, 0, R_ARG_LINES, tui_write_muted);
     }
 
     scratch->off = mark;
@@ -269,7 +297,8 @@ void render_shell_call(Str cmd, u32 id, b8 expanded) {
 
     tui_block();
     tui_write_tool(STR("\u25c6  shell "));
-    Str shown = clip(first, R_TARGET_BYTES);
+    g_head_more = first.n > R_CMD_BYTES;
+    Str shown = clip(first, R_CMD_BYTES);
     size_t at = tui_transcript_pos();
     if (cmd.n) {
         tui_write_source(shown);
@@ -281,10 +310,10 @@ void render_shell_call(Str cmd, u32 id, b8 expanded) {
     tui_write_tool(STR("\n"));
     if (cmd.n)
         write_syntax_lines(str_drop(cmd, off), cmd, false, &syntax,
-                           STR("\u2502 "), R_ARG_LINES);
+                           STR("\u2502 "), R_ARG_LINES, R_CMD_BYTES);
     else
         write_lines(str_drop(cmd, off), STR("\u2502 "), R_ARG_LINES,
-                    tui_write_muted);
+                    R_CMD_BYTES, tui_write_muted);
 
     if (cmd.n) tui_syntax_commit();
     block_end();
@@ -420,22 +449,8 @@ static void write_patch_lines(Str patch, Str source, const YhlResult *hl,
         tui_write(STR("\n"));
         shown++;
     }
-    size_t rest = str_lines(str_drop(patch, off));
-    char tail[64];
-    i32 len;
-    if (rest) {
-        len = snprintf(tail, sizeof tail, "\u25be %zu more line%s\n",
-                       rest, rest == 1 ? "" : "s");
-    } else if (g_expanded && !g_verbose && shown > max) {
-        len = snprintf(tail, sizeof tail, "\u25b4 show less\n");
-    } else {
-        tui_syntax_commit();
-        return;
-    }
-    tui_zone_begin(g_zone);
-    tui_write_muted(gutter);
-    if (len > 0) tui_write_muted((Str){ tail, (size_t)len });
-    tui_zone_end();
+    write_tail(gutter, str_lines(str_drop(patch, off)), shown, max,
+               tui_write_muted);
     tui_syntax_commit();
 }
 
@@ -497,13 +512,14 @@ static size_t grep_matches(Str result) {
 }
 
 static void write_syntax_lines(Str body, Str source, b8 grep,
-                               const YhlResult *hl, Str gutter, size_t max) {
+                               const YhlResult *hl, Str gutter, size_t max,
+                               size_t bytes) {
     size_t cap = line_cap(max);
     size_t off = 0, shown = 0, source_off = 0;
     Str line;
     while (shown < cap && str_line(body, &off, &line)) {
         tui_write_muted(gutter);
-        Str head = clip(line, R_LINE_BYTES);
+        Str head = clip(line, bytes);
         if (grep) {
             Str full_prefix, full_fragment;
             if (grep_fragment(line, &full_prefix, &full_fragment)) {
@@ -528,22 +544,8 @@ static void write_syntax_lines(Str body, Str source, b8 grep,
         tui_write(STR("\n"));
         shown++;
     }
-    size_t rest = str_lines(str_drop(body, off));
-    char tail[64];
-    i32 len;
-    if (rest) {
-        len = snprintf(tail, sizeof tail, "\u25be %zu more line%s\n",
-                       rest, rest == 1 ? "" : "s");
-    } else if (g_expanded && !g_verbose && shown > max) {
-        len = snprintf(tail, sizeof tail, "\u25b4 show less\n");
-    } else {
-        tui_syntax_commit();
-        return;
-    }
-    tui_zone_begin(g_zone);
-    tui_write_muted(gutter);
-    if (len > 0) tui_write_muted((Str){ tail, (size_t)len });
-    tui_zone_end();
+    write_tail(gutter, str_lines(str_drop(body, off)), shown, max,
+               tui_write_muted);
     tui_syntax_commit();
 }
 
@@ -613,9 +615,10 @@ void render_tool_result(Str name, Str args, Str result, Arena *scratch,
     tui_write_result(STR("\n"));
     if (source_code) {
         write_syntax_lines(body, syntax_source, grep, &hl, STR("   "),
-                           R_RESULT_LINES);
+                           R_RESULT_LINES, R_LINE_BYTES);
     } else {
-        write_lines(body, STR("   "), R_RESULT_LINES, tui_write_muted);
+        write_lines(body, STR("   "), R_RESULT_LINES, R_LINE_BYTES,
+                    tui_write_muted);
     }
     block_end();
 }
