@@ -28,6 +28,23 @@ BIN = ROOT / os.environ.get("ARQAN_TEST_BIN", "bin/arqan")
 HIGHLIGHT_BIN = BIN.parent / "arqan-highlight"
 GOLDEN = Path(__file__).resolve().parent / "golden"
 
+
+def _agent_version() -> str:
+    """The version the binary reports, read from its single source.
+
+    A release edits `AGENT_VERSION` and nothing else, so an assertion about
+    the version must follow it rather than repeat it.
+    """
+    text = (ROOT / "src/agent.h").read_text()
+    found = re.findall(
+        r'^\s*#\s*define\s+AGENT_VERSION\s+"([^"]+)"', text, re.MULTILINE
+    )
+    assert len(found) == 1, "src/agent.h must define AGENT_VERSION once"
+    return found[0]
+
+
+VERSION = _agent_version()
+
 # Enough room for the status line's model · provider · cwd · tokens groups.
 DEFAULT_COLS = 80
 DEFAULT_ROWS = 24
