@@ -559,3 +559,78 @@ def test_resume_offers_both_sides_of_a_fork(ctx):
     s.key("enter")
     s.wait_text("shared start")
     assert "only in the fork" not in s.text(), s.text()
+
+
+def plant_session(ctx, text: str, name: str = "20240101-000000.jsonl"):
+    """Write a session file directly, the way a crashed run leaves one."""
+    import string
+
+    unreserved = string.ascii_letters + string.digits + ".-_"
+    slug = "".join(
+        c if c in unreserved else f"%{ord(c):02x}" for c in str(ctx.work)
+    )
+    d = ctx.home / ".local" / "share" / "arqan" / "sessions" / slug
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / name
+    p.write_text(text)
+    return p
+
+
+def test_a_call_cut_off_before_it_ran_is_answered_on_resume(ctx):
+    """A round saved before its tool ran replays as a valid conversation."""
+    path = plant_session(ctx, "".join(
+        json.dumps(m) + "\n" for m in [
+            {"role": "user", "content": "read the notes"},
+            {"role": "assistant", "calls": True, "content": ""},
+            {"role": "assistant", "id": "call_1", "name": "read",
+             "content": '{"path":"notes.txt"}'},
+        ]
+    ))
+
+    s = ctx.spawn()
+    s.submit("/resume")
+    s.wait_status("pick a session")
+    s.key("enter")
+    s.wait_text("interrupted before this call ran")
+
+    # the answer is on disk too, so the next resume finds the file whole
+    lines = [json.loads(l) for l in path.read_text().splitlines()]
+    assert [l["role"] for l in lines] == [
+        "user", "assistant", "assistant", "tool"
+    ], lines
+    assert lines[3]["id"] == "call_1", lines[3]
+    assert "interrupted" in lines[3]["content"], lines[3]
+
+    # and the provider is sent a call every result follows, which it requires
+    ctx.scenario("final_text=picking+up")
+    s.submit("carry on")
+    s.wait_text("picking up")
+    s.wait_turn_done()
+    roles = [m["role"] for m in ctx.mock.requests[-1]["messages"]]
+    assert roles == ["system", "user", "assistant", "tool", "user"], roles
+
+
+def test_a_torn_last_line_does_not_swallow_the_next_message(ctx):
+    """A save cut mid-line is closed before the next append, not run onto."""
+    path = plant_session(
+        ctx,
+        json.dumps({"role": "user", "content": "before the cut"}) + "\n"
+        + '{"role":"assistant","content":"half a li',
+    )
+
+    s = ctx.spawn()
+    s.submit("/resume")
+    s.wait_status("pick a session")
+    s.key("enter")
+    s.wait_text("before the cut")
+    assert "half a li" not in s.text(), s.text()
+
+    ctx.scenario("text=after+the+cut")
+    s.submit("keep going")
+    s.wait_text("after the cut")
+    s.wait_turn_done()
+
+    lines = path.read_text().splitlines()
+    assert lines[1] == '{"role":"assistant","content":"half a li', lines
+    kept = [json.loads(l) for l in lines[2:]]
+    assert [l["content"] for l in kept] == ["keep going", "after the cut"], kept

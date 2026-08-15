@@ -2,6 +2,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -238,6 +239,34 @@ static void sess_put_json(FILE *f, Str s) {
     fputc('"', f);
 }
 
+/* Persist the directory entry itself, so a session file created just before
+ * the power went is still named by its directory when the machine comes
+ * back. Only the first save of a file needs it; later ones change no name. */
+static void sess_sync_dir(Str dir) {
+    char path[AGENT_MAX_PATH];
+    if (dir.n >= sizeof path) return;
+    memcpy(path, dir.p, dir.n);
+    path[dir.n] = '\0';
+    i32 fd = open(path, O_RDONLY | O_DIRECTORY);
+    if (fd < 0) return;
+    fsync(fd);
+    close(fd);
+}
+
+/* End a line the last save left half-written. A power loss can cut an append
+ * anywhere, and the torn line is dropped on load; without this the next
+ * append would run onto its tail and cost the first good message after it as
+ * well. `f` is open for append, so the write lands at the end regardless of
+ * where reading left the stream. */
+static void sess_close_line(FILE *f) {
+    struct stat st;
+    i32 fd = fileno(f);
+    char last = '\n';
+    if (fd < 0 || fstat(fd, &st) != 0 || st.st_size <= 0) return;
+    if (pread(fd, &last, 1, st.st_size - 1) != 1 || last == '\n') return;
+    fputc('\n', f);
+}
+
 /* Append the messages produced since the last save. The system prompt is
  * left out: it comes from the configuration, which may well have changed by
  * the time the session is resumed. */
@@ -246,8 +275,12 @@ void session_save(Session *s, const Conv *c) {
     telemetry_bind(s->path);
     Str dir = s->dir;
     if (dir.n) paths_ensure_dir(dir);
-    FILE *f = fopen(s->path.p, "ab");
+    b8 created = access(s->path.p, F_OK) != 0;
+    /* Read-write append: the file is only ever added to, but the byte before
+     * the append has to be known. */
+    FILE *f = fopen(s->path.p, "a+b");
     if (!f) return;
+    sess_close_line(f);
     for (size_t i = s->written; i < c->n; i++) {
         if (c->role[i] == M_SYSTEM) continue;
         const char *role = c->role[i] == M_USER ? "user"
@@ -279,7 +312,12 @@ void session_save(Session *s, const Conv *c) {
         sess_put_json(f, c->text[i]);
         fputs("}\n", f);
     }
+    /* A session is written to survive the machine losing power mid-turn, so
+     * the lines reach the disk before the call returns rather than sitting in
+     * the page cache behind whatever the next tool does. */
+    if (fflush(f) == 0) fsync(fileno(f));
     fclose(f);
+    if (created && dir.n) sess_sync_dir(dir);
     s->written = c->n;
 }
 
@@ -639,6 +677,34 @@ static Str sess_thinking(Arena *persist, const JVal *v) {
     return buf_ok(&out) ? buf_finish(&out) : (Str){0};
 }
 
+/* Whether any slot answers the call carried in `call`. */
+static b8 sess_call_answered(const Conv *c, size_t call) {
+    for (size_t i = call + 1; i < c->n; i++)
+        if (c->role[i] == M_TOOL
+            && str_eq(c->tool_call_id[i], c->tool_call_id[call]))
+            return true;
+    return false;
+}
+
+/* Answer the calls the session died between asking and running. The round
+ * that asked is on disk before any tool starts, so a session cut mid-round
+ * replays with calls no result follows, which every provider refuses. A
+ * result saying the call never ran keeps the conversation valid and leaves
+ * the model to decide whether the work is still wanted; nothing is replayed
+ * as having run. False when there was no room to answer them all. */
+static b8 sess_answer_pending(Conv *c) {
+    size_t n = c->n;
+    for (size_t i = 0; i < n; i++) {
+        if (!conv_is_call(c, i) || sess_call_answered(c, i)) continue;
+        if (conv_add_tool(c, c->tool_call_id[i],
+                          STR("ERROR: interrupted before this call ran. "
+                              "Call it again if it is still needed."))
+            == CONV_NONE)
+            return false;
+    }
+    return true;
+}
+
 /* Replay contents into `c`, which the caller has already rewound to the
  * system prompt. Messages are copied into `persist`; `scratch` holds each
  * parsed line and is rewound to where it started. False means the
@@ -701,5 +767,10 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
     }
     scratch->off = mark;
     s->written = c->n;
+    /* The repair belongs to the file as much as to this conversation: saving
+     * it now means the next resume of the same file finds it already whole,
+     * rather than appending a new turn behind calls nothing answers. */
+    if (!sess_answer_pending(c)) ok = false;
+    session_save(s, c);
     return ok;
 }

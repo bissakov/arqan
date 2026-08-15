@@ -28,6 +28,16 @@
 
 ### Fixed
 
+- Keep a session through a power loss. Each save now reaches the disk before
+  the call returns, instead of sitting in the page cache behind whatever the
+  next tool does, and the directory entry of a new session file is persisted
+  with it. A session cut off between a round asking for tools and running
+  them now resumes: the calls nothing answered are answered as interrupted,
+  which the provider accepts and the model can act on, and the answer is
+  written back so the next resume finds the file whole. A line torn in half
+  by the cut is also closed before the next append, which used to run onto
+  its tail and cost the first message after it.
+
 - Keep a command's password prompt off the screen. A command that wanted a
   human, `sudo` above all, opened the terminal behind the closed standard
   streams: its `[sudo] password for ...` was painted into the composer box
