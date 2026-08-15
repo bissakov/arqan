@@ -20,6 +20,34 @@ def running_turn(ctx, spec="first_delay=6,text=done"):
     return s
 
 
+def test_an_accepted_message_never_reads_ready(ctx):
+    """Enter empties the composer and the same frame stops saying ready.
+
+    Anything else puts a frame on screen showing an accepted message under an
+    idle status, which reads as a message that went nowhere. It is also the
+    only moment at which the turn is indistinguishable from a finished one,
+    so a loaded machine that looks here sees a turn that never ran.
+    """
+    ctx.scenario("first_delay=6,text=done")
+    s = ctx.spawn()
+    s.submit("go on")
+    assert s.status_kind() != "ready", s.snapshot("accepted")
+    s.wait_activity("thinking")
+
+
+def test_a_command_is_not_work(ctx):
+    """A command is answered where it stands, so it never claims to be busy.
+
+    The frame that takes a message says so because a turn follows it. Nothing
+    follows a command, and a status left saying otherwise is one the next
+    trip through the prompt has to take back.
+    """
+    ctx.scenario("text=ok")
+    s = ctx.spawn()
+    s.submit("/title")
+    assert s.status_kind() == "ready", s.status_line()
+
+
 def test_settings_opens_while_a_turn_streams(ctx):
     """The screen comes up mid-turn and the reply arrives behind it."""
     s = running_turn(ctx)

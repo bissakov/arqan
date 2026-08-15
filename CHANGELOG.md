@@ -51,6 +51,13 @@
 
 ### Fixed
 
+- Stop reading ready with a message in hand. Pressing Enter emptied the
+  composer one frame before the status left ready, so an accepted message
+  spent that frame on screen under an idle status, looking like a message
+  that had gone nowhere. The frame that takes the message now says so, and a
+  form that stops to ask for a value reads ready while it waits, since
+  waiting on the reader is not work.
+
 - Keep a wrapped command out of the justifier. With justified wrapping on, a
   command, file content or diff that ran past one row had the gaps of its
   wrapped rows widened like prose, which moved the columns of the code under
