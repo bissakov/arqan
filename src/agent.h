@@ -1641,7 +1641,9 @@ void tui_scroll_to_bottom(void);
 void tui_batch_begin(void);
 void tui_batch_end(void);
 /* One line where the completion popup would be: the answer to a command that
- * opened no popup, retired by the next keystroke. Empty clears it. */
+ * opened no popup, retired by the next keystroke. Empty clears it. It is read
+ * beside the transcript, so while no screen is open the row it takes is
+ * lifted off the transcript rather than covering its newest line. */
 void tui_notice(Str msg);
 /* Open the transcript search box, which takes the keyboard from the composer
  * until Escape closes it and leaves the draft untouched. Ctrl-R opens it too.

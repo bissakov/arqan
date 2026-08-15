@@ -4,6 +4,13 @@
 
 ### Changed
 
+- Lift the transcript for a notice. A one-line answer to a command that
+  opens nothing - "copied the last response", "exported session to ..." -
+  used to cover the newest transcript row for as long as it stayed up, which
+  hid the end of the last reply. It now takes a row of its own, the way the
+  activity spinner does. Pickers, the settings screen and the completion
+  popup still cover the transcript instead of moving it.
+
 - Paint every frame inside a synchronized update. Terminals that support
   DEC mode 2026 (kitty, WezTerm, Ghostty, foot, recent tmux) now hold the
   display until the frame is complete, so a repaint that leaves the process

@@ -278,6 +278,25 @@ def test_a_popup_does_not_shift_the_transcript(ctx):
     assert "/clear" not in "\n".join(s.screen.lines()), "the popup is gone"
 
 
+def test_a_notice_lifts_the_transcript(ctx):
+    """A notice answers the last command and is read beside the transcript,
+    so the row it takes is lifted rather than covered."""
+    s = ctx.spawn()
+    fill_transcript(ctx, s)
+    before = s.screen.lines()
+
+    s.submit("/copy")   # answers in the notice slot, writes no transcript
+    s.wait_text("copied the last response")
+    after = s.screen.lines()
+
+    kept = s.screen.rows - 16
+    assert after[:kept] == before[1:kept + 1], (before[:kept], after[:kept])
+
+    s.key("esc").sync()
+    assert "copied the last response" not in "\n".join(s.screen.lines())
+    assert s.screen.lines()[:kept] == before[:kept], "retiring it drops back"
+
+
 def test_the_viewport_scrolls_with_a_popup_open(ctx):
     """The transcript still takes wheel and PageUp while the popup is up."""
     s = ctx.spawn()

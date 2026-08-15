@@ -2795,7 +2795,13 @@ static void repaint(void) {
      * up, which leaves the newest rows under it. A search box may not: a match
      * it cannot show is a search that did not answer, so while it is open the
      * rows it covers are scrolled out from under it. */
-    size_t view_rows = body_rows - activity_rows;
+    /* Nor may a notice: it answers the last command and is read beside the
+     * transcript rather than instead of it, so the rows it would cover are
+     * lifted for as long as it is up. A screen borrows the same slot for its
+     * own hint, and a screen is read instead of the transcript, so while one
+     * is open the notice covers like the rest. */
+    size_t notice_lift = g_tui.picking || g_view.active ? 0 : notice_rows;
+    size_t view_rows = body_rows - activity_rows - notice_lift;
     if (g_tui.find_open) view_rows = transcript_rows;
     else if (g_tui.keep_off != SIZE_MAX) {
         /* A modal screen the agent opened is about the block written just
