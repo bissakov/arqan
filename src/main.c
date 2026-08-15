@@ -1326,7 +1326,7 @@ static void export_session(const Conv *conv, Str requested) {
 
 /* Built beside /compact's request, so a name that never arrives cannot cost
  * the conversation anything. */
-static b8 name_session(Agent *ag, b8 manual);
+static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out);
 
 /* /title: the name a session is listed under. Set by hand, edited in the
  * composer, cleared by an empty answer, or asked of the small model. */
@@ -1340,7 +1340,7 @@ static void title_command(Agent *ag, Str arg) {
         return;
     }
     if (str_eq(arg, STR("auto"))) {
-        name_session(ag, true);
+        name_session(ag, true, NULL);
         return;
     }
     char buf[AGENT_MAX_TITLE + 1];
@@ -3238,13 +3238,16 @@ static b8 small_model_endpoint(Config *small, Str name, Str model, b8 manual,
  *
  * `manual` says the user asked, which is what decides whether a missing
  * piece is reported: the automatic attempt happens on its own and says
- * nothing when it cannot. */
-static b8 name_session(Agent *ag, b8 manual) {
+ * nothing when it cannot. `interrupted`, when given, reports a Ctrl-C that
+ * landed in the errand: the flag is consumed here, and a caller running this
+ * inside a turn has to act on it. */
+static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out) {
     Session *sess = ag->sess;
     const Conv *conv = ag->conv;
     const Config *cfg = ag->cfg;
     Arena *persist = ag->persist;
 
+    if (interrupted_out) *interrupted_out = false;
     Str first_user = {0}, first_reply = {0};
     for (size_t i = 0; i < conv->n && !first_reply.n; i++) {
         if (conv->role[i] == M_USER && !conv_is_shell(conv, i)
@@ -3254,7 +3257,7 @@ static b8 name_session(Agent *ag, b8 manual) {
                  && !conv_is_call(conv, i) && conv->text[i].n)
             first_reply = conv->text[i];
     }
-    if (!sess->path.n || !first_user.n || !first_reply.n) {
+    if (!sess->path.n || !first_user.n) {
         if (manual) tui_notice(STR("nothing to name yet"));
         return false;
     }
@@ -3277,8 +3280,14 @@ static b8 name_session(Agent *ag, b8 manual) {
     buf_puts(&ask, prompt_title_ask());
     buf_puts(&ask, STR("\n\nUser: "));
     buf_puts(&ask, str_clip_utf8(first_user, TITLE_EXCERPT_BYTES));
-    buf_puts(&ask, STR("\n\nAssistant: "));
-    buf_puts(&ask, str_clip_utf8(first_reply, TITLE_EXCERPT_BYTES));
+    /* A turn that opens with tool calls has said nothing yet. The excerpt is
+     * then the user's message alone: what they asked for is what they read a
+     * session by in the list, and waiting for prose leaves a build that runs
+     * for minutes unnamed for all of them. */
+    if (first_reply.n) {
+        buf_puts(&ask, STR("\n\nAssistant: "));
+        buf_puts(&ask, str_clip_utf8(first_reply, TITLE_EXCERPT_BYTES));
+    }
     if (!conv_init(&tmp, persist, 4) || !buf_ok(&ask)
         || conv_add(&tmp, M_SYSTEM, prompt_title()) == CONV_NONE
         || conv_add(&tmp, M_USER, buf_finish(&ask)) == CONV_NONE) {
@@ -3330,12 +3339,19 @@ static b8 name_session(Agent *ag, b8 manual) {
     f64 started = agent_now_seconds();
     arena_reset(ag->scratch);
     i32 rc = provider_run(&p, err, sizeof err);
-    tui_activity_end();
-    tui_set_status("ready");
-    /* An interrupt skips the naming and stops there: it must not leak into
-     * the turn the user types next. */
+    /* Only the on-demand path returns the screen to idle. The automatic one
+     * runs inside a turn that is still working, and a spinner that stopped
+     * under a green bullet would say that turn had finished. */
+    if (manual) {
+        tui_activity_end();
+        tui_set_status("ready");
+    }
+    /* An interrupt skips the naming, and the flag is consumed here so it
+     * cannot leak into the turn the user types next. A caller that runs this
+     * in the middle of a turn is told instead, through `interrupted_out`. */
     b8 interrupted = g_got_sigint != 0;
     if (interrupted) g_got_sigint = 0;
+    if (interrupted_out) *interrupted_out = interrupted;
 
     Str title = {0};
     if (rc >= 0 && !interrupted) {
@@ -3408,6 +3424,33 @@ static Str last_reply(const Conv *conv) {
     return (Str){0};
 }
 
+/* Every way a turn hears Ctrl-C ends it the same: the word, the status, and
+ * the flag cleared so it cannot reach the next turn. */
+static void announce_interrupt(void) {
+    if (g_one_shot)
+        one_shot_diag("error", (Str){0}, STR("interrupted"));
+    else {
+        tui_block();
+        tui_write(STR("[interrupted]\n"));
+    }
+    tui_set_status("ready");
+    g_got_sigint = 0;
+}
+
+/* The automatic naming, made from inside the turn that earns it: as soon as
+ * one response is whole, rather than once every tool the turn asked for has
+ * run, because that can be many minutes away and an interrupted turn would
+ * never get there. One attempt per session, which `title_tried` records.
+ * True when Ctrl-C landed in the errand, which the turn has to act on. */
+static b8 name_session_now(Agent *ag) {
+    if (g_one_shot || !ag->cfg->auto_title || !ag->cfg->small_model.n
+        || ag->sess->title.n || ag->sess->title_tried)
+        return false;
+    b8 interrupted = false;
+    name_session(ag, false, &interrupted);
+    return interrupted;
+}
+
 static b8 agent_turn(Agent *ag, Str text) {
     Conv *conv = ag->conv;
 
@@ -3455,14 +3498,7 @@ static b8 agent_turn(Agent *ag, Str text) {
     for (;;) {
         rounds++;
         if (g_got_sigint) {
-            if (g_one_shot)
-                one_shot_diag("error", (Str){0}, STR("interrupted"));
-            else {
-                tui_block();
-                tui_write(STR("[interrupted]\n"));
-            }
-            tui_set_status("ready");
-            g_got_sigint = 0;
+            announce_interrupt();
             ending = NOTIFY_INTERRUPTED;
             break;
         }
@@ -3500,14 +3536,7 @@ static b8 agent_turn(Agent *ag, Str text) {
          * for run, so a crash inside one keeps the round that asked. */
         session_save(ag->sess, conv);
         if (g_got_sigint) {
-            if (g_one_shot)
-                one_shot_diag("error", (Str){0}, STR("interrupted"));
-            else {
-                tui_block();
-                tui_write(STR("[interrupted]\n"));
-            }
-            tui_set_status("ready");
-            g_got_sigint = 0;
+            announce_interrupt();
             ending = NOTIFY_INTERRUPTED;
             break;
         }
@@ -3528,6 +3557,14 @@ static b8 agent_turn(Agent *ag, Str text) {
             tui_set_status("ready");
             snprintf(ending_buf, sizeof ending_buf, "%s", err);
             ending_text = str_c(ending_buf);
+            break;
+        }
+        /* Inside the busy window and before the tools this round asked for:
+         * the session is named from its first response, not from everything
+         * the turn grows into. */
+        if (name_session_now(ag)) {
+            announce_interrupt();
+            ending = NOTIFY_INTERRUPTED;
             break;
         }
         if (rc == 0) {
@@ -3573,12 +3610,6 @@ static b8 agent_turn(Agent *ag, Str text) {
             break;
         }
     }
-    /* Inside the busy window: naming a session belongs to the turn that
-     * earned the name, and a spinner that flicked to ready and back would
-     * read as two waits rather than one. */
-    if (ok && !g_one_shot && ag->cfg->auto_title && ag->cfg->small_model.n
-        && !ag->sess->title.n && !ag->sess->title_tried)
-        name_session(ag, false);
     tui_set_busy(false);
     tui_activity_end();
     session_save(ag->sess, conv);

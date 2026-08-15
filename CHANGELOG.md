@@ -4,6 +4,12 @@
 
 ### Changed
 
+- Name a session from its first response instead of at the end of the turn.
+  A build that runs tools for minutes was unnamed until it finished, and one
+  that was interrupted was never named at all. The naming now happens as soon
+  as the turn's first response is whole, from the user's message alone when
+  the model opened with tool calls, and a Ctrl-C during it stops the turn.
+
 - Measure glyph widths from an owned Unicode table instead of the C library's
   `wcwidth`, and decode UTF-8 without consulting the locale. A transcript of
   CJK, emoji or combining marks now frames identically whatever the C library

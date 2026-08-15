@@ -142,6 +142,57 @@ def test_a_reasoning_small_model_is_left_room_to_answer(ctx):
     assert session_files(ctx, ".title")[0].read_text() == "Cat memory notes"
 
 
+# The small model answers from a scenario of its own, carried in its name: the
+# server's belongs to the turn, and a naming request answered from it would
+# come back as another tool call rather than as a name.
+SMALL_NAMES_IT = "mock:text=Cat+memory+notes"
+
+
+def test_a_tool_first_turn_is_named_before_its_tools_run(ctx):
+    """The name comes from the first whole response, not from the turn.
+
+    A build that opens with a tool call and runs for minutes has said nothing
+    yet, and naming it only once every round is done leaves it unnamed for all
+    of them.
+    """
+    ctx.scenario('tool=bash:{"command":"sleep 2; echo slept"},'
+                 'final_text=all+done')
+    s = ctx.spawn(ARQAN_SMALL_MODEL=SMALL_NAMES_IT)
+    s.submit("remember the cat")
+    s.wait_text("session named: Cat memory notes")
+    # Still the same turn: its tool has not answered and its reply is unsaid.
+    assert "all done" not in s.text(), s.text()
+    assert session_files(ctx, ".title")[0].read_text() == "Cat memory notes"
+
+    s.wait_turn_done()
+    assert [r["model"] for r in ctx.mock.requests] == [
+        "mock-model", SMALL_NAMES_IT, "mock-model"
+    ], [r["model"] for r in ctx.mock.requests]
+    # The excerpt is the user's message alone: there is no reply to quote.
+    excerpt = ctx.mock.requests[1]["messages"][-1]["content"]
+    assert "remember the cat" in excerpt, excerpt
+    assert "Assistant:" not in excerpt, excerpt
+
+
+def test_an_interrupt_during_naming_ends_the_turn(ctx):
+    """Ctrl-C in the errand stops the turn it was run from.
+
+    The naming happens mid-turn now, so an interrupt it swallowed would leave
+    the work running with nothing on screen to say the key did anything.
+    """
+    ctx.scenario('tool=bash:{"command":"echo slept"},final_text=all+done')
+    s = ctx.spawn(ARQAN_SMALL_MODEL="mock:first_delay=5,text=Slow+name")
+    s.submit("remember the cat")
+    s.wait_activity("naming")
+    s.key("ctrl-c")
+    s.wait_text("[interrupted]")
+    s.wait_turn_done()
+
+    assert "slept" not in s.text(), s.text()
+    assert "all done" not in s.text(), s.text()
+    assert session_files(ctx, ".title") == [], session_files(ctx, ".title")
+
+
 def test_a_named_session_is_not_named_again(ctx):
     """One name per session: the second turn spends no request on it."""
     s = one_turn(ctx, ARQAN_SMALL_MODEL="mock-small")
