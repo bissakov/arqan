@@ -182,6 +182,8 @@ class Run:
         self.verbose = verbose
         self.results: list[CaseResult] = []
         self.started = time.monotonic()
+        # Case names a baseline comparison faulted, for a confirming re-run.
+        self.regressed: list[str] = []
 
     # ---- case lifecycle ---------------------------------------------------
     def begin(self, name: str, summary: str) -> CaseResult:
@@ -322,6 +324,8 @@ class Run:
                     )
                     if ratio > limit:
                         regressions.append((metric.worse, line))
+                        if result.name not in self.regressed:
+                            self.regressed.append(result.name)
                     elif ratio and ratio < 1.0 / limit:
                         improvements.append((metric.better, line))
 

@@ -40,6 +40,25 @@ excluded: those cases run one hostile operation once, and that single sample
 swings by half again between runs of identical code. Their memory is still
 judged.
 
+Arguments to the script reach both runs, so they must be options the
+reference's own `bench/run.py` understands. Set thresholds through the
+`TOLERANCE` and `MEM_TOLERANCE` environment variables instead: they reach only
+the run being judged, so a reference from before an option existed still
+serves as one.
+
+A step that runs its operation once carries a fat tail, so a single sample can
+clear any tolerance by itself. When a comparison faults, the guard measures
+the faulted cases again on both sides and reports only what repeats; a budget,
+a stress check or a throw fails immediately, being no matter of sampling. Over
+three runs of identical code no step above the floor moved by more than 1.35x,
+and the excursions past that are single samples of one turn.
+
+Per-change gating cannot see accumulation, since ten changes that each cost
+1.3x all pass and together cost thirteen. A weekly `Drift` job measures main
+against the newest release tag at 1.25x and 1.1x, where the tolerances cover a
+release rather than a change. Run it by hand from the Actions tab, or locally
+with `TOLERANCE=1.25 MEM_TOLERANCE=1.1 make bench-guard REF=v0.4.0`.
+
 Budgets and the gate answer different questions. A budget is loose enough to
 survive a slow machine, so a change that made grep 60% slower still passes
 every budget it has; the baseline comparison is what fails it.

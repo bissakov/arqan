@@ -96,7 +96,8 @@ def write_back(*paths: Path):
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("-k", "--filter", default="", help="substring match on case name")
+    ap.add_argument("-k", "--filter", default="",
+                    help="substring match on case name, comma-separated for several")
     ap.add_argument("--list", action="store_true", help="list cases and exit")
     ap.add_argument("--slow", action="store_true", help="also run the soak cases")
     ap.add_argument("--scale", type=float, default=1.0,
@@ -115,6 +116,8 @@ def main(argv=None) -> int:
                     help="cpu ratio above which a baseline comparison fails")
     ap.add_argument("--mem-tolerance", type=float, default=1.15,
                     help="memory ratio above which a baseline comparison fails")
+    ap.add_argument("--regressed", default="",
+                    help="write the cases a comparison faulted to this file")
     ap.add_argument("--keep", action="store_true", help="keep temp dirs of failures")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
@@ -122,7 +125,8 @@ def main(argv=None) -> int:
     c = Colours(sys.stdout.isatty() and not os.environ.get("NO_COLOR"))
     cases = load_cases()
     if args.filter:
-        cases = [(n, f) for n, f in cases if args.filter in n]
+        wanted = [p for p in args.filter.split(",") if p]
+        cases = [(n, f) for n, f in cases if any(p in n for p in wanted)]
     elif not args.slow:
         cases = [(n, f) for n, f in cases if not getattr(f, "slow", False)]
     if args.list:
@@ -190,6 +194,8 @@ def main(argv=None) -> int:
     if args.baseline:
         status |= run.compare(Path(args.baseline), args.tolerance,
                               args.mem_tolerance)
+        if args.regressed:
+            Path(args.regressed).write_text(",".join(run.regressed))
     return status
 
 

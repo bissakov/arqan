@@ -4,6 +4,6 @@ dist/
 .pi/
 __pycache__/
 bench-baseline.json
-bench-base.json
-bench-head.json
+bench-*.json
+bench-regressed.txt
 .bench-guard/
