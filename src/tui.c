@@ -875,6 +875,7 @@ enum {
     ROW_POPUP, ROW_WELCOME_ART, ROW_WELCOME_TEXT,
     ROW_HEADING, ROW_CODE, ROW_QUOTE,      // block: the row is theirs
     ROW_ZONE, ROW_ZONE_HOVER,              // block: a clickable row
+    ROW_SOURCE,                            // block: code outside a fence
     ROW_BOLD, ROW_EMPH, ROW_MONO, ROW_MARKER, ROW_STRIKE
 };
 
@@ -900,6 +901,9 @@ static const char *kind_style(u8 kind) {
         case ROW_ZONE:         return S_LINK;
         case ROW_ZONE_HOVER:   return S_POPUP_BG S_LINK_HOVER;
         case ROW_QUOTE:        return S_MUTED;
+        /* Code quoted inline in a block reads as text; the kind is what
+         * keeps a wrapped row of it out of the justifier. */
+        case ROW_SOURCE:       return S_TEXT;
         case ROW_BOLD:         return S_BOLD S_TEXT;
         case ROW_EMPH:         return S_ITALIC S_MUTED;
         case ROW_MONO:         return S_MONO;
@@ -3791,6 +3795,7 @@ void tui_write_styled(Str s, TuiStyle st) {
 
 void tui_write_muted(Str s)  { write_span(s, ROW_REASON); }
 void tui_write_text(Str s)   { write_span(s, ROW_PLAIN); }
+void tui_write_source(Str s) { write_span(s, ROW_SOURCE); }
 void tui_write_tool(Str s)   { write_span(s, ROW_TOOL); }
 void tui_write_result(Str s) { write_span(s, ROW_RESULT); }
 void tui_write_error(Str s)  { write_span(s, ROW_ERROR); }

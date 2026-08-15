@@ -215,7 +215,7 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
         Str shown = clip(target, R_TARGET_BYTES);
         size_t at = tui_transcript_pos();
         if (source_code && cmd.n) {
-            tui_write_text(shown);
+            tui_write_source(shown);
             add_line_syntax(&syntax, syntax_source, 0, shown, at);
         } else {
             tui_write_tool(shown);
@@ -272,7 +272,7 @@ void render_shell_call(Str cmd, u32 id, b8 expanded) {
     Str shown = clip(first, R_TARGET_BYTES);
     size_t at = tui_transcript_pos();
     if (cmd.n) {
-        tui_write_text(shown);
+        tui_write_source(shown);
         add_line_syntax(&syntax, cmd, 0, shown, at);
     } else {
         tui_write_tool(shown);
@@ -406,7 +406,7 @@ static void write_patch_lines(Str patch, Str source, const YhlResult *hl,
             Str fragment = str_drop(head, 1);
             if (fragment.n) {
                 size_t at = tui_transcript_pos();
-                tui_write_text(fragment);
+                tui_write_source(fragment);
                 add_line_syntax(hl, source, source_off, fragment, at);
             }
             source_off += full_fragment.n + 1;
@@ -416,7 +416,7 @@ static void write_patch_lines(Str patch, Str source, const YhlResult *hl,
         } else {
             tui_write_muted(head);
         }
-        if (head.n < line.n) tui_write_text(STR(" ..."));
+        if (head.n < line.n) tui_write_source(STR(" ..."));
         tui_write(STR("\n"));
         shown++;
     }
@@ -512,7 +512,7 @@ static void write_syntax_lines(Str body, Str source, b8 grep,
                 Str fragment = str_drop(head, prefix_n);
                 if (fragment.n && prefix_n == full_prefix.n) {
                     size_t at = tui_transcript_pos();
-                    tui_write_text(fragment);
+                    tui_write_source(fragment);
                     add_line_syntax(hl, source, source_off, fragment, at);
                 }
                 source_off += full_fragment.n + 1;
@@ -521,7 +521,7 @@ static void write_syntax_lines(Str body, Str source, b8 grep,
             }
         } else {
             size_t at = tui_transcript_pos();
-            tui_write_text(head);
+            tui_write_source(head);
             add_line_syntax(hl, source, (size_t)(line.p - source.p), head, at);
         }
         if (head.n < line.n) tui_write(STR(" ..."));

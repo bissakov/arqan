@@ -123,6 +123,25 @@ def test_a_tool_result_is_not_justified(ctx):
     assert after == before, (before, after)
 
 
+def test_a_wrapped_command_is_not_justified(ctx):
+    """A command header long enough to wrap is code, not prose."""
+    args = json.dumps({"command": "echo " + " ".join(WORDS) + " #done"})
+    ctx.scenario(f"tool=bash:{args},final_text=ran+it")
+    s = ctx.spawn()
+    s.submit("run echo")
+    s.wait_text("ran it")
+    s.wait_turn_done()
+    before = [r for r in s.text().splitlines() if "w0" in r or "w1" in r]
+    assert len(before) > 2, s.text()
+    s.settings_act("Text wrap")
+    s.wait_for(lambda t: s.settings_option("Text wrap") == "Justified",
+               "justified wrapping")
+    s.key("esc")
+    s.wait_gone("Text wrap")
+    after = [r for r in s.text().splitlines() if "w0" in r or "w1" in r]
+    assert after == before, (before, after)
+
+
 def test_a_short_last_row_is_left_alone(ctx):
     """A row its author ended is as long as it was meant to be."""
     ctx.scenario("text=short+line\\nand+another")

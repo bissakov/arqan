@@ -1665,6 +1665,10 @@ void tui_block(void);
 void tui_write(Str s);
 // Explicit normal foreground inside a row owned by a surrounding style.
 void tui_write_text(Str s);
+/* Like tui_write_text, for bytes a highlighter marks up: a command, file
+ * content or a diff. It paints as normal text and is never justified, since
+ * widening the gaps of code would move columns its reader lines up. */
+void tui_write_source(Str s);
 /* The styles a tool block and a thinking trace are built from: muted for
  * quoted input, output and reasoning, yellow for a call's header, green for a
  * result, red for a failure. Style is a recorded byte range, so a write that

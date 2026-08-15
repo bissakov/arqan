@@ -28,6 +28,11 @@
 
 ### Fixed
 
+- Keep a wrapped command out of the justifier. With justified wrapping on, a
+  command, file content or diff that ran past one row had the gaps of its
+  wrapped rows widened like prose, which moved the columns of the code under
+  it. Those rows now keep the spacing they were written with.
+
 - Keep a session through a power loss. Each save now reaches the disk before
   the call returns, instead of sitting in the page cache behind whatever the
   next tool does, and the directory entry of a new session file is persisted
