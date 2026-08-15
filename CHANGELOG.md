@@ -12,26 +12,28 @@
   archive runs on a musl distribution, on a glibc older than the packages
   ask for, and in a container with no libcurl installed. The `.deb` and
   `.rpm` still link the distribution's libc and libcurl and are the better
-  choice where they install.
+  choice where they install. ([`6566f35`])
 
 - Give a picker the room the terminal has. A modal list - the question the
   agent asks, `/model`, `/resume`, the settings screen - now grows to about
   two thirds of the body instead of the eight rows the composer's completion
   popup uses, and a question too long for one row wraps over as many as four
   rather than being cut. A page of answers is read at once where before every
-  question past the third had to be scrolled through.
+  question past the third had to be scrolled through. ([`686df1a`])
 
 - Name a session from its first response instead of at the end of the turn.
   A build that runs tools for minutes was unnamed until it finished, and one
   that was interrupted was never named at all. The naming now happens as soon
   as the turn's first response is whole, from the user's message alone when
   the model opened with tool calls, and a Ctrl-C during it stops the turn.
+  ([`614b416`])
 
 - Measure glyph widths from an owned Unicode table instead of the C library's
   `wcwidth`, and decode UTF-8 without consulting the locale. A transcript of
   CJK, emoji or combining marks now frames identically whatever the C library
   and its Unicode version are, and under `LC_ALL=C` as under a UTF-8 locale,
   where before every byte of a wide glyph took a column of its own.
+  ([`54cd5f7`])
 
 ### Fixed
 
@@ -45,11 +47,12 @@
   and a resolved store answers for both of libcurl's options rather than
   leaving the other at a build-time path: libcurl loads the bundle and the
   hashed directory into one trust store, so either one naming somewhere
-  absent failed the handshake on its own.
+  absent failed the handshake on its own. ([`54cd5f7`])
 
 - Leave a reasoning small model room to answer when it names a session. The
   naming request was capped at a line's worth of tokens, which a model that
   thinks first spent entirely on reasoning, so the session was never named.
+  ([`8b6777b`])
 
 ## [0.3.0] - 2026-08-14
 
@@ -152,6 +155,11 @@
 [0.2.0]: https://github.com/bissakov/arqan/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bissakov/arqan/releases/tag/v0.1.0
 
+[`6566f35`]: https://github.com/bissakov/arqan/commit/6566f35f11a17baf50ded550c68ec1a684852ae4
+[`686df1a`]: https://github.com/bissakov/arqan/commit/686df1ab7cdc072c8fd229b66d30f46f80b6110b
+[`614b416`]: https://github.com/bissakov/arqan/commit/614b41641aa115e89fb2dd47f0804798584fba72
+[`54cd5f7`]: https://github.com/bissakov/arqan/commit/54cd5f78c07c91520b6293a9d97b4d03c8d84f5b
+[`8b6777b`]: https://github.com/bissakov/arqan/commit/8b6777b4ccb4bfa30451adc908edebc241e2641d
 [`73fa08d`]: https://github.com/bissakov/arqan/commit/73fa08d9b39c18378ccfef3af0617390a26636f6
 [`0d187c3`]: https://github.com/bissakov/arqan/commit/0d187c32dc098d11f6b7c13f55c8e6053691ed3a
 [`e98fc9a`]: https://github.com/bissakov/arqan/commit/e98fc9a60dca8eca563f4579cb32d59ef038a637
