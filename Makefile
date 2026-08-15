@@ -77,6 +77,7 @@ PYTHON  ?= python3
         clean-fil fil test-fil clean-static static test-static \
         clean-el9 el9 test-el9 \
         bench bench-slow bench-baseline \
+        bench-guard \
         package-linux test-package-linux release-linux
 
 all: $(BIN) $(HL_BIN)
@@ -227,6 +228,13 @@ bench-slow: all
 # Record a baseline, then `make bench B="--baseline bench-baseline.json"`.
 bench-baseline: all
 	$(PYTHON) -m bench.run --slow --json bench-baseline.json $(B)
+
+# The regression gate: build and measure REF, then this tree, on one machine.
+# REF defaults to HEAD, so an uncommitted change is judged against the commit
+# it sits on. CI passes the base of the branch instead.
+REF ?= HEAD
+bench-guard:
+	./scripts/bench-guard.sh $(REF) $(B)
 
 # The native packages take the glibc binaries from bin/; the portable archive
 # takes the relocatable ones from bin/musl, which scripts/build-musl.sh

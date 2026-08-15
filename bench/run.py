@@ -15,7 +15,7 @@ instead. Everything else (isolation, the mock provider, the pty) is the test
 harness, so a case is an ordinary session with a probe attached.
 
 Exit status is non-zero when a case blew a budget, failed a stress assertion,
-threw, or regressed past `--tolerance` against a baseline.
+threw, or regressed past `--tolerance` or `--mem-tolerance` against a baseline.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ if str(ROOT) not in sys.path:
 from bench.case import Bench, Options, Skip  # noqa: E402
 from bench.metrics import have_proc  # noqa: E402
 from bench.report import Colours, Run  # noqa: E402
-from tests.context import BIN, Ctx  # noqa: E402
+from tests.context import BIN, HIGHLIGHT_BIN, Ctx  # noqa: E402
 
 CASES_DIR = HERE / "cases"
 
@@ -72,6 +72,28 @@ def unmet(fn) -> str:
     return ""
 
 
+def write_back(*paths: Path):
+    """Flush the binaries to disk before anything measures them.
+
+    smaps reports a file page as private dirty while the page cache still
+    holds it dirty, so a binary mapped minutes after it was linked charges
+    its own text to the process: about 0.8 MB of phantom memory, and only
+    for whichever side of a comparison was built last. Fsync makes a fresh
+    build and an old one measure alike.
+    """
+    for path in paths:
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except OSError:
+            continue
+        try:
+            os.fsync(fd)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("-k", "--filter", default="", help="substring match on case name")
@@ -90,7 +112,9 @@ def main(argv=None) -> int:
     ap.add_argument("--baseline", default="",
                     help="compare cpu per operation against an earlier --json")
     ap.add_argument("--tolerance", type=float, default=1.4,
-                    help="ratio above which a baseline comparison fails")
+                    help="cpu ratio above which a baseline comparison fails")
+    ap.add_argument("--mem-tolerance", type=float, default=1.15,
+                    help="memory ratio above which a baseline comparison fails")
     ap.add_argument("--keep", action="store_true", help="keep temp dirs of failures")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
@@ -114,6 +138,8 @@ def main(argv=None) -> int:
         return 2
     if not have_proc():
         print(c.yellow("no /proc: process cost cannot be measured here"))
+
+    write_back(BIN, HIGHLIGHT_BIN)
 
     opts = Options(
         scale=args.scale,
@@ -162,7 +188,8 @@ def main(argv=None) -> int:
         })
         print(c.dim(f"report written to {path}"))
     if args.baseline:
-        status |= run.compare(Path(args.baseline), args.tolerance)
+        status |= run.compare(Path(args.baseline), args.tolerance,
+                              args.mem_tolerance)
     return status
 
 

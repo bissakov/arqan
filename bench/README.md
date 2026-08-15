@@ -10,13 +10,39 @@ make bench-slow                         # including the soak cases
 make bench B="-k transcript -v"         # matching cases, verbose
 make bench-baseline                     # write bench-baseline.json
 make bench B="--baseline bench-baseline.json"
+make bench-guard                        # this tree against the commit under it
+make bench-guard REF=origin/main B=-k\ tools
 python3 -m bench.run --list
 python3 -m bench.run --scale 0.25       # smoke-sized workloads
 python3 -m bench.run --no-budgets       # measure without failing on budgets
 ```
 
 Exit status is non-zero when a case blew a budget, failed a stress check,
-threw, or regressed past `--tolerance` against a baseline.
+threw, or regressed past `--tolerance` or `--mem-tolerance` against a
+baseline.
+
+## The regression gate
+
+`scripts/bench-guard.sh` is what CI runs on every pull request. It builds and
+measures a reference commit in a worktree, then measures this tree against it
+as a baseline, because a checked-in baseline would describe the machine that
+recorded it rather than the change under test. The reference is built beside
+the repository and never in `TMPDIR`, and both binaries are flushed to disk
+before they are measured: `smaps` counts a file page as private dirty while
+the page cache still holds it dirty, so a binary mapped moments after it was
+linked charges about 0.8 MB of its own text to the process.
+
+A comparison judges three figures per step, matched by case, label and
+position: CPU per operation at `--tolerance` (1.4), and private dirty memory
+and per-step growth at `--mem-tolerance` (1.15), memory being counted rather
+than sampled. Figures below a floor are left alone, and `stress.*` cost is
+excluded: those cases run one hostile operation once, and that single sample
+swings by half again between runs of identical code. Their memory is still
+judged.
+
+Budgets and the gate answer different questions. A budget is loose enough to
+survive a slow machine, so a change that made grep 60% slower still passes
+every budget it has; the baseline comparison is what fails it.
 
 ## What is measured
 

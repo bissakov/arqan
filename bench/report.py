@@ -112,6 +112,46 @@ class Row:
         return out
 
 
+@dataclass(frozen=True)
+class Metric:
+    """One figure a baseline comparison judges.
+
+    `floor` is the absolute value below which a step is left alone: the
+    difference between 0.1 ms and 0.2 ms is the machine, not the code.
+    """
+
+    key: str
+    attr: str
+    floor: float
+    timed: bool
+    worse: str
+    better: str
+
+    def of_row(self, row: "Row") -> float:
+        return float(getattr(row, self.attr))
+
+    def of_dict(self, row: dict) -> float:
+        return float(row.get(self.key, 0.0))
+
+    def fmt(self, value: float, row: "Row") -> str:
+        if self.timed:
+            return f"{value:.2f} ms/{row.unit}"
+        return human_kb(int(value))
+
+
+METRICS = (
+    Metric("cpu_per_unit_ms", "cpu_per_unit", 0.5, True, "SLOWER", "faster"),
+    Metric("priv_kb", "priv_kb", 1024, False, "HEAVIER", "lighter"),
+    Metric("growth_kb", "growth_kb", 512, False, "GROWS", "holds"),
+)
+
+# A stress case runs its one hostile operation once and asserts that the
+# process survived it. Measured against itself that single sample swings by
+# half again, so its cost is judged by a budget and never by a baseline;
+# its memory, which does not swing, still is.
+UNTIMED_GROUPS = ("stress.",)
+
+
 @dataclass
 class CaseResult:
     name: str
@@ -228,53 +268,71 @@ class Run:
         path.write_text(json.dumps(payload, indent=2) + "\n")
 
     # ---- baselines --------------------------------------------------------
-    def compare(self, baseline: Path, tolerance: float) -> int:
-        """Report rows whose CPU per operation grew past `tolerance`.
+    def compare(self, baseline: Path, tolerance: float,
+                mem_tolerance: float = 1.15) -> int:
+        """Report rows that grew past a tolerance against an earlier report.
 
-        Rows are matched by case and label, so renaming a step drops it from
-        the comparison rather than reporting a phantom regression.
+        CPU per operation is judged at `tolerance`, private dirty memory and
+        per-step growth at the tighter `mem_tolerance`: pages are counted, not
+        sampled, so they carry far less noise than a shared machine's clock.
+        Rows are matched by case, label and position among the steps that
+        share that label, so renaming or reordering a step drops it from the
+        comparison rather than reporting a phantom regression.
         """
         try:
             old = json.loads(baseline.read_text())
         except (OSError, ValueError) as exc:
             print(self.c.red(f"cannot read baseline {baseline}: {exc}"))
             return 1
-        previous: dict[tuple[str, str], float] = {}
+        previous: dict[tuple[str, str, int], dict] = {}
+        seen: dict[tuple[str, str], int] = {}
         for case in old.get("cases", []):
             for row in case.get("rows", []):
                 key = (case.get("name", ""), row.get("label", ""))
-                previous[key] = float(row.get("cpu_per_unit_ms", 0.0))
+                nth = seen.get(key, 0)
+                seen[key] = nth + 1
+                previous[(*key, nth)] = row
 
         regressions, improvements, missing = [], [], 0
+        seen.clear()
         for result in self.results:
             for row in result.rows:
-                was = previous.get((result.name, row.label))
-                if was is None:
+                key = (result.name, row.label)
+                nth = seen.get(key, 0)
+                seen[key] = nth + 1
+                before = previous.get((*key, nth))
+                if before is None:
                     missing += 1
                     continue
-                now = row.cpu_per_unit
-                # A sub-millisecond step is noise on any machine; only compare
-                # steps whose absolute cost is worth arguing about.
-                if was < 0.5 and now < 0.5:
-                    continue
-                ratio = now / was if was > 0 else 0.0
-                if ratio > tolerance:
-                    regressions.append(
+                for metric in METRICS:
+                    if metric.timed and result.name.startswith(UNTIMED_GROUPS):
+                        continue
+                    was = metric.of_dict(before)
+                    now = metric.of_row(row)
+                    # Below the floor a step is noise on any machine; only
+                    # compare figures worth arguing about.
+                    if was < metric.floor and now < metric.floor:
+                        continue
+                    ratio = now / was if was > 0 else 0.0
+                    limit = tolerance if metric.timed else mem_tolerance
+                    line = (
                         f"{result.name} / {row.label}: "
-                        f"{was:.2f} -> {now:.2f} ms/{row.unit} (x{ratio:.2f})"
+                        f"{metric.fmt(was, row)} -> {metric.fmt(now, row)}"
+                        f" (x{ratio:.2f})"
                     )
-                elif ratio and ratio < 1.0 / tolerance:
-                    improvements.append(
-                        f"{result.name} / {row.label}: "
-                        f"{was:.2f} -> {now:.2f} ms/{row.unit} (x{ratio:.2f})"
-                    )
+                    if ratio > limit:
+                        regressions.append((metric.worse, line))
+                    elif ratio and ratio < 1.0 / limit:
+                        improvements.append((metric.better, line))
 
         print()
-        print(self.c.bold(f"baseline {baseline} (tolerance x{tolerance:g})"))
-        for line in improvements:
-            print(self.c.green(f"  faster  {line}"))
-        for line in regressions:
-            print(self.c.red(f"  SLOWER  {line}"))
+        print(self.c.bold(
+            f"baseline {baseline} (cpu x{tolerance:g}, memory x{mem_tolerance:g})"
+        ))
+        for word, line in improvements:
+            print(self.c.green(f"  {word:<7} {line}"))
+        for word, line in regressions:
+            print(self.c.red(f"  {word:<7} {line}"))
         if missing:
             print(self.c.dim(f"  {missing} step(s) absent from the baseline"))
         if not regressions:
