@@ -74,8 +74,11 @@ def test_long_line_is_drained_per_run_not_per_byte(ctx):
     if not Path("/proc/self/stat").exists():
         return
     words = 150000
-    ctx.scenario(Scenario(text=long_line(words), chunk=500))
-    s = ctx.spawn()
+    text = long_line(words)
+    ctx.scenario(Scenario(text=text, chunk=500))
+    # The provider spends the request's max_tokens at four characters to the
+    # token, so the default cap would end this reply a tenth of the way in.
+    s = ctx.spawn(ARQAN_MAX_TOKENS=str(len(text) // 2))
     pid = s.proc.pid
     before = cpu_seconds(pid)
     s.submit("go")
