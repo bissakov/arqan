@@ -95,7 +95,7 @@ def test_sigwinch_during_a_turn_is_handled(ctx):
     ctx.scenario("words=40,chunk=2,delay=0.05")
     s = ctx.spawn()
     s.submit("keep talking")
-    s.wait_activity("thinking")
+    s.wait_turn_underway()
     s.resize(64, 20)
     s.wait_turn_done()
     assert s.screen.cols == 64

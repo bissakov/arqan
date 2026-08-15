@@ -260,6 +260,20 @@ class Session:
             timeout,
         )
 
+    def wait_turn_underway(self, timeout: float = 10.0):
+        """Wait for a turn to be running, in whichever phase it has reached.
+
+        'thinking' is only the phase before the first delta, so a provider
+        that answers at once is through it before anyone looks; waiting for
+        it by name is a race that a loaded machine loses. A caller that wants
+        a turn in flight wants either phase.
+        """
+        return self.wait_for(
+            lambda t: self.activity_label() in ("thinking", "responding"),
+            f"a running turn (now {self.activity_label()!r})",
+            timeout,
+        )
+
     def wait_status(self, status: str, timeout: float = 10.0):
         return self.wait_for(
             lambda t: self.status_kind() == status,

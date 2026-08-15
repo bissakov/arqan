@@ -5387,12 +5387,17 @@ static b8 ask_impl(Str question, b8 secret, char *out, size_t cap,
     size_t saved_notice_n = g_tui.notice_n;
     size_t saved_comp_n = g_tui.comp_n;
     b8 saved_editing = g_tui.editing;
+    char saved_status[sizeof g_tui.status];
     memcpy(saved_input, g_bulk.input, saved_n);
     memcpy(saved_notice, g_tui.notice, sizeof saved_notice);
+    memcpy(saved_status, g_tui.status, sizeof saved_status);
 
     g_tui.ask = true;
     g_tui.ask_secret = secret;
     g_tui.editing = true;
+    /* Waiting on the user is not work, whatever the caller was doing when it
+     * stopped to ask. */
+    memcpy(g_tui.status, "ready", sizeof "ready");
     if (initial_n) memcpy(g_bulk.input, out, initial_n);
     g_tui.input_n = initial_n;
     g_tui.input_cur = initial_n;
@@ -5446,6 +5451,10 @@ static b8 ask_impl(Str question, b8 secret, char *out, size_t cap,
     g_tui.ask = false;
     g_tui.ask_secret = false;
     g_tui.editing = saved_editing;
+    /* Answering a prompt is not work: the status the ask interrupted is the
+     * one the caller is still in, and submitting a field must not leave the
+     * form looking busy while it waits for the next. */
+    memcpy(g_tui.status, saved_status, sizeof g_tui.status);
     memcpy(g_bulk.input, saved_input, saved_n);
     g_tui.input_n = saved_n;
     g_tui.input_cur = saved_cur;
@@ -6164,7 +6173,14 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
             if (g_tui.hist) history_add(g_tui.hist, (Str){buf, n});
             composer_clear();
             *out_n = n;
-            repaint();
+            /* A message is handed to the caller and comes back as a turn, so
+             * this frame must not still read ready: an emptied composer under
+             * an idle status is a message that went nowhere, and it is the
+             * one frame at which a starting turn looks like a finished one.
+             * A command is answered where it stands and a blank line is no
+             * submission, so neither claims work the caller is not doing. */
+            if (n && buf[0] != '/') tui_set_status("working"); // repaints
+            else repaint();
             return true;
         }
         /* With more bytes already queued, painting the intermediate state
