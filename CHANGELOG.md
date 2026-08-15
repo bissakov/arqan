@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Paint every frame inside a synchronized update. Terminals that support
+  DEC mode 2026 (kitty, WezTerm, Ghostty, foot, recent tmux) now hold the
+  display until the frame is complete, so a repaint that leaves the process
+  in several writes - a fast stream, a slow pipe, an ssh link - is shown
+  whole rather than half drawn. Terminals without the mode ignore it.
+
 ### Fixed
 
 - Stop the `libcurl.so.4: no version information available` warning the rpm

@@ -41,6 +41,22 @@ QUIET = max(0.06, float(os.environ.get("ARQAN_TEST_QUIET") or 0))
 # a preexec_fn runs the interpreter in a forked, threaded child.
 SETSID = shutil.which("setsid")
 
+# Synchronized output, which `arqan` wraps every frame in. A pty read lands
+# wherever the child happened to be writing, so the bytes of an unfinished
+# frame are held back and the emulator only ever holds a painted screen: an
+# assertion taken straight after a wait sees the frame before or the frame
+# after, never a row half repainted.
+BSU = b"\033[?2026h"
+ESU = b"\033[?2026l"
+
+
+def _split_marker(buf: bytes) -> int:
+    """Length of the trailing marker prefix a read stopped in the middle of."""
+    for k in range(min(len(buf), len(BSU) - 1), 0, -1):
+        if bytes(buf[-k:]) == BSU[:k]:
+            return k
+    return 0
+
 
 class TimeoutError_(AssertionError):
     """Raised as an assertion so the runner reports it as a test failure."""
@@ -66,6 +82,7 @@ class Session:
         self.quiet = max(quiet, QUIET)
         self.term = Terminal(cols, rows)
         self.raw = bytearray()
+        self._held = bytearray()
         self.proc: subprocess.Popen | None = None
         self.master = -1
         self._eof = False
@@ -101,6 +118,27 @@ class Session:
         self.close()
 
     # ---- output -----------------------------------------------------------
+    def feed(self, data: bytes, flush: bool = False):
+        """Give the emulator whole frames, keeping an unfinished tail back.
+
+        With `flush` the held bytes go through as they are, which is what the
+        end of the process and a failure dump need: nothing more is coming to
+        close the frame.
+        """
+        self._held += data
+        cut = len(self._held)
+        if not flush:
+            opened = self._held.rfind(BSU)
+            if opened > self._held.rfind(ESU):
+                cut = opened
+            else:
+                cut -= _split_marker(self._held)
+        if cut <= 0:
+            return
+        chunk = bytes(self._held[:cut])
+        del self._held[:cut]
+        self.term.feed(chunk)
+
     def _read_once(self, timeout: float) -> bytes:
         if self.master < 0 or self._eof:
             return b""
@@ -108,6 +146,7 @@ class Session:
             r, _, _ = select.select([self.master], [], [], timeout)
         except (OSError, ValueError):
             self._eof = True
+            self.feed(b"", flush=True)
             return b""
         if not r:
             return b""
@@ -117,13 +156,15 @@ class Session:
             # Linux reports the child's exit on a pty master as EIO.
             if e.errno in (errno.EIO, errno.EBADF):
                 self._eof = True
+                self.feed(b"", flush=True)
                 return b""
             raise
         if not data:
             self._eof = True
+            self.feed(b"", flush=True)
             return b""
         self.raw += data
-        self.term.feed(data)
+        self.feed(data)
         return data
 
     def pump(self, timeout: float = 0.02) -> bytes:
@@ -152,7 +193,9 @@ class Session:
                 seen = True
                 last = now
                 continue
-            if seen and now - last >= quiet:
+            # A frame still being written is not a quiet screen, however long
+            # the child pauses in the middle of it.
+            if seen and not self._held and now - last >= quiet:
                 return self
             if self._eof:
                 return self
@@ -474,6 +517,8 @@ class Session:
         return self.term.snapshot(label)
 
     def debug_dump(self) -> str:
+        # A failure is the one place a half-painted frame is worth seeing.
+        self.feed(b"", flush=True)
         return (
             "----- screen -----\n"
             + self.term.snapshot()

@@ -389,6 +389,17 @@ static void put_raw(const char *s, size_t n) {
 static void put_str(const char *s) { put_raw(s, strlen(s)); }
 static void style(const char *s) { if (g_tui.color) put_str(s); }
 
+/* Synchronized output (DEC private mode 2026): the terminal holds the display
+ * between these two marks and shows the finished frame, so a frame split over
+ * several writes (a full buffer, a slow pipe) is never seen half-painted.
+ * Terminals without the mode ignore it, as does anything reading the stream. */
+static void frame_begin(void) { put_str("\033[?2026h"); }
+
+static void frame_end(void) {
+    put_str("\033[?2026l");
+    flush_out();
+}
+
 static void snap_seek(size_t row, size_t col);
 static void put_text(const char *s, size_t n);
 static void nl_commit(void);
@@ -2630,6 +2641,7 @@ static void repaint(void) {
                  || paint_cols != g_tui.painted_cols;
         memset(g_tui.row_src, 0xff, sizeof g_tui.row_src);
         g_winch = 0;
+        frame_begin();
         if (force) {
             sel_clear();
             put_str("\033[?25l\033[H\033[2J");
@@ -2645,7 +2657,7 @@ static void repaint(void) {
         g_tui.painted_cols = paint_cols;
         g_tui.frame_valid = true;
         g_tui.size_warning = true;
-        flush_out();
+        frame_end();
         return;
     }
     /* The count the box shows is carried over the bytes appended since the
@@ -2664,6 +2676,7 @@ static void repaint(void) {
      * rebuilt rather than aged. */
     memset(g_tui.row_src, 0xff, sizeof g_tui.row_src);
     g_winch = 0;
+    frame_begin();
     if (force) {
         sel_clear();
         put_str("\033[?25l\033[H\033[2J");
@@ -3001,7 +3014,7 @@ static void repaint(void) {
     g_tui.painted_cols = cols;
     g_tui.frame_valid = true;
     g_tui.size_warning = false;
-    flush_out();
+    frame_end();
 }
 
 /* Log lines become transcript notices while the alternate screen is up, so a

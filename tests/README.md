@@ -59,6 +59,13 @@ content, and `s.wait_turn_done()` waits for the agent loop to become idle.
 `ctx.check_screen(s)` creates or compares `golden/<case>.txt`; inspect its
 diff before accepting an intentional update.
 
+A read of the pty lands wherever the child happens to be writing, so the
+harness feeds the emulator whole frames only: `arqan` wraps each repaint in
+synchronized output and the bytes of an unfinished frame are held back until
+its closing mark arrives. The screen a case inspects is therefore always one
+the terminal finished painting, and a bare assertion after a wait reads a
+settled row rather than a half-written one.
+
 ## Mock scenarios
 
 `ctx.scenario()` controls the next completion. Common options:
