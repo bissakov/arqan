@@ -1,0 +1,64 @@
+name: Drift
+
+# Per-change gating cannot see accumulation: ten commits that each cost 1.3x
+# all pass, and together they cost thirteen. This measures main against the
+# newest release tag, where the tolerances are for a whole release and not for
+# one change.
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: reference tag or commit (default: newest release tag)
+        required: false
+        default: ''
+
+concurrency:
+  group: drift
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  anchor:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source and tags
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libcurl4-openssl-dev
+      - name: Resolve the anchor
+        id: anchor
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="${{ inputs.ref }}"
+          if [ -z "$ref" ]; then
+            ref=$(git tag -l 'v*' --sort=-v:refname | head -n1)
+          fi
+          if [ -z "$ref" ]; then
+            echo "no release tag to measure against" >&2
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "measuring against $ref ($(git rev-list --count "$ref"..HEAD) commits)"
+      - name: Measure the anchor and main
+        env:
+          TOLERANCE: '1.25'
+          MEM_TOLERANCE: '1.1'
+        run: scripts/bench-guard.sh ${{ steps.anchor.outputs.ref }}
+      - name: Retain both reports
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: drift-${{ github.run_id }}
+          path: |
+            bench-base.json
+            bench-head.json
+          if-no-files-found: warn
