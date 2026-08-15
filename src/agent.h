@@ -197,6 +197,16 @@ b8      str_line(Str s, size_t *off, Str *line);
 size_t  str_lines(Str s);
 // At most `max` bytes of `s`, never cutting a UTF-8 sequence in half.
 Str     str_clip_utf8(Str s, size_t max);
+/* Decode one UTF-8 sequence from `s`, writing the code point to `*cp` and
+ * returning its length in bytes. 0 when the bytes are not a well formed
+ * sequence, leaving `*cp` untouched: the caller decides what to do with
+ * input it did not produce. */
+size_t  utf8_decode(const char *s, size_t n, u32 *cp);
+/* Terminal columns for one code point: 0 for a control or a combining mark,
+ * 2 for East Asian Wide and Fullwidth, 1 for the rest. From this program's
+ * own Unicode table, so a frame does not depend on the C library's version
+ * of it. See scripts/gen-width.py. */
+i32     agent_width(u32 cp);
 i64    str_int(Str s, b8 *ok);
 /* FNV-1a: enough to tell two strings apart across runs, not enough to name
  * either, which is what a session slug and a telemetry field need. */
@@ -940,6 +950,14 @@ typedef struct {
  * Redirects share the protocol, credential and socket-address restrictions.
  * Returns the same status classes as http_post. */
 i32     http_url_get(HttpUrlReq *r);
+
+#ifdef AGENT_TESTING
+/* Print the resolved TLS trust store as "ca-file:" and "ca-dir:" lines, "-"
+ * for an option left to libcurl. Resolves it on the first call, as a request
+ * would. The testing build only: the suite has no TLS server to infer it
+ * from. */
+void    http_print_ca_trust(void);
+#endif
 
 /* ---- spilled tool output -------------------------------------------------
  * The full output of a tool whose result is a page, written to

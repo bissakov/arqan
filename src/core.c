@@ -102,6 +102,36 @@ Str str_clip_utf8(Str s, size_t max) {
     while (n && ((u8)s.p[n] & 0xc0) == 0x80) n--;
     return (Str){ s.p, n };
 }
+
+/* One code point, or 0 for anything that is not a well formed sequence:
+ * truncated, overlong, a surrogate, or past U+10FFFF. Callers that render
+ * bytes they did not produce need the malformed case to be a decision rather
+ * than a decoded value, so `*cp` is only written on success. */
+size_t utf8_decode(const char *s, size_t n, u32 *cp) {
+    if (n == 0) return 0;
+    u8 c = (u8)s[0];
+    size_t len;
+    u32 v;
+    if (c < 0x80u)              { *cp = c; return 1; }
+    else if ((c & 0xE0u) == 0xC0u) { len = 2; v = c & 0x1Fu; }
+    else if ((c & 0xF0u) == 0xE0u) { len = 3; v = c & 0x0Fu; }
+    else if ((c & 0xF8u) == 0xF0u) { len = 4; v = c & 0x07u; }
+    else return 0;              // a continuation byte or an invalid lead
+    if (n < len) return 0;
+    for (size_t i = 1; i < len; i++) {
+        u8 t = (u8)s[i];
+        if ((t & 0xC0u) != 0x80u) return 0;
+        v = (v << 6) | (t & 0x3Fu);
+    }
+    /* An overlong sequence encodes a code point that has a shorter form, and
+     * accepting one lets the same text compare unequal to itself. */
+    static const u32 min[5] = {0, 0, 0x80u, 0x800u, 0x10000u};
+    if (v < min[len]) return 0;
+    if (v > 0x10FFFFu || (v >= 0xD800u && v <= 0xDFFFu)) return 0;
+    *cp = v;
+    return len;
+}
+
 Str str_drop(Str s, size_t n) { return n >= s.n ? (Str){0} : (Str){ s.p+n, s.n-n }; }
 
 i64 str_int(Str s, b8 *ok) {

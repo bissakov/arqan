@@ -2,7 +2,22 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Measure glyph widths from an owned Unicode table instead of the C library's
+  `wcwidth`, and decode UTF-8 without consulting the locale. A transcript of
+  CJK, emoji or combining marks now frames identically whatever the C library
+  and its Unicode version are, and under `LC_ALL=C` as under a UTF-8 locale,
+  where before every byte of a wide glyph took a column of its own.
+
 ### Fixed
+
+- Find the TLS trust store at run time. libcurl's CA location is chosen when
+  libcurl is built, so a binary that runs somewhere else - a container, a
+  relocated build - could fail every HTTPS request with a verification error.
+  `CURL_CA_BUNDLE`, `SSL_CERT_FILE` and `SSL_CERT_DIR` are honoured first, a
+  working built-in default is left alone, and otherwise the usual
+  distribution locations are searched.
 
 - Leave a reasoning small model room to answer when it names a session. The
   naming request was capped at a line's worth of tokens, which a model that

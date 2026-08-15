@@ -5,6 +5,7 @@
 #include "agent.h"
 
 #include "core.c"
+#include "width.c"
 #include "json.c"
 #include "http.c"
 #include "web.c"

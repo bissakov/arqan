@@ -67,6 +67,14 @@ static b8 cli_value(CliArg *a, Str *out) {
  * option printed something the caller should exit on. */
 static b8 cli_option(CliArg *a, char c, const char *lng, b8 *done) {
     CliOpts *o = a->o;
+#ifdef AGENT_TESTING
+    /* Not part of OPT: a short name of '\0' would match every long option. */
+    if (lng && !strcmp(lng, "ca-trust")) {
+        http_print_ca_trust();
+        *done = true;
+        return true;
+    }
+#endif
 #define OPT(sc, ln) (c == (sc) || (lng && !strcmp(lng, (ln))))
     if (OPT('h', "help")) { fputs(g_usage, stdout); *done = true; return true; }
     if (OPT('v', "version")) { printf(AGENT_NAME " %s\n", AGENT_VERSION); *done = true; return true; }

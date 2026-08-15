@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 
 typedef struct {
     const HttpReq *r;
@@ -189,6 +190,152 @@ static const char *api_post_path(ApiKind api) {
     return api == API_ANTHROPIC ? "/messages" : "/chat/completions";
 }
 
+/* ---- TLS trust store -----------------------------------------------------
+ * libcurl's CA location is chosen when libcurl is built, so it names the
+ * machine that compiled it rather than the one running this binary. That
+ * holds wherever the two differ: a relocated build, a container, and every
+ * statically linked build. Resolve the store once per process and say so
+ * explicitly, but only when libcurl's own answer would not work: an unset
+ * option is how a working default keeps its behaviour. */
+
+/* Both members are process-lifetime storage, and NULL means "leave libcurl's
+ * option alone". */
+typedef struct {
+    const char *file;   // CURLOPT_CAINFO, a bundle
+    const char *dir;    // CURLOPT_CAPATH, a hashed directory
+} CaTrust;
+
+static b8 ca_present(const char *path, b8 want_dir) {
+    struct stat st;
+    if (!path || !*path || stat(path, &st) != 0) return false;
+    return want_dir ? S_ISDIR(st.st_mode) != 0 : S_ISREG(st.st_mode) != 0;
+}
+
+/* The probe reads absolute system paths, so the suite needs somewhere to hang
+ * a trust store it controls. Only the testing build offers one, and setting
+ * it also skips the build-time default: a host with a working bundle would
+ * otherwise never reach the probe under test. */
+static const char *ca_root(void) {
+#ifdef AGENT_TESTING
+    const char *root = getenv(AGENT_ENV_PREFIX "TEST_CA_ROOT");
+    if (root && *root) return root;
+#endif
+    return "";
+}
+
+/* Bundles before directories, in the order the distributions install them.
+ * A bundle is one open() where a hashed directory is a lookup per chain. */
+static const char *const k_ca_files[] = {
+    "/etc/ssl/certs/ca-certificates.crt",      // Debian, Ubuntu, Arch, Alpine
+    "/etc/pki/tls/certs/ca-bundle.crt",        // Fedora, RHEL
+    "/etc/ssl/ca-bundle.pem",                  // openSUSE
+    "/etc/pki/tls/cacert.pem",
+    "/etc/ssl/cert.pem",                       // Alpine, BSD
+    "/usr/local/share/certs/ca-root-nss.crt",  // FreeBSD
+    "/etc/certs/ca-certificates.crt",          // Solaris
+};
+static const char *const k_ca_dirs[] = {
+    "/etc/ssl/certs",
+    "/etc/pki/tls/certs",
+};
+
+/* Copy a candidate under the test root into `buf`. False when the composed
+ * path would not fit, which drops that candidate rather than truncating it
+ * into a path naming something else. */
+static b8 ca_candidate(const char *path, char *buf, size_t cap,
+                       const char **out) {
+    const char *root = ca_root();
+    if (!*root) { *out = path; return true; }
+    i32 n = snprintf(buf, cap, "%s%s", root, path);
+    if (n < 0 || (size_t)n >= cap) return false;
+    *out = buf;
+    return true;
+}
+
+/* The build-time default, when libcurl can report it and it still exists.
+ * Older libcurl cannot answer, and then the probe decides. */
+static b8 ca_default_works(void) {
+#if LIBCURL_VERSION_NUM >= 0x075400
+    CURL *probe = curl_easy_init();
+    if (!probe) return true;   // no handle, no request: assume nothing
+    char *file = NULL, *dir = NULL;
+    b8 ok = false;
+    if (curl_easy_getinfo(probe, CURLINFO_CAINFO, &file) == CURLE_OK)
+        ok = ca_present(file, false);
+    if (!ok && curl_easy_getinfo(probe, CURLINFO_CAPATH, &dir) == CURLE_OK)
+        ok = ca_present(dir, true);
+    curl_easy_cleanup(probe);
+    return ok;
+#else
+    return false;
+#endif
+}
+
+static const CaTrust *ca_trust(void) {
+    static CaTrust trust;
+    static b8 resolved;
+    static char file_buf[AGENT_MAX_PATH];
+    static char dir_buf[AGENT_MAX_PATH];
+    if (resolved) return &trust;
+    resolved = true;
+
+    /* An operator who names a store means it, so it is honoured whether or
+     * not it exists: a bad path is a TLS failure that says so, not a silent
+     * fall back to a store they declined. CURL_CA_BUNDLE is libcurl's own
+     * variable and outranks OpenSSL's, which libcurl reads only for its
+     * fallback. */
+    const char *env = getenv("CURL_CA_BUNDLE");
+    if (!env || !*env) env = getenv("SSL_CERT_FILE");
+    const char *env_dir = getenv("SSL_CERT_DIR");
+    if (env && *env) trust.file = env;
+    if (env_dir && *env_dir) trust.dir = env_dir;
+    if (trust.file || trust.dir) {
+        agent_log(AGENT_LOG_DEBUG, "tls: trust store from the environment");
+        return &trust;
+    }
+
+    if (!*ca_root() && ca_default_works()) return &trust;
+
+    for (size_t i = 0; i < sizeof k_ca_files / sizeof k_ca_files[0]; i++) {
+        const char *path = NULL;
+        if (!ca_candidate(k_ca_files[i], file_buf, sizeof file_buf, &path))
+            continue;
+        if (!ca_present(path, false)) continue;
+        trust.file = path;
+        return &trust;
+    }
+    for (size_t i = 0; i < sizeof k_ca_dirs / sizeof k_ca_dirs[0]; i++) {
+        const char *path = NULL;
+        if (!ca_candidate(k_ca_dirs[i], dir_buf, sizeof dir_buf, &path))
+            continue;
+        if (!ca_present(path, true)) continue;
+        trust.dir = path;
+        return &trust;
+    }
+
+    /* Nothing found. libcurl keeps its own defaults and reports the
+     * verification failure in its own words, which names the real problem. */
+    agent_log(AGENT_LOG_WARN,
+              "tls: no CA trust store found; HTTPS verification may fail");
+    return &trust;
+}
+
+/* Every handle this module opens goes through here, so one resolution
+ * decides the trust store for API calls and web fetches alike. */
+static void http_apply_ca(CURL *curl) {
+    const CaTrust *t = ca_trust();
+    if (t->file) curl_easy_setopt(curl, CURLOPT_CAINFO, t->file);
+    if (t->dir) curl_easy_setopt(curl, CURLOPT_CAPATH, t->dir);
+}
+
+#ifdef AGENT_TESTING
+void http_print_ca_trust(void) {
+    const CaTrust *t = ca_trust();
+    printf("ca-file: %s\n", t->file ? t->file : "-");
+    printf("ca-dir: %s\n", t->dir ? t->dir : "-");
+}
+#endif
+
 static Str url_host(const char *url) {
     Str s = str_c(url ? url : "");
     const char *sep = strstr(s.p, "://");
@@ -294,6 +441,7 @@ i32 http_get(const char *base_url, const char *path, const char *api_key,
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+    http_apply_ca(curl);
 
     CURLcode rc = curl_easy_perform(curl);
     long http_code = 0;
@@ -409,6 +557,7 @@ i32 http_url_get(HttpUrlReq *r) {
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, (long)r->connect_timeout_ms);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, (long)r->timeout_ms);
     curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, curl_err);
+    http_apply_ca(curl);
     if (r->public_only) {
         curl_easy_setopt(curl, CURLOPT_OPENSOCKETFUNCTION, public_open_cb);
         curl_easy_setopt(curl, CURLOPT_OPENSOCKETDATA, &ctx);
@@ -542,6 +691,7 @@ i32 http_post(const HttpReq *r) {
      * would fire into those handlers. */
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    http_apply_ca(curl);
 
     /* The multi interface so one wait covers the idle fd as well as curl's
      * sockets, which keeps the caller's UI live without a second thread. */

@@ -2,7 +2,6 @@
 
 #include <dirent.h>
 #include <errno.h>
-#include <locale.h>
 #include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -12,7 +11,6 @@
 #include <sys/stat.h>
 #include <termios.h>
 #include <unistd.h>
-#include <wchar.h>
 
 #define TUI_TRANSCRIPT_CAP (8u << 20)
 #define TUI_MAX_ROWS 4096
@@ -462,15 +460,16 @@ static size_t glyph(const char *s, size_t n, i32 *width) {
     if (n == 0) { *width = 0; return 0; }
     u8 c = (u8)s[0];
     if (c < 0x80) { *width = 1; return 1; }
-    mbstate_t st = {0};
-    wchar_t wc = 0;
-    size_t used = mbrtowc(&wc, s, n, &st);
-    if (used == (size_t)-1 || used == (size_t)-2 || used == 0) {
-        *width = 1;
-        return 1;
-    }
-    i32 w = wcwidth(wc);
-    *width = w < 0 ? 1 : w;
+    u32 cp = 0;
+    size_t used = utf8_decode(s, n, &cp);
+    /* Bytes the terminal will print as something take a cell each: a
+     * malformed sequence advances one byte rather than stalling the walk. */
+    if (used == 0) { *width = 1; return 1; }
+    i32 w = agent_width(cp);
+    /* A C1 control keeps the cell it has always been given here; the table
+     * answers for the character, not for what a terminal does with one. */
+    if (w == 0 && cp < 0xA0) w = 1;
+    *width = w;
     return used;
 }
 
@@ -2980,7 +2979,9 @@ void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
     const char *term = getenv("TERM");
     g_tui.color = getenv("NO_COLOR") == NULL
                && (!term || strcmp(term, "dumb"));
-    (void)setlocale(LC_CTYPE, "");
+    /* No setlocale: the UI decodes UTF-8 and measures columns from its own
+     * tables, so a frame is the same under LC_ALL=C as under a UTF-8 locale
+     * and the same against any C library. */
 
     if (!g_tui.tty) {
         g_tui.raw = true;
