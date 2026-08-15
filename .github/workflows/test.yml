@@ -27,3 +27,8 @@ jobs:
       # no network. A warning is a failure here, as it is in the guidelines.
       - name: Build and run the end-to-end suite
         run: make test EXTRA_CFLAGS=-Werror
+        env:
+          # The runner has four shared cores and the suite's waits are quiet
+          # windows, so the usual three-per-core oversubscription starves
+          # children long enough for a stall to read as a settled screen.
+          ARQAN_TEST_JOBS: 4

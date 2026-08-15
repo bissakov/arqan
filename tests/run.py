@@ -74,6 +74,10 @@ def auto_jobs(count: int) -> int:
     Oversubscribing the CPUs is therefore free, but not unbounded: the waits
     are quiet-window based, so a machine buried under processes could see a
     stall look like a settled screen.
+
+    That is not free on a shared runner, where the cores are slower than a
+    workstation's and are not the only thing on the host. Set
+    ARQAN_TEST_JOBS there rather than lowering this for everyone.
     """
     if count <= 1:
         return 1
@@ -161,7 +165,13 @@ def main(argv=None):
         )
         return 2
 
-    jobs = args.jobs if args.jobs > 0 else auto_jobs(len(cases) * args.repeat)
+    env_jobs = int(os.environ.get("ARQAN_TEST_JOBS", "0") or 0)
+    if args.jobs > 0:
+        jobs = args.jobs
+    elif env_jobs > 0:
+        jobs = max(1, min(env_jobs, len(cases) * args.repeat))
+    else:
+        jobs = auto_jobs(len(cases) * args.repeat)
 
     failures = []
     passed = 0
