@@ -1,8 +1,8 @@
 --- screen 80x24 ---
 |
-|
-|  please fail
-|
+|▌
+|▌ please fail
+|▌
 |
 |  [provider error: HTTP 500]
 |

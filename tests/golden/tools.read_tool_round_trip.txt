@@ -1,8 +1,8 @@
 --- screen 80x24 ---
 |
-|
-|  what is in notes.txt?
-|
+|▌
+|▌ what is in notes.txt?
+|▌
 |
 |  ◆  read notes.txt
 |  └─ 1 line · <t>

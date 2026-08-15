@@ -9,6 +9,8 @@ BLUE = 75       # S_BLUE, bullets and other markers
 MONO = 180      # S_MONO, inline code
 CODE_BG = 235   # S_CODE_BG, fenced blocks
 USER_BG = 238   # S_USER_BG, submitted user messages
+USER_CODE_BG = 236  # S_USER_CODE_BG, a fence inside a user message
+RULE = "\u258c"     # the rule down the left of a user turn
 
 
 def cell(s, needle: str, offset: int = 0):
@@ -17,6 +19,14 @@ def cell(s, needle: str, offset: int = 0):
         row = s.screen.row_text(r)
         if needle in row:
             return s.screen.attr_at(r, row.index(needle) + offset)
+    raise AssertionError(f"{needle!r} is not on screen:\n{s.text()}")
+
+
+def row_of(s, needle: str) -> int:
+    """The screen row `needle` is painted on."""
+    for r in range(s.screen.rows):
+        if needle in s.screen.row_text(r):
+            return r
     raise AssertionError(f"{needle!r} is not on screen:\n{s.text()}")
 
 
@@ -152,6 +162,31 @@ def test_submitted_user_messages_are_markdown_but_the_composer_is_not(ctx):
     assert cell(s, "request").bg == USER_BG
     assert cell(s, "code").fg == MONO
     assert cell(s, "code").bg == USER_BG
+
+
+def test_a_user_turn_is_marked_on_every_row(ctx):
+    """Formatted content in a user turn still reads as the reader's, not the
+    model's: the panel covers a fence, and every row carries the rule."""
+    ctx.scenario("text=here:\\n```c\\nint+theirs+=+2;\\n```\\ndone")
+    s = ctx.spawn()
+    s.paste("mine:\n```c\nint mine = 1;\n```\n\n| a | b |\n| --- | --- |\n| 1 | 2 |")
+    s.submit()
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    # The user's fence stays inside the panel rather than taking the slab the
+    # model's fence is painted with.
+    assert cell(s, "int mine").bg == USER_CODE_BG
+    assert cell(s, "int theirs").bg == CODE_BG
+    assert cell(s, "\u2502 1 \u2502 2 \u2502").bg == USER_BG
+
+    first, last = row_of(s, "mine:"), row_of(s, "\u2514\u2500")
+    for r in range(first, last + 1):
+        row = s.screen.row_text(r)
+        assert row.startswith(RULE), f"row {r} is unmarked: {row!r}"
+    assert not s.screen.row_text(row_of(s, "int theirs")).startswith(RULE)
+    assert not s.screen.row_text(row_of(s, "done")).startswith(RULE)
+    ctx.check_screen(s)
 
 
 def test_tables_are_drawn_as_aligned_terminal_tables(ctx):

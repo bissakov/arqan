@@ -2,6 +2,8 @@
 
 import json
 
+RULE = "\u258c"     # the rule down the left of a user turn
+
 
 def test_simple_turn(ctx):
     """One turn renders the user box, the reply, and returns to ready."""
@@ -177,9 +179,12 @@ def test_reply_keeps_one_blank_row_before_the_next_turn(ctx):
     lines = s.screen.lines()
     reply = s.screen.find_row("first answer")
     box = s.screen.find_row("two")
-    blank = [i for i in range(reply + 1, box) if not lines[i]]
-    # One air row, then the box's own top padding row.
-    assert len(blank) == 2, s.screen.snapshot()
+    # One air row, then the box's own top padding row: the padding carries no
+    # text either, but it belongs to the turn and so carries its rule.
+    empty = [i for i in range(reply + 1, box) if not lines[i].strip(RULE)]
+    assert len(empty) == 2, s.screen.snapshot()
+    assert not lines[reply + 1], s.screen.snapshot()
+    assert lines[box - 1] == RULE, s.screen.snapshot()
     assert box - reply == 3, s.screen.snapshot()
 
 

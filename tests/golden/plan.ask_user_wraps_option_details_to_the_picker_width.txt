@@ -1,8 +1,8 @@
 --- screen 48x20 ---
 |
-|
-|  plan the storage
-|
+|▌
+|▌ plan the storage
+|▌
 |
 |  ◆  ask
 |  │ Which storage?

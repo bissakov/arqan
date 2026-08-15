@@ -1,8 +1,8 @@
 --- screen 80x24 ---
 |
-|
-|  what is in notes?
-|
+|▌
+|▌ what is in notes?
+|▌
 |
 |  let me look
 |

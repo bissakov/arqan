@@ -1,8 +1,8 @@
 --- screen 80x24 ---
 |
-|
-|  say hi
-|
+|▌
+|▌ say hi
+|▌
 |
 |  [HTTP 503; retrying in 10ms (attempt 2 of 4)]
 |

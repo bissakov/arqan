@@ -1,8 +1,8 @@
 --- screen 80x24 ---
 |
-|
-|  how many?
-|
+|▌
+|▌ how many?
+|▌
 |
 |  let me count the rabbits
 |

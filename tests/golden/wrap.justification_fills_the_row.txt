@@ -1,8 +1,8 @@
 --- screen 80x24 ---
 |
-|
-|  say it
-|
+|▌
+|▌ say it
+|▌
 |
 |  w00 w01x w02xx w03xxx w04xxxx w05  w06x w07xx w08xxx w09xxxx w10 w11x  w12xx
 |  w13xxx w14xxxx w15 w16x w17xx w18xxx  w19xxxx w20 w21x w22xx w23xxx  w24xxxx

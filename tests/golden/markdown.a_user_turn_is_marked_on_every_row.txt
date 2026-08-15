@@ -1,0 +1,26 @@
+--- screen 80x24 ---
+|
+|▌
+|▌ mine:
+|▌
+|▌   int mine = 1;
+|▌
+|▌ ┌───┬───┐
+|▌ │ a │ b │
+|▌ ├───┼───┤
+|▌ │ 1 │ 2 │
+|▌ └───┴───┘
+|▌
+|
+|  here:
+|
+|    int theirs = 2;
+|
+|  done
+|
+|
+|  › Message arqan...
+|
+|
+|  ● ready · mock-model · build · local · ~/work · ~60 · free
+--- cursor row=21 col=5 visible=yes ---

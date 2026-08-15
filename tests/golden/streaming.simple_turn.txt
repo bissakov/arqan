@@ -1,8 +1,8 @@
 --- screen 80x24 ---
 |
-|
-|  say hi
-|
+|▌
+|▌ say hi
+|▌
 |
 |  Hello from the mock provider.
 |

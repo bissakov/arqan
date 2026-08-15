@@ -66,6 +66,13 @@ _Static_assert(TUI_STATUS_N == AGENT_STATUS_FIELDS,
 #define S_STRIKE      "\033[9;38;5;245m"
 #define S_USER_BG     "\033[48;5;238m"
 #define S_CODE_BG     "\033[48;5;235m"
+/* A fence inside a user turn stays inside the panel: it takes a shade of its
+ * own rather than the assistant's code slab, so the block never breaks. */
+#define S_USER_CODE_BG "\033[48;5;236m"
+/* The rule down the left of a user turn. It is a glyph before it is a colour,
+ * so the turn is still marked where the panel shade is not read: NO_COLOR, a
+ * light theme, a code row, a table. */
+#define S_USER_RULE   "\033[38;5;81m"
 #define S_POPUP_BG    "\033[48;5;237m"
 #define S_POPUP_SEL   "\033[48;5;24m"
 #define S_LINK        "\033[4;38;5;81m"
@@ -1478,11 +1485,32 @@ static void put_hits(const char *p, size_t rel, size_t n, Just *j,
 
 typedef struct { u8 kind, base, syntax; b8 user; } RunStyle;
 
+/* What a row of a user turn is padded and painted with. The panel covers the
+ * whole turn, so a code row inside it reads as the reader's own text rather
+ * than as the model's. */
+static const char *user_bg(u8 kind) {
+    return kind == ROW_CODE ? S_USER_CODE_BG : S_USER_BG;
+}
+
+/* The rule down the left of a user turn, drawn in the body gutter so it takes
+ * no width from the text. Every row of the turn carries it, a code row and a
+ * table row included, which is what tells the reader's own words from the
+ * model's once both are formatted the same way. The background under it is
+ * the one the row was padded with. */
+static void paint_user_rule(size_t screen_row, size_t screen_col) {
+    if (screen_col < 2) return;
+    cup(screen_row, screen_col > 2 ? screen_col - 2 : 1);
+    style(S_USER_RULE);
+    put_str("▌");
+}
+
 static void run_style(void *ud) {
     const RunStyle *r = ud;
     style(S_RESET);
-    if (r->user && r->base != ROW_CODE) style(S_USER_BG);
     style(kind_style(r->kind ? r->kind : r->base));
+    /* After the block style, which names the assistant's code background a
+     * user turn has already replaced. */
+    if (r->user) style(user_bg(r->base));
     if (r->syntax) style(syntax_style(r->syntax));
 }
 
@@ -1555,9 +1583,10 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
     if (kind == ROW_COMPOSER || user || kind == ROW_CODE) {
         /* The whole row carries the panel colour, so a user turn or a fenced
          * code block reads as a block of screen rather than a prefixed line. */
-        style(user && kind != ROW_CODE ? S_USER_BG
+        style(user ? user_bg(kind)
             : kind == ROW_CODE ? S_CODE_BG : S_PANEL_BG);
         pad_row(0, screen_cols);
+        if (user) paint_user_rule(screen_row, screen_col);
         cup(screen_row, screen_col);
     } else {
         cup(screen_row, screen_col);

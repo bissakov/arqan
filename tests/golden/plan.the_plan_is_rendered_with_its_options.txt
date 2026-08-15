@@ -1,8 +1,8 @@
 --- screen 80x24 ---
 |
-|
-|  plan the change
-|
+|▌
+|▌ plan the change
+|▌
 |
 |  ◆  plan
 |

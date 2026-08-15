@@ -1,8 +1,8 @@
 --- screen 80x24 ---
 |
-|
-|  show me code
-|
+|▌
+|▌ show me code
+|▌
 |
 |  here:
 |

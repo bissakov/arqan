@@ -13,6 +13,15 @@
 
 ### Changed
 
+- Mark a user turn on every row. What the reader wrote was told from what the
+  model answered by a background one shade off the transcript's, and a fenced
+  code block inside a user turn dropped even that and took the same slab the
+  model's code is painted with, so a message carrying code or a table read as
+  a reply. A user turn now carries a rule down its left edge on every row it
+  covers - code, tables and the padding around it included - and its panel
+  runs unbroken, with a fence inside it shaded as part of the turn. The rule
+  is a glyph, so the turn is still marked under `NO_COLOR`.
+
 - Show a command instead of summarising it. A tool call's header used to cut
   its command at a row's worth of bytes, which hid the tail of most pipelines
   and every quoted argument past it; it now shows what will run. A command

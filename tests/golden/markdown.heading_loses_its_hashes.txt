@@ -1,8 +1,8 @@
 --- screen 80x24 ---
 |
-|
-|  write a heading
-|
+|▌
+|▌ write a heading
+|▌
 |
 |  Plans
 |  details
