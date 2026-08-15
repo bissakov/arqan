@@ -21,6 +21,14 @@ changes need a focused end-to-end case in `tests/cases/`; write bug regressions
 first. Do not weaken assertions or update golden files merely to hide a
 failure. For suspected flakes, use `python3 tests/run.py --repeat 5`.
 
+`make test-asan` and `make test-fil` are not per-change gates; run one when the
+change touches memory. Prefer `make test-fil` for arena, buffer, bounds and
+pointer-arithmetic work and for any suspected memory bug: Fil-C carries bounds
+on the pointer, so it catches an out-of-bounds access that lands inside another
+valid object, which ASan cannot. It costs about ninety seconds beyond
+`make test` and ships nothing: the build stays in `build/fil/` and `bin/fil/`,
+and no release target reads them.
+
 ## Core design
 
 - This is a unity build: `src/main.c` includes every `.c` file and the Makefile
