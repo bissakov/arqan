@@ -122,8 +122,13 @@ def bench_interrupted_stream(b):
     s = b.spawn()
     b.ctx.scenario("words=4000,paragraphs=20,chunk=2,delay=0.002")
     s.submit("write forever")
-    s.wait_for(lambda t: s.status_kind() != "ready", "the turn to start",
-               timeout=30.0)
+    # Not merely that the turn was accepted: this is the process's first
+    # request, and the step would then measure opening libcurl rather than
+    # the interrupt. A request the provider has in hand is the point past it,
+    # and the point at which there is a stream to stop.
+    served = len(b.ctx.mock.requests)
+    s.wait_for(lambda t: len(b.ctx.mock.requests) > served,
+               "the request to reach the provider", timeout=30.0)
     with b.step("interrupt", budget_ms=40.0):
         s.key("esc")
         s.wait_status("ready", timeout=30.0)
