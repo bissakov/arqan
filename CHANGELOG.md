@@ -31,6 +31,11 @@
   `CURL_CA_BUNDLE`, `SSL_CERT_FILE` and `SSL_CERT_DIR` are honoured first, a
   working built-in default is left alone, and otherwise the usual
   distribution locations are searched.
+  A default is now taken as working only when every store it names exists,
+  and a resolved store answers for both of libcurl's options rather than
+  leaving the other at a build-time path: libcurl loads the bundle and the
+  hashed directory into one trust store, so either one naming somewhere
+  absent failed the handshake on its own.
 
 - Leave a reasoning small model room to answer when it names a session. The
   naming request was capped at a line's worth of tokens, which a model that

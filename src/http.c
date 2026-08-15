@@ -252,18 +252,24 @@ static b8 ca_candidate(const char *path, char *buf, size_t cap,
     return true;
 }
 
-/* The build-time default, when libcurl can report it and it still exists.
- * Older libcurl cannot answer, and then the probe decides. */
+/* The build-time defaults, when libcurl can report them and they still exist.
+ * Older libcurl cannot answer, and then the probe decides.
+ *
+ * Both options are loaded into one trust store, so a default naming a store
+ * that is not there fails the handshake however good the other one is: the
+ * pair is approved together or not at all. A binary built on one
+ * distribution and run on another carries exactly that mismatch. */
 static b8 ca_default_works(void) {
 #if LIBCURL_VERSION_NUM >= 0x075400
     CURL *probe = curl_easy_init();
     if (!probe) return true;   // no handle, no request: assume nothing
     char *file = NULL, *dir = NULL;
-    b8 ok = false;
-    if (curl_easy_getinfo(probe, CURLINFO_CAINFO, &file) == CURLE_OK)
-        ok = ca_present(file, false);
-    if (!ok && curl_easy_getinfo(probe, CURLINFO_CAPATH, &dir) == CURLE_OK)
-        ok = ca_present(dir, true);
+    if (curl_easy_getinfo(probe, CURLINFO_CAINFO, &file) != CURLE_OK) file = NULL;
+    if (curl_easy_getinfo(probe, CURLINFO_CAPATH, &dir) != CURLE_OK) dir = NULL;
+    b8 has_file = file && *file, has_dir = dir && *dir;
+    b8 ok = (has_file || has_dir) &&
+            (!has_file || ca_present(file, false)) &&
+            (!has_dir || ca_present(dir, true));
     curl_easy_cleanup(probe);
     return ok;
 #else
@@ -324,8 +330,12 @@ static const CaTrust *ca_trust(void) {
  * decides the trust store for API calls and web fetches alike. */
 static void http_apply_ca(CURL *curl) {
     const CaTrust *t = ca_trust();
-    if (t->file) curl_easy_setopt(curl, CURLOPT_CAINFO, t->file);
-    if (t->dir) curl_easy_setopt(curl, CURLOPT_CAPATH, t->dir);
+    if (!t->file && !t->dir) return;   // a working default keeps its behaviour
+    /* One resolution answers for both options: the one it does not name is
+     * cleared rather than left at its build-time default, which would name a
+     * store that need not exist here and fail the handshake on its own. */
+    curl_easy_setopt(curl, CURLOPT_CAINFO, t->file);
+    curl_easy_setopt(curl, CURLOPT_CAPATH, t->dir);
 }
 
 #ifdef AGENT_TESTING
@@ -333,6 +343,7 @@ void http_print_ca_trust(void) {
     const CaTrust *t = ca_trust();
     printf("ca-file: %s\n", t->file ? t->file : "-");
     printf("ca-dir: %s\n", t->dir ? t->dir : "-");
+    printf("ca-defaults: %s\n", (t->file || t->dir) ? "cleared" : "kept");
 }
 #endif
 

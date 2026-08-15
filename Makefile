@@ -27,6 +27,17 @@ FIL_BIN := bin/fil
 # warnings and drop the hardening. -g gives Fil-C panics a symbolized trace.
 FIL_DROP := -flto -fstack-protector-strong -D_FORTIFY_SOURCE=2
 
+# One relocatable executable: `make static`, from inside the musl builder image
+# `scripts/build-musl.sh` provides. The link is static-pie, so the binary keeps
+# ASLR and needs no interpreter, and it resolves its CA trust store at run time
+# rather than inheriting the builder's.
+STATIC_BUILD := build/musl
+STATIC_BIN := bin/musl
+# libcurl.a does not describe what it needs. curl-config lists most of it and
+# omits the two transitive archives: libidn2 wants libunistring, libbrotlidec
+# wants libbrotlicommon. Deferred, so no other target pays for the lookup.
+STATIC_LIBS ?= $(shell curl-config --static-libs) -lunistring -lbrotlicommon
+
 # BUILDDIR and BINDIR select a build variant; the sanitizer recipe overrides
 # both. Everything below derives from them, so no rule writes a fixed path.
 BUILDDIR ?= build
@@ -53,7 +64,8 @@ VENDOR_CFLAGS ?= -std=c17 -O2 -fno-strict-aliasing -pipe -w \
 PYTHON  ?= python3
 
 .PHONY: all minimal clean clean-asan run test test-update asan test-asan mock \
-        clean-fil fil test-fil bench bench-slow bench-baseline \
+        clean-fil fil test-fil clean-static static test-static \
+        bench bench-slow bench-baseline \
         package-linux test-package-linux release-linux
 
 all: $(BIN) $(HL_BIN)
@@ -159,6 +171,23 @@ fil:
 test-fil: fil
 	ARQAN_TEST_BIN=$(FIL_BIN)/arqan-test $(PYTHON) tests/run.py $(T)
 
+# Same variant layout as asan and fil, under build/musl and bin/musl. Run this
+# where a musl toolchain and the static archives are, which is what the builder
+# image is for; on a glibc host the link fails for want of libcurl.a.
+static:
+	@case '$(shell $(CC) -dumpmachine)' in *musl*) ;; *) \
+	    echo "$(CC) targets $(shell $(CC) -dumpmachine), not musl. Run"; \
+	    echo "scripts/build-musl.sh, which builds and enters the builder"; \
+	    echo "image this target expects."; \
+	    exit 1 ;; esac
+	$(MAKE) all $(STATIC_BIN)/arqan-test \
+	    BUILDDIR='$(STATIC_BUILD)' BINDIR='$(STATIC_BIN)' \
+	    CFLAGS='$(CFLAGS) -static-pie' LDFLAGS='$(LDFLAGS) -static-pie' \
+	    LIBS='$(STATIC_LIBS)'
+
+test-static: static
+	ARQAN_TEST_BIN=$(STATIC_BIN)/arqan-test $(PYTHON) tests/run.py $(T)
+
 mock:
 	$(PYTHON) -m tests.mockprovider.server $(MOCK_ARGS)
 
@@ -194,3 +223,7 @@ clean-asan:
 # Drop only the Fil-C tree; the shipped build survives.
 clean-fil:
 	rm -rf $(FIL_BUILD) $(FIL_BIN)
+
+# Drop only the static tree; the shipped build survives.
+clean-static:
+	rm -rf $(STATIC_BUILD) $(STATIC_BIN)

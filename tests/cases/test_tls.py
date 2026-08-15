@@ -10,13 +10,13 @@ store out of the answer.
 
 
 def trust(ctx, root=None, **env):
-    """The resolved store as {"ca-file": ..., "ca-dir": ...}, "-" when unset."""
+    """The resolution as {"ca-file", "ca-dir", "ca-defaults"}, "-" when unset."""
     if root is not None:
         env["ARQAN_TEST_CA_ROOT"] = str(root)
     out = ctx.run_cli("--ca-trust", **env)
     assert out.returncode == 0, out
     rows = dict(line.split(": ", 1) for line in out.stdout.splitlines())
-    assert set(rows) == {"ca-file", "ca-dir"}, out.stdout
+    assert set(rows) == {"ca-file", "ca-dir", "ca-defaults"}, out.stdout
     return rows
 
 
@@ -61,6 +61,35 @@ def test_bundle_outranks_directory(ctx):
     assert rows["ca-dir"] == "-", "a bundle answers alone"
 
 
+def test_a_resolved_bundle_clears_the_default_directory(ctx):
+    """The option the resolution does not name is cleared, not left alone.
+
+    libcurl loads CAINFO and CAPATH into one store, so a build-time default
+    directory surviving beside a resolved bundle fails the handshake by
+    itself once the binary runs where that directory is absent.
+    """
+    root, [bundle] = store(ctx, "/etc/ssl/certs/ca-certificates.crt")
+    rows = trust(ctx, root)
+    assert rows["ca-file"] == str(bundle), rows
+    assert rows["ca-defaults"] == "cleared", rows
+
+
+def test_a_resolved_directory_clears_the_default_bundle(ctx):
+    """The same, the other way round: no bundle leaves no default bundle."""
+    root, [certs] = store(ctx, "/etc/ssl/certs/")
+    rows = trust(ctx, root)
+    assert rows["ca-dir"] == str(certs), rows
+    assert rows["ca-defaults"] == "cleared", rows
+
+
+def test_a_named_store_clears_the_defaults_too(ctx):
+    """An operator naming one store is not asking for a second one beside it."""
+    rows = trust(ctx, ctx.work / "empty", SSL_CERT_FILE="/named/by/hand.pem")
+    assert rows["ca-file"] == "/named/by/hand.pem", rows
+    assert rows["ca-dir"] == "-", rows
+    assert rows["ca-defaults"] == "cleared", rows
+
+
 def test_hashed_directory_when_no_bundle(ctx):
     """No bundle anywhere falls back to the hashed directory."""
     root, [certs] = store(ctx, "/etc/ssl/certs/")
@@ -83,6 +112,7 @@ def test_no_store_is_reported_not_guessed(ctx):
     assert out.returncode == 0, out
     assert "ca-file: -" in out.stdout, out.stdout
     assert "ca-dir: -" in out.stdout, out.stdout
+    assert "ca-defaults: kept" in out.stdout, "an unset option stays unset"
     assert "no CA trust store" in out.stderr, out.stderr
 
 
