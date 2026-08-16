@@ -16,16 +16,36 @@ permissions:
 jobs:
   suite:
     runs-on: ubuntu-24.04
+    env:
+      # ccache returns byte-identical objects, so this buys build time and
+      # changes nothing that is tested. The unity translation unit misses
+      # whenever src/ changes, which is the point; the two dozen tree-sitter
+      # objects under build/highlight are a constant and always hit.
+      CC: ccache cc
     steps:
       - name: Check out source
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libcurl4-openssl-dev
+          sudo apt-get install -y --no-install-recommends \
+              libcurl4-openssl-dev ccache
+      # Restored after the checkout, so the cached objects are newer than the
+      # sources and make does not rebuild what ccache would have served.
+      - name: Restore the compiler cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ccache
+          key: ccache-test-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-test-${{ runner.os }}-
+      - name: Build
+        run: |
+          ccache -M 500M -z
+          make -j"$(nproc)" all bin/arqan-test EXTRA_CFLAGS=-Werror
+          ccache -s
       # The suite drives a pty against a mock provider on loopback and needs
       # no network. A warning is a failure here, as it is in the guidelines.
-      - name: Build and run the end-to-end suite
+      - name: Run the end-to-end suite
         run: make test EXTRA_CFLAGS=-Werror
         env:
           # The runner has four shared cores and the suite's waits are quiet
