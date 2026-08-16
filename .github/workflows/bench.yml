@@ -16,6 +16,12 @@ permissions:
 jobs:
   guard:
     runs-on: ubuntu-24.04
+    env:
+      # This job builds two whole trees, the reference and this change, so it
+      # pays the build twice. ccache is content-addressed and returns
+      # byte-identical objects, so the binaries measured here are the ones
+      # that would have been built without it.
+      CC: ccache cc
     steps:
       - name: Check out source and history
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -24,7 +30,20 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libcurl4-openssl-dev
+          sudo apt-get install -y --no-install-recommends \
+              libcurl4-openssl-dev ccache
+      # Restored after the checkout, so the cached objects are newer than the
+      # sources and make does not rebuild what ccache would have served. The
+      # reference commit is usually the previous run's head, so its tree is
+      # served from cache rather than compiled again.
+      - name: Restore the compiler cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ccache
+          key: ccache-bench-${{ runner.os }}-${{ github.sha }}
+          restore-keys: ccache-bench-${{ runner.os }}-
+      - name: Size the compiler cache
+        run: ccache -M 500M -z
       - name: Resolve the reference commit
         id: ref
         shell: bash
@@ -41,6 +60,9 @@ jobs:
         env:
           TOLERANCE: '1.5'
         run: scripts/bench-guard.sh ${{ steps.ref.outputs.sha }}
+      - name: Report the compiler cache
+        if: always()
+        run: ccache -s
       - name: Retain both reports
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

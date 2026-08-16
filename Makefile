@@ -96,6 +96,7 @@ VENDOR_CFLAGS ?= -std=c17 -O2 -fno-strict-aliasing -pipe -w \
 PYTHON  ?= python3
 
 .PHONY: all minimal clean clean-asan run test test-update asan test-asan mock \
+        test-ci \
         clean-fil fil test-fil clean-static static test-static \
         clean-el9 el9 test-el9 \
         bench bench-slow bench-baseline \
@@ -173,6 +174,15 @@ test: all $(TEST_BIN)
 
 test-update: all $(TEST_BIN)
 	ARQAN_TEST_BIN=$(TEST_BIN) $(PYTHON) tests/run.py --update $(T)
+
+# The suite as CI runs it. The waits are quiet-window based, so the number of
+# workers is part of what is being tested: a workstation's default spread
+# clears cases that starve on the runner's four shared cores, and the failure
+# is then discovered a push later. Reproduce it here instead.
+CI_JOBS ?= 4
+test-ci: all $(TEST_BIN)
+	ARQAN_TEST_BIN=$(TEST_BIN) ARQAN_TEST_JOBS=$(CI_JOBS) \
+	    $(PYTHON) tests/run.py $(T)
 
 # The instrumented tree is built and run entirely under build/asan and
 # bin/asan, so bin/arqan stays the shipped binary, bin/arqan-test the one the
