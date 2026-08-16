@@ -155,7 +155,8 @@ assistant/tool attribution or trailers.
 - Maintain `CHANGELOG.md` using Keep a Changelog. Add notable user-visible
   changes under `Unreleased`; do not list routine refactors, tests, or
   formatting. When releasing, move those entries under a dated `X.Y.Z`
-  heading and update comparison links.
+  heading and update comparison links. Write plain, understandable,
+  short, simple text.
 - Write a changelog entry without a commit link; a commit cannot carry its
   own hash. `python3 scripts/changelog-links.py` links every bare entry to
   the commit that introduced it, and `--check` reports the ones still bare.
