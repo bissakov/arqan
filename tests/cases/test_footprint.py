@@ -44,6 +44,16 @@ def maps_libcurl(pid: int) -> bool:
     return "libcurl.so" in text
 
 
+def opens_libcurl_on_demand() -> bool:
+    """Whether this build opens libcurl rather than linking it.
+
+    The static release links libcurl into the executable (`CURL_MODE=link`),
+    so no libcurl.so is ever mapped and the question below does not apply.
+    Only the dlopen path carries the diagnostic that names the soname.
+    """
+    return b"cannot load libcurl.so.4" in BIN.read_bytes()
+
+
 def test_idle_footprint_excludes_bulk_buffers(ctx):
     """A session that wrote nothing has not paid for the scrollback."""
     if unmeasurable():
@@ -68,6 +78,8 @@ def test_libcurl_is_absent_until_the_first_request(ctx):
     """
     if not Path("/proc/self/maps").exists():
         return   # not Linux; there is nothing to read
+    if not opens_libcurl_on_demand():
+        return   # linked build: libcurl is inside the binary, never mapped
     ctx.scenario("text=ok")
     s = ctx.spawn()
     s.settle()

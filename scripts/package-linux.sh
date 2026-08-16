@@ -136,6 +136,10 @@ verify_elf() {
     printf '%s\n' "$needed" | while IFS= read -r library; do
         case $library in
             libc.so.6) ;;
+            # dlopen moved into libc in glibc 2.34. An older target, Debian 11
+            # among them, still keeps it in libdl, which its libc6 dependency
+            # already carries.
+            libdl.so.2) ;;
             libcurl.so.4) [ "$needs_curl" = yes ] || fail "$label unexpectedly needs $library" ;;
             *) fail "$label unexpectedly needs $library" ;;
         esac
