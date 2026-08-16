@@ -116,11 +116,14 @@ static const ConfSpec k_conf[CONF_N] = {
     [CONF_ASK_TIMEOUT_MS] = { "ask_timeout_ms",
                               CONF_TEXT(AGENT_ASK_TIMEOUT_MS), NULL, CV_NUM,
                               0, 24 * 60 * 60 * 1000, 0, false },
-    /* Never from a project file either: a repository must not be able to
-     * hold a turn open past a prompt cache by making its build undetachable. */
+    /* Never from a project file: a repository must not be able to hold a turn
+     * open past a prompt cache by making its build undetachable. The ceiling
+     * is a job's longest wait, since both are time the model spends idle; a
+     * deadline outside the cache window would defeat the point of having one.
+     * 0 is the way to say the wait matters more than the cache. */
     [CONF_SHELL_TIMEOUT_MS] = { "shell_timeout_ms",
                                 CONF_TEXT(AGENT_SHELL_TIMEOUT_MS), NULL,
-                                CV_NUM, 0, 60 * 60 * 1000, 0, false },
+                                CV_NUM, 0, AGENT_JOB_WAIT_MAX_MS, 0, false },
 };
 
 Str conf_key_name(ConfKey k) {

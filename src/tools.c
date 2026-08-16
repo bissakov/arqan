@@ -608,8 +608,11 @@ static size_t job_page(Job *j, Buf *out, size_t limit, size_t *pending) {
     return shown;
 }
 
-static b8 shell_capture_page(Str cmd, size_t offset, size_t limit, Buf *out,
-                             char *err, size_t err_cap) {
+/* `timeout_ms` is how long the command may hold the turn before it is
+ * detached into a job; 0 waits for it. */
+static b8 shell_capture_page(Str cmd, size_t offset, size_t limit,
+                             i32 timeout_ms, Buf *out, char *err,
+                             size_t err_cap) {
     static char z[AGENT_MAX_COMMAND];
     if (!arg_cstr(cmd, z, sizeof z, "command", err, err_cap)) return false;
     if (g_shell_interrupt && *g_shell_interrupt) {
@@ -674,9 +677,8 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit, Buf *out,
          * costs a page and a job id rather than the rest of the turn. The
          * table being full or the log being gone is not worth killing it
          * over: the call falls back to waiting, once. */
-        if (!interrupted && !undetachable && g_shell_timeout_ms > 0
-            && (agent_now_seconds() - started) * 1000.0
-               >= (f64)g_shell_timeout_ms) {
+        if (!interrupted && !undetachable && timeout_ms > 0
+            && (agent_now_seconds() - started) * 1000.0 >= (f64)timeout_ms) {
             u32 job = job_detach(pid, fds[0], &spill, cmd);
             if (job) {
                 if (total > first + shown)
@@ -770,12 +772,24 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit, Buf *out,
 static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
     JVal *j = tool_args(args, scratch, err, err_cap);
     if (!j) return false;
-    size_t offset, limit;
+    size_t offset, limit, timeout;
     if (!arg_count(j, STR("offset"), 1, 1u << 30, &offset, err, err_cap) ||
         !arg_count(j, STR("limit"), AGENT_SHELL_OUT_BYTES,
                    AGENT_SHELL_OUT_BYTES, &limit, err, err_cap)) return false;
+    /* The deadline the settings set is the ceiling, not the only choice: a
+     * caller that knows what it started can hand the turn back sooner. It
+     * cannot hold it longer, which is what the ceiling is for. */
+    const JVal *want = json_get(j, STR("timeout_ms"));
+    if (g_shell_timeout_ms <= 0 && want && want->type != J_NULL) {
+        snprintf(err, err_cap, "timeout_ms is unavailable: shell_timeout_ms "
+                 "is 0, so every command is waited out");
+        return false;
+    }
+    if (!arg_count(j, STR("timeout_ms"), (size_t)g_shell_timeout_ms,
+                   (size_t)g_shell_timeout_ms, &timeout, err, err_cap))
+        return false;
     return shell_capture_page(json_str(j, STR("command")), offset, limit,
-                              out, err, err_cap);
+                              (i32)timeout, out, err, err_cap);
 }
 
 /* ---- job ----
@@ -1673,22 +1687,33 @@ void tools_init(ToolRegistry *r, Arena *persist) {
         "blindly. Commands run without a terminal, so anything that prompts "
         "for input, sudo included, fails rather than waits. A command still "
         "running after the deadline is not killed: it carries on as a job "
-        "the result names, and the job tool waits for the rest.",
+        "the result names, and the job tool waits for the rest. Set "
+        "timeout_ms to what this command is worth waiting for: a build you "
+        "expect to take minutes should become a job in seconds, while a test "
+        "you expect to finish should be waited out.",
         "Run a shell command", TOOL_IN_BUILD, TOOL_APPROVAL_BASH,
-        "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\",\"description\":\"first output byte, 1-based\"},\"limit\":{\"type\":\"integer\",\"description\":\"at most 8KB\"}},\"required\":[\"command\"]}",
+        "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},"
+        "\"offset\":{\"type\":\"integer\",\"description\":\"first output byte, 1-based\"},"
+        "\"limit\":{\"type\":\"integer\",\"description\":\"at most 8KB\"},"
+        "\"timeout_ms\":{\"type\":\"integer\",\"description\":\"how long to hold "
+        "the turn before the command becomes a job; defaults to the "
+        "configured deadline and may not exceed it\"}},"
+        "\"required\":[\"command\"]}",
         tool_bash);
     ADD("job", "Follow a command bash detached because it outran its "
         "deadline. Each call returns the output since the last one and says "
-        "whether the job is still running. A wait is bounded, so a job that "
-        "outlasts it is reported as still running and waiting again is the "
-        "right move: keep polling rather than leaving a job unattended. Job "
-        "ids last for this session only.",
+        "whether the job is still running. Set timeout_ms to how long the "
+        "job is worth waiting for this time; a job that outlasts the wait is "
+        "reported as still running, and waiting again is the right move. Keep "
+        "polling rather than leaving a job unattended. Job ids last for this "
+        "session only.",
         "Follow a background command", TOOL_IN_BUILD, TOOL_APPROVAL_NONE,
         "{\"type\":\"object\",\"properties\":{"
         "\"id\":{\"type\":\"integer\",\"description\":\"the job to act on; omit to list\"},"
         "\"action\":{\"type\":\"string\",\"enum\":[\"list\",\"poll\",\"wait\",\"kill\"],"
         "\"description\":\"default wait with an id, list without one; poll returns at once\"},"
-        "\"timeout_ms\":{\"type\":\"integer\",\"description\":\"how long to wait, at most 240000\"}},"
+        "\"timeout_ms\":{\"type\":\"integer\",\"description\":\"how long to wait "
+        "for it, at most 240000; default 120000\"}},"
         "\"required\":[]}",
         tool_job);
     ADD("patch", "Change files with a unified diff: hunks are located by "

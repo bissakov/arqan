@@ -14,6 +14,10 @@ def bash(command: str) -> str:
     return "bash:" + json.dumps({"command": command})
 
 
+def bash_for(command: str, timeout_ms: int) -> str:
+    return "bash:" + json.dumps({"command": command, "timeout_ms": timeout_ms})
+
+
 def job(**args) -> str:
     return "job:" + json.dumps(args)
 
@@ -154,3 +158,56 @@ def test_a_job_does_not_outlive_the_session(ctx):
     assert not (ctx.work / "orphan.txt").exists(), "a job outlived the session"
     logs = list(ctx.work.glob("arqan-bash-*.log"))
     assert not logs, f"job logs left behind: {logs}"
+
+
+def test_a_call_can_hand_the_turn_back_sooner(ctx):
+    """A caller that knows the command is slow detaches it on its own terms,
+    well inside the configured deadline."""
+    ctx.scenario(
+        "tool=" + bash_for("sleep 1; echo late", 200) + ",tool=" + job(id=1)
+        + ",final_text=followed"
+    )
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="60000")
+    s.submit("start the slow one")
+    s.wait_text("followed")
+    s.wait_turn_done()
+
+    detached, followed = results(ctx)[0], results(ctx)[1]
+    assert "still running as job 1" in detached, detached
+    assert "late" in followed, followed
+    assert "[job 1 exit 0" in followed, followed
+
+
+def test_a_call_cannot_hold_the_turn_longer(ctx):
+    """The deadline is a ceiling: a longer wait is refused, not granted."""
+    ctx.scenario("tool=" + bash_for("echo hi", 60000) + ",final_text=refused")
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="5000")
+    s.submit("wait as long as you like")
+    s.wait_text("refused")
+    s.wait_turn_done()
+
+    out = results(ctx)[0]
+    assert out.startswith("ERROR:"), out
+    assert "timeout_ms must be a whole number in 1..5000" in out, out
+
+
+def test_no_deadline_means_no_per_call_deadline(ctx):
+    """With detaching turned off, a call asking for it is told so."""
+    ctx.scenario("tool=" + bash_for("echo hi", 100) + ",final_text=refused")
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="0")
+    s.submit("detach this")
+    s.wait_text("refused")
+    s.wait_turn_done()
+
+    out = results(ctx)[0]
+    assert out.startswith("ERROR:"), out
+    assert "shell_timeout_ms is 0" in out, out
+
+
+def test_a_deadline_past_the_cache_window_is_refused(ctx):
+    """The deadline exists to keep the model inside a prompt cache, so it
+    cannot be set beyond one. Waiting longer than that is what 0 is for."""
+    ctx.write_config("shell_timeout_ms = 900000\n")
+    ctx.scenario("text=ok")
+    out = ctx.run_cli("-p", "hello")
+    assert "shell_timeout_ms" in out.stderr, out.stderr
