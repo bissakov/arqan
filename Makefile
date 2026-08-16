@@ -263,6 +263,13 @@ bench: all
 bench-slow: all
 	$(PYTHON) -m bench.run --slow $(B)
 
+# Iteration only. The instrumented binary announces every park on its input,
+# so the harness stops waiting quiet windows out and a run costs seconds
+# instead of minutes. Its figures describe the test build, which is why the
+# guard never reads them.
+bench-fast: all $(TEST_BIN)
+	ARQAN_TEST_BIN=$(TEST_BIN) $(PYTHON) -m bench.run $(B)
+
 # Record a baseline, then `make bench B="--baseline bench-baseline.json"`.
 bench-baseline: all
 	$(PYTHON) -m bench.run --slow --json bench-baseline.json $(B)

@@ -45,11 +45,16 @@ def test_a_turn_is_saved_round_by_round(ctx):
     ctx.write_file("sample.txt", "kept bytes\n")
     args = json.dumps({"path": "sample.txt"})
     ctx.scenario(
-        f"tool=read:{args},tool_rounds=2,final_text=done,first_delay=2"
+        f"tool=read:{args},tool_rounds=2,final_text=done,hold_round=2"
     )
     s = ctx.spawn()
     s.submit("read it")
     s.wait_text("kept bytes")
+    # The claim is about what is on disk by the time the next round is sent,
+    # so wait for that request rather than for the result to be painted. The
+    # round is held before it answers, so nothing else can reach the file
+    # while the records below are read.
+    s.wait_for(lambda t: len(ctx.mock.requests) == 2, "the next round")
 
     files = sorted(sessions_dir(ctx).iterdir())
     assert len(files) == 1, files
@@ -60,6 +65,7 @@ def test_a_turn_is_saved_round_by_round(ctx):
     assert lines[2]["name"] == "read", lines[2]
     assert "kept bytes" in lines[3]["content"], lines[3]
 
+    ctx.mock.release()
     s.wait_turn_done()
     done = [json.loads(l) for l in files[0].read_text().splitlines()]
     assert done[:len(lines)] == lines, done

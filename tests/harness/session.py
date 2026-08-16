@@ -87,6 +87,9 @@ class Session:
         self.master = -1
         self._eof = False
         self._exit_status: int | None = None
+        # Bytes written to the child. A wait is over once it parks having
+        # consumed all of them; see `wait_idle`.
+        self._sent = 0
 
     # ---- lifecycle --------------------------------------------------------
     def start(self) -> "Session":
@@ -176,7 +179,14 @@ class Session:
         timeout: float = 10.0,
         require_output: bool = False,
     ) -> "Session":
-        """Read until nothing arrives for `quiet` seconds.
+        """Read until the child has settled.
+
+        The test build says so itself: it writes an idle beacon every time it
+        blocks for input with a painted frame behind it, so a beacon newer
+        than the last thing sent is a finished repaint, observed rather than
+        guessed. Anything with no beacon to offer - a build without the
+        hooks, or a turn that is streaming and so never parks - falls back to
+        waiting out a `quiet` second silence.
 
         With `require_output`, at least one byte must arrive first, which is
         what makes "send a key, then assert" safe: the screen we inspect is
@@ -189,6 +199,12 @@ class Session:
         while time.monotonic() < deadline:
             got = self._read_once(min(0.02, quiet / 3))
             now = time.monotonic()
+            # Parked, having read everything sent: the frame on screen is the
+            # one those bytes asked for, and nothing more is coming.
+            if (self.term.idle_seq
+                    and self.term.idle_consumed >= self._sent
+                    and not self._held):
+                return self
             if got:
                 seen = True
                 last = now
@@ -295,6 +311,9 @@ class Session:
             data = data.encode("utf-8")
         if self.master < 0:
             raise AssertionError("session not started")
+        # The wait after this write is for the frame these bytes cause, and
+        # the beacon that answers it is the one reporting them consumed.
+        self._sent += len(data)
         off = 0
         while off < len(data):
             try:

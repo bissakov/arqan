@@ -11,8 +11,12 @@ import time
 PLAN = "## Steps\n\n1. Read the file\n2. Change the line"
 
 
-def running_turn(ctx, spec="first_delay=6,text=done"):
-    """A session with a turn slow enough to type a command into."""
+def running_turn(ctx, spec="hold,text=done"):
+    """A session with a turn held open to type a command into.
+
+    The turn stays running until `ctx.mock.release()`, so a case takes as
+    long as it needs rather than racing a wall-clock delay.
+    """
     ctx.scenario(spec)
     s = ctx.spawn()
     s.submit("go on")
@@ -28,11 +32,12 @@ def test_an_accepted_message_never_reads_ready(ctx):
     only moment at which the turn is indistinguishable from a finished one,
     so a loaded machine that looks here sees a turn that never ran.
     """
-    ctx.scenario("first_delay=6,text=done")
+    ctx.scenario("hold,text=done")
     s = ctx.spawn()
     s.submit("go on")
     assert s.status_kind() != "ready", s.snapshot("accepted")
     s.wait_activity("thinking")
+    ctx.mock.release()
 
 
 def test_a_command_is_not_work(ctx):
@@ -54,6 +59,7 @@ def test_settings_opens_while_a_turn_streams(ctx):
     s.submit("/settings")
     s.wait_text("Verbose tool output")
     assert "Stream replies" in s.text(), s.text()
+    ctx.mock.release()
     s.wait_text("done")                 # the turn ran on under the screen
     s.key("esc").sync()
     s.wait_gone("Verbose tool output")
@@ -64,7 +70,7 @@ def test_settings_opens_while_a_turn_streams(ctx):
 def test_a_look_setting_applies_without_disturbing_the_reply(ctx):
     """Verbose tool output is a way of reading the transcript, not a request
     setting, so it changes mid-turn and the streamed reply survives it."""
-    ctx.scenario('tool=bash:{"command":"echo hi"},first_delay=4,'
+    ctx.scenario('tool=bash:{"command":"echo hi"},hold_final,'
                  'final_text=finished')
     s = ctx.spawn()
     s.submit("run it")
@@ -74,6 +80,7 @@ def test_a_look_setting_applies_without_disturbing_the_reply(ctx):
     s.settings_select("Verbose tool output").key("enter").sync()
     s.wait_text("[x] Verbose tool output")
     s.key("esc").sync()
+    ctx.mock.release()
     s.wait_turn_done()
     assert "finished" in s.text(), s.text()
     assert "echo hi" in s.text(), "the tool call outlived the re-render"
@@ -89,6 +96,7 @@ def test_a_request_setting_is_refused_until_the_turn_ends(ctx):
     s.wait_text("shapes the request")
     assert "[x] Stream replies" in s.text(), "the setting changed anyway"
     s.key("esc").sync()
+    ctx.mock.release()
     s.wait_turn_done()
     # At the prompt the same row answers.
     s.open_settings()
@@ -104,12 +112,13 @@ def test_copy_takes_the_reply_the_last_turn_left(ctx):
     s.submit("say something")
     s.wait_text("first answer")
     s.wait_turn_done()
-    ctx.scenario("first_delay=6,text=second")
+    ctx.scenario("hold,text=second")
     s.submit("say more")
     s.wait_activity("thinking")
     s.submit("/copy")
     s.wait_text("copied the last response")
     assert s.screen.clipboard == "first answer", repr(s.screen.clipboard)
+    ctx.mock.release()
     s.wait_turn_done()
 
 
@@ -121,6 +130,7 @@ def test_a_command_that_changes_the_turn_waits_for_the_prompt(ctx):
     s.key("enter")
     s.wait_text("waits until the turn ends")
     s.wait_for(lambda t: s.composer_text() == "/clear", "the command to stay")
+    ctx.mock.release()
     s.wait_turn_done()
     s.key("enter")
     s.wait_gone("go on")
@@ -133,6 +143,7 @@ def test_an_unknown_command_says_so_mid_turn(ctx):
     s.type("/nope")
     s.key("enter")
     s.wait_text("unknown command: /nope")
+    ctx.mock.release()
     s.wait_turn_done()
 
 
@@ -143,6 +154,7 @@ def test_a_message_submitted_mid_turn_runs_after_the_reply(ctx):
     s.key("enter")
     s.wait_text("message queued")
     assert s.composer_text() == "", s.composer_lines()
+    ctx.mock.release()
     s.wait_turn_done()
     assert len(ctx.mock.requests) == 2, ctx.mock.requests
     messages = ctx.mock.requests[-1]["messages"]
@@ -183,6 +195,7 @@ def test_escape_cancels_a_queued_message_without_interrupting(ctx):
     s.wait_text("message queued")
     s.key("esc")
     s.wait_text("queued message cancelled")
+    ctx.mock.release()
     s.wait_turn_done()
 
     assert len(ctx.mock.requests) == 1, ctx.mock.requests
@@ -195,6 +208,7 @@ def test_shift_enter_does_not_interrupt_a_running_turn(ctx):
     s.type("first line").sync()
     s.key("shift-enter").sync()
     s.type("second line").sync()
+    ctx.mock.release()
     s.wait_turn_done()
 
     assert s.composer_body(2) == ["first line", "second line"], \
@@ -206,7 +220,7 @@ def test_shift_enter_does_not_interrupt_a_running_turn(ctx):
 def test_a_question_from_the_turn_takes_the_screen_back(ctx):
     """The agent loop is waiting on the answer, so a plan handover closes the
     screen the user left open rather than being refused by it."""
-    ctx.scenario("first_delay=4,tool=submit_plan:"
+    ctx.scenario("hold,tool=submit_plan:"
                  + json.dumps({"plan": PLAN}))
     s = ctx.spawn()
     s.key("shift-tab")
@@ -215,6 +229,7 @@ def test_a_question_from_the_turn_takes_the_screen_back(ctx):
     s.wait_activity("thinking")
     s.submit("/settings")
     s.wait_text("Verbose tool output")
+    ctx.mock.release()
     s.wait_status("continue?")
     assert "Verbose tool output" not in s.text(), s.text()
     assert "Yes, but from a new session" in s.text(), s.text()
@@ -226,6 +241,7 @@ def test_a_screen_left_open_survives_the_end_of_the_turn(ctx):
     s = running_turn(ctx)
     s.submit("/settings")
     s.wait_text("Verbose tool output")
+    ctx.mock.release()
     s.wait_text("done")                 # the turn ended under the screen
     s.settings_select("Display raw").key("enter").sync()
     s.wait_text("[x] Display raw")
@@ -236,12 +252,16 @@ def test_a_screen_left_open_survives_the_end_of_the_turn(ctx):
     assert "[x] Display raw" in s.text(), s.text()
 
 
-def folded_read(ctx, delay=4):
-    """A turn still running, with one folded block already on screen."""
+def folded_read(ctx):
+    """A turn still running, with one folded block already on screen.
+
+    The tool round streams, so the block reaches the screen; the round that
+    would end the turn is held until the case releases it.
+    """
     body = "\n".join(f"line {i:04d} of output" for i in range(40))
     ctx.write_file("big.txt", body)
     ctx.scenario('tool=read:{"path":"big.txt"},'
-                 f'first_delay={delay},final_text=done')
+                 'hold_final,final_text=done')
     s = ctx.spawn()
     s.submit("read big.txt")
     s.wait_text("\u25be 28 more lines")
@@ -302,7 +322,7 @@ def test_window_text_is_selectable_and_copyable(ctx):
 def test_streaming_does_not_drop_a_window_selection(ctx):
     """Transcript bytes arriving behind the independent window do not move
     or clear a selection in its body."""
-    s = folded_read(ctx, delay=8)
+    s = folded_read(ctx)
     click_tail(s)
     s.wait_text("line 0012 of output")
     row = s.screen.find_row("line 0012 of output") + 1
@@ -312,6 +332,7 @@ def test_streaming_does_not_drop_a_window_selection(ctx):
     assert all(s.screen.attr_at(row - 1, c).reverse
                for c in range(col - 1,
                               col - 1 + len("line 0012 of output")))
+    ctx.mock.release()
     s.wait_turn_done()
     assert all(s.screen.attr_at(row - 1, c).reverse
                for c in range(col - 1,
@@ -329,6 +350,7 @@ def test_the_window_closes_and_leaves_the_block_folded(ctx):
     s.key("esc").sync()
     s.wait_gone("line 0012 of output")
 
+    ctx.mock.release()
     s.wait_turn_done()
     text = s.text()
     assert "\u25be 28 more lines" in text, text
@@ -350,7 +372,7 @@ def test_the_visible_close_control_closes_the_window(ctx):
 def test_the_window_scrolls_through_the_whole_block(ctx):
     """Every folded line is reachable, not just the ones the first page of
     the window happened to hold."""
-    s = folded_read(ctx, delay=8)
+    s = folded_read(ctx)
     click_tail(s)
     s.wait_text("line 0012 of output")
     for _ in range(28):
@@ -368,7 +390,7 @@ def test_the_window_keeps_the_full_tool_result(ctx):
     body = "\n".join(["x"] * 1499 + ["LAST LINE"])
     ctx.write_file("long.txt", body)
     ctx.scenario('tool=read:{"path":"long.txt","limit":2000},'
-                 'first_delay=4,final_delay=12,final_text=done')
+                 'hold_final,final_text=done')
     s = ctx.spawn()
     s.submit("read long.txt")
     s.wait_text("\u25be 1488 more lines")
@@ -383,7 +405,7 @@ def test_the_window_keeps_the_tool_input_header_line(ctx):
     command = "printf first\\n\n" + "\n".join(
         f"# input {i:02d}" for i in range(20))
     ctx.scenario("tool=bash:" + json.dumps({"command": command})
-                 + ",first_delay=4,final_text=done")
+                 + ",hold_final,final_text=done")
     s = ctx.spawn()
     s.submit("run a long command")
     s.wait_text("\u25be 12 more lines")
@@ -395,7 +417,7 @@ def test_the_window_keeps_the_tool_input_header_line(ctx):
 def test_the_window_contains_a_shell_command_and_all_its_output(ctx):
     """A direct shell block is one window: its command is at the top and the
     last output line remains reachable at the bottom."""
-    ctx.scenario("first_delay=8,text=done")
+    ctx.scenario("hold,text=done")
     s = ctx.spawn()
     command = "for i in $(seq 0 39); do printf 'shell %04d\\n' \"$i\"; done"
     s.submit("!" + command)
@@ -410,7 +432,7 @@ def test_the_window_contains_a_shell_command_and_all_its_output(ctx):
 def test_the_window_reflows_on_a_narrow_terminal(ctx):
     """The centered rectangle stays inset, wraps its text, and preserves its
     scroll range after a resize."""
-    s = folded_read(ctx, delay=8)
+    s = folded_read(ctx)
     click_tail(s)
     s.wait_text("line 0012 of output")
     s.resize(42, 16).sync()
@@ -429,6 +451,7 @@ def test_the_turn_streams_on_under_the_window(ctx):
     s = folded_read(ctx)
     click_tail(s)
     s.wait_text("line 0012 of output")
+    ctx.mock.release()
     s.wait_turn_done()
     s.key("esc").sync()
     assert "done" in s.text(), s.text()
@@ -492,7 +515,7 @@ def test_a_question_the_turn_asks_takes_the_window(ctx):
     behind: an approval the next round needs closes it and is asked at once."""
     command = "for i in $(seq 0 39); do printf 'shell %04d\\n' \"$i\"; done"
     ctx.scenario("tool=bash:" + json.dumps({"command": command})
-                 + ",tool_rounds=2,first_delay=2,final_text=done")
+                 + ",tool_rounds=2,hold_round=2,final_text=done")
     s = ctx.spawn(ARQAN_PERMISSIONS="ask")
     s.submit("run it")
     s.wait_status("allow bash?")
@@ -501,6 +524,7 @@ def test_a_question_the_turn_asks_takes_the_window(ctx):
     click_tail(s)
     s.wait_text("shell 0012")
 
+    ctx.mock.release()
     s.wait_status("allow bash?")
     text = s.text()
     assert "Yes and remember" in text, text

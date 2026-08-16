@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import base64
 import unicodedata
+import re
 
 # ---- character cell widths ------------------------------------------------
 # Mirrors what wcwidth(3) reports for the glyphs the UI can paint, so the
 # emulator's column accounting matches tui.c's.
 
 
-def char_width(ch: str) -> int:
+def _width_of(ch: str) -> int:
     if ch == "\0":
         return 1
     cat = unicodedata.category(ch)
@@ -35,34 +36,75 @@ def char_width(ch: str) -> int:
     return 1
 
 
+# The screen is repainted whole on every frame, so the same few hundred
+# glyphs are measured millions of times per suite. The table is pure, so it
+# is memoized once and read from there.
+_WIDTHS: dict[str, int] = {chr(c): 1 for c in range(0x20, 0x7F)}
+
+
+def char_width(ch: str) -> int:
+    w = _WIDTHS.get(ch)
+    if w is None:
+        w = _WIDTHS[ch] = _width_of(ch)
+    return w
+
+
 def text_width(s: str) -> int:
     return sum(char_width(c) for c in s)
 
 
 class Attr:
-    """Style flags of one cell, kept comparable and hashable."""
+    """Style flags of one cell, kept comparable and hashable.
 
-    __slots__ = ("fg", "bg", "bold", "reverse", "underline")
+    Instances are immutable and interned by `attr_of`, so a cell holds a
+    shared reference rather than a copy: painting a row is a slice assignment
+    of one object instead of eighty constructions. Build a changed style with
+    `replace`; assigning to a field raises, since the instance is shared with
+    every other cell that carries the same style.
+    """
+
+    __slots__ = ("fg", "bg", "bold", "reverse", "underline", "_key", "_frozen")
 
     def __init__(self, fg=None, bg=None, bold=False, reverse=False,
                  underline=False):
-        self.fg = fg
-        self.bg = bg
-        self.bold = bold
-        self.reverse = reverse
-        self.underline = underline
+        set_ = object.__setattr__
+        set_(self, "fg", fg)
+        set_(self, "bg", bg)
+        set_(self, "bold", bold)
+        set_(self, "reverse", reverse)
+        set_(self, "underline", underline)
+        set_(self, "_key", (fg, bg, bold, reverse, underline))
+        set_(self, "_frozen", True)
+
+    def __setattr__(self, name, value):
+        raise AttributeError(
+            f"Attr is shared between cells and immutable; "
+            f"use replace({name}=...)"
+        )
+
+    def replace(self, **changes) -> "Attr":
+        fg, bg, bold, reverse, underline = self._key
+        return attr_of(
+            changes.get("fg", fg),
+            changes.get("bg", bg),
+            changes.get("bold", bold),
+            changes.get("reverse", reverse),
+            changes.get("underline", underline),
+        )
 
     def copy(self) -> "Attr":
-        return Attr(self.fg, self.bg, self.bold, self.reverse, self.underline)
+        return self
 
     def key(self):
-        return (self.fg, self.bg, self.bold, self.reverse, self.underline)
+        return self._key
 
     def __eq__(self, other):
-        return isinstance(other, Attr) and self.key() == other.key()
+        if self is other:
+            return True
+        return isinstance(other, Attr) and self._key == other._key
 
     def __hash__(self):
-        return hash(self.key())
+        return hash(self._key)
 
     def __repr__(self):
         bits = []
@@ -79,10 +121,44 @@ class Attr:
         return "Attr(" + ",".join(bits) + ")"
 
 
+_ATTRS: dict[tuple, Attr] = {}
+
+
+def attr_of(fg=None, bg=None, bold=False, reverse=False,
+            underline=False) -> Attr:
+    """The one `Attr` carrying this style; cells share it."""
+    key = (fg, bg, bold, reverse, underline)
+    got = _ATTRS.get(key)
+    if got is None:
+        got = _ATTRS[key] = Attr(*key)
+    return got
+
+
+DEFAULT_ATTR = attr_of()
+
 BLANK = " "
 
 # Placeholder occupying the right half of a double-width glyph.
 CONT = "\uffff"
+
+# The ground state consumes printable ASCII a run at a time; this finds where
+# the run ends, which is the next control byte, ESC, or non-ASCII lead.
+_NOT_PLAIN = re.compile(rb"[^\x20-\x7e]")
+
+# A whole CSI, taken in one match instead of a byte at a time. The byte ranges
+# are the state machine's: parameters, then intermediates, then the final. A
+# sequence split across two reads does not match and falls back to it.
+_CSI = re.compile(rb"\x1b\[([\x30-\x3f]*)([\x20-\x2f]*)([\x40-\x7e])")
+
+# Likewise for a string sequence's terminator: BEL or ST. OSC 52 carries the
+# whole clipboard, so the payload is worth taking whole.
+_STR_END = re.compile(rb"\x07|\x1b\\")
+
+# The test build's idle beacon, as an APC payload. See `idle_beacon` in
+# src/tui.c: the agent writes one every time it blocks for input with a
+# painted frame behind it, carrying a sequence number and the number of
+# input bytes it has consumed by then.
+IDLE_PREFIX = "agent;idle;"
 
 
 class Buffer:
@@ -90,24 +166,24 @@ class Buffer:
         self.cols = cols
         self.rows = rows
         self.chars = [[BLANK] * cols for _ in range(rows)]
-        self.attrs = [[Attr() for _ in range(cols)] for _ in range(rows)]
+        self.attrs = [[DEFAULT_ATTR] * cols for _ in range(rows)]
 
     def clear(self):
+        cols = self.cols
         for r in range(self.rows):
-            for c in range(self.cols):
-                self.chars[r][c] = BLANK
-                self.attrs[r][c] = Attr()
+            self.chars[r][:] = [BLANK] * cols
+            self.attrs[r][:] = [DEFAULT_ATTR] * cols
 
     def resize(self, cols: int, rows: int):
         old_chars, old_attrs = self.chars, self.attrs
         old_rows, old_cols = self.rows, self.cols
         self.cols, self.rows = cols, rows
         self.chars = [[BLANK] * cols for _ in range(rows)]
-        self.attrs = [[Attr() for _ in range(cols)] for _ in range(rows)]
+        self.attrs = [[DEFAULT_ATTR] * cols for _ in range(rows)]
+        keep = min(cols, old_cols)
         for r in range(min(rows, old_rows)):
-            for c in range(min(cols, old_cols)):
-                self.chars[r][c] = old_chars[r][c]
-                self.attrs[r][c] = old_attrs[r][c]
+            self.chars[r][:keep] = old_chars[r][:keep]
+            self.attrs[r][:keep] = old_attrs[r][:keep]
 
 
 class Terminal:
@@ -123,7 +199,7 @@ class Terminal:
         self.row = 0
         self.col = 0
         self.saved_cursor = (0, 0)
-        self.attr = Attr()
+        self.attr = DEFAULT_ATTR
         self.cursor_visible = True
         self.autowrap = True
         self.modes: dict[int, bool] = {}
@@ -133,12 +209,21 @@ class Terminal:
         self.bell_count = 0
         self.title: str | None = None
         self.unknown: list[str] = []
+        # Sequence number of the last idle beacon the test build emitted. It
+        # only ever grows, and each bump is one settled frame.
+        self.idle_seq = 0
+        # Input bytes the child had consumed when it last parked.
+        self.idle_consumed = 0
         # decoder state
         self._pending = b""
         self._state = "ground"
         self._params = ""
         self._intermediate = ""
         self._osc = ""
+        # Rendered rows, valid until the next feed. `wait_for` polls the
+        # screen far more often than bytes arrive, and every poll used to
+        # rebuild all of it.
+        self._lines: list[str] | None = None
 
     # ---- geometry ---------------------------------------------------------
     def resize(self, cols: int, rows: int):
@@ -147,9 +232,13 @@ class Terminal:
         self.alt.resize(cols, rows)
         self.row = min(self.row, rows - 1)
         self.col = min(self.col, cols - 1)
+        self._lines = None
 
     # ---- feeding ----------------------------------------------------------
     def feed(self, data: bytes):
+        # Only a feed can move the screen, so one invalidation here covers
+        # every mutation below.
+        self._lines = None
         data = self._pending + data
         self._pending = b""
         i = 0
@@ -158,10 +247,25 @@ class Terminal:
             b = data[i]
             if self._state == "ground":
                 if b == 0x1B:
+                    m = _CSI.match(data, i)
+                    if m is not None:
+                        self._params = m.group(1).decode("ascii")
+                        self._intermediate = m.group(2).decode("ascii")
+                        self._csi(m.group(3).decode("ascii"))
+                        i = m.end()
+                        continue
                     self._state = "esc"
                     i += 1
                     continue
                 if b < 0x80:
+                    # A frame is mostly runs of plain text between escapes;
+                    # take the whole run rather than dispatching per byte.
+                    if 0x20 <= b <= 0x7E:
+                        m = _NOT_PLAIN.search(data, i + 1)
+                        end = m.start() if m else n
+                        self._print_run(data[i:end].decode("ascii"))
+                        i = end
+                        continue
                     self._control_or_print(chr(b))
                     i += 1
                     continue
@@ -228,10 +332,23 @@ class Terminal:
                 continue
 
             if self._state in ("osc", "dcs"):
-                i += 1
-                if b == 0x07:  # BEL terminator
+                # OSC 52 carries a whole selection, so the payload is taken in
+                # one slice up to its terminator. A bare ESC at the end of the
+                # read may be the head of an ST split across two feeds, so it
+                # is left for the byte-at-a-time path below.
+                m = _STR_END.search(data, i)
+                if m is not None:
+                    self._osc += data[i:m.start()].decode("latin-1")
                     self._end_string()
-                elif b == 0x1B:
+                    i = m.end()
+                    continue
+                tail = n - 1 if data[n - 1] == 0x1B else n
+                if tail > i:
+                    self._osc += data[i:tail].decode("latin-1")
+                    i = tail
+                    continue
+                i += 1
+                if b == 0x1B:
                     self._state = self._state + "_esc"
                 else:
                     self._osc += ch
@@ -256,7 +373,7 @@ class Terminal:
         self.buf = self.primary
         self.alt_active = False
         self.row = self.col = 0
-        self.attr = Attr()
+        self.attr = DEFAULT_ATTR
 
     def _control_or_print(self, ch: str):
         if ch == "\n":
@@ -284,7 +401,44 @@ class Terminal:
         b.chars.pop(0)
         b.attrs.pop(0)
         b.chars.append([BLANK] * b.cols)
-        b.attrs.append([Attr() for _ in range(b.cols)])
+        b.attrs.append([DEFAULT_ATTR] * b.cols)
+
+    def _print_run(self, s: str):
+        """Paint a run of printable ASCII, which is every glyph one cell wide.
+
+        Same rules as `_print`, applied to as much of the run as fits the
+        current row at a time. The UI paints with DECAWM off, so that path is
+        the one that matters: everything past the right edge lands on the last
+        cell, where only the final glyph of the run survives.
+        """
+        b = self.buf
+        cols = self.cols
+        if cols <= 0:
+            return
+        i, n = 0, len(s)
+        while i < n:
+            if self.row >= self.rows:
+                self.row = self.rows - 1
+            if self.col + 1 > cols:
+                if self.autowrap:
+                    self.col = 0
+                    self.row += 1
+                    if self.row >= self.rows:
+                        self._scroll_up()
+                        self.row = self.rows - 1
+                else:
+                    # Every remaining glyph overwrites the last cell in turn,
+                    # so only the last one is observable.
+                    b.chars[self.row][cols - 1] = s[-1]
+                    b.attrs[self.row][cols - 1] = self.attr
+                    self.col = cols
+                    return
+            take = min(cols - self.col, n - i)
+            end = self.col + take
+            b.chars[self.row][self.col:end] = s[i:i + take]
+            b.attrs[self.row][self.col:end] = [self.attr] * take
+            self.col = end
+            i += take
 
     def _print(self, ch: str):
         w = char_width(ch)
@@ -304,11 +458,11 @@ class Terminal:
             self.row = self.rows - 1
         b = self.buf
         b.chars[self.row][self.col] = ch
-        b.attrs[self.row][self.col] = self.attr.copy()
+        b.attrs[self.row][self.col] = self.attr
         for k in range(1, w):
             if self.col + k < self.cols:
                 b.chars[self.row][self.col + k] = CONT
-                b.attrs[self.row][self.col + k] = self.attr.copy()
+                b.attrs[self.row][self.col + k] = self.attr
         self.col += w
         if self.col > self.cols:
             self.col = self.cols
@@ -397,72 +551,85 @@ class Terminal:
         else:
             self._erase_line(1)
             rng = range(0, self.row)
+        blank = [BLANK] * self.cols
+        plain = [DEFAULT_ATTR] * self.cols
         for r in rng:
-            for c in range(self.cols):
-                b.chars[r][c] = BLANK
-                b.attrs[r][c] = Attr()
+            b.chars[r][:] = blank
+            b.attrs[r][:] = plain
 
     def _erase_line(self, mode: int):
         b = self.buf
         if mode == 0:
-            rng = range(self.col, self.cols)
+            lo, hi = self.col, self.cols
         elif mode == 1:
-            rng = range(0, min(self.col + 1, self.cols))
+            lo, hi = 0, min(self.col + 1, self.cols)
         else:
-            rng = range(0, self.cols)
-        for c in rng:
-            b.chars[self.row][c] = BLANK
-            b.attrs[self.row][c] = self.attr.copy() if False else Attr()
+            lo, hi = 0, self.cols
+        if hi <= lo:
+            return
+        b.chars[self.row][lo:hi] = [BLANK] * (hi - lo)
+        b.attrs[self.row][lo:hi] = [DEFAULT_ATTR] * (hi - lo)
 
     def _sgr(self, params):
         if not params:
             params = [0]
+        fg, bg, bold, reverse, underline = self.attr.key()
         i = 0
         while i < len(params):
             v = params[i]
             if v == 0:
-                self.attr = Attr()
+                fg = bg = None
+                bold = reverse = underline = False
             elif v == 1:
-                self.attr.bold = True
+                bold = True
             elif v == 22:
-                self.attr.bold = False
+                bold = False
             elif v == 4:
-                self.attr.underline = True
+                underline = True
             elif v == 24:
-                self.attr.underline = False
+                underline = False
             elif v == 7:
-                self.attr.reverse = True
+                reverse = True
             elif v == 27:
-                self.attr.reverse = False
+                reverse = False
             elif v == 39:
-                self.attr.fg = None
+                fg = None
             elif v == 49:
-                self.attr.bg = None
+                bg = None
             elif 30 <= v <= 37:
-                self.attr.fg = v - 30
+                fg = v - 30
             elif 90 <= v <= 97:
-                self.attr.fg = v - 90 + 8
+                fg = v - 90 + 8
             elif 40 <= v <= 47:
-                self.attr.bg = v - 40
+                bg = v - 40
             elif 100 <= v <= 107:
-                self.attr.bg = v - 100 + 8
+                bg = v - 100 + 8
             elif v in (38, 48):
                 if i + 1 < len(params) and params[i + 1] == 5:
                     colour = params[i + 2] if i + 2 < len(params) else 0
                     if v == 38:
-                        self.attr.fg = colour
+                        fg = colour
                     else:
-                        self.attr.bg = colour
+                        bg = colour
                     i += 2
                 elif i + 1 < len(params) and params[i + 1] == 2:
                     i += 4
             i += 1
+        self.attr = attr_of(fg, bg, bold, reverse, underline)
 
     # ---- OSC --------------------------------------------------------------
     def _end_string(self):
         payload = self._osc
         self._osc = ""
         self._state = "ground"
+        if payload.startswith(IDLE_PREFIX):
+            try:
+                seq, _, consumed = payload[len(IDLE_PREFIX):].partition(";")
+                self.idle_seq = int(seq)
+                self.idle_consumed = int(consumed) if consumed else 0
+            except ValueError:
+                pass
+            return
         if payload.startswith("52;"):
             parts = payload.split(";", 2)
             if len(parts) == 3:
@@ -481,14 +648,16 @@ class Terminal:
 
     # ---- inspection -------------------------------------------------------
     def row_text(self, r: int) -> str:
-        return "".join(c for c in self.buf.chars[r] if c != CONT)
+        line = "".join(self.buf.chars[r])
+        return line.replace(CONT, "") if CONT in line else line
 
     def lines(self, strip=True) -> list[str]:
-        out = []
-        for r in range(self.rows):
-            line = self.row_text(r)
-            out.append(line.rstrip() if strip else line)
-        return out
+        rows = self._lines
+        if rows is None:
+            rows = self._lines = [self.row_text(r) for r in range(self.rows)]
+        if not strip:
+            return list(rows)
+        return [line.rstrip() for line in rows]
 
     def text(self, strip=True) -> str:
         return "\n".join(self.lines(strip))

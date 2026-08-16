@@ -181,7 +181,7 @@ def test_an_interrupt_during_naming_ends_the_turn(ctx):
     the work running with nothing on screen to say the key did anything.
     """
     ctx.scenario('tool=bash:{"command":"echo slept"},final_text=all+done')
-    s = ctx.spawn(ARQAN_SMALL_MODEL="mock:first_delay=5,text=Slow+name")
+    s = ctx.spawn(ARQAN_SMALL_MODEL="mock:hold,text=Slow+name")
     s.submit("remember the cat")
     s.wait_activity("naming")
     s.key("ctrl-c")

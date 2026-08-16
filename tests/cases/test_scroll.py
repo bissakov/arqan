@@ -128,7 +128,9 @@ def test_the_thumb_reaches_the_bottom_while_streaming(ctx):
     counting its rows as part of the scroll window pins the view one block too
     high and leaves the newest line off screen until the turn ends.
     """
-    ctx.scenario("words=600,paragraphs=8,chunk=4,delay=0.02")
+    # Held part way through the reply, so the assertion looks at a turn that
+    # is genuinely mid-stream without pacing the whole of it.
+    ctx.scenario("words=600,paragraphs=8,chunk=4,hold_after=100")
     s = ctx.spawn()
     s.submit("write a lot")
     s.wait_for(lambda t: "\u2503" in s.scrollbar(), "a scrollable transcript")
@@ -136,6 +138,7 @@ def test_the_thumb_reaches_the_bottom_while_streaming(ctx):
     bar = s.scrollbar(popup_rows=2)
     assert bar[-1] == "\u2503", (
         f"thumb should reach the bottom while pinned: {bar}\n{s.text()}")
+    ctx.mock.release()
     s.wait_turn_done()
 
 
@@ -170,7 +173,10 @@ def test_streaming_does_not_steal_a_scrolled_view(ctx):
     Every appended run used to pin the viewport back to the newest row, so a
     streaming reply dragged the reader off the lines they were reading.
     """
-    ctx.scenario("words=600,paragraphs=8,chunk=4,delay=0.02")
+    # Paced, not held: this case is about output that keeps arriving while
+    # the reader is scrolled up, so the reply has to grow in steps. The
+    # workload is the smallest one that overflows the viewport.
+    ctx.scenario("words=400,paragraphs=1,chunk=4,delay=0.02")
     s = ctx.spawn()
     s.submit("write a lot")
     s.wait_for(lambda t: "\u2503" in s.scrollbar(popup_rows=2),
