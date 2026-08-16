@@ -9,13 +9,13 @@
 - Run long commands in the background. A `bash` command still going after two
   minutes keeps running as a job, and the new `job` tool waits for it, lists
   jobs, or stops one. `shell_timeout_ms` sets the two minutes; 0 waits for
-  every command. Jobs end with the session.
+  every command. Jobs end with the session. ([`6efb5bf`])
 
 - Ship an Arch Linux package. The release now carries a
   `arqan-X.Y.Z-1-x86_64.pkg.tar.zst` next to the `.deb`, the `.rpm` and the
   portable archive, so Arch and its derivatives install with `pacman -U`
   and remove with `pacman -R`. It carries the same binaries as the `.rpm`,
-  and a file manifest `pacman -Qkk` verifies.
+  and a file manifest `pacman -Qkk` verifies. ([`3af8d2c`])
 
 ### Changed
 
@@ -25,7 +25,7 @@
   a session that never asks a provider anything never needs it. It is now
   opened at the first request, and a machine without it is told so there
   rather than refusing to start. What must be installed is unchanged: every
-  package names libcurl itself.
+  package names libcurl itself. ([`0c7a904`])
 
 - Mark a user turn on every row. What the reader wrote was told from what the
   model answered by a background one shade off the transcript's, and a fenced
@@ -34,7 +34,7 @@
   a reply. A user turn now carries a rule down its left edge on every row it
   covers - code, tables and the padding around it included - and its panel
   runs unbroken, with a fence inside it shaded as part of the turn. The rule
-  is a glyph, so the turn is still marked under `NO_COLOR`.
+  is a glyph, so the turn is still marked under `NO_COLOR`. ([`21b4801`])
 
 - Show a command instead of summarising it. A tool call's header used to cut
   its command at a row's worth of bytes, which hid the tail of most pipelines
@@ -42,19 +42,21 @@
   longer than the new width still ends in an ellipsis, and the block offers a
   "show in full" row that expands it in one click, so nothing a call does is
   out of reach without turning verbose output on. Tool *output* is unchanged.
+  ([`b3baa6d`])
 
 - Lift the transcript for a notice. A one-line answer to a command that
   opens nothing - "copied the last response", "exported session to ..." -
   used to cover the newest transcript row for as long as it stayed up, which
   hid the end of the last reply. It now takes a row of its own, the way the
   activity spinner does. Pickers, the settings screen and the completion
-  popup still cover the transcript instead of moving it.
+  popup still cover the transcript instead of moving it. ([`abde625`])
 
 - Paint every frame inside a synchronized update. Terminals that support
   DEC mode 2026 (kitty, WezTerm, Ghostty, foot, recent tmux) now hold the
   display until the frame is complete, so a repaint that leaves the process
   in several writes - a fast stream, a slow pipe, an ssh link - is shown
   whole rather than half drawn. Terminals without the mode ignore it.
+  ([`44afdd2`])
 
 ### Fixed
 
@@ -63,12 +65,12 @@
   spent that frame on screen under an idle status, looking like a message
   that had gone nowhere. The frame that takes the message now says so, and a
   form that stops to ask for a value reads ready while it waits, since
-  waiting on the reader is not work.
+  waiting on the reader is not work. ([`0b6afa1`])
 
 - Keep a wrapped command out of the justifier. With justified wrapping on, a
   command, file content or diff that ran past one row had the gaps of its
   wrapped rows widened like prose, which moved the columns of the code under
-  it. Those rows now keep the spacing they were written with.
+  it. Those rows now keep the spacing they were written with. ([`25131e2`])
 
 - Keep a session through a power loss. Each save now reaches the disk before
   the call returns, instead of sitting in the page cache behind whatever the
@@ -78,7 +80,7 @@
   which the provider accepts and the model can act on, and the answer is
   written back so the next resume finds the file whole. A line torn in half
   by the cut is also closed before the next append, which used to run onto
-  its tail and cost the first message after it.
+  its tail and cost the first message after it. ([`331950f`])
 
 - Keep a command's password prompt off the screen. A command that wanted a
   human, `sudo` above all, opened the terminal behind the closed standard
@@ -87,18 +89,18 @@
   command until Ctrl-C. Commands now run in a session of their own with no
   terminal to open, so `sudo` reports that it cannot ask for a password and
   exits, and the agent is told as much. Run `arqan` itself under `sudo` if
-  that is what the work needs.
+  that is what the work needs. ([`21a7cf1`])
 
 - Stop a Ctrl-C from ending the next `!` command as well. Interrupting a
   local run left the interrupt pending, so the command after it reported
-  itself interrupted without running.
+  itself interrupted without running. ([`21a7cf1`])
 
 - Stop claiming a copy under tmux succeeded. tmux ships with `set-clipboard
   external`, which forbids an application inside it from setting the
   clipboard and answers nothing, so `/copy` and a drag-select reported
   "copied" for text that never left tmux. Both now name the option that
   carries it, and the README says what to set for the clipboard and for
-  desktop notifications.
+  desktop notifications. ([`c283505`])
 
 - Stop the `libcurl.so.4: no version information available` warning the rpm
   printed on every run. Debian versions libcurl's symbols and the rpm
@@ -107,6 +109,7 @@
   now built on EL9 against its own family's libcurl and its dependencies are
   no longer filtered, so it declares what it actually needs: glibc 2.34 or
   newer. Hosts below that take the portable archive, which needs nothing.
+  ([`2021585`])
 
 ## [0.4.0] - 2026-08-15
 
@@ -262,6 +265,19 @@
 [0.2.0]: https://github.com/bissakov/arqan/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bissakov/arqan/releases/tag/v0.1.0
 
+[`6efb5bf`]: https://github.com/bissakov/arqan/commit/6efb5bf697325810417ca7e0a0f8c7200e53cbef
+[`3af8d2c`]: https://github.com/bissakov/arqan/commit/3af8d2c7e512f266f87ca341f514e88373ccb32e
+[`0c7a904`]: https://github.com/bissakov/arqan/commit/0c7a9042fb2af783b05a20ba2ed5c5a049b36f80
+[`21b4801`]: https://github.com/bissakov/arqan/commit/21b48017f3cab4b10751ecb8d7517e1901978b5c
+[`b3baa6d`]: https://github.com/bissakov/arqan/commit/b3baa6dc7775dedfd2bca82de3c995d476266d55
+[`abde625`]: https://github.com/bissakov/arqan/commit/abde62581ee3607af3a75f471159b3e0dc6807eb
+[`44afdd2`]: https://github.com/bissakov/arqan/commit/44afdd2f3eab6b2635986807bf9a4b8b703e3d29
+[`0b6afa1`]: https://github.com/bissakov/arqan/commit/0b6afa182b420c95c44d08186e1c8a3855e1160c
+[`25131e2`]: https://github.com/bissakov/arqan/commit/25131e29c9429a15e60e1ed2a74cc1d9a230fba0
+[`331950f`]: https://github.com/bissakov/arqan/commit/331950f3e506f4763701cc3e1cae0abb787b3469
+[`21a7cf1`]: https://github.com/bissakov/arqan/commit/21a7cf14e62e8fc030b1960f3dbb21776439139e
+[`c283505`]: https://github.com/bissakov/arqan/commit/c28350532070cd8d268bba1f0f13722f585b3958
+[`2021585`]: https://github.com/bissakov/arqan/commit/202158580abd54ad75e6ad0a287c9336c688bb4d
 [`6566f35`]: https://github.com/bissakov/arqan/commit/6566f35f11a17baf50ded550c68ec1a684852ae4
 [`686df1a`]: https://github.com/bissakov/arqan/commit/686df1ab7cdc072c8fd229b66d30f46f80b6110b
 [`614b416`]: https://github.com/bissakov/arqan/commit/614b41641aa115e89fb2dd47f0804798584fba72
