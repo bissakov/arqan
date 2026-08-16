@@ -205,6 +205,27 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
               : str_eq(name, STR("internet_search")) ? json_str(j, STR("query"))
               : (Str){0};
     Str target = query.n ? query : path.n ? path : cmd;
+    /* A job call names no file and runs no command, so it is shown by what
+     * it does to which job. */
+    char job_buf[40];
+    if (str_eq(name, STR("job"))) {
+        const JVal *v = json_get(j, STR("id"));
+        Str action = json_str(j, STR("action"));
+        u64 job_id = v && v->type == J_NUM && v->u.n >= 1 ? (u64)v->u.n : 0;
+        i32 n = !job_id
+              ? snprintf(job_buf, sizeof job_buf, "%.*s",
+                         action.n ? (i32)action.n : 4,
+                         action.n ? action.p : "list")
+              : action.n
+              ? snprintf(job_buf, sizeof job_buf, "%.*s %llu",
+                         (i32)action.n, action.p, (unsigned long long)job_id)
+              : snprintf(job_buf, sizeof job_buf, "%llu",
+                         (unsigned long long)job_id);
+        if (n > 0)
+            target = (Str){ job_buf,
+                            (size_t)n < sizeof job_buf ? (size_t)n
+                                                       : sizeof job_buf - 1 };
+    }
     size_t cmd_off = 0;
     b8 target_cmd = !path.n && cmd.n;
     if (target_cmd) str_line(cmd, &cmd_off, &target);
@@ -566,7 +587,10 @@ void render_tool_result(Str name, Str args, Str result, Arena *scratch,
     }
 
     Str body = result, status = {0};
-    b8 shell = str_eq(name, STR("bash")) || str_eq(name, STR("shell"));
+    /* job answers in the same shape as the command it follows: output, then
+     * a bracketed line saying where it stands. */
+    b8 shell = str_eq(name, STR("bash")) || str_eq(name, STR("shell"))
+            || str_eq(name, STR("job"));
     b8 have_status = shell && split_status(result, &body, &status);
     size_t mark = scratch ? scratch->off : 0;
     JVal *j = scratch && args.n ? json_parse(scratch, args) : NULL;

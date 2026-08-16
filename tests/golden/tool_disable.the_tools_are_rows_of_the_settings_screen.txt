@@ -15,9 +15,9 @@
 |    [x] internet_search      Search the public web
 |    [x] page_fetch           Fetch a public web page
 |    [x] bash                 Run a shell command
+|    [x] job                  Follow a background command
 |    [x] patch                Change files with a diff
 |  › [x] write                Write a file whole
-|        Text wrap            Word  Justified
 |
 |  › Message arqan...
 |

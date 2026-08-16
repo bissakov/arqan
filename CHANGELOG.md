@@ -4,6 +4,11 @@
 
 ### Added
 
+- Run long commands in the background. A `bash` command still going after two
+  minutes keeps running as a job, and the new `job` tool waits for it, lists
+  jobs, or stops one. `shell_timeout_ms` sets the two minutes; 0 waits for
+  every command. Jobs end with the session.
+
 - Ship an Arch Linux package. The release now carries a
   `arqan-X.Y.Z-1-x86_64.pkg.tar.zst` next to the `.deb`, the `.rpm` and the
   portable archive, so Arch and its derivatives install with `pacman -U`

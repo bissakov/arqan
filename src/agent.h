@@ -85,6 +85,17 @@ typedef bool     b8;
  * provider prompt cache, so a user who stepped away costs a wait rather
  * than a full re-read of the conversation. */
 #define AGENT_ASK_TIMEOUT_MS   180000
+/* How long a shell command holds the turn before it is detached into a job.
+ * Short of the shortest provider prompt cache for the reason above: a model
+ * idle past it pays for the whole conversation again on its next request.
+ * 0 waits for the command however long it takes. */
+#define AGENT_SHELL_TIMEOUT_MS 120000
+// How long one job wait blocks by default, and the most it may be asked for.
+#define AGENT_JOB_WAIT_MS      120000
+#define AGENT_JOB_WAIT_MAX_MS  240000
+#define AGENT_MAX_JOBS         8
+// Of the command a job listing names; the rest is elided.
+#define AGENT_JOB_CMD_CHARS    96
 #define AGENT_MAX_COMMANDS     32
 #define AGENT_LINE_BUF         (1u << 20)
 #define AGENT_RESP_BUF         (1u << 22)
@@ -681,6 +692,7 @@ typedef enum {
     CONF_SEARCH_ENGINE_ID,
     CONF_SMALL_MODEL, CONF_SMALL_PROVIDER, CONF_AUTO_TITLE,
     CONF_ASK_TIMEOUT_MS,
+    CONF_SHELL_TIMEOUT_MS,
     CONF_N
 } ConfKey;
 
@@ -827,6 +839,9 @@ typedef struct {
      * itself with the option the model recommended. 0 waits forever, which
      * is also what a question recommending nothing does. */
     i32 ask_timeout_ms;
+    /* How long a shell command runs before `bash` detaches it into a job and
+     * answers with the output so far. 0 waits for the command. */
+    i32 shell_timeout_ms;
     /* Commands may replace these fields after the conversation rewind mark.
      * Their owned copies live here so /clear cannot reclaim them. */
     char owned_base_url[AGENT_MAX_URL + 1];
@@ -1055,6 +1070,14 @@ void    spill_putf(Spill *s, const char *fmt, ...);
  * file is unlinked and `out` is untouched. The note fits in
  * AGENT_SPILL_NOTE_BYTES, which a caller reserves in its result budget. */
 void    spill_finish(Spill *s, Buf *out, b8 keep);
+/* Hands the file over: flushes what is buffered, copies the path into `path`,
+ * reports how much is already in it through `written`, and leaves the Spill
+ * empty without unlinking. Returns the open write fd, which the caller owns
+ * and must close, or -1 when there is no file or the flush failed (and then
+ * the file is unlinked as spill_finish would). */
+i32     spill_release(Spill *s, char *path, size_t path_cap, size_t *written);
+/* How large a file is, in the rounded form the spill note uses. */
+void    spill_size_text(char *z, size_t cap, size_t n);
 
 // ---- tools (SoA registry) -----------------------------------------------
 typedef b8 (*ToolRun)(Str args_json, Arena *scratch, Buf *out,
@@ -1137,6 +1160,13 @@ b8          shell_capture(Str cmd, Buf *out, char *err, size_t err_cap);
  * in-flight request does; unset by default, since a tool is not the TUI's. */
 void        shell_set_idle(void (*fn)(void *ud), void *ud);
 void        shell_set_interrupt_flag(volatile sig_atomic_t *flag);
+/* How long a `bash` call waits before it detaches the command into a job and
+ * answers with what ran so far; 0 waits for it. shell_capture, which runs a
+ * command the user typed with the user watching, has no deadline. */
+void        shell_set_timeout(i32 ms);
+/* Kills every job still running, reaps it and drops its log. Registered with
+ * atexit, so a detached command never outlives the session that started it. */
+void        jobs_stop(void);
 
 // ---- prompt -------------------------------------------------------------
 /* The system prompt, placeholders expanded. `configured` is what --system or

@@ -103,10 +103,26 @@ void spill_putf(Spill *s, const char *fmt, ...) {
 
 /* A size the model reads at a glance: what it decides is whether to grep the
  * file or read a range of it, and no such choice turns on the last byte. */
-static void spill_size(char *z, size_t cap, size_t n) {
+void spill_size_text(char *z, size_t cap, size_t n) {
     if (n < 1024) snprintf(z, cap, "%zu B", n);
     else if (n < 1024 * 1024) snprintf(z, cap, "%.0f KB", (f64)n / 1024.0);
     else snprintf(z, cap, "%.1f MB", (f64)n / (1024.0 * 1024.0));
+}
+
+i32 spill_release(Spill *s, char *path, size_t path_cap, size_t *written) {
+    *written = 0;
+    if (s->fd < 0) return -1;
+    if (!spill_flush(s) || !s->path[0]) { spill_drop(s); return -1; }
+    size_t n = strlen(s->path);
+    if (n >= path_cap) { spill_drop(s); return -1; }
+    memcpy(path, s->path, n + 1);
+    *written = s->written;
+    i32 fd = s->fd;
+    s->fd = -1;
+    s->path[0] = '\0';
+    s->written = 0;
+    s->buf_n = 0;
+    return fd;
 }
 
 void spill_finish(Spill *s, Buf *out, b8 keep) {
@@ -120,7 +136,7 @@ void spill_finish(Spill *s, Buf *out, b8 keep) {
         return;
     }
     char size[32];
-    spill_size(size, sizeof size, s->written);
+    spill_size_text(size, sizeof size, s->written);
     /* The note is its own line wherever it lands, including after a result
      * that ends mid-line. */
     if (out->n && out->p[out->n - 1] != '\n') buf_puts(out, STR("\n\n"));
