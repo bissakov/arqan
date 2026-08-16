@@ -532,6 +532,20 @@ static size_t grep_matches(Str result) {
     return n;
 }
 
+/* Which language a grep result is in: the path it searched, or a plain
+ * "*.ext" glob, which names one suffix and no directory. Empty when the
+ * search spanned whatever the tree holds. */
+static Str grep_hint(const JVal *j) {
+    Str path = json_str(j, STR("path"));
+    Str glob = json_str(j, STR("glob"));
+    if (glob.n >= 3 && glob.p[0] == '*' && glob.p[1] == '.'
+        && memchr(glob.p + 1, '/', glob.n - 1) == NULL
+        && memchr(glob.p + 1, '*', glob.n - 1) == NULL
+        && memchr(glob.p + 1, '?', glob.n - 1) == NULL)
+        return str_drop(glob, 1);
+    return path;
+}
+
 static void write_syntax_lines(Str body, Str source, b8 grep,
                                const YhlResult *hl, Str gutter, size_t max,
                                size_t bytes) {
@@ -595,7 +609,6 @@ void render_tool_result(Str name, Str args, Str result, Arena *scratch,
     size_t mark = scratch ? scratch->off : 0;
     JVal *j = scratch && args.n ? json_parse(scratch, args) : NULL;
     Str path = json_str(j, STR("path"));
-    Str glob = json_str(j, STR("glob"));
     static YhlResult hl;
     hl.n = 0;
     b8 source_code = false;
@@ -606,12 +619,7 @@ void render_tool_result(Str name, Str args, Str result, Arena *scratch,
         source_code = true;
         highlight_request(YHL_HINT_PATH, path, result, &hl);
     } else if (grep) {
-        Str hint = path;
-        if (glob.n >= 3 && glob.p[0] == '*' && glob.p[1] == '.'
-            && memchr(glob.p + 1, '/', glob.n - 1) == NULL
-            && memchr(glob.p + 1, '*', glob.n - 1) == NULL
-            && memchr(glob.p + 1, '?', glob.n - 1) == NULL)
-            hint = str_drop(glob, 1);
+        Str hint = grep_hint(j);
         if (hint.n) {
             size_t n = grep_batch(result, grep_source, sizeof grep_source);
             syntax_source = (Str){ grep_source, n };
@@ -647,11 +655,60 @@ void render_tool_result(Str name, Str args, Str result, Arena *scratch,
     block_end();
 }
 
+/* Runs measured over batched fragments, mapped back onto the text they were
+ * cut from: the batch keeps the fragments in line order, so one walk pairs
+ * them. A run crossing the newline the batch separates fragments with is
+ * split, since the bytes between them are not source. */
+static void unbatch_syntax(const YhlResult *hl, Str body, b8 grep,
+                           YhlResult *out) {
+    out->n = 0;
+    size_t off = 0, src = 0, k = 0;
+    Str line;
+    while (k < hl->n && str_line(body, &off, &line)) {
+        Str prefix, fragment;
+        if (grep ? !grep_fragment(line, &prefix, &fragment)
+                 : !patch_fragment(line, &fragment))
+            continue;
+        size_t at = (size_t)(fragment.p - body.p), end = src + fragment.n;
+        while (k < hl->n && hl->run[k].start < end) {
+            size_t a = hl->run[k].start, b = hl->run[k].end;
+            if (b > end) b = end;
+            if (a < src) a = src;
+            if (a < b && out->n < YHL_RUN_MAX)
+                out->run[out->n++] = (YhlRun){ (u32)(at + a - src),
+                                              (u32)(at + b - src),
+                                              hl->run[k].semantic };
+            if (hl->run[k].end > end) break;   // continues in the next one
+            k++;
+        }
+        src = end + 1;                          // the separator batch_line adds
+    }
+}
+
+/* Highlight the fragments of a patch or a grep result, which are source
+ * inside lines that are not. Both temporaries live in `scratch`, which the
+ * caller rewinds; the runs land in `out` in `body` coordinates. */
+static void batched_syntax(Str body, b8 grep, Str hint, Arena *scratch,
+                           YhlResult *out) {
+    if (!hint.n || !scratch) return;
+    char *batch = arena_alloc(scratch, YHL_SOURCE_MAX, 1);
+    YhlResult *hl = arena_alloc(scratch, sizeof *hl, alignof(YhlResult));
+    if (!batch || !hl) return;
+    size_t n = grep ? grep_batch(body, batch, YHL_SOURCE_MAX)
+                    : patch_batch(body, batch, YHL_SOURCE_MAX);
+    if (!n) return;
+    if (highlight_request(YHL_HINT_PATH, hint, (Str){ batch, n }, hl))
+        unbatch_syntax(hl, body, grep, out);
+}
+
 /* The window includes text summarized in a block header as well as the body
  * below it. `shown` counts both, so it still opens on the first folded line.
- * Keep these branches paired with the renderers above. */
-Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown) {
+ * The syntax it is offered is the syntax the block would paint. Keep these
+ * branches paired with the renderers above. */
+Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
+                     YhlResult *syntax) {
     if (shown) *shown = R_ARG_LINES;
+    if (syntax) syntax->n = 0;
     if (!scratch) return args;
     JVal *j = json_parse(scratch, args);
     Str path = json_str(j, STR("path"));
@@ -666,13 +723,24 @@ Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown) {
     Str body;
     if (str_eq(name, STR("write"))) {
         body = content;
+        if (syntax && path.n && content.n)
+            highlight_request(YHL_HINT_PATH, path, content, syntax);
     } else if (patch.n) {
         // Twice a call's usual allowance, as the block writes it.
         if (shown) *shown = R_ARG_LINES * 2;
         body = patch;
+        if (syntax) {
+            char buf[R_TARGET_BYTES + 32];
+            Str hint = {0};
+            (void)patch_target(patch, buf, sizeof buf, &hint);
+            batched_syntax(patch, false, hint, scratch, syntax);
+        }
     } else if (cmd.n) {
         if (shown) *shown = R_ARG_LINES + 1; // first line is in the header
         body = cmd;
+        if (syntax && str_eq(name, STR("bash")))
+            highlight_request(YHL_HINT_MARKDOWN_ALIAS, STR("bash"), cmd,
+                              syntax);
     } else if (!path.n && !query.n) {
         body = args;
     } else {
@@ -681,18 +749,40 @@ Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown) {
     return body;
 }
 
-Str render_result_text(Str name, Str result, size_t *shown) {
+Str render_result_text(Str name, Str args, Str result, Arena *scratch,
+                       size_t *shown, YhlResult *syntax) {
     if (shown) *shown = R_RESULT_LINES;
+    if (syntax) syntax->n = 0;
     if (str_starts(result, STR("ERROR: "))) return str_drop(result, 7);
     Str body = result, status = {0};
     b8 shell = str_eq(name, STR("bash")) || str_eq(name, STR("shell"));
     if (shell && split_status(result, &body, &status)) return body;
-    if (str_eq(name, STR("read")) || str_eq(name, STR("grep"))) return result;
+    b8 read_tool = str_eq(name, STR("read"));
+    b8 grep = str_eq(name, STR("grep"));
+    if (read_tool || grep) {
+        JVal *j = syntax && scratch && args.n ? json_parse(scratch, args)
+                                             : NULL;
+        if (read_tool && j) {
+            Str path = json_str(j, STR("path"));
+            if (path.n) highlight_request(YHL_HINT_PATH, path, result, syntax);
+        } else if (grep && j) {
+            Str hint = grep_hint(j);
+            if (source_filename(hint))
+                batched_syntax(result, true, hint, scratch, syntax);
+        }
+        return result;
+    }
     if (shown) *shown = R_RESULT_LINES + 1; // first line is in the header
     return body;
 }
 
-Str render_shell_text(Str cmd, size_t *shown) {
+Str render_shell_text(Str cmd, size_t *shown, YhlResult *syntax) {
     if (shown) *shown = R_ARG_LINES + 1; // first line is in the header
+    if (syntax) {
+        syntax->n = 0;
+        if (cmd.n)
+            highlight_request(YHL_HINT_MARKDOWN_ALIAS, STR("bash"), cmd,
+                              syntax);
+    }
     return cmd;
 }

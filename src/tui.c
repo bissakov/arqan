@@ -22,6 +22,7 @@
 #define TUI_SEL_ROW_BYTES 2048   // visible bytes kept per screen row
 #define TUI_SEL_BYTES (1u << 16) // clipboard payload cap
 #define TUI_VIEW_BYTES AGENT_RESP_BUF // copied text of one complete tool block
+#define TUI_VIEW_RUNS YHL_RUN_MAX     // syntax runs one window keeps
 #define TUI_POPUP_ROWS 8         // visual popup rows shown at once
 #define TUI_PICK_NOTICE_ROWS 4   // rows a picker's question may wrap over
 #define TUI_PICK_SEARCH_MIN 10   // entries above which a picker searches
@@ -323,6 +324,10 @@ typedef struct {
     char draft[AGENT_LINE_BUF];             // to g_tui.draft_n
     char kill[AGENT_LINE_BUF];              // to g_tui.kill_n
     char view[TUI_VIEW_BYTES];               // independent tool-block window
+    /* The window's syntax runs, to g_view.syn_n, in copied-text offsets. */
+    u32  view_syn_a[TUI_VIEW_RUNS];
+    u32  view_syn_b[TUI_VIEW_RUNS];
+    u8   view_syn_k[TUI_VIEW_RUNS];
     char row_text[TUI_SEL_ROWS][TUI_SEL_ROW_BYTES];  // g_tui.row_text_n[r]
 } TuiBulk;
 
@@ -337,6 +342,7 @@ typedef struct {
     char title[128];
     size_t title_n;
     size_t text_n;
+    size_t syn_n;
     size_t start_line;
     size_t top;
     size_t wrap_cols;
@@ -844,9 +850,12 @@ static size_t row_col_off(Str s, size_t cols, size_t prompt_cells,
     }
 }
 
-static void put_safe_clipped(Str s, size_t max_cells, size_t *used_cells) {
+/* Bytes painted, which is fewer than `s` holds when a glyph no longer fits:
+ * a caller painting one row in several styles stops where this one did. */
+static size_t put_safe_clipped(Str s, size_t max_cells, size_t *used_cells) {
     size_t cells = 0;
-    for (size_t i = 0; i < s.n;) {
+    size_t i = 0;
+    for (; i < s.n;) {
         unsigned char c = (unsigned char)s.p[i];
         if (c < 0x20 || c == 0x7f) { i++; continue; }
         i32 width = 0;
@@ -857,6 +866,7 @@ static void put_safe_clipped(Str s, size_t max_cells, size_t *used_cells) {
         cells += w; i += used;
     }
     if (used_cells) *used_cells += cells;
+    return i;
 }
 
 static void put_status_field(Str field, const char *field_style,
@@ -2151,10 +2161,52 @@ static void paint_view_header(size_t row, size_t col, size_t width,
     style(S_RESET);
 }
 
+/* The window's runs, searched the way the transcript's are: the first one
+ * reaching past `off`, then the style that holds from `off` up to the next
+ * boundary before `limit`. */
+static size_t view_syn_first(size_t off) {
+    size_t lo = 0, hi = g_view.syn_n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (g_bulk.view_syn_b[mid] <= off) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+}
+
+static u8 view_syn_run(size_t off, size_t limit, size_t *end) {
+    size_t i = view_syn_first(off);
+    u8 kind = 0;
+    size_t stop = limit;
+    if (i < g_view.syn_n) {
+        if (off >= g_bulk.view_syn_a[i]) {
+            kind = g_bulk.view_syn_k[i];
+            if (g_bulk.view_syn_b[i] < stop) stop = g_bulk.view_syn_b[i];
+        } else if (g_bulk.view_syn_a[i] < stop) {
+            stop = g_bulk.view_syn_a[i];
+        }
+    }
+    *end = stop;
+    return kind;
+}
+
+static u64 hash_view_syn(u64 h, size_t off, size_t n) {
+    for (size_t i = view_syn_first(off); i < g_view.syn_n; i++) {
+        if (g_bulk.view_syn_a[i] >= off + n) break;
+        h = hash_add(h, &g_bulk.view_syn_a[i], sizeof g_bulk.view_syn_a[i]);
+        h = hash_add(h, &g_bulk.view_syn_b[i], sizeof g_bulk.view_syn_b[i]);
+        h = hash_add(h, &g_bulk.view_syn_k[i], sizeof g_bulk.view_syn_k[i]);
+    }
+    return h;
+}
+
+/* `off` is where the row's bytes sit in the copied text, which is what its
+ * syntax runs are measured in. */
 static void paint_view_body_row(size_t screen_row, size_t col, size_t width,
-                                size_t screen_cols, Str text, b8 force) {
+                                size_t screen_cols, Str text, size_t off,
+                                b8 force) {
     u64 hash = row_hash(text, STR("view"), ROW_POPUP);
     hash = hash_add(hash, &g_view.top, sizeof g_view.top);
+    if (text.n) hash = hash_view_syn(hash, off, text.n);
     size_t c0, c1;
     sel_row_range(screen_row, &c0, &c1);
     hash = hash_add(hash, &c0, sizeof c0);
@@ -2169,7 +2221,21 @@ static void paint_view_body_row(size_t screen_row, size_t col, size_t width,
     style(S_POPUP_BG S_TEXT);
     size_t inner = width > 2 ? width - 2 : 0;
     size_t used = 0;
-    if (inner) put_safe_clipped(text, inner, &used);
+    if (inner && !g_view.syn_n) put_safe_clipped(text, inner, &used);
+    for (size_t i = 0; inner && g_view.syn_n && i < text.n && used < inner;) {
+        size_t end = 0;
+        u8 kind = view_syn_run(off + i, off + text.n, &end);
+        size_t take = end - (off + i);
+        style(S_POPUP_BG);
+        style(kind ? syntax_style(kind) : S_TEXT);
+        /* A glyph too wide for what is left ends the row here rather than
+         * letting a narrower one from the next run past it. */
+        if (put_safe_clipped((Str){ text.p + i, take }, inner - used, &used)
+            < take)
+            break;
+        i += take;
+    }
+    style(S_POPUP_BG S_TEXT);
     while (used < inner) { put_text(" ", 1); used++; }
     style(S_POPUP_BG S_CYAN);
     put_text("│", sizeof "│" - 1);
@@ -2223,12 +2289,14 @@ static void paint_view(size_t cols, b8 force) {
     size_t off = view_seek_row(g_view.top, inner_cols);
     for (size_t r = 0; r < body_rows; r++) {
         Str line = {0};
+        size_t line_off = off;
         if (g_view.top + r < total) {
             Row br = row_break(all, off, inner_cols, 0);
             line = (Str){ all.p + off, br.end - off };
             off = br.next;
         }
-        paint_view_body_row(top + 2 + r, left, width, cols, line, force);
+        paint_view_body_row(top + 2 + r, left, width, cols, line, line_off,
+                            force);
     }
     paint_view_border(top + height - 1, left, width, cols,
                       STR("└"), STR("─"), STR("┘"), force);
@@ -5218,17 +5286,53 @@ b8 tui_info_open(Str title, const TuiCmd *rows, size_t n) {
                      NULL, (Str){0}, false);
 }
 
-b8 tui_view_open(Str title, const Str *parts, size_t n, size_t start) {
+/* Where a part's runs stand while its bytes are copied. Tabs widen and
+ * control bytes vanish, so a run is remeasured as the copy passes its ends
+ * rather than shifted by a constant. */
+typedef struct {
+    const YhlRun *run;
+    size_t n;
+    size_t k;      // the run being followed
+    size_t at;     // where it started in copied bytes
+    b8 open;
+} ViewRuns;
+
+static void view_syn_add(size_t a, size_t b, u8 kind) {
+    if (a >= b || g_view.syn_n >= TUI_VIEW_RUNS) return;
+    g_bulk.view_syn_a[g_view.syn_n] = (u32)a;
+    g_bulk.view_syn_b[g_view.syn_n] = (u32)b;
+    g_bulk.view_syn_k[g_view.syn_n++] = kind;
+}
+
+/* Follow the runs to source byte `i`, whose copy begins at copied byte
+ * `out`: one ending here is recorded and one starting here is opened. `last`
+ * closes whatever is still open at the end of the part. */
+static void view_syn_step(ViewRuns *v, size_t i, size_t out, b8 last) {
+    if (!v->run) return;
+    if (v->open && (last || i == v->run[v->k].end)) {
+        view_syn_add(v->at, out, v->run[v->k].semantic);
+        v->open = false;
+        v->k++;
+    }
+    if (last) return;
+    while (!v->open && v->k < v->n && v->run[v->k].start <= i) {
+        if (v->run[v->k].end <= i) { v->k++; continue; }
+        v->at = out;
+        v->open = true;
+    }
+}
+
+b8 tui_view_open(Str title, const TuiViewPart *parts, size_t n, size_t start) {
     if (!g_tui.fullscreen || !parts || !n || g_pick.active || g_view.active
         || terminal_too_small())
         return false;
     size_t need = 0, nonempty = 0;
     for (size_t p = 0; p < n; p++) {
-        if (!parts[p].n) continue;
+        if (!parts[p].text.n) continue;
         if (nonempty && need == TUI_VIEW_BYTES) return false;
         if (nonempty) need++;
-        for (size_t i = 0; i < parts[p].n; i++) {
-            u8 c = (u8)parts[p].p[i];
+        for (size_t i = 0; i < parts[p].text.n; i++) {
+            u8 c = (u8)parts[p].text.p[i];
             size_t add = c == '\t' ? 4 : c == '\r' || (c < 0x20 && c != '\n')
                                               || c == 0x7f ? 0 : 1;
             if (add > TUI_VIEW_BYTES - need) return false;
@@ -5238,13 +5342,23 @@ b8 tui_view_open(Str title, const Str *parts, size_t n, size_t start) {
     }
     if (!need || !nonempty) return false;
 
+    /* Nothing below here fails, so the window's state is cleared before the
+     * copy that fills it. */
+    memset(&g_view, 0, sizeof g_view);
     size_t out = 0;
     nonempty = 0;
     for (size_t p = 0; p < n; p++) {
-        if (!parts[p].n) continue;
+        Str text = parts[p].text;
+        if (!text.n) continue;
         if (nonempty) g_bulk.view[out++] = '\n';
-        for (size_t i = 0; i < parts[p].n; i++) {
-            u8 c = (u8)parts[p].p[i];
+        ViewRuns runs = {0};
+        if (parts[p].syntax) {
+            runs.run = parts[p].syntax->run;
+            runs.n = parts[p].syntax->n;
+        }
+        for (size_t i = 0; i < text.n; i++) {
+            view_syn_step(&runs, i, out, false);
+            u8 c = (u8)text.p[i];
             if (c == '\t') {
                 memcpy(g_bulk.view + out, "    ", 4);
                 out += 4;
@@ -5252,9 +5366,9 @@ b8 tui_view_open(Str title, const Str *parts, size_t n, size_t start) {
                 if (c != 0x7f) g_bulk.view[out++] = (char)c;
             }
         }
+        view_syn_step(&runs, text.n, out, true);
         nonempty++;
     }
-    memset(&g_view, 0, sizeof g_view);
     g_view.active = true;
     g_view.start_line = start;
     g_view.text_n = out;

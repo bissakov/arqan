@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Keep the syntax colours when a block is opened in a window. Clicking a
+  tool block while a turn runs shows all of its text in a window, which was
+  plain even where the block under it was highlighted. The window now colours
+  the same things the block does: file content a `read` returned, the code a
+  `write` or a `patch` carries, a shell command, and the matched text of a
+  typed `grep`.
+
 ### Fixed
 
 - Report the last thing a background job printed. A command's final output

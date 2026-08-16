@@ -377,3 +377,88 @@ def test_malformed_and_hanging_helpers_fall_back_silently(ctx):
     assert time.monotonic() - before < 3
     assert cell(s2, "int n").fg == TEXT
     assert "highlight" not in s2.text().lower(), s2.text()
+
+
+def window_cell(s, needle: str, offset: int = 0):
+    """The attributes of a cell inside the expansion window alone, which the
+    transcript under it may hold a second copy of."""
+    lines = s.screen.lines()
+    top = next(i for i, line in enumerate(lines) if "┌" in line and "┐" in line)
+    bottom = next(i for i, line in enumerate(lines[top + 1:], top + 1)
+                  if "└" in line and "┘" in line)
+    for row in range(top + 2, bottom):
+        text = s.screen.row_text(row)
+        if needle in text:
+            return s.screen.attr_at(row, text.index(needle) + offset)
+    raise AssertionError(f"{needle!r} is not in the window:\n{s.text()}")
+
+
+def click_tail(s, needle: str):
+    row = s.screen.find_row(needle) + 1
+    s.mouse("down", row, 6)
+    return s.mouse("up", row, 6).sync()
+
+
+def test_window_over_a_read_result_keeps_the_source_colours(ctx):
+    """The block's own colours are what the window shows, over the whole
+    text rather than the twelve lines the block had room for."""
+    body = "\n".join(f"int v{i:04d} = {i}; // note {i:04d}" for i in range(40))
+    ctx.write_file("big.c", body)
+    ctx.scenario('tool=read:{"path":"big.c"},hold_final,final_text=done')
+    s = ctx.spawn()
+    s.submit("read big.c")
+    s.wait_text("\u25be 28 more lines")
+    click_tail(s, "\u25be 28 more lines")
+    s.wait_text("int v0012")
+    assert window_cell(s, "int v0015").fg == CYAN
+    assert window_cell(s, "int v0015", 4).fg == TEXT
+    assert window_cell(s, "= 15", 2).fg == YELLOW
+    assert window_cell(s, "// note 0015").fg == MUTED
+
+
+def test_window_over_plain_output_stays_plain(ctx):
+    """A file no language claims reads as text in the window too."""
+    body = "\n".join(f"line {i:04d} of output" for i in range(40))
+    ctx.write_file("big.txt", body)
+    ctx.scenario('tool=read:{"path":"big.txt"},hold_final,final_text=done')
+    s = ctx.spawn()
+    s.submit("read big.txt")
+    s.wait_text("\u25be 28 more lines")
+    click_tail(s, "\u25be 28 more lines")
+    s.wait_text("line 0012 of output")
+    assert window_cell(s, "line 0012 of output").fg == TEXT
+
+
+def test_window_over_a_grep_result_colours_only_match_text(ctx):
+    """Batched fragments land back on the lines they were cut from: the
+    window colours the code and leaves each file and line prefix alone."""
+    body = "\n".join(f"int v{i:04d} = {i};" for i in range(20))
+    ctx.write_file("one.c", body)
+    args = json.dumps({"pattern": "int", "glob": "*.c"})
+    ctx.scenario(f"tool=grep:{args},hold_final,final_text=done")
+    s = ctx.spawn()
+    s.submit("find them")
+    s.wait_text("\u25be 8 more lines")
+    click_tail(s, "\u25be 8 more lines")
+    s.wait_text("one.c:13:")
+    assert window_cell(s, "one.c:13:").fg == TEXT
+    assert window_cell(s, "int v0012").fg == CYAN
+    assert window_cell(s, "= 12", 2).fg == YELLOW
+
+
+def test_window_over_a_shell_run_highlights_the_command_only(ctx):
+    """The window holds a command and what it printed; only the command is
+    source."""
+    ctx.scenario("hold,text=done")
+    s = ctx.spawn()
+    command = "for i in $(seq 0 39); do printf 'shell %04d\\n' \"$i\"; done"
+    s.submit("!" + command)
+    s.wait_text("\u25be 28 more lines")
+    # The window is how a block is read while a turn owns the transcript.
+    s.submit("go on")
+    s.wait_activity("thinking")
+    click_tail(s, "\u25be 28 more lines")
+    s.key("home").sync()
+    assert window_cell(s, "for i in").fg == PURPLE
+    assert window_cell(s, "'shell %04d\\n'").fg == GREEN
+    assert window_cell(s, "shell 0000").fg == TEXT

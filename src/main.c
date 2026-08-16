@@ -2903,48 +2903,61 @@ static void choose_settings(Agent *ag) {
 }
 
 /* Open all text behind block `i`. The view copies it before returning, so a
- * decoded argument may live in the running request's scratch tail without
- * making that tail part of the window's lifetime. */
+ * decoded argument and the runs a highlighter answered with may live in the
+ * running request's scratch tail without making that tail part of the
+ * window's lifetime. Only the part that carries source is offered runs: a
+ * shell run's output is what a command printed, not code. */
 static b8 open_block_view(Agent *ag, size_t i) {
     const Conv *c = ag->conv;
-    Str parts[2] = {0};
+    TuiViewPart parts[2] = {0};
     size_t shown[2] = {0};
     size_t part_n = 0;
     char name_buf[64];
     i32 len = 0;
     size_t scratch_mark = ag->scratch->off;
+    YhlResult *syntax = arena_alloc(ag->scratch, sizeof *syntax,
+                                    alignof(YhlResult));
     if (c->role[i] == M_USER && conv_is_shell(c, i)) {
-        parts[part_n] = render_shell_text(c->text[i], &shown[part_n]);
+        parts[part_n].text = render_shell_text(c->text[i], &shown[part_n],
+                                               syntax);
+        parts[part_n].syntax = syntax;
         part_n++;
-        parts[part_n] = render_result_text(STR("shell"), c->shell_out[i],
-                                           &shown[part_n]);
+        parts[part_n].text = render_result_text(STR("shell"), (Str){0},
+                                                c->shell_out[i], NULL,
+                                                &shown[part_n], NULL);
         part_n++;
         len = snprintf(name_buf, 32, "shell run");
     } else if (c->role[i] == M_ASSISTANT && conv_is_call(c, i)) {
         Str name = c->tool_name[i];
-        parts[part_n] = render_call_text(name, c->text[i], ag->scratch,
-                                         &shown[part_n]);
+        parts[part_n].text = render_call_text(name, c->text[i], ag->scratch,
+                                              &shown[part_n], syntax);
+        parts[part_n].syntax = syntax;
         part_n++;
         len = snprintf(name_buf, sizeof name_buf, "%.*s input", (i32)name.n,
                        name.p);
     } else if (c->role[i] == M_TOOL) {
         size_t call = call_slot(c, i);
         Str name = call == CONV_NONE ? (Str){0} : c->tool_name[call];
-        parts[part_n] = render_result_text(name, c->text[i], &shown[part_n]);
+        Str args = call == CONV_NONE ? (Str){0} : c->text[call];
+        parts[part_n].text = render_result_text(name, args, c->text[i],
+                                                ag->scratch, &shown[part_n],
+                                                syntax);
+        parts[part_n].syntax = syntax;
         part_n++;
         len = snprintf(name_buf, sizeof name_buf, "%.*s output", (i32)name.n,
                        name.p);
     } else {
+        ag->scratch->off = scratch_mark;
         return false;
     }
     Str title = { name_buf, len > 0 && (size_t)len < sizeof name_buf
                             ? (size_t)len : 0 };
     size_t start = 0, lines = 0;
     for (size_t p = 0; p < part_n; p++) {
-        if (!parts[p].n) continue;
+        if (!parts[p].text.n) continue;
         if (lines) lines++;             // blank row between shell input/output
         size_t part_top = lines;
-        size_t part_lines = str_lines(parts[p]);
+        size_t part_lines = str_lines(parts[p].text);
         lines += part_lines;
         if (part_lines > shown[p]) start = part_top + shown[p];
     }
