@@ -3796,6 +3796,10 @@ i32 main(i32 argc, char **argv) {
      * same way. */
     shell_set_idle(on_idle, NULL);
     shell_set_interrupt_flag(&g_got_sigint);
+    shell_set_timeout(cfg.shell_timeout_ms);
+    /* A detached command belongs to the session that started it, so nothing
+     * it spawned survives the exit that stops watching it. */
+    atexit(jobs_stop);
     web_set_idle(on_idle, NULL, tui_input_fd(), &g_got_sigint);
     atexit(tui_stop);
     highlight_init(argv[0]);

@@ -226,6 +226,10 @@ void shell_set_interrupt_flag(volatile sig_atomic_t *flag) {
     g_shell_interrupt = flag;
 }
 
+static i32 g_shell_timeout_ms = AGENT_SHELL_TIMEOUT_MS;
+
+void shell_set_timeout(i32 ms) { g_shell_timeout_ms = ms > 0 ? ms : 0; }
+
 /* Long enough that a chatty command is drained in whole blocks, short enough
  * that the caller's idle hook keeps a frame moving. */
 #define SHELL_POLL_MS 50
@@ -338,6 +342,272 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
     return true;
 }
 
+/* ---- jobs ----
+ * A command that outlives the deadline is detached rather than killed: the
+ * call answers with what ran so far and names a job the model polls later.
+ * The reason is cost, not patience. Waiting out a ten-minute build waits
+ * past every provider's prompt cache, and the next request then pays for the
+ * whole conversation again.
+ *
+ * The command keeps writing into the pipe it was given, so something must
+ * keep draining it or it stalls on the first full buffer. That something is
+ * a forked drainer rather than this process's idle hooks: the agent blocks
+ * in several loops (the composer, an approval prompt, a provider stream) and
+ * whichever one forgot to drain would stall the build it was told to watch.
+ * The drainer appends to the log the spill already opened for the call, so
+ * one file holds the output from its first byte, and it exits when the last
+ * writer closes the pipe.
+ */
+typedef struct {
+    u32    id;          /* 0 marks a free slot; ids are never reused */
+    pid_t  pid;         /* session leader, signalled as -pid */
+    pid_t  drainer;
+    b8     running;
+    b8     drained;
+    b8     reported;    /* the model has been told how it ended */
+    i32    status;      /* wait status once !running */
+    i32    fd;          /* read end of the log, positioned at read_off */
+    f64    started;
+    f64    ended;
+    size_t read_off;    /* log bytes already returned to the model */
+    char   path[AGENT_SPILL_PATH_MAX];
+    char   cmd[AGENT_JOB_CMD_CHARS];
+} Job;
+
+static Job g_jobs[AGENT_MAX_JOBS];
+static u32 g_job_seq;
+
+static void job_release(Job *j) {
+    /* The drainer outlives a finished command whenever something it spawned
+     * still holds the pipe, so the slot takes it with it rather than leaving
+     * a child nobody will reap. */
+    if (j->drainer > 0 && !j->drained) {
+        kill(j->drainer, SIGKILL);
+        while (waitpid(j->drainer, NULL, 0) < 0 && errno == EINTR) {}
+    }
+    if (j->fd >= 0) close(j->fd);
+    if (j->path[0]) unlink(j->path);
+    memset(j, 0, sizeof *j);
+    j->fd = -1;
+}
+
+static void job_refresh(Job *j) {
+    if (!j->id) return;
+    if (j->running) {
+        i32 st = 0;
+        if (waitpid(j->pid, &st, WNOHANG) == j->pid) {
+            j->running = false;
+            j->status = st;
+            j->ended = agent_now_seconds();
+        }
+    }
+    if (!j->drained && j->drainer > 0
+        && waitpid(j->drainer, NULL, WNOHANG) == j->drainer)
+        j->drained = true;
+}
+
+static Job *job_find(u32 id) {
+    if (!id) return NULL;
+    for (size_t i = 0; i < AGENT_MAX_JOBS; i++)
+        if (g_jobs[i].id == id) return &g_jobs[i];
+    return NULL;
+}
+
+/* SIGTERM to the whole session, then SIGKILL to what ignored it, which is
+ * the escalation an interrupted foreground command already gets. */
+static void job_signal(Job *j) {
+    if (!j->running) return;
+    if (kill(-j->pid, SIGTERM) != 0) kill(j->pid, SIGTERM);
+    for (i32 i = 0; i < 20 && j->running; i++) {
+        poll(NULL, 0, SHELL_POLL_MS);
+        if (g_shell_idle) g_shell_idle(g_shell_idle_ud);
+        job_refresh(j);
+    }
+    if (!j->running) return;
+    if (kill(-j->pid, SIGKILL) != 0) kill(j->pid, SIGKILL);
+    i32 st = 0;
+    while (waitpid(j->pid, &st, 0) < 0 && errno == EINTR) {}
+    j->running = false;
+    j->status = st;
+    j->ended = agent_now_seconds();
+}
+
+void jobs_stop(void) {
+    for (size_t i = 0; i < AGENT_MAX_JOBS; i++) {
+        Job *j = &g_jobs[i];
+        if (!j->id) continue;
+        if (j->running) {
+            if (kill(-j->pid, SIGKILL) != 0) kill(j->pid, SIGKILL);
+            while (waitpid(j->pid, NULL, 0) < 0 && errno == EINTR) {}
+        }
+        job_release(j);
+    }
+}
+
+/* Runs in the forked child and never returns. `written` is what the log
+ * already holds, so the cap covers the whole file rather than this half. */
+static void job_drain(i32 in, i32 out, size_t written) {
+    /* Its own session: a signal aimed at the terminal must not take down the
+     * one process keeping the command's pipe empty. */
+    if (setsid() < 0) setpgid(0, 0);
+    signal(SIGINT, SIG_IGN);
+    signal(SIGHUP, SIG_IGN);
+    signal(SIGPIPE, SIG_IGN);
+    /* Nothing here reads or writes the terminal, and holding it open would
+     * outlast the session in the one case that skips jobs_stop. */
+    if (in > 2 && out > 2) {
+        i32 null_fd = open("/dev/null", O_RDWR);
+        if (null_fd >= 0) {
+            dup2(null_fd, 0); dup2(null_fd, 1); dup2(null_fd, 2);
+            close(null_fd);
+        }
+    }
+    char block[4096];
+    b8 noted = false;
+    for (;;) {
+        ssize_t n = read(in, block, sizeof block);
+        if (n < 0) { if (errno == EINTR) continue; break; }
+        if (n == 0) break;
+        size_t bytes = (size_t)n;
+        if (written >= AGENT_SPILL_BYTES) {
+            /* Past the cap the log stops growing, but the pipe is still
+             * drained: a command must not stall because its log is full. */
+            if (!noted) {
+                static const char note[] = "\n[log truncated here]\n";
+                noted = true;
+                if (write(out, note, sizeof note - 1) < 0) break;
+            }
+            continue;
+        }
+        if (bytes > AGENT_SPILL_BYTES - written)
+            bytes = AGENT_SPILL_BYTES - written;
+        const char *p = block;
+        while (bytes) {
+            ssize_t w = write(out, p, bytes);
+            if (w < 0) {
+                if (errno == EINTR) continue;
+                _exit(0);
+            }
+            p += w;
+            bytes -= (size_t)w;
+            written += (size_t)w;
+        }
+    }
+    _exit(0);
+}
+
+/* Takes over `pid` and the read end of its pipe, and with them the spill
+ * file the call was writing. Returns the job id, or 0 when there is no free
+ * slot or no log to drain into: a command whose output nothing can hold is
+ * better waited out than orphaned. */
+static u32 job_detach(pid_t pid, i32 pipe_fd, Spill *spill, Str cmd) {
+    Job *slot = NULL;
+    for (size_t i = 0; i < AGENT_MAX_JOBS && !slot; i++)
+        if (!g_jobs[i].id) slot = &g_jobs[i];
+    for (size_t i = 0; i < AGENT_MAX_JOBS && !slot; i++) {
+        job_refresh(&g_jobs[i]);
+        if (!g_jobs[i].running && g_jobs[i].reported) {
+            job_release(&g_jobs[i]);
+            slot = &g_jobs[i];
+        }
+    }
+    if (!slot) return 0;
+
+    char path[AGENT_SPILL_PATH_MAX];
+    size_t written = 0;
+    i32 log = spill_release(spill, path, sizeof path, &written);
+    if (log < 0) return 0;
+
+    pid_t drainer = fork();
+    if (drainer < 0) {
+        close(log);
+        unlink(path);
+        return 0;
+    }
+    if (drainer == 0) job_drain(pipe_fd, log, written);
+    close(log);
+    close(pipe_fd);
+
+    memset(slot, 0, sizeof *slot);
+    slot->fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (slot->fd >= 0 && lseek(slot->fd, (off_t)written, SEEK_SET) < 0) {
+        close(slot->fd);
+        slot->fd = -1;
+    }
+    slot->id = ++g_job_seq;
+    slot->pid = pid;
+    slot->drainer = drainer;
+    slot->running = true;
+    slot->started = agent_now_seconds();
+    slot->read_off = written;
+    memcpy(slot->path, path, strlen(path) + 1);
+    size_t n = cmd.n < sizeof slot->cmd - 1 ? cmd.n : sizeof slot->cmd - 1;
+    memcpy(slot->cmd, cmd.p, n);
+    slot->cmd[n] = '\0';
+    for (size_t i = 0; i < n; i++)
+        if ((unsigned char)slot->cmd[i] < ' ') slot->cmd[i] = ' ';
+    return slot->id;
+}
+
+static void job_elapsed_text(const Job *j, char *z, size_t cap) {
+    f64 end = j->running || j->ended <= 0.0 ? agent_now_seconds() : j->ended;
+    u32 s = end > j->started ? (u32)(end - j->started) : 0;
+    if (s < 60) snprintf(z, cap, "%us", s);
+    else snprintf(z, cap, "%um%02us", s / 60, s % 60);
+}
+
+static void job_status_text(const Job *j, char *z, size_t cap) {
+    if (j->running) snprintf(z, cap, "running");
+    else if (WIFSIGNALED(j->status))
+        snprintf(z, cap, "killed by signal %d", WTERMSIG(j->status));
+    else snprintf(z, cap, "exit %d",
+                  WIFEXITED(j->status) ? WEXITSTATUS(j->status) : -1);
+}
+
+static size_t job_log_bytes(const Job *j) {
+    struct stat st;
+    if (j->fd < 0 || fstat(j->fd, &st) != 0 || st.st_size < 0) return 0;
+    return (size_t)st.st_size;
+}
+
+/* The line a detached command leaves behind: where its output continues and
+ * how to pick it up. The state comes last, where a finished command puts its
+ * exit line, so the transcript summarises it the same way. Charged to the
+ * same result budget the page is. */
+static void job_note(Buf *out, u32 id, f64 started) {
+    Job *j = job_find(id);
+    if (!j) return;
+    char size[32];
+    spill_size_text(size, sizeof size, job_log_bytes(j));
+    if (out->n && out->p[out->n - 1] != '\n') buf_putc(out, '\n');
+    buf_putf(out, "[output continues in %s (%s); call job with id=%u for the "
+                  "rest]\n[still running as job %u after %us]",
+             j->path, size, id, id,
+             (u32)(agent_now_seconds() - started));
+}
+
+/* Appends output the model has not seen yet, from read_off forward, and
+ * reports through `pending` what the page left in the log. */
+static size_t job_page(Job *j, Buf *out, size_t limit, size_t *pending) {
+    *pending = 0;
+    if (j->fd < 0) return 0;
+    char block[4096];
+    size_t shown = 0;
+    while (shown < limit) {
+        size_t want = limit - shown;
+        if (want > sizeof block) want = sizeof block;
+        ssize_t n = read(j->fd, block, want);
+        if (n < 0) { if (errno == EINTR) continue; break; }
+        if (n == 0) break;
+        buf_put(out, block, (size_t)n);
+        shown += (size_t)n;
+        j->read_off += (size_t)n;
+    }
+    size_t have = job_log_bytes(j);
+    if (have > j->read_off) *pending = have - j->read_off;
+    return shown;
+}
+
 static b8 shell_capture_page(Str cmd, size_t offset, size_t limit, Buf *out,
                              char *err, size_t err_cap) {
     static char z[AGENT_MAX_COMMAND];
@@ -379,6 +649,8 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit, Buf *out,
     struct pollfd pfd = { fds[0], POLLIN, 0 };
     b8 interrupted = false;
     b8 killed = false;
+    b8 undetachable = false;
+    f64 started = agent_now_seconds();
     for (;;) {
         if (g_shell_interrupt && *g_shell_interrupt) {
             interrupted = true;
@@ -397,6 +669,23 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit, Buf *out,
             } else {
                 if (kill(-pid, SIGKILL) != 0) kill(pid, SIGKILL);
             }
+        }
+        /* Past the deadline the command carries on as a job, so a slow build
+         * costs a page and a job id rather than the rest of the turn. The
+         * table being full or the log being gone is not worth killing it
+         * over: the call falls back to waiting, once. */
+        if (!interrupted && !undetachable && g_shell_timeout_ms > 0
+            && (agent_now_seconds() - started) * 1000.0
+               >= (f64)g_shell_timeout_ms) {
+            u32 job = job_detach(pid, fds[0], &spill, cmd);
+            if (job) {
+                if (total > first + shown)
+                    buf_putf(out, "\n[shown %zu of %zu output bytes so far]",
+                             shown, total);
+                job_note(out, job, started);
+                return buf_ok(out) && out->n <= AGENT_TOOL_RESULT_BYTES;
+            }
+            undetachable = true;
         }
         if (ready < 0) { if (errno == EINTR) continue; break; }
         if (ready == 0) {
@@ -487,6 +776,105 @@ static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
                    AGENT_SHELL_OUT_BYTES, &limit, err, err_cap)) return false;
     return shell_capture_page(json_str(j, STR("command")), offset, limit,
                               out, err, err_cap);
+}
+
+/* ---- job ----
+ * One tool over the job table: list what is running, wait for one, or stop
+ * it. A wait is bounded like the command's own deadline, so polling a slow
+ * build costs a round trip every couple of minutes and the prompt cache
+ * survives it.
+ */
+static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
+                   size_t err_cap) {
+    JVal *j = tool_args(args, scratch, err, err_cap);
+    if (!j) return false;
+    size_t id = 0, wait_ms = 0;
+    if (!arg_count(j, STR("id"), 0, 1u << 30, &id, err, err_cap) ||
+        !arg_count(j, STR("timeout_ms"), AGENT_JOB_WAIT_MS,
+                   AGENT_JOB_WAIT_MAX_MS, &wait_ms, err, err_cap))
+        return false;
+    Str action = json_str(j, STR("action"));
+    if (!action.n) action = id ? STR("wait") : STR("list");
+
+    if (str_eq(action, STR("list"))) {
+        size_t live = 0;
+        for (size_t i = 0; i < AGENT_MAX_JOBS; i++) {
+            Job *job = &g_jobs[i];
+            if (!job->id) continue;
+            job_refresh(job);
+            char state[32], age[16], size[32];
+            job_status_text(job, state, sizeof state);
+            job_elapsed_text(job, age, sizeof age);
+            spill_size_text(size, sizeof size, job_log_bytes(job));
+            buf_putf(out, "job %u  %s  %s  %s  %s\n", job->id, state, age,
+                     size, job->cmd);
+            live++;
+        }
+        if (!live) buf_puts(out, STR("[no jobs in this session]"));
+        return buf_ok(out) && out->n <= AGENT_TOOL_RESULT_BYTES;
+    }
+
+    Job *job = job_find((u32)id);
+    if (!job) {
+        /* Ids do not survive the process, so a resumed session asking after
+         * one from the session before is told that, not left guessing. */
+        snprintf(err, err_cap, "no job %zu in this session; call job with "
+                 "action=\"list\" to see the ones there are", id);
+        return false;
+    }
+
+    b8 kill_it = str_eq(action, STR("kill"));
+    if (!kill_it && !str_eq(action, STR("wait")) &&
+        !str_eq(action, STR("poll"))) {
+        snprintf(err, err_cap, "action must be list, poll, wait or kill");
+        return false;
+    }
+    if (str_eq(action, STR("poll"))) wait_ms = 0;
+
+    b8 interrupted = false;
+    if (kill_it) {
+        job_signal(job);
+    } else {
+        f64 started = agent_now_seconds();
+        for (;;) {
+            job_refresh(job);
+            if (!job->running) break;
+            if (g_shell_interrupt && *g_shell_interrupt) {
+                /* An interrupt stops the work, not just the watching: a job
+                 * left running behind a cancelled turn is one nobody owns. */
+                interrupted = true;
+                job_signal(job);
+                break;
+            }
+            if ((agent_now_seconds() - started) * 1000.0 >= (f64)wait_ms) break;
+            poll(NULL, 0, SHELL_POLL_MS);
+            if (g_shell_idle) g_shell_idle(g_shell_idle_ud);
+        }
+    }
+
+    size_t pending = 0;
+    (void)job_page(job, out, AGENT_SHELL_OUT_BYTES, &pending);
+    char age[16];
+    job_elapsed_text(job, age, sizeof age);
+    if (out->n && out->p[out->n - 1] != '\n') buf_putc(out, '\n');
+    if (pending) {
+        char size[32];
+        spill_size_text(size, sizeof size, pending);
+        buf_putf(out, "[%s more in %s; call job again for it]\n", size,
+                 job->path);
+    }
+    if (job->running) {
+        buf_putf(out, "[job %u still running after %s]", job->id, age);
+    } else {
+        char state[32];
+        job_status_text(job, state, sizeof state);
+        buf_putf(out, "[job %u %s after %s]", job->id, state, age);
+        /* Nothing is left to read and the end is reported, so the slot may
+         * be taken by the next detached command. */
+        if (!pending) job->reported = true;
+    }
+    if (interrupted) buf_puts(out, STR("\n[interrupted]"));
+    return buf_ok(out) && out->n <= AGENT_TOOL_RESULT_BYTES;
 }
 
 /* ---- patch ----
@@ -1283,10 +1671,26 @@ void tools_init(ToolRegistry *r, Arena *persist) {
         "head, tail, sed -n or grep to target the lines you need. The harness "
         "may pause for approval; do not ask in prose or retry a denial "
         "blindly. Commands run without a terminal, so anything that prompts "
-        "for input, sudo included, fails rather than waits.",
+        "for input, sudo included, fails rather than waits. A command still "
+        "running after the deadline is not killed: it carries on as a job "
+        "the result names, and the job tool waits for the rest.",
         "Run a shell command", TOOL_IN_BUILD, TOOL_APPROVAL_BASH,
         "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\",\"description\":\"first output byte, 1-based\"},\"limit\":{\"type\":\"integer\",\"description\":\"at most 8KB\"}},\"required\":[\"command\"]}",
         tool_bash);
+    ADD("job", "Follow a command bash detached because it outran its "
+        "deadline. Each call returns the output since the last one and says "
+        "whether the job is still running. A wait is bounded, so a job that "
+        "outlasts it is reported as still running and waiting again is the "
+        "right move: keep polling rather than leaving a job unattended. Job "
+        "ids last for this session only.",
+        "Follow a background command", TOOL_IN_BUILD, TOOL_APPROVAL_NONE,
+        "{\"type\":\"object\",\"properties\":{"
+        "\"id\":{\"type\":\"integer\",\"description\":\"the job to act on; omit to list\"},"
+        "\"action\":{\"type\":\"string\",\"enum\":[\"list\",\"poll\",\"wait\",\"kill\"],"
+        "\"description\":\"default wait with an id, list without one; poll returns at once\"},"
+        "\"timeout_ms\":{\"type\":\"integer\",\"description\":\"how long to wait, at most 240000\"}},"
+        "\"required\":[]}",
+        tool_job);
     ADD("patch", "Change files with a unified diff: hunks are located by "
         "their context lines, not by @@ numbers, and every file applies or "
         "none does. --- /dev/null creates a file, +++ /dev/null deletes one. "

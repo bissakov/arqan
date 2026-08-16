@@ -104,7 +104,8 @@ def test_the_flag_disables_a_list(ctx):
 
     names = tool_names(ctx.mock.requests[-1])
     assert names == [
-        "ask_user", "find", "grep", "internet_search", "page_fetch", "read"
+        "ask_user", "find", "grep", "internet_search", "job", "page_fetch",
+        "read"
     ], names
 
 

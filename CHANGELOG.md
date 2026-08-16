@@ -4,6 +4,15 @@
 
 ### Added
 
+- Keep long commands from stalling a turn. A `bash` call that outruns
+  `shell_timeout_ms` (two minutes by default) no longer holds the turn until
+  the command ends: the command carries on as a job, the call answers with the
+  output so far and a job id, and the new `job` tool waits for the rest, lists
+  what is running, or stops one. Nothing is killed by the deadline, waits are
+  bounded so a provider's prompt cache survives a slow build, and every job
+  dies with the session that started it. Set `shell_timeout_ms = 0` to wait
+  for commands however long they take.
+
 - Ship an Arch Linux package. The release now carries a
   `arqan-X.Y.Z-1-x86_64.pkg.tar.zst` next to the `.deb`, the `.rpm` and the
   portable archive, so Arch and its derivatives install with `pacman -U`
