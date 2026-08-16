@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-16
+
 ### Added
 
 - Run long commands in the background. A `bash` command still going after two
@@ -253,7 +255,8 @@
 - Portable Linux x86_64 archive, installer, checksum, and draft release
   automation.
 
-[Unreleased]: https://github.com/bissakov/arqan/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/bissakov/arqan/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/bissakov/arqan/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/bissakov/arqan/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/bissakov/arqan/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/bissakov/arqan/compare/v0.1.0...v0.2.0
