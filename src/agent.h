@@ -1625,6 +1625,9 @@ b8 tui_settings_open(Str title, const TuiSettings *set);
 void tui_info(Str title, const TuiCmd *rows, size_t n);
 // The read-only page opened the way tui_settings_open opens a screen.
 b8 tui_info_open(Str title, const TuiCmd *rows, size_t n);
+/* One part of a text window: its bytes and, when it carries source, the
+ * syntax runs measured over those bytes. Both are copied into the window. */
+typedef struct { Str text; const YhlResult *syntax; } TuiViewPart;
 /* Open a separate, centered text window without borrowing completion or
  * picker state. Nonempty `parts` are joined with one blank row and copied,
  * so the caller may release them when this returns. `start` is the logical
@@ -1633,7 +1636,7 @@ b8 tui_info_open(Str title, const TuiCmd *rows, size_t n);
  * Enter, Ctrl-C, Ctrl-D, q, or the visible close control closes it. False on
  * invalid input, insufficient window storage, or another screen being open;
  * failure never opens a clipped window. */
-b8 tui_view_open(Str title, const Str *parts, size_t n, size_t start);
+b8 tui_view_open(Str title, const TuiViewPart *parts, size_t n, size_t start);
 /* The keybinding tables as info-page rows, grouped by input context with a
  * bracketed heading row per group. Writes at most `max` rows into `rows` and
  * returns how many it wrote; every string is static and outlives the caller,
@@ -1877,10 +1880,14 @@ void render_question(Str question);
  * parse `args` in `scratch` and return a string that lives there; result and
  * shell strings are borrowed slices. `shown` is the number of logical lines
  * represented before the block's fold tail, including a first line that its
- * header summarizes, and therefore the line the window initially opens on. */
-Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown);
-Str render_result_text(Str name, Str result, size_t *shown);
-Str render_shell_text(Str cmd, size_t *shown);
+ * header summarizes, and therefore the line the window initially opens on.
+ * `syntax`, when given, receives the highlighter's runs over the returned
+ * text and is emptied for text that carries no source. */
+Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
+                     YhlResult *syntax);
+Str render_result_text(Str name, Str args, Str result, Arena *scratch,
+                       size_t *shown, YhlResult *syntax);
+Str render_shell_text(Str cmd, size_t *shown, YhlResult *syntax);
 /* Every line of a call's input and result, with no "... N more lines" tail
  * and no per-line clip. Off by default: a tool that read a thousand lines
  * would otherwise be the whole scrollback. */
