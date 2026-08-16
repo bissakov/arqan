@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: reference tag or commit (default: newest release tag)
+        description: 'reference tag or commit (default: newest release tag)'
         required: false
         default: ''
 
