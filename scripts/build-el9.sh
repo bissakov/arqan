@@ -29,16 +29,21 @@ docker run --rm --platform linux/amd64 \
     "$IMAGE" \
     make "$target"
 
-# The point of the exercise: the binaries name libcurl.so.4 without asking for
-# a versioned symbol out of it. A CURL_ version reference here means the link
-# happened somewhere else, and every rpm host would warn about it at startup.
+# The point of the exercise: the binaries ask no rpm host for a libcurl it
+# does not have. A CURL_ version reference means the link happened on Debian,
+# whose versioned symbols this family lacks, and every host would warn about
+# it at startup.
 for exe in arqan arqan-highlight; do
     binary=$ROOT/bin/el9/$exe
     [ -x "$binary" ] || fail "missing bin/el9/$exe"
     ! readelf --version-info -W "$binary" 2>/dev/null | grep -q 'CURL_' || \
         fail "$exe requires versioned libcurl symbols"
 done
-readelf -dW "$ROOT/bin/el9/arqan" | grep -q 'libcurl\.so\.4' || \
-    fail 'arqan does not link libcurl.so.4'
+# libcurl is opened at the first request, so nothing may name it as NEEDED.
+# The packages carry the dependency by hand instead; a NEEDED entry here would
+# mean the rpm's automatic requires and the spec's explicit one had silently
+# swapped places.
+! readelf -dW "$ROOT/bin/el9/arqan" | grep -q 'NEEDED.*libcurl' || \
+    fail 'arqan links libcurl instead of opening it on demand'
 
 printf '%s\n' "The rpm binaries are in $ROOT/bin/el9."

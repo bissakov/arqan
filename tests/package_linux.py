@@ -169,8 +169,11 @@ def check_member(
 
 
 def check_executables(root: Path) -> None:
+    # libcurl is opened at the first request, so it is named by the package's
+    # dependencies and not by the binary. Debian 11 predates glibc 2.34 and
+    # still keeps dlopen in libdl.
     checks = {
-        "arqan": {"libc.so.6", "libcurl.so.4"},
+        "arqan": {"libc.so.6", "libdl.so.2"},
         "arqan-highlight": {"libc.so.6"},
     }
     for name, dependencies in checks.items():
@@ -186,8 +189,10 @@ def check_el9_executables(root: Path) -> None:
     it lacks: glibc no newer than EL9's 2.34, and no versioned libcurl symbol,
     which only Debian's libcurl defines and whose absence makes the loader
     warn on every startup."""
+    # EL9 is glibc 2.34, which carries dlopen in libc itself, and libcurl is
+    # opened at the first request rather than linked.
     checks = {
-        "arqan": {"libc.so.6", "libcurl.so.4"},
+        "arqan": {"libc.so.6"},
         "arqan-highlight": {"libc.so.6"},
     }
     for name, dependencies in checks.items():
@@ -309,7 +314,12 @@ def check_rpm(package: Path, ver: str, epoch: int, temp: Path) -> None:
     requires = set(run("rpm", "-qp", "--requires", package).stdout.splitlines())
     if "ca-certificates" not in requires:
         fail("RPM lacks explicit CA certificate dependency")
-    for pattern in (r"^libc\.so\.6", r"^libcurl\.so\.4"):
+    # libcurl is opened at the first request, so no NEEDED entry names it and
+    # rpm generates nothing for it. The spec carries the package by hand, and
+    # this is the check that it still does.
+    if "libcurl" not in requires:
+        fail("RPM lacks explicit libcurl dependency")
+    for pattern in (r"^libc\.so\.6",):
         if not any(re.search(pattern, item) for item in requires):
             fail(f"RPM lacks generated dependency {pattern}")
     # Nothing filters the generated dependencies any more, so a versioned
