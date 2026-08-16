@@ -6,7 +6,7 @@ import re
 def test_spinner_names_the_wait_and_counts_it(ctx):
     """A turn in flight shows a spinner, its label, its seconds and the key
     that ends it."""
-    ctx.scenario("first_delay=3,text=finally")
+    ctx.scenario("hold,text=finally")
     s = ctx.spawn()
     s.submit("take your time")
     s.wait_activity("thinking")
@@ -14,13 +14,14 @@ def test_spinner_names_the_wait_and_counts_it(ctx):
     assert re.fullmatch(r"\d+s", elapsed), elapsed
     assert "esc to interrupt" in s.text()
     s.wait_for(lambda t: s.activity()[1] != elapsed, "the clock to advance")
+    ctx.mock.release()
     s.wait_turn_done()
 
 
 def test_status_line_does_not_repeat_the_spinner(ctx):
     """One state, one place: the word lives on the spinner row while a turn
     runs and on the status line when none does."""
-    ctx.scenario("first_delay=3,text=done")
+    ctx.scenario("hold,text=done")
     s = ctx.spawn()
     s.submit("hi")
     s.wait_activity("thinking")
@@ -28,6 +29,7 @@ def test_status_line_does_not_repeat_the_spinner(ctx):
     assert "thinking" not in line, line
     assert line.startswith("\u25cf mock-model"), line
     assert s.status_colour() == "thinking", line
+    ctx.mock.release()
     s.wait_turn_done()
     assert s.status_line().startswith("\u25cf ready"), s.status_line()
 
@@ -46,12 +48,13 @@ def test_spinner_leaves_when_the_turn_ends(ctx):
 
 def test_spinner_leaves_the_composer_where_it_was(ctx):
     """It takes its rows from the transcript, so nothing below it moves."""
-    ctx.scenario("first_delay=3,text=done")
+    ctx.scenario("hold,text=done")
     s = ctx.spawn()
     s.submit("hi")
     s.wait_activity("thinking")
     composed = [i for i in range(s.term.rows) if "Message arqan..." in s.row(i)]
     assert len(composed) == 1, s.text()
+    ctx.mock.release()
     s.wait_turn_done()
     assert [i for i in range(s.term.rows) if "Message arqan..." in s.row(i)] \
         == composed, s.text()

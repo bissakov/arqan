@@ -3913,6 +3913,38 @@ static struct { unsigned char b[8192]; size_t n, at; } g_inbuf;
 
 static b8 input_buffered(void) { return g_inbuf.at < g_inbuf.n; }
 
+#ifdef AGENT_TESTING
+/* A settled screen, announced. The suite drives the UI over a pty, where the
+ * only other way to know a repaint has finished is to wait out a silence long
+ * enough to be sure it will not be broken; this says so instead, so a case
+ * spends no time guessing. Emitted where the reader is about to block with a
+ * painted frame behind it, which is the definition of settled.
+ *
+ * It carries the number of input bytes consumed so far, which is what makes
+ * it answerable: a park is only the answer to what a case wrote once the
+ * count reaches everything the case has sent. A bare sequence number cannot
+ * distinguish that from the park before it.
+ *
+ * APC: terminals consume and ignore it, and it carries no cursor or cell
+ * effect, so a golden screen is the same with it as without. Compiled into
+ * the test build alone; the shipped binary has no beacon and no counter. */
+static unsigned long g_idle_seq;
+static unsigned long g_input_bytes;
+
+static void idle_beacon(void) {
+    if (!g_tui.fullscreen || !g_tui.frame_valid) return;
+    char b[64];
+    i32 n = snprintf(b, sizeof b, "\033_agent;idle;%lu;%lu\033\\",
+                     ++g_idle_seq, g_input_bytes);
+    if (n > 0 && (size_t)n < sizeof b) {
+        put_raw(b, (size_t)n);
+        flush_out();
+    }
+}
+#else
+#define idle_beacon() ((void)0)
+#endif
+
 static b8 input_ready(i32 timeout_ms) {
     if (g_pushback >= 0 || input_buffered()) return true;
     struct pollfd pfd = { STDIN_FILENO, POLLIN, 0 };
@@ -3923,12 +3955,18 @@ static b8 input_ready(i32 timeout_ms) {
 static i32 rbyte(void) {
     if (g_pushback >= 0) { i32 c = g_pushback; g_pushback = -1; return c; }
     if (!input_buffered()) {
+        /* Nothing is buffered and nothing is pushed back, so every byte read
+         * so far has been consumed: the count the beacon carries is exact. */
+        idle_beacon();
         /* Blocks exactly where a one-byte read did: the first byte of a
          * batch. A resize or an interrupt is reported before any byte, so a
          * refill never hides input that already arrived. */
         ssize_t n = read(STDIN_FILENO, g_inbuf.b, sizeof g_inbuf.b);
         if (n < 0 && errno == EINTR) return g_winch ? -3 : -2;
         if (n <= 0) return -1;
+#ifdef AGENT_TESTING
+        g_input_bytes += (unsigned long)n;
+#endif
         g_inbuf.n = (size_t)n;
         g_inbuf.at = 0;
     }

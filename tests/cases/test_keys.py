@@ -131,13 +131,14 @@ def test_keys_page_is_chrome_and_sends_no_request(ctx):
 
 def test_the_page_opens_while_a_turn_streams(ctx):
     """Looking up a key changes neither the conversation nor the request."""
-    ctx.scenario("first_delay=6,text=done")
+    ctx.scenario("hold,text=done")
     s = ctx.spawn()
     s.submit("go on")
     s.wait_activity("thinking")
 
     s.submit("/keys")
     s.wait_text("Ctrl-R")
+    ctx.mock.release()
     s.wait_text("done")                 # the turn ran on under the page
     s.key("esc").sync()
     s.wait_gone("Ctrl-R")

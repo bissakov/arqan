@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Report the last thing a background job printed. A command's final output
+  can still be in flight when the command exits, so `job` waiting for one
+  could answer with its exit line and drop the lines just before it. A wait
+  now covers that hand-off, bounded so that anything the command left running
+  behind it cannot hold the answer.
+
 ## [0.5.0] - 2026-08-16
 
 ### Added

@@ -7,6 +7,7 @@ with a probe attached to the child process.
 ```sh
 make bench                              # every quick case
 make bench-slow                         # including the soak cases
+make bench-fast                         # iterate on bin/arqan-test, in seconds
 make bench B="-k transcript -v"         # matching cases, verbose
 make bench-baseline                     # write bench-baseline.json
 make bench B="--baseline bench-baseline.json"
@@ -20,6 +21,14 @@ python3 -m bench.run --no-budgets       # measure without failing on budgets
 Exit status is non-zero when a case blew a budget, failed a stress check,
 threw, or regressed past `--tolerance` or `--mem-tolerance` against a
 baseline.
+
+`make bench` and the gate measure `bin/arqan`, never the instrumented binary.
+A run is therefore mostly idle: the harness waits a quiet window out at every
+step. `make bench-fast` drives `bin/arqan-test`, which announces each park on
+its input, so the same cases finish in about a seventh of the time. Use it
+while writing a case or chasing a budget, and confirm the result with `make
+bench` or `make bench-guard`: the test build carries the mock provider hooks
+and the beacon, so its cost is not what ships.
 
 ## The regression gate
 

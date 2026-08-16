@@ -70,6 +70,13 @@ content, and `s.wait_turn_done()` waits for the agent loop to become idle.
 `ctx.check_screen(s)` creates or compares `golden/<case>.txt`; inspect its
 diff before accepting an intentional update.
 
+A wait ends as soon as the child says it is settled: the test build announces
+every park on its input with an APC beacon carrying the input bytes it has
+consumed, so a wait after `send` ends when the child has read everything the
+case wrote and painted the frame behind it. A build without the beacon - an
+older binary, another toolchain - falls back to waiting a quiet window out,
+which is the same answer more slowly.
+
 A read of the pty lands wherever the child happens to be writing, so the
 harness feeds the emulator whole frames only: `arqan` wraps each repaint in
 synchronized output and the bytes of an unfinished frame are held back until
@@ -92,9 +99,18 @@ settled row rather than a half-written one.
 | `status=`, `fail_times=`, `fail_status=`, `fail_mode=` | failures and retries |
 | `abort_after=` | cut a streaming response short |
 | `models=`, `model_count=`, `models_status=` | model-list response |
+| `hold`, `hold_final`, `hold_round=`, `hold_after=` | pause the response at a gate |
 
 Recorded requests are available through `ctx.mock.requests`; auth headers and
 tool results have matching helpers on `ctx.mock`.
+
+A case that needs a turn to still be running holds the response at the gate
+rather than guessing a delay: `hold` stops the first response before its
+first byte, `hold_final` stops the round that carries the text, `hold_round=N`
+stops round N, and `hold_after=N` stops after N words have streamed. The case
+asserts whatever the running turn should show, then `ctx.mock.release()` lets
+the response finish. A held response is released when the mock stops, and a
+gate nothing releases times out rather than hanging the suite.
 
 Run the mock provider manually without an API key:
 

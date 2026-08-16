@@ -61,6 +61,19 @@ class Scenario:
         self.first_delay: float = float(kw.get("first_delay", 0.0))
         self.status: int = int(kw.get("status", 200))
         self.error: str = kw.get("error", "mock provider error")
+        # A turn the case holds open, until it calls `ctx.mock.release()`.
+        # This is what a case needing a running turn should use: a wall-clock
+        # `first_delay` long enough to be safe on a loaded machine is dead
+        # time on every other run, and one too short is a flake.
+        #   hold        park every round before it streams anything
+        #   hold_final  park the round that streams the content, so the tool
+        #               rounds before it still reach the screen
+        #   hold_round  park round N only, counting from one
+        #   hold_after  park after that many content deltas
+        self.hold: bool = _truthy(kw.get("hold", "0"))
+        self.hold_final: bool = _truthy(kw.get("hold_final", "0"))
+        self.hold_round: int = int(kw.get("hold_round", 0))
+        self.hold_after: int = int(kw.get("hold_after", 0))
         # Transient failures: the first `fail_times` completion requests fail,
         # with `status` (default 503) or, with fail_mode=close, by dropping the
         # connection before answering. `abort_after` drops it mid-stream, after
@@ -200,6 +213,11 @@ def _truthy(v) -> bool:
     return str(v).lower() not in ("0", "false", "no", "off")
 
 
+# How long a held stream waits for its release. Longer than the harness's own
+# waits, so a case that never releases fails on its own assertion first.
+GATE_TIMEOUT = 15.0
+
+
 def _unescape(v: str) -> str:
     """'+' is a space and '\\n' a line break, so prose fits in one DSL field."""
     return v.replace("\\n", "\n").replace("+", " ")
@@ -310,6 +328,46 @@ class _AnthropicHandlerMixin:
         except (BrokenPipeError, ConnectionResetError, OSError):
             return False
 
+    # -- pacing ------------------------------------------------------------
+    def _hold_first(self, scenario, emit_tools: bool = False,
+                    tool_replies: int = 0) -> None:
+        """Park before the first delta, if the scenario asks.
+
+        Under `hold_final` a round carrying tool calls streams straight
+        through: the case is waiting for the tool's result to reach the
+        screen, and the round that answers it is the one worth parking.
+        `hold_round` names a round outright, which is what a case wants when
+        the round to park is one that asks for a tool of its own.
+        """
+        if (scenario.hold
+                or (scenario.hold_final and not emit_tools)
+                or (scenario.hold_round
+                    and tool_replies == scenario.hold_round - 1)):
+            self._gate()
+        elif scenario.first_delay:
+            time.sleep(scenario.first_delay)
+
+    def _pace(self, scenario, sent: int = -1) -> None:
+        """Park or sleep between deltas, `sent` of which have gone out.
+
+        `sent` is left out where the gate does not belong: reasoning and tool
+        arguments precede the content `hold_after` counts.
+        """
+        if scenario.hold_after and sent == scenario.hold_after:
+            self._gate()
+        if scenario.delay:
+            time.sleep(scenario.delay)
+
+    def _gate(self) -> None:
+        """Hold the stream open until the case releases it.
+
+        The wait outlasts the harness's own 10s waits on purpose: a case that
+        forgets to release should fail on its assertion, with the screen it
+        was looking at, rather than here with a timeout the case cannot see.
+        """
+        if not self.server.gate.wait(GATE_TIMEOUT):
+            self.server.gate_timeouts.append(time.time())
+
     def _anthropic(self):
         srv = self.server
         body = self._read_body()
@@ -356,8 +414,7 @@ class _AnthropicHandlerMixin:
         if not self._anth_sse("message_start", start):
             return
 
-        if scenario.first_delay:
-            time.sleep(scenario.first_delay)
+        self._hold_first(scenario, emit_tools, tool_replies)
 
         index = 0
         completion_chars = 0
@@ -431,8 +488,9 @@ class _AnthropicHandlerMixin:
             if abort and scenario.abort_after and sent >= scenario.abort_after:
                 self._reset()
                 return False
-            if scenario.delay:
-                time.sleep(scenario.delay)
+            # `abort` marks the content block, which is the one `hold_after`
+            # counts; thinking and tool blocks stream past the gate.
+            self._pace(scenario, sent if abort else -1)
         return self._anth_sse("content_block_stop", {"index": index})
 
     def _anth_usage(self, scenario, messages, completion_chars):
@@ -485,8 +543,7 @@ class _AnthropicHandlerMixin:
                 "cache_read_input_tokens": scenario.cache_read_tokens,
             },
         }
-        if scenario.first_delay:
-            time.sleep(scenario.first_delay)
+        self._hold_first(scenario, emit_tools, tool_replies)
         self._json(200, payload)
 
 
@@ -909,8 +966,7 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             if not self._sse(dict(base, choices=[], usage=usage)):
                 return
 
-        if scenario.first_delay:
-            time.sleep(scenario.first_delay)
+        self._hold_first(scenario, emit_tools, tool_replies)
 
         budget = Budget(body.get("max_tokens"))
         completion_chars = 0
@@ -932,8 +988,7 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
                         "reasoning_details": [detail],
                     })):
                         return
-                    if scenario.delay:
-                        time.sleep(scenario.delay)
+                    self._pace(scenario)
         elif scenario.reasoning and tool_replies == 0:
             for piece in chunks(scenario.reasoning, scenario.chunk):
                 piece = budget.take(piece)
@@ -941,8 +996,7 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
                     break
                 if not self._sse(frame({scenario.reasoning_field: piece})):
                     return
-                if scenario.delay:
-                    time.sleep(scenario.delay)
+                self._pace(scenario)
 
         if budget.spent:
             # The thinking took it all: the turn ends where the cap does.
@@ -974,8 +1028,7 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
                         )
                     ):
                         return
-                    if scenario.delay:
-                        time.sleep(scenario.delay)
+                    self._pace(scenario)
                 completion_chars += len(args)
             finish = "tool_calls"
         else:
@@ -995,8 +1048,7 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
                 if scenario.abort_after and sent >= scenario.abort_after:
                     self._reset()
                     return
-                if scenario.delay:
-                    time.sleep(scenario.delay)
+                self._pace(scenario, sent)
                 if len(piece) < len(whole):
                     finish = "length"
                     break
@@ -1061,8 +1113,7 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
         }
         if scenario.usage:
             payload["usage"] = scenario._usage(messages, completion_chars)
-        if scenario.first_delay:
-            time.sleep(scenario.first_delay)
+        self._hold_first(scenario, emit_tools, tool_replies)
         self._json(200, payload)
 
 
@@ -1142,6 +1193,10 @@ class MockProvider:
         self.httpd.web_request_times = []   # type: ignore[attr-defined]
         self.httpd.web_calls = []           # type: ignore[attr-defined]
         self.httpd.verbose = False         # type: ignore[attr-defined]
+        # A held stream waits on this; `release()` sets it. It stays set, so
+        # every later round of the same turn streams straight through.
+        self.httpd.gate = threading.Event()  # type: ignore[attr-defined]
+        self.httpd.gate_timeouts = []      # type: ignore[attr-defined]
         self.scenario = scenario
         # socketserver's shutdown() only returns on the next poll tick, so the
         # default 0.5s would dominate the runtime of a short case.
@@ -1181,6 +1236,22 @@ class MockProvider:
     @property
     def requests(self) -> list:
         return self.httpd.requests  # type: ignore[attr-defined]
+
+    # -- held turns --------------------------------------------------------
+    def release(self) -> "MockProvider":
+        """Let a turn held by `hold` or `hold_after` finish streaming."""
+        self.httpd.gate.set()              # type: ignore[attr-defined]
+        return self
+
+    def hold(self) -> "MockProvider":
+        """Re-arm the gate, so the next held turn parks again."""
+        self.httpd.gate.clear()            # type: ignore[attr-defined]
+        return self
+
+    @property
+    def gate_timeouts(self) -> list:
+        """Held streams that gave up waiting; a case that forgot to release."""
+        return self.httpd.gate_timeouts    # type: ignore[attr-defined]
 
     @property
     def bad_utf8(self) -> list:
@@ -1244,6 +1315,9 @@ class MockProvider:
         return self
 
     def stop(self):
+        # A handler parked at the gate would otherwise sit there until it
+        # times out, holding up a case that had no more use for the turn.
+        self.release()
         self.httpd.shutdown()
         self.httpd.server_close()
 
@@ -1282,7 +1356,8 @@ def main(argv=None):
         "--scenario",
         default="words=40,chunk=3,delay=0.03",
         help="key=value,... (words, paragraphs, seed, chunk, delay, "
-        "first_delay, status, tool=name:args, tool_rounds, text, usage=P/C)",
+        "first_delay, hold, hold_final, hold_after, status, tool=name:args, "
+        "tool_rounds, text, usage=P/C)",
     )
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)

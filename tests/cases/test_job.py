@@ -64,6 +64,28 @@ def test_a_detached_command_keeps_running(ctx):
     assert (ctx.work / "finished.txt").exists(), "the detached command was killed"
 
 
+def test_a_wait_answers_with_the_tail_the_command_wrote(ctx):
+    """What a command writes just before exiting is still in the pipe when it
+    is reaped, so a wait covers the drain too. It is not held by what the
+    command left behind: a child holding the pipe open must not hold the
+    answer past the command it came from."""
+    ctx.scenario(
+        "tool=" + bash("sleep 3 & sleep 0.4; echo tail-line")
+        + ",tool=" + job(id=1) + ",final_text=followed"
+    )
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="200")
+    s.submit("run something slow")
+    started = time.monotonic()
+    s.wait_text("followed")
+    s.wait_turn_done()
+    elapsed = time.monotonic() - started
+
+    followed = results(ctx)[1]
+    assert "tail-line" in followed, followed
+    assert "[job 1 exit 0" in followed, followed
+    assert elapsed < 3, elapsed
+
+
 def test_a_quick_command_is_unchanged(ctx):
     """Inside the deadline nothing detaches: one result, with its exit line."""
     ctx.scenario("tool=" + bash("echo quick") + ",final_text=ran")

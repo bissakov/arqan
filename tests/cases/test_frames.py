@@ -22,13 +22,14 @@ def busy_capture(ctx):
     composer are painted together, so a torn read shows the placeholder
     half-written.
     """
-    ctx.scenario("first_delay=1,text=done")
+    ctx.scenario("hold,text=done")
     s = ctx.spawn()
     s.submit("go on")
     s.wait_activity("thinking")
     s.type("and then this")
     s.key("enter")
     s.wait_text("message queued")
+    ctx.mock.release()
     s.wait_turn_done()
     return bytes(s.raw)
 

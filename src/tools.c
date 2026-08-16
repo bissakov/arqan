@@ -234,6 +234,11 @@ void shell_set_timeout(i32 ms) { g_shell_timeout_ms = ms > 0 ? ms : 0; }
  * that the caller's idle hook keeps a frame moving. */
 #define SHELL_POLL_MS 50
 
+/* How long a wait may outlast the command it watched, so that what the
+ * command wrote just before exiting reaches the log before it is paged.
+ * Bounded: anything the command left running can hold the pipe open. */
+#define JOB_DRAIN_MS 200
+
 b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
     static char z[AGENT_MAX_COMMAND];
     if (!arg_cstr(cmd, z, sizeof z, "command", err, err_cap)) return false;
@@ -850,17 +855,28 @@ static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
         job_signal(job);
     } else {
         f64 started = agent_now_seconds();
+        f64 exited = 0.0;
+        /* A poll answers with what is there; only a wait waits for the tail. */
+        f64 grace = wait_ms ? (f64)JOB_DRAIN_MS : 0.0;
         for (;;) {
             job_refresh(job);
-            if (!job->running) break;
-            if (g_shell_interrupt && *g_shell_interrupt) {
+            if (!job->running) {
+                /* The command's last writes sit in the pipe until the drainer
+                 * copies them, so an exit is not yet the whole output; the
+                 * drainer exits once it has seen EOF and written the rest. */
+                if (job->drained) break;
+                if (exited <= 0.0) exited = agent_now_seconds();
+                if ((agent_now_seconds() - exited) * 1000.0 >= grace) break;
+            } else if (g_shell_interrupt && *g_shell_interrupt) {
                 /* An interrupt stops the work, not just the watching: a job
                  * left running behind a cancelled turn is one nobody owns. */
                 interrupted = true;
                 job_signal(job);
                 break;
+            } else if ((agent_now_seconds() - started) * 1000.0
+                       >= (f64)wait_ms) {
+                break;
             }
-            if ((agent_now_seconds() - started) * 1000.0 >= (f64)wait_ms) break;
             poll(NULL, 0, SHELL_POLL_MS);
             if (g_shell_idle) g_shell_idle(g_shell_idle_ud);
         }

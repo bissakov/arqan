@@ -3,7 +3,12 @@
 
 def open_picker(ctx, s):
     s.submit("/model")
-    return s.wait_status("pick a model")
+    s.wait_status("pick a model")
+    # The status line announces the picker before the list it shows: the
+    # models arrive over HTTP. Waiting only for the status leaves the rows
+    # this returns to a race the callers all assert against.
+    s.wait_for(lambda t: ctx.mock.listings, "the model list to be fetched")
+    return s.settle()
 
 
 def test_picker_lists_the_provider_models(ctx):
