@@ -2,6 +2,8 @@
 
 import json
 
+from .test_image import png
+
 
 def test_read_tool_round_trip(ctx):
     """A read call runs, shows in the transcript and is fed back to the model."""
@@ -798,3 +800,54 @@ def test_binary_tool_output_is_sent_as_valid_utf8(ctx):
     results = ctx.mock.tool_results()
     assert results, ctx.mock.requests
     results[-1].encode("utf-8")          # decoded cleanly, so it round-trips
+
+
+def test_read_of_an_image_names_the_image(ctx):
+    """read on a PNG says what the file is instead of paging its bytes.
+
+    Every ill-formed byte becomes U+FFFD on the wire, so paging an image
+    would charge the model for a page of replacement characters and tell it
+    nothing about the file.
+    """
+    (ctx.work / "shot.png").write_bytes(png(1200, 800))
+    ctx.scenario('tool=read:{"path":"shot.png"},final_text=that+is+a+picture')
+    s = ctx.spawn()
+    s.submit("read shot.png")
+    s.wait_text("that is a picture")
+    s.wait_turn_done()
+
+    results = ctx.mock.tool_results()
+    assert results and results[0].startswith("ERROR:"), results
+    assert "shot.png is a png image, 1200x800" in results[0], results[0]
+    assert "\ufffd" not in results[0], results[0]
+    text = s.text()
+    assert "read returns text" in text, text
+
+
+def test_read_of_a_binary_file_is_refused(ctx):
+    """A file with a NUL byte in its head is binary, so read points at bash."""
+    (ctx.work / "a.out").write_bytes(b"\x7fELF\x02\x01\x01" + bytes(120))
+    ctx.scenario('tool=read:{"path":"a.out"},final_text=not+text')
+    s = ctx.spawn()
+    s.submit("read a.out")
+    s.wait_text("not text")
+    s.wait_turn_done()
+
+    results = ctx.mock.tool_results()
+    assert results and results[0].startswith("ERROR:"), results
+    assert "a.out is a binary file" in results[0], results[0]
+    assert "Use bash" in results[0], results[0]
+
+
+def test_read_of_utf8_text_still_pages(ctx):
+    """The binary guard tests the head for a NUL, not for plain ASCII."""
+    (ctx.work / "utf8.txt").write_text("h\u00e9llo \u2014 w\u00f6rld\n",
+                                       encoding="utf-8")
+    ctx.scenario('tool=read:{"path":"utf8.txt"},final_text=read+it')
+    s = ctx.spawn()
+    s.submit("read utf8.txt")
+    s.wait_text("read it")
+    s.wait_turn_done()
+
+    assert ctx.mock.tool_results() == ["h\u00e9llo \u2014 w\u00f6rld\n"], \
+        ctx.mock.tool_results()

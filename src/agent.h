@@ -1289,7 +1289,8 @@ void   media_write_anthropic(Buf *b, const MediaSet *m, size_t id);
  * installed, the clipboard holds no image, or it holds more bytes than an
  * image may have. The bytes are not validated here: the caller hands them
  * to media_add, which refuses a format or a size the same way it would from
- * a file. Pumps the UI while it waits.
+ * a file. Blocks for at most AGENT_CLIPBOARD_TIMEOUT_MS and does not pump
+ * the UI, so it is safe to call from inside input handling.
  */
 b8     clipboard_image(Arena *scratch, Str *out, char *err, size_t err_cap);
 

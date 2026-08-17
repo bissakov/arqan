@@ -19,6 +19,11 @@
 
 ### Changed
 
+- `read` names an image or a binary file instead of paging it. Reading a PNG
+  returned a page of replacement characters, because bytes that are not text
+  cannot go on the wire; it now answers with the type, size and dimensions of
+  the image, and points at `bash` for other binary files.
+
 - Keep the syntax colours when a block is opened in a window. Clicking a
   tool block while a turn runs showed all of its text plain. The window now
   colours what the block does: file content a `read` returned, the code a
