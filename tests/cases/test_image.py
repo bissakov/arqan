@@ -629,3 +629,60 @@ def test_a_long_image_path_attaches_mid_turn(ctx):
     wait_composer(s, "[Image #1]")
     ctx.mock.release()
     s.wait_turn_done()
+
+
+# ---- an attachment lives as long as its marker ----------------------------
+def test_clearing_the_composer_takes_the_attachment_back(ctx):
+    """Regression: the image whose marker was cleared came back numbered
+    behind the next one, so a second paste read `[Image #1] [Image #2]`."""
+    path = clipboard(ctx, png(4, 3))
+    ctx.scenario("text=one+picture")
+    s = ctx.spawn(PATH=path)
+    s.key("ctrl-v")
+    wait_composer(s, "[Image #1]")
+    s.key("ctrl-u").sync()
+    s.key("ctrl-v")
+    s.wait_text("attached [Image #1]")
+    wait_composer(s, "[Image #1]")
+
+    s.submit("what is [Image #1]")
+    s.wait_text("one picture")
+    s.wait_turn_done()
+    body = ctx.mock.requests[-1]
+    assert len(openai_images(body)) == 1, body["messages"][-1]
+
+
+def test_a_typed_attach_keeps_the_markers_it_was_typed_behind(ctx):
+    """Submitting `/attach` empties the composer, so the markers the line
+    carried are what the images still standing are read from."""
+    shot(ctx, "one.png", 4, 3)
+    shot(ctx, "two.png", 6, 5)
+    s = ctx.spawn()
+    attach(s, "one.png")
+    attach(s, "two.png", 2)
+    wait_composer(s, "[Image #1] [Image #2]")
+
+
+def test_deleting_one_marker_renumbers_what_the_next_attach_adds(ctx):
+    """The image behind a deleted marker goes, and the survivor moves up
+    before the new one is numbered."""
+    shot(ctx, "one.png", 4, 3)
+    second = shot(ctx, "two.png", 6, 5)
+    third = shot(ctx, "three.png", 8, 7)
+    ctx.scenario("text=two+pictures")
+    s = ctx.spawn()
+    attach(s, "one.png")
+    attach(s, "two.png", 2)
+    wait_composer(s, "[Image #1] [Image #2]")
+    s.key("home").key(*["delete"] * len("[Image #1] ")).key("end").sync()
+    wait_composer(s, "[Image #2]")
+    attach(s, "three.png", 2)
+    wait_composer(s, "[Image #1] [Image #2]")
+
+    s.submit("compare them")
+    s.wait_text("two pictures")
+    s.wait_turn_done()
+    body = ctx.mock.requests[-1]
+    urls = openai_images(body)
+    assert [base64.b64decode(u.partition(",")[2]) for u in urls] == \
+        [second, third], body["messages"][-1]

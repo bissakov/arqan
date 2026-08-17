@@ -1387,6 +1387,72 @@ static b8 draft_names_image(Str draft, size_t num) {
     return false;
 }
 
+/* "[Image #3]" at `i`, whose number is one a pending image answers to.
+ * `len` receives the whole placeholder's length. */
+static b8 image_tag_at(Str text, size_t i, size_t pending_n, size_t *num,
+                       size_t *len) {
+    static const Str lead = { "[Image #", 8 };
+    if (i + lead.n >= text.n || memcmp(text.p + i, lead.p, lead.n)) return false;
+    size_t j = i + lead.n, n = 0;
+    while (j < text.n && text.p[j] >= '0' && text.p[j] <= '9') {
+        n = n * 10 + (size_t)(text.p[j++] - '0');
+        if (n > pending_n) return false;
+    }
+    if (j == i + lead.n || j >= text.n || text.p[j] != ']' || !n) return false;
+    *num = n;
+    *len = j + 1 - i;
+    return true;
+}
+
+/* An attachment lives as long as its placeholder, so an image whose marker
+ * the user deleted is dropped before the next one is added rather than coming
+ * back numbered behind it. `carried` is the marker text a submitted line took
+ * out of the composer, which still counts as written: a typed /attach empties
+ * the box, a gesture leaves the draft where it was. The survivors and the
+ * markers left in the draft are renumbered together, so both count alike. */
+static void pending_drop_unnamed(Agent *ag, Str carried) {
+    if (!ag->pending_n) return;
+    size_t mark = ag->scratch->off;
+    Str draft = tui_input();
+
+    b8 named[AGENT_MAX_MEDIA_PER_TURN] = {0};
+    size_t live = 0;
+    for (size_t i = 0; i < ag->pending_n; i++) {
+        named[i] = draft_names_image(draft, i + 1)
+                || draft_names_image(carried, i + 1);
+        if (named[i]) live++;
+    }
+    if (live == ag->pending_n) { ag->scratch->off = mark; return; }
+
+    size_t renum[AGENT_MAX_MEDIA_PER_TURN] = {0};
+    size_t kept[AGENT_MAX_MEDIA_PER_TURN];
+    size_t n = 0;
+    for (size_t i = 0; i < ag->pending_n; i++)
+        if (named[i]) { kept[n] = ag->pending[i]; renum[i] = ++n; }
+
+    Buf b;
+    buf_init(&b, ag->scratch, draft.n + 32);
+    for (size_t i = 0; i < draft.n; i++) {
+        size_t num, len;
+        if (!image_tag_at(draft, i, ag->pending_n, &num, &len)) {
+            buf_putc(&b, draft.p[i]);
+            continue;
+        }
+        if (renum[num - 1]) buf_putf(&b, "[Image #%zu]", renum[num - 1]);
+        i += len - 1;
+    }
+    Str line = buf_finish(&b);
+    if (buf_ok(&b) && !str_eq(line, draft)) tui_set_input(line);
+    /* The dropped entries are this turn's own tail, so the table gives their
+     * places back; an earlier turn's images sit below `base` untouched. */
+    size_t base = ag->pending[0];
+    if (n) media_keep(&g_media, base, kept, n);
+    else if (base <= g_media.n) g_media.n = base;
+    for (size_t i = 0; i < n; i++) ag->pending[i] = base + i;
+    ag->pending_n = n;
+    ag->scratch->off = mark;
+}
+
 /* Leave the composer naming every pending image. A typed /attach submitted
  * the line, so the box is empty and the markers an earlier one left are
  * written back; Ctrl-V attaches under a draft, so what the user has written
@@ -1418,7 +1484,7 @@ static size_t attach_from_clipboard(Agent *ag, char *err, size_t err_cap) {
                      err, err_cap);
 }
 
-static void attach_image(Agent *ag, Str path) {
+static void attach_image(Agent *ag, Str path, Str carried) {
     path = str_trim(path);
     /* Without a media table nothing can hold an image, which is what
      * `images = off` leaves behind. The command is not offered then; typed
@@ -1427,6 +1493,7 @@ static void attach_image(Agent *ag, Str path) {
         notice_fmt("images are off: set images = auto to attach one");
         return;
     }
+    pending_drop_unnamed(ag, carried);
     /* The shape of an attachment, never the picture: how big it was and how
      * many the message is carrying, with no name, path or media type. */
     TelEvent e;
@@ -1464,23 +1531,6 @@ static void attach_image(Agent *ag, Str path) {
     tel_bucket(&e, "pixels", (u64)g_media.w[id] * g_media.h[id]);
     tel_int(&e, "pending", (i64)ag->pending_n);
     tel_send(&e);
-}
-
-/* "[Image #3]" at `i`, whose number is one a pending image answers to.
- * `len` receives the whole placeholder's length. */
-static b8 image_tag_at(Str text, size_t i, size_t pending_n, size_t *num,
-                       size_t *len) {
-    static const Str lead = { "[Image #", 8 };
-    if (i + lead.n >= text.n || memcmp(text.p + i, lead.p, lead.n)) return false;
-    size_t j = i + lead.n, n = 0;
-    while (j < text.n && text.p[j] >= '0' && text.p[j] <= '9') {
-        n = n * 10 + (size_t)(text.p[j++] - '0');
-        if (n > pending_n) return false;
-    }
-    if (j == i + lead.n || j >= text.n || text.p[j] != ']' || !n) return false;
-    *num = n;
-    *len = j + 1 - i;
-    return true;
 }
 
 /* How much of a submitted line is the placeholders an attachment left in the
@@ -3227,7 +3277,7 @@ static b8 on_busy_command(Str line, void *ud) {
      * read from the line rather than the bounded copy below, since a path is
      * longer than any command name. */
     if (str_eq(line, STR("/attach")) || str_starts(line, STR("/attach "))) {
-        attach_image(ag, str_drop(line, 7));
+        attach_image(ag, str_drop(line, 7), line);
         telemetry_command(STR("/attach"));
         return true;
     }
@@ -4137,9 +4187,18 @@ i32 main(i32 argc, char **argv) {
         /* The composer still holds the markers an /attach put there, so a
          * command typed behind them is read as one. The images stay pending;
          * only a message takes them. */
+        /* The markers a command was typed behind leave the composer with it,
+         * so an attachment reads them from here rather than from the box the
+         * submission emptied. */
+        char shed[AGENT_MAX_MEDIA_PER_TURN * 16];
+        size_t shed_n = 0;
         if (agent.pending_n) {
             size_t skip = pending_prefix(&agent, line, ln);
-            if (skip) { memmove(line, line + skip, ln - skip + 1); ln -= skip; }
+            if (skip) {
+                if (skip <= sizeof shed) { memcpy(shed, line, skip); shed_n = skip; }
+                memmove(line, line + skip, ln - skip + 1);
+                ln -= skip;
+            }
         }
         b8 escaped = ln >= 2 && line[0] == '\\'
                   && (line[1] == '/' || line[1] == '!');
@@ -4202,7 +4261,8 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
         if (!strncmp(line, "/attach", 7) && (ln == 7 || line[7] == ' ')) {
-            attach_image(&agent, (Str){ line + 7, ln - 7 });
+            attach_image(&agent, (Str){ line + 7, ln - 7 },
+                         (Str){ shed, shed_n });
             continue;
         }
         if (!strcmp(line, "/export") || !strncmp(line, "/export ", 8)) {
