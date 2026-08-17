@@ -243,6 +243,13 @@ void tel_bool(TelEvent *e, const char *key, b8 v) {
     tel_addz(e, v ? "true" : "false");
 }
 
+void tel_bucket(TelEvent *e, const char *key, u64 v) {
+    if (!e->live) return;
+    u64 b = 0;
+    while (v) { b = b ? b << 1 : 1; v >>= 1; }
+    tel_int(e, key, (i64)b);
+}
+
 void tel_str(TelEvent *e, const char *key, Str v) {
     if (!e->live) return;
     tel_key(e, key);

@@ -11,6 +11,8 @@
 #include "web.c"
 #include "paths.c"
 #include "spill.c"
+#include "media.c"
+#include "clipboard.c"
 #include "settings.c"
 #include "telemetry.c"
 #include "history.c"
@@ -61,7 +63,9 @@ static TuiCmd g_commands[AGENT_MAX_COMMANDS];
 
 static size_t g_command_n;
 
-static size_t commands_init(void) {
+/* `images` decides whether /attach is offered at all: a command the popup
+ * lists is one the session can run. */
+static size_t commands_init(b8 images) {
     size_t n = 0;
     g_commands[n++] = (TuiCmd){ STR("/clear"), STR("Start a fresh conversation") };
     g_commands[n++] = (TuiCmd){ STR("/resume"), STR("Resume a saved session from this directory, or delete one") };
@@ -73,6 +77,8 @@ static size_t commands_init(void) {
     g_commands[n++] = (TuiCmd){ STR("/rewind"), STR("Go back to an earlier message and edit it") };
     g_commands[n++] = (TuiCmd){ STR("/title"), STR("Name this session, or `/title auto` to let the small model name it") };
     g_commands[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
+    if (images)
+        g_commands[n++] = (TuiCmd){ STR("/attach"), STR("Attach an image to the next message, by path or from the clipboard (Ctrl-V)") };
     g_commands[n++] = (TuiCmd){ STR("/find"), STR("Search the transcript (Ctrl-R)") };
     g_commands[n++] = (TuiCmd){ STR("/keys"), STR("Show the keyboard shortcuts") };
     g_commands[n++] = (TuiCmd){ STR("/settings"), STR("Change how " AGENT_NAME " behaves") };
@@ -185,6 +191,12 @@ static void on_tool_call(i32 idx, Str id, Str name, Str args_delta, void *ud) {
  * fit it holds is what lets the field answer between requests. */
 static CtxGauge g_ctx;
 
+/* Every image this session holds. The table outlives a turn and is indexed
+ * by the conversation, which is what lets a slot keep its attachments
+ * through a replay; the bytes behind it live in the conversation's own
+ * region, so a /clear or a resume releases them with it. */
+static MediaSet g_media;
+
 /* The context the request carried, heard from the response while it streams:
  * an interrupt cannot take it back, since nothing behind it is lost to the
  * turn having ended early. The conversation is still the one the request was
@@ -251,6 +263,11 @@ typedef struct {
     b8            permission_blocked_one_shot;
     b8            echo;   // write the prompt into the transcript
     b8            show_instructions;
+    /* Images attached but not yet sent, in the order they were attached, so
+     * "[Image #1]" in the composer names pending[0]. The next user turn
+     * takes them; /clear drops them with the conversation they were for. */
+    size_t        pending[AGENT_MAX_MEDIA_PER_TURN];
+    size_t        pending_n;
 } Agent;
 
 static Str mode_name(AgentMode m) {
@@ -708,11 +725,31 @@ static void render_instructions(const Config *cfg) {
                                   sources->agents[i]);
 }
 
-static void render_user_message(Str text, u32 id) {
-    tui_pin(id);
+/* One row per image the turn carries, inside the user panel and under the
+ * text that refers to them: the transcript is cells, so an image is named
+ * rather than drawn. */
+static void render_user_media(const Conv *c, size_t i) {
+    if (!c->media || !c->media_n[i]) return;
+    for (size_t k = 0; k < c->media_n[i]; k++) {
+        size_t id = (size_t)c->media_off[i] + k;
+        if (id >= c->media->n) break;
+        char what[64];
+        media_describe(what, sizeof what, c->media, id);
+        char row[192];
+        i32 n = snprintf(row, sizeof row, "\n[Image #%zu] %.*s - %s", k + 1,
+                         (i32)c->media->label[id].n, c->media->label[id].p,
+                         what);
+        if (n > 0) tui_write_styled((Str){ row, (size_t)n }, TUI_QUOTE);
+    }
+}
+
+static void render_user_message(const Conv *c, size_t i) {
+    Str text = c->text[i];
+    tui_pin((u32)(i + 1));
     tui_user_begin();
     md_write(text);
     md_end();
+    render_user_media(c, i);
     tui_user_end();
 }
 
@@ -752,7 +789,7 @@ static void render_conv(const Conv *c, const Config *cfg,
                                        scratch, (u32)(i + 1), c->expanded[i],
                                        c->ms[i]);
                 } else {
-                    render_user_message(c->text[i], (u32)(i + 1));
+                    render_user_message(c, i);
                 }
                 break;
             case M_TOOL:
@@ -1027,7 +1064,8 @@ static Str help_build(Agent *ag) {
  * user writes is when the provider first sees the new conversation. */
 static void start_help_session(Agent *ag) {
     Conv *conv = ag->conv;
-    conv->n = 1;
+    conv_truncate(conv, 1);
+    ag->pending_n = 0;
     ag->persist->off = ag->mark;
     arena_reset(ag->scratch);
     session_begin(ag->sess);
@@ -1044,7 +1082,7 @@ static void start_help_session(Agent *ag) {
         tui_notice(STR("conversation is full"));
         return;
     }
-    render_user_message(prompt, (u32)conv->n);
+    render_user_message(conv, conv->n - 1);
     session_save(ag->sess, conv);
 }
 
@@ -1181,7 +1219,8 @@ static void resume_session(Agent *ag) {
         tui_notice(STR("could not read that session"));
         return;
     }
-    conv->n = 1;
+    conv_truncate(conv, 1);
+    ag->pending_n = 0;
     persist->off = session_mark;
     b8 whole = session_apply(sess, src, sp.list.path[pick], sp.list.name[pick],
                              conv, persist, scratch);
@@ -1252,8 +1291,19 @@ static void rewind_conversation(Agent *ag) {
                   TUI_PICK_NONE, &pick))
         return;
     size_t slot = at[pick];
+    /* The message returns to the composer with its images still attached:
+     * the placeholders in the text it restores would otherwise name nothing.
+     * They are the table's last live entries once the slot is dropped, and
+     * this path rewinds no arena, so the bytes behind them are still there. */
+    size_t img_off = conv->media_off[slot], img_n = conv->media_n[slot];
     tui_set_input(conv->text[slot]);
-    conv->n = slot;
+    conv_truncate(conv, slot);
+    ag->pending_n = 0;
+    if (img_n && conv->media && img_n <= AGENT_MAX_MEDIA_PER_TURN) {
+        conv->media->n = img_off + img_n;
+        for (size_t k = 0; k < img_n; k++)
+            ag->pending[ag->pending_n++] = img_off + k;
+    }
     tui_batch_begin();
     tui_clear();
     render_conv(conv, ag->cfg, ag->show_instructions, scratch);
@@ -1310,6 +1360,254 @@ static void notice_fmt(const char *fmt, ...) {
     if (len <= 0) return;
     size_t n = (size_t)len < sizeof msg ? (size_t)len : sizeof msg - 1;
     tui_notice((Str){ msg, n });
+}
+
+/* ---- attached images -----------------------------------------------------
+ * An attachment is one entry of the media table and one "[Image #n]" in the
+ * composer. The placeholder is ordinary text: the user can move it, keep
+ * writing around it or delete it, and the transcript shows the message the
+ * model was actually sent. The turn binds the images whose placeholder was
+ * still there when the message was submitted.
+ */
+static void attach_notice(const Agent *ag, size_t id) {
+    char what[64];
+    media_describe(what, sizeof what, &g_media, id);
+    notice_fmt("attached [Image #%zu] %.*s - %s", ag->pending_n,
+               (i32)g_media.label[id].n, g_media.label[id].p, what);
+}
+
+// Whether a draft still carries the placeholder for pending image `num`.
+static b8 draft_names_image(Str draft, size_t num) {
+    char tag[24];
+    i32 n = snprintf(tag, sizeof tag, "[Image #%zu]", num);
+    if (n <= 0) return false;
+    Str want = { tag, (size_t)n };
+    for (size_t i = 0; i + want.n <= draft.n; i++)
+        if (str_starts(str_drop(draft, i), want)) return true;
+    return false;
+}
+
+/* "[Image #3]" at `i`, whose number is one a pending image answers to.
+ * `len` receives the whole placeholder's length. */
+static b8 image_tag_at(Str text, size_t i, size_t pending_n, size_t *num,
+                       size_t *len) {
+    static const Str lead = { "[Image #", 8 };
+    if (i + lead.n >= text.n || memcmp(text.p + i, lead.p, lead.n)) return false;
+    size_t j = i + lead.n, n = 0;
+    while (j < text.n && text.p[j] >= '0' && text.p[j] <= '9') {
+        n = n * 10 + (size_t)(text.p[j++] - '0');
+        if (n > pending_n) return false;
+    }
+    if (j == i + lead.n || j >= text.n || text.p[j] != ']' || !n) return false;
+    *num = n;
+    *len = j + 1 - i;
+    return true;
+}
+
+/* An attachment lives as long as its placeholder, so an image whose marker
+ * the user deleted is dropped before the next one is added rather than coming
+ * back numbered behind it. `carried` is the marker text a submitted line took
+ * out of the composer, which still counts as written: a typed /attach empties
+ * the box, a gesture leaves the draft where it was. The survivors and the
+ * markers left in the draft are renumbered together, so both count alike. */
+static void pending_drop_unnamed(Agent *ag, Str carried) {
+    if (!ag->pending_n) return;
+    size_t mark = ag->scratch->off;
+    Str draft = tui_input();
+
+    b8 named[AGENT_MAX_MEDIA_PER_TURN] = {0};
+    size_t live = 0;
+    for (size_t i = 0; i < ag->pending_n; i++) {
+        named[i] = draft_names_image(draft, i + 1)
+                || draft_names_image(carried, i + 1);
+        if (named[i]) live++;
+    }
+    if (live == ag->pending_n) { ag->scratch->off = mark; return; }
+
+    size_t renum[AGENT_MAX_MEDIA_PER_TURN] = {0};
+    size_t kept[AGENT_MAX_MEDIA_PER_TURN];
+    size_t n = 0;
+    for (size_t i = 0; i < ag->pending_n; i++)
+        if (named[i]) { kept[n] = ag->pending[i]; renum[i] = ++n; }
+
+    Buf b;
+    buf_init(&b, ag->scratch, draft.n + 32);
+    for (size_t i = 0; i < draft.n; i++) {
+        size_t num, len;
+        if (!image_tag_at(draft, i, ag->pending_n, &num, &len)) {
+            buf_putc(&b, draft.p[i]);
+            continue;
+        }
+        if (renum[num - 1]) buf_putf(&b, "[Image #%zu]", renum[num - 1]);
+        i += len - 1;
+    }
+    Str line = buf_finish(&b);
+    if (buf_ok(&b) && !str_eq(line, draft)) tui_set_input(line);
+    /* The dropped entries are this turn's own tail, so the table gives their
+     * places back; an earlier turn's images sit below `base` untouched. */
+    size_t base = ag->pending[0];
+    if (n) media_keep(&g_media, base, kept, n);
+    else if (base <= g_media.n) g_media.n = base;
+    for (size_t i = 0; i < n; i++) ag->pending[i] = base + i;
+    ag->pending_n = n;
+    ag->scratch->off = mark;
+}
+
+/* Leave the composer naming every pending image. A typed /attach submitted
+ * the line, so the box is empty and the markers an earlier one left are
+ * written back; Ctrl-V attaches under a draft, so what the user has written
+ * stays and only the new marker is appended. */
+static void composer_restore_pending(const Agent *ag) {
+    if (!ag->pending_n) return;
+    size_t mark = ag->scratch->off;
+    Str draft = tui_input();
+    Buf b;
+    buf_init(&b, ag->scratch, draft.n + 32 * ag->pending_n);
+    buf_puts(&b, draft);
+    for (size_t i = 0; i < ag->pending_n; i++) {
+        if (draft_names_image(draft, i + 1)) continue;
+        if (b.n && b.p[b.n - 1] != ' ') buf_putc(&b, ' ');
+        buf_putf(&b, "[Image #%zu] ", i + 1);
+    }
+    Str line = buf_finish(&b);
+    if (line.n && !str_eq(line, draft)) tui_set_input(line);
+    ag->scratch->off = mark;
+}
+
+/* The clipboard's image, added like a file's. The helper's bytes land in
+ * `scratch` and media_add refuses a format or a size there exactly as it
+ * would from a path, so the two ways to attach answer alike. */
+static size_t attach_from_clipboard(Agent *ag, char *err, size_t err_cap) {
+    Str bytes;
+    if (!clipboard_image(ag->scratch, &bytes, err, err_cap)) return MEDIA_NONE;
+    return media_add(&g_media, ag->persist, bytes, STR("clipboard"),
+                     err, err_cap);
+}
+
+static void attach_image(Agent *ag, Str path, Str carried) {
+    path = str_trim(path);
+    /* Without a media table nothing can hold an image, which is what
+     * `images = off` leaves behind. The command is not offered then; typed
+     * anyway, it says which setting withdrew it. */
+    if (!ag->conv->media) {
+        notice_fmt("images are off: set images = auto to attach one");
+        return;
+    }
+    pending_drop_unnamed(ag, carried);
+    /* The shape of an attachment, never the picture: how big it was and how
+     * many the message is carrying, with no name, path or media type. */
+    TelEvent e;
+    tel_open(&e, "attach");
+    tel_bool(&e, "clipboard", !path.n);
+    if (ag->pending_n >= AGENT_MAX_MEDIA_PER_TURN) {
+        notice_fmt("a message carries at most %d images; send this one first",
+                   AGENT_MAX_MEDIA_PER_TURN);
+        composer_restore_pending(ag);
+        tel_bool(&e, "ok", false);
+        tel_send(&e);
+        return;
+    }
+    char err[256] = {0};
+    size_t mark = ag->scratch->off;
+    /* No path is the clipboard, which is what Ctrl-V submits: a screenshot
+     * is the one image a user has no name for. */
+    size_t id = path.n ? media_add_file(&g_media, ag->persist, ag->scratch,
+                                        path, err, sizeof err)
+                       : attach_from_clipboard(ag, err, sizeof err);
+    if (id == MEDIA_NONE) {
+        ag->scratch->off = mark;
+        notice_fmt("%s", err);
+        composer_restore_pending(ag);
+        tel_bool(&e, "ok", false);
+        tel_send(&e);
+        return;
+    }
+    ag->pending[ag->pending_n++] = id;
+    composer_restore_pending(ag);
+    attach_notice(ag, id);
+    ag->scratch->off = mark;
+    tel_bool(&e, "ok", true);
+    tel_bucket(&e, "kb", g_media.bytes[id].n / 1024);
+    tel_bucket(&e, "pixels", (u64)g_media.w[id] * g_media.h[id]);
+    tel_int(&e, "pending", (i64)ag->pending_n);
+    tel_send(&e);
+}
+
+/* How much of a submitted line is the placeholders an attachment left in the
+ * composer. A command or a '!' run typed behind them is still one: the
+ * markers name the images waiting to be sent, not the text of a message, and
+ * the next /attach hands them all back anyway. */
+static size_t pending_prefix(const Agent *ag, const char *line, size_t n) {
+    Str text = { line, n };
+    size_t at = 0;
+    while (at < n) {
+        size_t num, len;
+        if (!image_tag_at(text, at, ag->pending_n, &num, &len)) break;
+        at += len;
+        while (at < n && line[at] == ' ') at++;
+    }
+    return at < n && (line[at] == '/' || line[at] == '!') ? at : 0;
+}
+
+/* The message as it will be stored, and the images it carries. A placeholder
+ * the user deleted detaches its image, which is the only way to take one
+ * back; the survivors are renumbered so the text and the blocks beside it
+ * count the same way. An image nothing names is appended at the end rather
+ * than dropped silently, since a message can also be submitted from a
+ * queue that never saw the composer. Empty `.p` means the arena is full. */
+static Str turn_bind_images(Agent *ag, Str text, size_t *off, size_t *count) {
+    *off = *count = 0;
+    if (!ag->pending_n) return str_dup(ag->persist, text);
+    size_t mark = ag->scratch->off;
+
+    b8 named[AGENT_MAX_MEDIA_PER_TURN] = {0};
+    for (size_t i = 0; i < text.n; i++) {
+        size_t num, len;
+        if (!image_tag_at(text, i, ag->pending_n, &num, &len)) continue;
+        named[num - 1] = true;
+        i += len - 1;
+    }
+    /* Nothing named: the text was written without the composer's help, so
+     * every attachment still belongs to it. */
+    b8 none = true;
+    for (size_t i = 0; i < ag->pending_n; i++) none = none && !named[i];
+    if (none) for (size_t i = 0; i < ag->pending_n; i++) named[i] = true;
+
+    size_t renum[AGENT_MAX_MEDIA_PER_TURN] = {0};
+    size_t kept[AGENT_MAX_MEDIA_PER_TURN];
+    size_t n = 0;
+    for (size_t i = 0; i < ag->pending_n; i++)
+        if (named[i]) { kept[n] = ag->pending[i]; renum[i] = ++n; }
+
+    Buf b;
+    buf_init(&b, ag->scratch, text.n + 32);
+    b8 appended[AGENT_MAX_MEDIA_PER_TURN] = {0};
+    for (size_t i = 0; i < text.n; i++) {
+        size_t num, len;
+        if (!image_tag_at(text, i, ag->pending_n, &num, &len)) {
+            buf_putc(&b, text.p[i]);
+            continue;
+        }
+        if (renum[num - 1]) {
+            buf_putf(&b, "[Image #%zu]", renum[num - 1]);
+            appended[num - 1] = true;
+        }
+        i += len - 1;
+    }
+    for (size_t i = 0; i < ag->pending_n; i++) {
+        if (!renum[i] || appended[i]) continue;
+        if (b.n) buf_putc(&b, '\n');
+        buf_putf(&b, "[Image #%zu]", renum[i]);
+    }
+    Str full = buf_finish(&b);
+    /* The composer leaves a space after a marker so the user can keep
+     * writing; one they never wrote past is not part of the message. */
+    Str stored = buf_ok(&b) ? str_dup(ag->persist, str_trim(full)) : (Str){0};
+    ag->scratch->off = mark;
+    if (!stored.p) return (Str){0};
+    if (n) *off = media_keep(&g_media, ag->pending[0], kept, n);
+    *count = n;
+    return stored;
 }
 
 static void export_session(const Conv *conv, Str requested) {
@@ -2973,6 +3271,16 @@ static b8 open_block_view(Agent *ag, size_t i) {
  * composer, since the turn it would change is the one still running. */
 static b8 on_busy_command(Str line, void *ud) {
     Agent *ag = ud;
+    /* An attachment belongs to the message after this one, so it runs where
+     * it stands: the image joins the draft in the composer and goes out with
+     * whatever is sent next. Ctrl-V and the path popup submit this. It is
+     * read from the line rather than the bounded copy below, since a path is
+     * longer than any command name. */
+    if (str_eq(line, STR("/attach")) || str_starts(line, STR("/attach "))) {
+        attach_image(ag, str_drop(line, 7), line);
+        telemetry_command(STR("/attach"));
+        return true;
+    }
     char cmd[64];
     if (!line.n || line.n >= sizeof cmd) return false;
     memcpy(cmd, line.p, line.n);
@@ -3190,7 +3498,8 @@ static void compact_session(Agent *ag) {
         return;
     }
 
-    conv->n = 1;
+    conv_truncate(conv, 1);
+    ag->pending_n = 0;
     persist->off = ag->mark;
     Str stored = str_dup(persist, built);
     if (!stored.p) {
@@ -3208,7 +3517,7 @@ static void compact_session(Agent *ag) {
         say_conv_full();
         return;
     }
-    render_user_message(stored, (u32)conv->n);
+    render_user_message(conv, conv->n - 1);
     session_save(ag->sess, conv);
     if (title_n) session_set_title(ag->sess, (Str){ title, title_n });
     tui_notice(STR("compacted: a new session continues from the summary"));
@@ -3407,7 +3716,8 @@ static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out) {
 static b8 agent_handoff(Agent *ag) {
     Str plan = ag->handoff;
     ag->handoff = (Str){0};
-    ag->conv->n = 1;
+    conv_truncate(ag->conv, 1);
+    ag->pending_n = 0;
     ag->persist->off = ag->mark;
     plan = str_dup(ag->persist, plan);
     if (!plan.p) {
@@ -3473,7 +3783,9 @@ static b8 name_session_now(Agent *ag) {
 static b8 agent_turn(Agent *ag, Str text) {
     Conv *conv = ag->conv;
 
-    Str user_text = str_dup(ag->persist, text);
+    size_t media_off = 0, media_n = 0;
+    Str user_text = turn_bind_images(ag, text, &media_off, &media_n);
+    ag->pending_n = 0;
     if (text.n && !user_text.p) {
         if (g_one_shot)
             one_shot_diag("error", (Str){0}, STR("out of memory"));
@@ -3487,9 +3799,10 @@ static b8 agent_turn(Agent *ag, Str text) {
         say_conv_full();
         return false;
     }
+    if (media_n) conv_attach_media(conv, conv->n - 1, media_off, media_n);
     if (ag->echo) {
         tui_scroll_to_bottom();
-        render_user_message(text, (u32)conv->n);
+        render_user_message(conv, conv->n - 1);
     }
     session_save(ag->sess, conv);
     /* The message is context now, whatever the next request comes back and
@@ -3500,6 +3813,7 @@ static b8 agent_turn(Agent *ag, Str text) {
     tel_open(&te, "turn_start");
     tel_shape(&te, "prompt", text);
     tel_int(&te, "messages", (i64)conv->n);
+    tel_int(&te, "images", (i64)media_n);
     tel_str(&te, "mode", mode_name(ag->cfg->mode));
     tel_send(&te);
     f64 turn_started = agent_now_seconds();
@@ -3771,6 +4085,10 @@ i32 main(i32 argc, char **argv) {
                 cfg.max_messages);
         return 1;
     }
+    /* The table is reserved with the conversation, below the mark a /clear
+     * rewinds to: only the images it holds live in the region that goes. */
+    if (cfg.images && media_init(&g_media, &persist, AGENT_MAX_MEDIA))
+        conv_set_media(&conv, &g_media);
 
     conv_add(&conv, M_SYSTEM, cfg.mode == MODE_PLAN ? cfg.plan_prompt
                                                     : cfg.system_prompt);
@@ -3801,7 +4119,7 @@ i32 main(i32 argc, char **argv) {
     tui_set_reasoning(cfg.reasoning_effort, cfg.thinking_budget);
     if (prefs.show_instructions && !opts.have_prompt)
         render_instructions(&cfg);
-    tui_set_commands(g_commands, commands_init());
+    tui_set_commands(g_commands, commands_init(cfg.images));
     tui_set_aliases(k_aliases, ALIAS_N);
     tui_set_history(&hist);
     tui_set_interrupt_flag(&g_got_sigint);
@@ -3866,6 +4184,22 @@ i32 main(i32 argc, char **argv) {
         ctx_sync(&g_ctx, &conv);
         if (!tui_readline("> ", line, sizeof line, &ln)) break;
         if (ln == 0) { g_got_sigint = 0; continue; }
+        /* The composer still holds the markers an /attach put there, so a
+         * command typed behind them is read as one. The images stay pending;
+         * only a message takes them. */
+        /* The markers a command was typed behind leave the composer with it,
+         * so an attachment reads them from here rather than from the box the
+         * submission emptied. */
+        char shed[AGENT_MAX_MEDIA_PER_TURN * 16];
+        size_t shed_n = 0;
+        if (agent.pending_n) {
+            size_t skip = pending_prefix(&agent, line, ln);
+            if (skip) {
+                if (skip <= sizeof shed) { memcpy(shed, line, skip); shed_n = skip; }
+                memmove(line, line + skip, ln - skip + 1);
+                ln -= skip;
+            }
+        }
         b8 escaped = ln >= 2 && line[0] == '\\'
                   && (line[1] == '/' || line[1] == '!');
         if (escaped) {
@@ -3882,7 +4216,8 @@ i32 main(i32 argc, char **argv) {
         }
         if (!strcmp(line, "/exit")) break;
         if (!strcmp(line, "/clear")) {
-            conv.n = 1;
+            conv_truncate(&conv, 1);
+            agent.pending_n = 0;
             persist.off = session_mark;
             arena_reset(&scratch);
             session_begin(&sess);   // the next message starts a new file
@@ -3923,6 +4258,11 @@ i32 main(i32 argc, char **argv) {
         }
         if (!strcmp(line, "/copy")) {
             copy_last_reply(&conv);
+            continue;
+        }
+        if (!strncmp(line, "/attach", 7) && (ln == 7 || line[7] == ' ')) {
+            attach_image(&agent, (Str){ line + 7, ln - 7 },
+                         (Str){ shed, shed_n });
             continue;
         }
         if (!strcmp(line, "/export") || !strncmp(line, "/export ", 8)) {

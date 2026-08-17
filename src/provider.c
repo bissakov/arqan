@@ -20,12 +20,15 @@ b8 conv_init(Conv *c, Arena *persist, size_t cap) {
     c->expanded       = arena_new(persist, b8,  cap);
     c->args_object    = arena_new(persist, b8,  cap);
     c->ms             = arena_new(persist, u32, cap);
+    c->media_off      = arena_new(persist, u32, cap);
+    c->media_n        = arena_new(persist, u16, cap);
+    c->media          = NULL;
     c->n = 0;
     c->cap = cap;
     if (!c->role || !c->text || !c->anthropic_thinking || !c->tool_name
         || !c->tool_call_id
         || !c->shell_out || !c->has_tool_call || !c->expanded
-        || !c->args_object || !c->ms) {
+        || !c->args_object || !c->ms || !c->media_off || !c->media_n) {
         c->cap = 0;
         return false;
     }
@@ -33,6 +36,32 @@ b8 conv_init(Conv *c, Arena *persist, size_t cap) {
 }
 
 size_t conv_room(const Conv *c) { return c->cap - c->n; }
+
+void conv_set_media(Conv *c, MediaSet *m) { c->media = m; }
+
+void conv_attach_media(Conv *c, size_t i, size_t off, size_t n) {
+    if (i >= c->n || !n || off > UINT32_MAX || n > UINT16_MAX) return;
+    c->media_off[i] = (u32)off;
+    c->media_n[i] = (u16)n;
+}
+
+static size_t conv_media_end(const Conv *c, size_t i) {
+    return (size_t)c->media_off[i] + c->media_n[i];
+}
+
+/* The media table is append-only and a slot's entries are contiguous, so the
+ * highest end among the kept slots is what stays live. Scanning them is
+ * cheaper than it looks: this runs once per /clear, rewind or resume. */
+void conv_truncate(Conv *c, size_t keep) {
+    if (keep > c->n) return;
+    c->n = keep;
+    if (!c->media) return;
+    size_t live = 0;
+    for (size_t i = 0; i < keep; i++)
+        if (c->media_n[i] && conv_media_end(c, i) > live)
+            live = conv_media_end(c, i);
+    if (live < c->media->n) c->media->n = live;
+}
 
 /* The copy shares `src`'s strings rather than duplicating them: it exists to
  * be sent once, beside the conversation it was taken from. */
@@ -51,6 +80,9 @@ b8 conv_clone(Conv *dst, const Conv *src, Arena *a, size_t extra) {
     memcpy(dst->expanded, src->expanded, n * sizeof *dst->expanded);
     memcpy(dst->args_object, src->args_object, n * sizeof *dst->args_object);
     memcpy(dst->ms, src->ms, n * sizeof *dst->ms);
+    memcpy(dst->media_off, src->media_off, n * sizeof *dst->media_off);
+    memcpy(dst->media_n, src->media_n, n * sizeof *dst->media_n);
+    dst->media = src->media;
     dst->n = n;
     return true;
 }
@@ -69,6 +101,8 @@ static size_t conv_push(Conv *c, MRole role, Str text, Str id, Str name,
     c->expanded[i] = false;
     c->args_object[i] = false;
     c->ms[i] = 0;
+    c->media_off[i] = 0;
+    c->media_n[i] = 0;
     return i;
 }
 
@@ -128,6 +162,16 @@ static Str conv_call_name(const Conv *c, size_t result) {
     return STR("tool");
 }
 
+/* How many of a slot's images can still be sent. A resumed session may name
+ * one whose file has since gone: it keeps its number, so the placeholder in
+ * the text still counts, and contributes nothing to the request. */
+static size_t conv_media_live(const Conv *c, size_t i) {
+    size_t live = 0;
+    for (size_t k = 0; k < c->media_n[i]; k++)
+        if (media_live(c->media, (size_t)c->media_off[i] + k)) live++;
+    return live;
+}
+
 /* A tool result is charged again on every later turn, so one older than
  * AGENT_ELIDE_TURNS user turns goes out as a line naming what it was: a file
  * read four turns ago is either reflected in the work or worth reading again.
@@ -143,6 +187,29 @@ static void write_tool_result(Buf *b, const Conv *c, size_t i, size_t recent) {
     } else {
         buf_json_str(b, c->text[i]);
     }
+}
+
+/* A message carrying images is content blocks rather than a string, and only
+ * then: a turn with nothing attached goes out in the shape every endpoint
+ * that ever spoke to arqan already accepts. */
+static void oai_write_content(Buf *b, const Conv *c, size_t i) {
+    if (!conv_media_live(c, i)) { buf_json_str(b, c->text[i]); return; }
+    buf_putc(b, '[');
+    b8 first = true;
+    if (c->text[i].n) {
+        buf_puts(b, STR("{\"type\":\"text\",\"text\":"));
+        buf_json_str(b, c->text[i]);
+        buf_putc(b, '}');
+        first = false;
+    }
+    for (size_t k = 0; k < c->media_n[i]; k++) {
+        size_t id = (size_t)c->media_off[i] + k;
+        if (!media_live(c->media, id)) continue;
+        if (!first) buf_putc(b, ',');
+        first = false;
+        media_write_openai(b, c->media, id);
+    }
+    buf_putc(b, ']');
 }
 
 /* Assistant tool calls are emitted as one message with a "tool_calls" array,
@@ -205,7 +272,7 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
             continue;
         }
         buf_putf(b, ",\"content\":");
-        buf_json_str(b, c->text[i]);
+        oai_write_content(b, c, i);
         buf_putc(b, '}');
     }
     buf_putc(b, ']');
@@ -227,7 +294,21 @@ static b8 anth_has_plain_block(const Conv *c, size_t i) {
 }
 
 static b8 anth_has_block(const Conv *c, size_t i) {
-    return c->anthropic_thinking[i].n || anth_has_plain_block(c, i);
+    return c->anthropic_thinking[i].n || anth_has_plain_block(c, i)
+        || conv_media_live(c, i) > 0;
+}
+
+/* The slot's images, ahead of the block they belong to: Anthropic reads an
+ * image best with the question about it behind it. The cache breakpoint is
+ * chosen among text-bearing slots, so it never lands here. */
+static void anth_write_media(Buf *b, const Conv *c, size_t i, b8 *first) {
+    for (size_t k = 0; k < c->media_n[i]; k++) {
+        size_t id = (size_t)c->media_off[i] + k;
+        if (!media_live(c->media, id)) continue;
+        if (!*first) buf_putc(b, ',');
+        *first = false;
+        media_write_anthropic(b, c->media, id);
+    }
 }
 
 /* Stored arrays are produced by the parser or validated while a session is
@@ -320,6 +401,7 @@ void conv_write_json_anthropic(Buf *b, const Conv *c) {
                && (c->role[i] == M_ASSISTANT) == assistant; i++) {
             if (!anth_has_block(c, i)) continue;
             anth_write_thinking(b, c->anthropic_thinking[i], &first_block);
+            anth_write_media(b, c, i, &first_block);
             if (!anth_has_plain_block(c, i)) continue;
             if (!first_block) buf_putc(b, ',');
             first_block = false;

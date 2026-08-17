@@ -102,6 +102,40 @@ static b8 arg_page_limit(const JVal *j, size_t dflt, size_t max, size_t *out,
  * A page of a file rather than the file, since a whole one is charged to
  * every later turn: the default stops at AGENT_READ_LINES or AGENT_READ_BYTES
  * and says which call continues from there. */
+
+// Bytes of a file's head that decide whether it holds text, as git does it.
+#define READ_SNIFF 8000
+
+/* A file that is not text has no page worth returning: the serializer turns
+ * every ill-formed byte into U+FFFD, so the answer would cost a page of
+ * replacement characters and say nothing about the file. True with `err`
+ * filled in when that is what `body` is, so read reports what the file is
+ * instead of paging it. */
+static b8 read_not_text(const char *path, Str body, char *err, size_t err_cap) {
+    char size[32];
+    spill_size_text(size, sizeof size, body.n);
+    Str mime;
+    u32 w = 0, h = 0;
+    if (media_sniff(body, &mime, &w, &h)) {
+        Str kind = media_kind(mime);
+        char dim[32] = "";
+        if (w && h) snprintf(dim, sizeof dim, ", %ux%u", w, h);
+        snprintf(err, err_cap,
+                 "%s is a %.*s image%s, %s; read returns text. The user can "
+                 "attach an image for you to see it.",
+                 path, (int)kind.n, kind.p, dim, size);
+        return true;
+    }
+    Str head = body.n > READ_SNIFF ? (Str){ body.p, READ_SNIFF } : body;
+    if (memchr(head.p, 0, head.n)) {
+        snprintf(err, err_cap,
+                 "%s is a binary file, %s; read returns text. Use bash to "
+                 "inspect it.", path, size);
+        return true;
+    }
+    return false;
+}
+
 static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
     JVal *j = tool_args(args, scratch, err, err_cap);
     if (!j) return false;
@@ -117,6 +151,7 @@ static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
 
     Str body;
     if (!slurp(z, scratch, &body, err, err_cap)) return false;
+    if (body.n && read_not_text(z, body, err, err_cap)) return false;
 
     size_t off = 0;
     Str line;
@@ -1644,7 +1679,7 @@ void tools_init(ToolRegistry *r, Arena *persist) {
     r->n++; } while (0)
 #define BOTH (TOOL_IN_BUILD | TOOL_IN_PLAN)
 
-    ADD("read", "Read a page of a file: up to 2000 lines or 8KB, "
+    ADD("read", "Read a page of a text file: up to 2000 lines or 8KB, "
         "whichever is less. Use offset and limit to page through a long "
         "file one range at a time rather than reading it whole.",
         "Read a page of a file", BOTH, TOOL_APPROVAL_NONE,

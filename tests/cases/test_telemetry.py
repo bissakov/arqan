@@ -2,6 +2,8 @@
 
 import json
 
+from .test_image import png
+
 
 def log_dir(ctx, state=None):
     return (state or ctx.home / ".local" / "state") / "arqan" / "telemetry"
@@ -206,6 +208,45 @@ def test_an_unknown_command_is_not_named(ctx):
     assert "my-private-note" not in text, text
     names = [e["name"] for e in events(ctx) if e["ev"] == "command"]
     assert names == ["(unknown)"], names
+
+
+def test_an_attachment_is_recorded_as_a_size_not_a_picture(ctx):
+    """An image leaves a count and two buckets: no name, path or media type."""
+    (ctx.work / "holiday-photo.png").write_bytes(png(40, 30))
+    ctx.scenario("text=ok")
+    s = ctx.spawn()
+    s.settings_toggle("Telemetry")
+    s.type("/attach holiday-photo.png").sync()
+    s.key("enter")
+    s.wait_text("attached [Image #1]")
+    s.submit("what is this")
+    s.wait_turn_done()
+
+    text = body(ctx)
+    for leaked in ("holiday-photo", "image/png", "png", str(ctx.work)):
+        assert leaked not in text, text
+
+    attach = [e for e in events(ctx) if e["ev"] == "attach"][-1]
+    assert attach["ok"] is True and attach["pending"] == 1, attach
+    assert attach["pixels"] == 1024, attach       # 1200 pixels, bucketed
+    start = [e for e in events(ctx) if e["ev"] == "turn_start"][-1]
+    assert start["images"] == 1, start
+
+
+def test_a_refused_attachment_records_only_that_it_failed(ctx):
+    """The path that was refused is the user's, so none of it is recorded."""
+    s = ctx.spawn()
+    s.settings_toggle("Telemetry")
+    s.type("/attach ~/private/diary.png").sync()
+    s.key("enter")
+    s.wait_text("no such file")
+    s.submit("/exit")
+    s.wait_exit()
+
+    assert "diary" not in body(ctx), body(ctx)
+    attach = [e for e in events(ctx) if e["ev"] == "attach"][-1]
+    assert attach["ok"] is False, attach
+    assert "kb" not in attach and "pixels" not in attach, attach
 
 
 def test_the_transfer_is_recorded_with_its_timings(ctx):

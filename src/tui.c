@@ -231,6 +231,9 @@ typedef struct {
     u16 path_ord[TUI_PATH_ENTS];     // slots in the order they are shown
     size_t path_n;
     size_t path_at;                  // offset of the '@' being completed
+    /* The path an ED_ATTACH carries, in `g_bulk.attach`; 0 when the gesture
+     * named none, which is the clipboard. Cleared as the command is built. */
+    size_t attach_n;
     /* Word wrap reaches the right edge only where a word does; justification
      * widens the gaps of a wrapped row until it does. Breaking is the same
      * either way, so this is read by the painter alone. */
@@ -323,6 +326,7 @@ typedef struct {
     char queued[AGENT_LINE_BUF];            // to g_tui.queued_n
     char draft[AGENT_LINE_BUF];             // to g_tui.draft_n
     char kill[AGENT_LINE_BUF];              // to g_tui.kill_n
+    char attach[AGENT_MAX_PATH];            // to g_tui.attach_n
     char view[TUI_VIEW_BYTES];               // independent tool-block window
     /* The window's syntax runs, to g_view.syn_n, in copied-text offsets. */
     u32  view_syn_a[TUI_VIEW_RUNS];
@@ -4520,12 +4524,54 @@ static b8 completion_would_change(void) {
         || memcmp(name.p, g_bulk.input, name.n) != 0;
 }
 
+/* An image is attached rather than typed: the bytes are what a model that
+ * can see needs, and the path alone says nothing to one that cannot open it.
+ * The type is decided by the name here and by the header in media_add, which
+ * is what refuses a file that only looks like an image. */
+static b8 path_is_image(Str name) {
+    static const char *const k_ext[] = { ".png", ".jpg", ".jpeg", ".gif",
+                                         ".webp" };
+    for (size_t i = 0; i < sizeof k_ext / sizeof k_ext[0]; i++) {
+        size_t n = strlen(k_ext[i]);
+        if (name.n <= n) continue;
+        size_t at = name.n - n, k = 0;
+        while (k < n && lower_ascii(name.p[at + k]) == k_ext[i][k]) k++;
+        if (k == n) return true;
+    }
+    return false;
+}
+
+/* Whether attaching is on offer at all: `images = off` withdraws the command,
+ * and then a picked path is only ever text. */
+static b8 attach_offered(void) {
+    for (size_t i = 0; i < g_tui.cmd_n; i++)
+        if (str_eq(g_tui.cmds[i].name, STR("/attach"))) return true;
+    return false;
+}
+
 /* The picked path replaces the word it was picked for, the '@' left in place
  * as the marker it is. */
 static void path_accept(Str name) {
     size_t start = g_tui.path_at + 1;
     size_t cur = g_tui.input_cur;
     size_t tail = g_tui.input_n - cur;
+    /* An image is taken as an attachment instead, and the '@' word goes with
+     * it: the attachment writes an [Image #n] marker of its own, so leaving
+     * the path would name the same file twice. */
+    if (name.n && name.p[name.n - 1] != '/' && name.n <= sizeof g_bulk.attach
+        && path_is_image(name) && attach_offered()) {
+        memcpy(g_bulk.attach, name.p, name.n);
+        g_tui.attach_n = name.n;
+        memmove(g_bulk.input + g_tui.path_at, g_bulk.input + cur, tail);
+        g_tui.input_n = g_tui.path_at + tail;
+        g_tui.input_cur = g_tui.path_at;
+        g_bulk.input[g_tui.input_n] = '\0';
+        g_tui.comp_n = 0;
+        g_tui.comp_sel = 0;
+        g_tui.path_mode = false;
+        g_tui.comp_dismissed = true;
+        return;
+    }
     if (start + name.n + tail + 1 > sizeof g_bulk.input) return;
     memmove(g_bulk.input + start + name.n, g_bulk.input + cur, tail);
     memcpy(g_bulk.input + start, name.p, name.n);
@@ -4646,6 +4692,11 @@ void tui_set_input(Str s) {
     g_tui.hist_nav = false;
     completion_refresh();
     repaint();
+}
+
+Str tui_input(void) {
+    if (!g_tui.fullscreen) return (Str){0};
+    return (Str){ g_bulk.input, g_tui.input_n };
 }
 
 void tui_set_commands(const TuiCmd *cmds, size_t n) {
@@ -5626,7 +5677,7 @@ b8 tui_ask_edit(Str question, b8 allow_empty, char *inout, size_t cap) {
 }
 
 typedef enum { ED_EDIT = 0, ED_SUBMIT, ED_EOF, ED_REWIND, ED_EXPAND,
-               ED_MODE } EdAction;
+               ED_MODE, ED_ATTACH } EdAction;
 
 /* Up/Down, and their Ctrl-P/Ctrl-N twins: inside a multi-line draft they walk
  * its rows, and history is reached from the first row going up and the last
@@ -5836,7 +5887,9 @@ static b8 completion_take(void) {
 static void ed_enter(Ed *e) {
     sel_clear();
     if (!g_tui.comp_n) { ED_RETURN(e, ED_SUBMIT); return; }
-    ED_RETURN(e, completion_take() ? ED_SUBMIT : ED_EDIT);
+    b8 ran = completion_take();
+    if (g_tui.attach_n) { ED_RETURN(e, ED_ATTACH); return; }
+    ED_RETURN(e, ran ? ED_SUBMIT : ED_EDIT);
 }
 
 /* Tab completes the highlighted entry and stays in the composer. With no
@@ -5846,7 +5899,7 @@ static void ed_tab(Ed *e) {
     if (!g_tui.comp_n) return;
     sel_clear();
     (void)completion_take();
-    ED_RETURN(e, ED_EDIT);
+    ED_RETURN(e, g_tui.attach_n ? ED_ATTACH : ED_EDIT);
 }
 
 /* Down and Up, under either name. With the popup open they walk it and stop
@@ -5952,6 +6005,9 @@ static void ed_end(Ed *e) {
                                                         ed_delete_or_eof(e);) \
     X(0x12, "Ctrl-R", "Search the transcript",                                \
                     tui_find_open(); ED_RETURN(e, ED_EDIT);)                  \
+    /* A command rather than an edit, so a draft written around it stays. */   \
+    X(0x16, "Ctrl-V", "Attach the clipboard's image to the message",           \
+                    g_tui.attach_n = 0; e->action = ED_ATTACH;)                \
     X(0x0c, "Ctrl-L", "Repaint the screen",                                   \
                     g_tui.frame_valid = false;)
 
@@ -6207,6 +6263,28 @@ static void busy_expand(void) {
     if (len > 0) g_busy_cmd((Str){cmd, (size_t)len}, g_busy_cmd_ud);
 }
 
+/* Ctrl-V mid-turn. The hook refuses it like any other command that belongs
+ * to the next message, which is an answer rather than a key that did
+ * nothing; the draft it was pressed over is untouched either way. */
+/* The command an ED_ATTACH stands for: the path the picker took, or none,
+ * which is the clipboard. One gesture attaches once, so the path is spent
+ * here. Returns what was written, without its terminator. */
+static size_t attach_command(char *out, size_t cap) {
+    i32 len = g_tui.attach_n
+            ? snprintf(out, cap, "/attach %.*s", (i32)g_tui.attach_n,
+                       g_bulk.attach)
+            : snprintf(out, cap, "/attach");
+    g_tui.attach_n = 0;
+    if (len <= 0) return 0;
+    return (size_t)len < cap ? (size_t)len : cap - 1;
+}
+
+static void busy_attach(void) {
+    char cmd[AGENT_MAX_PATH + 16];
+    size_t n = attach_command(cmd, sizeof cmd);
+    if (g_busy_cmd && n) g_busy_cmd((Str){ cmd, n }, g_busy_cmd_ud);
+}
+
 /* Drain what the terminal already has, without ever blocking. Enter submits
  * commands a running turn can afford and queues one ordinary follow-up. */
 void tui_poll_input(void) {
@@ -6264,6 +6342,7 @@ void tui_poll_input(void) {
             busy_submit();
             if (g_pick.active && !g_pick.modal) { repaint(); return; }
         } else if (action == ED_EXPAND) busy_expand();
+        else if (action == ED_ATTACH) busy_attach();
         dirty = true;
     }
     if (dirty) repaint();
@@ -6300,15 +6379,23 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
 
         EdAction action = editor_key(c);
         if (action == ED_EOF) { *out_n = 0; return false; }
-        if (action == ED_REWIND || action == ED_EXPAND || action == ED_MODE) {
+        if (action == ED_REWIND || action == ED_EXPAND || action == ED_MODE
+            || action == ED_ATTACH) {
             /* The gesture and the command are one request, so it answers as
              * the command. The draft it was typed over is left alone. */
-            char cmd[32];
-            i32 len;
-            if (action == ED_REWIND) len = snprintf(cmd, sizeof cmd, "/rewind");
-            else if (action == ED_MODE) len = snprintf(cmd, sizeof cmd, "/mode");
-            else len = snprintf(cmd, sizeof cmd, "/expand %u", g_tui.click_id);
-            size_t n = len > 0 ? (size_t)len : 0;
+            char cmd[AGENT_MAX_PATH + 16];
+            size_t n;
+            if (action == ED_ATTACH) n = attach_command(cmd, sizeof cmd);
+            else {
+                i32 len;
+                if (action == ED_REWIND)
+                    len = snprintf(cmd, sizeof cmd, "/rewind");
+                else if (action == ED_MODE)
+                    len = snprintf(cmd, sizeof cmd, "/mode");
+                else
+                    len = snprintf(cmd, sizeof cmd, "/expand %u", g_tui.click_id);
+                n = len > 0 ? (size_t)len : 0;
+            }
             if (n >= cap) n = cap - 1;
             memcpy(buf, cmd, n);
             buf[n] = '\0';

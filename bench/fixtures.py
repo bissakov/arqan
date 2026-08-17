@@ -276,3 +276,24 @@ def unified_diff(path: Path, hunks: int, spacing: int = 40,
         out.append(f"+inserted line for hunk {h}")
         out.append(f" {lines[at]}")
     return "\n".join(out) + "\n"
+
+
+def png_image(rng: random.Random, w: int, h: int) -> bytes:
+    """A PNG of `w` by `h` pixels, of noise so that it does not compress.
+
+    Attached images are held whole and encoded per request, so a case that
+    wants an image's size to show up needs bytes that stay big.
+    """
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return (struct.pack(">I", len(data)) + body
+                + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
+
+    raw = b"".join(b"\x00" + rng.randbytes(w * 3) for _ in range(h))
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 1))
+            + chunk(b"IEND", b""))

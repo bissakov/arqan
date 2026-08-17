@@ -9,7 +9,7 @@ that cost on its own.
 from __future__ import annotations
 
 from bench.case import needs, slow
-from bench.fixtures import prose
+from bench.fixtures import png_image, prose
 from tests.mockprovider import Scenario
 
 
@@ -130,4 +130,34 @@ def bench_reasoning_heavy_session(b):
         s.wait_turn_done(timeout=120.0)
 
     b.sample("turn", one, repeat=rounds, unit="turn", budget_ms=150.0)
+    b.alive(s)
+
+
+@needs("proc")
+def bench_turn_carrying_an_image(b):
+    """A conversation with an image in it.
+
+    The request is rebuilt from the whole conversation every turn, so the
+    image is encoded again for each one: what this measures is the cost a
+    later turn pays for a picture sent earlier.
+    """
+    image = png_image(b.rng, b.scale(1200, floor=200), b.scale(800, floor=150))
+    (b.ctx.work / "shot.png").write_bytes(image)
+    b.note(f"image {len(image) // 1024} KB")
+
+    s = b.spawn()
+    s.type("/attach shot.png")
+    s.key("enter")
+    s.wait_text("attached [Image #1]")
+    b.ctx.scenario("words=200,paragraphs=2,chunk=8")
+    with b.step("turn that attaches", budget_ms=250.0):
+        s.submit("what is [Image #1]")
+        s.wait_turn_done(timeout=120.0)
+    b.sample("turn that replays it",
+             lambda: (s.submit("again"), s.wait_turn_done(timeout=120.0)),
+             repeat=b.scale(5, floor=2), unit="turn", budget_ms=250.0)
+    sent = len(str(b.ctx.mock.requests[-1]))
+    b.note(f"request body {sent // 1024} KB")
+    b.check("image_url" in str(b.ctx.mock.requests[-1]),
+            "the replayed turn carried no image")
     b.alive(s)
