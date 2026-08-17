@@ -16,13 +16,16 @@ b8 media_init(MediaSet *m, Arena *persist, size_t cap) {
     if (!cap) return false;
     m->mime  = arena_new(persist, Str, cap);
     m->bytes = arena_new(persist, Str, cap);
+    m->b64   = arena_new(persist, Str, cap);
     m->label = arena_new(persist, Str, cap);
     m->file  = arena_new(persist, Str, cap);
     m->w     = arena_new(persist, u32, cap);
     m->h     = arena_new(persist, u32, cap);
-    if (!m->mime || !m->bytes || !m->label || !m->file || !m->w || !m->h)
+    if (!m->mime || !m->bytes || !m->b64 || !m->label || !m->file || !m->w
+        || !m->h)
         return false;
     m->cap = cap;
+    m->arena = persist;
     return true;
 }
 
@@ -134,6 +137,7 @@ static size_t media_push(MediaSet *m, Str mime, Str bytes, Str label, Str file,
     size_t i = m->n++;
     m->mime[i]  = mime;
     m->bytes[i] = bytes;
+    m->b64[i]   = (Str){0};
     m->label[i] = label;
     m->file[i]  = file;
     m->w[i] = w;
@@ -242,6 +246,7 @@ size_t media_keep(MediaSet *m, size_t base, const size_t *ids, size_t n) {
         if (src == dst) continue;
         m->mime[dst]  = m->mime[src];
         m->bytes[dst] = m->bytes[src];
+        m->b64[dst]   = m->b64[src];
         m->label[dst] = m->label[src];
         m->file[dst]  = m->file[src];
         m->w[dst] = m->w[src];
@@ -269,11 +274,32 @@ void media_describe(char *out, size_t cap, const MediaSet *m, size_t id) {
         snprintf(out, cap, "%.*s - %s", (i32)kind.n, kind.p, size);
 }
 
+/* The entry's bytes in base64, encoded once and kept. Empty when there is
+ * nowhere to keep it, which leaves the caller encoding into the request as
+ * it did before: the cache is a saving, never a condition of sending. */
+static Str media_base64(const MediaSet *m, size_t id) {
+    if (m->b64[id].n) return m->b64[id];
+    if (!m->arena || !m->bytes[id].n) return (Str){0};
+    Buf b;
+    buf_init(&b, m->arena, (m->bytes[id].n + 2) / 3 * 4 + 1);
+    buf_base64(&b, m->bytes[id].p, m->bytes[id].n);
+    Str enc = buf_finish(&b);
+    if (!buf_ok(&b)) return (Str){0};
+    m->b64[id] = enc;
+    return enc;
+}
+
+static void media_put_base64(Buf *b, const MediaSet *m, size_t id) {
+    Str enc = media_base64(m, id);
+    if (enc.n) buf_puts(b, enc);
+    else buf_base64(b, m->bytes[id].p, m->bytes[id].n);
+}
+
 void media_write_openai(Buf *b, const MediaSet *m, size_t id) {
     buf_puts(b, STR("{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:"));
     buf_json_chars(b, m->mime[id]);
     buf_puts(b, STR(";base64,"));
-    buf_base64(b, m->bytes[id].p, m->bytes[id].n);
+    media_put_base64(b, m, id);
     buf_puts(b, STR("\"}}"));
 }
 
@@ -282,6 +308,6 @@ void media_write_anthropic(Buf *b, const MediaSet *m, size_t id) {
                     ",\"media_type\":"));
     buf_json_str(b, m->mime[id]);
     buf_puts(b, STR(",\"data\":\""));
-    buf_base64(b, m->bytes[id].p, m->bytes[id].n);
+    media_put_base64(b, m, id);
     buf_puts(b, STR("\"}}"));
 }

@@ -9,7 +9,7 @@ draft that is already large.
 from __future__ import annotations
 
 from bench.case import needs, slow
-from bench.fixtures import prose, wide_text
+from bench.fixtures import png_image, prose, wide_text
 
 
 def draft(b, s, words: int):
@@ -133,4 +133,33 @@ def bench_key_storm(b):
           budget_ms=0.5)
     s.key("ctrl-u").sync()
     b.check(s.composer_text() == "", "the composer did not clear after the storm")
+    b.alive(s)
+
+
+@needs("proc")
+def bench_typing_with_an_image_attached(b):
+    """Typing while an image waits in the composer.
+
+    The marker is text, but the bytes behind it are megabytes: a keystroke
+    must cost what it costs with no attachment, so this is judged against
+    `bench_typing` on the same run.
+    """
+    image = png_image(b.rng, b.scale(1200, floor=200), b.scale(800, floor=150))
+    (b.ctx.work / "shot.png").write_bytes(image)
+    b.note(f"image {len(image) // 1024} KB")
+
+    s = b.spawn()
+    s.type("/attach shot.png")
+    s.key("enter")
+    s.wait_text("attached [Image #1]")
+    text = prose(b.rng, b.scale(12, floor=4))[:b.scale(120, floor=40)]
+    b.keys("type", s, list(text), literal=True, budget_ms=2.0)
+    b.keys("backspace", s, ["backspace"] * b.scale(40, floor=10), budget_ms=2.0)
+
+    # The image is in the conversation now, and its chip in the transcript.
+    b.ctx.scenario("words=60,paragraphs=1,chunk=8")
+    s.key("ctrl-u")
+    s.submit("what is [Image #1]")
+    s.wait_turn_done(timeout=120.0)
+    b.keys("type after sending", s, list(text), literal=True, budget_ms=2.0)
     b.alive(s)

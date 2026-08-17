@@ -1229,8 +1229,10 @@ Str   prompt_title_ask(void);
 
 /* ---- media (SoA) ---------------------------------------------------------
  * Images attached to a turn. The bytes are kept as they were read and are
- * base64-encoded into each request instead of being stored encoded, so a
- * session holds one copy at its own size.
+ * base64-encoded on the first request that carries them. The encoding is
+ * kept beside them, since the request is rebuilt from the whole conversation
+ * for every turn and every tool round after it: a session holds an image
+ * once at its own size and once encoded, a third larger.
  *
  * An entry whose `bytes` are empty is one a resumed session could not read
  * back. It keeps its place so the numbering in the transcript still matches
@@ -1239,12 +1241,16 @@ Str   prompt_title_ask(void);
 typedef struct {
     Str  *mime;    // "image/png", and the three others an API accepts
     Str  *bytes;   // as read; empty for an entry whose file is gone
+    /* [cap] `bytes` encoded, written on first use and empty until then. The
+     * arena is the one the entries were allocated from. */
+    Str  *b64;
     Str  *label;   // what the transcript calls it, usually a basename
     /* [cap] the sidecar this entry was written to, relative to the session
      * directory. Empty until session_save writes one. */
     Str  *file;
     u32  *w, *h;   // 0 when the header did not say
     size_t n, cap;
+    Arena *arena;
 } MediaSet;
 
 #define MEDIA_NONE ((size_t)-1)
