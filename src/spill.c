@@ -8,7 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 
-// $TMPDIR, or /tmp when it is unset or relative.
+
 static Str spill_dir(void) {
     const char *tmp = getenv("TMPDIR");
     if (!tmp || tmp[0] != '/') tmp = "/tmp";
@@ -36,8 +36,7 @@ void spill_open(Spill *s, const char *tool, const char *ext, Str key) {
     i32 n = snprintf(s->path, sizeof s->path,
                      "%.*s/" AGENT_NAME "-%s-%016llx.%s", (i32)dir.n, dir.p,
                      tool, (unsigned long long)str_hash64(key), ext);
-    /* The note naming the path is charged to the same result budget the page
-     * is, so a path that would not leave room for it is no spill at all. */
+    
     if (n < 0 || (size_t)n >= AGENT_SPILL_PATH_MAX) { s->path[0] = '\0'; return; }
 
     /* The name is predictable and the directory is shared, so the previous
@@ -101,8 +100,7 @@ void spill_putf(Spill *s, const char *fmt, ...) {
     spill_put(s, line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
 }
 
-/* A size the model reads at a glance: what it decides is whether to grep the
- * file or read a range of it, and no such choice turns on the last byte. */
+
 void spill_size_text(char *z, size_t cap, size_t n) {
     if (n < 1024) snprintf(z, cap, "%zu B", n);
     else if (n < 1024 * 1024) snprintf(z, cap, "%.0f KB", (f64)n / 1024.0);
@@ -137,8 +135,7 @@ void spill_finish(Spill *s, Buf *out, b8 keep) {
     }
     char size[32];
     spill_size_text(size, sizeof size, s->written);
-    /* The note is its own line wherever it lands, including after a result
-     * that ends mid-line. */
+    
     if (out->n && out->p[out->n - 1] != '\n') buf_puts(out, STR("\n\n"));
     buf_putf(out, "[full output: %s, %s%s; grep or read part of it]\n",
              s->path, size, s->full ? ", truncated there" : "");

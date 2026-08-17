@@ -3,8 +3,7 @@
 #include <string.h>
 
 #define MD_PREFIX_MAX 24
-/* Past this an unresolved opener is taken literally, which bounds how far a
- * stray '*' holds the stream back. */
+
 #define MD_PEND_MAX 512
 #define MD_RULE_MAX 60
 #define MD_LINE_MAX 256
@@ -24,9 +23,7 @@ enum {
 };
 enum { MD_SPAN_NONE, MD_SPAN_WAIT, MD_SPAN_DONE };
 
-/* One resolved cell: `text` is what it draws, and run `i` styles the bytes
- * from the previous run's end to `run_end[i]`. `text` points into `buf`
- * unless the cell overflowed, when it aliases the row and carries no runs. */
+
 typedef struct {
     Str    text;
     size_t run_end[MD_CELL_RUNS];
@@ -39,17 +36,17 @@ typedef struct {
 
 static struct {
     b8     raw;
-    b8     muted;      // plain prose belongs to a thinking trace
-    b8     fence;      // inside a fenced code block
+    b8     muted;      
+    b8     fence;      
     char   fence_mark;
-    b8     in_body;    // the line's block marker has been resolved
-    b8     skip_line;  // the rest of the line is a marker's info string
+    b8     in_body;    
+    b8     skip_line;  
     i32    block;
     char   prefix[MD_PREFIX_MAX];
     size_t prefix_n;
     char   pend[MD_PEND_MAX];
     size_t pend_n;
-    char   last;       // last byte consumed, for the flanking rules
+    char   last;       
     char   line[MD_LINE_MAX];
     size_t line_n;
     b8     line_long;
@@ -63,9 +60,9 @@ static struct {
     size_t table_bytes;
     size_t table_cols;
     u8     table_align[MD_TABLE_COLS];
-    MdCell *cap;                  // inline output goes here while set
-    MdCell cell[MD_TABLE_COLS];   // the row being drawn
-    MdCell measured;              // one cell, while widths are taken
+    MdCell *cap;                  
+    MdCell cell[MD_TABLE_COLS];   
+    MdCell measured;              
     char   hl_alias[YHL_ALIAS_MAX];
     size_t hl_alias_n;
     char   hl_source[YHL_SOURCE_MAX];
@@ -214,12 +211,10 @@ static void md_push(char c) {
     if (g_md.pend_n < MD_PEND_MAX) g_md.pend[g_md.pend_n++] = c;
 }
 
-// ---- inline runs ---------------------------------------------------------
 
 static char md_prev(size_t i) { return i ? g_md.pend[i - 1] : g_md.last; }
 
-/* One construct starting at `pend[i]`: emitted, still waiting for its closer,
- * or no construct at all, which makes the marker literal. */
+
 static i32 md_run(size_t i, size_t *used) {
     const char *p = g_md.pend;
     size_t n = g_md.pend_n;
@@ -325,9 +320,7 @@ static i32 md_run(size_t i, size_t *used) {
         return MD_SPAN_WAIT;
     }
 
-    /* Doubled is strong, single is emphasis. An opener is followed by a
-     * non-space, which keeps "5 * 3" arithmetic, and an underscore also needs
-     * a boundary before it, which keeps snake_case a name. */
+    
     size_t run = 1;
     if (i + 1 < n && p[i + 1] == c) run = 2;
     if (i + run >= n) return MD_SPAN_WAIT;
@@ -346,8 +339,7 @@ static i32 md_run(size_t i, size_t *used) {
     return MD_SPAN_WAIT;
 }
 
-/* Emit as much of the pending bytes as have a decided style. `flush` ends the
- * line, so whatever is still open was never markup and reads literally. */
+
 static void md_drain(b8 flush) {
     if (g_md.block == MD_BLOCK_CODE) {
         md_hl_put((Str){ g_md.pend, g_md.pend_n });
@@ -378,10 +370,7 @@ static void md_drain(b8 flush) {
     g_md.pend_n -= i;
 }
 
-// ---- block markers -------------------------------------------------------
 
-/* Whether the buffered bytes can still grow into a block marker. While they
- * can, the line's shape is undecided and nothing has been painted. */
 static b8 md_candidate(Str s) {
     size_t i = 0;
     while (i < s.n && s.p[i] == ' ') i++;
@@ -425,8 +414,7 @@ static void md_rule(void) {
     md_emit((Str){ buf, cells * 3 }, TUI_MARKER);
 }
 
-/* Settle the line's shape and paint whatever stands in for the marker. `next`
- * is the byte after the buffered marker, 0 at the end of the line. */
+
 static void md_resolve(char next) {
     Str p = { g_md.prefix, g_md.prefix_n };
     size_t indent = 0;
@@ -543,11 +531,6 @@ static void md_low_end(void) {
     g_md.fence_mark = 0;
 }
 
-/* ---- line-aware extensions ---------------------------------------------
- * A table is the one common shape that cannot be identified from its first
- * row alone: the delimiter below it is the proof. Short lines wait here for
- * that decision. A line too long to be useful as a terminal table falls
- * through to the streaming renderer as soon as this bounded buffer fills. */
 
 static size_t md_cells(Str row, Str *out, size_t cap) {
     row = str_trim(row);
@@ -625,8 +608,7 @@ static void md_cell_put(MdCell *c, Str s, TuiStyle style) {
     c->run_end[c->runs++] = c->n;
 }
 
-/* Resolve `src` into `c`. The streaming state the inline renderer keeps is
- * saved across this, so a table drawn mid-message leaves it untouched. */
+
 static void md_cell_build(MdCell *c, Str src) {
     c->n = 0;
     c->runs = 0;
@@ -658,8 +640,7 @@ static TuiStyle md_cell_base(b8 head) {
     return head ? TUI_BOLD : g_md.muted ? TUI_QUOTE : TUI_PLAIN;
 }
 
-/* Draw `[a, b)` of a resolved cell, run by run. A header row bolds whatever
- * the runs left at the base style and keeps the rest as it resolved. */
+
 static void md_cell_emit(const MdCell *c, size_t a, size_t b, b8 head) {
     size_t run = 0;
     while (a < b) {
@@ -701,20 +682,17 @@ static void md_spaces(size_t n, TuiStyle style) {
     }
 }
 
-/* The next visual line of a cell: the bytes to draw, with `advance` bytes
- * consumed including the whitespace the break eats. Words are kept whole
- * where one fits, and a word wider than its column is split between
- * glyphs, which is the only way a narrow column can show it at all. */
+
 static Str md_wrap_segment(Str s, size_t width, size_t *advance) {
     size_t fit = tui_text_fit(s, width, NULL);
     if (fit == s.n) { *advance = s.n; return s; }
     size_t brk = fit;
     if (!md_space(s.p[fit])) {
-        size_t last = 0;   // the last space that fits, 0 for none
+        size_t last = 0;   
         for (size_t i = 1; i < fit; i++) if (md_space(s.p[i])) last = i;
         if (last) brk = last;
     }
-    if (!brk) {            // one glyph is already wider than the column
+    if (!brk) {            
         brk = 1;
         while (brk < s.n && ((u8)s.p[brk] & 0xc0u) == 0x80u) brk++;
     }
@@ -726,7 +704,7 @@ static Str md_wrap_segment(Str s, size_t width, size_t *advance) {
     return seg;
 }
 
-// One row, over as many visual lines as its widest cell wraps onto.
+
 static void md_table_line(Str line, const size_t *width, b8 head) {
     Str cells[MD_TABLE_COLS];
     size_t n = md_cells(line, cells, MD_TABLE_COLS);
@@ -770,7 +748,7 @@ static void md_table_line(Str line, const size_t *width, b8 head) {
  * one glyph wide says less than the wrapped rows do. */
 static void md_table_fit(size_t *width, size_t cols) {
     size_t body = tui_body_cols();
-    size_t frame = cols * 3 + 1;   // "| " before every cell, "|" at the end
+    size_t frame = cols * 3 + 1;   
     if (!body || cols > MD_TABLE_COLS || body < frame + cols) return;
     size_t budget = body - frame, total = 0, widest = 0;
     for (size_t i = 0; i < cols; i++) {
@@ -778,7 +756,7 @@ static void md_table_fit(size_t *width, size_t cols) {
         if (width[i] > widest) widest = width[i];
     }
     if (total <= budget) return;
-    // The largest cap every column can be clipped to and still fit.
+    
     size_t lo = 1, hi = widest;
     while (lo < hi) {
         size_t mid = lo + (hi - lo + 1) / 2, sum = 0;
@@ -793,8 +771,7 @@ static void md_table_fit(size_t *width, size_t cols) {
         if (clipped[i]) width[i] = lo;
         used += width[i];
     }
-    /* The cap divides unevenly, so the cells it left over go to the clipped
-     * columns and the row reaches the edge. */
+    
     for (size_t i = 0; i < cols && used < budget; i++)
         if (clipped[i]) { width[i]++; used++; }
 }
@@ -934,17 +911,12 @@ void md_write(Str delta) {
                 g_md.line_long = false;
                 continue;
             }
-            /* A line past MD_LINE_MAX is written through as it arrives, so
-             * it is handed over a run at a time: md_low_write drains to the
-             * transcript once per call, and a byte per call turns a long
-             * line, a minified blob or a wide log record into one drain per
-             * character. The run stops at the bytes the loop above treats
-             * specially, which keeps them on their existing paths. */
+            
             size_t run = i;
             while (run < delta.n && delta.p[run] != '\n' && delta.p[run] != '\r')
                 run++;
             md_low_write((Str){ delta.p + i, run - i });
-            i = run - 1;   // the loop's ++ lands on the stopper or the end
+            i = run - 1;   
             continue;
         }
         if (c == '\n') {

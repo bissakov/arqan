@@ -39,8 +39,7 @@ static i32 search_interval_ms(void) {
     return AGENT_WEB_SEARCH_INTERVAL_MS;
 }
 
-/* Search pacing shares the transfer's idle hook so waiting remains
- * interruptible and the TUI keeps accepting input. */
+
 static b8 search_wait_until(f64 until) {
     enum { SLICE_MS = 50 };
     for (;;) {
@@ -56,8 +55,7 @@ static b8 search_wait_until(f64 until) {
     }
 }
 
-/* Every backend that failed is named in the one error the model sees, so a
- * refusal from the first endpoint is never mistaken for the only attempt. */
+
 static void search_attempts_add(char *dst, size_t cap, size_t *n,
                                 const char *msg) {
     if (*n + 1 >= cap) return;
@@ -763,11 +761,11 @@ typedef struct {
 /* One engine's markup, as class tokens rather than selectors: a token match
  * survives the hashed class names single-page engines add to every element. */
 typedef struct {
-    const char *result;     // class token opening a result block, or NULL
-    const char *link[2];    // the result anchor's class tokens, or NULL
-    const char *title;      // class token holding the title, NULL: the anchor
+    const char *result;     
+    const char *link[2];    
+    const char *title;      
     const char *snippet[2];
-    b8 link_in_heading;     // the anchor is the block's <h2> link
+    b8 link_in_heading;     
 } SearchLayout;
 
 typedef struct {
@@ -777,9 +775,9 @@ typedef struct {
     size_t n;
     size_t layout_links;
     size_t current;
-    size_t heading;         // open <h2> depth
-    b8 in_result;           // inside a block the layout opened
-    b8 linked;              // this block's anchor was taken
+    size_t heading;         
+    b8 in_result;           
+    b8 linked;              
     b8 oom;
     b8 challenge;
     b8 explicit_empty;
@@ -825,8 +823,7 @@ static b8 search_enter(AgentHtmlNode *node, void *ud) {
         const char *href = agent_html_attr(node, "href", 4, &hn);
         b8 ok = false;
         Str url = href ? result_url((Str){href, hn}, s->scratch, &ok) : (Str){0};
-        /* A layout with its own title element leaves the anchor's text alone:
-         * it also carries the site name and the breadcrumb URL. */
+        
         Str title = lay->title ? (Str){0}
                                : search_text(s, node, WEB_TITLE_BYTES);
         if (!ok || (!lay->title && !title.n) || s->n == 10) return true;
@@ -851,8 +848,7 @@ static void search_leave(AgentHtmlNode *node, void *ud) {
         s->in_result = false;
 }
 
-/* A layout that names a title element can open a result before the element
- * arrives, and a block whose title never arrives is not a result. */
+
 static void search_compact(SearchCtx *s) {
     size_t n = 0;
     for (size_t i = 0; i < s->n; i++)
@@ -875,19 +871,14 @@ static b8 encode_query(Str query, Buf *url) {
     return buf_ok(url);
 }
 
-/* ---- engines -------------------------------------------------------------
- * Every engine is one row: where its query goes, what its answer looks like,
- * and what it needs configured. The keyless engines are scraped and each has
- * its own bot detection, so a refusal on one is retried on the next; a keyed
- * engine answers JSON and is chosen by name, never guessed at.
- */
+
 typedef enum {
     ENGINE_DDG_LITE, ENGINE_DDG_HTML, ENGINE_BRAVE,
     ENGINE_BRAVE_API, ENGINE_GOOGLE, ENGINE_SEARXNG, ENGINE_N
 } SearchEngine;
 
 typedef struct {
-    const char *object;    // wrapper object holding the array, or NULL
+    const char *object;    
     const char *array;
     const char *title, *url, *snippet;
 } SearchShape;
@@ -895,10 +886,10 @@ typedef struct {
 enum { NEED_KEY = 1u, NEED_ENGINE_ID = 2u, NEED_ENDPOINT = 4u };
 
 typedef struct {
-    const char *label;     // the search_backend value, and what errors call it
-    const char *base;      // scheme and host; search_endpoint replaces it
-    const char *path;      // path and query up to the query text; %k, %c
-    const char *header;    // extra request header, or NULL; %k
+    const char *label;     
+    const char *base;      
+    const char *path;      
+    const char *header;    
     u8 needs;
     b8 json;
     SearchLayout layout;
@@ -941,9 +932,7 @@ static struct {
 } g_search = { {ENGINE_DDG_LITE, ENGINE_DDG_HTML, ENGINE_BRAVE, 0, 0, 0},
                3, {0}, {0}, {0} };
 
-/* Pacing and quarantine are per engine: one service refusing says nothing
- * about the next, and a chain of four would otherwise wait out three
- * intervals it does not owe anybody. */
+
 static f64 g_engine_start[ENGINE_N];
 static f64 g_engine_paused[ENGINE_N];
 
@@ -972,8 +961,7 @@ static void search_pause(SearchEngine e) {
     if (until > g_engine_paused[e]) g_engine_paused[e] = until;
 }
 
-/* The engines `search_backend` selects. A name other than "auto" selects
- * exactly what it names, so an endpoint or a key has one engine to belong to. */
+
 static size_t search_chain_for(Str name, SearchEngine out[ENGINE_N]) {
     if (str_eq(name, STR("ddg"))) {
         out[0] = ENGINE_DDG_LITE;
@@ -992,9 +980,7 @@ static size_t search_chain_for(Str name, SearchEngine out[ENGINE_N]) {
 }
 
 #ifdef AGENT_TESTING
-/* One full URL prefix per chain slot, replacing that engine's base and path.
- * The chain is cut to the number of slots set, so a test says how many
- * endpoints exist by saying where they are. */
+
 static const char *search_test_prefix(size_t slot) {
     static const char *const env[] = {
         AGENT_ENV_PREFIX "TEST_WEB_SEARCH_URL",
@@ -1007,8 +993,7 @@ static const char *search_test_prefix(size_t slot) {
 }
 #endif
 
-/* An unset setting stays unset: the checks below and the URL builder both
- * read `.n` as "configured". */
+
 static Str search_setting(Arena *persist, Str value) {
     return str_dup_opt(persist, str_trim(value));
 }
@@ -1049,7 +1034,7 @@ void web_search_init(const Conf *c, Arena *persist) {
 #endif
 }
 
-// base + path with %k and %c expanded, then the encoded query.
+
 static b8 search_url(const SearchEngineSpec *spec, size_t slot,
                      const char *query, Arena *scratch, Str *out,
                      char *err, size_t err_cap) {
@@ -1106,14 +1091,13 @@ static const char *search_header(const SearchEngineSpec *spec, Arena *scratch) {
 }
 
 typedef enum {
-    SEARCH_OK,      // results, or a layout that states there are none
-    SEARCH_BLOCKED, // refusal or challenge; pause if no backend answers
+    SEARCH_OK,      
+    SEARCH_BLOCKED, 
     SEARCH_UNKNOWN, // transport failure or unfamiliar layout
     SEARCH_ERROR,   // local failure; give up without trying another backend
 } SearchOutcome;
 
-/* An engine's JSON answer, read through its shape. A result whose URL is not
- * a public HTTP(S) one is skipped the way a malformed anchor is. */
+
 static SearchOutcome search_json(Str raw, const SearchEngineSpec *spec,
                                  Arena *scratch, SearchCtx *found,
                                  char *err, size_t err_cap) {
@@ -1262,8 +1246,7 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out,
 
     if (found.n > limit) found.n = limit;
     Str records[10];
-    /* Results the byte budget cuts are still worth keeping: the search is
-     * rate limited, so repeating it to see them is the expensive path. */
+    
     static Spill spill;
     spill_open(&spill, "internet_search", "txt", str_c(query));
     size_t emitted = 0, bytes = 0;

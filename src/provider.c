@@ -49,9 +49,7 @@ static size_t conv_media_end(const Conv *c, size_t i) {
     return (size_t)c->media_off[i] + c->media_n[i];
 }
 
-/* The media table is append-only and a slot's entries are contiguous, so the
- * highest end among the kept slots is what stays live. Scanning them is
- * cheaper than it looks: this runs once per /clear, rewind or resume. */
+
 void conv_truncate(Conv *c, size_t keep) {
     if (keep > c->n) return;
     c->n = keep;
@@ -109,13 +107,11 @@ static size_t conv_push(Conv *c, MRole role, Str text, Str id, Str name,
 size_t conv_add(Conv *c, MRole role, Str text) {
     return conv_push(c, role, text, (Str){0}, (Str){0}, false);
 }
-/* Head slot of an assistant turn that calls tools: prose only. The calls
- * themselves follow as carrier slots, each with its own id. */
+
 size_t conv_add_assistant_calls(Conv *c, Str content) {
     return conv_push(c, M_ASSISTANT, content, (Str){0}, (Str){0}, true);
 }
-/* A model can emit malformed JSON, so what it wrote is checked here rather
- * than trusted: the answer is what anth_write_input reads back. */
+
 size_t conv_add_call(Conv *c, Arena *scratch, Str id, Str name, Str args) {
     size_t i = conv_push(c, M_ASSISTANT, args, id, name, true);
     if (i == CONV_NONE) return i;
@@ -140,8 +136,7 @@ b8 conv_is_shell(const Conv *c, size_t i) {
     return i < c->n && c->role[i] == M_USER
         && str_eq(c->tool_name[i], STR("shell"));
 }
-/* A carrier holds one call: an assistant slot flagged with a tool call and
- * naming the tool. The head slot names nothing. */
+
 b8 conv_is_call(const Conv *c, size_t i) {
     return i < c->n && c->role[i] == M_ASSISTANT && c->has_tool_call[i]
         && c->tool_name[i].p != NULL;
@@ -172,10 +167,7 @@ static size_t conv_media_live(const Conv *c, size_t i) {
     return live;
 }
 
-/* A tool result is charged again on every later turn, so one older than
- * AGENT_ELIDE_TURNS user turns goes out as a line naming what it was: a file
- * read four turns ago is either reflected in the work or worth reading again.
- * The transcript keeps the text either way. */
+
 static void write_tool_result(Buf *b, const Conv *c, size_t i, size_t recent) {
     if (i < recent && c->text[i].n > AGENT_ELIDE_BYTES) {
         Str name = conv_call_name(c, i);
@@ -212,8 +204,7 @@ static void oai_write_content(Buf *b, const Conv *c, size_t i) {
     buf_putc(b, ']');
 }
 
-/* Assistant tool calls are emitted as one message with a "tool_calls" array,
- * the carrier slots consumed here and skipped in the main loop. */
+
 void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
     (void)reg;
     size_t recent = conv_recent_start(c, AGENT_ELIDE_TURNS);
@@ -268,7 +259,7 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
             }
             buf_putc(b, ']');
             buf_putc(b, '}');
-            i = j - 1;   // the carriers are consumed
+            i = j - 1;   
             continue;
         }
         buf_putf(b, ",\"content\":");
@@ -298,9 +289,7 @@ static b8 anth_has_block(const Conv *c, size_t i) {
         || conv_media_live(c, i) > 0;
 }
 
-/* The slot's images, ahead of the block they belong to: Anthropic reads an
- * image best with the question about it behind it. The cache breakpoint is
- * chosen among text-bearing slots, so it never lands here. */
+
 static void anth_write_media(Buf *b, const Conv *c, size_t i, b8 *first) {
     for (size_t k = 0; k < c->media_n[i]; k++) {
         size_t id = (size_t)c->media_off[i] + k;
@@ -311,9 +300,7 @@ static void anth_write_media(Buf *b, const Conv *c, size_t i, b8 *first) {
     }
 }
 
-/* Stored arrays are produced by the parser or validated while a session is
- * resumed. Splice their elements into this assistant content array so the
- * signed blocks precede the text and tool calls they belong to. */
+
 static void anth_write_thinking(Buf *b, Str raw, b8 *first) {
     if (raw.n < 2 || raw.p[0] != '[' || raw.p[raw.n - 1] != ']') return;
     Str inner = { raw.p + 1, raw.n - 2 };
@@ -424,7 +411,7 @@ typedef struct {
     Buf  args[AGENT_MAX_TOOL_CALLS];
     b8   used[AGENT_MAX_TOOL_CALLS];
     i32  count;
-    i32  dropped;      // calls past the per-turn cap
+    i32  dropped;      
     Buf  text;
     /* Canonical JSON array of signed Anthropic thinking blocks. The readable
      * summary is also sent to on_reason, but this whole form is what a later
@@ -443,14 +430,13 @@ typedef struct {
     f64  reason_detail_index;
     b8   reason_detail_has_id;
     u64  reason_detail_id;
-    /* Anthropic streams one content block at a time, so the open block is
-     * enough to route a delta: the tool slot it fills, or -1 for prose. */
+    
     i32  open_slot;
-    i32  blocks;        // tool_use blocks seen, which is the next slot
-    size_t events;       // SSE data lines parsed, for telemetry
-    size_t bad_events;   // data lines that were not JSON arqan could read
-    size_t reason_bytes; // thinking trace streamed, which Conv never keeps
-    b8 stream_error;     // a parsed top-level provider error
+    i32  blocks;        
+    size_t events;       
+    size_t bad_events;   
+    size_t reason_bytes; 
+    b8 stream_error;     
 } StreamState;
 
 static i32 slot(StreamState *s, i32 idx) {
@@ -474,9 +460,7 @@ static size_t usage_add(size_t a, size_t b) {
     return a > SIZE_MAX - b ? SIZE_MAX : a + b;
 }
 
-/* With stream_options.include_usage the final event has no choices and
- * carries the request's token counts; a non-streamed reply carries the same
- * object at its top level. */
+
 static void read_usage(Provider *p, const JVal *root) {
     const JVal *usage = json_get(root, STR("usage"));
     if (!usage || usage->type != J_OBJ) return;
@@ -504,8 +488,7 @@ static void read_usage(Provider *p, const JVal *root) {
         p->on_usage(p->conv, p->prompt_tokens, p->completion_tokens, p->ud);
 }
 
-/* The composer has already advanced past the submitted line, so a provider
- * that leads with a line break would open the reply on a blank row. */
+
 static Str skip_leading_breaks(Str s, b8 started) {
     size_t skip = 0;
     if (!started)
@@ -513,16 +496,13 @@ static Str skip_leading_breaks(Str s, b8 started) {
     return str_drop(s, skip);
 }
 
-/* "reasoning_content" is what DeepSeek-style endpoints send, "reasoning" what
- * OpenRouter does; both carry plain text. */
+
 static Str reasoning_of(const JVal *v) {
     Str r = json_str(v, STR("reasoning_content"));
     return r.n ? r : json_str(v, STR("reasoning"));
 }
 
-/* The three things a reply carries, taken the same way whether they arrived a
- * delta at a time or whole: displayed thinking, the reply itself, and one
- * tool call per slot. */
+
 static void take_reason(Provider *p, StreamState *s, Str raw) {
     Str rt = skip_leading_breaks(raw, s->reason_started);
     if (!rt.n) return;
@@ -532,9 +512,7 @@ static void take_reason(Provider *p, StreamState *s, Str raw) {
     if (p->on_reason) p->on_reason(rt, p->ud);
 }
 
-/* Provider summary parts are separate prose units, while deltas within one
- * part are token fragments. Keep the former readable without guessing at
- * punctuation or changing the signed form retained for a later request. */
+
 static void take_reason_part(Provider *p, StreamState *s, Str raw, b8 new_part) {
     if (!raw.n) return;
     if (new_part && s->reason_started
@@ -615,8 +593,7 @@ static void openai_event(Provider *p, StreamState *s, const JVal *ev) {
             structured = true;
         }
     }
-    /* Gateways commonly send the flattened field beside reasoning_details.
-     * Reading both repeats every summary. */
+    
     if (!structured) take_reason(p, s, reasoning_of(delta));
     take_text(p, s, json_str(delta, STR("content")));
     const JVal *tcs = json_get(delta, STR("tool_calls"));
@@ -624,8 +601,7 @@ static void openai_event(Provider *p, StreamState *s, const JVal *ev) {
         for (size_t i = 0; i < tcs->u.arr.n; i++) {
             const JVal *tc = &tcs->u.arr.items[i];
             const JVal *idxv = json_get(tc, STR("index"));
-            /* A non-numeric "index" would read the union as a double, so
-             * anything but a number is the first call. */
+            
             i32 idx = idxv && idxv->type == J_NUM && idxv->u.n >= 0
                    && idxv->u.n < (f64)AGENT_MAX_TOOL_CALLS
                     ? (i32)idxv->u.n : 0;
@@ -659,8 +635,7 @@ static void read_usage_anth(Provider *p, const JVal *owner) {
         p->on_usage(p->conv, p->prompt_tokens, p->completion_tokens, p->ud);
 }
 
-/* The name and id arrive whole on content_block_start; the arguments follow
- * as partial JSON, the way an OpenAI call's do. */
+
 static void anth_open_tool(Provider *p, StreamState *s, const JVal *blk) {
     i32 sl = slot(s, s->blocks++);
     s->open_slot = sl;
@@ -782,8 +757,7 @@ static b8 on_line(Str line, void *ud) {
     StreamState *s = p->ud;
     if (line.n >= 6 && !memcmp(line.p, "data:", 5)) {
         Str payload = str_trim(str_drop(line, 5));
-        /* The OpenAI sentinel ends the application stream even when a broken
-         * HTTP server leaves its response connection open afterwards. */
+        
         if (str_eq(payload, STR("[DONE]"))) return false;
         s->events++;
         arena_reset(&s->ev);
@@ -845,8 +819,7 @@ static b8 read_completion(Provider *p, StreamState *s, Str raw, Arena *scratch,
     return true;
 }
 
-/* One Anthropic message document: the content array holding whole what the
- * blocks would have streamed. */
+
 static b8 read_message_anth(Provider *p, StreamState *s, Str raw,
                             Arena *scratch, char *err, size_t err_cap) {
     JVal *doc = json_parse(scratch, raw);
@@ -892,7 +865,7 @@ size_t provider_models(const Config *cfg, Arena *scratch, Str *out,
     i32 rc = http_get(cfg->base_url.p, "/models", cfg->api_key.p, cfg->api,
                       &body, why, sizeof why);
     if (rc != 0) {
-        // curl phrases its reasons as sentences; notices here are not.
+        
         if (why[0] >= 'A' && why[0] <= 'Z')
             why[0] = (char)(why[0] - 'A' + 'a');
         if (rc < 0) snprintf(err, err_cap, "models: HTTP %d", -rc);
@@ -944,7 +917,7 @@ static b8 output_untouched(const StreamState *s) {
     return response_empty(s) && s->dropped == 0;
 }
 
-// Doubling from the configured base; attempt 1 waits the base.
+
 static i32 backoff_ms(i32 base, i32 attempt) {
     i64 ms = base;
     for (i32 i = 1; i < attempt && ms < AGENT_MAX_RETRY_DELAY_MS; i++) ms *= 2;
@@ -965,8 +938,7 @@ static b8 retry_wait(const Provider *p, i32 delay_ms) {
     return !(p->interrupt_flag && *p->interrupt_flag);
 }
 
-/* The system prompt is a message to one API and a parameter to the other, so
- * this is where the two requests part. */
+
 static b8 template_owned(Str key, const Provider *p) {
     if (str_eq(key, STR("model")) || str_eq(key, STR("messages"))
         || str_eq(key, STR("system")) || str_eq(key, STR("tools"))
@@ -1183,8 +1155,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
             p->on_retry(attempt, attempts, delay, str_c(reason), saved_ud);
         if (!retry_wait(p, delay)) { rc = 3; break; }
 
-        /* Nothing arrived, so only what a refused request left behind is
-         * cleared. */
+        
         s->events = 0;
         s->bad_events = 0;
         s->stream_error = false;
@@ -1302,7 +1273,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         }
     }
 
-    // Count first: a turn is appended whole or not at all.
+    
     i32 calls = 0;
     for (i32 i = 0; i < s->count; i++)
         if (s->used[i] && s->name[i].p) calls++;

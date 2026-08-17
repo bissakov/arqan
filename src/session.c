@@ -9,19 +9,16 @@
 #include <time.h>
 #include <unistd.h>
 
-#define SESSION_SLUG_MAX 200      // encoded cwd kept whole up to this
-#define SESSION_PREVIEW_BYTES 60  // of the first prompt, shown when browsing
-#define SESSION_PREVIEW_READ 8192 // bytes of a file scanned for that prompt
+#define SESSION_SLUG_MAX 200      
+#define SESSION_PREVIEW_BYTES 60  
+#define SESSION_PREVIEW_READ 8192 
 
 static b8 sess_unreserved(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
         || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
 }
 
-/* One path component naming `path`. Percent-encoding keeps it reversible by
- * eye; a path too long to encode whole is cut at an escape boundary and
- * disambiguated by a hash of the original, so two long neighbours can never
- * collapse onto the same directory. */
+
 static size_t sess_slug(char *out, size_t cap, Str path) {
     static const char hex[] = "0123456789abcdef";
     size_t n = 0;
@@ -84,7 +81,7 @@ static void sess_set_current(Session *s, Str path, Str name) {
     s->name = (Str){ s->name_buf, nn };
 }
 
-// "20250607-134501" becomes "2025-06-07 13:45:01"; anything else is shown raw.
+
 static Str sess_label(Arena *a, Str file) {
     Str stem = file;
     if (stem.n > 6 && !memcmp(stem.p + stem.n - 6, ".jsonl", 6)) stem.n -= 6;
@@ -109,9 +106,7 @@ static size_t sess_title_clean(char *out, size_t cap, Str src) {
     for (size_t i = 0; i < src.n; i++)
         if (src.p[i] == '\n' || src.p[i] == '\r') { src.n = i; break; }
     src = str_trim(src);
-    /* A model asked for a name answers with a quoted sentence often enough
-     * that the quotes and the full stop are peeled together: the stop hides
-     * the closing quote, so one pass would leave the opening one behind. */
+    
     for (size_t before = 0; before != src.n;) {
         before = src.n;
         while (src.n && (src.p[src.n - 1] == '.' || src.p[src.n - 1] == ' '))
@@ -129,8 +124,7 @@ static size_t sess_title_clean(char *out, size_t cap, Str src) {
         if (c == ' ' && (!n || out[n - 1] == ' ')) continue;
         out[n++] = c;
     }
-    /* The cut lands on a UTF-8 boundary: a row of the picker showing half a
-     * glyph is a hole in the frame. Only an incomplete last sequence goes. */
+    
     size_t last = n;
     while (last && ((u8)out[last - 1] & 0xc0u) == 0x80u) last--;
     if (last) {
@@ -144,8 +138,7 @@ static size_t sess_title_clean(char *out, size_t cap, Str src) {
     return n;
 }
 
-/* The sidecar beside a session file: its path with ".jsonl" replaced. A path
- * that is not a session file, or one that would not fit, has none. */
+
 static size_t sess_title_path(char *out, size_t cap, Str session_path) {
     Str suffix = AGENT_TITLE_SUFFIX;
     if (session_path.n <= 6
@@ -178,18 +171,16 @@ b8 session_set_title(Session *s, Str title) {
     s->title = n ? (Str){ s->title_buf, n } : (Str){0};
     if (!sess_title_path(path, sizeof path, s->path)) return false;
     if (!n) {
-        unlink(path);           // an unnamed session leaves no sidecar behind
+        unlink(path);           
         return true;
     }
     return settings_write(str_c(path), s->title, 0600);
 }
 
-/* Start a fresh session file. The file itself is only created by the first
- * save, so an untouched session never shows up in the picker. */
+
 b8 session_begin(Session *s) {
     s->written = 0;
-    /* A reservation is a new thread, so the automatic name it has not earned
-     * yet is still owed to it. */
+    
     s->title_tried = false;
     /* The name is reserved here, but the conversation starts with its first
      * message: the record follows the file rather than the reservation, so
@@ -210,15 +201,14 @@ b8 session_begin(Session *s) {
         i32 pn = snprintf(path, sizeof path, "%.*s/%s",
                           (i32)s->dir.n, s->dir.p, file);
         if (pn <= 0 || (size_t)pn >= sizeof path) return false;
-        if (access(path, F_OK) == 0) continue;   // same second, twice
+        if (access(path, F_OK) == 0) continue;   
         sess_set_current(s, (Str){ path, (size_t)pn }, str_c(file));
         return s->path.n != 0;
     }
     return false;
 }
 
-/* JSON-escaped straight to the stream: a message has no bound worth a buffer
- * and the escaping rules are the same ones buf_json_str applies. */
+
 static void sess_put_json(FILE *f, Str s) {
     fputc('"', f);
     for (size_t i = 0; i < s.n; i++) {
@@ -259,9 +249,7 @@ static void sess_sync_dir(Str dir) {
  * resume against AGENT_MAX_SESSION_BYTES. The name is the content's hash, so
  * the same image pasted twice costs one file and a re-save writes none.
  */
-/* The sidecar an entry belongs in: its content's hash for one arqan holds,
- * and the name the session recorded for one it could not read back. False
- * when the entry names no file at all. */
+
 static b8 sess_media_name(char *rel, size_t cap, const MediaSet *m, size_t id) {
     if (!media_live(m, id)) {
         if (!m->file[id].n || m->file[id].n >= cap) return false;
@@ -287,7 +275,7 @@ static b8 sess_media_write(Str dir, const MediaSet *m, size_t id,
     i32 pn = snprintf(path, sizeof path, "%.*s/%s", (i32)dir.n, dir.p, rel);
     if (pn <= 0 || (size_t)pn >= sizeof path) return false;
 
-    /* Content-addressed: a file already there holds these very bytes. */
+    
     if (access(path, F_OK) == 0) return true;
     char tmp[AGENT_MAX_PATH];
     i32 tn = snprintf(tmp, sizeof tmp, "%s." AGENT_NAME "-tmp", path);
@@ -302,9 +290,7 @@ static b8 sess_media_write(Str dir, const MediaSet *m, size_t id,
     return true;
 }
 
-/* The slot's images as one JSON array, written after their sidecars are on
- * disk. An image that could not be written is still named, so the numbering
- * a replay shows matches the text that refers to it. */
+
 static void sess_put_media(FILE *f, Str dir, const Conv *c, size_t i) {
     if (!c->media || !c->media_n[i]) return;
     const MediaSet *m = c->media;
@@ -331,11 +317,7 @@ static void sess_put_media(FILE *f, Str dir, const Conv *c, size_t i) {
     fputs("]", f);
 }
 
-/* End a line the last save left half-written. A power loss can cut an append
- * anywhere, and the torn line is dropped on load; without this the next
- * append would run onto its tail and cost the first good message after it as
- * well. `f` is open for append, so the write lands at the end regardless of
- * where reading left the stream. */
+
 static void sess_close_line(FILE *f) {
     struct stat st;
     i32 fd = fileno(f);
@@ -354,8 +336,7 @@ void session_save(Session *s, const Conv *c) {
     Str dir = s->dir;
     if (dir.n) paths_ensure_dir(dir);
     b8 created = access(s->path.p, F_OK) != 0;
-    /* Read-write append: the file is only ever added to, but the byte before
-     * the append has to be known. */
+    
     FILE *f = fopen(s->path.p, "a+b");
     if (!f) return;
     sess_close_line(f);
@@ -384,8 +365,7 @@ void session_save(Session *s, const Conv *c) {
             sess_put_json(f, c->shell_out[i]);
         }
         sess_put_media(f, dir, c, i);
-        /* How long the run behind the slot took, so a replayed transcript
-         * says what the live one did. */
+        
         if (c->ms[i]) fprintf(f, ",\"ms\":%u", c->ms[i]);
         fputs(",\"content\":", f);
         sess_put_json(f, c->text[i]);
@@ -400,12 +380,9 @@ void session_save(Session *s, const Conv *c) {
     s->written = c->n;
 }
 
-/* Continue in a copy: a new file holding the conversation as it stands now,
- * which every later save appends to. The file left behind keeps exactly what
- * it had, so a fork costs the conversation it came from nothing. */
+
 b8 session_fork(Session *s, const Conv *c) {
-    /* A fork is the same thread continuing, so it carries the name over: the
-     * title is copied out before the reservation clears it. */
+    
     char title[AGENT_MAX_TITLE + 1];
     size_t title_n = s->title.n < sizeof title ? s->title.n : 0;
     if (title_n) memcpy(title, s->title.p, title_n);
@@ -426,8 +403,7 @@ static b8 export_text_section(FILE *f, const char *heading, Str text) {
     return text.n && text.p[text.n - 1] == '\n' ? true : fputc('\n', f) != EOF;
 }
 
-/* A fence longer than any run in the body keeps arbitrary tool text from
- * closing its own block. */
+
 static size_t export_fence_len(Str body) {
     size_t longest = 0, run = 0;
     for (size_t i = 0; i < body.n; i++) {
@@ -592,8 +568,7 @@ static Str sess_preview(Arena *a, const char *path) {
     }
     if (!out.n) { a->off = mark; return (Str){0}; }
 
-    /* Flatten to one line and cut on a UTF-8 boundary: this lands in a popup
-     * row, so a stray newline or half a glyph would be a hole in the frame. */
+    
     char tmp[SESSION_PREVIEW_BYTES + 8];
     size_t n = 0;
     for (size_t i = 0; i < out.n && n < SESSION_PREVIEW_BYTES; i++) {
@@ -609,8 +584,7 @@ static Str sess_preview(Arena *a, const char *path) {
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
 }
 
-/* One directory entry while the list is being ordered: the file name and
- * when it was last written. */
+
 typedef struct {
     char   name[64];
     time_t sec;
@@ -628,9 +602,7 @@ static b8 sess_before(const SessEntry *e, const SessEntry *cand) {
     return strcmp(e->name, cand->name) > 0;
 }
 
-/* Saved sessions for this directory, most recently written first. Only `max`
- * of them are kept, so a directory with a thousand files still costs one
- * pass and a fixed table. */
+
 size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max) {
     memset(out, 0, sizeof *out);
     if (!s->dir.n || !max) return 0;
@@ -655,7 +627,7 @@ size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max) {
         }
         size_t pos = n;
         while (pos > 0 && !sess_before(&ents[pos - 1], &cand)) pos--;
-        if (pos >= max) continue;               // older than everything kept
+        if (pos >= max) continue;               
         if (n < max) n++;
         for (size_t i = n - 1; i > pos; i--) ents[i] = ents[i - 1];
         ents[pos] = cand;
@@ -705,8 +677,7 @@ b8 session_delete(const Session *s, Str path) {
     if (memchr(file.p, '/', file.n) || str_eq(file, STR(".."))) return false;
     if (s->path.n && str_eq(path, s->path)) return false;
     b8 ok = unlink(path.p) == 0;
-    /* Best effort: a name left behind names nothing, and failing to remove
-     * it does not change whether the session was removed. */
+    
     char title[AGENT_MAX_PATH];
     if (sess_title_path(title, sizeof title, path)) unlink(title);
     return ok;
@@ -729,9 +700,7 @@ static Str sess_field(Arena *persist, const JVal *v, Str key) {
     return str_dup_opt(persist, json_str(v, key));
 }
 
-/* Session files are editable external input. Only validated thinking block
- * arrays may later be spliced into an Anthropic request. Canonicalizing them
- * through the serializer also prevents raw JSON from becoming request syntax. */
+
 static Str sess_thinking(Arena *persist, const JVal *v) {
     const JVal *blocks = json_get(v, STR("anthropic_thinking"));
     if (!blocks || blocks->type != J_ARR || !blocks->u.arr.n) return (Str){0};
@@ -756,9 +725,7 @@ static Str sess_thinking(Arena *persist, const JVal *v) {
     return buf_ok(&out) ? buf_finish(&out) : (Str){0};
 }
 
-/* A sidecar named by a saved line. The name is external input, so only the
- * one shape arqan writes is accepted: one component under the session's own
- * media directory, which no "..", absolute path or nested name can leave. */
+
 static b8 sess_media_path(char *out, size_t cap, Str dir, Str file) {
     if (!str_starts(file, STR("media/"))) return false;
     Str name = str_drop(file, 6);
@@ -770,10 +737,7 @@ static b8 sess_media_path(char *out, size_t cap, Str dir, Str file) {
     return n > 0 && (size_t)n < cap;
 }
 
-/* The images a saved line names, read back from beside the session and held
- * to the same limits a live attachment is. One whose file is gone keeps its
- * place in the table: the text it belongs to still says which image it was,
- * and nothing but the numbering depends on it. */
+
 static void sess_apply_media(const Session *s, const JVal *v, Conv *c,
                              size_t slot, Arena *persist, Arena *scratch) {
     const JVal *arr = json_get(v, STR("media"));
@@ -794,13 +758,13 @@ static void sess_apply_media(const Session *s, const JVal *v, Conv *c,
         if (id == MEDIA_NONE)
             id = media_add_missing(c->media, persist, label,
                                    json_str(e, STR("mime")), file);
-        if (id == MEDIA_NONE) break;   // the table is full
+        if (id == MEDIA_NONE) break;   
         kept++;
     }
     if (kept) conv_attach_media(c, slot, off, kept);
 }
 
-/* Whether any slot answers the call carried in `call`. */
+
 static b8 sess_call_answered(const Conv *c, size_t call) {
     for (size_t i = call + 1; i < c->n; i++)
         if (c->role[i] == M_TOOL
@@ -809,12 +773,7 @@ static b8 sess_call_answered(const Conv *c, size_t call) {
     return false;
 }
 
-/* Answer the calls the session died between asking and running. The round
- * that asked is on disk before any tool starts, so a session cut mid-round
- * replays with calls no result follows, which every provider refuses. A
- * result saying the call never ran keeps the conversation valid and leaves
- * the model to decide whether the work is still wanted; nothing is replayed
- * as having run. False when there was no room to answer them all. */
+
 static b8 sess_answer_pending(Conv *c) {
     size_t n = c->n;
     for (size_t i = 0; i < n; i++) {
@@ -835,11 +794,9 @@ static b8 sess_answer_pending(Conv *c) {
 b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
                  Arena *persist, Arena *scratch) {
     sess_set_current(s, path, name);
-    telemetry_bind(s->path);          // the record of the session reopened
+    telemetry_bind(s->path);          
     s->written = c->n;
-    /* A resumed session is not a fresh one to name automatically, so a name
-     * it already has ends the question. One that has none may still earn it
-     * from the turn that follows. */
+    
     {
         size_t mark = scratch->off;
         Str title = session_title_read(s->path, scratch);

@@ -44,12 +44,12 @@ static void jpeg_size(Str s, u32 *w, u32 *h) {
     while (i + 9 < s.n) {
         if (p[i] != 0xff) return;
         u8 marker = p[i + 1];
-        if (marker == 0xff) { i++; continue; }          // fill bytes
+        if (marker == 0xff) { i++; continue; }          
         if (marker == 0xd8 || (marker >= 0xd0 && marker <= 0xd9)) {
             i += 2;
             continue;
         }
-        if (marker == 0xda) return;                     // scan data begins
+        if (marker == 0xda) return;                     
         u32 len = be16(p + i + 2);
         if (len < 2) return;
         b8 sof = (marker >= 0xc0 && marker <= 0xcf)
@@ -64,8 +64,7 @@ static void jpeg_size(Str s, u32 *w, u32 *h) {
     }
 }
 
-/* The three WebP chunk layouts. A lossy frame's dimensions sit behind a
- * three-byte start code; a lossless one packs them fourteen bits at a time. */
+
 static void webp_size(Str s, u32 *w, u32 *h) {
     const u8 *p = (const u8 *)s.p;
     if (s.n < 30) return;
@@ -125,7 +124,7 @@ Str media_ext(Str mime) {
     return STR("bin");
 }
 
-// The type name without the "image/", which is what a chip has room for.
+
 static Str media_kind(Str mime) {
     return str_starts(mime, STR("image/"))
          ? (Str){ mime.p + 6, mime.n - 6 } : mime;
@@ -212,7 +211,7 @@ size_t media_add_file(MediaSet *m, Arena *persist, Arena *scratch, Str path,
         case FILE_UNREADABLE:  snprintf(err, err_cap, "%s could not be read", z); break;
     }
     if (st == FILE_OK) {
-        // The label is the basename: a chip has no room for a project path.
+        
         Str label = path;
         for (size_t i = path.n; i-- > 0;)
             if (path.p[i] == '/') { label = str_drop(path, i + 1); break; }
@@ -233,11 +232,7 @@ b8 media_live(const MediaSet *m, size_t id) {
     return m && id < m->n && m->bytes[id].n > 0;
 }
 
-/* Keep `n` of the entries a turn added from `base` on and drop the rest, so
- * what it attaches ends up contiguous there. Only that tail moves: an entry
- * an earlier turn already indexes keeps its place. The ids are ascending and
- * each is at or past where it lands, so the copy is safe in place. Returns
- * where the kept run starts. */
+
 size_t media_keep(MediaSet *m, size_t base, const size_t *ids, size_t n) {
     if (!n || base >= m->n || n > m->n - base) return m->n;
     for (size_t i = 0; i < n; i++) {

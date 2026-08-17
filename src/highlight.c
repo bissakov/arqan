@@ -36,9 +36,9 @@ typedef struct {
  * with the protocol, so the process is replaced rather than reused. */
 typedef enum {
     HL_OK,      /* runs are in the caller's result */
-    HL_NONE,    /* the helper declined this source and stays healthy */
-    HL_RETRY,   /* it stalled or the pipe broke */
-    HL_BROKEN,  /* it does not speak the protocol */
+    HL_NONE,    
+    HL_RETRY,   
+    HL_BROKEN,  
 } HlOutcome;
 
 static HighlightClient g_hl = { .pid = -1, .in_fd = -1, .out_fd = -1 };

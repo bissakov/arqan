@@ -21,14 +21,14 @@
  */
 
 #define CLIP_POLL_MS   20
-#define CLIP_LIST_MAX  4096   // a type listing is a few dozen short lines
+#define CLIP_LIST_MAX  4096   
 #define CLIP_ARGV_MAX  8
-// The element a helper's argv carries where the media type belongs.
+
 #define CLIP_TYPE_MARK "%t"
 
 typedef struct {
-    const char *list[CLIP_ARGV_MAX];    // prints the types on offer, or empty
-    const char *fetch[CLIP_ARGV_MAX];   // prints one type's bytes
+    const char *list[CLIP_ARGV_MAX];    
+    const char *fetch[CLIP_ARGV_MAX];   
 } ClipHelper;
 
 static const ClipHelper k_clip[] = {
@@ -37,13 +37,11 @@ static const ClipHelper k_clip[] = {
     { { "xclip", "-selection", "clipboard", "-t", "TARGETS", "-o", NULL },
       { "xclip", "-selection", "clipboard", "-t", CLIP_TYPE_MARK, "-o",
         NULL } },
-    /* pngpaste lists nothing: it answers with a PNG or with nothing, which is
-     * what makes it the macOS entry. */
+    
     { { NULL }, { "pngpaste", "-", NULL } },
 };
 
-/* What to ask a clipboard for, in the order it is asked. The listing says
- * what is on offer; this is the preference over it. */
+
 static const Str k_clip_types[] = {
     { "image/png", 9 }, { "image/jpeg", 10 },
     { "image/gif", 9 }, { "image/webp", 10 },
@@ -51,19 +49,13 @@ static const Str k_clip_types[] = {
 
 typedef enum {
     CLIP_OK = 0,
-    CLIP_ABSENT,   // the helper is not installed
-    CLIP_NONE,     // it ran and offered nothing of the kind
-    CLIP_BIG,      // more bytes than an image may have
-    CLIP_FAILED,   // spawn, pipe or deadline
+    CLIP_ABSENT,   
+    CLIP_NONE,     
+    CLIP_BIG,      
+    CLIP_FAILED,   
 } ClipStatus;
 
-/* Poll one fd until the deadline. Returns 1 ready, 0 timed out, -1 failed.
- *
- * The UI is deliberately not pumped here, unlike the waits that sit behind a
- * network request: a clipboard read is local and bounded by
- * AGENT_CLIPBOARD_TIMEOUT_MS, and Ctrl-V mid-turn reaches this from inside
- * the input dispatch, where a nested tui_poll_input would deliver the keys
- * after it a second time. */
+
 static i32 clip_wait(i32 fd, f64 deadline) {
     for (;;) {
         f64 left = deadline - agent_now_seconds();
@@ -87,8 +79,7 @@ static ClipStatus clip_exec(const char *const *argv, Str type, char *out,
     char typez[32];
     size_t argc = 0;
     if (type.n >= sizeof typez) return CLIP_FAILED;
-    /* The listing call passes no type at all, and memcpy is not defined for
-     * a null source however few bytes it is asked for. */
+    
     if (type.n) memcpy(typez, type.p, type.n);
     typez[type.n] = '\0';
     for (; argc + 1 < CLIP_ARGV_MAX && argv[argc]; argc++)
@@ -122,7 +113,7 @@ static ClipStatus clip_exec(const char *const *argv, Str type, char *out,
         i32 rc = clip_wait(fds[0], deadline);
         if (rc == 0) { timed_out = true; ok = false; break; }
         if (rc < 0) { ok = false; break; }
-        if (*n >= cap) {   // drain to let the helper finish, but it is refused
+        if (*n >= cap) {   
             char sink[4096];
             ssize_t got = read(fds[0], sink, sizeof sink);
             if (got <= 0) { if (got < 0 && errno == EINTR) continue; break; }
@@ -143,18 +134,18 @@ static ClipStatus clip_exec(const char *const *argv, Str type, char *out,
     if (over) return CLIP_BIG;
     i32 code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     if (code == 127) return CLIP_ABSENT;
-    // A helper answers nonzero for a clipboard that holds nothing it can give.
+    
     if (code != 0) return CLIP_NONE;
     return *n ? CLIP_OK : CLIP_NONE;
 }
 
-// The first type in the preference order that `listing` offers.
+
 static b8 clip_pick_type(Str listing, Str *type) {
     for (size_t t = 0; t < sizeof k_clip_types / sizeof *k_clip_types; t++) {
         Str want = k_clip_types[t];
         for (size_t i = 0; i + want.n <= listing.n; i++) {
             if (memcmp(listing.p + i, want.p, want.n)) continue;
-            // A whole line, so "image/png" does not match "ximage/png-ish".
+            
             b8 head = i == 0 || listing.p[i - 1] == '\n'
                    || listing.p[i - 1] == '\r';
             size_t end = i + want.n;

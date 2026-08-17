@@ -2,20 +2,15 @@
 
 #include <stddef.h>
 
-// The JSON envelope a message is sent in: role, keys, quotes and commas.
+
 #define CTX_SLOT_BYTES     48
-// Below this the growth between two requests is too small to divide by.
+
 #define CTX_FIT_MIN_BYTES  2048.0
-/* A token is a handful of bytes in every tokenizer anyone serves; a ratio
- * outside this came from something other than the conversation growing. */
+
 #define CTX_SLOPE_MIN      0.05
 #define CTX_SLOPE_MAX      2.0
 #define CTX_SLOPE_DEFAULT  0.25
-/* What an image costs. Providers bill by area at about this many pixels per
- * token, having first scaled anything larger down to their own limit, which
- * is what bounds a single image. An entry whose header gave no dimensions is
- * charged that bound: a gauge that overstates one turn is kinder than one
- * that hides it. */
+
 #define CTX_IMAGE_PIXELS   750.0
 #define CTX_IMAGE_TOKENS   1600.0
 
@@ -26,10 +21,7 @@ void ctx_init(CtxGauge *g) {
     g->exact_slots = SIZE_MAX;
 }
 
-/* What the conversation contributes to a request. Every field a request body
- * carries is counted, including the shell output a '!' run attached, since
- * that is replayed too. Attached images are not here: they are counted in
- * tokens by ctx_media_tokens, not in bytes. */
+
 static f64 ctx_bytes(const Conv *c) {
     f64 total = 0;
     for (size_t i = 0; i < c->n; i++) {
@@ -40,7 +32,7 @@ static f64 ctx_bytes(const Conv *c) {
     return total;
 }
 
-// The tokens the images still attached to the conversation are worth.
+
 static f64 ctx_media_tokens(const Conv *c) {
     const MediaSet *m = c->media;
     if (!m) return 0;
@@ -68,11 +60,7 @@ void ctx_note_usage(CtxGauge *g, const Conv *c, size_t prompt_tokens) {
     f64 media = ctx_media_tokens(c);
     f64 text  = (f64)prompt_tokens - media;
     if (text < 0) text = 0;
-    /* A conversation that shrank, or grew by too little to measure, says
-     * nothing about the slope, and neither does a request whose prompt came
-     * out no larger than the last one. Those guards are also what keeps a
-     * dropped conversation, a rewind or a compaction from fitting a slope to
-     * a difference that is not growth. */
+    
     if (g->basis && bytes - g->fit_bytes >= CTX_FIT_MIN_BYTES
         && text > g->fit_text) {
         f64 slope = (text - g->fit_text) / (bytes - g->fit_bytes);
@@ -90,10 +78,7 @@ void ctx_note_usage(CtxGauge *g, const Conv *c, size_t prompt_tokens) {
 
 void ctx_model_changed(CtxGauge *g) {
     if (!g) return;
-    /* The fit stays: a byte is worth about as much in one tokenizer as in
-     * another, and an estimate carried across is far closer than the
-     * previous model's exact count would be. Exactness and the window are
-     * the model's own, and go with it. */
+    
     g->exact_slots = SIZE_MAX;
     g->window      = 0;
     g->basis       = false;
@@ -109,10 +94,7 @@ static b8 ctx_view(const CtxGauge *g, const Conv *c, size_t *tokens,
     if (!g || !c || !g->measured) return false;
     f64 bytes = ctx_bytes(c);
     f64 media = ctx_media_tokens(c);
-    /* The same slots holding the same bytes are the conversation that was
-     * measured. A compaction or a rewind can land on the slot count the
-     * measurement covered while holding something else entirely, which is
-     * why the count alone does not decide this. */
+    
     if (c->n == g->exact_slots && bytes == g->fit_bytes
         && media == g->fit_media) {
         *tokens = g->fit_tokens;
@@ -120,9 +102,7 @@ static b8 ctx_view(const CtxGauge *g, const Conv *c, size_t *tokens,
         return true;
     }
     f64 v = g->offset + g->slope * bytes + media;
-    /* Appending to a measured conversation cannot make the next request
-     * smaller than the one that was measured. A conversation that lost bytes
-     * or an image is a rewind or a compaction, where it can. */
+    
     if (bytes > g->fit_bytes && media >= g->fit_media
         && v < (f64)g->fit_tokens) v = (f64)g->fit_tokens;
     if (!(v > 0)) v = 0;

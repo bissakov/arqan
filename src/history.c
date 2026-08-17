@@ -29,7 +29,7 @@ static Str hist_unescape(Arena *a, Str s) {
 // A full ring drops its oldest entry rather than refusing the new one.
 static void hist_push(History *h, Str line) {
     if (!h->entry || !h->cap) return;
-    if (h->n && str_eq(h->entry[h->n - 1], line)) return;  // no runs
+    if (h->n && str_eq(h->entry[h->n - 1], line)) return;  
     if (h->n == h->cap) {
         memmove(h->entry, h->entry + 1, (h->cap - 1) * sizeof *h->entry);
         h->n--;
@@ -101,8 +101,7 @@ void history_load(History *h, Str path, Arena *scratch) {
         if (kept.n) hist_push(h, kept);
     }
     h->cursor = h->n;
-    /* The ring dropped entries the file still holds: rewrite it, or it grows
-     * without bound across sessions. */
+    
     if (h->n == h->cap) history_rewrite(h);
 }
 

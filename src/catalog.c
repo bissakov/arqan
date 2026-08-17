@@ -36,18 +36,14 @@ b8 catalog_add(Catalog *c, Str provider, Str model) {
 size_t catalog_endpoints(const Config *cfg, const Endpoints *e, Str *out,
                          size_t max) {
     size_t n = 0;
-    /* The run's own endpoint is offered only when no provider was chosen:
-     * with one chosen, its stored connection is already in the list, and a
-     * second unnamed copy of it would be a second row for every model. */
+    
     if (n < max && cfg && !cfg->provider.n && cfg->base_url_set)
         out[n++] = (Str){0};
     for (size_t i = 0; e && i < e->n && n < max; i++) out[n++] = e->name[i];
     return n;
 }
 
-/* The configuration one endpoint is listed through: the stored provider's URL,
- * API and key, or the run's own when the name is empty. False when the
- * provider is gone or its key cannot be read, with `err` saying which. */
+
 static b8 catalog_probe(Config *probe, Str name, const Config *cfg,
                         const Endpoints *e, Arena *tmp,
                         char *err, size_t err_cap) {

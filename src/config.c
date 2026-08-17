@@ -10,11 +10,11 @@ typedef enum { CV_STR, CV_NUM, CV_BOOL, CV_ENUM } ConfType;
 typedef struct {
     const char *name;
     const char *dflt;
-    const char *options;   // CV_ENUM: every value it may take
+    const char *options;   
     ConfType    type;
-    i64         lo, hi;    // CV_NUM: the range, refused outside
-    size_t      max_len;   // CV_STR: longer is refused, never truncated
-    b8          project;   // may a project's .arqan/config.toml set it
+    i64         lo, hi;    
+    size_t      max_len;   
+    b8          project;   
 } ConfSpec;
 
 #define CONF_TEXT2(x) #x
@@ -25,8 +25,7 @@ _Static_assert(AGENT_STATUS_FIELDS == 10,
                "the status_fields default is 1023");
 
 static const ConfSpec k_conf[CONF_N] = {
-    /* Which provider serves `model`. The two are one choice: an id belongs to
-     * the endpoint that lists it, and /model writes them together. */
+    
     [CONF_PROVIDER] = { "provider", "", NULL, CV_STR, 0, 0,
                         AGENT_MAX_ENDPOINT_NAME, true },
     [CONF_BASE_URL] = { "base_url", "", NULL, CV_STR, 0, 0,
@@ -71,8 +70,7 @@ static const ConfSpec k_conf[CONF_N] = {
                               0, 0, 0, true },
     [CONF_STATUS_FIELDS]  = { "status_fields", "1023", NULL, CV_NUM,
                               0, 1023, 0, true },
-    /* Recording is the user's decision about their own machine, so a cloned
-     * repository does not get to make it. */
+    
     [CONF_TELEMETRY]      = { "telemetry", "false", NULL, CV_BOOL,
                               0, 0, 0, false },
     [CONF_NOTIFY]         = { "notify", "osc9", "off,bel,osc9,both", CV_ENUM,
@@ -81,12 +79,10 @@ static const ConfSpec k_conf[CONF_N] = {
      * `git clone` must not be able to choose it. */
     [CONF_NOTIFY_COMMAND] = { "notify_command", "", NULL, CV_STR, 0, 0,
                               AGENT_MAX_NOTIFY_CMD, false },
-    /* A turn shorter than this had the user watching it, so it passes in
-     * silence. Errors and questions ignore the floor. */
+    
     [CONF_NOTIFY_MIN_MS]  = { "notify_min_ms", "10000", NULL, CV_NUM,
                               0, 24 * 60 * 60 * 1000, 0, true },
-    /* "auto" is the keyless engine chain. Naming one engine uses only that
-     * engine, which is what an endpoint or a key is worth configuring for. */
+    
     [CONF_SEARCH_BACKEND] = { "search_backend", "auto",
                               "auto,ddg,brave,brave_api,google,searxng",
                               CV_ENUM, 0, 0, 0, true },
@@ -98,16 +94,13 @@ static const ConfSpec k_conf[CONF_N] = {
                                AGENT_MAX_API_KEY, false },
     [CONF_SEARCH_ENGINE_ID] = { "search_engine_id", "", NULL, CV_STR, 0, 0,
                                 AGENT_MAX_ENDPOINT_NAME, false },
-    /* A model id like `model`, so a project that pins one may pin the cheap
-     * one it wants beside it. */
+    
     [CONF_SMALL_MODEL] = { "small_model", "", NULL, CV_STR, 0, 0,
                            AGENT_MAX_MODEL_NAME, true },
-    /* Never from a project file: it names the endpoint an errand is sent to
-     * and the key that pays for it, which is not a repository's choice. */
+    
     [CONF_SMALL_PROVIDER] = { "small_provider", "", NULL, CV_STR, 0, 0,
                               AGENT_MAX_ENDPOINT_NAME, false },
-    /* Inert while no small model is configured, which is why it is on: a
-     * user who names one asked for the errands it pays for. */
+    
     [CONF_AUTO_TITLE]  = { "auto_title", "true", NULL, CV_BOOL, 0, 0, 0,
                            true },
     /* Never from a project file: a repository must not be able to shorten
@@ -136,7 +129,6 @@ Str conf_key_name(ConfKey k) {
     return k < CONF_N ? str_c(k_conf[k].name) : (Str){0};
 }
 
-// ---- values --------------------------------------------------------------
 
 static b8 conf_bool_value(Str v, b8 *out) {
     if (str_eq(v, STR("true")) || str_eq(v, STR("on"))) { *out = true; return true; }
@@ -187,10 +179,7 @@ b8 conf_bool(const Conf *c, ConfKey k) {
     return out;
 }
 
-// ---- resolution ----------------------------------------------------------
 
-/* One value from one source. `where` names the file for a diagnostic and is
- * empty for the built-in defaults. */
 static void conf_take(Conf *c, ConfKey k, Str v, ConfOrigin o, Str where,
                       Arena *persist) {
     const ConfSpec *sp = &k_conf[k];
@@ -213,8 +202,7 @@ static void conf_take(Conf *c, ConfKey k, Str v, ConfOrigin o, Str where,
     c->origin[k] = (u8)o;
 }
 
-/* Top-level keys of one settings file. A named section is a provider, which
- * endpoints.c reads. */
+
 static void conf_apply_settings(Conf *c, const Settings *s, ConfOrigin o,
                                 Str where, Arena *persist) {
     for (size_t i = 0; i < s->n; i++) {
@@ -223,9 +211,7 @@ static void conf_apply_settings(Conf *c, const Settings *s, ConfOrigin o,
         for (ConfKey j = 0; j < CONF_N; j++)
             if (str_eq(s->key[i], str_c(k_conf[j].name))) { k = j; break; }
         if (k == CONF_N) {
-            /* The state file is arqan's own and may carry a key this build no
-             * longer has; a config file is the user's and a typo in it is
-             * worth saying out loud. */
+            
             if (o != CONF_FROM_STATE)
                 agent_log(AGENT_LOG_WARN, "unknown setting %.*s in %.*s",
                          (i32)s->key[i].n, s->key[i].p,
@@ -245,8 +231,7 @@ static void conf_apply_file(Conf *c, Str path, ConfOrigin o, Arena *persist,
     scratch->off = mark;
 }
 
-/* AGENT_ENV_PREFIX<NAME>, built from the key's own name so the two cannot
- * drift. */
+
 static void conf_apply_env(Conf *c, Arena *persist) {
     for (ConfKey k = 0; k < CONF_N; k++) {
         char name[64] = AGENT_ENV_PREFIX;
@@ -288,17 +273,11 @@ static void conf_apply_endpoint(Conf *c, Arena *persist, Arena *scratch) {
               persist);
     conf_take(c, CONF_API, api_name(e.api[i]), CONF_FROM_ENDPOINT, where,
               persist);
-    /* The provider's own `model` line is a default under everything the user
-     * has actually chosen: /model records its pick as the state file's
-     * `provider` and `model` pair, so this only speaks for a config file that
-     * names a model nowhere else. */
+    
     if (e.model[i].n && c->origin[CONF_MODEL] == CONF_FROM_DEFAULT)
         conf_take(c, CONF_MODEL, e.model[i], CONF_FROM_ENDPOINT, where,
                   persist);
-    /* A provider's own small model outranks the config files and is still
-     * overridden by the environment. It is a fallback under the chosen pair,
-     * though: the small model chosen in /model names the provider serving it,
-     * so it is not undone by a provider that names one of its own. */
+    
     if (e.small_model[i].n && c->origin[CONF_SMALL_MODEL] < CONF_FROM_STATE)
         conf_take(c, CONF_SMALL_MODEL, e.small_model[i], CONF_FROM_ENDPOINT,
                   where, persist);
@@ -373,7 +352,6 @@ void ui_prefs_load(UiPrefs *p, const Conf *conf) {
     p->status_fields     = (u64)conf_num(conf, CONF_STATUS_FIELDS);
 }
 
-// ---- Config --------------------------------------------------------------
 
 b8 config_remember_model(Str provider, Str model, Arena *scratch) {
     return conf_remember_pair(CONF_PROVIDER, provider, CONF_MODEL, model,
@@ -481,9 +459,7 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
     c->base_url_set = c->base_url.n != 0;
     c->model    = conf_str(conf, CONF_MODEL);
     c->small_model = conf_str(conf, CONF_SMALL_MODEL);
-    /* Only a pair: a provider named with no small model beside it selects
-     * nothing, and would otherwise send the errand to a model it never
-     * chose. */
+    
     c->small_provider = c->small_model.n ? conf_str(conf, CONF_SMALL_PROVIDER)
                                          : (Str){0};
     c->api_key  = conf_str(conf, CONF_API_KEY);
@@ -503,8 +479,7 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
     c->shell_timeout_ms = (i32)conf_num(conf, CONF_SHELL_TIMEOUT_MS);
     c->images = !str_eq(conf_str(conf, CONF_IMAGES), STR("off"));
 
-    /* "none" is how the UI records that nothing is disabled: an empty value
-     * removes the key, which the next run would read as never chosen. */
+    
     Str tools = conf_str(conf, CONF_DISABLE_TOOLS);
     c->disable_tools = str_eq(tools, STR("none")) ? (Str){0} : tools;
 
