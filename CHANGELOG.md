@@ -4,6 +4,14 @@
 
 ### Added
 
+- Start where you left off. The new `Resume last session` setting reopens this
+  directory's newest session instead of the welcome screen. It is off by
+  default, and `resume_last = true` in a config file does the same.
+
+- `/restart` restarts arqan in place. The new process reads the settings
+  again, so it resumes the session or greets with the welcome screen exactly
+  as `Resume last session` says.
+
 - Send images to a multimodal model. `/attach <path>` adds a PNG, JPEG, GIF
   or WebP to the message being written and marks it `[Image #1]`; deleting the
   marker detaches it. Four images per message. Images are saved beside the

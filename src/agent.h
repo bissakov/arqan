@@ -617,6 +617,7 @@ typedef enum {
     CONF_ASK_TIMEOUT_MS,
     CONF_SHELL_TIMEOUT_MS,
     CONF_IMAGES,
+    CONF_RESUME_LAST,
     CONF_N
 } ConfKey;
 
@@ -748,6 +749,9 @@ typedef struct {
     b8 auto_title;
     
     b8 images;
+    /* Whether an interactive start reopens the newest session of this
+     * directory instead of greeting with the welcome screen. */
+    b8 resume_last;
     
     i32 ask_timeout_ms;
     
