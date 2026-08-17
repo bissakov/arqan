@@ -214,6 +214,9 @@ class Terminal:
         self.idle_seq = 0
         # Input bytes the child had consumed when it last parked.
         self.idle_consumed = 0
+        # (cols, rows) the frame behind that park was painted for, which is
+        # what says a resize has been taken up. None until a beacon says so.
+        self.idle_size: tuple[int, int] | None = None
         # decoder state
         self._pending = b""
         self._state = "ground"
@@ -624,9 +627,15 @@ class Terminal:
         self._state = "ground"
         if payload.startswith(IDLE_PREFIX):
             try:
-                seq, _, consumed = payload[len(IDLE_PREFIX):].partition(";")
+                fields = payload[len(IDLE_PREFIX):].split(";")
+                seq = fields[0]
+                consumed = fields[1] if len(fields) > 1 else ""
+                size = fields[2] if len(fields) > 2 else ""
                 self.idle_seq = int(seq)
                 self.idle_consumed = int(consumed) if consumed else 0
+                if size:
+                    cols, _, rows = size.partition("x")
+                    self.idle_size = (int(cols), int(rows))
             except ValueError:
                 pass
             return

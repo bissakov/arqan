@@ -3,12 +3,27 @@
 import time
 from pathlib import Path
 
+from tests.context import wait_until
+
 
 def composer_marker(s):
     """The composer's prompt marker and its colour, as painted."""
     row = s.term.rows - 4
     col = s.gutter()
     return s.term.row_text(row)[col], s.term.attr_at(row, col).fg
+
+
+def wait_for_file(path: Path):
+    """Block until the running command has created `path`.
+
+    A run's output only reaches the screen once it is over, so a case that
+    has to interrupt a command already under way cannot wait on the
+    transcript for it. Waiting on the spinner instead would only say the run
+    was about to start: an interrupt that arrives before the fork is answered
+    without running the command, which reads differently and is not what
+    these cases are about.
+    """
+    return wait_until(path.exists, f"the run to create {path.name}")
 
 
 def test_marker_switches_to_shell(ctx):
@@ -164,11 +179,12 @@ def test_an_interrupt_ends_the_children_of_a_run(ctx):
     if not Path("/proc/self/cmdline").exists():
         return                                  # not Linux; no process list
     marker = str(ctx.work / "survivor")         # unique to this case
+    running = ctx.work / "running"
     s = ctx.spawn()
-    s.submit(f"!(sleep 300; touch {marker}) & wait")
-    s.wait_activity("running shell")
+    s.submit(f"!touch {running}; (sleep 300; touch {marker}) & wait")
+    wait_for_file(running)
     s.key("ctrl-c")
-    s.wait_text("[interrupted]")
+    s.wait_text("interrupted")
     s.wait_status("ready")
 
     # the signal goes to the group, so the backgrounded sleep dies with the
@@ -181,11 +197,12 @@ def test_an_interrupt_ends_the_children_of_a_run(ctx):
 
 def test_a_spent_interrupt_does_not_end_the_next_run(ctx):
     """The Ctrl-C belonged to the run it stopped, not to the one after it."""
+    running = ctx.work / "running"
     s = ctx.spawn()
-    s.submit("!sleep 300")
-    s.wait_activity("running shell")
+    s.submit(f"!touch {running}; sleep 300")
+    wait_for_file(running)
     s.key("ctrl-c")
-    s.wait_text("[interrupted]")
+    s.wait_text("interrupted")
     s.wait_status("ready")
 
     s.submit("!echo second-run")
@@ -193,8 +210,9 @@ def test_a_spent_interrupt_does_not_end_the_next_run(ctx):
     s.wait_status("ready")
     # the first run owns the only interruption on screen
     text = s.text()
-    assert text.count("[interrupted]") == 1, text
-    assert text.count("exit 130") == 1, text
+    assert text.count("interrupted") == 1, text
+    assert "second-run" in text, text
+    assert text.count("\u2514\u2500 exit 0") == 1, text
 
 
 def processes_matching(needle: str) -> list[str]:

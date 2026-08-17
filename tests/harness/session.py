@@ -191,6 +191,12 @@ class Session:
         With `require_output`, at least one byte must arrive first, which is
         what makes "send a key, then assert" safe: the screen we inspect is
         never the one from before the key.
+
+        A resize sends the child a signal rather than bytes, so no count
+        moves and the park it was already sitting in would pass for the
+        answer to it. The beacon names the size its frame was painted for,
+        so a wait after a resize is only over once that size is the one
+        asked for.
         """
         quiet = self.quiet if quiet is None else quiet
         deadline = time.monotonic() + timeout
@@ -203,6 +209,7 @@ class Session:
             # one those bytes asked for, and nothing more is coming.
             if (self.term.idle_seq
                     and self.term.idle_consumed >= self._sent
+                    and self.term.idle_size in (None, (self.cols, self.rows))
                     and not self._held):
                 return self
             if got:

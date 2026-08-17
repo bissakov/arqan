@@ -3997,6 +3997,10 @@ static b8 input_buffered(void) { return g_inbuf.at < g_inbuf.n; }
  * count reaches everything the case has sent. A bare sequence number cannot
  * distinguish that from the park before it.
  *
+ * It carries the size the frame behind it was painted for for the same
+ * reason: a resize is a signal rather than input, so no byte count moves and
+ * the park before it would otherwise pass for the answer to it.
+ *
  * APC: terminals consume and ignore it, and it carries no cursor or cell
  * effect, so a golden screen is the same with it as without. Compiled into
  * the test build alone; the shipped binary has no beacon and no counter. */
@@ -4005,9 +4009,10 @@ static unsigned long g_input_bytes;
 
 static void idle_beacon(void) {
     if (!g_tui.fullscreen || !g_tui.frame_valid) return;
-    char b[64];
-    i32 n = snprintf(b, sizeof b, "\033_agent;idle;%lu;%lu\033\\",
-                     ++g_idle_seq, g_input_bytes);
+    char b[96];
+    i32 n = snprintf(b, sizeof b, "\033_agent;idle;%lu;%lu;%zux%zu\033\\",
+                     ++g_idle_seq, g_input_bytes, g_tui.painted_cols,
+                     g_tui.painted_rows);
     if (n > 0 && (size_t)n < sizeof b) {
         put_raw(b, (size_t)n);
         flush_out();
@@ -4945,7 +4950,7 @@ static void pick_close(void);
 static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
                     size_t n, size_t search_n, TuiPickAnchor anchor,
                     size_t start, PickKind kind, const TuiSettings *set,
-                    Str notice, b8 modal) {
+                    const TuiPickAction *act, Str notice, b8 modal) {
     /* The request belongs to this screen: one that never opens must not leave
      * it behind, and a frame painted with no screen up never lifts. */
     size_t keep_off = g_tui.keep_off;
@@ -5008,6 +5013,14 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
         pick_search_row((Str){g_pick.query, g_pick.query_n}, settings);
     if (kind == PICK_INFO && !g_tui.notice_n)
         tui_notice(STR("Up/Down reads the page - Enter or Esc closes"));
+    if (act) {
+        g_pick.action = *act;
+        g_pick.has_action = true;
+        /* The key is this list's alone, so the screen says so while it is
+         * open. An answer already in the slot is what the reader asked for
+         * and keeps its place. */
+        if (act->hint.n && !g_tui.notice_n) tui_notice(act->hint);
+    }
     char status[sizeof g_tui.status];
     snprintf(status, sizeof status, "%.*s", (i32)title.n, title.p);
     tui_set_status(status);   // repaints
@@ -5235,7 +5248,7 @@ static b8 pick_impl(Str title, const TuiCmd *items, const TuiMark *marks,
                     Str notice, i32 timeout_ms) {
     if (!out) return false;
     if (!pick_open(title, items, marks, n, search_n, anchor, start, kind, set,
-                   notice, true))
+                   act, notice, true))
         return false;
     /* Set after pick_open, which clamps the list and is the only place that
      * knows how many rows a deadline may name. */
@@ -5243,14 +5256,6 @@ static b8 pick_impl(Str title, const TuiCmd *items, const TuiMark *marks,
         g_pick.timeout_ms = timeout_ms;
         g_pick.fallback = start;
         g_pick.deadline = agent_now_seconds() + (f64)timeout_ms / 1000.0;
-    }
-    if (act) {
-        g_pick.action = *act;
-        g_pick.has_action = true;
-        /* The key is this list's alone, so the screen says so while it is
-         * open. An answer already in the slot is what the reader asked for
-         * and keeps its place. */
-        if (act->hint.n && !g_tui.notice_n) tui_notice(act->hint);
     }
     pick_run();
     if (g_pick.chosen) *out = g_pick.out;
@@ -5309,7 +5314,7 @@ b8 tui_settings_open(Str title, const TuiSettings *set) {
     size_t n = set->build(set->ud);
     if (!n) return false;
     return pick_open(title, set->rows, set->marks, n, n, TUI_PICK_FIRST, 0,
-                     PICK_SETTINGS, set, (Str){0}, false);
+                     PICK_SETTINGS, set, NULL, (Str){0}, false);
 }
 
 void tui_info(Str title, const TuiCmd *rows, size_t n) {
@@ -5334,7 +5339,7 @@ void tui_info(Str title, const TuiCmd *rows, size_t n) {
 b8 tui_info_open(Str title, const TuiCmd *rows, size_t n) {
     if (!rows || !n) return false;
     return pick_open(title, rows, NULL, n, n, TUI_PICK_FIRST, 0, PICK_INFO,
-                     NULL, (Str){0}, false);
+                     NULL, NULL, (Str){0}, false);
 }
 
 /* Where a part's runs stand while its bytes are copied. Tabs widen and
