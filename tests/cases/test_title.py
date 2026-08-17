@@ -6,7 +6,10 @@ request from the active scenario, so what a session ends up called is fixed
 by the case rather than by a model.
 """
 
+import json
 import re
+
+from tests.context import wait_until
 
 TIMESTAMP = re.compile(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d")
 
@@ -155,15 +158,26 @@ def test_a_tool_first_turn_is_named_before_its_tools_run(ctx):
     yet, and naming it only once every round is done leaves it unnamed for all
     of them.
     """
-    ctx.scenario('tool=bash:{"command":"sleep 2; echo slept"},'
+    # The tool waits on a file this case owns, so "before its tools run" is
+    # a state rather than a head start: nothing can get past the call until
+    # the gate is opened. The name lands in the sidecar, which is what says
+    # the naming happened; the notice that announces it is cleared by the
+    # next line of transcript, so it is not something to wait on.
+    gate = ctx.work / "gate"
+    command = f"while [ ! -e {gate} ]; do sleep 0.02; done; echo slept"
+    ctx.scenario(f'tool=bash:{json.dumps({"command": command})},'
                  'final_text=all+done')
     s = ctx.spawn(ARQAN_SMALL_MODEL=SMALL_NAMES_IT)
     s.submit("remember the cat")
-    s.wait_text("session named: Cat memory notes")
+    named = wait_until(
+        lambda: [p for p in session_files(ctx, ".title") if p.read_text()],
+        "the session to be named",
+    )
     # Still the same turn: its tool has not answered and its reply is unsaid.
     assert "all done" not in s.text(), s.text()
-    assert session_files(ctx, ".title")[0].read_text() == "Cat memory notes"
+    assert named[0].read_text() == "Cat memory notes"
 
+    gate.touch()
     s.wait_turn_done()
     assert [r["model"] for r in ctx.mock.requests] == [
         "mock-model", SMALL_NAMES_IT, "mock-model"

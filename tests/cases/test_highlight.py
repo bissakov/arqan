@@ -379,6 +379,47 @@ def test_malformed_and_hanging_helpers_fall_back_silently(ctx):
     assert "highlight" not in s2.text().lower(), s2.text()
 
 
+def test_one_stalled_answer_does_not_end_highlighting(ctx):
+    """A helper that misses the deadline once is replaced, not written off."""
+    stamp = ctx.work / "stalled-once"
+    stalling = ctx.write_file(
+        "stalling-helper",
+        "#!/usr/bin/python3\n"
+        "import os, struct, sys, time\n"
+        f"stamp = {str(stamp)!r}\n"
+        "def exact(n):\n"
+        "    out = b''\n"
+        "    while len(out) < n:\n"
+        "        chunk = os.read(0, n - len(out))\n"
+        "        if not chunk: sys.exit(0)\n"
+        "        out += chunk\n"
+        "    return out\n"
+        "while True:\n"
+        "    h = exact(20)\n"
+        "    rid = struct.unpack_from('<I', h, 4)[0]\n"
+        "    hn, sn = struct.unpack_from('<II', h, 12)\n"
+        "    exact(hn + sn)\n"
+        "    if not os.path.exists(stamp):\n"
+        "        open(stamp, 'w').close()\n"
+        "        time.sleep(30)\n"        # the agent gives up on this one
+        "        sys.exit(0)\n"
+        "    os.write(1, struct.pack('<4sIB3xI', b'YHL1', rid, 0, 1))\n"
+        "    os.write(1, struct.pack('<IIB3x', 0, 4, 5))\n",
+    )
+    stalling.chmod(0o755)
+
+    ctx.scenario("text=```c\nint+n+=+1;\n```")
+    s = ctx.spawn(ARQAN_HIGHLIGHTER=stalling)
+    s.submit("stalls once")
+    s.wait_turn_done()
+    assert stamp.exists(), "the first exchange never reached the helper"
+
+    ctx.scenario("text=```c\nlong+m+=+2;\n```")
+    s.submit("answers after")
+    s.wait_turn_done()
+    assert cell(s, "long m").fg == CYAN, s.text()
+
+
 def window_cell(s, needle: str, offset: int = 0):
     """The attributes of a cell inside the expansion window alone, which the
     transcript under it may hold a second copy of."""

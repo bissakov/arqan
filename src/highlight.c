@@ -13,6 +13,12 @@
 
 #define YHL_TIMEOUT_MS 500
 #define YHL_POLL_MS 25
+/* A helper that stalls or dies takes its request down with it, but not the
+ * session: it is replaced once inside the request, and only after this many
+ * exchanges have failed in a row does the session stop asking. Both bounds
+ * are small because every failed exchange stalls a repaint for the timeout. */
+#define YHL_ATTEMPTS 2
+#define YHL_STRIKES 3
 
 typedef struct {
     char path[AGENT_MAX_PATH];
@@ -22,7 +28,18 @@ typedef struct {
     i32 in_fd;
     i32 out_fd;
     u32 next_id;
+    i32 strikes;
 } HighlightClient;
+
+/* What one exchange with the helper came to. `HL_NONE` and `HL_OK` are
+ * answers, so the helper is kept; `HL_RETRY` leaves the pipes out of step
+ * with the protocol, so the process is replaced rather than reused. */
+typedef enum {
+    HL_OK,      /* runs are in the caller's result */
+    HL_NONE,    /* the helper declined this source and stays healthy */
+    HL_RETRY,   /* it stalled or the pipe broke */
+    HL_BROKEN,  /* it does not speak the protocol */
+} HlOutcome;
 
 static HighlightClient g_hl = { .pid = -1, .in_fd = -1, .out_fd = -1 };
 
@@ -102,7 +119,7 @@ static void close_fd(i32 *fd) {
     *fd = -1;
 }
 
-static void highlight_disable(void) {
+static void highlight_retire(void) {
     close_fd(&g_hl.in_fd);
     close_fd(&g_hl.out_fd);
     if (g_hl.pid > 0) {
@@ -110,6 +127,10 @@ static void highlight_disable(void) {
         while (waitpid(g_hl.pid, NULL, 0) < 0 && errno == EINTR) {}
     }
     g_hl.pid = -1;
+}
+
+static void highlight_disable(void) {
+    highlight_retire();
     g_hl.disabled = true;
 }
 
@@ -185,15 +206,8 @@ static b8 io_all(i32 fd, i16 events, u8 *p, size_t n, f64 deadline) {
     return true;
 }
 
-b8 highlight_request(YhlHintKind kind, Str hint, Str source,
-                     YhlResult *result) {
-    result->n = 0;
-    if (md_raw() || !tui_highlight_enabled() || g_hl.disabled) return false;
-    size_t hint_max = kind == YHL_HINT_MARKDOWN_ALIAS
-                    ? YHL_ALIAS_MAX : YHL_FILENAME_MAX;
-    if (!hint.n || hint.n > hint_max || source.n > YHL_SOURCE_MAX) return false;
-    if (!highlight_start()) return false;
-
+static HlOutcome highlight_exchange(YhlHintKind kind, Str hint, Str source,
+                                    YhlResult *result) {
     u8 header[YHL_REQUEST_HEADER] = {0};
     memcpy(header, YHL_MAGIC, 4);
     u32 id = g_hl.next_id++;
@@ -213,44 +227,66 @@ b8 highlight_request(YhlHintKind kind, Str hint, Str source,
          && io_all(g_hl.in_fd, POLLOUT, (u8 *)(uintptr_t)source.p, source.n,
                    deadline);
     if (have_old) sigaction(SIGPIPE, &oldpipe, NULL);
-    if (!ok) { highlight_disable(); return false; }
+    if (!ok) return HL_RETRY;
 
     u8 response[YHL_RESPONSE_HEADER];
-    if (!io_all(g_hl.out_fd, POLLIN, response, sizeof response, deadline)
-        || memcmp(response, YHL_MAGIC, 4) != 0
-        || get_u32(response + 4) != id) {
-        highlight_disable();
-        return false;
-    }
+    if (!io_all(g_hl.out_fd, POLLIN, response, sizeof response, deadline))
+        return HL_RETRY;
+    if (memcmp(response, YHL_MAGIC, 4) != 0 || get_u32(response + 4) != id)
+        return HL_BROKEN;
     u8 status = response[8];
     u32 count = get_u32(response + 12);
-    if (count > YHL_RUN_MAX || (status != YHL_STATUS_OK && count != 0)) {
-        highlight_disable();
-        return false;
-    }
+    if (count > YHL_RUN_MAX || (status != YHL_STATUS_OK && count != 0))
+        return HL_BROKEN;
     if (status == YHL_STATUS_UNKNOWN || status == YHL_STATUS_TOO_LARGE
         || status == YHL_STATUS_TOO_COMPLEX)
-        return false;
-    if (status != YHL_STATUS_OK) { highlight_disable(); return false; }
+        return HL_NONE;
+    if (status != YHL_STATUS_OK) return HL_BROKEN;
 
     u32 previous = 0;
     for (u32 i = 0; i < count; i++) {
         u8 wire[YHL_RUN_BYTES];
-        if (!io_all(g_hl.out_fd, POLLIN, wire, sizeof wire, deadline)) {
-            highlight_disable(); result->n = 0; return false;
-        }
+        if (!io_all(g_hl.out_fd, POLLIN, wire, sizeof wire, deadline))
+            return HL_RETRY;
         u32 a = get_u32(wire);
         u32 b = get_u32(wire + 4);
         u8 semantic = wire[8];
         if (a < previous || a >= b || b > source.n
-            || semantic < YHL_SEM_COMMENT || semantic > YHL_SEM_BUILTIN) {
-            highlight_disable(); result->n = 0; return false;
-        }
+            || semantic < YHL_SEM_COMMENT || semantic > YHL_SEM_BUILTIN)
+            return HL_BROKEN;
         result->run[i] = (YhlRun){ a, b, semantic };
         previous = b;
     }
     result->n = count;
-    return true;
+    return HL_OK;
+}
+
+b8 highlight_request(YhlHintKind kind, Str hint, Str source,
+                     YhlResult *result) {
+    result->n = 0;
+    if (md_raw() || !tui_highlight_enabled() || g_hl.disabled) return false;
+    size_t hint_max = kind == YHL_HINT_MARKDOWN_ALIAS
+                    ? YHL_ALIAS_MAX : YHL_FILENAME_MAX;
+    if (!hint.n || hint.n > hint_max || source.n > YHL_SOURCE_MAX) return false;
+
+    for (i32 attempt = 0; attempt < YHL_ATTEMPTS; attempt++) {
+        if (!highlight_start()) return false;
+        HlOutcome outcome = highlight_exchange(kind, hint, source, result);
+        if (outcome == HL_OK) { g_hl.strikes = 0; return true; }
+        result->n = 0;
+        if (outcome == HL_NONE) { g_hl.strikes = 0; return false; }
+        if (outcome == HL_BROKEN) { highlight_disable(); return false; }
+        /* A machine busy enough to miss the deadline is the usual reason,
+         * and it passes: replace the helper, since a request half written
+         * or half read leaves the pipes mid-message, and give up on the
+         * session only once several exchanges in a row have failed. */
+        highlight_retire();
+        if (++g_hl.strikes >= YHL_STRIKES) {
+            g_hl.disabled = true;
+            return false;
+        }
+    }
+    return false;
 }
 
 void highlight_close(void) {

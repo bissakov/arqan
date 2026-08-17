@@ -35,6 +35,13 @@
 
 ### Fixed
 
+- Keep syntax colours on a busy machine. One slow answer from the highlighter
+  used to turn colouring off for the rest of the session. It now starts in
+  milliseconds, and a slow answer is asked again instead.
+
+- Say which key deletes on the frame the session picker opens on, rather than
+  the one after it.
+
 - Report the last thing a background job printed. Output still in flight when
   a command exits could be dropped, so `job` answered with the exit line
   alone. A wait now covers that hand-off, bounded so that a process left

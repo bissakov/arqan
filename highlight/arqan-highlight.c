@@ -36,21 +36,22 @@ typedef struct {
     const char *extensions;
     LanguageFn language;
     TSQuery *query;
+    int broken;
 } Language;
 
 static Language languages[YHL_LANG_COUNT] = {
-    { "c", "c", ".c .h", tree_sitter_c, NULL },
-    { "cpp", "cpp c++ cxx", ".cc .cpp .cxx .hh .hpp .hxx", tree_sitter_cpp, NULL },
-    { "rust", "rust rs", ".rs", tree_sitter_rust, NULL },
-    { "go", "go golang", ".go", tree_sitter_go, NULL },
-    { "python", "python py", ".py .pyw", tree_sitter_python, NULL },
-    { "javascript", "javascript js jsx node", ".js .jsx .mjs .cjs", tree_sitter_javascript, NULL },
-    { "typescript", "typescript ts", ".ts .mts .cts", tree_sitter_typescript, NULL },
-    { "tsx", "tsx", ".tsx", tree_sitter_tsx, NULL },
-    { "bash", "bash sh shell", ".sh .bash .bashrc", tree_sitter_bash, NULL },
-    { "json", "json", ".json", tree_sitter_json, NULL },
-    { "toml", "toml", ".toml Cargo.lock", tree_sitter_toml, NULL },
-    { "yaml", "yaml yml", ".yaml .yml", tree_sitter_yaml, NULL },
+    { "c", "c", ".c .h", tree_sitter_c, NULL, 0 },
+    { "cpp", "cpp c++ cxx", ".cc .cpp .cxx .hh .hpp .hxx", tree_sitter_cpp, NULL, 0 },
+    { "rust", "rust rs", ".rs", tree_sitter_rust, NULL, 0 },
+    { "go", "go golang", ".go", tree_sitter_go, NULL, 0 },
+    { "python", "python py", ".py .pyw", tree_sitter_python, NULL, 0 },
+    { "javascript", "javascript js jsx node", ".js .jsx .mjs .cjs", tree_sitter_javascript, NULL, 0 },
+    { "typescript", "typescript ts", ".ts .mts .cts", tree_sitter_typescript, NULL, 0 },
+    { "tsx", "tsx", ".tsx", tree_sitter_tsx, NULL, 0 },
+    { "bash", "bash sh shell", ".sh .bash .bashrc", tree_sitter_bash, NULL, 0 },
+    { "json", "json", ".json", tree_sitter_json, NULL, 0 },
+    { "toml", "toml", ".toml Cargo.lock", tree_sitter_toml, NULL, 0 },
+    { "yaml", "yaml yml", ".yaml .yml", tree_sitter_yaml, NULL, 0 },
 };
 
 static unsigned char source[YHL_SOURCE_MAX];
@@ -167,32 +168,59 @@ static uint8_t semantic(const char *name, uint32_t n) {
     return 0;
 }
 
-static int queries_init(void) {
+/* The query table has to line up with the language table by index, which is
+ * cheap enough to check before serving anything. */
+static int queries_named(void) {
     if (yhl_query_source_count != YHL_LANG_COUNT) return 0;
-    for (size_t i = 0; i < YHL_LANG_COUNT; i++) {
+    for (size_t i = 0; i < YHL_LANG_COUNT; i++)
         if (strcmp(languages[i].name, yhl_query_sources[i].name) != 0) return 0;
-        uint32_t error_offset = 0;
-        TSQueryError error_type = TSQueryErrorNone;
-        languages[i].query = ts_query_new(
-            languages[i].language(),
-            (const char *)yhl_query_sources[i].text,
-            (uint32_t)yhl_query_sources[i].size,
-            &error_offset, &error_type);
-        if (!languages[i].query) return 0;
-        uint32_t useful = 0;
-        uint32_t patterns = ts_query_pattern_count(languages[i].query);
+    return 1;
+}
+
+/* Compiled on first use and kept for the process's life. Compiling all
+ * twelve is the whole of this helper's startup cost, and a session asks
+ * about one or two languages, so the rest would be paid inside the client's
+ * request deadline for nothing. A query that will not compile, or that has
+ * no pattern left once the predicate ones are disabled, marks its language
+ * broken: its requests answer "unknown" rather than being retried.
+ *
+ * Predicates are disabled rather than evaluated: a capture that depends on
+ * one must not be applied speculatively. */
+static TSQuery *language_query(Language *lang) {
+    if (lang->query || lang->broken) return lang->query;
+    const YhlQuerySource *src = &yhl_query_sources[lang - languages];
+    uint32_t error_offset = 0;
+    TSQueryError error_type = TSQueryErrorNone;
+    TSQuery *query = ts_query_new(lang->language(), (const char *)src->text,
+                                  (uint32_t)src->size, &error_offset,
+                                  &error_type);
+    uint32_t useful = 0;
+    if (query) {
+        uint32_t patterns = ts_query_pattern_count(query);
         for (uint32_t pattern = 0; pattern < patterns; pattern++) {
             uint32_t predicate_n = 0;
-            (void)ts_query_predicates_for_pattern(languages[i].query, pattern,
-                                                  &predicate_n);
+            (void)ts_query_predicates_for_pattern(query, pattern, &predicate_n);
             if (predicate_n) {
-                ts_query_disable_pattern(languages[i].query, pattern);
+                ts_query_disable_pattern(query, pattern);
                 continue;
             }
             useful++;
         }
-        if (!useful) return 0;
     }
+    if (!query || !useful) {
+        if (query) ts_query_delete(query);
+        lang->broken = 1;
+        return NULL;
+    }
+    lang->query = query;
+    return query;
+}
+
+/* What `--self-test` asks at build time: every bundled grammar and query
+ * pair compiles, which serving no longer proves on its own. */
+static int queries_all_compile(void) {
+    for (size_t i = 0; i < YHL_LANG_COUNT; i++)
+        if (!language_query(&languages[i])) return 0;
     return 1;
 }
 
@@ -201,7 +229,7 @@ static void queries_delete(void) {
         if (languages[i].query) ts_query_delete(languages[i].query);
 }
 
-static uint8_t make_runs(Language *lang, uint32_t source_n,
+static uint8_t make_runs(Language *lang, TSQuery *query, uint32_t source_n,
                          uint32_t *run_count) {
     *run_count = 0;
     if (!source_n) return YHL_STATUS_OK;
@@ -224,7 +252,7 @@ static uint8_t make_runs(Language *lang, uint32_t source_n,
         return YHL_STATUS_INTERNAL;
     }
     ts_query_cursor_set_match_limit(cursor, YHL_RUN_MAX);
-    ts_query_cursor_exec(cursor, lang->query, ts_tree_root_node(tree));
+    ts_query_cursor_exec(cursor, query, ts_tree_root_node(tree));
     TSQueryMatch match;
     uint32_t capture_index = 0;
     uint32_t captures = 0;
@@ -234,8 +262,8 @@ static uint8_t make_runs(Language *lang, uint32_t source_n,
         if (++captures > YHL_RUN_MAX) { status = YHL_STATUS_TOO_COMPLEX; break; }
         TSQueryCapture capture = match.captures[capture_index];
         uint32_t name_n = 0;
-        const char *name = ts_query_capture_name_for_id(lang->query,
-                                                        capture.index, &name_n);
+        const char *name = ts_query_capture_name_for_id(query, capture.index,
+                                                        &name_n);
         uint8_t kind = semantic(name, name_n);
         if (!kind) continue;
         uint32_t a = ts_node_start_byte(capture.node);
@@ -323,12 +351,13 @@ static int serve(void) {
         if (!read_all(hint, hint_n) || !read_all(source, source_n)) return 0;
         hint[hint_n] = '\0';
         Language *lang = language_for(hint_kind);
-        if (!lang) {
+        TSQuery *query = lang ? language_query(lang) : NULL;
+        if (!query) {
             if (!send_response(id, YHL_STATUS_UNKNOWN, 0, 0)) return 0;
             continue;
         }
         uint32_t run_count = 0;
-        uint8_t status = make_runs(lang, source_n, &run_count);
+        uint8_t status = make_runs(lang, query, source_n, &run_count);
         if (!send_response(id, status, status == YHL_STATUS_OK ? run_count : 0,
                            source_n))
             return 0;
@@ -348,7 +377,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: arqan-highlight [--version|--list-languages]\n");
         return 2;
     }
-    if (!queries_init()) {
+    if (!queries_named() || (argc == 2 && !queries_all_compile())) {
         fputs("arqan-highlight: bundled grammar/query validation failed\n", stderr);
         queries_delete();
         return 1;

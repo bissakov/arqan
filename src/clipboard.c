@@ -87,7 +87,9 @@ static ClipStatus clip_exec(const char *const *argv, Str type, char *out,
     char typez[32];
     size_t argc = 0;
     if (type.n >= sizeof typez) return CLIP_FAILED;
-    memcpy(typez, type.p, type.n);
+    /* The listing call passes no type at all, and memcpy is not defined for
+     * a null source however few bytes it is asked for. */
+    if (type.n) memcpy(typez, type.p, type.n);
     typez[type.n] = '\0';
     for (; argc + 1 < CLIP_ARGV_MAX && argv[argc]; argc++)
         args[argc] = strcmp(argv[argc], CLIP_TYPE_MARK) ? argv[argc] : typez;

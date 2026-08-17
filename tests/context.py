@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from .harness import Session
@@ -52,6 +53,24 @@ DEFAULT_ROWS = 24
 
 class GoldenMismatch(AssertionError):
     pass
+
+
+def wait_until(pred, what: str = "a condition", timeout: float = 10.0):
+    """Poll something that is not on the screen, and answer with it.
+
+    A case waits on files, request logs and process lists as well as frames,
+    and none of those have a beacon or a repaint to announce them. Polling
+    here keeps such a wait bounded and reported as a failure rather than
+    written out as a sleep long enough to usually work.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        got = pred()
+        if got:
+            return got
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"timed out waiting for {what}")
+        time.sleep(0.01)
 
 
 def parse_settings(text: str) -> dict:
