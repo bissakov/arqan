@@ -18,7 +18,7 @@ void arena_init(Arena *a, void *mem, size_t cap) {
  * checked against the arena's own capacity instead of being computed first and
  * compared afterwards: `off + n` is exactly the addition that wraps. */
 void *arena_alloc(Arena *a, size_t n, size_t align) {
-    if (align == 0 || (align & (align - 1))) return NULL;   // power of two
+    if (align == 0 || (align & (align - 1))) return NULL;   
     size_t mask = align - 1;
     size_t pad = (align - (a->off & mask)) & mask;
     if (pad > a->cap - a->off) {
@@ -45,10 +45,9 @@ void *arena_alloc_array(Arena *a, size_t count, size_t size, size_t align) {
 void arena_reset(Arena *a) { a->off = 0; }
 size_t arena_used(const Arena *a) { return a->off; }
 
-// ---- strings ------------------------------------------------------------
+
 Str str_c(const char *z) { return (Str){ z, strlen(z) }; }
-/* An empty Str legitimately carries a NULL pointer (missing JSON field, failed
- * dup), and memcmp(NULL, NULL, 0) is undefined however harmless it looks. */
+
 b8 str_eq(Str a, Str b) { return a.n == b.n && (a.n == 0 || !memcmp(a.p, b.p, a.n)); }
 
 Str str_dup(Arena *a, Str s) {
@@ -116,15 +115,14 @@ size_t utf8_decode(const char *s, size_t n, u32 *cp) {
     else if ((c & 0xE0u) == 0xC0u) { len = 2; v = c & 0x1Fu; }
     else if ((c & 0xF0u) == 0xE0u) { len = 3; v = c & 0x0Fu; }
     else if ((c & 0xF8u) == 0xF0u) { len = 4; v = c & 0x07u; }
-    else return 0;              // a continuation byte or an invalid lead
+    else return 0;              
     if (n < len) return 0;
     for (size_t i = 1; i < len; i++) {
         u8 t = (u8)s[i];
         if ((t & 0xC0u) != 0x80u) return 0;
         v = (v << 6) | (t & 0x3Fu);
     }
-    /* An overlong sequence encodes a code point that has a shorter form, and
-     * accepting one lets the same text compare unequal to itself. */
+    
     static const u32 min[5] = {0, 0, 0x80u, 0x800u, 0x10000u};
     if (v < min[len]) return 0;
     if (v > 0x10FFFFu || (v >= 0xD800u && v <= 0xDFFFu)) return 0;
@@ -159,7 +157,7 @@ u64 str_hash64(Str s) {
     return h;
 }
 
-// ---- files --------------------------------------------------------------
+
 FileStatus file_read(Arena *a, const char *path, size_t max, size_t head,
                      Str *out, u64 *size_out) {
     *out = (Str){0};
@@ -188,12 +186,11 @@ FileStatus file_read(Arena *a, const char *path, size_t max, size_t head,
     return FILE_OK;
 }
 
-// ---- buffer -------------------------------------------------------------
+
 void buf_init(Buf *b, Arena *a, size_t cap) {
     b->a = a; b->n = 0; b->oom = false;
     b->p = (char *)arena_alloc(a, cap, 1);
-    /* A failed reserve is an empty, latched-full buffer, never a live one
-     * pointing at NULL with room to spare. */
+    
     b->cap = b->p ? cap : 0;
     if (!b->p) b->oom = true;
 }
@@ -218,8 +215,7 @@ static b8 buf_grow(Buf *b, size_t need) {
 }
 void buf_adopt(Buf *b, Arena *a, Str s) {
     b->a = a; b->n = s.n; b->cap = s.n; b->oom = false;
-    /* Casting away const is sound here: the bytes came from `a`, which hands
-     * out writable memory, and Str is the only shape a reader returns them in. */
+    
     b->p = (char *)s.p;
 }
 b8 buf_reserve(Buf *b, size_t need) { return buf_grow(b, need); }
@@ -255,10 +251,7 @@ void buf_json_str(Buf *b, Str s) {
     buf_putc(b, '"');
 }
 
-/* Length of the well-formed UTF-8 sequence at `s+i`, or 0 when there is none.
- * Overlongs, surrogates and anything past U+10FFFF are not well formed: a
- * decoder that accepts them is how a byte string smuggles itself through one
- * that does not. */
+
 static size_t utf8_seq(Str s, size_t i) {
     u8 c = (u8)s.p[i];
     size_t need; u32 cp; u32 lo;
@@ -304,8 +297,7 @@ void buf_json_chars(Buf *b, Str s) {
         }
     }
 }
-/* The whole encoding is reserved up front: a megabyte of image would
- * otherwise be copied through every doubling of the buffer. */
+
 void buf_base64(Buf *b, const void *p, size_t n) {
     static const char k_b64[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -332,7 +324,7 @@ void buf_base64(Buf *b, const void *p, size_t n) {
 
 Str buf_finish(Buf *b) {
     if (b->n == b->cap && !buf_grow(b, b->n + 1)) {
-        // Nowhere to put the terminator: hand back what is safely readable.
+        
         if (b->n == 0) return (Str){0};
         b->n--;
     }
@@ -340,7 +332,7 @@ Str buf_finish(Buf *b) {
     return (Str){ b->p, b->n };
 }
 
-// ---- logging ------------------------------------------------------------
+
 static i32 g_level = AGENT_LOG_INFO;
 static AgentLogSink g_log_sink;
 static void *g_log_ud;
@@ -360,7 +352,7 @@ void agent_log(i32 level, const char *fmt, ...) {
     fprintf(stderr, "[" AGENT_NAME " %s] %.*s\n", tags[level], (i32)n, msg);
 }
 
-// ---- time ---------------------------------------------------------------
+
 f64 agent_now_seconds(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);

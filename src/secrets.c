@@ -20,13 +20,12 @@ typedef struct {
     const char *argv[AGENT_MAX_SECRET_ARGV + 1];
     size_t n;
     char account[AGENT_MAX_ENDPOINT_NAME + 1];
-    char path[AGENT_MAX_ENDPOINT_NAME + 8];    // "arqan/<account>"
-    char label[AGENT_MAX_ENDPOINT_NAME + 16];  // "arqan: <account>"
-    char words[AGENT_MAX_SECRET_CMD + 1];      // key_command, split in place
+    char path[AGENT_MAX_ENDPOINT_NAME + 8];    
+    char label[AGENT_MAX_ENDPOINT_NAME + 16];  
+    char words[AGENT_MAX_SECRET_CMD + 1];      
 } SecretCmd;
 
-/* Indexed by SecretSource, which is what the credentials file reads and
- * writes. Adding a store means adding its name here and its argv below. */
+
 static const char *const g_secret_names[] = {
     "file", "secret-service", "pass", "keychain", "command",
 };
@@ -55,11 +54,7 @@ b8 secret_source_can_store(SecretSource src) {
     return src == SECRET_STORED || src == SECRET_SERVICE || src == SECRET_PASS;
 }
 
-/* The account rides on argv, and argv is not a shell word: a space, a quote
- * or a semicolon in a name is passed through verbatim and means nothing to
- * the helper, so none of them is refused. What is refused is a name that
- * would change which question is asked: a leading '-' reads as an option, and
- * '/' or a leading '.' walks the tree that `pass` keys entries by. */
+
 static b8 secret_account_ok(Str name) {
     if (!name.n || name.n > AGENT_MAX_ENDPOINT_NAME) return false;
     if (name.p[0] == '-' || name.p[0] == '.') return false;
@@ -74,8 +69,7 @@ static void secret_arg(SecretCmd *c, const char *z) {
     if (c->n < AGENT_MAX_SECRET_ARGV) c->argv[c->n++] = z;
 }
 
-/* The fixed argv table. Nothing outside this function decides what runs for a
- * named source, which is the whole point of naming one. */
+
 static b8 secret_build(SecretCmd *c, SecretSource src, SecretOp op,
                        Str account, char *err, size_t err_cap) {
     memset(c, 0, sizeof *c);
@@ -121,9 +115,7 @@ static b8 secret_build(SecretCmd *c, SecretSource src, SecretOp op,
     return true;
 }
 
-/* key_command, split on whitespace. No quoting and no escapes: a value that
- * needs either wants a shell, and a shell is what this path exists to avoid.
- * A wrapper script is the answer for anything more involved. */
+
 static b8 secret_split(SecretCmd *c, Str command, char *err, size_t err_cap) {
     memset(c, 0, sizeof *c);
     Str s = str_trim(command);
@@ -155,8 +147,7 @@ static b8 secret_split(SecretCmd *c, Str command, char *err, size_t err_cap) {
     return c->n > 0;
 }
 
-/* Poll one fd until the deadline, pumping the UI so a slow helper does not
- * freeze the frame. Returns 1 ready, 0 timed out, -1 failed. */
+
 static i32 secret_wait(i32 fd, i16 events, f64 deadline) {
     for (;;) {
         f64 left = deadline - agent_now_seconds();
@@ -176,9 +167,7 @@ static void secret_reap(pid_t pid, i32 *status) {
     while (waitpid(pid, status, 0) < 0 && errno == EINTR) {}
 }
 
-/* Runs `c`, feeding `input` on stdin and collecting at most `out_cap` bytes
- * of stdout. False with `err` set for a failed spawn, a nonzero exit, a
- * deadline or more output than the cap allows. */
+
 static b8 secret_exec(const SecretCmd *c, Str input, char *out, size_t out_cap,
                       size_t *out_n, char *err, size_t err_cap) {
     *out_n = 0;
@@ -205,7 +194,7 @@ static b8 secret_exec(const SecretCmd *c, Str input, char *out, size_t out_cap,
         if (input.p) dup2(in_fds[0], STDIN_FILENO);
         else if (null_rd >= 0) dup2(null_rd, STDIN_FILENO);
         dup2(out_fds[1], STDOUT_FILENO);
-        // Never the terminal: a helper's diagnostics may quote the secret.
+        
         if (null_wr >= 0) dup2(null_wr, STDERR_FILENO);
         if (null_rd > STDERR_FILENO) close(null_rd);
         if (null_wr > STDERR_FILENO) close(null_wr);
@@ -220,8 +209,7 @@ static b8 secret_exec(const SecretCmd *c, Str input, char *out, size_t out_cap,
     f64 deadline = agent_now_seconds() + (f64)AGENT_SECRET_TIMEOUT_MS / 1000.0;
     b8 ok = true, timed_out = false;
 
-    /* A helper that never reads its stdin would block the write forever, so
-     * the deadline covers it too. */
+    
     if (in_fds[1] >= 0) {
         struct sigaction oldpipe, ignore = {0};
         ignore.sa_handler = SIG_IGN;
@@ -249,7 +237,7 @@ static b8 secret_exec(const SecretCmd *c, Str input, char *out, size_t out_cap,
         i32 rc = secret_wait(out_fds[0], POLLIN, deadline);
         if (rc == 0) { timed_out = true; ok = false; break; }
         if (rc < 0) { ok = false; break; }
-        if (*out_n >= out_cap) {   // drain, but the answer is already refused
+        if (*out_n >= out_cap) {   
             char sink[256];
             ssize_t n = read(out_fds[0], sink, sizeof sink);
             if (n <= 0) { if (n < 0 && errno == EINTR) continue; break; }

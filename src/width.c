@@ -11,9 +11,7 @@
 
 typedef struct { u32 lo, hi; } WidthRange;
 
-/* Zero width: NUL, the C0 and C1 controls, nonspacing and enclosing marks,
- * format characters other than the soft hyphen, and conjoining Hangul
- * medials and finals. */
+
 static const WidthRange k_zero[] = {
     {0x0000, 0x001F}, {0x007F, 0x009F}, {0x0300, 0x036F}, {0x0483, 0x0489},
     {0x0591, 0x05BD}, {0x05BF, 0x05BF}, {0x05C1, 0x05C2}, {0x05C4, 0x05C5},
@@ -110,7 +108,7 @@ static const WidthRange k_zero[] = {
     {0xE0020, 0xE007F}, {0xE0100, 0xE01EF},
 };
 
-/* Two columns: East Asian Wide and Fullwidth. */
+
 static const WidthRange k_wide[] = {
     {0x1100, 0x115F}, {0x231A, 0x231B}, {0x2329, 0x232A}, {0x23E9, 0x23EC},
     {0x23F0, 0x23F0}, {0x23F3, 0x23F3}, {0x25FD, 0x25FE}, {0x2614, 0x2615},
@@ -158,7 +156,7 @@ static b8 in_ranges(const WidthRange *r, size_t n, u32 cp) {
 
 i32 agent_width(u32 cp) {
     if (cp < 0x20u || (cp >= 0x7Fu && cp < 0xA0u)) return 0;
-    if (cp < 0x0300u) return 1;   /* ASCII and Latin-1 letters, the common case */
+    if (cp < 0x0300u) return 1;   
     if (cp > 0x10FFFFu) return 1;
     if (in_ranges(k_zero, sizeof k_zero / sizeof k_zero[0], cp)) return 0;
     if (in_ranges(k_wide, sizeof k_wide / sizeof k_wide[0], cp)) return 2;

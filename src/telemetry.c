@@ -5,25 +5,24 @@
 #include <time.h>
 #include <unistd.h>
 
-/* Of a name or a diagnostic, what one field keeps. Longer than any tool or
- * model name and short enough that a line stays one line. */
+
 #define TEL_STR_MAX 120
 
 static struct {
     b8   on;
-    b8   ready;              // the root below resolved
-    char root_buf[AGENT_MAX_PATH];  // .../arqan/telemetry
-    char dir_buf[AGENT_MAX_PATH];   // the current file's directory
-    char path_buf[AGENT_MAX_PATH];  // the current file
-    char slug_buf[256];      // the session directory's last component
-    char stem_buf[64];       // the session file without its extension
-    char run_stem[40];       // the name a session that has none falls to
+    b8   ready;              
+    char root_buf[AGENT_MAX_PATH];  
+    char dir_buf[AGENT_MAX_PATH];   
+    char path_buf[AGENT_MAX_PATH];  
+    char slug_buf[256];      
+    char stem_buf[64];       
+    char run_stem[40];       
     Str  dir;
     u64  run;
     f64  t0;
     u64  seq;
-    b8   header_due;         // the file has no session event yet
-    b8   attached;           // a file was chosen
+    b8   header_due;         
+    b8   attached;           
     /* What was recorded before a session named a file. Sized for a startup
      * and the commands that reach one: past that the run is a record of its
      * own rather than a reason to drop lines. */
@@ -42,9 +41,7 @@ static b8 tel_keep(char *dst, size_t cap, Str path) {
     return true;
 }
 
-/* The one write: whole lines, appended to the file the record is bound to.
- * A directory that cannot be made or a file that cannot be opened costs the
- * session nothing. */
+
 static void tel_append(const char *data, size_t n, b8 newline) {
     if (!n || !g_tel.path_buf[0]) return;
     paths_ensure_dir(g_tel.dir);
@@ -72,7 +69,7 @@ static void tel_attach(const char *dir, size_t dn, const char *path, size_t pn) 
     }
 }
 
-// Where waiting lines go when no conversation ever claims them.
+
 static void tel_attach_run(void) {
     char path[AGENT_MAX_PATH];
     i32 pn = snprintf(path, sizeof path, "%s/%s.jsonl", g_tel.root_buf,
@@ -113,8 +110,7 @@ void telemetry_bind(Str session_path) {
     tel_attach(d, (size_t)dn, path, (size_t)pn);
 }
 
-/* The conversation the record was following is over: what follows belongs to
- * the next one, so it waits for the file that one will name. */
+
 void telemetry_detach(void) {
     g_tel.attached = false;
     g_tel.pend_n = 0;
@@ -160,8 +156,7 @@ void telemetry_init(Arena *scratch, b8 on) {
     scratch->off = mark;
     if (!g_tel.ready) return;
 
-    /* Enough to tell two sessions of the same second apart, and nothing that
-     * says whose they are: a pid and two clocks, hashed. */
+    
     time_t now = time(NULL);
     char seed[64];
     i32 n = snprintf(seed, sizeof seed, "%ld:%ld:%f", (long)getpid(),
@@ -191,11 +186,10 @@ b8 telemetry_set(b8 on, Arena *scratch) {
     return conf_remember_bool(CONF_TELEMETRY, on, scratch);
 }
 
-// ---- one event ----------------------------------------------------------
+
 static void tel_add(TelEvent *e, const char *p, size_t n) {
     if (!e->live) return;
-    /* The tail is reserved for what tel_send owes the line: the truncation
-     * marker and the closing brace, which therefore always fit. */
+    
     size_t cap = sizeof e->buf - 16;
     if (n > cap - e->n) { e->full = true; return; }
     memcpy(e->buf + e->n, p, n);
@@ -216,12 +210,12 @@ void tel_open(TelEvent *e, const char *ev) {
     e->live = telemetry_on();
     if (!e->live) return;
     if (g_tel.header_due && g_tel.header) {
-        g_tel.header_due = false;   // before the call, which records too
+        g_tel.header_due = false;   
         g_tel.header(g_tel.header_ud);
     }
     char head[96];
     u64 ms = (u64)((agent_now_seconds() - g_tel.t0) * 1000.0);
-    // The run id names the file, so a line carries only its place in it.
+    
     i32 n = snprintf(head, sizeof head, "{\"t\":%llu,\"seq\":%llu,\"ev\":\"%s\"",
                      (unsigned long long)ms,
                      (unsigned long long)g_tel.seq++, ev);
@@ -297,8 +291,7 @@ void tel_arg_keys(TelEvent *e, const char *key, Str args, Arena *scratch) {
         for (const JVal *m = j->u.obj.head; m; m = m->next) {
             if (!first) tel_addz(e, ",");
             first = false;
-            /* A key is a schema field name, so it is written as it came; a
-             * value never is. */
+            
             Str k = str_clip_utf8(m->key, 40);
             for (size_t i = 0; i < k.n; i++) {
                 char c = k.p[i];
@@ -314,8 +307,7 @@ void tel_arg_keys(TelEvent *e, const char *key, Str args, Arena *scratch) {
 
 void tel_send(TelEvent *e) {
     if (!e->live) return;
-    /* Straight past the reserve the fields respect: a line that dropped one
-     * says so, whichever field it was that did not fit. */
+    
     if (e->full) {
         static const char trunc[] = ",\"trunc\":true";
         memcpy(e->buf + e->n, trunc, sizeof trunc - 1);

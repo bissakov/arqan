@@ -57,14 +57,12 @@ static alignas(64) u8 g_scratch[AGENT_ARENA_BYTES];
  * the transcript under them. */
 static alignas(64) u8 g_screen[AGENT_SCREEN_BYTES];
 
-/* Handled below in the prompt loop; the TUI reads this to drive the
- * composer's completion popup. */
+
 static TuiCmd g_commands[AGENT_MAX_COMMANDS];
 
 static size_t g_command_n;
 
-/* `images` decides whether /attach is offered at all: a command the popup
- * lists is one the session can run. */
+
 static size_t commands_init(b8 images) {
     size_t n = 0;
     g_commands[n++] = (TuiCmd){ STR("/clear"), STR("Start a fresh conversation") };
@@ -91,7 +89,7 @@ static size_t commands_init(b8 images) {
     return n;
 }
 
-// -Wpedantic rejects STR()'s compound literal as a static initializer.
+
 #define ALIAS(a, b) { { (a), sizeof(a) - 1 }, { (b), sizeof(b) - 1 } }
 static const TuiAlias k_aliases[] = {
     ALIAS("/config", "/settings"),
@@ -112,15 +110,13 @@ static const TuiCmd k_about[] = {
 };
 #define ABOUT_N (sizeof k_about / sizeof k_about[0])
 
-/* The keybinding page. The rows are the TUI's own tables rendered, and they
- * are static there, so this array only has to outlive the open screen. */
+
 static TuiCmd g_keys[AGENT_MAX_KEY_ROWS];
 static size_t keys_rows(void) {
     return tui_key_rows(g_keys, sizeof g_keys / sizeof g_keys[0]);
 }
 
-/* A submitted alias is the command it stands for by the time anything reads
- * the line, so the dispatch and the telemetry know one name per command. */
+
 static size_t resolve_alias(char *line, size_t ln, size_t cap) {
     for (size_t i = 0; i < ALIAS_N; i++) {
         Str name = k_aliases[i].name;
@@ -133,14 +129,12 @@ static size_t resolve_alias(char *line, size_t ln, size_t cap) {
     return ln;
 }
 
-/* Whether the round's thinking trace and its reply have opened their block:
- * each is one, so the deltas after the first do not open a second. */
+
 static b8 g_reasoning;
 static b8 g_replying;
 static b8 g_one_shot;
 
-/* One-shot diagnostics stay useful in pipelines without letting an
- * unbounded provider or tool payload take over stderr. */
+
 static void one_shot_diag(const char *kind, Str name, Str text) {
     if (!g_one_shot) return;
     Str head = str_clip_utf8(text, 2048);
@@ -152,8 +146,7 @@ static void one_shot_diag(const char *kind, Str name, Str text) {
     fputc('\n', stderr);
 }
 
-/* The status line and the activity row say the same word about the same wait,
- * and a turn that only changed one of them would read as two states. */
+
 static void say_busy(const char *what) {
     tui_set_status(what);
     tui_activity(str_c(what));
@@ -261,11 +254,9 @@ typedef struct {
      * rewinds and handoffs leave them alone, and no persistence path sees it. */
     u8            permission_grants;
     b8            permission_blocked_one_shot;
-    b8            echo;   // write the prompt into the transcript
+    b8            echo;   
     b8            show_instructions;
-    /* Images attached but not yet sent, in the order they were attached, so
-     * "[Image #1]" in the composer names pending[0]. The next user turn
-     * takes them; /clear drops them with the conversation they were for. */
+    
     size_t        pending[AGENT_MAX_MEDIA_PER_TURN];
     size_t        pending_n;
 } Agent;
@@ -278,8 +269,7 @@ static Str permission_name(PermissionPolicy policy) {
     return policy == PERMISSION_FREE ? STR("free") : STR("ask");
 }
 
-/* The settings a report needs and the working directory as a hash. It opens
- * every file the record is written to, so each one can be read on its own. */
+
 static void telemetry_session(const Config *cfg, const ToolRegistry *tools) {
     TelEvent e;
     tel_open(&e, "session");
@@ -317,8 +307,7 @@ typedef enum {
 static void rerender_conv(const Conv *c, const Config *cfg,
                           b8 show_instructions, Arena *scratch, u32 zone);
 
-/* Prompt and registry move together, so the model never sees one without the
- * other. */
+
 static void agent_set_mode(Agent *ag, AgentMode mode) {
     TelEvent e;
     tel_open(&e, "mode");
@@ -448,8 +437,7 @@ static Str ask_user_answer(Agent *ag, Str args) {
     items[n] = (TuiCmd){ STR("+ something else"),
                          STR("Answer in your own words") };
 
-    /* A question that recommends nothing has no answer to fall back on, so
-     * it waits however long the user takes. */
+    
     i32 wait_ms = recommended ? ag->cfg->ask_timeout_ms : 0;
     if (wait_ms > 0) {
         char hint[96];
@@ -468,8 +456,7 @@ static Str ask_user_answer(Agent *ag, Str args) {
         return (Str){0};
     if (pick < n) {
         if (!expired) return str_dup(ag->persist, items[pick].name);
-        /* The model is told nobody read the question: an answer it gave
-         * itself is not the user's approval of anything. */
+        
         Buf b; buf_init(&b, ag->persist, items[pick].name.n + 160);
         buf_puts(&b, items[pick].name);
         buf_puts(&b, STR("\n\n(Nobody answered in time, so the recommended "
@@ -486,8 +473,7 @@ static Str ask_user_answer(Agent *ag, Str args) {
     return str_dup(ag->persist, str_c(typed));
 }
 
-/* `at` is where the call's own block starts in the transcript, so the prompt
- * that asks about it does not cover it. */
+
 static ToolAuthorization tool_authorization(Agent *ag,
                                              ToolApprovalClass approval,
                                              size_t at) {
@@ -580,8 +566,7 @@ static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
 static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
     Conv *conv = ag->conv;
     ag->permission_blocked_one_shot = false;
-    /* Every call is answered even once the user has ended the turn: one left
-     * without its result is a conversation the provider refuses. */
+    
     TurnAction pending = TURN_CONTINUE;
     for (size_t i = first; i < last; i++) {
         if (!conv_is_call(conv, i)) continue;
@@ -610,7 +595,7 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
             if (!add_result(ag, i, name, result, 0)) return TURN_FULL;
             continue;
         }
-        /* Nothing is running while an agent UI tool is on screen. */
+        
         if (str_eq(name, STR("submit_plan"))) {
             tui_activity_end();
             notify_event(NOTIFY_INPUT_NEEDED, STR("a plan is ready to review"), 0);
@@ -668,8 +653,7 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
                           &out, err, sizeof err);
         if (!ok) buf_error(&out, err, "tool failed");
         Str result = buf_finish(&out);
-        /* Which tool, which argument keys, how long, how much. What the
-         * arguments said and what it answered stay out. */
+        
         TelEvent e;
         tel_open(&e, "tool");
         tel_str(&e, "name", name);
@@ -687,8 +671,7 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
     return pending;
 }
 
-/* A result slot carries only the id of the call it belongs to, and how it
- * reads depends on which tool produced it. */
+
 static size_t call_slot(const Conv *c, size_t result) {
     for (size_t i = result; i-- > 0;)
         if (conv_is_call(c, i) && str_eq(c->tool_call_id[i],
@@ -697,8 +680,7 @@ static size_t call_slot(const Conv *c, size_t result) {
     return CONV_NONE;
 }
 
-/* The transcript is a rendering of the messages, so replaying them takes the
- * same path a live turn does. */
+
 static void render_instruction_source(Str label, Str path, Str text) {
     tui_block();
     tui_write_tool(STR("\u25c6  "));
@@ -775,8 +757,7 @@ static void render_saved_thinking(Str raw, Arena *scratch) {
 static void render_conv(const Conv *c, const Config *cfg,
                         b8 show_instructions, Arena *scratch) {
     for (size_t i = 0; i < c->n; i++) {
-        /* One landmark per message, so a re-render can put the viewport back
-         * where the reader left it. */
+        
         tui_pin((u32)(i + 1));
         switch (c->role[i]) {
             case M_SYSTEM:
@@ -818,8 +799,7 @@ static void render_conv(const Conv *c, const Config *cfg,
     }
 }
 
-/* `zone` is the block the reader acted on, which keeps its place on screen
- * while everything above it is rebuilt; 0 when no one block was involved. */
+
 static void rerender_conv(const Conv *conv, const Config *cfg,
                           b8 show_instructions, Arena *scratch, u32 zone) {
     arena_reset(scratch);
@@ -834,8 +814,7 @@ static void rerender_conv(const Conv *conv, const Config *cfg,
 
 static const char *help_toggle(b8 on) { return on ? "on" : "off"; }
 
-/* Paths can contain whitespace and control bytes, so JSON quoting keeps each
- * diagnostic on one line. No file content is read here. */
+
 static void help_path(Buf *b, const char *label, Str path) {
     buf_putf(b, "- %s: ", label);
     if (!path.n || path.n >= AGENT_MAX_PATH) {
@@ -1060,8 +1039,7 @@ static Str help_build(Agent *ag) {
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
 }
 
-/* Help is a real first user message, but not a turn: the next message the
- * user writes is when the provider first sees the new conversation. */
+
 static void start_help_session(Agent *ag) {
     Conv *conv = ag->conv;
     conv_truncate(conv, 1);
@@ -1086,10 +1064,7 @@ static void start_help_session(Agent *ag) {
     session_save(ag->sess, conv);
 }
 
-/* The session picker's list, with the rows it draws beside the files they
- * name so a delete can drop both together. `armed` is the row a second
- * Ctrl-X removes: the file is the only record of a conversation, so it is
- * asked twice, and the arming is the question. */
+
 typedef struct {
     Agent      *ag;
     SessionList list;
@@ -1169,9 +1144,7 @@ static void resume_session(Agent *ag) {
         tui_notice(STR("out of memory listing sessions"));
         return;
     }
-    /* A named session is listed under its name, with the timestamp it would
-     * otherwise have shown moved beside the preview. An unnamed one is the
-     * row it always was. */
+    
     for (size_t i = 0; i < n; i++) {
         if (!sp.list.title[i].n) {
             items[i] = (TuiCmd){ sp.list.name[i], sp.list.preview[i] };
@@ -1231,8 +1204,7 @@ static void resume_session(Agent *ag) {
     if (!whole) tui_notice(STR("session truncated: the conversation is full"));
 }
 
-/* One popup row of a message: control bytes become spaces and the cut lands
- * on a UTF-8 boundary. */
+
 #define REWIND_PREVIEW_BYTES 72
 static Str preview_line(Arena *a, Str s) {
     char tmp[REWIND_PREVIEW_BYTES];
@@ -1283,9 +1255,7 @@ static void rewind_conversation(Agent *ag) {
         n++;
     }
 
-    /* The list points into the transcript, so it is ordered like it: the
-     * newest turn sits nearest the composer and going back further is Up, as
-     * it is in the composer's own history. */
+    
     size_t pick = 0;
     if (!tui_pick(STR("rewind to a message"), items, n, TUI_PICK_LAST,
                   TUI_PICK_NONE, &pick))
@@ -1308,13 +1278,11 @@ static void rewind_conversation(Agent *ag) {
     tui_clear();
     render_conv(conv, ag->cfg, ag->show_instructions, scratch);
     tui_batch_end();
-    /* A session file is append-only and this one no longer describes the
-     * conversation, so what is left of it continues in a new file. */
+    
     session_fork(sess, conv);
 }
 
-/* Continue in a copy: only the file underneath changes, so the session this
- * was forked from keeps what it had, where /resume can still find it. */
+
 static void fork_session(Session *sess, const Conv *conv) {
     if (conv->n <= 1) {
         tui_notice(STR("nothing to fork yet"));
@@ -1362,13 +1330,7 @@ static void notice_fmt(const char *fmt, ...) {
     tui_notice((Str){ msg, n });
 }
 
-/* ---- attached images -----------------------------------------------------
- * An attachment is one entry of the media table and one "[Image #n]" in the
- * composer. The placeholder is ordinary text: the user can move it, keep
- * writing around it or delete it, and the transcript shows the message the
- * model was actually sent. The turn binds the images whose placeholder was
- * still there when the message was submitted.
- */
+
 static void attach_notice(const Agent *ag, size_t id) {
     char what[64];
     media_describe(what, sizeof what, &g_media, id);
@@ -1376,7 +1338,7 @@ static void attach_notice(const Agent *ag, size_t id) {
                (i32)g_media.label[id].n, g_media.label[id].p, what);
 }
 
-// Whether a draft still carries the placeholder for pending image `num`.
+
 static b8 draft_names_image(Str draft, size_t num) {
     char tag[24];
     i32 n = snprintf(tag, sizeof tag, "[Image #%zu]", num);
@@ -1387,8 +1349,7 @@ static b8 draft_names_image(Str draft, size_t num) {
     return false;
 }
 
-/* "[Image #3]" at `i`, whose number is one a pending image answers to.
- * `len` receives the whole placeholder's length. */
+
 static b8 image_tag_at(Str text, size_t i, size_t pending_n, size_t *num,
                        size_t *len) {
     static const Str lead = { "[Image #", 8 };
@@ -1443,8 +1404,7 @@ static void pending_drop_unnamed(Agent *ag, Str carried) {
     }
     Str line = buf_finish(&b);
     if (buf_ok(&b) && !str_eq(line, draft)) tui_set_input(line);
-    /* The dropped entries are this turn's own tail, so the table gives their
-     * places back; an earlier turn's images sit below `base` untouched. */
+    
     size_t base = ag->pending[0];
     if (n) media_keep(&g_media, base, kept, n);
     else if (base <= g_media.n) g_media.n = base;
@@ -1453,10 +1413,7 @@ static void pending_drop_unnamed(Agent *ag, Str carried) {
     ag->scratch->off = mark;
 }
 
-/* Leave the composer naming every pending image. A typed /attach submitted
- * the line, so the box is empty and the markers an earlier one left are
- * written back; Ctrl-V attaches under a draft, so what the user has written
- * stays and only the new marker is appended. */
+
 static void composer_restore_pending(const Agent *ag) {
     if (!ag->pending_n) return;
     size_t mark = ag->scratch->off;
@@ -1486,16 +1443,13 @@ static size_t attach_from_clipboard(Agent *ag, char *err, size_t err_cap) {
 
 static void attach_image(Agent *ag, Str path, Str carried) {
     path = str_trim(path);
-    /* Without a media table nothing can hold an image, which is what
-     * `images = off` leaves behind. The command is not offered then; typed
-     * anyway, it says which setting withdrew it. */
+    
     if (!ag->conv->media) {
         notice_fmt("images are off: set images = auto to attach one");
         return;
     }
     pending_drop_unnamed(ag, carried);
-    /* The shape of an attachment, never the picture: how big it was and how
-     * many the message is carrying, with no name, path or media type. */
+    
     TelEvent e;
     tel_open(&e, "attach");
     tel_bool(&e, "clipboard", !path.n);
@@ -1509,8 +1463,7 @@ static void attach_image(Agent *ag, Str path, Str carried) {
     }
     char err[256] = {0};
     size_t mark = ag->scratch->off;
-    /* No path is the clipboard, which is what Ctrl-V submits: a screenshot
-     * is the one image a user has no name for. */
+    
     size_t id = path.n ? media_add_file(&g_media, ag->persist, ag->scratch,
                                         path, err, sizeof err)
                        : attach_from_clipboard(ag, err, sizeof err);
@@ -1533,10 +1486,7 @@ static void attach_image(Agent *ag, Str path, Str carried) {
     tel_send(&e);
 }
 
-/* How much of a submitted line is the placeholders an attachment left in the
- * composer. A command or a '!' run typed behind them is still one: the
- * markers name the images waiting to be sent, not the text of a message, and
- * the next /attach hands them all back anyway. */
+
 static size_t pending_prefix(const Agent *ag, const char *line, size_t n) {
     Str text = { line, n };
     size_t at = 0;
@@ -1567,8 +1517,7 @@ static Str turn_bind_images(Agent *ag, Str text, size_t *off, size_t *count) {
         named[num - 1] = true;
         i += len - 1;
     }
-    /* Nothing named: the text was written without the composer's help, so
-     * every attachment still belongs to it. */
+    
     b8 none = true;
     for (size_t i = 0; i < ag->pending_n; i++) none = none && !named[i];
     if (none) for (size_t i = 0; i < ag->pending_n; i++) named[i] = true;
@@ -1600,8 +1549,7 @@ static Str turn_bind_images(Agent *ag, Str text, size_t *off, size_t *count) {
         buf_putf(&b, "[Image #%zu]", renum[i]);
     }
     Str full = buf_finish(&b);
-    /* The composer leaves a space after a marker so the user can keep
-     * writing; one they never wrote past is not part of the message. */
+    
     Str stored = buf_ok(&b) ? str_dup(ag->persist, str_trim(full)) : (Str){0};
     ag->scratch->off = mark;
     if (!stored.p) return (Str){0};
@@ -1625,17 +1573,14 @@ static void export_session(const Conv *conv, Str requested) {
     notice_fmt("exported session to %s", path);
 }
 
-/* Built beside /compact's request, so a name that never arrives cannot cost
- * the conversation anything. */
+
 static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out);
 
-/* /title: the name a session is listed under. Set by hand, edited in the
- * composer, cleared by an empty answer, or asked of the small model. */
+
 static void title_command(Agent *ag, Str arg) {
     Session *sess = ag->sess;
     arg = str_trim(arg);
-    /* A session with no file behind it is not in any list yet, so there is
-     * nothing a name would name. */
+    
     if (!sess->path.n || ag->conv->n <= 1) {
         tui_notice(STR("nothing to name yet"));
         return;
@@ -1667,8 +1612,7 @@ static b8 command_offered(Str name) {
     return false;
 }
 
-/* Only the commands arqan offers are named: a line it does not know is the
- * user's text, not ours. */
+
 static void telemetry_command(Str line) {
     Str word = line;
     for (size_t i = 0; i < line.n; i++)
@@ -1710,21 +1654,19 @@ typedef struct {
     TuiCmd    *rows;
     size_t     live;
     Favorites  fav;
-    b8         named;        // more than one endpoint serves the list
-    Str        provider;     // the pair the session is on
+    b8         named;        
+    Str        provider;     
     Str        current;
     Str        small;
-    Str        small_owner;  // the provider serving it, empty for this run's
-    Config    *cfg;          // what Ctrl-S applies the small model to
+    Str        small_owner;  
+    Config    *cfg;          
     Arena     *arena;
     u8         requested;
-    size_t     acted;        // the entry a key acted on, read after the close
-    char       msg[192];     // said after the picker closes, not under it
+    size_t     acted;        
+    char       msg[192];     
 } ModelPick;
 
-/* Capabilities for one exact pair, which is where they are configured: a
- * model's reasoning controls belong to the endpoint that serves it. They are
- * applied to the session only when the pair is the one it is on. */
+
 static b8 edit_model_profile(Config *cfg, Str provider, Str model,
                              Arena *scratch) {
     if (!provider.n || !model.n) {
@@ -1824,7 +1766,7 @@ static Str model_label(ModelPick *mp, size_t i) {
     return mp->label[i];
 }
 
-// The same name behind the pin marker.
+
 static Str model_starred(ModelPick *mp, size_t i) {
     if (!mp->starred[i].p) {
         Str name = model_label(mp, i);
@@ -1838,10 +1780,7 @@ static Str model_starred(ModelPick *mp, size_t i) {
     return mp->starred[i];
 }
 
-/* Both marks compare the pair: the same id served by another provider is
- * another model, and neither the session's nor the small model's row is
- * decided by the id alone. An empty owner is this run's own endpoint, which
- * is what a small model configured without a provider names. */
+
 static b8 model_is_current(const ModelPick *mp, size_t i) {
     return str_eq(mp->cat->model[i], mp->current)
         && str_eq(mp->cat->provider[i], mp->provider);
@@ -1863,7 +1802,7 @@ static void model_row(ModelPick *mp, size_t row, size_t i, b8 fav) {
     mp->rows[row] = (TuiCmd){ name, desc };
 }
 
-// The entry holding a pair, SIZE_MAX when none does or it was unpinned.
+
 static size_t model_entry(const ModelPick *mp, Str provider, Str model) {
     for (size_t i = 0; i < mp->cat->n; i++)
         if (mp->cat->model[i].n && str_eq(mp->cat->model[i], model)
@@ -1871,8 +1810,7 @@ static size_t model_entry(const ModelPick *mp, Str provider, Str model) {
     return SIZE_MAX;
 }
 
-/* Pins first, in the order they were pinned, then everything else in the
- * order its provider served it. */
+
 static size_t model_build(void *ud) {
     ModelPick *mp = ud;
     size_t row = 0;
@@ -1894,15 +1832,12 @@ static size_t model_favorite(void *ud, size_t row, size_t *moved) {
     size_t i = mp->order[row];
     b8 on = false;
     char err[128] = {0};
-    /* The list is written as it is toggled: pinning is its own action, so it
-     * survives a picker the user then cancels. */
+    
     if (!favorites_toggle(&mp->fav, mp->cat->provider[i], mp->cat->model[i],
                           mp->arena, &on, err, sizeof err))
         snprintf(mp->msg, sizeof mp->msg, "%s", err[0] ? err
                  : "could not save the favorites");
-    /* A pin was the only reason an unlisted model was a row, so unpinning one
-     * takes the row with it. A listed model stays: its provider said it is
-     * there. */
+    
     if (!on && i >= mp->live) mp->cat->model[i] = (Str){0};
     size_t rows = model_build(mp);
     *moved = row < rows ? row : rows ? rows - 1 : 0;
@@ -1919,8 +1854,7 @@ static size_t model_manual_action(void *ud, size_t row, size_t *moved) {
     return 0;
 }
 
-/* The row's own pair is configured, not the session's: a model is set up
- * wherever it is read about. */
+
 static size_t model_configure_action(void *ud, size_t row, size_t *moved) {
     ModelPick *mp = ud;
     *moved = 0;
@@ -1929,10 +1863,7 @@ static size_t model_configure_action(void *ud, size_t row, size_t *moved) {
     return 0;
 }
 
-/* One small model for the whole run, wherever it is served: the pair goes to
- * the state file, so a model of another provider can run arqan's own errands
- * while the conversation stays where it is. Like pinning, it is its own action
- * and survives a cancelled picker. */
+
 static size_t model_small_action(void *ud, size_t row, size_t *moved) {
     ModelPick *mp = ud;
     if (row == SIZE_MAX) { *moved = 0; return model_build(mp); }
@@ -1953,8 +1884,7 @@ static size_t model_small_action(void *ud, size_t row, size_t *moved) {
     return model_build(mp);
 }
 
-/* The endpoints a model may be entered by hand for, which are the ones the
- * catalog draws from: a typed id still belongs to a provider. */
+
 static b8 manual_provider(const Config *cfg, const Endpoints *eps,
                           Arena *scratch, Str *out) {
     Str names[AGENT_MAX_ENDPOINTS + 1];
@@ -1998,8 +1928,7 @@ static b8 manual_model_id(Arena *scratch, const char *why, Str *model) {
     return true;
 }
 
-/* The same, for a run that has every configured endpoint to choose between:
- * a typed id still belongs to one of them. */
+
 static b8 manual_model(const Config *cfg, const Endpoints *eps, Arena *scratch,
                        const char *why, Str *provider, Str *model) {
     return manual_provider(cfg, eps, scratch, provider)
@@ -2069,8 +1998,7 @@ static b8 pick_model(Config *cfg, const Endpoints *eps, Catalog *cat,
     mp.live = cat->n;
     mp.arena = scratch;
     favorites_load(&mp.fav, eps, scratch);
-    /* Pins of a provider that could not be listed become entries of their
-     * own: local state is all an endpoint that is down leaves to offer. */
+    
     for (size_t f = 0; f < mp.fav.n; f++) {
         if (model_entry(&mp, mp.fav.provider[f], mp.fav.model[f]) != SIZE_MAX)
             continue;
@@ -2083,8 +2011,7 @@ static b8 pick_model(Config *cfg, const Endpoints *eps, Catalog *cat,
         return manual_model(cfg, eps, scratch, why, provider, model);
     }
 
-    /* The provider is named in a row only when more than one serves the list:
-     * with one, every row would carry the same name for no reader. */
+    
     for (size_t i = 1; i < cat->n && !mp.named; i++)
         mp.named = !str_eq(cat->provider[i], cat->provider[0]);
     mp.label    = arena_new(scratch, Str, cat->n);
@@ -2095,7 +2022,7 @@ static b8 pick_model(Config *cfg, const Endpoints *eps, Catalog *cat,
         tui_notice(STR("out of memory listing models"));
         return false;
     }
-    memset(mp.label, 0, cat->n * sizeof *mp.label);      // built on first use
+    memset(mp.label, 0, cat->n * sizeof *mp.label);      
     memset(mp.starred, 0, cat->n * sizeof *mp.starred);
     mp.provider = cfg->provider;
     mp.current  = cfg->model;
@@ -2109,12 +2036,10 @@ static b8 pick_model(Config *cfg, const Endpoints *eps, Catalog *cat,
         { model_favorite, &mp, 0x06 },
         { model_manual_action, &mp, 0x0f },
         { model_configure_action, &mp, 0x05 },
-        /* Ctrl-S reaches the app: raw mode clears IXON, so it is not flow
-         * control here. */
+        
         { model_small_action, &mp, 0x13 },
     };
-    /* Four keys have to fit one 80-column row, so each is named as briefly
-     * as it can be and still be found. */
+    
     TuiPickAction act = { mp.rows, cat->n, bindings, 4,
         STR("Ctrl-F pins \xc2\xb7 Ctrl-O manual entry \xc2\xb7 "
             "Ctrl-E configures \xc2\xb7 Ctrl-S small model") };
@@ -2150,16 +2075,12 @@ static b8 apply_model_profile(Config *cfg, Arena *scratch) {
     return config_set_model_profile(cfg, &p);
 }
 
-/* No key and no endpoint from a flag, the environment, a config file or a
- * chosen model. The default base URL is a placeholder here, not a
- * destination. */
+
 static b8 no_provider(const Config *cfg) {
     return !cfg->api_key.p && !cfg->base_url_set;
 }
 
-/* What a run with nothing to talk to is missing. Providers with no model
- * chosen is its own state: there is somewhere to list models from, and
- * nowhere to send a turn yet. */
+
 static Str setup_hint(const Config *cfg, Arena *scratch) {
     if (!no_provider(cfg)) return (Str){0};
     size_t mark = scratch->off;
@@ -2169,11 +2090,7 @@ static Str setup_hint(const Config *cfg, Arena *scratch) {
     return n ? NO_MODEL_HINT : NO_PROVIDER_HINT;
 }
 
-/* The one path that changes what the session talks to. A pair names a model
- * and the connection that serves it: an empty provider is the endpoint this
- * run was pointed at, whose URL and key stay as they are. Everything a choice
- * implies happens here, which is why nothing else selects an endpoint.
- * `*saved` reports whether the pair was remembered for the next run. */
+
 static b8 use_model(Config *cfg, const Endpoints *eps, Str provider,
                     Str model, Arena *scratch, b8 remember, b8 *saved) {
     size_t mark = scratch->off;
@@ -2208,11 +2125,7 @@ static b8 use_model(Config *cfg, const Endpoints *eps, Str provider,
         tui_notice(STR("out of memory storing model settings"));
         return false;
     }
-    /* A small model chosen with its provider is served from there wherever
-     * the conversation is, so it is left alone. One with no provider of its
-     * own is this endpoint's, which is what a provider's `small_model` key
-     * names: it goes with the connection, and clears when the new one names
-     * none. */
+    
     if (!cfg->small_provider.n)
         config_set_small_model(cfg, endpoints_small_model(cfg->provider,
                                                          scratch), (Str){0});
@@ -2236,7 +2149,7 @@ static b8 use_model(Config *cfg, const Endpoints *eps, Str provider,
     return true;
 }
 
-// "model: <id>" while one provider serves the list, "<id> @ <provider>" past it.
+
 static void model_chosen_notice(Str provider, Str model, b8 verified,
                                 b8 saved) {
     notice_fmt("model: %.*s%s%.*s%s%s", (i32)model.n, model.p,
@@ -2257,15 +2170,13 @@ static void model_status(Str provider, void *ud) {
     tui_set_status(status);
 }
 
-/* Every provider's models, listed where the picker opens. The conversation is
- * untouched: a model change is not part of it. */
+
 static void choose_model(Config *cfg, Arena *scratch) {
     arena_reset(scratch);
     Endpoints eps;
     endpoints_load(&eps, scratch);
     Str names[AGENT_MAX_ENDPOINTS + 1];
-    /* Nothing to list from is the first-run state, not an empty list: the
-     * answer is a provider, which /model cannot give. */
+    
     if (!catalog_endpoints(cfg, &eps, names, AGENT_MAX_ENDPOINTS + 1)) {
         tui_notice(NO_PROVIDER_HINT);
         return;
@@ -2284,12 +2195,6 @@ static void choose_model(Config *cfg, Arena *scratch) {
     model_chosen_notice(provider, model, verified, saved);
 }
 
-/* ---- /provider -----------------------------------------------------------
- * A provider is a connection: a name, a base URL, the API it speaks and a
- * key. This screen creates, edits and removes them, and changes nothing about
- * the session: the models of every provider are offered together in /model,
- * and choosing one there is what selects a connection.
- */
 
 /* Where the key is kept. The file is offered first because it always works:
  * a keyring needs its daemon and its helper installed, and a run with no
@@ -2365,7 +2270,7 @@ static b8 keep_unlisted_endpoint(Str name, const char *why, Arena *scratch) {
         && action == 1;
 }
 
-/* What a stored connection answered with, which is the check that it works. */
+
 static void notice_models(Str name, size_t n) {
     notice_fmt("provider: %.*s (%zu model%s)", (i32)name.n, name.p, n,
                n == 1 ? "" : "s");
@@ -2435,9 +2340,7 @@ static b8 add_endpoint(Config *cfg, Arena *scratch) {
         tui_notice(STR("could not write the provider store"));
         return false;
     }
-    /* Written even when the answer was empty: a credential is keyed by name,
-     * so one an earlier provider of this name left behind would be adopted
-     * silently, and the run would authenticate with a key nobody entered. */
+    
     if (!endpoints_set_key(str_c(name), str_c(key), key_source, scratch,
                            err, sizeof err)) {
         tui_notice(str_c(err[0] ? err : "could not store the API key"));
@@ -2470,8 +2373,7 @@ static b8 add_endpoint(Config *cfg, Arena *scratch) {
                                 : "no models returned", &model)) {
         model = (Str){0};
     }
-    /* Stored either way: the connection is the answer to /provider, and a run
-     * that stopped before choosing a model says which step is left. */
+    
     if (!model.n
         || !use_model(cfg, &eps, provider, model, scratch, true, &saved)) {
         notice_fmt("provider: %.*s (no model chosen yet: type /model)",
@@ -2483,9 +2385,7 @@ static b8 add_endpoint(Config *cfg, Arena *scratch) {
     return true;
 }
 
-/* Existing provider names are identities: editing changes its connection,
- * never the section name. Which models it serves is not its setting, and
- * their capabilities are edited from /model. */
+
 static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
                         Arena *persist, Arena *scratch) {
     char url[AGENT_MAX_URL + 1];
@@ -2500,9 +2400,7 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
     }
     ApiKind api = eps->api[i];
     if (!pick_api(&api)) return false;
-    /* Which store holds it belongs in the menu: it is the only place the
-     * answer is ever shown, and a key cannot be moved out of a store the user
-     * cannot see it is in. */
+    
     SecretSource key_source = endpoints_key_source(eps->name[i], scratch);
     Str store = secret_source_name(key_source);
     Buf keep_desc;
@@ -2576,8 +2474,7 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
         tui_notice(str_c(err[0] ? err : "could not store the API key"));
         return false;
     }
-    /* The session follows the connection it is already on: the model is the
-     * same one, served over what was just edited. */
+    
     if (str_eq(eps->name[i], cfg->provider) && cfg->model.n
         && !use_model(cfg, eps, eps->name[i], cfg->model, scratch, false,
                       NULL))
@@ -2614,7 +2511,7 @@ static b8 delete_endpoint(Config *cfg, const Endpoints *eps, size_t i,
         tui_notice(str_c(err[0] ? err : "could not delete the provider"));
         return false;
     }
-    // Pins of a provider that is gone are rows of a list nothing can serve.
+    
     favorites_forget(name, scratch);
     if (serving) {
         /* The model went with the connection, so the choice is forgotten
@@ -2655,8 +2552,7 @@ static void manage_providers(Config *cfg, Arena *persist, Arena *scratch) {
     }
     for (size_t i = 0; i < n; i++) {
         Str desc = eps.base_url[i];
-        /* The API is named only where it is not the default one, so a line
-         * says what the reader could not have assumed. */
+        
         b8 serving = str_eq(eps.name[i], cfg->provider);
         b8 anth = eps.api[i] == API_ANTHROPIC;
         if (serving || anth) {
@@ -2777,13 +2673,13 @@ static void remember_tools(const ToolRegistry *reg, Arena *scratch) {
  * strings live in the scratch arena, which each rebuild resets, so nothing
  * outside a build call may hold one. */
 typedef struct {
-    Arena  *scratch;       // what remembering a choice writes through
-    Arena   rows_arena;    // what the rows themselves are built in
+    Arena  *scratch;       
+    Arena   rows_arena;    
     TuiCmd  rows[TUI_STATUS_N];
 } StatusView;
 
 static size_t statusline_build(void *ud) {
-    // -Wpedantic rejects STR()'s compound literal as a static initializer.
+    
     const Str labels[TUI_STATUS_N] = {
         STR("State"), STR("Model"), STR("Reasoning effort"),
         STR("Thinking budget"), STR("Mode"), STR("Provider"),
@@ -3049,9 +2945,7 @@ static size_t settings_build(void *ud) {
     return n;
 }
 
-/* A transcript rebuilt while a reply is streaming would drop the half of it
- * that has not reached Conv yet, so a look that changed mid-turn is applied
- * to the screen once the turn has stopped writing to it. */
+
 static b8 g_rerender_pending;
 
 static void rerender_or_defer(Agent *ag) {
@@ -3059,11 +2953,7 @@ static void rerender_or_defer(Agent *ag) {
     rerender_conv(ag->conv, ag->cfg, ag->show_instructions, ag->scratch, 0);
 }
 
-/* A search reaches what the transcript rendered, and a tool's output is
- * rendered under a cap. Ctrl-E in the search box lifts it for this session:
- * the setting is the reader's to keep, so this one is not remembered. Once
- * every line is on screen the key has nothing left to reveal, so the box
- * stops offering it. */
+
 static void find_expand(void *ud) {
     Agent *ag = ud;
     tui_set_find_expand(NULL, NULL);
@@ -3072,9 +2962,7 @@ static void find_expand(void *ud) {
     rerender_or_defer(ag);
 }
 
-/* What the running turn reads when it builds its next request. Changing one
- * of these mid-turn would move the agent's ground under it, so the screen
- * refuses them while a turn is in flight and takes them at the prompt. */
+
 static b8 setting_shapes_request(u8 kind) {
     switch (kind) {
         case SET_TOOL: case SET_MODE: case SET_STREAM:
@@ -3253,7 +3141,7 @@ static b8 open_block_view(Agent *ag, size_t i) {
     size_t start = 0, lines = 0;
     for (size_t p = 0; p < part_n; p++) {
         if (!parts[p].text.n) continue;
-        if (lines) lines++;             // blank row between shell input/output
+        if (lines) lines++;             
         size_t part_top = lines;
         size_t part_lines = str_lines(parts[p].text);
         lines += part_lines;
@@ -3344,8 +3232,7 @@ static void run_shell(Agent *ag, Str cmd) {
         say_conv_full();
         return;
     }
-    /* A Ctrl-C that ended the previous run is spent: leaving it set would
-     * make this command report itself interrupted without running. */
+    
     g_got_sigint = 0;
     say_busy("running shell");
     render_shell_call(stored, (u32)(slot + 1), false);
@@ -3367,16 +3254,12 @@ static void run_shell(Agent *ag, Str cmd) {
     render_tool_result(STR("shell"), (Str){0}, result, ag->scratch,
                        (u32)(slot + 1), false, ms);
     session_save(ag->sess, conv);
-    /* Last, so the spinner is never taken down before what it was spinning
-     * for is on screen: a frame saying idle with no result is a run that
-     * looks lost. */
+    
     tui_set_status("ready");
     tui_activity_end();
 }
 
-/* Appends `text` as a user message and streams completions until the model
- * asks for no more tools. False when the turn ended on an error, an
- * interrupt or a full conversation, which is a one-shot run's exit status. */
+
 static b8 agent_turn(Agent *ag, Str text);
 
 /* /compact: one request that condenses the conversation into a checkpoint,
@@ -3423,8 +3306,7 @@ static void compact_session(Agent *ag) {
     g_got_sigint = 0;
     tui_set_busy(true);
     say_busy("compacting");
-    /* The tools stay in the request: a history holding tool calls is only
-     * valid beside the schemas it names. Nothing here runs one. */
+    
     Provider p = {
         .cfg = ag->cfg,
         .tools = ag->tools,
@@ -3506,8 +3388,7 @@ static void compact_session(Agent *ag) {
         tui_notice(STR("out of memory keeping the summary"));
         return;
     }
-    /* The compacted session is the same thread continuing, so it keeps its
-     * name: the reservation clears the title, so it is copied out first. */
+    
     char title[AGENT_MAX_TITLE + 1];
     size_t title_n = ag->sess->title.n < sizeof title ? ag->sess->title.n : 0;
     if (title_n) memcpy(title, ag->sess->title.p, title_n);
@@ -3523,16 +3404,10 @@ static void compact_session(Agent *ag) {
     tui_notice(STR("compacted: a new session continues from the summary"));
 }
 
-/* The excerpt the naming request is made from: one turn of the conversation,
- * labelled and cut, so a session is named from what it opened with rather
- * than from everything it grew into. */
+
 #define TITLE_EXCERPT_BYTES 1024
 
-/* The budget the naming request is capped to. A title is one line, but a
- * small model may be a reasoning one that spends its budget thinking before
- * it writes anything: a cap of a line's worth comes back as reasoning and no
- * name at all. Most of this is room to think, not room for the title, which
- * is cut to AGENT_MAX_TITLE whatever arrives. */
+
 #define TITLE_MAX_TOKENS 1024
 
 /* Point `small` at the endpoint that serves the small model, which may not be
@@ -3608,10 +3483,7 @@ static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out) {
     buf_puts(&ask, prompt_title_ask());
     buf_puts(&ask, STR("\n\nUser: "));
     buf_puts(&ask, str_clip_utf8(first_user, TITLE_EXCERPT_BYTES));
-    /* A turn that opens with tool calls has said nothing yet. The excerpt is
-     * then the user's message alone: what they asked for is what they read a
-     * session by in the list, and waiting for prose leaves a build that runs
-     * for minutes unnamed for all of them. */
+    
     if (first_reply.n) {
         buf_puts(&ask, STR("\n\nAssistant: "));
         buf_puts(&ask, str_clip_utf8(first_reply, TITLE_EXCERPT_BYTES));
@@ -3635,9 +3507,7 @@ static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out) {
         if (manual) tui_notice(STR("could not use the small model"));
         return false;
     }
-    /* The small model may be served by another provider, and the errand
-     * follows it there. The session's own endpoint is untouched: `small` is
-     * this request's configuration and nothing else's. */
+    
     if (cfg->small_provider.n && !str_eq(cfg->small_provider, cfg->provider)
         && !small_model_endpoint(&small, cfg->small_provider, cfg->small_model,
                                  manual, ag->scratch)) {
@@ -3651,8 +3521,7 @@ static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out) {
         small.max_tokens = TITLE_MAX_TOKENS;
 
     say_busy("naming");
-    /* No tools and no text callbacks: the answer is read from `tmp` once the
-     * request is whole, exactly as /compact reads its summary. */
+    
     Provider p = {
         .cfg = &small,
         .tools = NULL,
@@ -3667,9 +3536,7 @@ static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out) {
     f64 started = agent_now_seconds();
     arena_reset(ag->scratch);
     i32 rc = provider_run(&p, err, sizeof err);
-    /* Only the on-demand path returns the screen to idle. The automatic one
-     * runs inside a turn that is still working, and a spinner that stopped
-     * under a green bullet would say that turn had finished. */
+    
     if (manual) {
         tui_activity_end();
         tui_set_status("ready");
@@ -3728,8 +3595,7 @@ static b8 agent_handoff(Agent *ag) {
         return false;
     }
     agent_set_mode(ag, MODE_BUILD);
-    /* The plan's session continues the thread that produced it, so the name
-     * follows it across the new file. */
+    
     char title[AGENT_MAX_TITLE + 1];
     size_t title_n = ag->sess->title.n < sizeof title ? ag->sess->title.n : 0;
     if (title_n) memcpy(title, ag->sess->title.p, title_n);
@@ -3739,8 +3605,7 @@ static b8 agent_handoff(Agent *ag) {
     return agent_turn(ag, plan);
 }
 
-/* The prose the turn ended on, without its trailing newlines. Empty when the
- * turn only ran tools. */
+
 static Str last_reply(const Conv *conv) {
     for (size_t i = conv->n; i-- > 0;) {
         if (conv->role[i] != M_ASSISTANT || conv_is_call(conv, i)) continue;
@@ -3753,8 +3618,7 @@ static Str last_reply(const Conv *conv) {
     return (Str){0};
 }
 
-/* Every way a turn hears Ctrl-C ends it the same: the word, the status, and
- * the flag cleared so it cannot reach the next turn. */
+
 static void announce_interrupt(void) {
     if (g_one_shot)
         one_shot_diag("error", (Str){0}, STR("interrupted"));
@@ -3805,8 +3669,7 @@ static b8 agent_turn(Agent *ag, Str text) {
         render_user_message(conv, conv->n - 1);
     }
     session_save(ag->sess, conv);
-    /* The message is context now, whatever the next request comes back and
-     * says it was worth. */
+    
     ctx_sync(&g_ctx, conv);
 
     TelEvent te;
@@ -3825,9 +3688,7 @@ static b8 agent_turn(Agent *ag, Str text) {
     char ending_buf[256] = {0};
     g_got_sigint = 0;
     tui_set_busy(true);
-    /* No round cap: it would end a long build in the middle of itself, and a
-     * user who walked away from one is not there to lift it. Stopping the
-     * agent is theirs to do, through Ctrl-C. */
+    
     for (;;) {
         rounds++;
         if (g_got_sigint) {
@@ -3859,14 +3720,10 @@ static b8 agent_turn(Agent *ag, Str text) {
         arena_reset(ag->scratch);
         size_t before = conv->n;
         i32 rc = provider_run(&p, err, sizeof err);
-        /* The completion is whole, so whatever line the renderer held back
-         * has no more bytes coming. The context counter was already kept
-         * current by on_usage as the reply streamed, so an interrupt does not
-         * lose the context the response metadata reported. */
+        
         md_end();
         md_set_muted(false);
-        /* Whatever the round committed goes to disk before the tools it asked
-         * for run, so a crash inside one keeps the round that asked. */
+        
         session_save(ag->sess, conv);
         if (g_got_sigint) {
             announce_interrupt();
@@ -3874,8 +3731,7 @@ static b8 agent_turn(Agent *ag, Str text) {
             break;
         }
         if (rc < 0) {
-            /* `err` is formatted by arqan itself: a status or a limit, never
-             * anything from the conversation. */
+            
             TelEvent ee;
             tel_open(&ee, "error");
             tel_str(&ee, "where", STR("provider"));
@@ -3892,9 +3748,7 @@ static b8 agent_turn(Agent *ag, Str text) {
             ending_text = str_c(ending_buf);
             break;
         }
-        /* Inside the busy window and before the tools this round asked for:
-         * the session is named from its first response, not from everything
-         * the turn grows into. */
+        
         if (name_session_now(ag)) {
             announce_interrupt();
             ending = NOTIFY_INTERRUPTED;
@@ -3906,13 +3760,10 @@ static b8 agent_turn(Agent *ag, Str text) {
             ending = NOTIFY_TURN_DONE;
             break;
         }
-        /* The turn appended one head slot plus a carrier per call at
-         * [before, conv->n); run them straight off the conversation rather
-         * than mirroring them into a second, separately capped array. */
+        
         size_t tail = conv->n;
         TurnAction act = run_tool_calls(ag, before, tail);
-        /* Tool results are context the next round carries, and nothing has
-         * measured them yet. */
+        
         ctx_sync(&g_ctx, conv);
         if (act == TURN_FULL) {
             tui_set_status("ready");
@@ -3956,8 +3807,7 @@ static b8 agent_turn(Agent *ag, Str text) {
     tel_int(&te, "persist_used", (i64)arena_used(ag->persist));
     tel_int(&te, "scratch_used", (i64)arena_used(ag->scratch));
     tel_send(&te);
-    /* A handoff is the same turn continuing in build mode, so the user is
-     * told once, when the work it started actually stops. */
+    
     if (!ag->handoff.n && !tui_queued_pending()) {
         if (ending == NOTIFY_TURN_DONE) ending_text = last_reply(conv);
         notify_event(ending, ending_text,
@@ -4037,8 +3887,7 @@ i32 main(i32 argc, char **argv) {
     tools_init(&tools, &persist);
     tools_set_interactive(!opts.have_prompt && isatty(STDIN_FILENO)
                           && isatty(STDOUT_FILENO));
-    /* Before the prompt is built, so a disabled tool is absent from the
-     * listing the model reads as well as from the schemas it is sent. */
+    
     char tools_err[128] = {0};
     if (cfg.disable_tools.n &&
         !tools_disable_list(&tools, cfg.disable_tools, tools_err,
@@ -4085,8 +3934,7 @@ i32 main(i32 argc, char **argv) {
                 cfg.max_messages);
         return 1;
     }
-    /* The table is reserved with the conversation, below the mark a /clear
-     * rewinds to: only the images it holds live in the region that goes. */
+    
     if (cfg.images && media_init(&g_media, &persist, AGENT_MAX_MEDIA))
         conv_set_media(&conv, &g_media);
 
@@ -4123,13 +3971,11 @@ i32 main(i32 argc, char **argv) {
     tui_set_aliases(k_aliases, ALIAS_N);
     tui_set_history(&hist);
     tui_set_interrupt_flag(&g_got_sigint);
-    /* A command runs where a request would, so it keeps the frame alive the
-     * same way. */
+    
     shell_set_idle(on_idle, NULL);
     shell_set_interrupt_flag(&g_got_sigint);
     shell_set_timeout(cfg.shell_timeout_ms);
-    /* A detached command belongs to the session that started it, so nothing
-     * it spawned survives the exit that stops watching it. */
+    
     atexit(jobs_stop);
     web_set_idle(on_idle, NULL, tui_input_fd(), &g_got_sigint);
     atexit(tui_stop);
@@ -4153,8 +3999,7 @@ i32 main(i32 argc, char **argv) {
     tui_set_busy_command(on_busy_command, &agent);
     if (!render_verbose()) tui_set_find_expand(find_expand, &agent);
 
-    /* One-shot: the reply is the output and the exit status reports whether
-     * the turn completed. */
+    
     if (opts.have_prompt) {
         if (no_provider(&cfg)) {
             Str hint = setup_hint(&cfg, &scratch);
@@ -4173,8 +4018,7 @@ i32 main(i32 argc, char **argv) {
      * over an empty screen. */
     if (tui_is_fullscreen()) tui_set_setup_hint(setup_hint(&cfg, &scratch));
 
-    /* Static, not automatic: a megabyte of stack for a line the composer
-     * already holds is a frame that turns a deep call into a crash. */
+    
     static char line[AGENT_LINE_BUF];
     for (;;) {
         size_t ln = 0;
@@ -4184,9 +4028,7 @@ i32 main(i32 argc, char **argv) {
         ctx_sync(&g_ctx, &conv);
         if (!tui_readline("> ", line, sizeof line, &ln)) break;
         if (ln == 0) { g_got_sigint = 0; continue; }
-        /* The composer still holds the markers an /attach put there, so a
-         * command typed behind them is read as one. The images stay pending;
-         * only a message takes them. */
+        
         /* The markers a command was typed behind leave the composer with it,
          * so an attachment reads them from here rather than from the box the
          * submission emptied. */
@@ -4220,10 +4062,8 @@ i32 main(i32 argc, char **argv) {
             agent.pending_n = 0;
             persist.off = session_mark;
             arena_reset(&scratch);
-            session_begin(&sess);   // the next message starts a new file
-            /* Do not expose the clear operation's transient unknown context
-             * frame: the cleared screen and the estimate the empty
-             * conversation already has are one paint. */
+            session_begin(&sess);   
+            
             tui_batch_begin();
             tui_clear();
             ctx_sync(&g_ctx, &conv);
@@ -4294,8 +4134,7 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
         if (!strncmp(line, "/expand ", 8)) {
-            /* Submitted by a click on a block's truncation tail; the id is
-             * the slot it was rendered from. */
+            
             unsigned long id = strtoul(line + 8, NULL, 10);
             if (id && id <= conv.n) {
                 conv.expanded[id - 1] = !conv.expanded[id - 1];

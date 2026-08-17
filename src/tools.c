@@ -15,7 +15,7 @@
 #include <fcntl.h>
 #include <signal.h>
 
-// ---- argument helpers ----------------------------------------------------
+
 static JVal *tool_args(Str args, Arena *scratch, char *err, size_t err_cap) {
     JVal *j = json_parse(scratch, args);
     if (!j) snprintf(err, err_cap, "bad args json");
@@ -82,9 +82,7 @@ static b8 arg_count(const JVal *j, Str key, size_t dflt, size_t max,
     return true;
 }
 
-/* `max_results` was the original spelling for a search page size. Keep it
- * working for saved conversations, but make the common pagination pair
- * `offset` + `limit` the public API. */
+
 static b8 arg_page_limit(const JVal *j, size_t dflt, size_t max, size_t *out,
                          char *err, size_t err_cap) {
     const JVal *limit = json_get(j, STR("limit"));
@@ -103,7 +101,7 @@ static b8 arg_page_limit(const JVal *j, size_t dflt, size_t max, size_t *out,
  * every later turn: the default stops at AGENT_READ_LINES or AGENT_READ_BYTES
  * and says which call continues from there. */
 
-// Bytes of a file's head that decide whether it holds text, as git does it.
+
 #define READ_SNIFF 8000
 
 /* A file that is not text has no page worth returning: the serializer turns
@@ -197,7 +195,7 @@ static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
     return true;
 }
 
-// ---- write ----
+
 static b8 tool_write(Str args, Arena *scratch, Buf *out, char *err, size_t err_cap) {
     JVal *j = tool_args(args, scratch, err, err_cap);
     if (!j) return false;
@@ -230,8 +228,7 @@ static b8 tool_write(Str args, Arena *scratch, Buf *out, char *err, size_t err_c
  * setsid() also makes the child a process-group leader, which is what the
  * kill(-pid, ...) below needs, so the parent must not race it with setpgid():
  * a group the parent creates first would make the child's setsid() fail. */
-/* A ring holding the last `cap` bytes written: `head` is the oldest, `len`
- * how many are live. */
+
 static void ring_put(char *ring, size_t cap, size_t *head, size_t *len,
                      const char *p, size_t n) {
     if (n > cap) { p += n - cap; n = cap; }
@@ -269,9 +266,7 @@ void shell_set_timeout(i32 ms) { g_shell_timeout_ms = ms > 0 ? ms : 0; }
  * that the caller's idle hook keeps a frame moving. */
 #define SHELL_POLL_MS 50
 
-/* How long a wait may outlast the command it watched, so that what the
- * command wrote just before exiting reaches the log before it is paged.
- * Bounded: anything the command left running can hold the pipe open. */
+
 #define JOB_DRAIN_MS 200
 
 b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
@@ -399,17 +394,17 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
  * writer closes the pipe.
  */
 typedef struct {
-    u32    id;          /* 0 marks a free slot; ids are never reused */
-    pid_t  pid;         /* session leader, signalled as -pid */
+    u32    id;          
+    pid_t  pid;         
     pid_t  drainer;
     b8     running;
     b8     drained;
-    b8     reported;    /* the model has been told how it ended */
-    i32    status;      /* wait status once !running */
-    i32    fd;          /* read end of the log, positioned at read_off */
+    b8     reported;    
+    i32    status;      
+    i32    fd;          
     f64    started;
     f64    ended;
-    size_t read_off;    /* log bytes already returned to the model */
+    size_t read_off;    
     char   path[AGENT_SPILL_PATH_MAX];
     char   cmd[AGENT_JOB_CMD_CHARS];
 } Job;
@@ -453,8 +448,7 @@ static Job *job_find(u32 id) {
     return NULL;
 }
 
-/* SIGTERM to the whole session, then SIGKILL to what ignored it, which is
- * the escalation an interrupted foreground command already gets. */
+
 static void job_signal(Job *j) {
     if (!j->running) return;
     if (kill(-j->pid, SIGTERM) != 0) kill(j->pid, SIGTERM);
@@ -493,8 +487,7 @@ static void job_drain(i32 in, i32 out, size_t written) {
     signal(SIGINT, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
     signal(SIGPIPE, SIG_IGN);
-    /* Nothing here reads or writes the terminal, and holding it open would
-     * outlast the session in the one case that skips jobs_stop. */
+    
     if (in > 2 && out > 2) {
         i32 null_fd = open("/dev/null", O_RDWR);
         if (null_fd >= 0) {
@@ -536,10 +529,7 @@ static void job_drain(i32 in, i32 out, size_t written) {
     _exit(0);
 }
 
-/* Takes over `pid` and the read end of its pipe, and with them the spill
- * file the call was writing. Returns the job id, or 0 when there is no free
- * slot or no log to drain into: a command whose output nothing can hold is
- * better waited out than orphaned. */
+
 static u32 job_detach(pid_t pid, i32 pipe_fd, Spill *spill, Str cmd) {
     Job *slot = NULL;
     for (size_t i = 0; i < AGENT_MAX_JOBS && !slot; i++)
@@ -610,10 +600,7 @@ static size_t job_log_bytes(const Job *j) {
     return (size_t)st.st_size;
 }
 
-/* The line a detached command leaves behind: where its output continues and
- * how to pick it up. The state comes last, where a finished command puts its
- * exit line, so the transcript summarises it the same way. Charged to the
- * same result budget the page is. */
+
 static void job_note(Buf *out, u32 id, f64 started) {
     Job *j = job_find(id);
     if (!j) return;
@@ -626,8 +613,7 @@ static void job_note(Buf *out, u32 id, f64 started) {
              (u32)(agent_now_seconds() - started));
 }
 
-/* Appends output the model has not seen yet, from read_off forward, and
- * reports through `pending` what the page left in the log. */
+
 static size_t job_page(Job *j, Buf *out, size_t limit, size_t *pending) {
     *pending = 0;
     if (j->fd < 0) return 0;
@@ -648,8 +634,7 @@ static size_t job_page(Job *j, Buf *out, size_t limit, size_t *pending) {
     return shown;
 }
 
-/* `timeout_ms` is how long the command may hold the turn before it is
- * detached into a job; 0 waits for it. */
+
 static b8 shell_capture_page(Str cmd, size_t offset, size_t limit,
                              i32 timeout_ms, Buf *out, char *err,
                              size_t err_cap) {
@@ -832,12 +817,7 @@ static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
                               (i32)timeout, out, err, err_cap);
 }
 
-/* ---- job ----
- * One tool over the job table: list what is running, wait for one, or stop
- * it. A wait is bounded like the command's own deadline, so polling a slow
- * build costs a round trip every couple of minutes and the prompt cache
- * survives it.
- */
+
 static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
                    size_t err_cap) {
     JVal *j = tool_args(args, scratch, err, err_cap);
@@ -870,8 +850,7 @@ static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
 
     Job *job = job_find((u32)id);
     if (!job) {
-        /* Ids do not survive the process, so a resumed session asking after
-         * one from the session before is told that, not left guessing. */
+        
         snprintf(err, err_cap, "no job %zu in this session; call job with "
                  "action=\"list\" to see the ones there are", id);
         return false;
@@ -891,14 +870,12 @@ static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
     } else {
         f64 started = agent_now_seconds();
         f64 exited = 0.0;
-        /* A poll answers with what is there; only a wait waits for the tail. */
+        
         f64 grace = wait_ms ? (f64)JOB_DRAIN_MS : 0.0;
         for (;;) {
             job_refresh(job);
             if (!job->running) {
-                /* The command's last writes sit in the pipe until the drainer
-                 * copies them, so an exit is not yet the whole output; the
-                 * drainer exits once it has seen EOF and written the rest. */
+                
                 if (job->drained) break;
                 if (exited <= 0.0) exited = agent_now_seconds();
                 if ((agent_now_seconds() - exited) * 1000.0 >= grace) break;
@@ -934,8 +911,7 @@ static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
         char state[32];
         job_status_text(job, state, sizeof state);
         buf_putf(out, "[job %u %s after %s]", job->id, state, age);
-        /* Nothing is left to read and the end is reported, so the slot may
-         * be taken by the next detached command. */
+        
         if (!pending) job->reported = true;
     }
     if (interrupted) buf_puts(out, STR("\n[interrupted]"));
@@ -970,9 +946,9 @@ static size_t find_unique(Str hay, Str needle, size_t *count) {
 
 typedef struct {
     char   path[AGENT_MAX_PATH];
-    Buf    body;              // the file as the hunks applied so far leave it
+    Buf    body;              
     size_t added, removed;
-    size_t hunk_n;            // hunks seen, so an error names one per file
+    size_t hunk_n;            
     b8     create;
     b8     unlink_it;
 } PatchFile;
@@ -988,7 +964,7 @@ typedef struct {
     size_t     err_cap;
 } Patch;
 
-// "a/src/x.c\t2024-01-01" names src/x.c, the way patch -p1 reads it.
+
 static Str patch_path(Str s) {
     const char *tab = (const char *)memchr(s.p, '\t', s.n);
     if (tab) s.n = (size_t)(tab - s.p);
@@ -1048,26 +1024,22 @@ static PatchFile *patch_open(Patch *p, Str oldp, Str newp) {
     return f;
 }
 
-/* Reads a hunk body from `off`, appending its old side to `o` and its new one
- * to `n` when they are given, and returns the offset the hunk ends at. Called
- * once with no buffers to measure the span, then again to fill them. */
+
 static size_t hunk_scan(Str text, size_t off, Buf *o, Buf *n, PatchFile *f) {
     Str line;
     char prev = ' ';
     for (;;) {
         size_t start = off;
         if (!str_line(text, &off, &line)) return off;
-        /* A model that trims trailing space leaves an empty context line
-         * where the format wants a single one. */
+        
         char c = line.n ? line.p[0] : ' ';
         if (c == '@' && str_starts(line, STR("@@"))) return start;
-        if (c == '\\') {                  // "\ No newline at end of file"
+        if (c == '\\') {                  
             if (o && prev != '+' && o->n) o->n--;
             if (n && prev != '-' && n->n) n->n--;
             continue;
         }
-        /* A "--- " line is a header only when "+++ " follows it: a removed
-         * line reading "-- x" is spelled the same way. */
+        
         if (str_starts(line, STR("--- "))) {
             size_t peek = off;
             Str next;
@@ -1084,23 +1056,21 @@ static size_t hunk_scan(Str text, size_t off, Buf *o, Buf *n, PatchFile *f) {
     }
 }
 
-/* The one place a hunk meets the file: its context and removed lines are the
- * text to find, its context and added lines what replaces it. */
+
 static b8 patch_hunk(Patch *p, PatchFile *f, Str text, size_t *off) {
     if (++p->hunks > AGENT_MAX_PATCH_HUNKS)
         return patch_fail(p, "patch carries more than %u hunks",
                           AGENT_MAX_PATCH_HUNKS);
     f->hunk_n++;
 
-    /* A deleted file's hunk describes what goes away, which the delete says
-     * already: it is read for its line count and applied to nothing. */
+    
     if (f->unlink_it) {
         *off = hunk_scan(text, *off, NULL, NULL, f);
         return true;
     }
 
     size_t end = hunk_scan(text, *off, NULL, NULL, NULL);
-    // Neither side of a hunk is longer than the hunk.
+    
     size_t span = end - *off + 1;
     Buf o, n;
     buf_init(&o, p->scratch, span);
@@ -1127,8 +1097,7 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str text, size_t *off) {
     size_t count;
     Str body = patch_body(f);
     size_t at = find_unique(body, oldt, &count);
-    /* A file whose last line has no newline cannot be matched by a hunk that
-     * ends on one, so the same hunk is retried against the end of the file. */
+    
     if (at == (size_t)-1 && !count && oldt.p[oldt.n - 1] == '\n'
         && (!body.n || body.p[body.n - 1] != '\n')) {
         Str o2 = { oldt.p, oldt.n - 1 };
@@ -1177,8 +1146,7 @@ static b8 patch_parse(Patch *p, Str text) {
             if (!f) return patch_fail(p, "a hunk before any --- / +++ header");
             if (!patch_hunk(p, f, text, &off)) return false;
         }
-        /* Anything else, "diff --git", "index", a mode line or prose around
-         * the diff, names no change and is skipped. */
+        
     }
     if (!p->n) return patch_fail(p, "no --- / +++ file header in the patch");
     return true;
@@ -1239,27 +1207,25 @@ static b8 tool_patch(Str args, Arena *scratch, Buf *out, char *err, size_t err_c
  */
 typedef struct {
     Buf   *out;
-    Arena *names;         // per-level directory listing, reset on the way out
-    Arena *file;          // one file's contents, reset after each
-    Str    pattern;       // empty for find
-    const char *glob;     // NULL for no name filter
+    Arena *names;         
+    Arena *file;          
+    Str    pattern;       
+    const char *glob;     
     size_t max;
-    size_t offset;        // 1-based first result to show
-    size_t found;         // total matches encountered
-    size_t shown;         // results actually written
-    size_t skipped;       // results past the page
-    b8     out_limited;   // page hit the byte budget before its record limit
+    size_t offset;        
+    size_t found;         
+    size_t shown;         
+    size_t skipped;       
+    b8     out_limited;   
     b8     ignore_case;
     b8     single;         // the root is one file rather than a tree
-    AgentIgnore ignore;    // rules in force at the current path
+    AgentIgnore ignore;    
     char   path[AGENT_MAX_PATH];
     size_t path_n;
-    Spill  spill;         // every record found, page or not
+    Spill  spill;         
 } Walk;
 
-/* Keep the continuation line inside the same hard result budget. Once a page
- * cannot take a record, later matches belong to the next page too: otherwise
- * the next offset would skip records the model never saw. */
+
 static b8 walk_has_room(const Walk *w, size_t n) {
     const size_t reserve = w->spill.fd >= 0 ? 128 + AGENT_SPILL_NOTE_BYTES : 128;
     if (w->out->n > AGENT_TOOL_RESULT_BYTES - reserve) return false;
@@ -1283,14 +1249,12 @@ static b8 line_matches(Str line, Str pat, b8 ignore_case) {
     return false;
 }
 
-/* A relative walk starts at "./", which is two bytes of nothing on every line
- * it would be printed on. */
+
 static const char *walk_shown(const Walk *w) {
     return w->path[0] == '.' && w->path[1] == '/' ? w->path + 2 : w->path;
 }
 
-/* A glob without a slash names a file, one with a slash names a path, where a
- * wildcard stops at a separator the way a shell's does. */
+
 static b8 name_matches(const Walk *w, const char *base) {
     if (!w->glob) return true;
     if (!strchr(w->glob, '/')) return fnmatch(w->glob, base, 0) == 0;
@@ -1307,8 +1271,7 @@ static void walk_grep_file(Walk *w) {
     if (file_read(w->file, w->path, AGENT_MAX_GREP_FILE, 0, &body, NULL)
         != FILE_OK)
         return;
-    /* A nul byte says the file is not text, and a binary "match" is a line of
-     * noise nobody can read. */
+    
     Str head = str_take(body, 4096);
     if (head.n && memchr(head.p, '\0', head.n)) return;
 
@@ -1318,8 +1281,7 @@ static void walk_grep_file(Walk *w) {
         ln++;
         if (!line_matches(line, w->pattern, w->ignore_case)) continue;
         w->found++;
-        /* The spill holds the match whole and unclipped, whichever page it
-         * would have landed on. */
+        
         spill_putf(&w->spill, "%s:%zu: ", walk_shown(w), ln);
         spill_put(&w->spill, line.p, line.n);
         spill_put(&w->spill, "\n", 1);
@@ -1381,8 +1343,7 @@ static b8 walk_dir(Walk *w, i32 depth) {
     }
     closedir(d);
 
-    /* readdir order is the filesystem's, so the same tree would answer
-     * differently on the next run. */
+    
     for (size_t i = 1; i < n; i++) {
         Str key = ent[i];
         size_t k = i;
@@ -1446,8 +1407,7 @@ static b8 walk_start(Walk *w, Str root, char *err, size_t err_cap) {
         snprintf(err, err_cap, "%s does not exist", rel);
         return false;
     }
-    /* Narrowing a query to the file it is about is the same request with a
-     * smaller root. */
+    
     if (!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode)) {
         snprintf(err, err_cap, "%s is not a file or a directory", rel);
         return false;
@@ -1555,8 +1515,7 @@ static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep,
                  w.shown, w.found,
                  grep ? "matches" : "files");
     }
-    /* Kept only when the page left something out: a complete answer needs no
-     * file behind it. */
+    
     spill_finish(&w.spill, out, w.skipped > 0 || !room || w.out_limited);
     if (!buf_ok(out) || out->n > AGENT_TOOL_RESULT_BYTES) {
         snprintf(err, err_cap, "result does not fit in the %u byte limit",
@@ -1574,11 +1533,7 @@ static b8 tool_find(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
     return walk_run(args, scratch, out, false, err, err_cap);
 }
 
-/* ---- agent UI tools ----
- * submit_plan and ask_user are registered like any other tool so the model is
- * offered them in the usual place, but the agent loop intercepts both, since
- * each waits for the user and a ToolRun cannot reach the screen. Reaching
- * these bodies means the interception is gone. */
+
 static b8 tool_agent_only(Str args, Arena *scratch, Buf *out,
                           char *err, size_t err_cap) {
     (void)args; (void)scratch; (void)out;
@@ -1586,7 +1541,7 @@ static b8 tool_agent_only(Str args, Arena *scratch, Buf *out,
     return false;
 }
 
-// ---- registry ----
+
 static AgentMode g_mode;
 static b8 g_interactive;
 

@@ -15,8 +15,7 @@
 
 CurlApi g_curl;
 
-/* The soname, not the linker name: libcurl.so is a development symlink and is
- * absent from a machine that only runs the program. */
+
 #define AGENT_CURL_SONAME "libcurl.so.4"
 
 b8 curl_load(char *err, size_t err_cap) {
@@ -30,8 +29,7 @@ b8 curl_load(char *err, size_t err_cap) {
             snprintf(why, sizeof why, "cannot load " AGENT_CURL_SONAME ": %s",
                      e ? e : "unknown error");
         } else {
-            /* One miss leaves the table unusable, so the whole set is
-             * resolved before anything may call through it. */
+            
             struct { void **slot; const char *name; } wanted[] = {
                 {(void **)&g_curl.easy_init,      "curl_easy_init"},
                 {(void **)&g_curl.easy_setopt,    "curl_easy_setopt"},
@@ -79,19 +77,16 @@ b8 curl_load(char *err, size_t err_cap) {
 typedef struct {
     const HttpReq *r;
     Buf    line;      // the event being accumulated, grown rather than clipped
-    b8     aborted;   // on_line asked us to stop
+    b8     aborted;   
     b8     oom;       // a line outgrew the arena it accumulates in
-    /* What no return code carries: how many lines arrived and the longest the
-     * stream went silent between them, which is the "it froze" report. */
+    
     size_t lines;
     size_t polls;
     f64    last_write;
     f64    stall;
 } Ctx;
 
-/* Accumulate into `line`, dispatch on newline. False once a sink has asked
- * for the stream to end, or once a line could not be held whole: delivering a
- * truncated event would hand the parser something that is not JSON. */
+
 static b8 dispatch_line(Ctx *c, const char *p, size_t n) {
     size_t start = 0;
     for (size_t i = 0; i < n; i++) {
@@ -122,8 +117,7 @@ static size_t write_cb(char *p, size_t sz, size_t n, void *ud) {
         c->stall = now - c->last_write;
     c->last_write = now;
     b8 consumed = dispatch_line(c, p, total);
-    /* A terminal protocol event is a clean early end. Tell curl the bytes
-     * were consumed, then let the multi loop remove the still-open handle. */
+    
     if (c->aborted) return total;
     return consumed ? total : 0;
 }
@@ -144,8 +138,7 @@ typedef struct {
     b8 blocked;
 } UrlCtx;
 
-/* Short enough that Ctrl-C feels immediate, long enough to stay idle between
- * events. */
+
 #define HTTP_POLL_MS 100
 
 static size_t url_body_cb(char *p, size_t sz, size_t n, void *ud) {
@@ -183,16 +176,15 @@ static b8 ipv6_public(const struct in6_addr *in) {
         memcpy(&v4.s_addr, p + 12, 4);
         return ipv4_public(&v4);
     }
-    /* Public IPv6 unicast is 2000::/3. Reject its non-routable special-use
-     * subnets as well as every address outside it. */
+    
     if ((p[0] & 0xe0u) != 0x20u) return false;
     if (p[0] == 0x20 && p[1] == 0x01) {
-        if (p[2] < 0x02) return false;               // 2001:0000::/23
+        if (p[2] < 0x02) return false;               
         if (p[2] == 0x02 && p[3] == 0x00) return false;
         if (p[2] == 0x0d && p[3] == 0xb8) return false;
     }
-    if (p[0] == 0x20 && p[1] == 0x02) return false; // 6to4
-    if (p[0] == 0x3f && p[1] == 0xff) return false; // documentation
+    if (p[0] == 0x20 && p[1] == 0x02) return false; 
+    if (p[0] == 0x3f && p[1] == 0xff) return false; 
     return true;
 }
 
@@ -233,8 +225,7 @@ static b8 build_url(char *url, size_t cap, const char *base_url,
     return true;
 }
 
-/* The Anthropic API pins the shape of its request and its events to a dated
- * version, so every request names the one this client was written against. */
+
 #define ANTHROPIC_VERSION "anthropic-version: 2023-06-01"
 
 /* Only when there is a key: "Bearer (null)" is not a request worth sending.
@@ -267,8 +258,8 @@ static const char *api_post_path(ApiKind api) {
 /* Both members are process-lifetime storage, and NULL means "leave libcurl's
  * option alone". */
 typedef struct {
-    const char *file;   // CURLOPT_CAINFO, a bundle
-    const char *dir;    // CURLOPT_CAPATH, a hashed directory
+    const char *file;   
+    const char *dir;    
 } CaTrust;
 
 static b8 ca_present(const char *path, b8 want_dir) {
@@ -277,10 +268,7 @@ static b8 ca_present(const char *path, b8 want_dir) {
     return want_dir ? S_ISDIR(st.st_mode) != 0 : S_ISREG(st.st_mode) != 0;
 }
 
-/* The probe reads absolute system paths, so the suite needs somewhere to hang
- * a trust store it controls. Only the testing build offers one, and setting
- * it also skips the build-time default: a host with a working bundle would
- * otherwise never reach the probe under test. */
+
 static const char *ca_root(void) {
 #ifdef AGENT_TESTING
     const char *root = getenv(AGENT_ENV_PREFIX "TEST_CA_ROOT");
@@ -289,16 +277,15 @@ static const char *ca_root(void) {
     return "";
 }
 
-/* Bundles before directories, in the order the distributions install them.
- * A bundle is one open() where a hashed directory is a lookup per chain. */
+
 static const char *const k_ca_files[] = {
-    "/etc/ssl/certs/ca-certificates.crt",      // Debian, Ubuntu, Arch, Alpine
-    "/etc/pki/tls/certs/ca-bundle.crt",        // Fedora, RHEL
-    "/etc/ssl/ca-bundle.pem",                  // openSUSE
+    "/etc/ssl/certs/ca-certificates.crt",      
+    "/etc/pki/tls/certs/ca-bundle.crt",        
+    "/etc/ssl/ca-bundle.pem",                  
     "/etc/pki/tls/cacert.pem",
-    "/etc/ssl/cert.pem",                       // Alpine, BSD
-    "/usr/local/share/certs/ca-root-nss.crt",  // FreeBSD
-    "/etc/certs/ca-certificates.crt",          // Solaris
+    "/etc/ssl/cert.pem",                       
+    "/usr/local/share/certs/ca-root-nss.crt",  
+    "/etc/certs/ca-certificates.crt",          
 };
 static const char *const k_ca_dirs[] = {
     "/etc/ssl/certs",
@@ -318,17 +305,11 @@ static b8 ca_candidate(const char *path, char *buf, size_t cap,
     return true;
 }
 
-/* The build-time defaults, when libcurl can report them and they still exist.
- * Older libcurl cannot answer, and then the probe decides.
- *
- * Both options are loaded into one trust store, so a default naming a store
- * that is not there fails the handshake however good the other one is: the
- * pair is approved together or not at all. A binary built on one
- * distribution and run on another carries exactly that mismatch. */
+
 static b8 ca_default_works(void) {
 #if LIBCURL_VERSION_NUM >= 0x075400
     CURL *probe = curl_easy_init();
-    if (!probe) return true;   // no handle, no request: assume nothing
+    if (!probe) return true;   
     char *file = NULL, *dir = NULL;
     if (curl_easy_getinfo(probe, CURLINFO_CAINFO, &file) != CURLE_OK) file = NULL;
     if (curl_easy_getinfo(probe, CURLINFO_CAPATH, &dir) != CURLE_OK) dir = NULL;
@@ -392,11 +373,10 @@ static const CaTrust *ca_trust(void) {
     return &trust;
 }
 
-/* Every handle this module opens goes through here, so one resolution
- * decides the trust store for API calls and web fetches alike. */
+
 static void http_apply_ca(CURL *curl) {
     const CaTrust *t = ca_trust();
-    if (!t->file && !t->dir) return;   // a working default keeps its behaviour
+    if (!t->file && !t->dir) return;   
     /* One resolution answers for both options: the one it does not name is
      * cleared rather than left at its build-time default, which would name a
      * store that need not exist here and fail the handshake on its own. */
@@ -434,7 +414,7 @@ static b8 host_is_loopback(Str host) {
         || str_eq(host, STR("[::1]")) || str_starts(host, STR("127."));
 }
 
-// curl reports its phases in microseconds; the record is in milliseconds.
+
 static i64 curl_ms(CURL *curl, CURLINFO info) {
     curl_off_t us = 0;
     if (curl_easy_getinfo(curl, info, &us) != CURLE_OK || us < 0) return -1;
@@ -457,7 +437,7 @@ static void http_record(const char *method, const char *path, const char *url,
     tel_bool(&e, "tls", str_starts(str_c(url ? url : ""), STR("https://")));
     tel_int(&e, "status", status);
     tel_int(&e, "curl", (i64)rc);
-    // A fixed catalogue string of curl's, nothing of the conversation.
+    
     if (rc != CURLE_OK) tel_str(&e, "curl_error", str_c(curl_easy_strerror(rc)));
     tel_bool(&e, "interrupted", interrupted);
 
@@ -478,7 +458,7 @@ static void http_record(const char *method, const char *path, const char *url,
     curl_easy_getinfo(curl, CURLINFO_REDIRECT_COUNT, &redirects);
     tel_int(&e, "http_version", (i64)version);
     tel_int(&e, "redirects", (i64)redirects);
-    // Which family the connection ended up on, never the address itself.
+    
     char *ip = NULL;
     if (curl_easy_getinfo(curl, CURLINFO_PRIMARY_IP, &ip) == CURLE_OK && ip)
         tel_str(&e, "ip", strchr(ip, ':') ? STR("v6") : STR("v4"));
@@ -764,8 +744,7 @@ i32 http_post(const HttpReq *r) {
 
     Ctx ctx = {0};
     ctx.r = r;
-    /* An event is one line, and providers send anything from a word to a whole
-     * reply in one; this is where it starts, not where it stops. */
+    
     if (stream) buf_init(&ctx.line, r->line_arena, 8192);
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
@@ -775,8 +754,7 @@ i32 http_post(const HttpReq *r) {
                                                      : (void *)r->body_out);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, drop_header_cb);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    /* SIGWINCH and SIGINT are ours, and curl's signal-based resolver timeouts
-     * would fire into those handlers. */
+    
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
     http_apply_ca(curl);
@@ -822,12 +800,11 @@ i32 http_post(const HttpReq *r) {
             if (msg->msg == CURLMSG_DONE) rc = msg->data.result;
     }
 
-    /* A body not ending in a newline still has a last line, and for a single
-     * JSON document that line is the whole reply. */
+    
     if (stream && !interrupted && !ctx.aborted && rc == CURLE_OK && ctx.line.n)
         dispatch_line(&ctx, "\n", 1);
 
-    // curl writes a `long` through this pointer, whatever its width.
+    
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     i64 http = (i64)http_code;
@@ -853,7 +830,7 @@ i32 http_post(const HttpReq *r) {
         return 2;
     }
     if (http < 200 || http >= 300) {
-        return -(i32)http;   // negative HTTP code signals the error
+        return -(i32)http;   
     }
     return 0;
 }

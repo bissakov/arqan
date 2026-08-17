@@ -9,7 +9,7 @@
 
 #include "highlight_protocol.h"
 
-// ---- fixed-width aliases -----------------------------------------------
+
 typedef int8_t   i8;
 typedef int16_t  i16;
 typedef int32_t  i32;
@@ -23,14 +23,11 @@ typedef double   f64;
 typedef bool     b8;
 
 #define AGENT_VERSION "0.5.0"
-/* The user-facing name: the binary, the XDG directories, the project
- * directory and the environment prefix all derive from it. Internal
- * identifiers keep the AGENT_ prefix, so a rename touches this line and
- * scripts/rename.py handles the rest. */
+
 #define AGENT_NAME       "arqan"
 #define AGENT_ENV_PREFIX "ARQAN_"
 
-// ---- capacities (compile-time, no growth) -------------------------------
+
 /* Both arenas are static storage, so this is address space rather than
  * startup cost, sized an order of magnitude above the per-turn peak. */
 #define AGENT_ARENA_BYTES      (1u << 27)
@@ -62,9 +59,9 @@ typedef bool     b8;
  * call a page rather than a file; the call says where to continue. */
 #define AGENT_TOOL_RESULT_BYTES (8u << 10)
 #define AGENT_READ_LINES       2000
-// Leave enough room under the result cap for a continuation/status line.
+
 #define AGENT_READ_BYTES       (AGENT_TOOL_RESULT_BYTES - 256u)
-// One page of shell output, with room for its notes and a spill line.
+
 #define AGENT_SHELL_OUT_BYTES  (AGENT_TOOL_RESULT_BYTES - 256u \
                                 - AGENT_SPILL_NOTE_BYTES)
 #define AGENT_GREP_RESULTS     100
@@ -78,7 +75,7 @@ typedef bool     b8;
 #define AGENT_MAX_GREP_FILE    (1u << 20)
 #define AGENT_MAX_PATCH_FILES  32
 #define AGENT_MAX_PATCH_HUNKS  512
-// The whole output a paged tool keeps on disk; see spill.c.
+
 #define AGENT_SPILL_BYTES      (16u << 20)
 #define AGENT_SPILL_PATH_MAX   128
 #define AGENT_SPILL_NOTE_BYTES 256
@@ -86,24 +83,19 @@ typedef bool     b8;
  * line naming what it was; see conv_write_json. */
 #define AGENT_ELIDE_TURNS      2
 #define AGENT_ELIDE_BYTES      512
-// The delay doubles per attempt from Config.retry_delay_ms and stops here.
+
 #define AGENT_RETRIES          4
 #define AGENT_RETRY_DELAY_MS   2000
 #define AGENT_MAX_RETRY_DELAY_MS 30000
-/* How long an unanswered ask_user question waits. Short of the shortest
- * provider prompt cache, so a user who stepped away costs a wait rather
- * than a full re-read of the conversation. */
+
 #define AGENT_ASK_TIMEOUT_MS   180000
-/* How long a shell command holds the turn before it is detached into a job.
- * Short of the shortest provider prompt cache for the reason above: a model
- * idle past it pays for the whole conversation again on its next request.
- * 0 waits for the command however long it takes. */
+
 #define AGENT_SHELL_TIMEOUT_MS 120000
-// How long one job wait blocks by default, and the most it may be asked for.
+
 #define AGENT_JOB_WAIT_MS      120000
 #define AGENT_JOB_WAIT_MAX_MS  240000
 #define AGENT_MAX_JOBS         8
-// Of the command a job listing names; the rest is elided.
+
 #define AGENT_JOB_CMD_CHARS    96
 #define AGENT_MAX_COMMANDS     32
 #define AGENT_LINE_BUF         (1u << 20)
@@ -115,34 +107,29 @@ typedef bool     b8;
 #define AGENT_MAX_CONFIG_FILES 8
 #define AGENT_MAX_PROJECT_FILES 8
 #define AGENT_MAX_SETTINGS     512
-#define AGENT_MAX_SETTINGS_BYTES (1u << 20) // largest settings file we will read
+#define AGENT_MAX_SETTINGS_BYTES (1u << 20) 
 #define AGENT_MAX_SET_KEYS     8
 #define AGENT_MAX_TOOL_LIST    256
-/* The three files settings live in. One format, three audiences: the config
- * is the user's document, the state is what the UI remembers, and the
- * credentials file holds keys alone at mode 0600. */
+
 #define AGENT_CONFIG_NAME      STR("config.toml")
 #define AGENT_STATE_NAME       STR("state.toml")
 #define AGENT_CREDENTIALS_NAME STR("credentials.toml")
-// A project's own settings, beside its .<name>/SYSTEM.md.
+
 #define AGENT_PROJECT_DIR      STR("." AGENT_NAME)
 // Past this arqan refuses to start rather than send a truncated prompt.
 #define AGENT_MAX_PROMPT_FILE  (1u << 16)
 #define AGENT_MAX_AGENTS_FILES 8
 #define AGENT_MAX_SESSIONS     64
-#define AGENT_MAX_SESSION_BYTES (32u << 20) // largest session file we will read
+#define AGENT_MAX_SESSION_BYTES (32u << 20) 
 /* A session's name: one short line of display text, not a file name. It is
  * kept beside the session file, so the picker reads it back rather than
  * deriving it from anything on the wire. */
 #define AGENT_MAX_TITLE        64
 #define AGENT_TITLE_SUFFIX     STR(".title")
-/* A popup shows a handful of rows at a time, so this bounds what it can hold
- * and scroll or search through, not what it can show: a provider that serves
- * hundreds of models is the reason it is not the row count. */
+
 #define AGENT_MAX_POPUP        4096
 #define AGENT_MAX_MODELS       AGENT_MAX_POPUP
-/* Pinned models, counted across every provider: the picker's rows are pairs,
- * so one pin is one (provider, model). */
+
 #define AGENT_MAX_FAVORITES    64
 #define AGENT_MAX_KEY_ROWS     128
 #define AGENT_MAX_ENDPOINTS    32
@@ -176,8 +163,7 @@ typedef bool     b8;
 #define AGENT_WEB_TYPE_BYTES   128
 #define AGENT_WEB_SEARCH_INTERVAL_MS 10000
 #define AGENT_WEB_SEARCH_PAUSE_MS 3600000
-/* Search engines answer a request with no User-Agent with a challenge or a
- * stripped page, so every web request claims a current browser. */
+
 #define AGENT_WEB_USER_AGENT \
     "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
 #define AGENT_STATUS_FIELDS    10
@@ -196,10 +182,10 @@ void   *arena_alloc(Arena *a, size_t n, size_t align);
 void   *arena_alloc_array(Arena *a, size_t count, size_t size, size_t align);
 void    arena_reset(Arena *a);
 size_t  arena_used(const Arena *a);
-// Contents are uninitialised.
+
 #define arena_new(a, T, n) ((T *)arena_alloc_array((a), (n), sizeof(T), alignof(T)))
 
-// ---- string view + builder ----------------------------------------------
+
 typedef struct { const char *p; size_t n; } Str;
 #define STR(lit) ((Str){ (lit), sizeof(lit) - 1 })
 
@@ -216,24 +202,20 @@ b8    str_starts(Str s, Str prefix);
 Str     str_trim(Str s);
 Str     str_take(Str s, size_t n);
 Str     str_drop(Str s, size_t n);
-// `line` excludes the newline, `off` advances past it.
+
 b8      str_line(Str s, size_t *off, Str *line);
 size_t  str_lines(Str s);
-// At most `max` bytes of `s`, never cutting a UTF-8 sequence in half.
+
 Str     str_clip_utf8(Str s, size_t max);
 /* Decode one UTF-8 sequence from `s`, writing the code point to `*cp` and
  * returning its length in bytes. 0 when the bytes are not a well formed
  * sequence, leaving `*cp` untouched: the caller decides what to do with
  * input it did not produce. */
 size_t  utf8_decode(const char *s, size_t n, u32 *cp);
-/* Terminal columns for one code point: 0 for a control or a combining mark,
- * 2 for East Asian Wide and Fullwidth, 1 for the rest. From this program's
- * own Unicode table, so a frame does not depend on the C library's version
- * of it. See scripts/gen-width.py. */
+
 i32     agent_width(u32 cp);
 i64    str_int(Str s, b8 *ok);
-/* FNV-1a: enough to tell two strings apart across runs, not enough to name
- * either, which is what a session slug and a telemetry field need. */
+
 u64     str_hash64(Str s);
 
 /* Growable char buffer doubling into an arena. `oom` latches when a growth
@@ -254,7 +236,7 @@ void    buf_put(Buf *b, const void *p, size_t n);
 void    buf_puts(Buf *b, Str s);
 void    buf_putf(Buf *b, const char *fmt, ...) __attribute__((format(printf,2,3)));
 void    buf_json_str(Buf *b, Str s);
-// Its body without the quotes, so several pieces can share one string.
+
 void    buf_json_chars(Buf *b, Str s);
 /* Standard base64 with padding, appended raw: a caller that needs it inside
  * JSON writes the quotes, since the alphabet needs no escaping. */
@@ -270,88 +252,63 @@ typedef enum {
     FILE_NO_MEMORY, FILE_UNREADABLE
 } FileStatus;
 
-/* Reads `path` into `a`, nul-terminated past `out->n`. A file over `max` is
- * FILE_TOO_LARGE and reads nothing; a nonzero `head` caps how much of one
- * within the limit is read, which is what a preview asks for. `size_out` is
- * optional and carries the file's own size, for a message about it. `out` is
- * empty for every status but FILE_OK. */
+
 FileStatus file_read(Arena *a, const char *path, size_t max, size_t head,
                      Str *out, u64 *size_out);
 
-// ---- logging ------------------------------------------------------------
+
 enum { AGENT_LOG_DEBUG, AGENT_LOG_INFO, AGENT_LOG_WARN, AGENT_LOG_ERROR };
 void    agent_log(i32 level, const char *fmt, ...) __attribute__((format(printf,2,3)));
 void    agent_log_set_level(i32 level);
-/* Raw stderr would paint over the frame, so the TUI redirects log lines into
- * the transcript while it is up. NULL restores plain stderr. */
+
 typedef void (*AgentLogSink)(i32 level, Str msg, void *ud);
 void    agent_log_set_sink(AgentLogSink sink, void *ud);
 
-/* ---- telemetry -----------------------------------------------------------
- * An anonymized record of a session, appended as JSON lines to that
- * conversation's own $XDG_STATE_HOME/arqan/telemetry/<cwd>/<timestamp>.jsonl
- * while /telemetry is on: the file is named after the session file and is
- * rebound with it, so /clear starts a record and /resume continues one.
- *
- * The record is the shape of a session, never its content: a message is a
- * byte and a line count, a tool call is its name and the keys of its
- * arguments, the working directory is a hash. A string field is for text arqan
- * formats itself; user and model text goes through tel_shape, which keeps no
- * bytes of it. With telemetry off every call below is a no-op.
- */
-/* One line, sized for the widest event: a network transfer is two dozen
- * counters and curl's own timings. */
+
 typedef struct { char buf[1024]; size_t n; b8 full, live; } TelEvent;
 
-// `on` is the resolved `telemetry` setting; /settings changes it later.
+
 void telemetry_init(Arena *scratch, b8 on);
 b8   telemetry_on(void);
-/* Records into the file named after `session_path`, under a directory named
- * after its parent, taking with it whatever was recorded while no session had
- * a file. Called by session.c when a session file is written or resumed. */
+
 void telemetry_bind(Str session_path);
-// The conversation is over: what follows waits for the next one's file.
+
 void telemetry_detach(void);
-// Writes out whatever is still waiting, as a record named after the run.
+
 void telemetry_close(void);
 /* Writes the session event: what the record needs to be read on its own.
  * Called on the first event of a file, since a file that starts mid-run
  * would otherwise say nothing about the run. */
 typedef void (*TelHeader)(void *ud);
 void telemetry_set_header(TelHeader fn, void *ud);
-/* False when no state directory resolves or the setting could not be
- * written, leaving it unchanged. */
+
 b8   telemetry_set(b8 on, Arena *scratch);
-// The file being recorded to. Empty when no state directory resolves.
+
 Str  telemetry_file(void);
-/* Mirror of a agent_log line, so the diagnostics sit beside the events they
- * explain. Called by agent_log. */
+
 void telemetry_log(i32 level, Str msg);
 
 void tel_open(TelEvent *e, const char *ev);
 void tel_int(TelEvent *e, const char *key, i64 v);
 void tel_bool(TelEvent *e, const char *key, b8 v);
-/* The largest power of two `v` reaches, so a record says what order of
- * magnitude something was without measuring it. */
+
 void tel_bucket(TelEvent *e, const char *key, u64 v);
-// Escaped and clipped. Never pass text a user or a model wrote.
+
 void tel_str(TelEvent *e, const char *key, Str v);
-/* "<key>_bytes" and "<key>_lines": what a message looked like, not what it
- * said. */
+
 void tel_shape(TelEvent *e, const char *key, Str text);
 /* The top-level keys of a tool call's JSON arguments, comma-separated; the
  * values carry the path or the command, so none is recorded. `scratch` is
  * rewound before returning. */
 void tel_arg_keys(TelEvent *e, const char *key, Str args, Arena *scratch);
-/* A stable 64-bit hash: enough to tell two directories apart across runs,
- * not enough to name either. */
+
 void tel_hash_field(TelEvent *e, const char *key, Str v);
 void tel_send(TelEvent *e);
 
-// ---- time ---------------------------------------------------------------
+
 f64  agent_now_seconds(void);
 
-// ---- JSON ---------------------------------------------------------------
+
 typedef enum { J_NULL, J_BOOL, J_NUM, J_STR, J_ARR, J_OBJ } JType;
 typedef struct JVal JVal;
 struct JVal {
@@ -376,7 +333,7 @@ const JVal *json_at(const JVal *arr, size_t i);
 /* Empty when the member is absent or is not a string, which is the same
  * answer to the caller: the field it asked for is not there. */
 Str    json_str(const JVal *obj, Str key);
-// False unless the member is present and true.
+
 b8     json_bool(const JVal *obj, Str key);
 
 /* ---- XDG base directories ------------------------------------------------
@@ -385,18 +342,15 @@ b8     json_bool(const JVal *obj, Str key);
  */
 typedef enum { AGENT_DIR_CONFIG, AGENT_DIR_DATA, AGENT_DIR_STATE, AGENT_DIR_CACHE } AgentDir;
 
-// Absolute "<base>/arqan" path, empty when no base resolves.
+
 Str    paths_dir(AgentDir kind, Arena *a);
 Str    paths_file(AgentDir kind, Str name, Arena *a);
 b8     paths_ensure_dir(Str dir);
-/* Candidates for a global config file, lowest precedence first: each
- * XDG_CONFIG_DIRS entry, then XDG_CONFIG_HOME. */
+
 size_t paths_config_files(Str name, Arena *a, Str *out, size_t max);
-/* "<dir>/.arqan/<name>" for the working directory and every directory above
- * it, outermost first, so the nearest file is applied last and wins. Only
- * files that exist are returned. */
+
 size_t paths_project_files(Str name, Arena *a, Str *out, size_t max);
-// "$cwd/.arqan", where a project keeps its own settings and prompts.
+
 Str    paths_project_dir(Arena *a);
 
 /* ---- settings files ------------------------------------------------------
@@ -417,12 +371,11 @@ typedef struct {
     size_t n;
 } Settings;
 
-// False when the file is missing, empty or past AGENT_MAX_SETTINGS_BYTES.
+
 b8     settings_load(Settings *s, Str path, Arena *a);
-/* Empty when the key is unset; a key repeated in one file reads as the last
- * assignment wins. */
+
 Str    settings_get(const Settings *s, Str section, Str key);
-// Distinct section names starting with `prefix`, in file order.
+
 size_t settings_sections(const Settings *s, Str prefix, Str *out, size_t max);
 /* Upserts `n` keys in `section` (empty names the head of the file), keeping
  * every other line, its order and its comments; an empty value removes the
@@ -433,23 +386,19 @@ b8     settings_set(Str path, Str section, const Str *keys, const Str *vals,
                    size_t n, u32 mode, Arena *scratch);
 b8     settings_set_one(Str path, Str section, Str key, Str val, u32 mode,
                        Arena *scratch);
-/* Removes one named section whole, preserving every byte outside it. Missing
- * files and sections are already absent and therefore succeed. */
+
 b8     settings_remove_section(Str path, Str section, Arena *scratch);
 /* Replaces a settings file wholesale, through a temporary file and a rename.
  * For rewriting a file whose format changed; a per-key change is an upsert,
  * since a settings file is a document its owner edits. */
 b8     settings_write(Str path, Str data, u32 mode);
 
-/* $XDG_STATE_HOME/arqan/state.toml: the choices the UI remembers between runs.
- * Keys are the configuration keys of config.c, so what the UI writes reads
- * back through the same table the config files feed. */
+
 b8     state_set(Str key, Str val, Arena *scratch);
-/* Several head keys in one write, for a choice no half of which stands on
- * its own. */
+
 b8     state_set_many(const Str *keys, const Str *vals, size_t n,
                       Arena *scratch);
-// The same file, under a named section; an empty section names its head.
+
 b8     state_set_in(Str section, Str key, Str val, Arena *scratch);
 
 /* ---- prompt history ------------------------------------------------------
@@ -467,7 +416,7 @@ typedef struct {
     size_t cursor;
     Str    path;
     Arena *a;
-    size_t base_off; // where entries start, past the index array
+    size_t base_off; 
 } History;
 
 b8   history_init(History *h, Arena *own, size_t cap);
@@ -475,7 +424,7 @@ void history_load(History *h, Str path, Arena *scratch);
 void history_rewrite(const History *h);
 void history_add(History *h, Str line);
 b8   history_prev(History *h, Str *out);
-// false once it steps past the newest entry, where the draft belongs.
+
 b8   history_next(History *h, Str *out);
 void history_reset_cursor(History *h);
 b8   history_browsing(const History *h);
@@ -494,16 +443,7 @@ typedef enum { API_OPENAI = 0, API_ANTHROPIC } ApiKind;
 ApiKind api_from_str(Str s);
 Str     api_name(ApiKind k);
 
-/* ---- secrets -------------------------------------------------------------
- * Where an endpoint's key comes from. SECRET_STORED is arqan's own
- * credentials file; the rest name an external store that arqan asks through a
- * helper program, so no plaintext key is written anywhere.
- *
- * The directive naming a source is executable content, so it is read only
- * from $XDG_STATE_HOME/arqan/credentials.toml at mode 0600, never from the config
- * file a dotfile repository carries. Helpers run through execvp with an argv
- * built here, never through a shell. See secrets.c.
- */
+
 typedef enum {
     SECRET_STORED = 0,
     SECRET_SERVICE,
@@ -522,15 +462,12 @@ b8           secret_source_external(SecretSource src);
  * with their own tool. */
 b8           secret_source_can_store(SecretSource src);
 
-/* The key `account` holds in `src`, allocated in `out`. Empty with `err` set
- * when the helper is missing, fails, answers with more than one line or does
- * not answer before AGENT_SECRET_TIMEOUT_MS. `command` is read only for
- * SECRET_COMMAND. No message ever quotes the key. */
+
 Str secret_lookup(SecretSource src, Str account, Str command, Arena *out,
                   char *err, size_t err_cap);
 b8  secret_store(SecretSource src, Str account, Str key,
                  char *err, size_t err_cap);
-// Removing what is not there is success: this runs to leave no key behind.
+
 b8  secret_erase(SecretSource src, Str account, char *err, size_t err_cap);
 
 /* ---- endpoints -----------------------------------------------------------
@@ -549,15 +486,9 @@ b8  secret_erase(SecretSource src, Str account, char *err, size_t err_cap);
 typedef struct {
     Str     name[AGENT_MAX_ENDPOINTS];
     Str     base_url[AGENT_MAX_ENDPOINTS];
-    /* The model this provider names for itself, empty when it names none.
-     * Read and never written: /model records its choice as the `provider`
-     * and `model` pair in the state file, and this is the default a
-     * hand-written or pre-0.3 config file leaves under the section. */
+    
     Str     model[AGENT_MAX_ENDPOINTS];
-    /* The cheap model this provider names for arqan's own errands, naming a
-     * session among them. Empty when it names none. A fallback only: the
-     * small model chosen in /model carries the provider that serves it, and
-     * it sits above this. */
+    
     Str     small_model[AGENT_MAX_ENDPOINTS];
     ApiKind api[AGENT_MAX_ENDPOINTS];
     size_t  n;
@@ -565,19 +496,15 @@ typedef struct {
 
 #define ENDPOINT_NONE ((size_t)-1)
 
-// Every Str lands in `a` and lives as long as it does.
+
 size_t endpoints_load(Endpoints *e, Arena *a);
 size_t endpoints_find(const Endpoints *e, Str name);
-/* A name that is a TOML bare key, which is what "[providers.<name>]" needs
- * to stay a header a TOML reader and arqan agree on. */
+
 b8     endpoint_name_ok(Str name);
-/* False when the store is full or a field is past its cap. The model fields
- * of a new entry are empty: they are the provider's own defaults, which only
- * a config file sets. */
+
 b8     endpoints_put(Endpoints *e, Str name, Str base_url, ApiKind api,
                      Arena *a);
-/* Writes one endpoint's connection keys, leaving the rest of the config file
- * alone. */
+
 b8     endpoints_save_one(Str name, Str base_url, ApiKind api, Arena *scratch);
 /* The provider's own small model, allocated in `scratch`. Empty when it has
  * none. */
@@ -587,14 +514,12 @@ Str    endpoints_small_model(Str name, Arena *scratch);
  * anyone but its owner: that is a key to rotate rather than one to load. */
 Str    endpoints_key(Str name, Arena *out, Arena *scratch,
                      char *err, size_t err_cap);
-/* Which store `name` keeps its key in. SECRET_STORED when it has no
- * `key_source` line, which is every endpoint written before they existed. */
+
 SecretSource endpoints_key_source(Str name, Arena *scratch);
-/* Writes the key through `src` and records which one was used. An empty key
- * clears it from whichever store held it. */
+
 b8     endpoints_set_key(Str name, Str key, SecretSource src, Arena *scratch,
                          char *err, size_t err_cap);
-// Removes the provider's config and credential sections.
+
 b8     endpoints_delete(Str name, Arena *scratch, char *err, size_t err_cap);
 
 /* ---- favorite models -----------------------------------------------------
@@ -607,15 +532,12 @@ b8     endpoints_delete(Str name, Arena *scratch, char *err, size_t err_cap);
  * Order is the order they were pinned in, provider by provider.
  */
 typedef struct {
-    Str    provider[AGENT_MAX_FAVORITES];   // empty for the unnamed endpoint
+    Str    provider[AGENT_MAX_FAVORITES];   
     Str    model[AGENT_MAX_FAVORITES];
     size_t n;
 } Favorites;
 
-/* Every pin of the unnamed endpoint and of each provider in `e`, which is
- * what makes a pin of a provider that cannot be listed still reachable: this
- * reads local state and never the network. Every Str points into `a` and
- * lives as long as it does. */
+
 size_t favorites_load(Favorites *f, const Endpoints *e, Arena *a);
 b8     favorites_has(const Favorites *f, Str provider, Str model);
 /* Pins the pair when it is not pinned and unpins it when it is, then writes
@@ -627,7 +549,7 @@ b8     favorites_has(const Favorites *f, Str provider, Str model);
  * before the call. */
 b8     favorites_toggle(Favorites *f, Str provider, Str model, Arena *scratch,
                         b8 *on, char *err, size_t err_cap);
-// Drops a deleted provider's whole section, pins and all.
+
 b8     favorites_forget(Str provider, Arena *scratch);
 
 /* Optional user-owned capabilities for one exact (provider, model) pair.
@@ -645,7 +567,7 @@ void model_profile_load(ModelProfile *p, Str provider, Str model, Arena *out,
                         Arena *scratch);
 b8   model_profile_save(Str provider, Str model, const ModelProfile *p,
                         Arena *scratch);
-// Removes the user-configured profiles nested under one provider.
+
 b8   model_profiles_delete(Str provider, Arena *scratch);
 
 /* ---- agent modes ---------------------------------------------------------
@@ -656,9 +578,7 @@ b8   model_profiles_delete(Str provider, Arena *scratch);
  */
 typedef enum { MODE_BUILD = 0, MODE_PLAN } AgentMode;
 
-/* Whether assistant-issued effectful tool calls pause for approval. This is
- * independent of Build/Plan: Plan withholds every shell and file mutation
- * tool structurally, while Build applies this policy to the ones it offers. */
+
 typedef enum { PERMISSION_ASK = 0, PERMISSION_FREE } PermissionPolicy;
 
 /* Declarative effect classes carried by the tool registry. Unguarded tools
@@ -671,12 +591,10 @@ typedef enum {
     TOOL_APPROVAL_PATCH,
 } ToolApprovalClass;
 
-// Every guarded execution crosses tools_run with an explicit decision.
+
 typedef enum { TOOL_AUTH_DENIED = 0, TOOL_AUTH_GRANTED } ToolAuthorization;
 
-/* The effective prompt remains one system message. These copies explain where
- * it came from when the session chooses to show instructions; they never go
- * through Conv or a provider request. */
+
 typedef struct {
     Str primary, primary_label, primary_path;
     Str agents[AGENT_MAX_AGENTS_FILES];
@@ -684,21 +602,7 @@ typedef struct {
     size_t n_agents;
 } PromptSources;
 
-/* ---- configuration keys --------------------------------------------------
- * Every setting arqan has is a row of one table in config.c: its name in a
- * file, its type, its bounds and whether a project may set it. The name is
- * also its environment variable, upper-cased under ARQAN_.
- *
- * Sources, lowest precedence first. See conf_resolve.
- *   defaults
- *   $XDG_CONFIG_DIRS/arqan/config.toml   site-wide
- *   $XDG_CONFIG_HOME/arqan/config.toml   the user's; what /provider writes
- *   <dir>/.arqan/config.toml             the project's, nearest last
- *   $XDG_STATE_HOME/arqan/state.toml     what the UI last chose
- *   [providers.<name>]                  the chosen model's provider
- *   ARQAN_<NAME>                         per invocation
- *   command-line options                applied to Config by cli_apply
- */
+
 typedef enum {
     CONF_PROVIDER, CONF_BASE_URL, CONF_MODEL, CONF_API, CONF_API_KEY,
     CONF_MAX_TOKENS, CONF_MAX_MESSAGES, CONF_STREAM, CONF_MODE,
@@ -716,8 +620,7 @@ typedef enum {
     CONF_N
 } ConfKey;
 
-/* Where a value came from. A write from a lower origin than the one already
- * recorded is dropped, which is the whole of the precedence rule. */
+
 typedef enum {
     CONF_FROM_DEFAULT, CONF_FROM_SYSTEM, CONF_FROM_USER, CONF_FROM_PROJECT,
     CONF_FROM_STATE, CONF_FROM_ENDPOINT, CONF_FROM_ENV
@@ -740,12 +643,11 @@ Str    conf_key_name(ConfKey k);
 Str    conf_str(const Conf *c, ConfKey k);
 i64    conf_num(const Conf *c, ConfKey k);
 b8     conf_bool(const Conf *c, ConfKey k);
-// True when `val` is one this key accepts; what refuses a bad UI write.
+
 b8     conf_value_ok(ConfKey k, Str val);
-// Records a choice in the state file under this key's name.
+
 b8     conf_remember(ConfKey k, Str val, Arena *scratch);
-/* Two keys in one state-file write. Neither is written when either value is
- * one its key refuses. */
+
 b8     conf_remember_pair(ConfKey a, Str va, ConfKey b, Str vb,
                           Arena *scratch);
 b8     conf_remember_bool(ConfKey k, b8 on, Arena *scratch);
@@ -764,8 +666,7 @@ typedef struct {
 
 void   ui_prefs_load(UiPrefs *p, const Conf *conf);
 
-/* A walk's .gitignore and .ignore rules. Patterns point into `buf`; a mark
- * lets a recursive walker remove one directory's rules on its way out. */
+
 typedef struct {
     const char *pat[AGENT_IGNORE_PATTERNS];
     u8 flag[AGENT_IGNORE_PATTERNS];
@@ -784,7 +685,7 @@ b8              agent_ignore_match(const AgentIgnore *ig, const char *rel,
                                    size_t rel_n, b8 is_dir);
 AgentIgnoreMark agent_ignore_mark(const AgentIgnore *ig);
 void            agent_ignore_restore(AgentIgnore *ig, AgentIgnoreMark mark);
-// One preference controls both tool walks and the composer's path picker.
+
 void            agent_ignore_set_show(b8 on);
 b8              agent_ignore_show(void);
 
@@ -805,14 +706,10 @@ typedef enum {
 
 // Reads the notify settings once. `persist` owns the copied command line.
 void notify_init(const Conf *c, Arena *persist);
-/* Raise one notification. `detail` is untrusted model or provider text: it
- * is stripped of control bytes and cut to AGENT_MAX_NOTIFY_TEXT before it
- * reaches a terminal or a hook. `elapsed_ms` gates NOTIFY_TURN_DONE against
- * notify_min_ms; the other kinds always speak. Best effort throughout: a
- * failed hook or a terminal that ignores the escape changes nothing. */
+
 void notify_event(NotifyKind kind, Str detail, f64 elapsed_ms);
 
-// ---- config -------------------------------------------------------------
+
 typedef struct {
     Str base_url;
     Str model;
@@ -821,13 +718,9 @@ typedef struct {
     /* The provider serving `model`, empty when a base URL from a flag, the
      * environment or a config file names the endpoint instead. */
     Str provider;
-    /* A cheap model for arqan's own short errands, empty when none is
-     * configured. Naming a session is the only one so far. */
+    
     Str small_model;
-    /* Which provider serves `small_model`, empty for this run's own endpoint.
-     * A named provider here is followed for the errand alone: the request
-     * takes that endpoint's URL, API and key, and the conversation stays
-     * where it is. */
+    
     Str small_provider;
     Str reasoning_efforts, thinking_budgets;
     Str reasoning_effort, thinking_budget;
@@ -842,33 +735,24 @@ typedef struct {
     AgentMode mode;
     PermissionPolicy permissions;
     i32  max_tokens;
-    /* Configurable so the full-history path is reachable in a test without
-     * streaming four thousand messages. */
+    
     size_t max_messages;
     b8 stream;
-    /* Further attempts a turn that reached nothing may make, and the wait
-     * before the first one. */
+    
     i32 retries;
     i32 retry_delay_ms;
     /* Tools to turn off before the first turn, comma separated. Applied once
      * the registry exists, since config_load runs before tools_init. */
     Str disable_tools;
-    // Name a session automatically once it has a turn to name.
+    
     b8 auto_title;
-    /* Whether this connection carries images. False withdraws /attach and
-     * leaves the conversation with no media table at all, so no image can
-     * reach a model that cannot see one. Fixed for the run: the table is
-     * what a slot's indices address, so it cannot appear mid-session. */
+    
     b8 images;
-    /* How long an ask_user question waits for a keypress before it answers
-     * itself with the option the model recommended. 0 waits forever, which
-     * is also what a question recommending nothing does. */
+    
     i32 ask_timeout_ms;
-    /* How long a shell command runs before `bash` detaches it into a job and
-     * answers with the output so far. 0 waits for the command. */
+    
     i32 shell_timeout_ms;
-    /* Commands may replace these fields after the conversation rewind mark.
-     * Their owned copies live here so /clear cannot reclaim them. */
+    
     char owned_base_url[AGENT_MAX_URL + 1];
     char owned_model[AGENT_MAX_MODEL_NAME + 1];
     char owned_small_model[AGENT_MAX_MODEL_NAME + 1];
@@ -890,10 +774,9 @@ b8    config_load(Config *c, const Conf *conf, Arena *persist);
  * forgets the choice. conf_resolve applies both above the config files and
  * below the environment. */
 b8    config_remember_model(Str provider, Str model, Arena *scratch);
-// Runtime choices are copied into Config itself and survive /clear.
+
 b8    config_set_model(Config *c, Str model);
-/* The small model and the provider that serves it, together: an empty model
- * clears both, and an empty provider means this run's own endpoint. */
+
 b8    config_set_small_model(Config *c, Str model, Str provider);
 b8    config_set_endpoint(Config *c, Str name, Str base_url, Str model,
                           ApiKind api, Str key);
@@ -901,8 +784,6 @@ b8    config_set_model_profile(Config *c, const ModelProfile *p);
 b8    config_set_reasoning(Config *c, b8 effort, Str value);
 
 
-// ---- command line -------------------------------------------------------
-// Every Str points into argv, so nothing is copied and nothing is freed.
 typedef struct {
     Str base_url, model, api_key, system_prompt;
     Str api;
@@ -921,7 +802,7 @@ typedef enum {
 CliStatus cli_parse(i32 argc, char **argv, CliOpts *out);
 void      cli_apply(const CliOpts *o, Config *c);
 
-// ---- HTTP (libcurl) -----------------------------------------------------
+
 #include <curl/curl.h>
 
 /* libcurl is opened at the first request rather than at exec. Loading its
@@ -963,9 +844,7 @@ typedef struct {
 extern CurlApi g_curl;
 b8 curl_load(char *err, size_t err_cap);
 
-/* curl.h defines type-checking macros over some of these names under GCC.
- * The undef drops them, so the checked build is the one that links libcurl
- * directly: `make check-curl-types`. */
+
 #undef curl_easy_setopt
 #undef curl_easy_getinfo
 #define curl_easy_init         g_curl.easy_init
@@ -1063,10 +942,7 @@ typedef struct {
 i32     http_url_get(HttpUrlReq *r);
 
 #ifdef AGENT_TESTING
-/* Print the resolved TLS trust store as "ca-file:" and "ca-dir:" lines, "-"
- * for an option left to libcurl. Resolves it on the first call, as a request
- * would. The testing build only: the suite has no TLS server to infer it
- * from. */
+
 void    http_print_ca_trust(void);
 #endif
 
@@ -1085,8 +961,7 @@ typedef struct {
     char   buf[4096];
 } Spill;
 
-/* Names the file after `tool` and a hash of `key`, which is the call the
- * output belongs to, so repeating a call reuses its own file. */
+
 void    spill_open(Spill *s, const char *tool, const char *ext, Str key);
 void    spill_put(Spill *s, const char *p, size_t n);
 void    spill_putf(Spill *s, const char *fmt, ...);
@@ -1101,20 +976,20 @@ void    spill_finish(Spill *s, Buf *out, b8 keep);
  * and must close, or -1 when there is no file or the flush failed (and then
  * the file is unlinked as spill_finish would). */
 i32     spill_release(Spill *s, char *path, size_t path_cap, size_t *written);
-/* How large a file is, in the rounded form the spill note uses. */
+
 void    spill_size_text(char *z, size_t cap, size_t n);
 
-// ---- tools (SoA registry) -----------------------------------------------
+
 typedef b8 (*ToolRun)(Str args_json, Arena *scratch, Buf *out,
                       char *err, size_t err_cap);
 
-// A bit per mode in ToolRegistry.modes.
+
 #define TOOL_IN_BUILD 1u
 #define TOOL_IN_PLAN  2u
 /* Answered by the agent loop rather than run, so it is never offered as a
  * toggle and never disabled. */
 #define TOOL_FIXED    4u
-/* Needs a live terminal user, so non-interactive requests do not advertise it. */
+
 #define TOOL_INTERACTIVE 8u
 
 typedef struct {
@@ -1131,38 +1006,33 @@ typedef struct {
     size_t   n;
 } ToolRegistry;
 
-// Ids are indices into the registry.
+
 #define TOOL_NONE ((size_t)-1)
 
 void        tools_init(ToolRegistry *r, Arena *persist);
-// The mode tools_write_schemas offers and tools_run enforces.
+
 void        tools_set_mode(AgentMode mode);
-// Whether tools that wait for terminal input are offered and accepted.
+
 void        tools_set_interactive(b8 interactive);
-/* False for a tool the mode or interaction style does not offer and for one
- * the user turned off. This withholds it from schemas and prompt listings. */
+
 b8          tools_available(const ToolRegistry *r, size_t id, AgentMode mode);
 size_t      tools_find(const ToolRegistry *r, Str name);
 ToolApprovalClass tools_approval_class(const ToolRegistry *r, size_t id);
-// A fixed, user-facing operation-class name; empty for unguarded.
+
 Str         tools_approval_name(ToolApprovalClass approval);
-// Whether the user may turn `id` off: everything but a TOOL_FIXED entry.
+
 b8          tools_can_disable(const ToolRegistry *r, size_t id);
 b8          tools_disabled(const ToolRegistry *r, size_t id);
 void        tools_set_disabled(ToolRegistry *r, size_t id, b8 off);
-/* Turns off every tool named in a comma or space separated list, which is
- * what disable_tools and --disable-tools carry. False with `err` filled in
- * on a name no tool answers to or one that cannot be disabled: a typo in a
- * list whose point is that bash cannot run is not worth ignoring. */
+
 b8          tools_disable_list(ToolRegistry *r, Str names,
                                char *err, size_t err_cap);
 b8          tools_run(const ToolRegistry *r, size_t id, Str args,
                       ToolAuthorization authorization,
                       Arena *scratch, Buf *out, char *err, size_t err_cap);
-/* The registry as the API declares tools: an array of OpenAI "function"
- * wrappers, or of Anthropic entries carrying an "input_schema". */
+
 void        tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api);
-// The built-in web tools share the TUI's single-threaded idle loop.
+
 void        web_set_idle(void (*fn)(void *ud), void *ud, i32 idle_fd,
                          const volatile sig_atomic_t *interrupt_flag);
 /* Chooses the search engines internet_search tries and copies the endpoint,
@@ -1185,15 +1055,13 @@ b8          shell_capture(Str cmd, Buf *out, char *err, size_t err_cap);
  * in-flight request does; unset by default, since a tool is not the TUI's. */
 void        shell_set_idle(void (*fn)(void *ud), void *ud);
 void        shell_set_interrupt_flag(volatile sig_atomic_t *flag);
-/* How long a `bash` call waits before it detaches the command into a job and
- * answers with what ran so far; 0 waits for it. shell_capture, which runs a
- * command the user typed with the user watching, has no deadline. */
+
 void        shell_set_timeout(i32 ms);
 /* Kills every job still running, reaps it and drops its log. Registered with
  * atexit, so a detached command never outlives the session that started it. */
 void        jobs_stop(void);
 
-// ---- prompt -------------------------------------------------------------
+
 /* The system prompt, placeholders expanded. `configured` is what --system or
  * ARQAN_SYSTEM_PROMPT set, unset to take .arqan/SYSTEM.md, the global
  * SYSTEM.md or the built-in template, in that order. Returned in `persist`,
@@ -1206,9 +1074,7 @@ void        jobs_stop(void);
 Str   prompt_build(const ToolRegistry *tools, Str configured, Arena *persist,
                    Arena *scratch, PromptSources *sources, char *err,
                    size_t err_cap);
-/* The plan-mode prompt, resolved the same way from .arqan/PLAN.md, the global
- * PLAN.md or the built-in template, with {tools} listing only what plan mode
- * offers. Nothing configures it: --system describes Build mode. */
+
 Str   prompt_build_plan(const ToolRegistry *tools, Arena *persist,
                         Arena *scratch, PromptSources *sources, char *err,
                         size_t err_cap);
@@ -1219,12 +1085,9 @@ Str   prompt_compact(void);
 /* The user turn that request ends on, so the summary is asked for by a
  * message rather than only by the system prompt. */
 Str   prompt_compact_ask(void);
-/* The naming instruction, a static document like the compaction one: it
- * stands in for the system prompt of the single request that names a
- * session. */
+
 Str   prompt_title(void);
-/* The lead line of that request's user turn; main.c appends the excerpt of
- * the conversation being named to it. */
+
 Str   prompt_title_ask(void);
 
 /* ---- media (SoA) ---------------------------------------------------------
@@ -1239,16 +1102,15 @@ Str   prompt_title_ask(void);
  * the text, and every writer skips it.
  */
 typedef struct {
-    Str  *mime;    // "image/png", and the three others an API accepts
-    Str  *bytes;   // as read; empty for an entry whose file is gone
+    Str  *mime;    
+    Str  *bytes;   
     /* [cap] `bytes` encoded, written on first use and empty until then. The
      * arena is the one the entries were allocated from. */
     Str  *b64;
-    Str  *label;   // what the transcript calls it, usually a basename
-    /* [cap] the sidecar this entry was written to, relative to the session
-     * directory. Empty until session_save writes one. */
+    Str  *label;   
+    
     Str  *file;
-    u32  *w, *h;   // 0 when the header did not say
+    u32  *w, *h;   
     size_t n, cap;
     Arena *arena;
 } MediaSet;
@@ -1256,11 +1118,9 @@ typedef struct {
 #define MEDIA_NONE ((size_t)-1)
 
 b8     media_init(MediaSet *m, Arena *persist, size_t cap);
-/* The media type and dimensions of an image, from its header alone. False
- * for anything that is not a PNG, JPEG, GIF or WebP; `*w` and `*h` are 0
- * when the format was recognized but its header could not be read. */
+
 b8     media_sniff(Str bytes, Str *mime, u32 *w, u32 *h);
-// The file extension a media type is stored under, without the dot.
+
 Str    media_ext(Str mime);
 /* Copies `bytes` into `persist` and records it under `label`. MEDIA_NONE
  * with `err` filled in when the table is full, the bytes are not a supported
@@ -1272,19 +1132,16 @@ size_t media_add(MediaSet *m, Arena *persist, Str bytes, Str label,
  * costs `persist` nothing. `scratch` is rewound before returning. */
 size_t media_add_file(MediaSet *m, Arena *persist, Arena *scratch, Str path,
                       char *err, size_t err_cap);
-/* A placeholder entry for an image a session names but could not read back,
- * so the numbering the saved text refers to still lines up. */
+
 size_t media_add_missing(MediaSet *m, Arena *persist, Str label, Str mime,
                          Str file);
 // Whether the entry has bytes to send. A missing one never reaches the wire.
 b8     media_live(const MediaSet *m, size_t id);
-/* Keep `n` of the entries added from `base` on, in the order given, and drop
- * the rest, so a turn's attachments end up contiguous. Returns where the kept
- * run starts, which is `base` unless nothing could be kept. */
+
 size_t media_keep(MediaSet *m, size_t base, const size_t *ids, size_t n);
-// "png 1280x800 - 240 KB", or what of it is known.
+
 void   media_describe(char *out, size_t cap, const MediaSet *m, size_t id);
-// One OpenAI image_url block, and one Anthropic image block.
+
 void   media_write_openai(Buf *b, const MediaSet *m, size_t id);
 void   media_write_anthropic(Buf *b, const MediaSet *m, size_t id);
 
@@ -1300,10 +1157,10 @@ void   media_write_anthropic(Buf *b, const MediaSet *m, size_t id);
  */
 b8     clipboard_image(Arena *scratch, Str *out, char *err, size_t err_cap);
 
-// ---- conversation (SoA) -------------------------------------------------
+
 typedef enum { M_SYSTEM = 0, M_USER, M_ASSISTANT, M_TOOL } MRole;
 
-// Returned by every conv_* append when the conversation is full.
+
 #define CONV_NONE ((size_t)-1)
 
 typedef struct {
@@ -1321,9 +1178,7 @@ typedef struct {
      * when the call is recorded, since every later Anthropic request would
      * otherwise re-parse the whole history to ask the same question. */
     b8  *args_object;
-    /* [cap] milliseconds the work behind a slot took, 0 when it took none
-     * that was measured. A tool result and a '!' run carry one, which is
-     * what lets a replay render the time a live turn showed. */
+    
     u32   *ms;
     /* [cap] the slot's images: `media_n` entries of `media` from `media_off`.
      * A slot's entries are contiguous because a turn's attachments are added
@@ -1338,8 +1193,7 @@ typedef struct {
 
 b8      conv_init(Conv *c, Arena *persist, size_t cap);
 size_t  conv_add(Conv *c, MRole role, Str text);
-/* Point the conversation at the table its slots index. Set once, before any
- * message is added; a clone inherits it. */
+
 void    conv_set_media(Conv *c, MediaSet *m);
 /* Attach `n` media entries starting at `off` to slot `i`. The caller has
  * just appended them, so they are the table's last `n` entries. */
@@ -1349,9 +1203,7 @@ void    conv_attach_media(Conv *c, size_t i, size_t off, size_t n);
  * the bytes behind those entries live in the region the caller is about to
  * rewind, so leaving the table pointing into it would outlive them. */
 void    conv_truncate(Conv *c, size_t keep);
-/* An assistant turn with tool calls is a head slot (prose) followed by one
- * carrier slot per call, each keeping its own id. `conv_is_call` picks the
- * carriers out of a tail scan. */
+
 size_t  conv_add_assistant_calls(Conv *c, Str content);
 /* `scratch` holds the parse that decides whether `args` are a JSON object;
  * it is rewound before returning. */
@@ -1369,8 +1221,7 @@ size_t  conv_room(const Conv *c);
  * the caller appends. False when `a` cannot take the arrays, leaving `dst`
  * with no capacity. */
 b8      conv_clone(Conv *dst, const Conv *src, Arena *a, size_t extra);
-/* The messages array of an OpenAI request. The system prompt is slot 0's
- * message like any other. */
+
 void    conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg);
 /* The same conversation as Anthropic messages: content blocks rather than
  * flat text, preserved thinking blocks before their assistant content, tool
@@ -1391,15 +1242,13 @@ typedef struct {
     char   dir_buf[AGENT_MAX_PATH];
     char   path_buf[AGENT_MAX_PATH];
     char   name_buf[32];
-    /* The session's name, cleaned. `title` points into `title_buf` and is
-     * cleared by session_begin and session_apply along with the path. */
+    
     char   title_buf[AGENT_MAX_TITLE + 1];
     Str    dir;
     Str    path;
     Str    name;
     Str    title;
-    /* One automatic naming attempt per session file, so an attempt that was
-     * refused or interrupted is not retried on every later turn. */
+    
     b8     title_tried;
     size_t written;
 } Session;
@@ -1408,7 +1257,7 @@ typedef struct {
     Str   *name;
     Str   *path;
     Str   *preview;
-    Str   *title;          // empty for a session that has no name
+    Str   *title;          
     size_t n;
 } SessionList;
 
@@ -1417,19 +1266,13 @@ b8     session_begin(Session *s);
 /* Append the messages produced since the last call; the file is created on
  * the first one, so an untouched session never reaches the picker. */
 void   session_save(Session *s, const Conv *c);
-/* Continue in a new file holding the conversation whole, leaving the one it
- * was appending to as it is. */
+
 b8     session_fork(Session *s, const Conv *c);
-/* Writes the conversation as Markdown. `requested` names the output file;
- * empty chooses a timestamped name in the working directory. The system
- * prompt and private thinking are omitted. On success `path` receives the
- * NUL-terminated path used. A failed write leaves an existing destination
- * unchanged and fills `err`. */
+
 b8     session_export_markdown(const Conv *c, Str requested,
                                char *path, size_t path_cap,
                                char *err, size_t err_cap);
-/* Up to `max` saved sessions for this directory, most recently written
- * first, held in `a`. Returns how many were listed. */
+
 size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max);
 /* Remove one saved session file. `path` must name a file directly in this
  * session's own directory, which is what session_list hands out; the file
@@ -1446,15 +1289,12 @@ b8     session_delete(const Session *s, Str path);
 Str    session_read(Str path, Arena *scratch);
 b8     session_apply(Session *s, Str src, Str path, Str name, Conv *c,
                      Arena *persist, Arena *scratch);
-/* The cleaned contents of a session's title sidecar, held in `a`. Empty when
- * there is none, it cannot be read, or nothing survives cleaning. */
+
 Str    session_title_read(Str session_path, Arena *a);
-/* Clean `title` into the session's own buffer and write the sidecar beside
- * the session file. An empty title removes both the name and the file.
- * False when there is no session file yet or the write failed. */
+
 b8     session_set_title(Session *s, Str title);
 
-// ---- provider -----------------------------------------------------------
+
 typedef struct {
     const Config      *cfg;
     const ToolRegistry*tools;
@@ -1462,9 +1302,7 @@ typedef struct {
     Arena             *persist;
     Arena             *scratch;
     void (*on_text)(Str delta, void *ud);
-    /* OpenAI reasoning text or an Anthropic thinking summary, displayed as
-     * the turn streams. Anthropic's complete signed blocks are also retained
-     * privately in Conv so a tool-result request can return them unchanged. */
+    
     void (*on_reason)(Str delta, void *ud);
     void (*on_tool_call)(i32 index, Str id, Str name, Str args_delta, void *ud);
     /* The request's usage as it is heard: the mock and most providers send it
@@ -1478,9 +1316,7 @@ typedef struct {
      * is passed because `ud` belongs to the stream while one is running. */
     void (*on_usage)(const Conv *conv, size_t prompt_tokens,
                      size_t completion_tokens, void *ud);
-    /* A request that produced nothing is about to be sent again. `attempt`
-     * is 1-based over `attempts`, and `reason` is arqan's own wording: an
-     * HTTP status or curl's catalogue string, never a URL. */
+    
     void (*on_retry)(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
                      void *ud);
     void *ud;
@@ -1496,7 +1332,7 @@ typedef struct {
     b8 usage_valid;
 } Provider;
 
-// An otherwise successful completion carried no prose, reasoning or calls.
+
 #define PROVIDER_EMPTY (-2)
 /* Run one completion turn, appending the assistant message and its tool
  * calls to conv. Returns the number of tool calls, PROVIDER_EMPTY for no
@@ -1539,24 +1375,19 @@ typedef struct {
     b8     full;
 } Catalog;
 
-/* Room for `cap` entries, allocated in `a`. False when there is none. */
+
 b8     catalog_init(Catalog *c, size_t cap, Arena *a);
 /* Both strings are kept by reference, so they must outlive `c`. False when
  * the catalog is full, which also sets `full`. */
 b8     catalog_add(Catalog *c, Str provider, Str model);
-/* The endpoints a catalog draws from, as provider names written to `out`: this
- * run's own endpoint first when it names no provider, then every stored
- * provider in the order they are stored. An empty name is the run's own. */
+
 size_t catalog_endpoints(const Config *cfg, const Endpoints *e, Str *out,
                          size_t max);
 /* Named before each endpoint is asked, since one request per provider is a
  * wait worth narrating. An empty name is the run's own endpoint. */
 typedef void (*CatalogProgress)(Str provider, void *ud);
 
-/* Lists each of those endpoints in turn. Model ids, `failed` and `reason` are
- * copied into `out`; each reply is read and parsed in a region carved from
- * `out` and reused, so listing every provider costs what listing the largest
- * one does. Returns the number of entries. */
+
 size_t catalog_load(Catalog *c, const Config *cfg, const Endpoints *e,
                     size_t cap, Arena *out, CatalogProgress progress,
                     void *ud);
@@ -1585,8 +1416,7 @@ typedef struct {
     f64    slope;
     f64    offset;
     size_t fit_tokens;
-    /* The measured total less the images in it, which is the quantity the
-     * slope actually relates to bytes. */
+    
     f64    fit_text;
     f64    fit_media;
     f64    fit_bytes;
@@ -1596,25 +1426,20 @@ typedef struct {
     b8     basis;
 } CtxGauge;
 
-// A zeroed gauge is not usable; this is what makes it "nothing known yet".
+
 void ctx_init(CtxGauge *g);
 /* Fold one request's reported prompt tokens into the fit. `c` must be the
  * conversation that request was built from, which is what it still is while
  * the response streams. A zero count is not a measurement. */
 void ctx_note_usage(CtxGauge *g, const Conv *c, size_t prompt_tokens);
-/* The model or the provider changed: keep the fit as a starting point and
- * drop what described the model that left. */
+
 void ctx_model_changed(CtxGauge *g);
-/* A user-configured window for the exact active model. Zero, or a value no
- * context window can be, leaves it unknown. */
+
 void ctx_set_window(CtxGauge *g, size_t window);
-/* Paint the field for `c`, exactly when the last measurement still covers
- * it and as an estimate otherwise. */
+
 void ctx_sync(const CtxGauge *g, const Conv *c);
 
-// ---- TUI ---------------------------------------------------------------
-/* A block style claims whole rows (a wrapped continuation is painted like
- * its first row); an inline one applies to the bytes it covers. */
+
 typedef enum {
     TUI_PLAIN = 0, TUI_HEADING, TUI_CODE, TUI_QUOTE,
     TUI_BOLD, TUI_EMPH, TUI_MONO, TUI_MARKER, TUI_STRIKE
@@ -1637,22 +1462,17 @@ void highlight_close(void);
 /* A slash command the completion popup offers. The table is owned by the
  * caller and only read here. */
 typedef struct { Str name; Str desc; } TuiCmd;
-/* A labelled row that divides a picker or information page into sections.
- * It is painted with the other rows but cannot be selected or accepted. */
+
 TuiCmd tui_separator(Str label);
 /* A byte range of the matching row's `desc`, painted as the chosen one of the
  * options that row lists. A zero `n` is a description rather than options.
  * Rows and marks are parallel arrays; the caller owns both. */
 typedef struct { size_t off, n; } TuiMark;
 void tui_set_commands(const TuiCmd *cmds, size_t n);
-/* A second name a command answers to. It is a way to find the command rather
- * than a command of its own: the popup lists the entry it stands for, and
- * accepting one leaves that name in the composer. */
+
 typedef struct { Str alias; Str name; } TuiAlias;
 void tui_set_aliases(const TuiAlias *aliases, size_t n);
-/* Which end of a picker's list the selection opens on and returns to after a
- * search: a list ordered like the transcript ends at the entry nearest the
- * composer. */
+
 typedef enum { TUI_PICK_FIRST = 0, TUI_PICK_LAST } TuiPickAnchor;
 
 typedef enum {
@@ -1661,15 +1481,9 @@ typedef enum {
     TUI_STATUS_CWD, TUI_STATUS_CONTEXT, TUI_STATUS_COPY,
     TUI_STATUS_PERMISSIONS, TUI_STATUS_N
 } TuiStatusItem;
-/* `start` for a list that recommends none of its entries, which opens on the
- * end `anchor` names. */
+
 #define TUI_PICK_NONE ((size_t)-1)
-/* Keep the transcript from `off` to its end out from under the next modal
- * screen: a screen that asks about a block may not cover it. `off` is a
- * tui_transcript_pos taken before the block was written. Set it immediately
- * before opening the screen, which consumes it and retires it on close; a
- * screen that never opens drops it. A block taller than the rows left over
- * is lifted only to its first row. */
+
 void tui_keep_visible(size_t off);
 /* Modal picker: the completion popup over a caller-owned list. `title` names
  * it in the status line, Enter chooses (index in *out), Esc/Ctrl-C cancels.
@@ -1679,9 +1493,7 @@ void tui_keep_visible(size_t off);
  * untouched. */
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t start, size_t *out);
-/* As tui_pick, with a one-line notice kept above the options while the picker
- * is open. The notice overlays the transcript, which moves only for a block
- * tui_keep_visible asked to keep on screen. */
+
 b8 tui_pick_notice(Str title, Str notice, const TuiCmd *items, size_t n,
                    TuiPickAnchor anchor, size_t start, size_t *out);
 /* As tui_pick_notice, answering itself with `start` once `timeout_ms` passes
@@ -1692,8 +1504,7 @@ b8 tui_pick_notice(Str title, Str notice, const TuiCmd *items, size_t n,
 b8 tui_pick_timed(Str title, Str notice, const TuiCmd *items, size_t n,
                   TuiPickAnchor anchor, size_t start, i32 timeout_ms,
                   size_t *out, b8 *expired);
-/* As tui_pick, with `search_n` excluding fixed action rows from the length
- * that decides whether keyboard search opens. */
+
 b8 tui_pick_search_count(Str title, const TuiCmd *items, size_t n,
                          size_t search_n, TuiPickAnchor anchor, size_t start,
                          size_t *out);
@@ -1715,7 +1526,7 @@ typedef struct {
     size_t  n_bindings;
     Str     hint;
 } TuiPickAction;
-// As tui_pick_search_count over `act->rows`, with its key actions bound.
+
 b8 tui_pick_action(Str title, size_t n, size_t search_n, TuiPickAnchor anchor,
                    size_t start, const TuiPickAction *act, size_t *out);
 /* The settings screen: the same list, read rather than chosen from. Space,
@@ -1749,10 +1560,9 @@ b8 tui_settings_open(Str title, const TuiSettings *set);
 /* Read-only modal rows. Enter, Escape, Ctrl-C or Ctrl-D closes the page; the
  * caller keeps ownership of every string for the duration of the call. */
 void tui_info(Str title, const TuiCmd *rows, size_t n);
-// The read-only page opened the way tui_settings_open opens a screen.
+
 b8 tui_info_open(Str title, const TuiCmd *rows, size_t n);
-/* One part of a text window: its bytes and, when it carries source, the
- * syntax runs measured over those bytes. Both are copied into the window. */
+
 typedef struct { Str text; const YhlResult *syntax; } TuiViewPart;
 /* Open a separate, centered text window without borrowing completion or
  * picker state. Nonempty `parts` are joined with one blank row and copied,
@@ -1769,29 +1579,21 @@ b8 tui_view_open(Str title, const TuiViewPart *parts, size_t n, size_t start);
  * so the rows may be held for as long as the page is open. A `max` short of
  * AGENT_MAX_KEY_ROWS truncates the page rather than failing. */
 size_t tui_key_rows(TuiCmd *rows, size_t max);
-// Whether a screen is up, modal or not.
+
 b8 tui_screen_open(void);
-/* Modal one-line question, answered in the composer with `question` in the
- * notice row. `secret` echoes the answer as dots and keeps it out of the
- * prompt history and the transcript. False when it was cancelled, the answer
- * was empty, or there is no fullscreen UI; the composer's own text is
- * restored on the way out. */
+
 b8 tui_ask(Str question, b8 secret, char *out, size_t cap);
-// Edits the existing value in `inout`; Enter may accept an empty result.
+
 b8 tui_ask_edit(Str question, b8 allow_empty, char *inout, size_t cap);
-/* The '@' picker and recursive tools hide what the project's .gitignore and
- * .ignore exclude, while the picker always hides .git; this offers ignored
- * paths anyway. Off by default. A path typed by hand is unaffected. */
+
 void tui_set_show_ignored(b8 on);
 b8   tui_show_ignored(void);
-/* Rows wrap between words either way; this also widens the gaps of a wrapped
- * prose row until it reaches the right edge. Off by default. */
+
 void tui_set_justify(b8 on);
 b8   tui_justify(void);
-// Composer history for Up/Down recall; NULL disables it.
+
 void tui_set_history(History *h);
-/* `plain` forces the line-oriented path and drops the banner even on a tty,
- * which is what a one-shot -p run wants. */
+
 void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
                size_t tool_count, b8 show_ignored, b8 justify,
                u64 status_fields, AgentMode mode, b8 plain);
@@ -1801,15 +1603,12 @@ void tui_set_mode(AgentMode mode);
 void tui_set_permissions(PermissionPolicy policy);
 void tui_set_provider(Str name);
 void tui_set_reasoning(Str effort, Str thinking_budget);
-// Switch to truthful first-run chrome, clearing endpoint fields.
+
 void tui_set_setup(b8 on);
-// Visibility is remembered by /statusline.
+
 b8   tui_status_visible(TuiStatusItem item);
 void tui_set_status_visible(TuiStatusItem item, b8 visible);
-/* What a run with nothing to talk to says, on the welcome screen and again if
- * a message is submitted anyway. Which one applies is a question about the
- * store: with no provider there is nothing to pick a model from, and with
- * providers but no chosen model there is nothing to send a turn to. */
+
 #define NO_PROVIDER_HINT \
     STR("no provider yet: type /provider, then \"+ add a provider\"")
 #define NO_MODEL_HINT \
@@ -1822,10 +1621,7 @@ void tui_set_setup_hint(Str hint);
  * the status line. False for an empty payload or one past the sequence cap,
  * which is refused rather than truncated. */
 b8 tui_copy(Str text);
-/* True when a clipboard write has to pass through tmux, which with its
- * default `set-clipboard external` forbids an application inside it from
- * setting the clipboard and answers nothing either way. A copy is sent
- * hopefully there, so what is said about it says so too. */
+
 b8 tui_clipboard_via_tmux(void);
 #define AGENT_TMUX_COPY_NOTICE \
     STR("copied; tmux needs `set -s set-clipboard on` to pass it on")
@@ -1843,28 +1639,18 @@ void tui_set_status(const char *status);
  * invented. */
 void tui_set_context(size_t tokens, b8 known, b8 exact, size_t window);
 void tui_clear(void);
-/* Drop the transcript alone, leaving the context counter as it is: the
- * conversation is unchanged, only its rendering is about to be replayed. */
+
 void tui_clear_transcript(void);
-/* Mark the transcript bytes written between these calls as a click target
- * carrying nonzero `id`. A click inside one makes tui_readline submit
- * "/expand <id>", the same way Escape submits "/rewind". Zones are dropped
- * with the transcript; a replay reuses the ids so a target survives it. */
+
 void tui_zone_begin(u32 id);
 void tui_zone_end(void);
-/* Mark the current end of the transcript as landmark `id`, which a re-render
- * can steer the viewport by. Landmarks are dropped with the transcript; a
- * replay reuses the ids so one survives it. */
+
 void tui_pin(u32 id);
-/* Keep zone `id`, or the landmark nearest the top of the viewport, where it
- * is on screen across a re-render: anchor before the clear, restore after the
- * replay. A viewport pinned to the bottom is left there. */
+
 void tui_anchor_zone(u32 id);
 void tui_anchor_view(void);
 void tui_restore_anchor(void);
-/* Follow the newest row again. Output alone never does this: a viewport the
- * reader scrolled off the bottom holds the rows it is showing, and only a new
- * turn or scrolling back down returns it. */
+
 void tui_scroll_to_bottom(void);
 /* Holds frames while the transcript is rebuilt from the conversation, so a
  * replay paints once rather than once per line it lays down. Not nested. */
@@ -1875,17 +1661,9 @@ void tui_batch_end(void);
  * beside the transcript, so while no screen is open the row it takes is
  * lifted off the transcript rather than covering its newest line. */
 void tui_notice(Str msg);
-/* Open the transcript search box, which takes the keyboard from the composer
- * until Escape closes it and leaves the draft untouched. Ctrl-R opens it too.
- * What it searches is the transcript, so its reach is the scrollback's: a
- * match is always a line the reader can also scroll to. Ignored without a
- * fullscreen UI. */
+
 void tui_find_open(void);
-/* What Ctrl-E in the search box runs: the transcript caps a tool's output, and
- * text that was never rendered is text the search cannot reach, so the box
- * offers to lift them. The hook re-renders the transcript and is expected to
- * unregister itself once there is nothing left to reveal, which is also what
- * takes the key off the box. */
+
 void tui_set_find_expand(void (*fn)(void *ud), void *ud);
 /* Open a transcript block; the only place the air above one comes from. A
  * block writes no air of its own, so the gap between any two is one blank
@@ -1893,11 +1671,9 @@ void tui_set_find_expand(void (*fn)(void *ud), void *ud);
  * stacked. */
 void tui_block(void);
 void tui_write(Str s);
-// Explicit normal foreground inside a row owned by a surrounding style.
+
 void tui_write_text(Str s);
-/* Like tui_write_text, for bytes a highlighter marks up: a command, file
- * content or a diff. It paints as normal text and is never justified, since
- * widening the gaps of code would move columns its reader lines up. */
+
 void tui_write_source(Str s);
 /* The styles a tool block and a thinking trace are built from: muted for
  * quoted input, output and reasoning, yellow for a call's header, green for a
@@ -1907,40 +1683,32 @@ void tui_write_muted(Str s);
 void tui_write_tool(Str s);
 void tui_write_result(Str s);
 void tui_write_error(Str s);
-/* A padded block with its own background, which is what marks a user turn
- * apart from the agent's output. The split form lets Markdown write styled
- * spans inside the panel; `tui_write_user` is the plain convenience form. */
+
 void tui_user_begin(void);
 void tui_user_end(void);
 void tui_write_user(Str s);
-// TUI_PLAIN records no style at all. This is how markdown.c paints.
+
 void tui_write_styled(Str s, TuiStyle style);
-// Cells a transcript row holds, 0 without a fullscreen UI.
+
 size_t tui_body_cols(void);
-/* Terminal cells occupied by UTF-8 text. Invalid bytes take one cell; control
- * and combining code points take none, matching transcript wrapping. */
+
 size_t tui_text_cells(Str s);
-/* Bytes of `s` that fit in `cells` columns, never splitting a glyph; `used`
- * receives the cells they take unless it is null. */
+
 size_t tui_text_fit(Str s, size_t cells, size_t *used);
-// False on a pipe or in a one-shot run, where output is text, not a view.
+
 b8 tui_is_fullscreen(void);
-/* Syntax overlays exist only in the fullscreen colour presentation. The
- * epoch changes whenever transcript offsets move or are cleared. */
+
 b8     tui_highlight_enabled(void);
 size_t tui_transcript_pos(void);
 u64    tui_transcript_epoch(void);
 void   tui_syntax_add(size_t start, size_t end, u8 semantic);
 void   tui_syntax_commit(void);
-// Flag Esc raises to cancel an in-flight turn (same path as SIGINT).
+
 void tui_set_interrupt_flag(volatile sig_atomic_t *flag);
 void tui_printf(const char *fmt, ...) __attribute__((format(printf,1,2)));
-/* Read one submitted line. Escape at an idle composer with nothing to dismiss
- * arms a rewind and the next Escape submits "/rewind", leaving the composed
- * text where it is; Shift+Tab submits "/mode" the same way. */
+
 b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n);
-/* Replace the composer's text, cursor at its end; ignored without a
- * fullscreen UI. This is how a rewind hands an earlier message back. */
+
 void tui_set_input(Str s);
 /* The composer's text. TUI-owned and valid until the next edit; empty
  * without a fullscreen UI. A caller that adds to a draft reads it first
@@ -1981,13 +1749,12 @@ i32  tui_input_fd(void);
  * a fullscreen UI, where the output is a message rather than a view. */
 void md_write(Str delta);
 void md_end(void);
-/* Make unstyled Markdown prose muted for a thinking trace. Changing it closes
- * the current Markdown stream, so markers never span reasoning and a reply. */
+
 void md_set_muted(b8 on);
 void md_set_raw(b8 on);
 b8   md_raw(void);
 
-// ---- render.c ------------------------------------------------------------
+
 /* Write one tool call, and later its result, into the transcript. The JSON
  * arguments are parsed in `scratch`, which is rewound before returning, and
  * unparsable ones fall back to the raw text. `result` is the tool's own
@@ -1995,15 +1762,12 @@ b8   md_raw(void);
  * target and `expanded` is the state that click left behind, which lifts
  * this block's caps the way /verbose lifts every block's. */
 void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded);
-/* The header of a '!' shell run, the same shape a tool call gets. Its output
- * follows through render_tool_result under the name "shell". */
+
 void render_shell_call(Str cmd, u32 id, b8 expanded);
-/* `ms` is how long the run took; 0 leaves it off, which is what a result
- * replayed from a session written before it was measured carries. */
+
 void render_tool_result(Str name, Str args, Str result, Arena *scratch,
                         u32 id, b8 expanded, u32 ms);
-/* A plan mode handover and the question that led to it. The answer to either
- * arrives as a tool result and reads like one. */
+
 void render_plan(Str plan);
 void render_question(Str question);
 /* Complete readable input or output for a block's text window. A call may
@@ -2018,9 +1782,7 @@ Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
 Str render_result_text(Str name, Str args, Str result, Arena *scratch,
                        size_t *shown, YhlResult *syntax);
 Str render_shell_text(Str cmd, size_t *shown, YhlResult *syntax);
-/* Every line of a call's input and result, with no "... N more lines" tail
- * and no per-line clip. Off by default: a tool that read a thousand lines
- * would otherwise be the whole scrollback. */
+
 void render_set_verbose(b8 on);
 b8   render_verbose(void);
 

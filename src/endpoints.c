@@ -14,8 +14,7 @@ Str api_name(ApiKind k) {
     return k == API_ANTHROPIC ? STR("anthropic") : STR("openai");
 }
 
-/* A name that is a TOML bare key, so "[providers.<name>]" stays a header a
- * TOML reader and this one agree on. */
+
 b8 endpoint_name_ok(Str name) {
     if (!name.n || name.n > AGENT_MAX_ENDPOINT_NAME) return false;
     for (size_t i = 0; i < name.n; i++) {
@@ -87,12 +86,10 @@ size_t endpoints_load(Endpoints *e, Arena *a) {
     Str files[AGENT_MAX_CONFIG_FILES + AGENT_MAX_PROJECT_FILES];
     size_t n = paths_config_files(AGENT_CONFIG_NAME, a, files,
                                   AGENT_MAX_CONFIG_FILES);
-    /* A project may name endpoints too, and its files sit above the global
-     * ones for the same reason its settings do. */
+    
     n += paths_project_files(AGENT_CONFIG_NAME, a, files + n,
                              AGENT_MAX_PROJECT_FILES);
-    /* Lowest precedence first, so a user's entry replaces a system one of the
-     * same name the way a config key does. */
+    
     for (size_t i = 0; i < n; i++) {
         Settings s;
         if (settings_load(&s, files[i], a)) endpoints_collect(e, &s, a);
@@ -155,8 +152,7 @@ Str endpoints_small_model(Str name, Arena *scratch) {
     return i == ENDPOINT_NONE ? (Str){0} : e.small_model[i];
 }
 
-/* The credentials file, refused when anyone but the owner can read it: a key
- * left world-readable is a key to rotate, not one to load. */
+
 static b8 creds_open(Settings *s, Arena *a, Str *path_out,
                      char *err, size_t err_cap) {
     s->n = 0;
@@ -244,8 +240,7 @@ b8 endpoints_set_key(Str name, Str key, SecretSource src, Arena *scratch,
     b8 ok = section.n && creds_open(&s, scratch, &path, err, err_cap)
          && path.n && dir.n && paths_ensure_dir(dir);
 
-    /* The store that held it is cleared first, so switching stores or
-     * clearing a key never leaves a live copy in the other one. */
+    
     if (ok) {
         SecretSource old = creds_source(&s, section, name, NULL, 0);
         if (secret_source_external(old) && (old != src || !key.n))

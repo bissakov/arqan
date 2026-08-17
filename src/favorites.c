@@ -62,8 +62,7 @@ b8 favorites_has(const Favorites *f, Str provider, Str model) {
     return false;
 }
 
-/* One provider's pins as one settings value. Empty when it has none, which is
- * how settings_set removes the key. */
+
 static Str favorites_join(const Favorites *f, Str provider, Arena *a) {
     Buf b;
     buf_init(&b, a, AGENT_MAX_FAVORITES * (AGENT_MAX_MODEL_NAME + 2) + 1);
@@ -86,8 +85,7 @@ b8 favorites_toggle(Favorites *f, Str provider, Str model, Arena *scratch,
                     b8 *on, char *err, size_t err_cap) {
     if (on) *on = favorites_has(f, provider, model);
     if (!model.n || model.n > AGENT_MAX_MODEL_NAME) return false;
-    /* The list is one comma-separated value, so a model id carrying a comma
-     * could not be read back as itself. */
+    
     for (size_t i = 0; i < model.n; i++)
         if (model.p[i] == ',') {
             if (err) snprintf(err, err_cap,
@@ -135,8 +133,7 @@ b8 favorites_forget(Str provider, Arena *scratch) {
     size_t mark = scratch->off;
     Str path = paths_file(AGENT_DIR_STATE, AGENT_STATE_NAME, scratch);
     Str section = favorites_section(provider, scratch);
-    /* Nothing to remove is success: this runs to leave no pins behind, and a
-     * provider that never had any has none. */
+    
     b8 ok = path.n && section.n
          && settings_remove_section(path, section, scratch);
     scratch->off = mark;

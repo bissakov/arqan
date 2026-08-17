@@ -55,7 +55,7 @@ static const char *kind_label(NotifyKind k) {
  * a UTF-8 boundary rather than mid-sequence. */
 static Str sanitize(Str in, char *out, size_t cap) {
     size_t n = 0;
-    b8 blank = true;   // leading whitespace is dropped with the same test
+    b8 blank = true;   
     for (size_t i = 0; i < in.n && n < cap; i++) {
         u8 ch = (u8)in.p[i];
         if (ch < 0x20 || ch == 0x7f) ch = ' ';
@@ -71,7 +71,7 @@ static Str sanitize(Str in, char *out, size_t cap) {
     return str_clip_utf8((Str){ out, n }, cap);
 }
 
-// JSON needs two more escapes than sanitize leaves behind.
+
 static size_t json_put(char *dst, size_t cap, Str s) {
     size_t n = 0;
     for (size_t i = 0; i < s.n && n + 2 < cap; i++) {
@@ -90,9 +90,7 @@ static size_t lit_put(char *dst, size_t cap, size_t n, const char *z) {
     return n + len;
 }
 
-/* Fire and forget. The hook is a grandchild, so it is reparented to init the
- * moment its parent exits and there is no zombie for the UI loop to reap;
- * arqan never waits on it, and never lets its output near the frame. */
+
 static void run_command(NotifyKind kind, Str text) {
     if (!g_notify.command.n) return;
 
@@ -115,13 +113,12 @@ static void run_command(NotifyKind kind, Str text) {
     if (!argc) return;
     argv[argc] = NULL;
 
-    /* One pipe write, under PIPE_BUF, so a hook that never reads its stdin
-     * still cannot block the turn that spawned it. */
+    
     char payload[1024];
     char cwd[512];
     if (!getcwd(cwd, sizeof cwd)) cwd[0] = '\0';
     Str dir = { cwd, strlen(cwd) };
-    size_t cap = sizeof payload - 8;   // room the closers always have
+    size_t cap = sizeof payload - 8;   
     size_t n = lit_put(payload, cap, 0, "{\"kind\":\"");
     n = lit_put(payload, cap, n, kind_name(kind));
     n = lit_put(payload, cap, n, "\",\"text\":\"");
@@ -138,8 +135,7 @@ static void run_command(NotifyKind kind, Str text) {
         if (fork() == 0) {
             i32 null_wr = open("/dev/null", O_WRONLY);
             dup2(fds[0], STDIN_FILENO);
-            /* Never the terminal: a hook writing to it would land inside the
-             * frame arqan is painting. */
+            
             if (null_wr >= 0) {
                 dup2(null_wr, STDOUT_FILENO);
                 dup2(null_wr, STDERR_FILENO);
@@ -169,17 +165,14 @@ static void run_command(NotifyKind kind, Str text) {
 }
 
 void notify_event(NotifyKind kind, Str detail, f64 elapsed_ms) {
-    /* A turn the user sat and watched needs no notification; an error or a
-     * question does, however fast it arrived. */
+    
     if (kind == NOTIFY_TURN_DONE && elapsed_ms < g_notify.min_ms) return;
 
     char body[AGENT_MAX_NOTIFY_TEXT];
     Str said = sanitize(detail, body, sizeof body);
 
     char line[AGENT_MAX_NOTIFY_TEXT];
-    /* The leading name keeps the payload out of the "9;<digit>" sub-command
-     * space ConEmu, Windows Terminal and ghostty reserve, and says who is
-     * speaking in the one line a desktop notification shows. */
+    
     i32 len = said.n
         ? snprintf(line, sizeof line, AGENT_NAME ": %.*s",
                    (i32)said.n, said.p)

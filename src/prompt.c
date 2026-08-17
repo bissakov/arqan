@@ -259,8 +259,7 @@ static void prompt_expand(Buf *b, Str tmpl, const ToolRegistry *tools,
     }
 }
 
-/* One prompt, whichever mode it describes: `configured` wins, else the
- * project's file, else the global one, else `builtin`. */
+
 static Str prompt_for(const ToolRegistry *tools, AgentMode mode, Str configured,
                       const char *project, size_t project_size, Str global,
                       const char *builtin, Arena *persist, Arena *scratch,

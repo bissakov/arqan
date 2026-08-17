@@ -21,9 +21,7 @@ static void skipws(JParser *p) {
 static i32 peekc(JParser *p) { return p->pos < p->len ? (u8)p->src[p->pos] : -1; }
 static i32 getc_(JParser *p) { return p->pos < p->len ? (u8)p->src[p->pos++] : -1; }
 
-/* One \uXXXX escape is six source bytes and at most four UTF-8 bytes, and a
- * surrogate pair is twelve source bytes for four, so raw.n + 1 is always
- * enough room for the decoded form. */
+
 static u32 hex4(const char *p) {
     u32 cp = 0;
     for (i32 k = 0; k < 4; k++) {
@@ -79,9 +77,7 @@ static Str unescape(JParser *p, Str raw) {
                 u32 cp = hex4(raw.p + i + 1);
                 if (cp == 0xFFFFFFFFu) goto bad;
                 i += 4;
-                /* A high surrogate is only half a code point: pair it with the
-                 * low one that follows, or the model's emoji come out as
-                 * invalid UTF-8 the renderer then has to guess at. */
+                
                 if (cp >= 0xD800u && cp <= 0xDBFFu
                     && i + 6 < raw.n && raw.p[i+1] == '\\' && raw.p[i+2] == 'u') {
                     u32 lo = hex4(raw.p + i + 3);
@@ -90,7 +86,7 @@ static Str unescape(JParser *p, Str raw) {
                         i += 6;
                     }
                 }
-                if (cp >= 0xD800u && cp <= 0xDFFFu) cp = 0xFFFDu;  // lone half
+                if (cp >= 0xD800u && cp <= 0xDFFFu) cp = 0xFFFDu;  
                 w += utf8_put(dst + w, cp);
                 continue;
             }
@@ -112,7 +108,7 @@ static Str parse_string_raw(JParser *p) {
         if (c == '\\') { p->pos += 2; continue; }
         if (c == '"') {
             Str raw = { p->src + start, p->pos - start };
-            p->pos++; // closing quote
+            p->pos++; 
             return raw;
         }
         p->pos++;
@@ -151,7 +147,7 @@ static JVal *parse_number(JParser *p) {
 }
 
 static JVal *parse_array(JParser *p) {
-    getc_(p); // [
+    getc_(p); 
     skipws(p);
     size_t count = 0;
     JVal list_head; list_head.next = NULL; JVal *tail = &list_head;
@@ -163,7 +159,7 @@ static JVal *parse_array(JParser *p) {
         if (peekc(p) == ',') { p->pos++; skipws(p); }
         else break;
     }
-    getc_(p); // ]
+    getc_(p); 
     JVal *arr = jnew(p, J_ARR);
     if (!arr) return NULL;
     arr->u.arr.items = NULL;
@@ -174,7 +170,7 @@ static JVal *parse_array(JParser *p) {
     JVal *cur = list_head.next;
     for (size_t i = 0; i < count; i++) {
         items[i] = *cur;
-        items[i].next = NULL;   // the sibling link belongs to objects only
+        items[i].next = NULL;   
         cur = cur->next;
     }
     arr->u.arr.items = items;
@@ -183,7 +179,7 @@ static JVal *parse_array(JParser *p) {
 }
 
 static JVal *parse_object(JParser *p) {
-    getc_(p); // {
+    getc_(p); 
     JVal *obj = jnew(p, J_OBJ);
     if (!obj) return NULL;
     obj->u.obj.head = NULL;
@@ -205,7 +201,7 @@ static JVal *parse_object(JParser *p) {
         if (peekc(p) == ',') { p->pos++; skipws(p); }
         else break;
     }
-    getc_(p); // }
+    getc_(p); 
     return obj;
 }
 
@@ -214,8 +210,7 @@ static JVal *parse_value(JParser *p) {
     i32 c = peekc(p);
     if (c == '"') return parse_string(p);
     if (c == '{' || c == '[') {
-        /* Nesting is recursion, and the depth comes from whatever the provider
-         * sends: without this cap a stream of "[[[[[..." is a stack overflow. */
+        
         if (p->depth >= AGENT_MAX_JSON_DEPTH) return NULL;
         p->depth++;
         JVal *v = c == '{' ? parse_object(p) : parse_array(p);

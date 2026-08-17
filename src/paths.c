@@ -42,7 +42,7 @@ static Str dir_default(AgentDir kind) {
 
 static Str paths_base(AgentDir kind, Arena *a) {
     const char *env = getenv(dir_env(kind));
-    if (env && env[0] == '/') {   // a relative value is ignored
+    if (env && env[0] == '/') {   
         Str s = str_c(env);
         while (s.n > 1 && s.p[s.n - 1] == '/') s.n--;
         return str_dup(a, s);
@@ -158,14 +158,13 @@ size_t paths_project_files(Str name, Arena *a, Str *out, size_t max) {
     return found;
 }
 
-/* Candidates for `name` in increasing precedence: the XDG_CONFIG_DIRS
- * entries first, XDG_CONFIG_HOME last. */
+
 size_t paths_config_files(Str name, Arena *a, Str *out, size_t max) {
     if (!out || max == 0 || !name.n) return 0;
     const char *dirs = getenv("XDG_CONFIG_DIRS");
     if (!dirs || !*dirs) dirs = "/etc/xdg";
 
-    // XDG_CONFIG_DIRS runs highest first, so collect it and then reverse.
+    
     Str sys[8];
     size_t sys_n = 0;
     Str all = str_c(dirs);
@@ -175,7 +174,7 @@ size_t paths_config_files(Str name, Arena *a, Str *out, size_t max) {
         Str d = { all.p + start, i - start };
         start = i + 1;
         while (d.n > 1 && d.p[d.n - 1] == '/') d.n--;
-        if (!d.n || d.p[0] != '/') continue;   // relative entries: ignored
+        if (!d.n || d.p[0] != '/') continue;   
         Buf b; buf_init(&b, a, d.n + name.n + 8);
         buf_puts(&b, d);
         buf_puts(&b, STR("/" AGENT_NAME "/"));

@@ -38,7 +38,7 @@ static Str setting_val(Str rest) {
             if (q == '"' && rest.p[i] == '\\') { i++; continue; }
             if (rest.p[i] == q) return setting_unquote((Str){ rest.p, i + 1 });
         }
-        return rest;   // unterminated: the line as written
+        return rest;   
     }
     for (size_t i = 1; i < rest.n; i++)
         if (rest.p[i] == '#' && (rest.p[i - 1] == ' ' || rest.p[i - 1] == '\t'))
@@ -64,8 +64,7 @@ static Str setting_section(Str line) {
     return str_trim(str_drop(str_take(line, line.n - 1), 1));
 }
 
-/* An integer or a boolean is written bare; everything else is a quoted
- * string, which is what makes the result TOML. */
+
 static b8 setting_bare(Str v) {
     if (str_eq(v, STR("true")) || str_eq(v, STR("false"))) return true;
     if (!v.n) return false;
@@ -93,8 +92,7 @@ static void setting_put_kv(Buf *b, Str key, Str val) {
     buf_puts(b, STR("\"\n"));
 }
 
-/* Empty for a file that is missing, unreadable or past `max`: a settings file
- * arqan cannot read is one it has no keys from, whichever it was. */
+
 static Str settings_src(Str path, Arena *a, size_t max) {
     Str src = {0};
     if (path.n) file_read(a, path.p, max, 0, &src, NULL);
@@ -166,8 +164,7 @@ size_t settings_sections(const Settings *s, Str prefix, Str *out, size_t max) {
     return n;
 }
 
-/* True while `line` is inside `section`: a header switches sections and every
- * other line belongs to whichever one preceded it. */
+
 static b8 in_section(Str *cur, Str line, Str want) {
     Str sec = setting_section(line);
     if (sec.n) *cur = sec;
@@ -181,23 +178,20 @@ b8 settings_set(Str path, Str section, const Str *keys, const Str *vals,
     Str src = settings_src(path, scratch, AGENT_MAX_SETTINGS_BYTES);
     b8 done[AGENT_MAX_SET_KEYS] = {0};
 
-    /* An existing file keeps the mode its owner gave it; `mode` is what a new
-     * one is created with. A credentials file others can read is refused
-     * before it reaches here, so preserving a mode never widens one. */
+    
     struct stat st;
     if (stat(path.p, &st) == 0) mode = (u32)(st.st_mode & 0777);
 
     Buf b;
     buf_init(&b, scratch, src.n + 512);
 
-    /* Every existing line is copied through; one inside `section` whose key is
-     * being set is replaced in place, so the file keeps its shape. */
+    
     Str cur = {0}, line;
     size_t off = 0;
     /* The unnamed section is the head of the file, which always exists: a
      * key added to it belongs above the first header rather than under it. */
     b8 seen_section = section.n == 0, section_open = false;
-    size_t tail = 0;   // bytes written when `section` was last still open
+    size_t tail = 0;   
     while (str_line(src, &off, &line)) {
         b8 mine = in_section(&cur, line, section);
         if (mine) { seen_section = true; section_open = true; }
@@ -219,8 +213,7 @@ b8 settings_set(Str path, Str section, const Str *keys, const Str *vals,
         if (section_open) tail = b.n;
     }
 
-    /* What was not replaced is appended: to the end of its section when it has
-     * one, else under a header opened for it. */
+    
     Buf add;
     buf_init(&add, scratch, 256);
     for (size_t i = 0; i < n; i++) {
@@ -292,12 +285,7 @@ b8 settings_remove_section(Str path, Str section, Arena *scratch) {
     return ok;
 }
 
-/* ---- the state file ------------------------------------------------------
- * What the UI last chose, keyed by the same names the config files use, so a
- * remembered choice reads back through one table. It is arqan's memory rather
- * than the user's file, which is why it is not the config file: a document
- * a person edits should not be rewritten behind them by a toggle.
- */
+
 b8 state_set(Str key, Str val, Arena *scratch) {
     return state_set_many(&key, &val, 1, scratch);
 }

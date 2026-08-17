@@ -4,20 +4,18 @@
 #include <string.h>
 
 enum {
-    R_ARG_LINES    = 8,    // input lines shown under a call's header
-    R_RESULT_LINES = 12,   // output lines shown under a result
-    R_LINE_BYTES   = 200,  // a single line's share of the transcript
-    R_TARGET_BYTES = 120,  // the header's path or query
-    /* A command is what the agent is about to run, so it is shown rather
-     * than summarised; the bound is only against a generated one-liner
-     * taking the screen, and what it cuts is one click away. */
+    R_ARG_LINES    = 8,    
+    R_RESULT_LINES = 12,   
+    R_LINE_BYTES   = 200,  
+    R_TARGET_BYTES = 120,  
+    
     R_CMD_BYTES    = 1024
 };
 
 static b8 g_verbose;
 
 static b8 g_expanded;
-static b8 g_head_more;   // the header was cut, so the block owes a way to it
+static b8 g_head_more;   
 static u32 g_zone;
 
 void render_set_verbose(b8 on) { g_verbose = on; }
@@ -43,18 +41,16 @@ static size_t patch_batch(Str patch, char *out, size_t cap);
 static void write_patch_lines(Str patch, Str source, const YhlResult *hl,
                               Str gutter, size_t max);
 
-/* `s` up to `max`, with the ellipsis a cut earns and nothing when it does
- * not: what was left out is said in one place. */
+
 static void write_clipped(Str s, size_t max, Sink sink) {
     Str head = clip(s, max);
     sink(head);
     if (head.n < s.n) sink(STR(" ..."));
 }
 
-// The block being written, for the length of one render_* call.
+
 static void block_begin(u32 id, b8 expanded) {
-    /* A block is where a re-render can put the viewport back, so it is a
-     * landmark whether it was written live or replayed. */
+    
     tui_pin(id);
     g_zone = id;
     g_expanded = expanded;
@@ -111,8 +107,7 @@ static void write_elapsed(u32 ms) {
     if (len > 0) tui_write_muted((Str){ buf, (size_t)len });
 }
 
-/* Which sink one line is written through, for a block whose lines do not read
- * alike; NULL means the block's own. */
+
 typedef Sink (*LineStyle)(Str line);
 
 /* The row that closes a block: what it left out, or the way back from an
@@ -142,8 +137,7 @@ static void write_tail(Str gutter, size_t rest, size_t shown, size_t max,
     tui_zone_end();
 }
 
-/* At most `max` lines of `body`, each behind `gutter` and each up to `bytes`
- * long, then whatever tail row the block earned. */
+
 static void write_styled(Str body, Str gutter, size_t max, size_t bytes,
                          Sink sink, LineStyle style) {
     size_t cap = line_cap(max);
@@ -205,8 +199,7 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
               : str_eq(name, STR("internet_search")) ? json_str(j, STR("query"))
               : (Str){0};
     Str target = query.n ? query : path.n ? path : cmd;
-    /* A job call names no file and runs no command, so it is shown by what
-     * it does to which job. */
+    
     char job_buf[40];
     if (str_eq(name, STR("job"))) {
         const JVal *v = json_get(j, STR("id"));
@@ -279,8 +272,7 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
             write_lines(content, STR("\u2502 "), R_ARG_LINES,
                         R_LINE_BYTES, tui_write_muted);
     } else if (patch.n) {
-        /* Twice a call's usual allowance: a hunk spends most of its lines on
-         * the context that locates it. */
+        
         write_patch_lines(patch, syntax_source, &syntax, STR("\u2502 "),
                           R_ARG_LINES * 2);
     } else if (cmd.n) {
@@ -295,8 +287,7 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
         write_lines(args, STR("\u2502 "), R_ARG_LINES, R_LINE_BYTES,
                     tui_write_muted);
     } else {
-        /* A call whose arguments are all in its header still owes the way to
-         * a target the header cut. */
+        
         write_tail(STR("\u2502 "), 0, 0, R_ARG_LINES, tui_write_muted);
     }
 
@@ -305,8 +296,7 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
     block_end();
 }
 
-/* A '!' run has no JSON to unpack: the command is the header and its trailing
- * lines the input preview. */
+
 void render_shell_call(Str cmd, u32 id, b8 expanded) {
     block_begin(id, expanded);
     size_t off = 0;
@@ -340,9 +330,7 @@ void render_shell_call(Str cmd, u32 id, b8 expanded) {
     block_end();
 }
 
-/* A plan is prose the model wrote, so it reads as the Markdown it is rather
- * than as a quoted argument, and is never truncated: it is what the user is
- * being asked to approve. */
+
 void render_plan(Str plan) {
     tui_block();
     tui_write_tool(STR("\u25c6  plan\n\n"));
@@ -407,8 +395,7 @@ static void add_line_syntax(const YhlResult *hl, Str source,
     }
 }
 
-/* Headers and hunk coordinates are diff syntax. The byte after a line marker
- * is source syntax, including context lines whose marker is a space. */
+
 static b8 patch_fragment(Str line, Str *fragment) {
     if (!line.n || str_starts(line, STR("+++ "))
         || str_starts(line, STR("--- "))
@@ -532,9 +519,7 @@ static size_t grep_matches(Str result) {
     return n;
 }
 
-/* Which language a grep result is in: the path it searched, or a plain
- * "*.ext" glob, which names one suffix and no directory. Empty when the
- * search spanned whatever the tree holds. */
+
 static Str grep_hint(const JVal *j) {
     Str path = json_str(j, STR("path"));
     Str glob = json_str(j, STR("glob"));
@@ -601,8 +586,7 @@ void render_tool_result(Str name, Str args, Str result, Arena *scratch,
     }
 
     Str body = result, status = {0};
-    /* job answers in the same shape as the command it follows: output, then
-     * a bracketed line saying where it stands. */
+    
     b8 shell = str_eq(name, STR("bash")) || str_eq(name, STR("shell"))
             || str_eq(name, STR("job"));
     b8 have_status = shell && split_status(result, &body, &status);
@@ -678,10 +662,10 @@ static void unbatch_syntax(const YhlResult *hl, Str body, b8 grep,
                 out->run[out->n++] = (YhlRun){ (u32)(at + a - src),
                                               (u32)(at + b - src),
                                               hl->run[k].semantic };
-            if (hl->run[k].end > end) break;   // continues in the next one
+            if (hl->run[k].end > end) break;   
             k++;
         }
-        src = end + 1;                          // the separator batch_line adds
+        src = end + 1;                          
     }
 }
 
@@ -701,10 +685,7 @@ static void batched_syntax(Str body, b8 grep, Str hint, Arena *scratch,
         unbatch_syntax(hl, body, grep, out);
 }
 
-/* The window includes text summarized in a block header as well as the body
- * below it. `shown` counts both, so it still opens on the first folded line.
- * The syntax it is offered is the syntax the block would paint. Keep these
- * branches paired with the renderers above. */
+
 Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
                      YhlResult *syntax) {
     if (shown) *shown = R_ARG_LINES;
@@ -726,7 +707,7 @@ Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
         if (syntax && path.n && content.n)
             highlight_request(YHL_HINT_PATH, path, content, syntax);
     } else if (patch.n) {
-        // Twice a call's usual allowance, as the block writes it.
+        
         if (shown) *shown = R_ARG_LINES * 2;
         body = patch;
         if (syntax) {
@@ -736,7 +717,7 @@ Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
             batched_syntax(patch, false, hint, scratch, syntax);
         }
     } else if (cmd.n) {
-        if (shown) *shown = R_ARG_LINES + 1; // first line is in the header
+        if (shown) *shown = R_ARG_LINES + 1; 
         body = cmd;
         if (syntax && str_eq(name, STR("bash")))
             highlight_request(YHL_HINT_MARKDOWN_ALIAS, STR("bash"), cmd,
@@ -772,12 +753,12 @@ Str render_result_text(Str name, Str args, Str result, Arena *scratch,
         }
         return result;
     }
-    if (shown) *shown = R_RESULT_LINES + 1; // first line is in the header
+    if (shown) *shown = R_RESULT_LINES + 1; 
     return body;
 }
 
 Str render_shell_text(Str cmd, size_t *shown, YhlResult *syntax) {
-    if (shown) *shown = R_ARG_LINES + 1; // first line is in the header
+    if (shown) *shown = R_ARG_LINES + 1; 
     if (syntax) {
         syntax->n = 0;
         if (cmd.n)
