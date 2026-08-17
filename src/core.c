@@ -304,6 +304,32 @@ void buf_json_chars(Buf *b, Str s) {
         }
     }
 }
+/* The whole encoding is reserved up front: a megabyte of image would
+ * otherwise be copied through every doubling of the buffer. */
+void buf_base64(Buf *b, const void *p, size_t n) {
+    static const char k_b64[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    if (!n || !p) return;
+    if (n > ((size_t)-1 - b->n) / 4 * 3) { b->oom = true; return; }
+    if (!buf_reserve(b, b->n + (n + 2) / 3 * 4)) return;
+    const u8 *s = (const u8 *)p;
+    size_t i = 0;
+    for (; n - i >= 3; i += 3) {
+        u32 v = (u32)s[i] << 16 | (u32)s[i + 1] << 8 | s[i + 2];
+        b->p[b->n++] = k_b64[v >> 18];
+        b->p[b->n++] = k_b64[(v >> 12) & 0x3f];
+        b->p[b->n++] = k_b64[(v >> 6) & 0x3f];
+        b->p[b->n++] = k_b64[v & 0x3f];
+    }
+    if (i == n) return;
+    u32 v = (u32)s[i] << 16;
+    if (n - i == 2) v |= (u32)s[i + 1] << 8;
+    b->p[b->n++] = k_b64[v >> 18];
+    b->p[b->n++] = k_b64[(v >> 12) & 0x3f];
+    b->p[b->n++] = n - i == 2 ? k_b64[(v >> 6) & 0x3f] : '=';
+    b->p[b->n++] = '=';
+}
+
 Str buf_finish(Buf *b) {
     if (b->n == b->cap && !buf_grow(b, b->n + 1)) {
         // Nowhere to put the terminator: hand back what is safely readable.

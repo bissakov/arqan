@@ -3,7 +3,8 @@
 `arqan` is a C17 terminal coding agent for OpenAI-compatible Chat Completions
 and Anthropic Messages APIs. It streams replies in a fullscreen TUI and can
 read, write, patch, search local files and the public web, fetch web pages,
-and run shell commands.
+and run shell commands. `/attach` sends an image with a message to a model
+that can see it.
 
 ## Build
 

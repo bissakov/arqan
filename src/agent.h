@@ -49,6 +49,15 @@ typedef bool     b8;
 #define AGENT_MAX_PATH         4096
 #define AGENT_MAX_COMMAND      (1u << 16)
 #define AGENT_MAX_FILE_BYTES   (16u << 20)
+/* Images a turn carries. The per-image cap is the smallest a served API
+ * enforces, so an image accepted here is one every provider takes; the side
+ * cap refuses the decompression bombs a header can claim. Neither is
+ * negotiable at runtime: an image over them is refused, never rescaled,
+ * since nothing here decodes pixels. */
+#define AGENT_MAX_IMAGE_BYTES  (5u << 20)
+#define AGENT_MAX_IMAGE_SIDE   8000u
+#define AGENT_MAX_MEDIA        64
+#define AGENT_MAX_MEDIA_PER_TURN 4
 /* A tool result is replayed on every later turn, so each cap below makes one
  * call a page rather than a file; the call says where to continue. */
 #define AGENT_TOOL_RESULT_BYTES (8u << 10)
@@ -243,6 +252,9 @@ void    buf_putf(Buf *b, const char *fmt, ...) __attribute__((format(printf,2,3)
 void    buf_json_str(Buf *b, Str s);
 // Its body without the quotes, so several pieces can share one string.
 void    buf_json_chars(Buf *b, Str s);
+/* Standard base64 with padding, appended raw: a caller that needs it inside
+ * JSON writes the quotes, since the alphabet needs no escaping. */
+void    buf_base64(Buf *b, const void *p, size_t n);
 Str     buf_finish(Buf *b);
 
 /* ---- files ---------------------------------------------------------------
@@ -315,6 +327,9 @@ void telemetry_log(i32 level, Str msg);
 void tel_open(TelEvent *e, const char *ev);
 void tel_int(TelEvent *e, const char *key, i64 v);
 void tel_bool(TelEvent *e, const char *key, b8 v);
+/* The largest power of two `v` reaches, so a record says what order of
+ * magnitude something was without measuring it. */
+void tel_bucket(TelEvent *e, const char *key, u64 v);
 // Escaped and clipped. Never pass text a user or a model wrote.
 void tel_str(TelEvent *e, const char *key, Str v);
 /* "<key>_bytes" and "<key>_lines": what a message looked like, not what it
@@ -1202,6 +1217,61 @@ Str   prompt_title(void);
  * the conversation being named to it. */
 Str   prompt_title_ask(void);
 
+/* ---- media (SoA) ---------------------------------------------------------
+ * Images attached to a turn. The bytes are kept as they were read and are
+ * base64-encoded into each request instead of being stored encoded, so a
+ * session holds one copy at its own size.
+ *
+ * An entry whose `bytes` are empty is one a resumed session could not read
+ * back. It keeps its place so the numbering in the transcript still matches
+ * the text, and every writer skips it.
+ */
+typedef struct {
+    Str  *mime;    // "image/png", and the three others an API accepts
+    Str  *bytes;   // as read; empty for an entry whose file is gone
+    Str  *label;   // what the transcript calls it, usually a basename
+    /* [cap] the sidecar this entry was written to, relative to the session
+     * directory. Empty until session_save writes one. */
+    Str  *file;
+    u32  *w, *h;   // 0 when the header did not say
+    size_t n, cap;
+} MediaSet;
+
+#define MEDIA_NONE ((size_t)-1)
+
+b8     media_init(MediaSet *m, Arena *persist, size_t cap);
+/* The media type and dimensions of an image, from its header alone. False
+ * for anything that is not a PNG, JPEG, GIF or WebP; `*w` and `*h` are 0
+ * when the format was recognized but its header could not be read. */
+b8     media_sniff(Str bytes, Str *mime, u32 *w, u32 *h);
+// The file extension a media type is stored under, without the dot.
+Str    media_ext(Str mime);
+/* Copies `bytes` into `persist` and records it under `label`. MEDIA_NONE
+ * with `err` filled in when the table is full, the bytes are not a supported
+ * image, they are over AGENT_MAX_IMAGE_BYTES or AGENT_MAX_IMAGE_SIDE, or the
+ * arena cannot take them. */
+size_t media_add(MediaSet *m, Arena *persist, Str bytes, Str label,
+                 char *err, size_t err_cap);
+/* media_add on a file's contents, read through `scratch` so a refused image
+ * costs `persist` nothing. `scratch` is rewound before returning. */
+size_t media_add_file(MediaSet *m, Arena *persist, Arena *scratch, Str path,
+                      char *err, size_t err_cap);
+/* A placeholder entry for an image a session names but could not read back,
+ * so the numbering the saved text refers to still lines up. */
+size_t media_add_missing(MediaSet *m, Arena *persist, Str label, Str mime,
+                         Str file);
+// Whether the entry has bytes to send. A missing one never reaches the wire.
+b8     media_live(const MediaSet *m, size_t id);
+/* Keep `n` of the entries added from `base` on, in the order given, and drop
+ * the rest, so a turn's attachments end up contiguous. Returns where the kept
+ * run starts, which is `base` unless nothing could be kept. */
+size_t media_keep(MediaSet *m, size_t base, const size_t *ids, size_t n);
+// "png 1280x800 - 240 KB", or what of it is known.
+void   media_describe(char *out, size_t cap, const MediaSet *m, size_t id);
+// One OpenAI image_url block, and one Anthropic image block.
+void   media_write_openai(Buf *b, const MediaSet *m, size_t id);
+void   media_write_anthropic(Buf *b, const MediaSet *m, size_t id);
+
 // ---- conversation (SoA) -------------------------------------------------
 typedef enum { M_SYSTEM = 0, M_USER, M_ASSISTANT, M_TOOL } MRole;
 
@@ -1227,11 +1297,30 @@ typedef struct {
      * that was measured. A tool result and a '!' run carry one, which is
      * what lets a replay render the time a live turn showed. */
     u32   *ms;
+    /* [cap] the slot's images: `media_n` entries of `media` from `media_off`.
+     * A slot's entries are contiguous because a turn's attachments are added
+     * together, which is what lets one pair of numbers stand for a list. */
+    u32   *media_off;
+    u16   *media_n;
+    /* The table those indices address, owned by the caller and shared with
+     * every clone of this conversation; NULL when nothing can be attached. */
+    MediaSet *media;
     size_t n, cap;
 } Conv;
 
 b8      conv_init(Conv *c, Arena *persist, size_t cap);
 size_t  conv_add(Conv *c, MRole role, Str text);
+/* Point the conversation at the table its slots index. Set once, before any
+ * message is added; a clone inherits it. */
+void    conv_set_media(Conv *c, MediaSet *m);
+/* Attach `n` media entries starting at `off` to slot `i`. The caller has
+ * just appended them, so they are the table's last `n` entries. */
+void    conv_attach_media(Conv *c, size_t i, size_t off, size_t n);
+/* Drop every slot from `keep` on, releasing the media entries they held.
+ * This is what /clear, a rewind and a resume rewind the conversation with:
+ * the bytes behind those entries live in the region the caller is about to
+ * rewind, so leaving the table pointing into it would outlive them. */
+void    conv_truncate(Conv *c, size_t keep);
 /* An assistant turn with tool calls is a head slot (prose) followed by one
  * carrier slot per call, each keeping its own id. `conv_is_call` picks the
  * carriers out of a tail scan. */
@@ -1458,11 +1547,20 @@ size_t catalog_load(Catalog *c, const Config *cfg, const Endpoints *e,
  * but drops exactness and the discovered window, so the field reads as an
  * estimate until the new model has measured itself, rather than reporting
  * one tokenizer's count as another's.
+ *
+ * An image is not bytes of conversation: it is billed by its pixels, and its
+ * base64 never appears in what the slope is fitted to. Its estimate is added
+ * after the slope and taken back out of a measurement before the slope sees
+ * it, so attaching one neither distorts the fit nor goes uncounted.
  */
 typedef struct {
     f64    slope;
     f64    offset;
     size_t fit_tokens;
+    /* The measured total less the images in it, which is the quantity the
+     * slope actually relates to bytes. */
+    f64    fit_text;
+    f64    fit_media;
     f64    fit_bytes;
     size_t exact_slots;
     size_t window;

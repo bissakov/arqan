@@ -253,6 +253,84 @@ static void sess_sync_dir(Str dir) {
     close(fd);
 }
 
+/* ---- media sidecars ------------------------------------------------------
+ * An image is written beside the session rather than into it: base64 in the
+ * line would multiply the file by four thirds of the image and put every
+ * resume against AGENT_MAX_SESSION_BYTES. The name is the content's hash, so
+ * the same image pasted twice costs one file and a re-save writes none.
+ */
+/* The sidecar an entry belongs in: its content's hash for one arqan holds,
+ * and the name the session recorded for one it could not read back. False
+ * when the entry names no file at all. */
+static b8 sess_media_name(char *rel, size_t cap, const MediaSet *m, size_t id) {
+    if (!media_live(m, id)) {
+        if (!m->file[id].n || m->file[id].n >= cap) return false;
+        memcpy(rel, m->file[id].p, m->file[id].n);
+        rel[m->file[id].n] = '\0';
+        return true;
+    }
+    Str ext = media_ext(m->mime[id]);
+    i32 rn = snprintf(rel, cap, "media/%016llx.%.*s",
+                      (unsigned long long)str_hash64(m->bytes[id]),
+                      (i32)ext.n, ext.p);
+    return rn > 0 && (size_t)rn < cap;
+}
+
+static b8 sess_media_write(Str dir, const MediaSet *m, size_t id,
+                           const char *rel) {
+    if (!media_live(m, id)) return false;
+    char sub[AGENT_MAX_PATH];
+    i32 sn = snprintf(sub, sizeof sub, "%.*s/media", (i32)dir.n, dir.p);
+    if (sn <= 0 || (size_t)sn >= sizeof sub) return false;
+    if (!paths_ensure_dir((Str){ sub, (size_t)sn })) return false;
+    char path[AGENT_MAX_PATH];
+    i32 pn = snprintf(path, sizeof path, "%.*s/%s", (i32)dir.n, dir.p, rel);
+    if (pn <= 0 || (size_t)pn >= sizeof path) return false;
+
+    /* Content-addressed: a file already there holds these very bytes. */
+    if (access(path, F_OK) == 0) return true;
+    char tmp[AGENT_MAX_PATH];
+    i32 tn = snprintf(tmp, sizeof tmp, "%s." AGENT_NAME "-tmp", path);
+    if (tn <= 0 || (size_t)tn >= sizeof tmp) return false;
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return false;
+    size_t wr = fwrite(m->bytes[id].p, 1, m->bytes[id].n, f);
+    b8 ok = wr == m->bytes[id].n && ferror(f) == 0;
+    if (ok && fflush(f) == 0) fsync(fileno(f));
+    if (fclose(f) != 0) ok = false;
+    if (!ok || rename(tmp, path) != 0) { unlink(tmp); return false; }
+    return true;
+}
+
+/* The slot's images as one JSON array, written after their sidecars are on
+ * disk. An image that could not be written is still named, so the numbering
+ * a replay shows matches the text that refers to it. */
+static void sess_put_media(FILE *f, Str dir, const Conv *c, size_t i) {
+    if (!c->media || !c->media_n[i]) return;
+    const MediaSet *m = c->media;
+    fputs(",\"media\":[", f);
+    for (size_t k = 0; k < c->media_n[i]; k++) {
+        size_t id = (size_t)c->media_off[i] + k;
+        if (id >= m->n) break;
+        char rel[64];
+        b8 named = sess_media_name(rel, sizeof rel, m, id)
+                && (!media_live(m, id) || sess_media_write(dir, m, id, rel));
+        if (k) fputc(',', f);
+        fputs("{\"mime\":", f);
+        sess_put_json(f, m->mime[id]);
+        fputs(",\"label\":", f);
+        sess_put_json(f, m->label[id]);
+        if (named) {
+            fputs(",\"file\":", f);
+            sess_put_json(f, str_c(rel));
+        }
+        if (m->w[id] && m->h[id])
+            fprintf(f, ",\"w\":%u,\"h\":%u", m->w[id], m->h[id]);
+        fputc('}', f);
+    }
+    fputs("]", f);
+}
+
 /* End a line the last save left half-written. A power loss can cut an append
  * anywhere, and the torn line is dropped on load; without this the next
  * append would run onto its tail and cost the first good message after it as
@@ -305,6 +383,7 @@ void session_save(Session *s, const Conv *c) {
             fputs(",\"output\":", f);
             sess_put_json(f, c->shell_out[i]);
         }
+        sess_put_media(f, dir, c, i);
         /* How long the run behind the slot took, so a replayed transcript
          * says what the live one did. */
         if (c->ms[i]) fprintf(f, ",\"ms\":%u", c->ms[i]);
@@ -677,6 +756,50 @@ static Str sess_thinking(Arena *persist, const JVal *v) {
     return buf_ok(&out) ? buf_finish(&out) : (Str){0};
 }
 
+/* A sidecar named by a saved line. The name is external input, so only the
+ * one shape arqan writes is accepted: one component under the session's own
+ * media directory, which no "..", absolute path or nested name can leave. */
+static b8 sess_media_path(char *out, size_t cap, Str dir, Str file) {
+    if (!str_starts(file, STR("media/"))) return false;
+    Str name = str_drop(file, 6);
+    if (!name.n || name.p[0] == '.') return false;
+    for (size_t i = 0; i < name.n; i++)
+        if (name.p[i] == '/' || (u8)name.p[i] < 0x20) return false;
+    i32 n = snprintf(out, cap, "%.*s/media/%.*s", (i32)dir.n, dir.p,
+                     (i32)name.n, name.p);
+    return n > 0 && (size_t)n < cap;
+}
+
+/* The images a saved line names, read back from beside the session and held
+ * to the same limits a live attachment is. One whose file is gone keeps its
+ * place in the table: the text it belongs to still says which image it was,
+ * and nothing but the numbering depends on it. */
+static void sess_apply_media(const Session *s, const JVal *v, Conv *c,
+                             size_t slot, Arena *persist, Arena *scratch) {
+    const JVal *arr = json_get(v, STR("media"));
+    if (!c->media || !arr || arr->type != J_ARR || !arr->u.arr.n) return;
+    size_t off = c->media->n, kept = 0;
+    for (size_t i = 0; i < arr->u.arr.n && kept < AGENT_MAX_MEDIA_PER_TURN; i++) {
+        const JVal *e = &arr->u.arr.items[i];
+        if (e->type != J_OBJ) continue;
+        Str file = json_str(e, STR("file"));
+        Str label = json_str(e, STR("label"));
+        char path[AGENT_MAX_PATH], err[128];
+        size_t id = MEDIA_NONE;
+        if (sess_media_path(path, sizeof path, s->dir, file))
+            id = media_add_file(c->media, persist, scratch, str_c(path),
+                                err, sizeof err);
+        if (id != MEDIA_NONE && label.n)
+            c->media->label[id] = str_dup(persist, label);
+        if (id == MEDIA_NONE)
+            id = media_add_missing(c->media, persist, label,
+                                   json_str(e, STR("mime")), file);
+        if (id == MEDIA_NONE) break;   // the table is full
+        kept++;
+    }
+    if (kept) conv_attach_media(c, slot, off, kept);
+}
+
 /* Whether any slot answers the call carried in `call`. */
 static b8 sess_call_answered(const Conv *c, size_t call) {
     for (size_t i = call + 1; i < c->n; i++)
@@ -760,6 +883,8 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
         if (slot != CONV_NONE && ms && ms->type == J_NUM && ms->u.n > 0)
             c->ms[slot] = ms->u.n > (f64)UINT32_MAX ? UINT32_MAX
                                                     : (u32)ms->u.n;
+        if (slot != CONV_NONE && c->role[slot] == M_USER)
+            sess_apply_media(s, v, c, slot, persist, scratch);
         if (slot != CONV_NONE && c->role[slot] == M_ASSISTANT)
             c->anthropic_thinking[slot] = sess_thinking(persist, v);
         scratch->off = line_mark;

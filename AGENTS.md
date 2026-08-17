@@ -78,6 +78,8 @@ and no release target reads them.
 - `tools.c`: registry and built-in tool implementations.
 - `spill.c`: full output of a paged tool, written to a temporary file the
   result names.
+- `media.c`: images attached to a turn. Sniffs the type and dimensions from
+  the header, holds the bytes once in `persist`, and writes each API's block.
 - `provider.c`: OpenAI/Anthropic request and response handling.
 - `history.c`, `session.c`: local prompt and conversation persistence.
 - `telemetry.c`: anonymized diagnostics. Record session shape only; never pass
@@ -108,6 +110,9 @@ them in a new path.
 - What a page leaves out goes to a spill file the result names, so the next
   call can narrow it on disk. Spilling is best effort and never changes what
   a tool answers.
+- An image over `AGENT_MAX_IMAGE_BYTES` or `AGENT_MAX_IMAGE_SIDE` is refused
+  with the limit named; nothing is resized and no pixel decoder is added. A
+  turn with no media keeps the plain-string content shape on the wire.
 - Tool availability is registry-enforced, including plan mode and disabled
   tools; prompts must describe the tools actually offered.
 - The agent keeps running tool rounds until completion or interruption; do not

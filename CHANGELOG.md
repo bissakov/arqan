@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Send images to a model that can see. `/attach <path>` adds a PNG, JPEG, GIF
+  or WebP to the message being written and puts an `[Image #1]` marker in the
+  composer, so a question can point at a picture. A message carries up to four
+  images; deleting a marker detaches its image and renumbers the rest. Images
+  are saved beside the session and sent again when it is resumed. An image
+  over 5 MB or 8000 pixels on a side is refused with the limit named, never
+  resized.
+
 ### Changed
 
 - Keep the syntax colours when a block is opened in a window. Clicking a
