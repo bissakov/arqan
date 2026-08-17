@@ -123,6 +123,10 @@ static const ConfSpec k_conf[CONF_N] = {
      * Never from a project file: a repository must not be able to put image
      * bytes into a request for a connection the user gave none. */
     [CONF_IMAGES] = { "images", "auto", "auto,off", CV_ENUM, 0, 0, 0, false },
+    /* Off by default: a start that reopens the last conversation is a choice
+     * the user makes, not what a first run does. */
+    [CONF_RESUME_LAST] = { "resume_last", "false", NULL, CV_BOOL, 0, 0, 0,
+                           true },
 };
 
 Str conf_key_name(ConfKey k) {
@@ -478,6 +482,7 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
     c->ask_timeout_ms = (i32)conf_num(conf, CONF_ASK_TIMEOUT_MS);
     c->shell_timeout_ms = (i32)conf_num(conf, CONF_SHELL_TIMEOUT_MS);
     c->images = !str_eq(conf_str(conf, CONF_IMAGES), STR("off"));
+    c->resume_last    = conf_bool(conf, CONF_RESUME_LAST);
 
     
     Str tools = conf_str(conf, CONF_DISABLE_TOOLS);

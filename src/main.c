@@ -83,6 +83,7 @@ static size_t commands_init(b8 images) {
     g_commands[n++] = (TuiCmd){ STR("/statusline"), STR("Choose what the status line shows") };
     g_commands[n++] = (TuiCmd){ STR("/about"), STR("About " AGENT_NAME " and its contributors") };
     g_commands[n++] = (TuiCmd){ STR("/help"), STR("Start a conversation about using " AGENT_NAME) };
+    g_commands[n++] = (TuiCmd){ STR("/restart"), STR("Restart " AGENT_NAME ", resuming this session only if the setting says so") };
     g_commands[n++] = (TuiCmd){ STR("/exit"), STR("Quit " AGENT_NAME) };
     g_commands[n++] = (TuiCmd){ STR("/export"), STR("Export this session as Markdown") };
     g_command_n = n;
@@ -1202,6 +1203,30 @@ static void resume_session(Agent *ag) {
     render_conv(conv, ag->cfg, ag->show_instructions, scratch);
     tui_batch_end();
     if (!whole) tui_notice(STR("session truncated: the conversation is full"));
+}
+
+/* Reopen this directory's newest session, for a start that was configured to
+ * continue rather than to greet. It runs before the screen exists, so
+ * nothing is painted here and the caller renders the conversation once the
+ * TUI is up; `truncated` says the conversation filled up on the way in.
+ * False means there was nothing to reopen, and leaves the session unnamed so
+ * the caller reserves a fresh one as usual. */
+static b8 resume_latest(Session *sess, Conv *conv, Arena *persist,
+                        Arena *scratch, b8 *truncated) {
+    *truncated = false;
+    arena_reset(scratch);
+    SessionList list;
+    Str src = {0};
+    if (session_list(sess, scratch, &list, 1))
+        src = session_read(list.path[0], scratch);
+    if (!src.n) {
+        arena_reset(scratch);
+        return false;
+    }
+    *truncated = !session_apply(sess, src, list.path[0], list.name[0], conv,
+                                persist, scratch);
+    arena_reset(scratch);
+    return true;
 }
 
 
@@ -2608,7 +2633,7 @@ enum {
     SET_VERBOSE, SET_RAW, SET_STREAM, SET_IGNORED, SET_TELEMETRY,
     SET_SHOW_INSTRUCTIONS, SET_AUTO_TITLE, SET_TOOL, SET_WRAP, SET_MODE,
     SET_MAX_TOKENS,
-    SET_EFFORT, SET_BUDGET, SET_PERMISSIONS
+    SET_EFFORT, SET_BUDGET, SET_PERMISSIONS, SET_RESUME_LAST
 };
 #define SET_MAX_ROWS (18 + AGENT_MAX_TOOLS)
 
@@ -2870,6 +2895,11 @@ static size_t settings_build(void *ud) {
         setting_check(rows_arena, cfg->auto_title,
                       STR("Name sessions")),
         STR("Name a session after its first turn, with a small model configured") };
+    kind[n] = SET_RESUME_LAST;
+    rows[n++] = (TuiCmd){
+        setting_check(rows_arena, cfg->resume_last,
+                      STR("Resume last session")),
+        STR("Start in this directory's newest session instead of the welcome screen") };
 
     /* One checkbox per tool a turn may call. A tool the mode does not offer
      * is still listed, since turning bash off is a statement about the
@@ -3038,6 +3068,10 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
         case SET_AUTO_TITLE:
             cfg->auto_title = !cfg->auto_title;
             remember_ui_bool(scratch, CONF_AUTO_TITLE, cfg->auto_title);
+            break;
+        case SET_RESUME_LAST:
+            cfg->resume_last = !cfg->resume_last;
+            remember_ui_bool(scratch, CONF_RESUME_LAST, cfg->resume_last);
             break;
         case SET_MAX_TOKENS:
             cfg->max_tokens = max_tokens_step(cfg->max_tokens, delta);
@@ -3846,6 +3880,47 @@ static void write_final_reply(const Conv *conv) {
     }
 }
 
+/* The image a restart runs. /proc/self/exe names it even where argv[0] was
+ * replaced or is a bare command name; without it, only a command line
+ * carrying a path can be checked, and a bare name is left to the PATH search
+ * execvp does. */
+static b8 restart_exe(char *out, size_t cap, const char *argv0) {
+#ifdef __linux__
+    ssize_t n = readlink("/proc/self/exe", out, cap - 1);
+    if (n > 0 && (size_t)n < cap - 1) {
+        out[(size_t)n] = '\0';
+        if (access(out, X_OK) == 0) return true;
+    }
+#endif
+    size_t len = argv0 ? strlen(argv0) : 0;
+    if (!len || len >= cap || !strchr(argv0, '/')) return false;
+    memcpy(out, argv0, len + 1);
+    return access(out, X_OK) == 0;
+}
+
+/* Hand the terminal to a fresh process with the same command line, which
+ * reads the settings again: it reopens this session or greets with the
+ * welcome screen exactly as `resume_last` says. The conversation is already
+ * on disk, since a session is saved as it happens. exec keeps the pty and
+ * runs no atexit handler, so what those release is released here and the
+ * terminal is put back before the image is replaced. */
+static void restart_agent(char **argv) {
+    char exe[AGENT_MAX_PATH];
+    b8 have = restart_exe(exe, sizeof exe, argv[0]);
+    if (!have && (!argv[0] || !*argv[0])) {
+        tui_notice(STR("could not find the " AGENT_NAME " to restart"));
+        return;
+    }
+    jobs_stop();
+    highlight_close();
+    telemetry_close();
+    tui_stop();
+    if (have) execv(exe, argv);
+    else execvp(argv[0], argv);
+    fprintf(stderr, AGENT_NAME ": could not restart: %s\n", strerror(errno));
+    exit(1);
+}
+
 i32 main(i32 argc, char **argv) {
 #ifdef PR_SET_THP_DISABLE
     /* The large static arenas and TUI buffers are sparse. Under an "always"
@@ -3885,8 +3960,9 @@ i32 main(i32 argc, char **argv) {
 
     ToolRegistry tools;
     tools_init(&tools, &persist);
-    tools_set_interactive(!opts.have_prompt && isatty(STDIN_FILENO)
-                          && isatty(STDOUT_FILENO));
+    b8 interactive = !opts.have_prompt && isatty(STDIN_FILENO)
+                     && isatty(STDOUT_FILENO);
+    tools_set_interactive(interactive);
     
     char tools_err[128] = {0};
     if (cfg.disable_tools.n &&
@@ -3946,7 +4022,13 @@ i32 main(i32 argc, char **argv) {
     static Session sess;
     session_init(&sess, &scratch);
     arena_reset(&scratch);
-    session_begin(&sess);
+    /* Reopening is for a session someone is about to sit in front of: a
+     * one-shot run and a piped one each answer one request, so both start
+     * clean whatever the setting says. */
+    b8 truncated = false;
+    b8 resumed = interactive && cfg.resume_last
+              && resume_latest(&sess, &conv, &persist, &scratch, &truncated);
+    if (!resumed) session_begin(&sess);
 
     struct sigaction sa = {0}; sa.sa_handler = on_sigint;
     sigemptyset(&sa.sa_mask); sa.sa_flags = 0;
@@ -3965,8 +4047,14 @@ i32 main(i32 argc, char **argv) {
     tui_set_permissions(cfg.permissions);
     if (cfg.provider.n) tui_set_provider(cfg.provider);
     tui_set_reasoning(cfg.reasoning_effort, cfg.thinking_budget);
-    if (prefs.show_instructions && !opts.have_prompt)
+    if (resumed) {
+        tui_batch_begin();
+        render_conv(&conv, &cfg, prefs.show_instructions, &scratch);
+        tui_batch_end();
+        arena_reset(&scratch);
+    } else if (prefs.show_instructions && !opts.have_prompt) {
         render_instructions(&cfg);
+    }
     tui_set_commands(g_commands, commands_init(cfg.images));
     tui_set_aliases(k_aliases, ALIAS_N);
     tui_set_history(&hist);
@@ -4017,6 +4105,8 @@ i32 main(i32 argc, char **argv) {
     /* The welcome screen names the command instead of a form opening unasked
      * over an empty screen. */
     if (tui_is_fullscreen()) tui_set_setup_hint(setup_hint(&cfg, &scratch));
+    if (truncated)
+        tui_notice(STR("session truncated: the conversation is full"));
 
     
     static char line[AGENT_LINE_BUF];
@@ -4153,6 +4243,10 @@ i32 main(i32 argc, char **argv) {
         }
         if (!strcmp(line, "/resume")) {
             resume_session(&agent);
+            continue;
+        }
+        if (!strcmp(line, "/restart")) {
+            restart_agent(argv);
             continue;
         }
         if (!escaped && line[0] == '/') {

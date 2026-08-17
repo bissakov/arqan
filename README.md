@@ -136,6 +136,7 @@ api = "openai"
 max_tokens = 32768
 stream = true
 images = "auto"    # "off" withdraws /attach and sends no image
+resume_last = false  # true starts in this directory's newest session
 
 [providers.openai]
 base_url = "https://api.openai.com/v1"
