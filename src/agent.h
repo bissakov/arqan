@@ -155,6 +155,10 @@ typedef bool     b8;
 /* A locked keyring may prompt through its own agent; past this the helper is
  * killed, since a wait with no end would take the UI with it. */
 #define AGENT_SECRET_TIMEOUT_MS 15000
+/* A clipboard helper answers at once or not at all: it reads what the display
+ * server already holds. Past this it is killed, so a stuck one costs a moment
+ * rather than the session. */
+#define AGENT_CLIPBOARD_TIMEOUT_MS 3000
 #define AGENT_MAX_REASONING_LIST 1024
 /* A desktop notification is a one-line summary, not a transcript: the text
  * is cut to this and the tail is dropped rather than wrapped. */
@@ -708,6 +712,7 @@ typedef enum {
     CONF_SMALL_MODEL, CONF_SMALL_PROVIDER, CONF_AUTO_TITLE,
     CONF_ASK_TIMEOUT_MS,
     CONF_SHELL_TIMEOUT_MS,
+    CONF_IMAGES,
     CONF_N
 } ConfKey;
 
@@ -850,6 +855,11 @@ typedef struct {
     Str disable_tools;
     // Name a session automatically once it has a turn to name.
     b8 auto_title;
+    /* Whether this connection carries images. False withdraws /attach and
+     * leaves the conversation with no media table at all, so no image can
+     * reach a model that cannot see one. Fixed for the run: the table is
+     * what a slot's indices address, so it cannot appear mid-session. */
+    b8 images;
     /* How long an ask_user question waits for a keypress before it answers
      * itself with the option the model recommended. 0 waits forever, which
      * is also what a question recommending nothing does. */
@@ -1271,6 +1281,17 @@ void   media_describe(char *out, size_t cap, const MediaSet *m, size_t id);
 // One OpenAI image_url block, and one Anthropic image block.
 void   media_write_openai(Buf *b, const MediaSet *m, size_t id);
 void   media_write_anthropic(Buf *b, const MediaSet *m, size_t id);
+
+/* ---- clipboard ----------------------------------------------------------
+ * The image the system clipboard holds, read through the first helper that
+ * is installed (wl-paste, xclip, pngpaste) and returned as the bytes it
+ * gave, in `scratch`. False with `err` filled in when no helper is
+ * installed, the clipboard holds no image, or it holds more bytes than an
+ * image may have. The bytes are not validated here: the caller hands them
+ * to media_add, which refuses a format or a size the same way it would from
+ * a file. Pumps the UI while it waits.
+ */
+b8     clipboard_image(Arena *scratch, Str *out, char *err, size_t err_cap);
 
 // ---- conversation (SoA) -------------------------------------------------
 typedef enum { M_SYSTEM = 0, M_USER, M_ASSISTANT, M_TOOL } MRole;
@@ -1914,6 +1935,10 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n);
 /* Replace the composer's text, cursor at its end; ignored without a
  * fullscreen UI. This is how a rewind hands an earlier message back. */
 void tui_set_input(Str s);
+/* The composer's text. TUI-owned and valid until the next edit; empty
+ * without a fullscreen UI. A caller that adds to a draft reads it first
+ * rather than replacing what the user has written. */
+Str  tui_input(void);
 /* While a turn is in flight keystrokes are accepted and Enter moves one
  * follow-up into a queue. Callers pump tui_poll_input from wherever they wait.
  * The queued Str is TUI-owned and remains valid until another message is

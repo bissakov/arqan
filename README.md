@@ -4,7 +4,7 @@
 and Anthropic Messages APIs. It streams replies in a fullscreen TUI and can
 read, write, patch, search local files and the public web, fetch web pages,
 and run shell commands. `/attach` sends an image with a message to a model
-that can see it.
+that can see it, by path or straight from the clipboard with Ctrl-V.
 
 ## Build
 
@@ -134,6 +134,7 @@ api_key = "sk-..."
 api = "openai"
 max_tokens = 32768
 stream = true
+images = "auto"    # "off" withdraws /attach and sends no image
 
 [providers.openai]
 base_url = "https://api.openai.com/v1"

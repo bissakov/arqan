@@ -4648,6 +4648,11 @@ void tui_set_input(Str s) {
     repaint();
 }
 
+Str tui_input(void) {
+    if (!g_tui.fullscreen) return (Str){0};
+    return (Str){ g_bulk.input, g_tui.input_n };
+}
+
 void tui_set_commands(const TuiCmd *cmds, size_t n) {
     g_tui.cmds = cmds;
     g_tui.cmd_n = n < AGENT_MAX_COMMANDS ? n : AGENT_MAX_COMMANDS;
@@ -5626,7 +5631,7 @@ b8 tui_ask_edit(Str question, b8 allow_empty, char *inout, size_t cap) {
 }
 
 typedef enum { ED_EDIT = 0, ED_SUBMIT, ED_EOF, ED_REWIND, ED_EXPAND,
-               ED_MODE } EdAction;
+               ED_MODE, ED_ATTACH } EdAction;
 
 /* Up/Down, and their Ctrl-P/Ctrl-N twins: inside a multi-line draft they walk
  * its rows, and history is reached from the first row going up and the last
@@ -5952,6 +5957,9 @@ static void ed_end(Ed *e) {
                                                         ed_delete_or_eof(e);) \
     X(0x12, "Ctrl-R", "Search the transcript",                                \
                     tui_find_open(); ED_RETURN(e, ED_EDIT);)                  \
+    /* A command rather than an edit, so a draft written around it stays. */   \
+    X(0x16, "Ctrl-V", "Attach the clipboard's image to the message",           \
+                    e->action = ED_ATTACH;)                                    \
     X(0x0c, "Ctrl-L", "Repaint the screen",                                   \
                     g_tui.frame_valid = false;)
 
@@ -6207,6 +6215,13 @@ static void busy_expand(void) {
     if (len > 0) g_busy_cmd((Str){cmd, (size_t)len}, g_busy_cmd_ud);
 }
 
+/* Ctrl-V mid-turn. The hook refuses it like any other command that belongs
+ * to the next message, which is an answer rather than a key that did
+ * nothing; the draft it was pressed over is untouched either way. */
+static void busy_attach(void) {
+    if (g_busy_cmd) g_busy_cmd(STR("/attach"), g_busy_cmd_ud);
+}
+
 /* Drain what the terminal already has, without ever blocking. Enter submits
  * commands a running turn can afford and queues one ordinary follow-up. */
 void tui_poll_input(void) {
@@ -6264,6 +6279,7 @@ void tui_poll_input(void) {
             busy_submit();
             if (g_pick.active && !g_pick.modal) { repaint(); return; }
         } else if (action == ED_EXPAND) busy_expand();
+        else if (action == ED_ATTACH) busy_attach();
         dirty = true;
     }
     if (dirty) repaint();
@@ -6300,13 +6316,15 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
 
         EdAction action = editor_key(c);
         if (action == ED_EOF) { *out_n = 0; return false; }
-        if (action == ED_REWIND || action == ED_EXPAND || action == ED_MODE) {
+        if (action == ED_REWIND || action == ED_EXPAND || action == ED_MODE
+            || action == ED_ATTACH) {
             /* The gesture and the command are one request, so it answers as
              * the command. The draft it was typed over is left alone. */
             char cmd[32];
             i32 len;
             if (action == ED_REWIND) len = snprintf(cmd, sizeof cmd, "/rewind");
             else if (action == ED_MODE) len = snprintf(cmd, sizeof cmd, "/mode");
+            else if (action == ED_ATTACH) len = snprintf(cmd, sizeof cmd, "/attach");
             else len = snprintf(cmd, sizeof cmd, "/expand %u", g_tui.click_id);
             size_t n = len > 0 ? (size_t)len : 0;
             if (n >= cap) n = cap - 1;

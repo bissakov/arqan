@@ -4,30 +4,32 @@
 
 ### Added
 
-- Send images to a model that can see. `/attach <path>` adds a PNG, JPEG, GIF
-  or WebP to the message being written and puts an `[Image #1]` marker in the
-  composer, so a question can point at a picture. A message carries up to four
-  images; deleting a marker detaches its image and renumbers the rest. Images
-  are saved beside the session and sent again when it is resumed. An image
-  over 5 MB or 8000 pixels on a side is refused with the limit named, never
-  resized.
+- Send images to a multimodal model. `/attach <path>` adds a PNG, JPEG, GIF
+  or WebP to the message being written and marks it `[Image #1]`; deleting the
+  marker detaches it. Four images per message. Images are saved beside the
+  session and sent again on resume. One over 5 MB or 8000 pixels a side is
+  refused with the limit named, never resized.
+
+- Paste a screenshot. Ctrl-V, or `/attach` with no path, attaches the image on
+  the clipboard, read through `wl-paste`, `xclip` or `pngpaste`. The draft is
+  left alone when there is no image to take.
+
+- Turn images off. `images = off` withdraws `/attach` and sends none, not even
+  those a resumed session saved. A project file cannot turn it on.
 
 ### Changed
 
 - Keep the syntax colours when a block is opened in a window. Clicking a
-  tool block while a turn runs shows all of its text in a window, which was
-  plain even where the block under it was highlighted. The window now colours
-  the same things the block does: file content a `read` returned, the code a
-  `write` or a `patch` carries, a shell command, and the matched text of a
-  typed `grep`.
+  tool block while a turn runs showed all of its text plain. The window now
+  colours what the block does: file content a `read` returned, the code a
+  `write` or a `patch` carries, a shell command, and typed `grep` matches.
 
 ### Fixed
 
-- Report the last thing a background job printed. A command's final output
-  can still be in flight when the command exits, so `job` waiting for one
-  could answer with its exit line and drop the lines just before it. A wait
-  now covers that hand-off, bounded so that anything the command left running
-  behind it cannot hold the answer.
+- Report the last thing a background job printed. Output still in flight when
+  a command exits could be dropped, so `job` answered with the exit line
+  alone. A wait now covers that hand-off, bounded so that a process left
+  running behind the command cannot hold the answer.
 
 ## [0.5.0] - 2026-08-16
 

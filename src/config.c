@@ -124,6 +124,12 @@ static const ConfSpec k_conf[CONF_N] = {
     [CONF_SHELL_TIMEOUT_MS] = { "shell_timeout_ms",
                                 CONF_TEXT(AGENT_SHELL_TIMEOUT_MS), NULL,
                                 CV_NUM, 0, AGENT_JOB_WAIT_MAX_MS, 0, false },
+    /* Whether a message may carry an image. "auto" offers /attach and is
+     * named that way because what a model accepts is the model's to say: a
+     * later release may decide it from the model rather than from here.
+     * Never from a project file: a repository must not be able to put image
+     * bytes into a request for a connection the user gave none. */
+    [CONF_IMAGES] = { "images", "auto", "auto,off", CV_ENUM, 0, 0, 0, false },
 };
 
 Str conf_key_name(ConfKey k) {
@@ -495,6 +501,7 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
     c->auto_title     = conf_bool(conf, CONF_AUTO_TITLE);
     c->ask_timeout_ms = (i32)conf_num(conf, CONF_ASK_TIMEOUT_MS);
     c->shell_timeout_ms = (i32)conf_num(conf, CONF_SHELL_TIMEOUT_MS);
+    c->images = !str_eq(conf_str(conf, CONF_IMAGES), STR("off"));
 
     /* "none" is how the UI records that nothing is disabled: an empty value
      * removes the key, which the next run would read as never chosen. */

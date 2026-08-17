@@ -12,6 +12,7 @@
 #include "paths.c"
 #include "spill.c"
 #include "media.c"
+#include "clipboard.c"
 #include "settings.c"
 #include "telemetry.c"
 #include "history.c"
@@ -62,7 +63,9 @@ static TuiCmd g_commands[AGENT_MAX_COMMANDS];
 
 static size_t g_command_n;
 
-static size_t commands_init(void) {
+/* `images` decides whether /attach is offered at all: a command the popup
+ * lists is one the session can run. */
+static size_t commands_init(b8 images) {
     size_t n = 0;
     g_commands[n++] = (TuiCmd){ STR("/clear"), STR("Start a fresh conversation") };
     g_commands[n++] = (TuiCmd){ STR("/resume"), STR("Resume a saved session from this directory, or delete one") };
@@ -74,7 +77,8 @@ static size_t commands_init(void) {
     g_commands[n++] = (TuiCmd){ STR("/rewind"), STR("Go back to an earlier message and edit it") };
     g_commands[n++] = (TuiCmd){ STR("/title"), STR("Name this session, or `/title auto` to let the small model name it") };
     g_commands[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
-    g_commands[n++] = (TuiCmd){ STR("/attach"), STR("Attach an image to the next message: `/attach shot.png`") };
+    if (images)
+        g_commands[n++] = (TuiCmd){ STR("/attach"), STR("Attach an image to the next message, by path or from the clipboard (Ctrl-V)") };
     g_commands[n++] = (TuiCmd){ STR("/find"), STR("Search the transcript (Ctrl-R)") };
     g_commands[n++] = (TuiCmd){ STR("/keys"), STR("Show the keyboard shortcuts") };
     g_commands[n++] = (TuiCmd){ STR("/settings"), STR("Change how " AGENT_NAME " behaves") };
@@ -1372,34 +1376,62 @@ static void attach_notice(const Agent *ag, size_t id) {
                (i32)g_media.label[id].n, g_media.label[id].p, what);
 }
 
-/* Hand the composer every pending placeholder back. Submitting the command
- * emptied it, so this is what puts the markers an earlier /attach left there
- * back in front of the user, whether or not this one added anything. */
+// Whether a draft still carries the placeholder for pending image `num`.
+static b8 draft_names_image(Str draft, size_t num) {
+    char tag[24];
+    i32 n = snprintf(tag, sizeof tag, "[Image #%zu]", num);
+    if (n <= 0) return false;
+    Str want = { tag, (size_t)n };
+    for (size_t i = 0; i + want.n <= draft.n; i++)
+        if (str_starts(str_drop(draft, i), want)) return true;
+    return false;
+}
+
+/* Leave the composer naming every pending image. A typed /attach submitted
+ * the line, so the box is empty and the markers an earlier one left are
+ * written back; Ctrl-V attaches under a draft, so what the user has written
+ * stays and only the new marker is appended. */
 static void composer_restore_pending(const Agent *ag) {
     if (!ag->pending_n) return;
     size_t mark = ag->scratch->off;
+    Str draft = tui_input();
     Buf b;
-    buf_init(&b, ag->scratch, 128);
-    for (size_t i = 0; i < ag->pending_n; i++)
+    buf_init(&b, ag->scratch, draft.n + 32 * ag->pending_n);
+    buf_puts(&b, draft);
+    for (size_t i = 0; i < ag->pending_n; i++) {
+        if (draft_names_image(draft, i + 1)) continue;
+        if (b.n && b.p[b.n - 1] != ' ') buf_putc(&b, ' ');
         buf_putf(&b, "[Image #%zu] ", i + 1);
+    }
     Str line = buf_finish(&b);
-    if (line.n) tui_set_input(line);
+    if (line.n && !str_eq(line, draft)) tui_set_input(line);
     ag->scratch->off = mark;
+}
+
+/* The clipboard's image, added like a file's. The helper's bytes land in
+ * `scratch` and media_add refuses a format or a size there exactly as it
+ * would from a path, so the two ways to attach answer alike. */
+static size_t attach_from_clipboard(Agent *ag, char *err, size_t err_cap) {
+    Str bytes;
+    if (!clipboard_image(ag->scratch, &bytes, err, err_cap)) return MEDIA_NONE;
+    return media_add(&g_media, ag->persist, bytes, STR("clipboard"),
+                     err, err_cap);
 }
 
 static void attach_image(Agent *ag, Str path) {
     path = str_trim(path);
+    /* Without a media table nothing can hold an image, which is what
+     * `images = off` leaves behind. The command is not offered then; typed
+     * anyway, it says which setting withdrew it. */
+    if (!ag->conv->media) {
+        notice_fmt("images are off: set images = auto to attach one");
+        return;
+    }
     /* The shape of an attachment, never the picture: how big it was and how
      * many the message is carrying, with no name, path or media type. */
     TelEvent e;
     tel_open(&e, "attach");
-    if (!path.n) {
-        tui_notice(STR("usage: /attach <path to a png, jpeg, gif or webp>"));
-        composer_restore_pending(ag);
-        tel_bool(&e, "ok", false);
-        tel_send(&e);
-        return;
-    }
+    tel_bool(&e, "clipboard", !path.n);
     if (ag->pending_n >= AGENT_MAX_MEDIA_PER_TURN) {
         notice_fmt("a message carries at most %d images; send this one first",
                    AGENT_MAX_MEDIA_PER_TURN);
@@ -1410,8 +1442,11 @@ static void attach_image(Agent *ag, Str path) {
     }
     char err[256] = {0};
     size_t mark = ag->scratch->off;
-    size_t id = media_add_file(&g_media, ag->persist, ag->scratch, path,
-                               err, sizeof err);
+    /* No path is the clipboard, which is what Ctrl-V submits: a screenshot
+     * is the one image a user has no name for. */
+    size_t id = path.n ? media_add_file(&g_media, ag->persist, ag->scratch,
+                                        path, err, sizeof err)
+                       : attach_from_clipboard(ag, err, sizeof err);
     if (id == MEDIA_NONE) {
         ag->scratch->off = mark;
         notice_fmt("%s", err);
@@ -1515,7 +1550,9 @@ static Str turn_bind_images(Agent *ag, Str text, size_t *off, size_t *count) {
         buf_putf(&b, "[Image #%zu]", renum[i]);
     }
     Str full = buf_finish(&b);
-    Str stored = buf_ok(&b) ? str_dup(ag->persist, full) : (Str){0};
+    /* The composer leaves a space after a marker so the user can keep
+     * writing; one they never wrote past is not part of the message. */
+    Str stored = buf_ok(&b) ? str_dup(ag->persist, str_trim(full)) : (Str){0};
     ag->scratch->off = mark;
     if (!stored.p) return (Str){0};
     if (n) *off = media_keep(&g_media, ag->pending[0], kept, n);
@@ -3203,6 +3240,14 @@ static b8 on_busy_command(Str line, void *ud) {
         rerender_or_defer(ag);
         return true;
     }
+    /* An attachment belongs to the message after this one, so it runs where
+     * it stands: the image joins the draft in the composer and goes out with
+     * whatever is sent next. Ctrl-V submits this. */
+    if (!strcmp(cmd, "/attach") || !strncmp(cmd, "/attach ", 8)) {
+        attach_image(ag, (Str){ cmd + 7, line.n - 7 });
+        telemetry_command(STR("/attach"));
+        return true;
+    }
     Str name = { cmd, resolve_alias(cmd, line.n, sizeof cmd) };
 
     b8 ran;
@@ -3990,7 +4035,7 @@ i32 main(i32 argc, char **argv) {
     }
     /* The table is reserved with the conversation, below the mark a /clear
      * rewinds to: only the images it holds live in the region that goes. */
-    if (media_init(&g_media, &persist, AGENT_MAX_MEDIA))
+    if (cfg.images && media_init(&g_media, &persist, AGENT_MAX_MEDIA))
         conv_set_media(&conv, &g_media);
 
     conv_add(&conv, M_SYSTEM, cfg.mode == MODE_PLAN ? cfg.plan_prompt
@@ -4022,7 +4067,7 @@ i32 main(i32 argc, char **argv) {
     tui_set_reasoning(cfg.reasoning_effort, cfg.thinking_budget);
     if (prefs.show_instructions && !opts.have_prompt)
         render_instructions(&cfg);
-    tui_set_commands(g_commands, commands_init());
+    tui_set_commands(g_commands, commands_init(cfg.images));
     tui_set_aliases(k_aliases, ALIAS_N);
     tui_set_history(&hist);
     tui_set_interrupt_flag(&g_got_sigint);

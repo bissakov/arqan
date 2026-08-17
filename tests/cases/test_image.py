@@ -358,3 +358,176 @@ def test_a_lost_sidecar_leaves_the_turn_sendable(ctx):
     body = ctx.mock.requests[-1]
     assert openai_images(body) == [], body["messages"]
     assert body["messages"][1]["content"] == "[Image #1] look", body["messages"]
+
+
+# ---- the images setting ---------------------------------------------------
+def test_images_off_withdraws_the_command(ctx):
+    """`images = off` is a connection that carries none: the command is not
+    offered, and typed anyway it names the setting rather than failing."""
+    shot(ctx)
+    s = ctx.spawn(ARQAN_IMAGES="off")
+    s.type("/att").sync()
+    assert "/attach" not in s.text(), s.text()
+    s.key("ctrl-u").sync()
+    s.type("/attach shot.png").sync()
+    s.key("enter")
+    s.wait_text("images are off")
+    wait_composer(s, "")
+
+
+def test_images_off_sends_no_image_a_session_saved(ctx):
+    """A session resumed with images off replays its text and none of its
+    pictures: nothing reaches a model that was told it cannot see."""
+    shot(ctx)
+    ctx.scenario("text=ok")
+    s = ctx.spawn()
+    attach(s, "shot.png")
+    s.submit("look")
+    s.wait_text("ok")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+
+    ctx.scenario("text=still+here")
+    s2 = ctx.spawn(ARQAN_IMAGES="off")
+    s2.submit("/resume")
+    s2.wait_status("pick a session")
+    s2.key("enter")
+    s2.wait_for(lambda t: t.contains("[Image #1] look"), "the replayed turn")
+    assert "shot.png" not in s2.text(), s2.text()
+    s2.submit("again")
+    s2.wait_text("still here")
+    s2.wait_turn_done()
+
+    body = ctx.mock.requests[-1]
+    assert openai_images(body) == [], body["messages"]
+    assert body["messages"][1]["content"] == "[Image #1] look", body["messages"]
+
+
+def test_a_project_file_cannot_turn_images_on(ctx):
+    """The setting names what the user's connection carries, so a repository
+    may not add image bytes to a request the user disabled."""
+    shot(ctx)
+    config = ctx.config_file()
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("images = off\n")
+    ctx.write_project_config("images = auto\n")
+
+    s = ctx.spawn()
+    s.type("/attach shot.png").sync()
+    s.key("enter")
+    s.wait_text("images are off")
+
+
+# ---- the clipboard --------------------------------------------------------
+def clipboard(ctx, data: bytes = None, types=("text/plain", "image/png")):
+    """A PATH holding one fake `wl-paste`, and nothing else.
+
+    The directory is the whole PATH so that no clipboard reader installed on
+    the machine can answer instead: what a case says the clipboard holds is
+    what arqan sees. `data` of None is a helper that lists types but hands
+    over nothing.
+    """
+    bindir = ctx.work / "clipbin"
+    bindir.mkdir(exist_ok=True)
+    listing = " ".join(types)
+    body = f'exec cat "{ctx.work}/clipboard.bin"\n' if data is not None else "exit 1\n"
+    if data is not None:
+        (ctx.work / "clipboard.bin").write_bytes(data)
+    script = bindir / "wl-paste"
+    script.write_text(
+        "#!/bin/sh\n"
+        "PATH=/usr/bin:/bin\n"
+        f'[ "$1" = "--list-types" ] && {{ printf "%s\\n" {listing}; exit 0; }}\n'
+        + body
+    )
+    script.chmod(0o755)
+    return str(bindir)
+
+
+def test_ctrl_v_attaches_the_clipboard_image(ctx):
+    """A screenshot is the one image a user has no filename for."""
+    path = clipboard(ctx, png(4, 3))
+    s = ctx.spawn(PATH=path)
+    s.key("ctrl-v")
+    s.wait_text("attached [Image #1] clipboard - png 4x3")
+    wait_composer(s, "[Image #1]")
+
+
+def test_ctrl_v_keeps_what_was_already_typed(ctx):
+    """The key is a command, not a paste: the draft it lands in survives and
+    the marker joins it."""
+    path = clipboard(ctx, png(4, 3))
+    ctx.scenario("text=a+red+rectangle")
+    s = ctx.spawn(PATH=path)
+    s.type("what is this").sync()
+    s.key("ctrl-v")
+    s.wait_text("attached [Image #1]")
+    wait_composer(s, "what is this [Image #1]")
+    s.key("enter")
+    s.wait_text("a red rectangle")
+    s.wait_turn_done()
+
+    body = ctx.mock.requests[-1]
+    content = body["messages"][-1]["content"]
+    assert content[0]["text"] == "what is this [Image #1]", content
+    assert len(openai_images(body)) == 1, content
+
+
+def test_attach_with_no_path_reads_the_clipboard(ctx):
+    """The command and the key are one path: no argument means the clipboard."""
+    path = clipboard(ctx, png(6, 5))
+    s = ctx.spawn(PATH=path)
+    s.type("/attach").sync()
+    s.key("enter")
+    s.wait_text("attached [Image #1] clipboard - png 6x5")
+
+
+def test_a_clipboard_with_no_image_says_so(ctx):
+    """Text on the clipboard is not an attachment."""
+    path = clipboard(ctx, types=("text/plain", "text/html"))
+    s = ctx.spawn(PATH=path)
+    s.key("ctrl-v")
+    s.wait_text("the clipboard holds no image")
+    wait_composer(s, "")
+
+
+def test_no_clipboard_reader_names_the_helpers(ctx):
+    """Nothing installed is answered with what to install."""
+    empty = ctx.work / "nobin"
+    empty.mkdir()
+    s = ctx.spawn(PATH=str(empty))
+    s.key("ctrl-v")
+    s.wait_text("no clipboard reader found")
+
+
+def test_an_oversized_clipboard_image_is_refused_with_its_limit(ctx):
+    """Over the cap is refused by naming the cap, as a file's would be."""
+    path = clipboard(ctx, png(8, 8) + b"\x00" * (6 << 20))
+    s = ctx.spawn(PATH=path)
+    s.key("ctrl-v")
+    s.wait_text("the clipboard image is over 5.0 MB")
+    wait_composer(s, "")
+
+
+def test_ctrl_v_during_a_turn_attaches_to_the_next_message(ctx):
+    """An attachment belongs to the message after the running one, so the key
+    works mid-turn and the marker waits in the composer."""
+    path = clipboard(ctx, png(4, 3))
+    ctx.scenario("text=ok,hold=1")
+    s = ctx.spawn(PATH=path)
+    s.submit("start")
+    s.wait_activity("thinking")
+    s.type("and this").sync()
+    s.key("ctrl-v")
+    wait_composer(s, "and this [Image #1]")
+    ctx.mock.release()
+    s.wait_turn_done()
+
+    ctx.scenario("text=seen")
+    s.key("enter")
+    s.wait_text("seen")
+    s.wait_turn_done()
+    body = ctx.mock.requests[-1]
+    assert body["messages"][-1]["content"][0]["text"] == "and this [Image #1]"
+    assert len(openai_images(body)) == 1, body["messages"][-1]
