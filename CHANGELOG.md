@@ -14,6 +14,10 @@
   the clipboard, read through `wl-paste`, `xclip` or `pngpaste`. The draft is
   left alone when there is no image to take.
 
+- Pick an image with `@`. Taking a PNG, JPEG, GIF or WebP from the path popup
+  attaches it and leaves an `[Image #1]` marker where the path would have
+  gone. Any other path is still written out as text.
+
 - Turn images off. `images = off` withdraws `/attach` and sends none, not even
   those a resumed session saved. A project file cannot turn it on.
 

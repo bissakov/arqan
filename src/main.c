@@ -3221,6 +3221,16 @@ static b8 open_block_view(Agent *ag, size_t i) {
  * composer, since the turn it would change is the one still running. */
 static b8 on_busy_command(Str line, void *ud) {
     Agent *ag = ud;
+    /* An attachment belongs to the message after this one, so it runs where
+     * it stands: the image joins the draft in the composer and goes out with
+     * whatever is sent next. Ctrl-V and the path popup submit this. It is
+     * read from the line rather than the bounded copy below, since a path is
+     * longer than any command name. */
+    if (str_eq(line, STR("/attach")) || str_starts(line, STR("/attach "))) {
+        attach_image(ag, str_drop(line, 7));
+        telemetry_command(STR("/attach"));
+        return true;
+    }
     char cmd[64];
     if (!line.n || line.n >= sizeof cmd) return false;
     memcpy(cmd, line.p, line.n);
@@ -3238,14 +3248,6 @@ static b8 on_busy_command(Str line, void *ud) {
         }
         ag->conv->expanded[id - 1] = !ag->conv->expanded[id - 1];
         rerender_or_defer(ag);
-        return true;
-    }
-    /* An attachment belongs to the message after this one, so it runs where
-     * it stands: the image joins the draft in the composer and goes out with
-     * whatever is sent next. Ctrl-V submits this. */
-    if (!strcmp(cmd, "/attach") || !strncmp(cmd, "/attach ", 8)) {
-        attach_image(ag, (Str){ cmd + 7, line.n - 7 });
-        telemetry_command(STR("/attach"));
         return true;
     }
     Str name = { cmd, resolve_alias(cmd, line.n, sizeof cmd) };

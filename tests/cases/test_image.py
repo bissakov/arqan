@@ -531,3 +531,101 @@ def test_ctrl_v_during_a_turn_attaches_to_the_next_message(ctx):
     body = ctx.mock.requests[-1]
     assert body["messages"][-1]["content"][0]["text"] == "and this [Image #1]"
     assert len(openai_images(body)) == 1, body["messages"][-1]
+
+
+def test_picking_an_image_from_the_path_popup_attaches_it(ctx):
+    """A path names a file the model can open; an image is not one of those,
+    so the picker hands over the bytes instead of the name."""
+    shot(ctx)
+    ctx.write_file("notes.txt", "hello\n")
+    s = ctx.spawn()
+    s.type("look at @sho").sync()
+    s.key("tab")
+    s.wait_text("attached [Image #1] shot.png - png 4x3")
+    wait_composer(s, "look at [Image #1]")
+    assert "shot.png" not in s.composer_text(), s.composer_lines()
+
+
+def test_enter_on_a_picked_image_attaches_without_sending(ctx):
+    """Enter takes the entry the popup is on, and taking an image is an
+    attachment rather than a message."""
+    shot(ctx)
+    s = ctx.spawn()
+    s.type("@sho").sync()
+    s.key("enter")
+    s.wait_text("attached [Image #1]")
+    wait_composer(s, "[Image #1]")
+    assert s.proc.poll() is None
+    assert not ctx.mock.requests, ctx.mock.requests
+
+
+def test_a_picked_image_is_sent_with_the_message(ctx):
+    """The attachment the picker made travels like any other."""
+    shot(ctx)
+    ctx.scenario("text=a+red+rectangle")
+    s = ctx.spawn()
+    s.type("what is @sho").sync()
+    s.key("tab")
+    s.wait_text("attached [Image #1]")
+    wait_composer(s, "what is [Image #1]")
+    s.key("enter")
+    s.wait_text("a red rectangle")
+    s.wait_turn_done()
+
+    body = ctx.mock.requests[-1]
+    content = body["messages"][-1]["content"]
+    assert content[0]["text"] == "what is [Image #1]", content
+    assert len(openai_images(body)) == 1, content
+
+
+def test_picking_a_text_file_still_writes_its_path(ctx):
+    """Only an image is taken as an attachment: everything else is a path the
+    tools can read."""
+    ctx.write_file("notes.txt", "hello\n")
+    s = ctx.spawn()
+    s.type("read @no").sync()
+    s.key("tab").sync()
+    assert s.composer_text() == "read @notes.txt", s.composer_lines()
+
+
+def test_images_off_leaves_a_picked_image_as_a_path(ctx):
+    """With nothing to attach to, an image is a path like any other."""
+    shot(ctx)
+    s = ctx.spawn(ARQAN_IMAGES="off")
+    s.type("look at @sho").sync()
+    s.key("tab").sync()
+    assert s.composer_text() == "look at @shot.png", s.composer_lines()
+
+
+def test_picking_an_image_during_a_turn_attaches_to_the_next_message(ctx):
+    """The picker answers mid-turn as the key does, and the marker waits in
+    the composer for the message after the running one."""
+    shot(ctx)
+    ctx.scenario("text=ok,hold=1")
+    s = ctx.spawn()
+    s.submit("start")
+    s.wait_activity("thinking")
+    s.type("and @sho").sync()
+    s.key("tab")
+    s.wait_text("attached [Image #1]")
+    wait_composer(s, "and [Image #1]")
+    ctx.mock.release()
+    s.wait_turn_done()
+
+
+def test_a_long_image_path_attaches_mid_turn(ctx):
+    """A path outruns any command name, so the mid-turn handler must read it
+    from the line rather than a buffer sized for commands."""
+    deep = "assets/screenshots/2024/very-long-directory-name/shot.png"
+    (ctx.work / deep).parent.mkdir(parents=True, exist_ok=True)
+    (ctx.work / deep).write_bytes(png(4, 3))
+    ctx.scenario("text=ok,hold=1")
+    s = ctx.spawn()
+    s.submit("start")
+    s.wait_activity("thinking")
+    s.type(f"/attach {deep}").sync()
+    s.key("enter")
+    s.wait_text("attached [Image #1] shot.png - png 4x3")
+    wait_composer(s, "[Image #1]")
+    ctx.mock.release()
+    s.wait_turn_done()
