@@ -1820,3 +1820,15 @@ void tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api) {
     }
     buf_putc(b, ']');
 }
+
+size_t tools_schema_bytes(const ToolRegistry *r) {
+    /* The envelope either API wraps one tool in, to the nearest few bytes. */
+    enum { PER_TOOL = 64 };
+    size_t total = 0;
+    if (!r || !r->name) return 0;
+    for (size_t i = 0; i < r->n; i++) {
+        if (!tools_available(r, i, g_mode)) continue;
+        total += r->name[i].n + r->desc[i].n + r->schema[i].n + PER_TOOL;
+    }
+    return total;
+}

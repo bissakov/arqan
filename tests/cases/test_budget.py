@@ -114,7 +114,7 @@ def test_an_old_tool_result_is_elided_on_the_wire(ctx):
     s.submit("and again")
     s.wait_turn_done()
     content = tool_messages(ctx)[0]["content"]
-    assert content.startswith("[read result elided after 2 turns:"), content
+    assert content.startswith("[older read result elided:"), content
     assert "line 0079" not in content, content
 
     # what the reader sees is unchanged: the transcript renders Conv, not the wire
@@ -150,3 +150,54 @@ def test_an_elided_result_keeps_answering_its_call(ctx):
     calls = [c["id"] for m in messages if m.get("tool_calls") for c in m["tool_calls"]]
     answered = [m["tool_call_id"] for m in messages if m["role"] == "tool"]
     assert calls and answered == calls, (calls, answered)
+
+
+def test_results_older_than_the_last_rounds_are_elided_inside_one_turn(ctx):
+    """Age is rounds as well as turns.
+
+    A turn that works on its own produces one user message and many rounds,
+    so a rule counting user turns never reaches back over any of it and every
+    result is replayed whole to the end of the run. The boundary moves a
+    block of four rounds at a time, so at nine rounds the first four are a
+    line each and the five that follow are sent as they stand.
+    """
+    args = json.dumps({"command": "seq 1 300"})
+    ctx.scenario(f"tool=bash:{args},tool_rounds=9,text=ok,final_text=done")
+    s = ctx.spawn(ARQAN_PERMISSIONS="free")
+    s.submit("go")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    results = [m["content"] for m in tool_messages(ctx)]
+    assert len(results) == 9, results
+    elided = [r for r in results if r.startswith("[older bash result elided:")]
+    assert len(elided) == 4, results
+    # The oldest, and only the oldest: the newest block is what the model is
+    # working from.
+    assert results[:4] == elided, results
+    assert all("300\n" in r for r in results[4:]), results[4:]
+
+    # A note is not an answer that went missing.
+    messages = ctx.mock.requests[-1]["messages"]
+    calls = [c["id"] for m in messages if m.get("tool_calls") for c in m["tool_calls"]]
+    answered = [m["tool_call_id"] for m in messages if m["role"] == "tool"]
+    assert calls and answered == calls, (calls, answered)
+
+
+def test_a_run_under_two_blocks_of_rounds_elides_nothing(ctx):
+    """The boundary moves in blocks so the provider's prefix cache still hits.
+
+    Eliding one result per round would rewrite the prefix every round and
+    throw the cache away each time. Under two blocks there is nothing old
+    enough to be worth that.
+    """
+    args = json.dumps({"command": "seq 1 300"})
+    ctx.scenario(f"tool=bash:{args},tool_rounds=6,text=ok,final_text=done")
+    s = ctx.spawn(ARQAN_PERMISSIONS="free")
+    s.submit("go")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    results = [m["content"] for m in tool_messages(ctx)]
+    assert len(results) == 6, results
+    assert all("300\n" in r for r in results), results

@@ -79,10 +79,30 @@ typedef bool     b8;
 #define AGENT_SPILL_BYTES      (16u << 20)
 #define AGENT_SPILL_PATH_MAX   128
 #define AGENT_SPILL_NOTE_BYTES 256
-/* A tool result older than this many user turns is replaced on the wire by a
- * line naming what it was; see conv_write_json. */
+/* A tool result older than this many user turns, or than this many tool
+ * rounds, is replaced on the wire by a line naming what it was; see
+ * conv_write_json. Both, because neither alone measures age: an autonomous
+ * turn is one user message and many rounds, and a conversation of short
+ * exchanges has too few rounds to reach back at all. The round boundary
+ * advances a block of ROUNDS at a time, so a boundary moving every round
+ * does not leave a provider's prefix cache nothing to hit. */
 #define AGENT_ELIDE_TURNS      2
+#define AGENT_ELIDE_ROUNDS     4
 #define AGENT_ELIDE_BYTES      512
+/* Nominal cost of that replacement line. The context gauge charges this for
+ * an elided result instead of the bytes the request will not carry. */
+#define AGENT_ELIDE_NOTE_BYTES 76
+/* Compaction is due at whichever is lower of AT percent of the window and
+ * the window less RESERVE: a percentage of a small window leaves no room for
+ * the round that discovers it. KEEP_PCT is how much of the window the tail
+ * replayed verbatim past a compaction may cost, capped so at least HEAD_PCT
+ * of the conversation is left to summarize. The tail starts at a round
+ * boundary, so an assistant call is never separated from the results that
+ * answer it. */
+#define AGENT_COMPACT_RESERVE    16384
+#define AGENT_COMPACT_KEEP_PCT   30
+#define AGENT_COMPACT_HEAD_PCT   50
+#define AGENT_COMPACT_AT         85
 
 #define AGENT_RETRIES          4
 #define AGENT_RETRY_DELAY_MS   2000
@@ -618,6 +638,7 @@ typedef enum {
     CONF_SHELL_TIMEOUT_MS,
     CONF_IMAGES,
     CONF_RESUME_LAST,
+    CONF_COMPACT, CONF_COMPACT_AT, CONF_COMPACT_MODEL,
     CONF_N
 } ConfKey;
 
@@ -711,6 +732,13 @@ void notify_init(const Conf *c, Arena *persist);
 void notify_event(NotifyKind kind, Str detail, f64 elapsed_ms);
 
 
+/* What happens when the conversation nears the model's context window.
+ * COMPACT_OFF says nothing, COMPACT_MANUAL says so once and leaves /compact
+ * to the user, COMPACT_AUTO summarizes the older turns in place. Nothing
+ * fires without a configured `context_window`: an unknown window is not a
+ * window that is nearly full. */
+typedef enum { COMPACT_OFF = 0, COMPACT_MANUAL, COMPACT_AUTO } CompactMode;
+
 typedef struct {
     Str base_url;
     Str model;
@@ -752,6 +780,13 @@ typedef struct {
     /* Whether an interactive start reopens the newest session of this
      * directory instead of greeting with the welcome screen. */
     b8 resume_last;
+    CompactMode compact;
+    /* Percentage of the window the conversation may reach before compaction
+     * is due, capped by AGENT_COMPACT_RESERVE. */
+    u32 compact_at;
+    /* Whether the summarizing request goes to the small model rather than
+     * the one the conversation is on. Ignored when none is configured. */
+    b8 compact_small;
     
     i32 ask_timeout_ms;
     
@@ -1036,6 +1071,9 @@ b8          tools_run(const ToolRegistry *r, size_t id, Str args,
                       Arena *scratch, Buf *out, char *err, size_t err_cap);
 
 void        tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api);
+/* What those schemas cost a request, near enough for an estimate: the bytes
+ * the currently available tools would write. Counts no arena. */
+size_t      tools_schema_bytes(const ToolRegistry *r);
 
 void        web_set_idle(void (*fn)(void *ud), void *ud, i32 idle_fd,
                          const volatile sig_atomic_t *interrupt_flag);
@@ -1225,6 +1263,10 @@ size_t  conv_room(const Conv *c);
  * the caller appends. False when `a` cannot take the arrays, leaving `dst`
  * with no capacity. */
 b8      conv_clone(Conv *dst, const Conv *src, Arena *a, size_t extra);
+/* The same copy over the first `keep` slots only, for a request made about
+ * part of a conversation. */
+b8      conv_clone_head(Conv *dst, const Conv *src, size_t keep, Arena *a,
+                        size_t extra);
 
 void    conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg);
 /* The same conversation as Anthropic messages: content blocks rather than
@@ -1232,6 +1274,31 @@ void    conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg);
  * results carried by the user, and consecutive slots of one role merged into
  * a single message. The system prompt is written by the caller and skipped. */
 void    conv_write_json_anthropic(Buf *b, const Conv *c);
+
+/* Where a request stops eliding old tool results: the later of the slot the
+ * last AGENT_ELIDE_TURNS user turns begin at and the slot the last
+ * AGENT_ELIDE_ROUNDS tool rounds begin at. Zero when the conversation
+ * reaches back no further than that, which elides nothing. */
+size_t  conv_elide_start(const Conv *c);
+/* True when slot `i` goes out as the elision note rather than its own text,
+ * for a request whose recent window begins at `recent`. Anything measuring
+ * what a request carries has to ask this rather than read `text[i].n`. */
+b8      conv_result_elided(const Conv *c, size_t i, size_t recent);
+
+/* True when a request may begin at slot `i`: a user turn, a plain assistant
+ * reply, or the assistant message that opens a group of tool calls. A tool
+ * result names a call id its assistant message declares, so a cut anywhere
+ * else would send an answer whose question is gone. */
+b8      conv_round_start(const Conv *c, size_t i);
+
+/* Replace the slots from 1 up to `keep` with one user message holding
+ * `checkpoint`, leaving slot 0 and everything from `keep` on as they stand.
+ * `keep` must be at least 2 and must name a round boundary or the end. The
+ * dropped slots' strings and media entries are not reclaimed: they live in
+ * the persistent arena, which only /clear rewinds. False when the message
+ * does not fit or `keep` is not a boundary, leaving the conversation
+ * untouched. */
+b8      conv_compact_head(Conv *c, size_t keep, Str checkpoint);
 
 /* ---- sessions ------------------------------------------------------------
  * The conversation as it happened, one JSON object per line under
@@ -1406,6 +1473,18 @@ size_t catalog_load(Catalog *c, const Config *cfg, const Endpoints *e,
  * in this model's tokens, `offset` what a request carries beyond the
  * conversation, which is the system prompt and the tool schemas.
  *
+ * Before this model has measured anything the field still answers, from the
+ * same bytes at a default slope with the tool schemas counted directly. A
+ * resumed session holds a conversation whose cost is no mystery, and saying
+ * nothing about it until a reply arrives is worse than saying it roughly.
+ * Such a figure is never exact, and the first measurement replaces it.
+ *
+ * The bytes are the ones a request carries rather than the ones the
+ * conversation holds: an old tool result the writer elides is charged its
+ * note. Counting the full text instead would fit the slope against bytes
+ * that were never sent, and would hold the field high over a conversation
+ * whose next request is far smaller than its last.
+ *
  * The fit describes one model. A model change keeps it as a starting point
  * but drops exactness and the discovered window, so the field reads as an
  * estimate until the new model has measured itself, rather than reporting
@@ -1426,12 +1505,17 @@ typedef struct {
     f64    fit_bytes;
     size_t exact_slots;
     size_t window;
+    const ToolRegistry *tools;
     b8     measured;
     b8     basis;
 } CtxGauge;
 
 
 void ctx_init(CtxGauge *g);
+/* The registry whose schemas ride with every request, for the estimate made
+ * before a measurement exists. Borrowed for the session; availability is
+ * read at each use, so a mode change needs no new call. */
+void ctx_set_tools(CtxGauge *g, const ToolRegistry *tools);
 /* Fold one request's reported prompt tokens into the fit. `c` must be the
  * conversation that request was built from, which is what it still is while
  * the response streams. A zero count is not a measurement. */
@@ -1440,6 +1524,33 @@ void ctx_note_usage(CtxGauge *g, const Conv *c, size_t prompt_tokens);
 void ctx_model_changed(CtxGauge *g);
 
 void ctx_set_window(CtxGauge *g, size_t window);
+
+/* Whether the next request would carry more than `percent` of the window, or
+ * more than the window less AGENT_COMPACT_RESERVE, whichever is lower. False
+ * when no window is configured: an unknown window cannot be nearly full. */
+b8 ctx_over(const CtxGauge *g, const Conv *c, u32 percent);
+
+/* Where to cut a conversation that has to be compacted: the slot the
+ * verbatim tail begins at, the oldest round boundary whose tail still fits
+ * a budget of AGENT_COMPACT_KEEP_PCT of the window, measured in this model's
+ * tokens through the same fit the gauge reports. The budget is capped so at
+ * least AGENT_COMPACT_HEAD_PCT of the conversation is left to summarize: a
+ * checkpoint that stands for nothing is worth less than the work it
+ * replaces. The round in flight is kept whether or not it fits.
+ *
+ * With no window declared that cap is the whole budget, so a model of
+ * unknown size still keeps a tail. Zero when the conversation is too short
+ * to have a head at all; a caller that asks anyway summarizes all of it. */
+size_t ctx_compact_split(const CtxGauge *g, const Conv *c);
+
+/* Whether summarizing the head that `keep` leaves behind pays for the request
+ * it costs: the head must be worth at least as much as the tail budget it
+ * makes room for. False holds off the first rounds of a long turn, whose head
+ * is one user message, and a conversation whose bulk is the system prompt and
+ * the schemas. The head grows as the turn does, so a caller refused now is
+ * worth asking again a round later. This gates automatic compaction only: a
+ * user who asks for one gets it. */
+b8 ctx_compact_worth(const CtxGauge *g, const Conv *c, size_t keep);
 
 void ctx_sync(const CtxGauge *g, const Conv *c);
 

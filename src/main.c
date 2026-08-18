@@ -257,6 +257,14 @@ typedef struct {
     b8            permission_blocked_one_shot;
     b8            echo;   
     b8            show_instructions;
+    /* One attempt, or one word about it, per crossing: cleared when the next
+     * turn starts, when a compaction succeeds, and as soon as the
+     * conversation is back under the threshold. */
+    b8            compact_seen;
+    /* The same, for the crossing that had nothing old enough to compact.
+     * Kept apart because that one is not an attempt: a turn still running
+     * grows a tail as it goes, and the next round may well have one. */
+    b8            compact_short;
     
     size_t        pending[AGENT_MAX_MEDIA_PER_TURN];
     size_t        pending_n;
@@ -932,6 +940,17 @@ static Str help_build(Agent *ag) {
     buf_putf(&b, "- text wrap: %s\n", tui_justify() ? "justified" : "word");
     buf_putf(&b, "- max reply tokens: %d\n", cfg->max_tokens);
     buf_putf(&b, "- max conversation messages: %zu\n", cfg->max_messages);
+    if (cfg->context_window)
+        buf_putf(&b, "- context window: %zu tokens\n", cfg->context_window);
+    else
+        buf_puts(&b, STR("- context window: not configured, so automatic "
+                         "compaction never fires and /compact sizes its "
+                         "tail from the conversation\n"));
+    buf_putf(&b, "- compact context: %s, at %u%% of the window, with the %s "
+             "model\n",
+             cfg->compact == COMPACT_OFF ? "off"
+             : cfg->compact == COMPACT_MANUAL ? "manual" : "auto",
+             cfg->compact_at, cfg->compact_small ? "small" : "main");
     buf_putf(&b, "- retries after an empty response: %d\n", cfg->retries);
     buf_putf(&b, "- initial retry delay: %d ms\n", cfg->retry_delay_ms);
     buf_putf(&b, "- reasoning effort: %.*s\n",
@@ -2633,9 +2652,10 @@ enum {
     SET_VERBOSE, SET_RAW, SET_STREAM, SET_IGNORED, SET_TELEMETRY,
     SET_SHOW_INSTRUCTIONS, SET_AUTO_TITLE, SET_TOOL, SET_WRAP, SET_MODE,
     SET_MAX_TOKENS,
-    SET_EFFORT, SET_BUDGET, SET_PERMISSIONS, SET_RESUME_LAST
+    SET_EFFORT, SET_BUDGET, SET_PERMISSIONS, SET_RESUME_LAST,
+    SET_COMPACT, SET_COMPACT_AT, SET_COMPACT_MODEL
 };
-#define SET_MAX_ROWS (18 + AGENT_MAX_TOOLS)
+#define SET_MAX_ROWS (21 + AGENT_MAX_TOOLS)
 
 /* "[x] label" for a toggle and the same column for a value row, so the two
  * kinds read as one list. A row that lost its checkbox to a full arena is
@@ -2791,6 +2811,21 @@ static i32 max_tokens_step(i32 cur, i32 dir) {
     return g_token_steps[0];
 }
 
+/* The compaction threshold walks in fives between the bounds the settings
+ * table states, and the ends hold rather than wrap: a percentage is a dial,
+ * not a list of answers. */
+#define COMPACT_AT_MIN  50u
+#define COMPACT_AT_MAX  95u
+#define COMPACT_AT_STEP 5u
+
+static u32 compact_at_step(u32 cur, i32 dir) {
+    if (dir > 0)
+        return cur + COMPACT_AT_STEP > COMPACT_AT_MAX
+             ? COMPACT_AT_MAX : cur + COMPACT_AT_STEP;
+    return cur < COMPACT_AT_MIN + COMPACT_AT_STEP
+         ? COMPACT_AT_MIN : cur - COMPACT_AT_STEP;
+}
+
 /* A configured comma list as the options a row offers: "Off" first, since a
  * provider control the user has not set is a control that is not sent. */
 #define SET_MAX_OPTIONS 64
@@ -2907,9 +2942,9 @@ static size_t settings_build(void *ud) {
      * absent: the agent loop answers them, so "disabled" would mean a mode
      * that cannot end.
      *
-     * Six rows are held back for the option rows below: a registry that
+     * Nine rows are held back for the option rows below: a registry that
      * outgrew the array is a screen missing its settings, not its tools. */
-    for (size_t i = 0; i < reg->n && n + 6 < SET_MAX_ROWS; i++) {
+    for (size_t i = 0; i < reg->n && n + 9 < SET_MAX_ROWS; i++) {
         if (!tools_can_disable(reg, i)) continue;
         kind[n] = SET_TOOL;
         v->tool[n] = i;
@@ -2947,6 +2982,30 @@ static size_t settings_build(void *ud) {
     rows[n++] = (TuiCmd){
         setting_value(rows_arena, STR("Max tokens")),
         str_dup(rows_arena, str_c(tokens)) };
+
+    const Str compact_opts[3] = { STR("Off"), STR("Manual"), STR("Auto") };
+    kind[n] = SET_COMPACT;
+    rows[n] = (TuiCmd){ setting_value(rows_arena, STR("Compact context")),
+        setting_options(rows_arena, compact_opts, 3, (size_t)cfg->compact,
+                        &marks[n]) };
+    n++;
+    /* Only ever a share of a window the user configured: without one there
+     * is no percentage to be past, and the row says so. */
+    char at[32];
+    if (cfg->context_window)
+        snprintf(at, sizeof at, "%u%%", cfg->compact_at);
+    else
+        snprintf(at, sizeof at, "%u%% (no window set)", cfg->compact_at);
+    kind[n] = SET_COMPACT_AT;
+    rows[n++] = (TuiCmd){
+        setting_value(rows_arena, STR("Compact at")),
+        str_dup(rows_arena, str_c(at)) };
+    const Str compact_model_opts[2] = { STR("Main"), STR("Small") };
+    kind[n] = SET_COMPACT_MODEL;
+    rows[n] = (TuiCmd){ setting_value(rows_arena, STR("Compact with")),
+        setting_options(rows_arena, compact_model_opts, 2,
+                        cfg->compact_small ? 1 : 0, &marks[n]) };
+    n++;
 
     Str opt[SET_MAX_OPTIONS];
     if (cfg->reasoning_efforts.n && n < SET_MAX_ROWS) {
@@ -3080,6 +3139,31 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
                 snprintf(value, sizeof value, "%d", cfg->max_tokens);
                 remember_ui(scratch, CONF_MAX_TOKENS, str_c(value));
             }
+            break;
+        case SET_COMPACT: {
+            const Str names[3] = { STR("off"), STR("manual"), STR("auto") };
+            i32 next = (i32)cfg->compact + (delta > 0 ? 1 : -1);
+            if (next > 2) next = 0;
+            if (next < 0) next = 2;
+            cfg->compact = (CompactMode)next;
+            ag->compact_seen = false;
+            ag->compact_short = false;
+            remember_ui(scratch, CONF_COMPACT, names[next]);
+            break;
+        }
+        case SET_COMPACT_AT: {
+            cfg->compact_at = compact_at_step(cfg->compact_at, delta);
+            ag->compact_seen = false;
+            ag->compact_short = false;
+            char value[16];
+            snprintf(value, sizeof value, "%u", cfg->compact_at);
+            remember_ui(scratch, CONF_COMPACT_AT, str_c(value));
+            break;
+        }
+        case SET_COMPACT_MODEL:
+            cfg->compact_small = !cfg->compact_small;
+            remember_ui(scratch, CONF_COMPACT_MODEL,
+                        cfg->compact_small ? STR("small") : STR("main"));
             break;
         default: break;
     }
@@ -3296,149 +3380,6 @@ static void run_shell(Agent *ag, Str cmd) {
 
 static b8 agent_turn(Agent *ag, Str text);
 
-/* /compact: one request that condenses the conversation into a checkpoint,
- * then a new session whose first message is that checkpoint.
- *
- * The request is made over a copy of the conversation, appended to in a part
- * of the persistent arena that is rewound either way, so a compaction that
- * fails, is interrupted or comes back empty leaves the conversation and the
- * session file it is appending to exactly as they were. Only a summary in
- * hand starts the new session. */
-static void compact_session(Agent *ag) {
-    Conv *conv = ag->conv;
-    Arena *persist = ag->persist;
-    if (conv->n <= 1) {
-        tui_notice(STR("nothing to compact yet"));
-        return;
-    }
-    if (no_provider(ag->cfg)) {
-        tui_notice(setup_hint(ag->cfg, ag->scratch));
-        return;
-    }
-
-    size_t mark = persist->off;
-    Conv tmp;
-    /* Room for the question, the reply, and whatever calls a model asks for
-     * instead of answering: a full copy would be reported as an error, and
-     * the point of the copy is that it cannot cost the conversation. */
-    if (!conv_clone(&tmp, conv, persist, AGENT_MAX_TOOL_CALLS + 2)) {
-        persist->off = mark;
-        tui_notice(STR("out of memory compacting"));
-        return;
-    }
-    /* Slot 0 is the system prompt of the conversation being summarized, which
-     * describes how to do the work rather than how to describe it. */
-    tmp.role[0] = M_SYSTEM;
-    tmp.text[0] = prompt_compact();
-    tmp.anthropic_thinking[0] = (Str){0};
-    if (conv_add(&tmp, M_USER, prompt_compact_ask()) == CONV_NONE) {
-        persist->off = mark;
-        tui_notice(STR("out of memory compacting"));
-        return;
-    }
-
-    g_got_sigint = 0;
-    tui_set_busy(true);
-    say_busy("compacting");
-    
-    Provider p = {
-        .cfg = ag->cfg,
-        .tools = ag->tools,
-        .conv = &tmp,
-        .persist = persist,
-        .scratch = ag->scratch,
-        .on_retry = on_retry,
-        .on_idle = on_idle,
-        .idle_fd = tui_input_fd(),
-        .interrupt_flag = &g_got_sigint,
-    };
-    char err[256] = {0};
-    f64 started = agent_now_seconds();
-    arena_reset(ag->scratch);
-    i32 rc = provider_run(&p, err, sizeof err);
-    tui_set_busy(false);
-    tui_activity_end();
-    tui_set_status("ready");
-
-    Str summary = {0};
-    if (rc >= 0) {
-        for (size_t i = tmp.n; i-- > conv->n;) {
-            if (tmp.role[i] != M_ASSISTANT || conv_is_call(&tmp, i)) continue;
-            if (tmp.text[i].n) { summary = str_trim(tmp.text[i]); break; }
-        }
-    }
-
-    TelEvent ce;
-    tel_open(&ce, "compact");
-    tel_int(&ce, "messages", (i64)conv->n);
-    tel_int(&ce, "rc", rc);
-    tel_int(&ce, "ms", (i64)((agent_now_seconds() - started) * 1000.0));
-    tel_shape(&ce, "summary", summary);
-    tel_send(&ce);
-
-    if (g_got_sigint) {
-        g_got_sigint = 0;
-        persist->off = mark;
-        tui_notice(STR("compaction interrupted: this session is unchanged"));
-        return;
-    }
-    if (rc == PROVIDER_EMPTY) {
-        persist->off = mark;
-        tui_notice(STR("the model sent no summary: this session is unchanged"));
-        return;
-    }
-    if (rc < 0) {
-        persist->off = mark;
-        notice_fmt("could not compact: %s; this session is unchanged", err);
-        return;
-    }
-    if (!summary.n) {
-        persist->off = mark;
-        tui_notice(STR("the model sent no summary: this session is unchanged"));
-        return;
-    }
-
-    /* The checkpoint is a message of the next conversation, so it is built
-     * before that one exists: the scratch arena outlives the rewind that
-     * drops the copy, the reply and the conversation being left behind. */
-    Buf b;
-    buf_init(&b, ag->scratch, summary.n + 256);
-    buf_puts(&b, STR("# Context checkpoint\n\nThe conversation before this "
-                     "point was compacted into the summary below. Continue "
-                     "the work from it.\n\n"));
-    buf_puts(&b, summary);
-    Str built = buf_ok(&b) ? buf_finish(&b) : (Str){0};
-    if (!built.n) {
-        persist->off = mark;
-        tui_notice(STR("out of memory keeping the summary"));
-        return;
-    }
-
-    conv_truncate(conv, 1);
-    ag->pending_n = 0;
-    persist->off = ag->mark;
-    Str stored = str_dup(persist, built);
-    if (!stored.p) {
-        tui_notice(STR("out of memory keeping the summary"));
-        return;
-    }
-    
-    char title[AGENT_MAX_TITLE + 1];
-    size_t title_n = ag->sess->title.n < sizeof title ? ag->sess->title.n : 0;
-    if (title_n) memcpy(title, ag->sess->title.p, title_n);
-    session_begin(ag->sess);
-    tui_clear();
-    if (conv_add(conv, M_USER, stored) == CONV_NONE) {
-        say_conv_full();
-        return;
-    }
-    render_user_message(conv, conv->n - 1);
-    session_save(ag->sess, conv);
-    if (title_n) session_set_title(ag->sess, (Str){ title, title_n });
-    tui_notice(STR("compacted: a new session continues from the summary"));
-}
-
-
 #define TITLE_EXCERPT_BYTES 1024
 
 
@@ -3447,8 +3388,8 @@ static void compact_session(Agent *ag) {
 /* Point `small` at the endpoint that serves the small model, which may not be
  * the one the conversation is on: the URL, the API and the key all come from
  * the stored provider, and only this request goes there. False when that
- * provider is gone or its key cannot be read, which leaves the session
- * unnamed rather than sending the excerpt somewhere else. */
+ * provider is gone or its key cannot be read, which leaves the errand undone
+ * rather than sending what it carries somewhere else. */
 static b8 small_model_endpoint(Config *small, Str name, Str model, b8 manual,
                                Arena *scratch) {
     size_t mark = scratch->off;
@@ -3466,6 +3407,328 @@ static b8 small_model_endpoint(Config *small, Str name, Str model, b8 manual,
         notice_fmt("the small model's provider %.*s is not usable",
                    (i32)name.n, name.p);
     return ok;
+}
+
+/* The small model as a request of its own: the same connection unless a
+ * provider was stored for it, and without the main model's reasoning
+ * controls, which describe that model rather than this one. False when none
+ * is configured or its provider is gone, which leaves the errand undone
+ * rather than sending it somewhere else. `manual` says the user asked, which
+ * is what decides whether a missing piece is reported. */
+static b8 small_config(Config *small, const Config *cfg, Arena *scratch,
+                       b8 manual) {
+    if (!cfg->small_model.n) return false;
+    *small = *cfg;
+    if (!config_set_model(small, cfg->small_model)) {
+        if (manual) tui_notice(STR("could not use the small model"));
+        return false;
+    }
+    if (cfg->small_provider.n && !str_eq(cfg->small_provider, cfg->provider)
+        && !small_model_endpoint(small, cfg->small_provider, cfg->small_model,
+                                 manual, scratch))
+        return false;
+    small->reasoning_effort = (Str){0};
+    small->thinking_budget = (Str){0};
+    small->reasoning_template = (Str){0};
+    return true;
+}
+
+typedef enum {
+    COMPACT_SUM_OK, COMPACT_SUM_NOMEM, COMPACT_SUM_INTERRUPTED,
+    COMPACT_SUM_EMPTY, COMPACT_SUM_ERROR
+} CompactOutcome;
+
+/* One request that condenses slots [0, upto) into a checkpoint message.
+ *
+ * The request is made over a copy of that head, appended to in a part of the
+ * persistent arena that is rewound either way, so a compaction that fails,
+ * is interrupted or comes back empty leaves the conversation and the session
+ * file it is appending to exactly as they were. The checkpoint is built in
+ * the scratch arena, which outlives that rewind: the caller copies it out
+ * before resetting scratch. */
+static CompactOutcome compact_summarize(Agent *ag, size_t upto, Str *out,
+                                        char *err, size_t err_cap) {
+    Arena *persist = ag->persist;
+    Config *cfg = ag->cfg;
+    *out = (Str){0};
+
+    size_t mark = persist->off;
+    Conv tmp;
+    /* Room for the question, the reply, and whatever calls a model asks for
+     * instead of answering: a full copy would be reported as an error, and
+     * the point of the copy is that it cannot cost the conversation. */
+    if (!conv_clone_head(&tmp, ag->conv, upto, persist,
+                         AGENT_MAX_TOOL_CALLS + 2)) {
+        persist->off = mark;
+        return COMPACT_SUM_NOMEM;
+    }
+    /* Slot 0 is the system prompt of the conversation being summarized, which
+     * describes how to do the work rather than how to describe it. */
+    tmp.role[0] = M_SYSTEM;
+    tmp.text[0] = prompt_compact();
+    tmp.anthropic_thinking[0] = (Str){0};
+    if (conv_add(&tmp, M_USER, prompt_compact_ask()) == CONV_NONE) {
+        persist->off = mark;
+        return COMPACT_SUM_NOMEM;
+    }
+
+    /* Static: a Config carries kilobytes of owned buffers, and this runs from
+     * a turn's frame rather than from one with room for them. */
+    static Config small;
+    b8 use_small = cfg->compact_small
+                && small_config(&small, cfg, ag->scratch, false);
+
+    /* Busy is restored rather than cleared: this also runs inside a turn,
+     * which stays busy until it ends. */
+    b8 was_busy = tui_busy();
+    g_got_sigint = 0;
+    tui_set_busy(true);
+    say_busy("compacting");
+
+    Provider p = {
+        .cfg = use_small ? &small : cfg,
+        .tools = use_small ? NULL : ag->tools,
+        .conv = &tmp,
+        .persist = persist,
+        .scratch = ag->scratch,
+        .on_retry = on_retry,
+        .on_idle = on_idle,
+        .idle_fd = tui_input_fd(),
+        .interrupt_flag = &g_got_sigint,
+    };
+    f64 started = agent_now_seconds();
+    arena_reset(ag->scratch);
+    i32 rc = provider_run(&p, err, err_cap);
+    tui_set_busy(was_busy);
+    tui_activity_end();
+    tui_set_status("ready");
+
+    Str summary = {0};
+    if (rc >= 0) {
+        for (size_t i = tmp.n; i-- > upto;) {
+            if (tmp.role[i] != M_ASSISTANT || conv_is_call(&tmp, i)) continue;
+            if (tmp.text[i].n) { summary = str_trim(tmp.text[i]); break; }
+        }
+    }
+
+    TelEvent ce;
+    tel_open(&ce, "compact");
+    tel_int(&ce, "messages", (i64)upto);
+    tel_int(&ce, "kept", (i64)(ag->conv->n - upto));
+    tel_bool(&ce, "small", use_small);
+    tel_int(&ce, "rc", rc);
+    tel_int(&ce, "ms", (i64)((agent_now_seconds() - started) * 1000.0));
+    tel_shape(&ce, "summary", summary);
+    tel_send(&ce);
+
+    b8 interrupted = g_got_sigint != 0;
+    if (interrupted) g_got_sigint = 0;
+    CompactOutcome outcome =
+          interrupted          ? COMPACT_SUM_INTERRUPTED
+        : rc == PROVIDER_EMPTY ? COMPACT_SUM_EMPTY
+        : rc < 0               ? COMPACT_SUM_ERROR
+        : !summary.n           ? COMPACT_SUM_EMPTY
+                               : COMPACT_SUM_OK;
+
+    if (outcome == COMPACT_SUM_OK) {
+        Buf b;
+        buf_init(&b, ag->scratch, summary.n + 256);
+        buf_puts(&b, STR("# Context checkpoint\n\nThe conversation before this "
+                         "point was compacted into the summary below. Continue "
+                         "the work from it.\n\n"));
+        buf_puts(&b, summary);
+        *out = buf_ok(&b) ? buf_finish(&b) : (Str){0};
+        if (!out->n) outcome = COMPACT_SUM_NOMEM;
+    }
+    persist->off = mark;
+    return outcome;
+}
+
+/* /compact: the conversation condensed into a checkpoint, then a new session
+ * that starts from it. The tail automatic compaction would keep is kept here
+ * too, so asking for room does not cost the work in hand. Where there is no
+ * window to budget a tail against, or too little conversation to be worth
+ * splitting, the whole of it is summarized and the new session opens on the
+ * checkpoint alone. */
+static void compact_session(Agent *ag) {
+    Conv *conv = ag->conv;
+    Arena *persist = ag->persist;
+    if (conv->n <= 1) {
+        tui_notice(STR("nothing to compact yet"));
+        return;
+    }
+    if (no_provider(ag->cfg)) {
+        tui_notice(setup_hint(ag->cfg, ag->scratch));
+        return;
+    }
+
+    size_t keep = ctx_compact_split(&g_ctx, conv);
+    if (!keep) keep = conv->n;
+    Str built = {0};
+    char err[256] = {0};
+    switch (compact_summarize(ag, keep, &built, err, sizeof err)) {
+        case COMPACT_SUM_OK: break;
+        case COMPACT_SUM_NOMEM:
+            tui_notice(STR("out of memory compacting"));
+            return;
+        case COMPACT_SUM_INTERRUPTED:
+            tui_notice(STR("compaction interrupted: this session is unchanged"));
+            return;
+        case COMPACT_SUM_EMPTY:
+            tui_notice(STR("the model sent no summary: this session is unchanged"));
+            return;
+        case COMPACT_SUM_ERROR:
+            notice_fmt("could not compact: %s; this session is unchanged", err);
+            return;
+    }
+
+    char title[AGENT_MAX_TITLE + 1];
+    size_t title_n = ag->sess->title.n < sizeof title ? ag->sess->title.n : 0;
+    if (title_n) memcpy(title, ag->sess->title.p, title_n);
+
+    if (keep < conv->n) {
+        /* Nothing is given back to the persistent arena: the kept tail still
+         * points into it, and only /clear rewinds that far. */
+        Str stored = str_dup(persist, built);
+        if (!stored.p || !conv_compact_head(conv, keep, stored)) {
+            tui_notice(STR("out of memory keeping the summary"));
+            return;
+        }
+        session_begin(ag->sess);
+        tui_clear();
+        rerender_conv(conv, ag->cfg, ag->show_instructions, ag->scratch, 0);
+        session_save(ag->sess, conv);
+        if (title_n) session_set_title(ag->sess, (Str){ title, title_n });
+        ctx_sync(&g_ctx, conv);
+        tui_notice(STR("compacted: a new session continues from the summary "
+                       "and the newest work"));
+        return;
+    }
+
+    conv_truncate(conv, 1);
+    ag->pending_n = 0;
+    persist->off = ag->mark;
+    Str stored = str_dup(persist, built);
+    if (!stored.p) {
+        tui_notice(STR("out of memory keeping the summary"));
+        return;
+    }
+
+    session_begin(ag->sess);
+    tui_clear();
+    if (conv_add(conv, M_USER, stored) == CONV_NONE) {
+        say_conv_full();
+        return;
+    }
+    render_user_message(conv, conv->n - 1);
+    session_save(ag->sess, conv);
+    if (title_n) session_set_title(ag->sess, (Str){ title, title_n });
+    ctx_sync(&g_ctx, conv);
+    tui_notice(STR("compacted: a new session continues from the summary"));
+}
+
+static void say_compaction(Str text) {
+    if (g_one_shot) one_shot_diag("context", (Str){0}, text);
+    else tui_notice(text);
+}
+
+/* Compaction that keeps the thread: the older turns become one checkpoint
+ * message and the newest rounds that fit the tail budget are replayed
+ * exactly as they stand, so the model keeps the detail it is working from.
+ * Safe between rounds of a turn, since the kept tail begins at a round
+ * boundary and no assistant call is separated from the results that answer
+ * it.
+ *
+ * A session file is only appended to, so the compacted conversation
+ * continues in a new one the way /compact does and the old file keeps every
+ * turn it recorded. Nothing is given back to the persistent arena: the kept
+ * tail still points into it, and only /clear rewinds that far.
+ *
+ * `keep` is the first slot of that tail, which the caller has already
+ * measured. `interrupted` reports a Ctrl-C that landed in the request, which
+ * is consumed there and left for the turn this runs inside to act on. */
+static b8 compact_auto(Agent *ag, size_t keep, b8 *interrupted) {
+    Conv *conv = ag->conv;
+    *interrupted = false;
+    if (no_provider(ag->cfg)) return false;
+    if (keep < 2 || keep > conv->n) return false;
+
+    Str built = {0};
+    char err[256] = {0};
+    CompactOutcome rc = compact_summarize(ag, keep, &built, err, sizeof err);
+    if (rc == COMPACT_SUM_INTERRUPTED) { *interrupted = true; return false; }
+    if (rc == COMPACT_SUM_ERROR) {
+        notice_fmt("could not compact the context: %s", err);
+        return false;
+    }
+    if (rc != COMPACT_SUM_OK) {
+        say_compaction(STR("could not compact the context: this session "
+                           "continues whole"));
+        return false;
+    }
+
+    Str stored = str_dup(ag->persist, built);
+    if (!stored.p || !conv_compact_head(conv, keep, stored)) {
+        say_compaction(STR("could not compact the context: this session "
+                           "continues whole"));
+        return false;
+    }
+
+    char title[AGENT_MAX_TITLE + 1];
+    size_t title_n = ag->sess->title.n < sizeof title ? ag->sess->title.n : 0;
+    if (title_n) memcpy(title, ag->sess->title.p, title_n);
+    session_begin(ag->sess);
+    session_save(ag->sess, conv);
+    if (title_n) session_set_title(ag->sess, (Str){ title, title_n });
+
+    if (!g_one_shot)
+        rerender_conv(conv, ag->cfg, ag->show_instructions, ag->scratch, 0);
+    say_compaction(STR("context compacted: the older work is now a summary"));
+    ctx_sync(&g_ctx, conv);
+    return true;
+}
+
+/* Checked between rounds, where the conversation is consistent and the usage
+ * the provider last reported measures it. Nothing here interrupts a stream:
+ * a request already in flight is the provider's to accept or refuse. One
+ * attempt, or one word about it, per crossing of the threshold.
+ * True when Ctrl-C landed in the request, which the turn has to act on. */
+static b8 compact_if_needed(Agent *ag) {
+    const Config *cfg = ag->cfg;
+    if (cfg->compact == COMPACT_OFF
+        || !ctx_over(&g_ctx, ag->conv, cfg->compact_at)) {
+        ag->compact_seen = false;
+        ag->compact_short = false;
+        return false;
+    }
+    if (ag->compact_seen) return false;
+    if (cfg->compact == COMPACT_MANUAL) {
+        ag->compact_seen = true;
+        say_compaction(STR("the context window is nearly full: /compact to "
+                           "continue from a summary"));
+        return false;
+    }
+    /* Too little older than the tail to pay for the request: either this
+     * turn's work is most of the conversation, or what fills the window is
+     * the system prompt and the tool schemas. Said once, and the crossing is
+     * left open: a turn still running grows a head as it goes. */
+    size_t keep = ctx_compact_split(&g_ctx, ag->conv);
+    if (!keep || !ctx_compact_worth(&g_ctx, ag->conv, keep)) {
+        if (ag->compact_short) return false;
+        ag->compact_short = true;
+        say_compaction(STR("the context window is nearly full: nothing old "
+                           "enough to compact yet"));
+        return false;
+    }
+    ag->compact_seen = true;
+    b8 interrupted = false;
+    /* A compaction that worked earns the next one: a long turn crosses the
+     * threshold again as it grows. */
+    if (compact_auto(ag, keep, &interrupted)) {
+        ag->compact_seen = false;
+        ag->compact_short = false;
+    }
+    return interrupted;
 }
 
 /* Name the session from its first exchange, through the small model. Built
@@ -3535,22 +3798,10 @@ static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out) {
      * reasoning controls describe the main model, so the small one is asked
      * without them. */
     static Config small;
-    small = *cfg;
-    if (!config_set_model(&small, cfg->small_model)) {
-        persist->off = mark;
-        if (manual) tui_notice(STR("could not use the small model"));
-        return false;
-    }
-    
-    if (cfg->small_provider.n && !str_eq(cfg->small_provider, cfg->provider)
-        && !small_model_endpoint(&small, cfg->small_provider, cfg->small_model,
-                                 manual, ag->scratch)) {
+    if (!small_config(&small, cfg, ag->scratch, manual)) {
         persist->off = mark;
         return false;
     }
-    small.reasoning_effort = (Str){0};
-    small.thinking_budget = (Str){0};
-    small.reasoning_template = (Str){0};
     if (small.max_tokens > TITLE_MAX_TOKENS)
         small.max_tokens = TITLE_MAX_TOKENS;
 
@@ -3698,6 +3949,11 @@ static b8 agent_turn(Agent *ag, Str text) {
         return false;
     }
     if (media_n) conv_attach_media(conv, conv->n - 1, media_off, media_n);
+    /* A new turn is a new crossing: an attempt that found nothing older than
+     * the turns it keeps is worth making again once the conversation has
+     * grown one. */
+    ag->compact_seen = false;
+    ag->compact_short = false;
     if (ag->echo) {
         tui_scroll_to_bottom();
         render_user_message(conv, conv->n - 1);
@@ -3726,6 +3982,14 @@ static b8 agent_turn(Agent *ag, Str text) {
     for (;;) {
         rounds++;
         if (g_got_sigint) {
+            announce_interrupt();
+            ending = NOTIFY_INTERRUPTED;
+            break;
+        }
+        /* Before the request rather than during it: here the conversation is
+         * consistent, and a summary that arrives is what the next request is
+         * built from. */
+        if (compact_if_needed(ag)) {
             announce_interrupt();
             ending = NOTIFY_INTERRUPTED;
             break;
@@ -4038,6 +4302,7 @@ i32 main(i32 argc, char **argv) {
     g_one_shot = opts.have_prompt;
     ctx_init(&g_ctx);
     ctx_set_window(&g_ctx, cfg.context_window);
+    ctx_set_tools(&g_ctx, &tools);
     render_set_verbose(prefs.verbose_tools);
     md_set_raw(prefs.raw_markdown);
     b8 setup = no_provider(&cfg);

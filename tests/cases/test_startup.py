@@ -15,14 +15,16 @@ def test_first_frame(ctx):
 
 
 def test_status_line_fields(ctx):
-    """Status line carries model, provider, cwd and an unknown token count."""
+    """Status line carries model, provider, cwd and an estimated token count."""
     s = ctx.spawn()
     status = s.status_line()
     assert "mock-model" in status, status
     # base_url is http://127.0.0.1:PORT/v1, so the loopback host reads as "local"
     assert "local" in status, status
     assert "~/work" in status, status
-    assert s.status_field(5) == "-", status  # dash: no usage reported yet
+    # No request has been measured, but the prompt and the schemas one would
+    # carry are already known, so the field estimates rather than shrugs.
+    assert s.status_field(5).startswith("~"), status
     assert str(ctx.mock.port) not in status, "port must not leak into the UI"
 
 

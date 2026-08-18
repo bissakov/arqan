@@ -22,5 +22,5 @@
 |  ! echo hi
 |
 |
-|  ● ready · mock-model · build · local · ~/work · - · free
+|  ● ready · mock-model · build · local · ~/work · ~1k · free
 --- cursor row=21 col=12 visible=yes ---
