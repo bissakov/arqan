@@ -224,13 +224,44 @@ static JVal *parse_value(JParser *p) {
     return NULL;
 }
 
-JVal *json_parse(Arena *a, Str s) {
+static JVal *json_parse_impl(Arena *a, Str s, size_t *bad) {
     JParser p = { a, s.p, 0, s.n, 0, false };
-    if (!s.p || s.n == 0) return NULL;
+    if (!s.p || s.n == 0) {
+        if (bad) *bad = 0;
+        return NULL;
+    }
     JVal *v = parse_value(&p);
     skipws(&p);
-    if (p.oom || p.pos != p.len) return NULL;
+    if (!v || p.oom || p.pos != p.len) {
+        if (bad) *bad = p.pos;
+        return NULL;
+    }
     return v;
+}
+
+JVal *json_parse(Arena *a, Str s) { return json_parse_impl(a, s, NULL); }
+
+JVal *json_parse_error(Arena *a, Str s, char *err, size_t err_cap) {
+    size_t bad = 0;
+    JVal *v = json_parse_impl(a, s, &bad);
+    if (v || !err || !err_cap) return v;
+    if (!s.p || !s.n) {
+        snprintf(err, err_cap, "bad args json: input is empty");
+        return NULL;
+    }
+
+    size_t lo = bad > 24 ? bad - 24 : 0;
+    size_t hi = bad + 24 < s.n ? bad + 24 : s.n;
+    char near[64];
+    size_t w = 0;
+    for (size_t i = lo; i < hi && w + 2 < sizeof near; i++) {
+        unsigned char c = (unsigned char)s.p[i];
+        near[w++] = c >= 0x20 && c < 0x7f ? (char)c : ' ';
+    }
+    near[w] = 0;
+    snprintf(err, err_cap, "bad args json at byte %zu near \"%s\"", bad + 1,
+             near);
+    return NULL;
 }
 
 void json_write(Buf *b, const JVal *v) {

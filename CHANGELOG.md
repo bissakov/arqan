@@ -4,81 +4,47 @@
 
 ### Added
 
-- Start where you left off. The new `Resume last session` setting reopens this
-  directory's newest session instead of the welcome screen. It is off by
-  default, and `resume_last = true` in a config file does the same.
+- Add `resume_last` to reopen the newest session in the current directory. It
+  is off by default.
 
-- `/restart` restarts arqan in place. The new process reads the settings
-  again, so it resumes the session or greets with the welcome screen exactly
-  as `Resume last session` says.
+- Add `/restart` to restart the process and reload settings.
 
-- Send images to a multimodal model. `/attach <path>` adds a PNG, JPEG, GIF
-  or WebP to the message being written and marks it `[Image #1]`; deleting the
-  marker detaches it. Four images per message. Images are saved beside the
-  session and sent again on resume. One over 5 MB or 8000 pixels a side is
-  refused with the limit named, never resized.
+- Add PNG, JPEG, GIF and WebP attachments with `/attach <path>`. A message can
+  contain four images. Sessions preserve attachments. Images over 5 MB or
+  8000 pixels per side are refused.
 
-- Paste a screenshot. Ctrl-V, or `/attach` with no path, attaches the image on
-  the clipboard, read through `wl-paste`, `xclip` or `pngpaste`. The draft is
-  left alone when there is no image to take.
+- Add clipboard image attachments with Ctrl-V or `/attach` without a path.
 
-- Pick an image with `@`. Taking a PNG, JPEG, GIF or WebP from the path popup
-  attaches it and leaves an `[Image #1]` marker where the path would have
-  gone. Any other path is still written out as text.
+- Attach supported images selected from the `@` path picker.
 
-- Turn images off. `images = off` withdraws `/attach` and sends none, not even
-  those a resumed session saved. A project file cannot turn it on.
+- Add `images = off` to disable image tools and resumed attachments. Project
+  configuration cannot enable images.
 
-- Compact the context before it runs out. When a conversation nears the
-  window, arqan summarizes the older work and replays the newest rounds word
-  for word, so a turn continues from a checkpoint instead of stopping at a
-  full window. `/settings` holds `Compact context` (off, manual or auto),
-  `Compact at` (85% by default) and `Compact with` (the main model or the
-  small one). Manual only says the window is filling and leaves `/compact` to
-  you. Compacting on its own needs a `context_window` in the model's profile;
-  `/compact` works without one and still keeps the newest rounds word for
-  word.
+- Add manual and automatic context compaction. It summarizes older messages
+  and preserves recent rounds. Settings control the mode, threshold and model.
 
 ### Changed
 
-- `read` names an image or a binary file instead of paging it. Reading a PNG
-  returned a page of replacement characters, because bytes that are not text
-  cannot go on the wire; it now answers with the type, size and dimensions of
-  the image, and points at `bash` for other binary files.
+- Make `read` identify binary files instead of returning invalid text. Image
+  results include the type, size and dimensions.
 
-- Keep the syntax colours when a block is opened in a window. Clicking a
-  tool block while a turn runs showed all of its text plain. The window now
-  colours what the block does: file content a `read` returned, the code a
-  `write` or a `patch` carries, a shell command, and typed `grep` matches.
+- Add syntax highlighting to tool blocks opened in a separate window.
 
 ### Fixed
 
-- Keep syntax colours on a busy machine. One slow answer from the highlighter
-  used to turn colouring off for the rest of the session. It now starts in
-  milliseconds, and a slow answer is asked again instead.
+- Improve tool errors for failed patches, invalid JSON, limits and file access.
 
-- Count the context a request actually carries. A tool result more than two
-  user turns old is sent as a one-line note, but the status line kept
-  charging the session for its full size. The figure now drops as soon as
-  those results stop being sent.
+- Retry syntax highlighting after a slow response instead of disabling it.
 
-- `/compact` keeps the newest work. Where the model's profile declares a
-  context window, the new session continues from the summary and the rounds
-  that still fit beside it, word for word. Without a declared window it
-  summarizes the whole conversation as before.
+- Exclude omitted older tool output from the context usage estimate.
 
-- Report the context of a resumed session. The status line used to show a
-  dash until a reply arrived. It now estimates from the conversation, the
-  system prompt and the tool schemas, marked with `~`, and the first measured
-  reply replaces it.
+- Preserve recent rounds when `/compact` uses a declared context window.
 
-- Say which key deletes on the frame the session picker opens on, rather than
-  the one after it.
+- Show an estimated context size immediately after resuming a session.
 
-- Report the last thing a background job printed. Output still in flight when
-  a command exits could be dropped, so `job` answered with the exit line
-  alone. A wait now covers that hand-off, bounded so that a process left
-  running behind the command cannot hold the answer.
+- Show the delete key when the session picker opens.
+
+- Preserve output received while a background job exits.
 
 ## [0.5.0] - 2026-08-16
 

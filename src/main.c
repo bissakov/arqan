@@ -628,7 +628,7 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
             continue;
         }
         Buf out; buf_init(&out, ag->scratch, 4096);
-        char err[256] = {0};
+        char err[AGENT_TOOL_ERR] = {0};
         if (g_one_shot) one_shot_diag("tool call", name, args);
         size_t call_at = tui_transcript_pos();
         if (!g_one_shot)
@@ -4223,7 +4223,7 @@ i32 main(i32 argc, char **argv) {
     arena_reset(&scratch);
 
     ToolRegistry tools;
-    tools_init(&tools, &persist);
+    tools_init(&tools, &persist, cfg.shell_timeout_ms);
     b8 interactive = !opts.have_prompt && isatty(STDIN_FILENO)
                      && isatty(STDOUT_FILENO);
     tools_set_interactive(interactive);

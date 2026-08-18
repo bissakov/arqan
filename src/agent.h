@@ -75,6 +75,11 @@ typedef bool     b8;
 #define AGENT_MAX_GREP_FILE    (1u << 20)
 #define AGENT_MAX_PATCH_FILES  32
 #define AGENT_MAX_PATCH_HUNKS  512
+/* A patch reports every hunk it could not place, not just the first, so one
+ * call names every edit that needs fixing; past this many the count stands in
+ * for the rest. `AGENT_TOOL_ERR` bounds the whole report. */
+#define AGENT_MAX_PATCH_NOTES  4
+#define AGENT_TOOL_ERR         1024
 
 #define AGENT_SPILL_BYTES      (16u << 20)
 #define AGENT_SPILL_PATH_MAX   128
@@ -347,6 +352,9 @@ struct JVal {
 typedef struct { Arena *a; const char *src; size_t pos, len; i32 depth; b8 oom; } JParser;
 
 JVal   *json_parse(Arena *a, Str s);
+/* Like json_parse, but reports the 1-based byte and nearby input when the
+ * document is invalid. `err` is untouched on success. */
+JVal   *json_parse_error(Arena *a, Str s, char *err, size_t err_cap);
 void    json_write(Buf *b, const JVal *v);
 const JVal *json_get(const JVal *obj, Str key);
 const JVal *json_at(const JVal *arr, size_t i);
@@ -1048,7 +1056,8 @@ typedef struct {
 
 #define TOOL_NONE ((size_t)-1)
 
-void        tools_init(ToolRegistry *r, Arena *persist);
+void        tools_init(ToolRegistry *r, Arena *persist,
+                       i32 shell_timeout_ms);
 
 void        tools_set_mode(AgentMode mode);
 

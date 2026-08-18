@@ -164,6 +164,98 @@ def test_patch_rewrites_a_line_in_place(ctx):
     assert ctx.mock.tool_results()[-1].strip() == "edit.txt +1 -1"
 
 
+def test_patch_reports_all_bad_hunks_with_locations(ctx):
+    """One failed call names every bad hunk and leaves the file untouched."""
+    original = "same\nold a\nsame\nold b\nsame\n"
+    ctx.write_file("edit.txt", original)
+    diff = (
+        "--- edit.txt\n+++ edit.txt\n"
+        "@@\n same\n-old x\n+new x\n"
+        "@@\n same\n-old y\n+new y\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="not changed"))
+    s = ctx.spawn()
+    s.submit("apply it")
+    s.wait_text("not changed")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "edit.txt hunk 1:" in result, result
+    assert "edit.txt hunk 2:" in result, result
+    assert "line 2 is \"old a\" where the hunk wants \"old x\"" in result, result
+    assert "nothing was written" in result, result
+    assert (ctx.work / "edit.txt").read_text() == original
+
+
+def test_patch_ambiguous_context_names_matching_lines(ctx):
+    ctx.write_file("edit.txt", "repeat\nother\nrepeat\n")
+    diff = "--- edit.txt\n+++ edit.txt\n@@\n-repeat\n+changed\n"
+    ctx.scenario(patch_call(diff, final_text="ambiguous"))
+    s = ctx.spawn()
+    s.submit("apply it")
+    s.wait_text("ambiguous")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "matches 2 places (lines 1, 3)" in result, result
+    assert (ctx.work / "edit.txt").read_text() == "repeat\nother\nrepeat\n"
+
+
+def test_patch_explains_apply_patch_envelope(ctx):
+    ctx.write_file("edit.txt", "old\n")
+    diff = (
+        "*** Begin Patch\n*** Update File: edit.txt\n@@\n-old\n+new\n"
+        "*** End Patch"
+    )
+    ctx.scenario(patch_call(diff, final_text="wrong format"))
+    s = ctx.spawn()
+    s.submit("apply it")
+    s.wait_text("wrong format")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "apply_patch envelope, not a unified diff" in result, result
+    assert "'--- path', '+++ path', then '@@'" in result, result
+    assert (ctx.work / "edit.txt").read_text() == "old\n"
+
+
+def test_bad_tool_json_reports_the_byte_and_input(ctx):
+    ctx.scenario('tool=read:{"path":"a",,"limit":1},final_text=bad+json')
+    s = ctx.spawn()
+    s.submit("read it")
+    s.wait_text("bad json")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "bad args json at byte" in result, result
+    assert 'near "' in result and ",," in result, result
+
+
+def test_reading_a_directory_points_to_directory_tools(ctx):
+    ctx.scenario('tool=read:{"path":"."},final_text=is+a+directory')
+    s = ctx.spawn()
+    s.submit("read it")
+    s.wait_text("is a directory")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "is a directory; use find" in result, result
+    assert "bash with ls" in result, result
+
+
+def test_write_failure_includes_the_system_reason(ctx):
+    args = json.dumps({"path": "missing/file.txt", "content": "x"})
+    ctx.scenario(f"tool=write:{args},final_text=not+written")
+    s = ctx.spawn()
+    s.submit("write it")
+    s.wait_text("not written")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "open missing/file.txt for write failed:" in result, result
+    assert "No such file or directory" in result, result
+
+
 def test_patch_keeps_a_file_that_ends_without_a_newline(ctx):
     """A hunk ending at EOF matches a last line the file never terminated."""
     ctx.write_file("tail.txt", "one\ntwo")
@@ -228,6 +320,19 @@ def test_bash_tool_runs_a_command(ctx):
     s.wait_turn_done()
     assert "tool-output-marker" in s.text()
     assert any("tool-output-marker" in r for r in ctx.mock.tool_results())
+
+
+def test_bash_empty_output_is_not_described_as_a_bad_offset(ctx):
+    args = json.dumps({"command": ":"})
+    ctx.scenario(f"tool=bash:{args},final_text=ran+it")
+    s = ctx.spawn()
+    s.submit("run it")
+    s.wait_text("ran it")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "[command produced no output]" in result, result
+    assert "offset 1 is past its end" not in result, result
 
 
 def test_bash_tool_cannot_reach_the_terminal(ctx):

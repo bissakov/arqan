@@ -78,6 +78,20 @@ def test_tools_are_declared_with_an_input_schema(ctx):
     assert read["input_schema"]["type"] == "object", read
 
 
+def test_bash_schema_names_the_configured_timeout_ceiling(ctx):
+    ctx.write_config("shell_timeout_ms = 4321\n")
+    ctx.scenario("text=nothing+to+do")
+    s = anth(ctx)
+    s.submit("hello")
+    s.wait_turn_done()
+
+    tools = ctx.mock.requests[-1]["tools"]
+    bash = next(t for t in tools if t["name"] == "bash")
+    timeout = bash["input_schema"]["properties"]["timeout_ms"]
+    assert timeout["maximum"] == 4321, timeout
+    assert "4321" in timeout["description"], timeout
+
+
 def test_a_tool_call_round_trips_as_blocks(ctx):
     """tool_use in, tool_result back, and the same transcript as ever."""
     ctx.write_file("notes.txt", "kept it\n")
