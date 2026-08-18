@@ -134,12 +134,13 @@ def test_notice_rows_are_styled_as_notices(ctx):
 
 
 def test_context_counter_reports_the_context_not_the_bill(ctx):
-    """The field shows a dash until a request is measured, and then the
+    """The field estimates until a request is measured, and then reports the
     context that request carried: the reply the provider charged for is an
     estimate on top of it, not part of the measurement."""
     ctx.scenario("text=ok,usage=900/100")
     s = ctx.spawn()
-    assert s.status_field(5) == "-", s.status_line()
+    before = s.status_field(5)
+    assert before.startswith("~"), s.status_line()
     s.submit("count")
     s.wait_turn_done()
     field = s.status_field(5)

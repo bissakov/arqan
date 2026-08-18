@@ -29,6 +29,16 @@
 - Turn images off. `images = off` withdraws `/attach` and sends none, not even
   those a resumed session saved. A project file cannot turn it on.
 
+- Compact the context before it runs out. When a conversation nears the
+  window, arqan summarizes the older work and replays the newest rounds word
+  for word, so a turn continues from a checkpoint instead of stopping at a
+  full window. `/settings` holds `Compact context` (off, manual or auto),
+  `Compact at` (85% by default) and `Compact with` (the main model or the
+  small one). Manual only says the window is filling and leaves `/compact` to
+  you. Compacting on its own needs a `context_window` in the model's profile;
+  `/compact` works without one and still keeps the newest rounds word for
+  word.
+
 ### Changed
 
 - `read` names an image or a binary file instead of paging it. Reading a PNG
@@ -46,6 +56,21 @@
 - Keep syntax colours on a busy machine. One slow answer from the highlighter
   used to turn colouring off for the rest of the session. It now starts in
   milliseconds, and a slow answer is asked again instead.
+
+- Count the context a request actually carries. A tool result more than two
+  user turns old is sent as a one-line note, but the status line kept
+  charging the session for its full size. The figure now drops as soon as
+  those results stop being sent.
+
+- `/compact` keeps the newest work. Where the model's profile declares a
+  context window, the new session continues from the summary and the rounds
+  that still fit beside it, word for word. Without a declared window it
+  summarizes the whole conversation as before.
+
+- Report the context of a resumed session. The status line used to show a
+  dash until a reply arrived. It now estimates from the conversation, the
+  system prompt and the tool schemas, marked with `~`, and the first measured
+  reply replaces it.
 
 - Say which key deletes on the frame the session picker opens on, rather than
   the one after it.

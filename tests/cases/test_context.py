@@ -6,6 +6,10 @@ went out, and it belongs to the model that answered. Everything else the
 field says is an estimate, and says so.
 """
 
+import json
+
+from tests.context import wait_until
+
 
 def field(s) -> str:
     """The context field, immediately before the appended permissions field."""
@@ -146,3 +150,80 @@ def test_a_window_no_model_could_have_is_refused(ctx):
     s.submit("hello")
     s.wait_turn_done()
     assert "/" not in field(s), field(s)
+
+
+def wire_tokens(request) -> int:
+    """What the mock charged for a request: its messages at four bytes a
+    token, which is the only tokenizer in the test suite."""
+    return max(1, len(json.dumps(request.get("messages", []))) // 4)
+
+
+def test_the_field_follows_the_wire_when_old_results_are_elided(ctx):
+    """A tool result older than two user turns goes out as a one-line note,
+    so the conversation costs less than the bytes it holds. The field has to
+    say so when the turn that elides them is typed, not a request later: it
+    reports what a request sent now would carry, and that is what decides
+    whether there is room for one.
+    """
+    args = json.dumps({"command": "seq 1 200"})
+    ctx.scenario(f"tool=bash:{args},tool_rounds=1,text=ok,final_text=ok")
+    s = ctx.spawn(ARQAN_PERMISSIONS="free")
+    s.submit("run it")
+    s.wait_turn_done()
+    ctx.scenario("text=ok")
+    s.submit("and again")
+    s.wait_turn_done()
+
+    before = tokens(s)
+    # Held open, so the field is read from the estimate alone: no usage for
+    # this request has been heard yet.
+    ctx.scenario("hold,text=ok")
+    sent = len(ctx.mock.requests)
+    # A third user turn puts the result two turns back, which is where the
+    # writer stops sending it.
+    s.submit("carry on")
+    request = wait_until(lambda: ctx.mock.requests[sent:], "the request")[0]
+    predicted = tokens(s.settle())
+    ctx.mock.release()
+    s.wait_turn_done()
+
+    carried = wire_tokens(request)
+    assert "result elided" in json.dumps(request.get("messages", [])), \
+        "the run never got old enough to elide a result"
+    assert predicted < before, (
+        f"the turn that elides the result has to cost less: "
+        f"{before} -> {predicted}")
+    # Counting the bytes the conversation holds rather than the ones it sends
+    # is what `before` is; the field must be the closer of the two.
+    assert abs(predicted - carried) < abs(before - carried), (
+        predicted, before, carried)
+
+
+def test_a_resumed_session_reports_its_context_before_it_speaks(ctx):
+    """A resumed conversation costs what it costs whether or not this run has
+    heard a reply yet, so the field estimates it on the frame it is replayed
+    and gives way to the measurement when one arrives."""
+    ctx.scenario("text=a+long+enough+first+answer+to+be+worth+counting")
+    s = ctx.spawn()
+    s.submit("a question with some words in it to give the fit something")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+
+    s = ctx.spawn()
+    fresh = tokens(s)
+    s.submit("/resume")
+    s.wait_status("pick a session")
+    s.key("enter")
+    s.wait_text("a long enough first answer")
+    resumed = tokens(s)
+    assert field(s).startswith("~"), field(s)
+    assert resumed > fresh, (
+        f"the replayed conversation has to show in the field: "
+        f"{fresh} -> {resumed}")
+
+    ctx.scenario("text=ok,usage=800/10")
+    s.submit("carry on")
+    s.wait_turn_done()
+    # The measurement wins: an estimate is only what stands in for one.
+    assert 800 <= tokens(s) < 900, field(s)

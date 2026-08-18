@@ -2,6 +2,11 @@
 
 The conversation is summarized over a copy, so only a summary that arrived
 starts a new session; anything else leaves the session as it was.
+
+/compact keeps the same verbatim tail automatic compaction does: asking for
+room should not cost the work in hand. A declared context window sizes that
+tail; without one the conversation's own size does, so the newest work
+survives a checkpoint on a model of unknown size too.
 """
 
 
@@ -20,6 +25,157 @@ def one_turn(ctx, prompt="remember the cat", reply="noted"):
     s.wait_text(reply)
     s.wait_turn_done()
     return s
+
+
+def windowed(ctx, window=4000):
+    """A provider whose model declares a window, with automatic compaction
+    off: what /compact does is the subject, not what fires on its own."""
+    ctx.write_config(
+        "compact = off\n"
+        "[providers.work]\n"
+        f"base_url = {ctx.mock.base_url}\n"
+        "model = alpha\n"
+        '[providers.work.models."alpha"]\n'
+        f"context_window = {window}\n"
+    )
+    state = ctx.state_file()
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text("provider = work\n")
+    return ctx.spawn(ARQAN_MODEL="alpha", ARQAN_BASE_URL=None,
+                     ARQAN_API_KEY=None)
+
+
+def unwindowed(ctx):
+    """The same provider with no model profile: nothing declares a window,
+    which is the shape of a model the profile table has never heard of."""
+    ctx.write_config(
+        "compact = off\n"
+        "[providers.work]\n"
+        f"base_url = {ctx.mock.base_url}\n"
+        "model = alpha\n"
+    )
+    state = ctx.state_file()
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text("provider = work\n")
+    return ctx.spawn(ARQAN_MODEL="alpha", ARQAN_BASE_URL=None,
+                     ARQAN_API_KEY=None)
+
+
+def test_compact_keeps_the_newest_work_where_a_window_sizes_it(ctx):
+    """The tail is 30% of the declared window: a long first reply is more
+    than that on its own, so it is what the summary stands for and the short
+    exchange after it is replayed word for word."""
+    s = windowed(ctx)
+    ctx.scenario("words=1000")          # roughly 6 KB, past the tail budget
+    s.submit("one")
+    s.wait_turn_done()
+    ctx.scenario("text=ok")
+    s.submit("two")
+    s.wait_turn_done()
+
+    ctx.scenario("text=##+Goal\\nShip+the+cat")
+    sent = len(ctx.mock.requests)
+    s.submit("/compact")
+    s.wait_text("compacted: a new session continues")
+
+    # The head only: what is kept verbatim is not summarized as well.
+    summarize = ctx.mock.requests[sent]["messages"]
+    assert [m["role"] for m in summarize] == [
+        "system", "user", "assistant", "user"
+    ], summarize
+    assert summarize[1]["content"] == "one", summarize[1]
+
+    ctx.scenario("text=carrying+on")
+    s.submit("what next?")
+    s.wait_turn_done()
+    messages = ctx.mock.requests[-1]["messages"]
+    assert [m["role"] for m in messages] == [
+        "system", "user", "user", "assistant", "user"
+    ], messages
+    assert messages[1]["content"].startswith("# Context checkpoint"), messages[1]
+    assert "Ship the cat" in messages[1]["content"], messages[1]
+    assert messages[2]["content"] == "two", messages[2]
+    assert messages[3]["content"] == "ok", messages[3]
+
+
+def test_compact_keeps_a_tail_when_the_whole_conversation_fits_the_budget(ctx):
+    """A conversation far under the window's share is still cut, not swallowed.
+
+    The tail budget is capped at half the conversation, so asking for a
+    checkpoint early leaves the newest work standing instead of summarizing
+    everything and losing the thread the request was meant to protect.
+    """
+    s = windowed(ctx, window=400000)    # 30% of it dwarfs anything below
+    ctx.scenario("words=1000")
+    s.submit("one")
+    s.wait_turn_done()
+    ctx.scenario("text=ok")
+    s.submit("two")
+    s.wait_turn_done()
+
+    ctx.scenario("text=##+Goal\\nShip+the+cat")
+    sent = len(ctx.mock.requests)
+    s.submit("/compact")
+    s.wait_text("compacted: a new session continues")
+
+    summarize = ctx.mock.requests[sent]["messages"]
+    assert [m["role"] for m in summarize] == [
+        "system", "user", "assistant", "user"
+    ], summarize
+    assert summarize[1]["content"] == "one", summarize[1]
+
+    ctx.scenario("text=carrying+on")
+    s.submit("what next?")
+    s.wait_turn_done()
+    messages = ctx.mock.requests[-1]["messages"]
+    assert [m["role"] for m in messages] == [
+        "system", "user", "user", "assistant", "user"
+    ], messages
+    assert messages[1]["content"].startswith("# Context checkpoint"), messages[1]
+    assert messages[2]["content"] == "two", messages[2]
+    assert messages[3]["content"] == "ok", messages[3]
+
+
+def test_compact_without_a_window_keeps_the_newest_work_verbatim(ctx):
+    """Regression: a model that declares no window used to leave a tail of
+    nothing, so /compact threw away the exchange in hand. The conversation's
+    own size budgets the tail when the model's does not."""
+    s = unwindowed(ctx)
+    ctx.scenario("words=1000")
+    s.submit("one")
+    s.wait_turn_done()
+    ctx.scenario("text=ok+the+cat+is+fed")
+    s.submit("two")
+    s.wait_turn_done()
+
+    ctx.scenario("text=##+Goal\\nShip+the+cat")
+    s.submit("/compact")
+    s.wait_text("compacted: a new session continues from the summary "
+                "and the newest work")
+    s.sync()
+    assert "Ship the cat" in s.text(), s.text()
+    assert "ok the cat is fed" in s.text(), s.text()
+
+    ctx.scenario("text=carrying+on")
+    s.submit("what next?")
+    s.wait_turn_done()
+    messages = ctx.mock.requests[-1]["messages"]
+    assert [m["role"] for m in messages] == [
+        "system", "user", "user", "assistant", "user"], messages
+    assert messages[1]["content"].startswith("# Context checkpoint"), messages[1]
+    assert messages[2]["content"] == "two", messages[2]
+    assert messages[3]["content"] == "ok the cat is fed", messages[3]
+
+
+def test_compact_summarizes_a_single_exchange_whole(ctx):
+    """One exchange has no older work to stand behind a checkpoint, so the
+    cut that would split a question from its answer is not taken."""
+    s = one_turn(ctx)
+
+    ctx.scenario("text=##+Goal\\nShip+the+cat")
+    s.submit("/compact")
+    s.wait_text("compacted: a new session continues from the summary")
+    assert "noted" not in s.text(), s.text()
 
 
 def test_compact_asks_for_a_checkpoint_over_the_whole_conversation(ctx):

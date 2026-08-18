@@ -127,6 +127,16 @@ static const ConfSpec k_conf[CONF_N] = {
      * the user makes, not what a first run does. */
     [CONF_RESUME_LAST] = { "resume_last", "false", NULL, CV_BOOL, 0, 0, 0,
                            true },
+    /* Automatic by default, which costs nothing until a model profile
+     * declares a window: without one there is no percentage to be past. */
+    [CONF_COMPACT] = { "compact", "auto", "off,manual,auto", CV_ENUM,
+                       0, 0, 0, true },
+    /* The ceiling leaves the reply that discovers the threshold somewhere to
+     * land. */
+    [CONF_COMPACT_AT] = { "compact_at", CONF_TEXT(AGENT_COMPACT_AT), NULL,
+                          CV_NUM, 50, 95, 0, true },
+    [CONF_COMPACT_MODEL] = { "compact_model", "main", "main,small", CV_ENUM,
+                             0, 0, 0, true },
 };
 
 Str conf_key_name(ConfKey k) {
@@ -483,6 +493,13 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
     c->shell_timeout_ms = (i32)conf_num(conf, CONF_SHELL_TIMEOUT_MS);
     c->images = !str_eq(conf_str(conf, CONF_IMAGES), STR("off"));
     c->resume_last    = conf_bool(conf, CONF_RESUME_LAST);
+    Str compact = conf_str(conf, CONF_COMPACT);
+    c->compact = str_eq(compact, STR("off"))    ? COMPACT_OFF
+               : str_eq(compact, STR("manual")) ? COMPACT_MANUAL
+                                                : COMPACT_AUTO;
+    c->compact_at    = (u32)conf_num(conf, CONF_COMPACT_AT);
+    c->compact_small = str_eq(conf_str(conf, CONF_COMPACT_MODEL),
+                              STR("small"));
 
     
     Str tools = conf_str(conf, CONF_DISABLE_TOOLS);

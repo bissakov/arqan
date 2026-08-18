@@ -63,10 +63,11 @@ void conv_truncate(Conv *c, size_t keep) {
 
 /* The copy shares `src`'s strings rather than duplicating them: it exists to
  * be sent once, beside the conversation it was taken from. */
-b8 conv_clone(Conv *dst, const Conv *src, Arena *a, size_t extra) {
-    if (extra > (size_t)-1 - src->n) return false;
-    if (!conv_init(dst, a, src->n + extra)) return false;
-    size_t n = src->n;
+b8 conv_clone_head(Conv *dst, const Conv *src, size_t keep, Arena *a,
+                   size_t extra) {
+    if (keep > src->n || extra > (size_t)-1 - keep) return false;
+    if (!conv_init(dst, a, keep + extra)) return false;
+    size_t n = keep;
     memcpy(dst->role, src->role, n * sizeof *dst->role);
     memcpy(dst->text, src->text, n * sizeof *dst->text);
     memcpy(dst->anthropic_thinking, src->anthropic_thinking,
@@ -83,6 +84,10 @@ b8 conv_clone(Conv *dst, const Conv *src, Arena *a, size_t extra) {
     dst->media = src->media;
     dst->n = n;
     return true;
+}
+
+b8 conv_clone(Conv *dst, const Conv *src, Arena *a, size_t extra) {
+    return conv_clone_head(dst, src, src->n, a, extra);
 }
 
 static size_t conv_push(Conv *c, MRole role, Str text, Str id, Str name,
@@ -142,11 +147,86 @@ b8 conv_is_call(const Conv *c, size_t i) {
         && c->tool_name[i].p != NULL;
 }
 
-static size_t conv_recent_start(const Conv *c, size_t turns) {
+static size_t conv_turns_back(const Conv *c, size_t turns) {
     size_t seen = 0;
     for (size_t i = c->n; i-- > 0;)
         if (c->role[i] == M_USER && ++seen == turns) return i;
     return 0;
+}
+
+/* A round is headed by the assistant message that opened a group of calls;
+ * the call slots after it and the results that answer them belong to it. */
+static b8 conv_round_head(const Conv *c, size_t i) {
+    return c->role[i] == M_ASSISTANT && c->has_tool_call[i]
+        && !conv_is_call(c, i);
+}
+
+/* The slot the oldest round still sent whole begins at, `block` rounds at a
+ * time: nothing is elided under two blocks, and past that the boundary sits
+ * on the last multiple of `block` that leaves a whole block standing. */
+static size_t conv_rounds_back(const Conv *c, size_t block) {
+    if (!block) return 0;
+    size_t total = 0;
+    for (size_t i = 0; i < c->n; i++) total += conv_round_head(c, i) ? 1 : 0;
+    if (total < 2 * block) return 0;
+    size_t skip = (total / block - 1) * block;
+    size_t seen = 0;
+    for (size_t i = 0; i < c->n; i++)
+        if (conv_round_head(c, i) && seen++ == skip) return i;
+    return 0;
+}
+
+size_t conv_elide_start(const Conv *c) {
+    size_t turns = conv_turns_back(c, AGENT_ELIDE_TURNS);
+    size_t rounds = conv_rounds_back(c, AGENT_ELIDE_ROUNDS);
+    return turns > rounds ? turns : rounds;
+}
+
+b8 conv_result_elided(const Conv *c, size_t i, size_t recent) {
+    return c->role[i] == M_TOOL && i < recent
+        && c->text[i].n > AGENT_ELIDE_BYTES;
+}
+
+b8 conv_round_start(const Conv *c, size_t i) {
+    return i < c->n && c->role[i] != M_TOOL && !conv_is_call(c, i);
+}
+
+b8 conv_compact_head(Conv *c, size_t keep, Str checkpoint) {
+    if (keep < 2 || keep > c->n || !checkpoint.n) return false;
+    if (keep < c->n && !conv_round_start(c, keep)) return false;
+    size_t tail = c->n - keep;
+    if (2 + tail > c->cap) return false;
+
+#define CONV_SLIDE(field) \
+    memmove(&c->field[2], &c->field[keep], tail * sizeof *c->field)
+    CONV_SLIDE(role);
+    CONV_SLIDE(text);
+    CONV_SLIDE(anthropic_thinking);
+    CONV_SLIDE(tool_name);
+    CONV_SLIDE(tool_call_id);
+    CONV_SLIDE(shell_out);
+    CONV_SLIDE(has_tool_call);
+    CONV_SLIDE(expanded);
+    CONV_SLIDE(args_object);
+    CONV_SLIDE(ms);
+    CONV_SLIDE(media_off);
+    CONV_SLIDE(media_n);
+#undef CONV_SLIDE
+
+    c->role[1] = M_USER;
+    c->text[1] = checkpoint;
+    c->anthropic_thinking[1] = (Str){0};
+    c->tool_name[1] = (Str){0};
+    c->tool_call_id[1] = (Str){0};
+    c->shell_out[1] = (Str){0};
+    c->has_tool_call[1] = false;
+    c->expanded[1] = false;
+    c->args_object[1] = false;
+    c->ms[1] = 0;
+    c->media_off[1] = 0;
+    c->media_n[1] = 0;
+    c->n = 2 + tail;
+    return true;
 }
 
 static Str conv_call_name(const Conv *c, size_t result) {
@@ -169,13 +249,12 @@ static size_t conv_media_live(const Conv *c, size_t i) {
 
 
 static void write_tool_result(Buf *b, const Conv *c, size_t i, size_t recent) {
-    if (i < recent && c->text[i].n > AGENT_ELIDE_BYTES) {
+    if (conv_result_elided(c, i, recent)) {
         Str name = conv_call_name(c, i);
-        buf_puts(b, STR("\"["));
+        buf_puts(b, STR("\"[older "));
         buf_json_chars(b, name);
-        buf_putf(b, " result elided after %u turns: %zu bytes. "
-                 "Call it again if you still need it.]\"",
-                 (unsigned)AGENT_ELIDE_TURNS, c->text[i].n);
+        buf_putf(b, " result elided: %zu bytes. "
+                 "Call it again if you still need it.]\"", c->text[i].n);
     } else {
         buf_json_str(b, c->text[i]);
     }
@@ -207,7 +286,7 @@ static void oai_write_content(Buf *b, const Conv *c, size_t i) {
 
 void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
     (void)reg;
-    size_t recent = conv_recent_start(c, AGENT_ELIDE_TURNS);
+    size_t recent = conv_elide_start(c);
     buf_putc(b, '[');
     for (size_t i = 0; i < c->n; i++) {
         if (i) buf_putc(b, ',');
@@ -367,7 +446,7 @@ static void anth_write_block(Buf *b, const Conv *c, size_t i,
 }
 
 void conv_write_json_anthropic(Buf *b, const Conv *c) {
-    size_t recent = conv_recent_start(c, AGENT_ELIDE_TURNS);
+    size_t recent = conv_elide_start(c);
     size_t cache_at = CONV_NONE;
     for (size_t j = c->n; j-- > 0;) {
         if ((c->role[j] == M_USER || c->role[j] == M_TOOL)
