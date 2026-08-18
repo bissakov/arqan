@@ -17,9 +17,7 @@
 
 
 static JVal *tool_args(Str args, Arena *scratch, char *err, size_t err_cap) {
-    JVal *j = json_parse(scratch, args);
-    if (!j) snprintf(err, err_cap, "bad args json");
-    return j;
+    return json_parse_error(scratch, args, err, err_cap);
 }
 
 /* Clamping instead would run a different command, or touch a different file,
@@ -51,7 +49,15 @@ static b8 slurp(const char *z, Arena *scratch, Str *out,
                      (unsigned)AGENT_MAX_FILE_BYTES);
             break;
         case FILE_NOT_REGULAR:
-            snprintf(err, err_cap, "%s is not a regular file", z);
+            {
+                struct stat st;
+                if (stat(z, &st) == 0 && S_ISDIR(st.st_mode))
+                    snprintf(err, err_cap, "%s is a directory; use find to "
+                             "list files or bash with ls for directory details",
+                             z);
+                else
+                    snprintf(err, err_cap, "%s is not a regular file", z);
+            }
             break;
         case FILE_NO_MEMORY:
             snprintf(err, err_cap, "out of memory reading %s", z);
@@ -205,11 +211,20 @@ static b8 tool_write(Str args, Arena *scratch, Buf *out, char *err, size_t err_c
         return false;
     if (!content.p) { snprintf(err, err_cap, "missing content"); return false; }
     FILE *f = fopen(z, "wb");
-    if (!f) { snprintf(err, err_cap, "open %s for write failed", z); return false; }
+    if (!f) {
+        snprintf(err, err_cap, "open %s for write failed: %s", z,
+                 strerror(errno));
+        return false;
+    }
     size_t wr = content.n ? fwrite(content.p, 1, content.n, f) : 0;
     b8 failed = wr != content.n || ferror(f) != 0;
-    if (fclose(f) != 0) failed = true;
-    if (failed) { snprintf(err, err_cap, "write %s failed", z); return false; }
+    int e = failed ? errno : 0;
+    if (fclose(f) != 0) { failed = true; if (!e) e = errno; }
+    if (failed) {
+        snprintf(err, err_cap, "write %s failed: %s", z,
+                 strerror(e ? e : EIO));
+        return false;
+    }
     buf_putf(out, "wrote %zu bytes to %s", content.n, z);
     return true;
 }
@@ -762,8 +777,11 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit,
 
     if (interrupted) {
         if (offset > total) {
-            buf_putf(out, "[output has %zu bytes; offset %zu is past its end]\n",
-                     total, offset);
+            if (!total && offset == 1)
+                buf_puts(out, STR("[command produced no output]\n"));
+            else
+                buf_putf(out, "[output has %zu bytes; offset %zu is past its end]\n",
+                         total, offset);
         } else if (total > first + shown) {
             buf_putf(out, "[read %zu of %zu output bytes; continue with offset=%zu]\n",
                      shown, total, offset + shown);
@@ -778,8 +796,11 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit,
     }
 
     if (offset > total) {
-        buf_putf(out, "[output has %zu bytes; offset %zu is past its end]\n",
-                 total, offset);
+        if (!total && offset == 1)
+            buf_puts(out, STR("[command produced no output]\n"));
+        else
+            buf_putf(out, "[output has %zu bytes; offset %zu is past its end]\n",
+                     total, offset);
     } else if (total > first + shown) {
         buf_putf(out, "[read %zu of %zu output bytes; continue with offset=%zu]\n",
                  shown, total, offset + shown);
@@ -929,19 +950,137 @@ static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
  * the first occurrence is rarely the reviewed one.
  */
 
-/* Offset of the single occurrence of `needle`, or SIZE_MAX with `count` set
- * to what was found instead. An ambiguous match is refused rather than
- * resolved by position: the first occurrence is rarely the reviewed one. */
-static size_t find_unique(Str hay, Str needle, size_t *count) {
-    size_t at = (size_t)-1;
-    *count = 0;
-    if (!needle.n || hay.n < needle.n) return at;
+/* Every occurrence of `needle` in `hay`: the total is returned and the first
+ * `max` offsets land in `offs`. The scan runs to the end even once a match is
+ * ambiguous, since the error names where the rivals are. */
+static size_t find_matches(Str hay, Str needle, size_t *offs, size_t max) {
+    size_t count = 0;
+    if (!needle.n || hay.n < needle.n) return 0;
     for (size_t i = 0; i + needle.n <= hay.n; i++) {
         if (memcmp(hay.p + i, needle.p, needle.n)) continue;
-        if (!(*count)++) at = i;
-        else return (size_t)-1;
+        if (count < max) offs[count] = i;
+        count++;
     }
-    return *count == 1 ? at : (size_t)-1;
+    return count;
+}
+
+/* 1-based line number of `off`, for an error that points at the file. */
+static size_t line_of(Str body, size_t off) {
+    size_t n = 1;
+    if (off > body.n) off = body.n;
+    for (size_t i = 0; i < off; i++)
+        if (body.p[i] == '\n') n++;
+    return n;
+}
+
+static b8 patch_space(char c) { return c == ' ' || c == '\t' || c == '\r'; }
+
+/* Whether two lines carry the same text once every space is dropped. An edit
+ * that fails only on this reads as a puzzle unless the error says so. */
+static b8 same_but_space(Str a, Str b) {
+    size_t i = 0, j = 0;
+    for (;;) {
+        while (i < a.n && patch_space(a.p[i])) i++;
+        while (j < b.n && patch_space(b.p[j])) j++;
+        if (i == a.n || j == b.n) break;
+        if (a.p[i] != b.p[j]) return false;
+        i++, j++;
+    }
+    while (i < a.n && patch_space(a.p[i])) i++;
+    while (j < b.n && patch_space(b.p[j])) j++;
+    return i == a.n && j == b.n;
+}
+
+/* `s` as a short fragment for an error message. A tab is written as an
+ * escape, since an indentation mismatch is invisible otherwise. */
+static void quote_line(char *dst, size_t cap, Str s) {
+    size_t w = 0;
+    if (cap < 8) { if (cap) dst[0] = 0; return; }
+    for (size_t i = 0; i < s.n && w + 4 < cap; i++) {
+        char c = s.p[i];
+        if (c == '\t') { dst[w++] = '\\'; dst[w++] = 't'; }
+        else if ((unsigned char)c < 0x20) { dst[w++] = '?'; }
+        else dst[w++] = c;
+        if (i + 1 < s.n && w + 4 >= cap) {
+            dst[w++] = '.', dst[w++] = '.', dst[w++] = '.';
+            break;
+        }
+    }
+    dst[w] = 0;
+}
+
+/* How many lines agree from `boff` in `body` and `ooff` in `oldt`, and where
+ * the first difference is: `bad` gets its offset in `body`, `bl` and `ol` the
+ * two lines. `bl` is empty when the file runs out first. */
+static size_t patch_agree(Str body, size_t boff, Str oldt, size_t ooff,
+                          size_t *bad, Str *bl, Str *ol) {
+    size_t n = 0;
+    *bad = boff, *bl = (Str){ NULL, 0 }, *ol = (Str){ NULL, 0 };
+    for (;;) {
+        Str want, have;
+        if (!str_line(oldt, &ooff, &want)) return n;
+        size_t at = boff;
+        if (!str_line(body, &boff, &have)) { *bad = at, *ol = want; return n; }
+        if (!str_eq(have, want)) {
+            *bad = at, *bl = have, *ol = want;
+            return n;
+        }
+        n++;
+    }
+}
+
+/* Why a hunk's context is nowhere in the file, as a fragment appended to the
+ * error. Anchors on the hunk's first line that carries text, scores every
+ * file line equal to it, and reports the closest candidate's first
+ * difference, so the caller can fix the hunk without re-reading the file. */
+static void patch_diverge(Str body, Str oldt, char *note, size_t cap) {
+    Str anchor = { NULL, 0 };
+    size_t off = 0, anchor_off = 0;
+    for (;;) {
+        size_t at = off;
+        Str line;
+        if (!str_line(oldt, &off, &line)) break;
+        if (str_trim(line).n) { anchor = line, anchor_off = at; break; }
+    }
+    if (!anchor.n) { note[0] = 0; return; }
+
+    b8 have = false;
+    size_t best = 0, bad = 0;
+    Str bl = { NULL, 0 }, ol = { NULL, 0 };
+    off = 0;
+    for (;;) {
+        size_t at = off;
+        Str line;
+        if (!str_line(body, &off, &line)) break;
+        if (!str_eq(line, anchor)) continue;
+        size_t b_at = 0;
+        Str b_line, o_line;
+        size_t score = patch_agree(body, at, oldt, anchor_off, &b_at,
+                                   &b_line, &o_line);
+        if (have && score <= best) continue;
+        have = true, best = score, bad = b_at, bl = b_line, ol = o_line;
+    }
+    if (!have) {
+        snprintf(note, cap, "; no line of its context is in the file");
+        return;
+    }
+    if (!ol.n && !bl.n) {
+        snprintf(note, cap, "; its context is already there from line %zu",
+                 line_of(body, bad));
+        return;
+    }
+    char want[48];
+    quote_line(want, sizeof want, ol);
+    if (!bl.n) {
+        snprintf(note, cap, "; the file ends at line %zu, before \"%s\"",
+                 line_of(body, bad), want);
+        return;
+    }
+    char has[48];
+    quote_line(has, sizeof has, bl);
+    snprintf(note, cap, "; line %zu is \"%s\" where the hunk wants \"%s\"%s",
+             line_of(body, bad), has, want,
+             same_but_space(bl, ol) ? " (only spacing differs)" : "");
 }
 
 typedef struct {
@@ -962,6 +1101,9 @@ typedef struct {
     Arena     *scratch;
     char      *err;
     size_t     err_cap;
+    size_t     err_n;         /* bytes of `err` written, for appending */
+    size_t     bad;           /* hunks that could not be placed */
+    size_t     noted;         /* of those, the ones `err` names */
 } Patch;
 
 
@@ -980,6 +1122,26 @@ static b8 patch_fail(Patch *p, const char *fmt, ...) {
     vsnprintf(p->err, p->err_cap, fmt, ap);
     va_end(ap);
     return false;
+}
+
+/* A hunk that could not be placed. The patch is refused whole, but the scan
+ * carries on so that one call names every hunk needing a fix: reporting only
+ * the first costs a round trip per hunk. Each lands on its own line. */
+static void patch_bad_hunk(Patch *p, const char *fmt, ...) {
+    p->bad++;
+    if (p->noted >= AGENT_MAX_PATCH_NOTES) return;
+    if (p->err_n + 2 >= p->err_cap) return;
+    if (p->err_n) p->err[p->err_n++] = '\n';
+
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(p->err + p->err_n, p->err_cap - p->err_n, fmt, ap);
+    va_end(ap);
+    if (n < 0) { p->err[p->err_n] = 0; return; }
+
+    size_t w = (size_t)n;
+    p->err_n += w < p->err_cap - p->err_n ? w : p->err_cap - p->err_n - 1;
+    p->noted++;
 }
 
 /* The header pair a file's hunks follow. A patch that names one file twice is
@@ -1094,27 +1256,47 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str text, size_t *off) {
         return patch_fail(p, "%s hunk %zu: nothing to locate it by; include "
                           "the surrounding lines as context", f->path, f->hunk_n);
 
+    size_t hits[AGENT_MAX_PATCH_NOTES];
     size_t count;
     Str body = patch_body(f);
-    size_t at = find_unique(body, oldt, &count);
-    
+    count = find_matches(body, oldt, hits, sizeof hits / sizeof *hits);
+    size_t at = count == 1 ? hits[0] : (size_t)-1;
+
     if (at == (size_t)-1 && !count && oldt.p[oldt.n - 1] == '\n'
         && (!body.n || body.p[body.n - 1] != '\n')) {
         Str o2 = { oldt.p, oldt.n - 1 };
-        size_t at2 = find_unique(body, o2, &count);
-        if (at2 != (size_t)-1 && at2 + o2.n == body.n) {
-            at = at2;
+        size_t n2 = find_matches(body, o2, hits, sizeof hits / sizeof *hits);
+        if (n2 == 1 && hits[0] + o2.n == body.n) {
+            at = hits[0];
+            count = 1;
             oldt = o2;
             if (newt.n && newt.p[newt.n - 1] == '\n') newt.n--;
         }
     }
     if (at == (size_t)-1) {
-        if (count > 1)
-            return patch_fail(p, "%s hunk %zu: its context matches %zu places; "
-                              "widen it until it matches one", f->path,
-                              f->hunk_n, count);
-        return patch_fail(p, "%s hunk %zu: context not found; re-read the file "
-                          "and patch what it says now", f->path, f->hunk_n);
+        if (count > 1) {
+            char at_lines[96];
+            size_t w = 0, shown = count < sizeof hits / sizeof *hits
+                                      ? count : sizeof hits / sizeof *hits;
+            at_lines[0] = 0;
+            for (size_t i = 0; i < shown && w + 12 < sizeof at_lines; i++) {
+                int n = snprintf(at_lines + w, sizeof at_lines - w, "%s%zu",
+                                 i ? ", " : "", line_of(body, hits[i]));
+                if (n < 0) break;
+                w += (size_t)n < sizeof at_lines - w ? (size_t)n
+                                                     : sizeof at_lines - w - 1;
+            }
+            patch_bad_hunk(p, "%s hunk %zu: its context matches %zu places "
+                           "(lines %s%s); widen it with a nearby unique line",
+                           f->path, f->hunk_n, count, at_lines,
+                           count > shown ? ", ..." : "");
+        } else {
+            char note[192];
+            patch_diverge(body, oldt, note, sizeof note);
+            patch_bad_hunk(p, "%s hunk %zu: context not found%s", f->path,
+                           f->hunk_n, note);
+        }
+        return true;
     }
 
     /* Splice in place. `newt` lives in its own scratch buffer, never inside
@@ -1126,6 +1308,32 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str text, size_t *off) {
     memcpy(f->body.p + at, newt.p, newt.n);
     f->body.n = at + newt.n + tail;
     return true;
+}
+
+/* Whether the text is an apply_patch envelope rather than a unified diff.
+ * Models trained on that format reach for it often, and the bare complaint
+ * about a missing header sends them round again with the same shape. A
+ * marker only counts at column zero, where a diff can never put one: inside a
+ * hunk every line carries a ' ', '-' or '+'. */
+static b8 patch_envelope(Str text) {
+    static const char *mark[] = { "*** Begin Patch", "*** Update File:",
+                                  "*** Add File:", "*** Delete File:" };
+    size_t off = 0;
+    Str line;
+    while (str_line(text, &off, &line))
+        for (size_t i = 0; i < sizeof mark / sizeof *mark; i++)
+            if (str_starts(line, (Str){ mark[i], strlen(mark[i]) })) return true;
+    return false;
+}
+
+/* No usable file header: name the envelope when that is what arrived, so the
+ * next call carries a diff instead of the same text again. */
+static b8 patch_no_header(Patch *p, Str text, const char *plain) {
+    if (patch_envelope(text))
+        return patch_fail(p, "this is an apply_patch envelope, not a unified "
+                          "diff; resend it as '--- path', '+++ path', then "
+                          "'@@' hunks whose lines start with ' ', '-' or '+'");
+    return patch_fail(p, "%s", plain);
 }
 
 static b8 patch_parse(Patch *p, Str text) {
@@ -1143,12 +1351,15 @@ static b8 patch_parse(Patch *p, Str text) {
                            patch_path(str_drop(next, 4)));
             if (!f) return false;
         } else if (str_starts(line, STR("@@"))) {
-            if (!f) return patch_fail(p, "a hunk before any --- / +++ header");
+            if (!f)
+                return patch_no_header(p, text,
+                                       "a hunk before any --- / +++ header");
             if (!patch_hunk(p, f, text, &off)) return false;
         }
         
     }
-    if (!p->n) return patch_fail(p, "no --- / +++ file header in the patch");
+    if (!p->n)
+        return patch_no_header(p, text, "no --- / +++ file header in the patch");
     return true;
 }
 
@@ -1161,14 +1372,17 @@ static b8 patch_write(Patch *p, const PatchFile *f) {
         return patch_fail(p, "%s: path too long to write", f->path);
 
     FILE *o = fopen(tmp, "wb");
-    if (!o) return patch_fail(p, "open %s for write failed", f->path);
+    if (!o)
+        return patch_fail(p, "open %s for write failed: %s", f->path,
+                          strerror(errno));
     b8 failed = f->body.n && fwrite(f->body.p, 1, f->body.n, o) != f->body.n;
     if (ferror(o)) failed = true;
     if (fclose(o) != 0) failed = true;
     if (!failed && rename(tmp, f->path) != 0) failed = true;
     if (failed) {
+        int e = errno;
         unlink(tmp);
-        return patch_fail(p, "write %s failed", f->path);
+        return patch_fail(p, "write %s failed: %s", f->path, strerror(e));
     }
     return true;
 }
@@ -1179,16 +1393,33 @@ static b8 tool_patch(Str args, Arena *scratch, Buf *out, char *err, size_t err_c
     Str text = json_str(j, STR("patch"));
     if (!text.n) { snprintf(err, err_cap, "missing patch"); return false; }
 
-    Patch p = { NULL, 0, 0, scratch, err, err_cap };
+    Patch p = { .file = NULL, .n = 0, .hunks = 0, .scratch = scratch,
+                .err = err, .err_cap = err_cap, .err_n = 0, .bad = 0,
+                .noted = 0 };
     p.file = arena_new(scratch, PatchFile, AGENT_MAX_PATCH_FILES);
     if (!p.file) { snprintf(err, err_cap, "out of memory"); return false; }
     if (!patch_parse(&p, text)) return false;
+
+    /* Every file applies or none does, so a hunk that could not be placed
+     * stops the write after the whole patch has been checked. */
+    if (p.bad) {
+        if (p.bad > p.noted && p.err_n + 48 < p.err_cap)
+            p.err_n += (size_t)snprintf(p.err + p.err_n, p.err_cap - p.err_n,
+                                        "\nand %zu more hunk%s did not apply",
+                                        p.bad - p.noted,
+                                        p.bad - p.noted == 1 ? "" : "s");
+        if (p.err_n + 32 < p.err_cap)
+            snprintf(p.err + p.err_n, p.err_cap - p.err_n,
+                     "\nnothing was written");
+        return false;
+    }
 
     for (size_t i = 0; i < p.n; i++) {
         const PatchFile *f = &p.file[i];
         if (f->unlink_it) {
             if (unlink(f->path) != 0)
-                return patch_fail(&p, "delete %s failed", f->path);
+                return patch_fail(&p, "delete %s failed: %s", f->path,
+                                  strerror(errno));
             buf_putf(out, "%s deleted\n", f->path);
         } else {
             if (!patch_write(&p, f)) return false;
@@ -1606,7 +1837,7 @@ b8 tools_disable_list(ToolRegistry *r, Str names, char *err, size_t err_cap) {
     return true;
 }
 
-void tools_init(ToolRegistry *r, Arena *persist) {
+void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms) {
     r->name   = arena_new(persist, Str, AGENT_MAX_TOOLS);
     r->desc   = arena_new(persist, Str, AGENT_MAX_TOOLS);
     r->brief  = arena_new(persist, Str, AGENT_MAX_TOOLS);
@@ -1633,6 +1864,22 @@ void tools_init(ToolRegistry *r, Arena *persist) {
     r->off[r->n] = false; \
     r->n++; } while (0)
 #define BOTH (TOOL_IN_BUILD | TOOL_IN_PLAN)
+
+    char *bash_schema = arena_alloc(persist, 768, 1);
+    if (!bash_schema) { r->name = NULL; return; }
+    int schema_n = snprintf(bash_schema, 768,
+        "{\"type\":\"object\",\"properties\":{"
+        "\"command\":{\"type\":\"string\"},"
+        "\"offset\":{\"type\":\"integer\",\"minimum\":1,"
+          "\"description\":\"first output byte, 1-based\"},"
+        "\"limit\":{\"type\":\"integer\",\"minimum\":1,"
+          "\"maximum\":8192,\"description\":\"at most 8KB\"},"
+        "\"timeout_ms\":{\"type\":\"integer\",\"minimum\":1,"
+          "\"maximum\":%d,\"description\":\"turn deadline in milliseconds; "
+          "at most %d\"}},"
+        "\"required\":[\"command\"]}", shell_timeout_ms,
+        shell_timeout_ms);
+    if (schema_n < 0 || (size_t)schema_n >= 768) { r->name = NULL; return; }
 
     ADD("read", "Read a page of a text file: up to 2000 lines or 8KB, "
         "whichever is less. Use offset and limit to page through a long "
@@ -1686,26 +1933,28 @@ void tools_init(ToolRegistry *r, Arena *persist) {
         "\"limit\":{\"type\":\"integer\",\"description\":\"at most 2000 extracted lines\"}},"
         "\"required\":[\"url\"]}",
         page_fetch_run);
-    ADD("bash", "Run a shell command; returns one page of up to 8KB of its "
-        "stdout and stderr. Use offset and limit to page output, and prefer "
-        "head, tail, sed -n or grep to target the lines you need. The harness "
-        "may pause for approval; do not ask in prose or retry a denial "
-        "blindly. Commands run without a terminal, so anything that prompts "
-        "for input, sudo included, fails rather than waits. A command still "
-        "running after the deadline is not killed: it carries on as a job "
-        "the result names, and the job tool waits for the rest. Set "
-        "timeout_ms to what this command is worth waiting for: a build you "
-        "expect to take minutes should become a job in seconds, while a test "
-        "you expect to finish should be waited out.",
-        "Run a shell command", TOOL_IN_BUILD, TOOL_APPROVAL_BASH,
-        "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},"
-        "\"offset\":{\"type\":\"integer\",\"description\":\"first output byte, 1-based\"},"
-        "\"limit\":{\"type\":\"integer\",\"description\":\"at most 8KB\"},"
-        "\"timeout_ms\":{\"type\":\"integer\",\"description\":\"how long to hold "
-        "the turn before the command becomes a job; defaults to the "
-        "configured deadline and may not exceed it\"}},"
-        "\"required\":[\"command\"]}",
-        tool_bash);
+    if (r->n < AGENT_MAX_TOOLS) {
+        r->name[r->n] = STR("bash");
+        r->desc[r->n] = STR("Run a shell command; returns one page of up to 8KB "
+            "of its stdout and stderr. Use offset and limit to page output, "
+            "and prefer head, tail, sed -n or grep to target the lines you "
+            "need. The harness may pause for approval; do not ask in prose "
+            "or retry a denial blindly. Commands run without a terminal, so "
+            "anything that prompts for input, sudo included, fails rather "
+            "than waits. A command still running after the deadline is not "
+            "killed: it carries on as a job the result names, and the job "
+            "tool waits for the rest. Set timeout_ms to what this command is "
+            "worth waiting for: a build you expect to take minutes should "
+            "become a job in seconds, while a test you expect to finish "
+            "should be waited out.");
+        r->brief[r->n] = STR("Run a shell command");
+        r->schema[r->n] = (Str){ bash_schema, (size_t)schema_n };
+        r->run[r->n] = tool_bash;
+        r->modes[r->n] = TOOL_IN_BUILD;
+        r->approval[r->n] = TOOL_APPROVAL_BASH;
+        r->off[r->n] = false;
+        r->n++;
+    }
     ADD("job", "Follow a command bash detached because it outran its "
         "deadline. Each call returns the output since the last one and says "
         "whether the job is still running. Set timeout_ms to how long the "
