@@ -265,10 +265,39 @@ typedef struct {
      * Kept apart because that one is not an attempt: a turn still running
      * grows a tail as it goes, and the next round may well have one. */
     b8            compact_short;
+    /* Session writes retry silently after the first warning, then announce
+     * the transition back to durable checkpoints once. */
+    b8            session_save_failed;
     
     size_t        pending[AGENT_MAX_MEDIA_PER_TURN];
     size_t        pending_n;
 } Agent;
+
+static b8 save_session(Agent *ag) {
+    char err[256] = {0};
+    if (session_save(ag->sess, ag->conv, err, sizeof err)) {
+        if (ag->session_save_failed) {
+            if (g_one_shot)
+                one_shot_diag("warning", (Str){0}, STR("session saving recovered"));
+            else
+                tui_notice(STR("session saving recovered"));
+        }
+        ag->session_save_failed = false;
+        return true;
+    }
+    if (!ag->session_save_failed) {
+        char msg[384];
+        i32 n = snprintf(msg, sizeof msg,
+                         "session was not saved: %s; it remains in memory",
+                         err[0] ? err : "unknown persistence failure");
+        Str text = { msg, n > 0 && (size_t)n < sizeof msg
+                          ? (size_t)n : sizeof msg - 1 };
+        if (g_one_shot) one_shot_diag("warning", (Str){0}, text);
+        else tui_notice(text);
+    }
+    ag->session_save_failed = true;
+    return false;
+}
 
 static Str mode_name(AgentMode m) {
     return m == MODE_PLAN ? STR("plan") : STR("build");
@@ -395,7 +424,7 @@ static b8 add_result(Agent *ag, size_t call, Str name, Str result, u32 ms) {
                             (u32)(slot + 1), conv->expanded[slot], ms);
     /* Saved per result, not per turn: a build that dies in its tenth round
      * must still be resumable up to its ninth. */
-    session_save(ag->sess, conv);
+    save_session(ag);
     return true;
 }
 
@@ -1121,7 +1150,7 @@ static void start_help_session(Agent *ag) {
         return;
     }
     render_user_message(conv, conv->n - 1);
-    session_save(ag->sess, conv);
+    save_session(ag);
 }
 
 
@@ -1261,7 +1290,9 @@ static void resume_session(Agent *ag) {
     tui_clear();
     render_conv(conv, ag->cfg, ag->show_instructions, scratch);
     tui_batch_end();
-    if (!whole) tui_notice(STR("session truncated: the conversation is full"));
+    b8 saved = save_session(ag);
+    if (!whole && saved)
+        tui_notice(STR("session truncated: the conversation is full"));
 }
 
 /* Reopen this directory's newest session, for a start that was configured to
@@ -1363,11 +1394,19 @@ static void rewind_conversation(Agent *ag) {
     render_conv(conv, ag->cfg, ag->show_instructions, scratch);
     tui_batch_end();
     
-    session_fork(sess, conv);
+    char err[256] = {0};
+    if (!session_fork(sess, conv, err, sizeof err)) {
+        /* The old append-only file cannot represent a rewind. Reserve a new
+         * destination so the in-memory branch can recover on a later save. */
+        session_begin(sess);
+        save_session(ag);
+    }
 }
 
 
-static void fork_session(Session *sess, const Conv *conv) {
+static void fork_session(Agent *ag) {
+    Session *sess = ag->sess;
+    const Conv *conv = ag->conv;
     if (conv->n <= 1) {
         tui_notice(STR("nothing to fork yet"));
         return;
@@ -1376,10 +1415,15 @@ static void fork_session(Session *sess, const Conv *conv) {
         tui_notice(STR("sessions are not saved here: nothing to fork"));
         return;
     }
-    if (!session_fork(sess, conv)) {
-        tui_notice(STR("could not start a forked session"));
+    char err[256] = {0};
+    if (!session_fork(sess, conv, err, sizeof err)) {
+        char msg[384];
+        snprintf(msg, sizeof msg, "could not start a forked session: %s",
+                 err[0] ? err : "unknown persistence failure");
+        tui_notice(str_c(msg));
         return;
     }
+    ag->session_save_failed = false;
     tui_notice(STR("forked: this copy continues, the original is unchanged"));
 }
 
@@ -3411,7 +3455,7 @@ static void run_shell(Agent *ag, Str cmd) {
     conv->ms[slot] = ms;
     render_tool_result(STR("shell"), (Str){0}, result, ag->scratch,
                        (u32)(slot + 1), false, ms);
-    session_save(ag->sess, conv);
+    save_session(ag);
     
     tui_set_status("ready");
     tui_activity_end();
@@ -3637,7 +3681,10 @@ static void compact_session(Agent *ag) {
         session_begin(ag->sess);
         tui_clear();
         rerender_conv(conv, ag->cfg, ag->show_instructions, ag->scratch, 0);
-        session_save(ag->sess, conv);
+        if (!save_session(ag)) {
+            ctx_sync(&g_ctx, conv);
+            return;
+        }
         if (title_n) session_set_title(ag->sess, (Str){ title, title_n });
         ctx_sync(&g_ctx, conv);
         tui_notice(STR("compacted: a new session continues from the summary "
@@ -3661,7 +3708,10 @@ static void compact_session(Agent *ag) {
         return;
     }
     render_user_message(conv, conv->n - 1);
-    session_save(ag->sess, conv);
+    if (!save_session(ag)) {
+        ctx_sync(&g_ctx, conv);
+        return;
+    }
     if (title_n) session_set_title(ag->sess, (Str){ title, title_n });
     ctx_sync(&g_ctx, conv);
     tui_notice(STR("compacted: a new session continues from the summary"));
@@ -3718,12 +3768,15 @@ static b8 compact_auto(Agent *ag, size_t keep, b8 *interrupted) {
     size_t title_n = ag->sess->title.n < sizeof title ? ag->sess->title.n : 0;
     if (title_n) memcpy(title, ag->sess->title.p, title_n);
     session_begin(ag->sess);
-    session_save(ag->sess, conv);
-    if (title_n) session_set_title(ag->sess, (Str){ title, title_n });
+    b8 saved = save_session(ag);
+    if (saved && title_n)
+        session_set_title(ag->sess, (Str){ title, title_n });
 
     if (!g_one_shot)
         rerender_conv(conv, ag->cfg, ag->show_instructions, ag->scratch, 0);
-    say_compaction(STR("context compacted: the older work is now a summary"));
+    say_compaction(saved
+        ? STR("context compacted: the older work is now a summary")
+        : STR("context compacted in memory but the new session was not saved"));
     ctx_sync(&g_ctx, conv);
     return true;
 }
@@ -3998,7 +4051,7 @@ static b8 agent_turn(Agent *ag, Str text) {
         tui_scroll_to_bottom();
         render_user_message(conv, conv->n - 1);
     }
-    session_save(ag->sess, conv);
+    save_session(ag);
     
     ctx_sync(&g_ctx, conv);
 
@@ -4062,7 +4115,7 @@ static b8 agent_turn(Agent *ag, Str text) {
         md_end();
         md_set_muted(false);
         
-        session_save(ag->sess, conv);
+        save_session(ag);
         if (g_got_sigint) {
             announce_interrupt();
             ending = NOTIFY_INTERRUPTED;
@@ -4134,7 +4187,7 @@ static b8 agent_turn(Agent *ag, Str text) {
     }
     tui_set_busy(false);
     tui_activity_end();
-    session_save(ag->sess, conv);
+    save_session(ag);
     tel_open(&te, "turn_end");
     tel_bool(&te, "ok", ok);
     tel_int(&te, "rounds", rounds);
@@ -4391,6 +4444,7 @@ i32 main(i32 argc, char **argv) {
     };
     tui_set_busy_command(on_busy_command, &agent);
     if (!render_verbose()) tui_set_find_expand(find_expand, &agent);
+    b8 resumed_saved = !resumed || save_session(&agent);
 
     
     if (opts.have_prompt) {
@@ -4410,7 +4464,7 @@ i32 main(i32 argc, char **argv) {
     /* The welcome screen names the command instead of a form opening unasked
      * over an empty screen. */
     if (tui_is_fullscreen()) tui_set_setup_hint(setup_hint(&cfg, &scratch));
-    if (truncated)
+    if (truncated && resumed_saved)
         tui_notice(STR("session truncated: the conversation is full"));
 
     
@@ -4476,7 +4530,7 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
         if (!strcmp(line, "/fork")) {
-            fork_session(&sess, &conv);
+            fork_session(&agent);
             continue;
         }
         if (!strcmp(line, "/compact")) {

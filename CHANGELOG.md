@@ -32,6 +32,8 @@
 
 ### Fixed
 
+- Report failed session saves and retry messages that were not persisted.
+
 - Improve tool errors for failed patches, invalid JSON, limits and file access.
 
 - Accept common patch envelopes, return current context after failed hunks and
