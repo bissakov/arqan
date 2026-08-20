@@ -115,6 +115,42 @@ def bench_persisting_turns(b):
 
 
 @needs("proc")
+def bench_append_to_a_large_session(b):
+    """Saving new work must not rewrite the conversation already on disk."""
+    seed_session(b.ctx)
+    planted = plant_session(b.ctx, "append", tokens=b.scale(100_000, floor=20_000),
+                            turns=b.scale(60, floor=12), tag="appendbase")
+    initial_bytes = planted.path.stat().st_size
+    initial_lines = len(planted.path.read_bytes().splitlines())
+    b.row("session file", units=int(planted.megabytes * 1000) or 1, unit="KB",
+          note=planted.describe())
+
+    s = b.spawn()
+    resume_at(s, 0)
+    saves = b.scale(12, floor=4)
+    start = b.probe.read()
+
+    def one():
+        s.submit("!:")
+        s.wait_status("ready", timeout=30.0)
+
+    b.sample("append", one, repeat=saves, unit="save", budget_ms=30.0)
+    d = b.probe.since(start)
+    final_bytes = planted.path.stat().st_size
+    final_lines = len(planted.path.read_bytes().splitlines())
+    growth = final_bytes - initial_bytes
+    b.row("session io", units=saves, unit="save", write_kb=d.write_kb,
+          read_kb=d.read_kb, priv_kb=d.priv_kb, peak_kb=d.peak_kb,
+          note=f"file grew {growth}B; process wrote {d.write_kb}K")
+    b.check(final_lines - initial_lines == saves,
+            f"{saves} saves added {final_lines - initial_lines} records")
+    b.check(d.write_kb * 1024 < initial_bytes,
+            f"incremental saves wrote {d.write_kb}K around a "
+            f"{initial_bytes // 1024}K session")
+    b.alive(s)
+
+
+@needs("proc")
 def bench_history_recall(b):
     """A full prompt history file, walked from the newest entry to the oldest."""
     hist = b.ctx.home / ".local" / "state" / "arqan" / "history"
