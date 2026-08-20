@@ -1,7 +1,6 @@
 #include "agent.h"
 
 #include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -100,21 +99,7 @@ static Str settings_src(Str path, Arena *a, size_t max) {
 }
 
 b8 settings_write(Str path, Str data, u32 mode) {
-    char tmp[AGENT_MAX_PATH];
-    i32 n = snprintf(tmp, sizeof tmp, "%.*s.tmp", (i32)path.n, path.p);
-    if (n <= 0 || (size_t)n >= sizeof tmp) return false;
-    i32 fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, (mode_t)mode);
-    if (fd < 0) return false;
-    b8 ok = true;
-    for (size_t off = 0; ok && off < data.n;) {
-        ssize_t w = write(fd, data.p + off, data.n - off);
-        if (w <= 0) ok = false; else off += (size_t)w;
-    }
-    if (fchmod(fd, (mode_t)mode) != 0) ok = false;
-    if (close(fd) != 0) ok = false;
-    if (ok && rename(tmp, path.p) == 0) return true;
-    unlink(tmp);
-    return false;
+    return path.n && file_write_atomic_str(path.p, data, mode, true);
 }
 
 static size_t settings_parse(Settings *s, Str src) {
@@ -177,10 +162,6 @@ b8 settings_set(Str path, Str section, const Str *keys, const Str *vals,
     size_t mark = scratch->off;
     Str src = settings_src(path, scratch, AGENT_MAX_SETTINGS_BYTES);
     b8 done[AGENT_MAX_SET_KEYS] = {0};
-
-    
-    struct stat st;
-    if (stat(path.p, &st) == 0) mode = (u32)(st.st_mode & 0777);
 
     Buf b;
     buf_init(&b, scratch, src.n + 512);
@@ -256,7 +237,7 @@ b8 settings_remove_section(Str path, Str section, Arena *scratch) {
     if (!path.n || !section.n) return false;
     size_t mark = scratch->off;
     struct stat st;
-    if (stat(path.p, &st) != 0) {
+    if (lstat(path.p, &st) != 0) {
         scratch->off = mark;
         return errno == ENOENT;
     }
@@ -279,8 +260,7 @@ b8 settings_remove_section(Str path, Str section, Arena *scratch) {
         buf_putc(&out, '\n');
     }
     if (!buf_ok(&out)) { scratch->off = mark; return false; }
-    b8 ok = !found || settings_write(
-        path, buf_finish(&out), (u32)(st.st_mode & 0777));
+    b8 ok = !found || settings_write(path, buf_finish(&out), 0600);
     scratch->off = mark;
     return ok;
 }
