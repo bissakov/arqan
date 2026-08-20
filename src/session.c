@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -180,6 +181,8 @@ b8 session_set_title(Session *s, Str title) {
 
 b8 session_begin(Session *s) {
     s->written = 0;
+    s->save_blocked = false;
+    s->sync_dir = false;
     
     s->title_tried = false;
     /* The name is reserved here, but the conversation starts with its first
@@ -209,38 +212,34 @@ b8 session_begin(Session *s) {
 }
 
 
-static void sess_put_json(FILE *f, Str s) {
-    fputc('"', f);
-    for (size_t i = 0; i < s.n; i++) {
-        u8 c = (u8)s.p[i];
-        switch (c) {
-            case '"':  fputs("\\\"", f); break;
-            case '\\': fputs("\\\\", f); break;
-            case '\b': fputs("\\b", f); break;
-            case '\f': fputs("\\f", f); break;
-            case '\n': fputs("\\n", f); break;
-            case '\r': fputs("\\r", f); break;
-            case '\t': fputs("\\t", f); break;
-            default:
-                if (c < 0x20) fprintf(f, "\\u%04x", c);
-                else fputc((i32)c, f);
-        }
-    }
-    fputc('"', f);
-}
-
-/* Persist the directory entry itself, so a session file created just before
- * the power went is still named by its directory when the machine comes
- * back. Only the first save of a file needs it; later ones change no name. */
-static void sess_sync_dir(Str dir) {
+/* Persist a directory entry before anything durable refers to it. */
+static b8 sess_sync_dir(Str dir, char *err, size_t err_cap) {
     char path[AGENT_MAX_PATH];
-    if (dir.n >= sizeof path) return;
+    if (dir.n >= sizeof path) {
+        snprintf(err, err_cap, "session directory path is too long");
+        return false;
+    }
     memcpy(path, dir.p, dir.n);
     path[dir.n] = '\0';
     i32 fd = open(path, O_RDONLY | O_DIRECTORY);
-    if (fd < 0) return;
-    fsync(fd);
-    close(fd);
+    if (fd < 0) {
+        snprintf(err, err_cap, "could not open session directory: %s",
+                 strerror(errno));
+        return false;
+    }
+    if (fsync(fd) != 0) {
+        i32 saved = errno;
+        close(fd);
+        snprintf(err, err_cap, "could not sync session directory: %s",
+                 strerror(saved));
+        return false;
+    }
+    if (close(fd) != 0) {
+        snprintf(err, err_cap, "could not close session directory: %s",
+                 strerror(errno));
+        return false;
+    }
+    return true;
 }
 
 /* ---- media sidecars ------------------------------------------------------
@@ -265,132 +264,353 @@ static b8 sess_media_name(char *rel, size_t cap, const MediaSet *m, size_t id) {
 }
 
 static b8 sess_media_write(Str dir, const MediaSet *m, size_t id,
-                           const char *rel) {
-    if (!media_live(m, id)) return false;
+                           const char *rel, char *err, size_t err_cap) {
+    if (!media_live(m, id)) {
+        snprintf(err, err_cap, "session image is unavailable");
+        return false;
+    }
     char sub[AGENT_MAX_PATH];
     i32 sn = snprintf(sub, sizeof sub, "%.*s/media", (i32)dir.n, dir.p);
-    if (sn <= 0 || (size_t)sn >= sizeof sub) return false;
-    if (!paths_ensure_dir((Str){ sub, (size_t)sn })) return false;
+    if (sn <= 0 || (size_t)sn >= sizeof sub) {
+        snprintf(err, err_cap, "session media path is too long");
+        return false;
+    }
+    if (!paths_ensure_dir((Str){ sub, (size_t)sn })) {
+        snprintf(err, err_cap, "could not create session media directory");
+        return false;
+    }
     char path[AGENT_MAX_PATH];
     i32 pn = snprintf(path, sizeof path, "%.*s/%s", (i32)dir.n, dir.p, rel);
-    if (pn <= 0 || (size_t)pn >= sizeof path) return false;
+    if (pn <= 0 || (size_t)pn >= sizeof path) {
+        snprintf(err, err_cap, "session media path is too long");
+        return false;
+    }
 
-    
-    if (access(path, F_OK) == 0) return true;
+    if (access(path, F_OK) == 0)
+        return sess_sync_dir((Str){ sub, (size_t)sn }, err, err_cap);
+    if (errno != ENOENT) {
+        snprintf(err, err_cap, "could not inspect session image: %s",
+                 strerror(errno));
+        return false;
+    }
     char tmp[AGENT_MAX_PATH];
     i32 tn = snprintf(tmp, sizeof tmp, "%s." AGENT_NAME "-tmp", path);
-    if (tn <= 0 || (size_t)tn >= sizeof tmp) return false;
+    if (tn <= 0 || (size_t)tn >= sizeof tmp) {
+        snprintf(err, err_cap, "session media path is too long");
+        return false;
+    }
     FILE *f = fopen(tmp, "wb");
-    if (!f) return false;
+    if (!f) {
+        snprintf(err, err_cap, "could not open session image: %s",
+                 strerror(errno));
+        return false;
+    }
     size_t wr = fwrite(m->bytes[id].p, 1, m->bytes[id].n, f);
     b8 ok = wr == m->bytes[id].n && ferror(f) == 0;
-    if (ok && fflush(f) == 0) fsync(fileno(f));
-    if (fclose(f) != 0) ok = false;
-    if (!ok || rename(tmp, path) != 0) { unlink(tmp); return false; }
+    i32 saved = ok ? 0 : errno;
+    if (ok && fflush(f) != 0) { ok = false; saved = errno; }
+    if (ok && fsync(fileno(f)) != 0) { ok = false; saved = errno; }
+    if (fclose(f) != 0 && ok) { ok = false; saved = errno; }
+    if (!ok) {
+        unlink(tmp);
+        snprintf(err, err_cap, "could not write session image: %s",
+                 strerror(saved ? saved : EIO));
+        return false;
+    }
+    if (rename(tmp, path) != 0) {
+        saved = errno;
+        unlink(tmp);
+        snprintf(err, err_cap, "could not install session image: %s",
+                 strerror(saved));
+        return false;
+    }
+    return sess_sync_dir((Str){ sub, (size_t)sn }, err, err_cap);
+}
+
+
+static b8 sess_write_all(i32 fd, const char *p, size_t n) {
+    for (size_t off = 0; off < n;) {
+        ssize_t wr = write(fd, p + off, n - off);
+        if (wr < 0 && errno == EINTR) continue;
+        if (wr <= 0) { if (!wr) errno = EIO; return false; }
+        off += (size_t)wr;
+    }
     return true;
 }
 
+typedef struct {
+    i32 fd;
+    i32 error;
+    char buf[4096];
+    size_t n;
+} SessOut;
 
-static void sess_put_media(FILE *f, Str dir, const Conv *c, size_t i) {
-    if (!c->media || !c->media_n[i]) return;
-    const MediaSet *m = c->media;
-    fputs(",\"media\":[", f);
-    for (size_t k = 0; k < c->media_n[i]; k++) {
-        size_t id = (size_t)c->media_off[i] + k;
-        if (id >= m->n) break;
-        char rel[64];
-        b8 named = sess_media_name(rel, sizeof rel, m, id)
-                && (!media_live(m, id) || sess_media_write(dir, m, id, rel));
-        if (k) fputc(',', f);
-        fputs("{\"mime\":", f);
-        sess_put_json(f, m->mime[id]);
-        fputs(",\"label\":", f);
-        sess_put_json(f, m->label[id]);
-        if (named) {
-            fputs(",\"file\":", f);
-            sess_put_json(f, str_c(rel));
-        }
-        if (m->w[id] && m->h[id])
-            fprintf(f, ",\"w\":%u,\"h\":%u", m->w[id], m->h[id]);
-        fputc('}', f);
+static b8 sess_out_flush(SessOut *o) {
+    if (o->error) return false;
+    if (o->n && !sess_write_all(o->fd, o->buf, o->n)) {
+        o->error = errno ? errno : EIO;
+        return false;
     }
-    fputs("]", f);
+    o->n = 0;
+    return true;
 }
 
+static void sess_out_put(SessOut *o, const void *src, size_t n) {
+    const char *p = src;
+    while (n && !o->error) {
+        size_t avail = sizeof o->buf - o->n;
+        if (!avail) {
+            if (!sess_out_flush(o)) return;
+            avail = sizeof o->buf;
+        }
+        size_t take = n < avail ? n : avail;
+        memcpy(o->buf + o->n, p, take);
+        o->n += take;
+        p += take;
+        n -= take;
+    }
+}
 
-static void sess_close_line(FILE *f) {
-    struct stat st;
-    i32 fd = fileno(f);
-    char last = '\n';
-    if (fd < 0 || fstat(fd, &st) != 0 || st.st_size <= 0) return;
-    if (pread(fd, &last, 1, st.st_size - 1) != 1 || last == '\n') return;
-    fputc('\n', f);
+static void sess_out_putc(SessOut *o, char c) {
+    sess_out_put(o, &c, 1);
+}
+
+static void sess_out_puts(SessOut *o, Str s) {
+    sess_out_put(o, s.p, s.n);
+}
+
+static void sess_out_putf(SessOut *o, const char *fmt, ...) {
+    char tmp[96];
+    va_list ap;
+    va_start(ap, fmt);
+    i32 n = vsnprintf(tmp, sizeof tmp, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= sizeof tmp) {
+        o->error = EOVERFLOW;
+        return;
+    }
+    sess_out_put(o, tmp, (size_t)n);
+}
+
+static void sess_out_json(SessOut *o, Str s) {
+    sess_out_putc(o, '"');
+    size_t start = 0;
+    for (size_t i = 0; i < s.n; i++) {
+        const char *escaped = NULL;
+        size_t escaped_n = 0;
+        char control[7];
+        switch (s.p[i]) {
+            case '"':  escaped = "\\\""; escaped_n = 2; break;
+            case '\\': escaped = "\\\\"; escaped_n = 2; break;
+            case '\b': escaped = "\\b";  escaped_n = 2; break;
+            case '\f': escaped = "\\f";  escaped_n = 2; break;
+            case '\n': escaped = "\\n";  escaped_n = 2; break;
+            case '\r': escaped = "\\r";  escaped_n = 2; break;
+            case '\t': escaped = "\\t";  escaped_n = 2; break;
+            default:
+                if ((u8)s.p[i] < 0x20) {
+                    i32 n = snprintf(control, sizeof control, "\\u%04x",
+                                     (u8)s.p[i]);
+                    if (n != 6) { o->error = EILSEQ; return; }
+                    escaped = control;
+                    escaped_n = 6;
+                }
+                break;
+        }
+        if (!escaped) continue;
+        sess_out_put(o, s.p + start, i - start);
+        sess_out_put(o, escaped, escaped_n);
+        start = i + 1;
+    }
+    if (start < s.n) sess_out_put(o, s.p + start, s.n - start);
+    sess_out_putc(o, '"');
+}
+
+static b8 sess_put_media(SessOut *o, Str dir, const Conv *c, size_t i,
+                         char *err, size_t err_cap) {
+    if (!c->media || !c->media_n[i]) return true;
+    const MediaSet *m = c->media;
+    sess_out_puts(o, STR(",\"media\":["));
+    for (size_t k = 0; k < c->media_n[i]; k++) {
+        size_t id = (size_t)c->media_off[i] + k;
+        if (id >= m->n) {
+            snprintf(err, err_cap, "session image index is invalid");
+            return false;
+        }
+        char rel[64];
+        b8 named = sess_media_name(rel, sizeof rel, m, id)
+                && (!media_live(m, id)
+                    || sess_media_write(dir, m, id, rel, err, err_cap));
+        if (!named) {
+            if (!err[0])
+                snprintf(err, err_cap, "could not construct session media path");
+            return false;
+        }
+        if (k) sess_out_putc(o, ',');
+        sess_out_puts(o, STR("{\"mime\":"));
+        sess_out_json(o, m->mime[id]);
+        sess_out_puts(o, STR(",\"label\":"));
+        sess_out_json(o, m->label[id]);
+        sess_out_puts(o, STR(",\"file\":"));
+        sess_out_json(o, str_c(rel));
+        if (m->w[id] && m->h[id])
+            sess_out_putf(o, ",\"w\":%u,\"h\":%u", m->w[id], m->h[id]);
+        sess_out_putc(o, '}');
+    }
+    sess_out_putc(o, ']');
+    return true;
 }
 
 /* Append the messages produced since the last save. The system prompt is
  * left out: it comes from the configuration, which may well have changed by
  * the time the session is resumed. */
-void session_save(Session *s, const Conv *c) {
-    if (!s->path.n || s->written >= c->n) return;
+b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
+    if (err_cap) err[0] = '\0';
+    if (s->save_blocked) {
+        snprintf(err, err_cap, "a previous failed append could not be rolled back");
+        return false;
+    }
+    if (s->sync_dir) {
+        if (!sess_sync_dir(s->dir, err, err_cap)) return false;
+        s->sync_dir = false;
+    }
+    if (s->written >= c->n) return true;
+    b8 pending = false;
+    for (size_t i = s->written; i < c->n; i++)
+        if (c->role[i] != M_SYSTEM) { pending = true; break; }
+    if (!pending) { s->written = c->n; return true; }
+    if (!s->path.n) {
+        snprintf(err, err_cap, "session storage is unavailable");
+        return false;
+    }
     telemetry_bind(s->path);
     Str dir = s->dir;
-    if (dir.n) paths_ensure_dir(dir);
-    b8 created = access(s->path.p, F_OK) != 0;
-    
-    FILE *f = fopen(s->path.p, "a+b");
-    if (!f) return;
-    sess_close_line(f);
-    for (size_t i = s->written; i < c->n; i++) {
+    if (!dir.n || !paths_ensure_dir(dir)) {
+        snprintf(err, err_cap, "could not create session directory");
+        return false;
+    }
+
+    b8 created = false;
+    i32 fd = open(s->path.p, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (fd >= 0) created = true;
+    else if (errno == EEXIST) fd = open(s->path.p, O_RDWR);
+    if (fd < 0) {
+        snprintf(err, err_cap, "could not open session file: %s",
+                 strerror(errno));
+        return false;
+    }
+    off_t old_end = lseek(fd, 0, SEEK_END);
+    if (old_end < 0) {
+        i32 saved = errno;
+        close(fd);
+        if (created) unlink(s->path.p);
+        snprintf(err, err_cap, "could not inspect session file: %s",
+                 strerror(saved));
+        return false;
+    }
+    char last = '\n';
+    if (old_end > 0 && pread(fd, &last, 1, old_end - 1) != 1) {
+        i32 saved = errno;
+        close(fd);
+        snprintf(err, err_cap, "could not inspect session file: %s",
+                 strerror(saved ? saved : EIO));
+        return false;
+    }
+    b8 newline = old_end > 0 && last != '\n';
+    SessOut out = { .fd = fd };
+    if (newline) sess_out_putc(&out, '\n');
+    b8 serialized = true;
+    for (size_t i = s->written; i < c->n && serialized; i++) {
         if (c->role[i] == M_SYSTEM) continue;
         const char *role = c->role[i] == M_USER ? "user"
                          : c->role[i] == M_TOOL ? "tool" : "assistant";
-        fprintf(f, "{\"role\":\"%s\"", role);
+        sess_out_putf(&out, "{\"role\":\"%s\"", role);
         if (c->tool_call_id[i].n) {
-            fputs(",\"id\":", f);
-            sess_put_json(f, c->tool_call_id[i]);
+            sess_out_puts(&out, STR(",\"id\":"));
+            sess_out_json(&out, c->tool_call_id[i]);
         }
         if (c->tool_name[i].n) {
-            fputs(",\"name\":", f);
-            sess_put_json(f, c->tool_name[i]);
+            sess_out_puts(&out, STR(",\"name\":"));
+            sess_out_json(&out, c->tool_name[i]);
         }
-        if (c->role[i] == M_ASSISTANT && c->has_tool_call[i] && !c->tool_name[i].n)
-            fputs(",\"calls\":true", f);
+        if (c->role[i] == M_ASSISTANT && c->has_tool_call[i]
+            && !c->tool_name[i].n)
+            sess_out_puts(&out, STR(",\"calls\":true"));
         if (c->anthropic_thinking[i].n) {
-            fputs(",\"anthropic_thinking\":", f);
-            fwrite(c->anthropic_thinking[i].p, 1,
-                   c->anthropic_thinking[i].n, f);
+            sess_out_puts(&out, STR(",\"anthropic_thinking\":"));
+            sess_out_puts(&out, c->anthropic_thinking[i]);
         }
         if (c->shell_out[i].n) {
-            fputs(",\"output\":", f);
-            sess_put_json(f, c->shell_out[i]);
+            sess_out_puts(&out, STR(",\"output\":"));
+            sess_out_json(&out, c->shell_out[i]);
         }
-        sess_put_media(f, dir, c, i);
-        
-        if (c->ms[i]) fprintf(f, ",\"ms\":%u", c->ms[i]);
-        fputs(",\"content\":", f);
-        sess_put_json(f, c->text[i]);
-        fputs("}\n", f);
+        serialized = sess_put_media(&out, dir, c, i, err, err_cap);
+        if (!serialized) break;
+        if (c->ms[i]) sess_out_putf(&out, ",\"ms\":%u", c->ms[i]);
+        sess_out_puts(&out, STR(",\"content\":"));
+        sess_out_json(&out, c->text[i]);
+        sess_out_puts(&out, STR("}\n"));
     }
-    /* A session is written to survive the machine losing power mid-turn, so
-     * the lines reach the disk before the call returns rather than sitting in
-     * the page cache behind whatever the next tool does. */
-    if (fflush(f) == 0) fsync(fileno(f));
-    fclose(f);
-    if (created && dir.n) sess_sync_dir(dir);
+    b8 ok = serialized && sess_out_flush(&out) && fsync(fd) == 0;
+    i32 saved = out.error ? out.error : ok ? 0 : errno;
+    if (!ok) {
+        b8 restored = ftruncate(fd, old_end) == 0 && fsync(fd) == 0;
+        if (close(fd) != 0) restored = false;
+        if (created && restored) unlink(s->path.p);
+        if (!restored) s->save_blocked = true;
+        if (!err[0])
+            snprintf(err, err_cap, "could not write session file: %s",
+                     strerror(saved ? saved : EIO));
+        if (!restored) {
+            size_t used = strlen(err);
+            if (used < err_cap)
+                snprintf(err + used, err_cap - used,
+                         "; refusing further appends");
+        }
+        return false;
+    }
+    if (close(fd) != 0) {
+        saved = errno;
+        s->written = c->n;
+        if (created) s->sync_dir = true;
+        snprintf(err, err_cap, "could not close session file: %s",
+                 strerror(saved));
+        return false;
+    }
     s->written = c->n;
+    if (created) {
+        s->sync_dir = true;
+        if (!sess_sync_dir(dir, err, err_cap)) {
+            return false;
+        }
+        s->sync_dir = false;
+    }
+    return true;
 }
 
 
-b8 session_fork(Session *s, const Conv *c) {
-    
-    char title[AGENT_MAX_TITLE + 1];
-    size_t title_n = s->title.n < sizeof title ? s->title.n : 0;
-    if (title_n) memcpy(title, s->title.p, title_n);
-    if (!session_begin(s)) return false;
-    session_save(s, c);
-    b8 ok = s->written >= c->n;
-    if (title_n) session_set_title(s, (Str){ title, title_n });
-    return ok;
+static void sess_rebind(Session *s) {
+    if (s->dir.n) s->dir.p = s->dir_buf;
+    if (s->path.n) s->path.p = s->path_buf;
+    if (s->name.n) s->name.p = s->name_buf;
+    if (s->title.n) s->title.p = s->title_buf;
+}
+
+b8 session_fork(Session *s, const Conv *c, char *err, size_t err_cap) {
+    Session old = *s;
+    if (!session_begin(s)) {
+        snprintf(err, err_cap, "could not reserve a session path");
+        *s = old;
+        sess_rebind(s);
+        return false;
+    }
+    if (!session_save(s, c, err, err_cap)) {
+        *s = old;
+        sess_rebind(s);
+        return false;
+    }
+    if (old.title.n) session_set_title(s, (Str){ old.title_buf, old.title.n });
+    return true;
 }
 
 static b8 export_put(FILE *f, Str s) {
@@ -851,8 +1071,8 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
     s->written = c->n;
     /* The repair belongs to the file as much as to this conversation: saving
      * it now means the next resume of the same file finds it already whole,
-     * rather than appending a new turn behind calls nothing answers. */
+     * rather than appending a new turn behind calls nothing answers. The
+     * caller performs that save so it can report a persistence failure. */
     if (!sess_answer_pending(c)) ok = false;
-    session_save(s, c);
     return ok;
 }

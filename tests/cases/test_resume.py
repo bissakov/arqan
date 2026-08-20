@@ -521,6 +521,32 @@ def test_a_fork_keeps_the_conversation_it_copied(ctx):
     assert messages[3]["content"] == "second question"
 
 
+def test_a_failed_fork_keeps_appending_to_the_original(ctx):
+    """A fork is not selected until its first checkpoint is durable."""
+    ctx.scenario("text=first+reply")
+    s = ctx.spawn()
+    s.submit("first prompt")
+    s.wait_turn_done()
+
+    d = sessions_dir(ctx)
+    original = sorted(d.glob("*.jsonl"))[0]
+    mode = d.stat().st_mode
+    d.chmod(0o555)
+    try:
+        s.submit("/fork")
+        s.wait_text("could not start a forked session")
+    finally:
+        d.chmod(mode)
+
+    ctx.scenario("text=second+reply")
+    s.submit("second prompt")
+    s.wait_turn_done()
+
+    assert sorted(d.glob("*.jsonl")) == [original]
+    contents = original.read_text()
+    assert "first prompt" in contents and "second prompt" in contents
+
+
 def test_a_fork_can_be_rewound_without_touching_the_original(ctx):
     """Going back in the copy leaves the session it was forked from whole."""
     ctx.scenario("text=first+reply")

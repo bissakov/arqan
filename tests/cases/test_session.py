@@ -1,6 +1,36 @@
 """Session-level behaviour: slash commands, exit paths and terminal restore."""
 
+import json
 import signal
+
+
+def test_a_failed_session_save_is_reported_and_retried(ctx):
+    """A transient data-directory failure leaves every message pending."""
+    blocked = ctx.home / "blocked-data"
+    blocked.write_text("not a directory\n")
+
+    ctx.scenario("text=first+reply")
+    s = ctx.spawn(XDG_DATA_HOME=str(blocked))
+    s.submit("first prompt")
+    s.wait_text("session was not saved")
+    s.wait_turn_done()
+
+    blocked.unlink()
+    blocked.mkdir()
+    ctx.scenario("text=second+reply")
+    s.submit("second prompt")
+    s.wait_text("session saving recovered")
+    s.wait_turn_done()
+
+    files = sorted(blocked.rglob("*.jsonl"))
+    assert len(files) == 1, files
+    lines = [json.loads(line) for line in files[0].read_text().splitlines()]
+    assert [(line["role"], line["content"]) for line in lines] == [
+        ("user", "first prompt"),
+        ("assistant", "first reply"),
+        ("user", "second prompt"),
+        ("assistant", "second reply"),
+    ], lines
 
 
 def test_exit_command_quits_cleanly(ctx):

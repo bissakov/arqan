@@ -1331,6 +1331,11 @@ typedef struct {
     Str    title;
     
     b8     title_tried;
+    /* A failed append is retried while its old end was restored. If restoring
+     * that boundary failed, later writes stop rather than risk duplicating or
+     * appending behind a partial JSON record. */
+    b8     save_blocked;
+    b8     sync_dir;
     size_t written;
 } Session;
 
@@ -1345,10 +1350,15 @@ typedef struct {
 b8     session_init(Session *s, Arena *scratch);
 b8     session_begin(Session *s);
 /* Append the messages produced since the last call; the file is created on
- * the first one, so an untouched session never reaches the picker. */
-void   session_save(Session *s, const Conv *c);
+ * the first one, so an untouched session never reaches the picker. False
+ * fills `err`; uncommitted messages remain pending, while bytes confirmed by
+ * fsync are never repeated. A later call retries unless restoring a failed
+ * append's old boundary was itself unsafe. */
+b8     session_save(Session *s, const Conv *c, char *err, size_t err_cap);
 
-b8     session_fork(Session *s, const Conv *c);
+/* Start a copy only after its conversation is durable. False leaves `s`
+ * naming the original session and fills `err`. */
+b8     session_fork(Session *s, const Conv *c, char *err, size_t err_cap);
 
 b8     session_export_markdown(const Conv *c, Str requested,
                                char *path, size_t path_cap,
