@@ -79,6 +79,7 @@ typedef bool     b8;
  * call names every edit that needs fixing; past this many the count stands in
  * for the rest. `AGENT_TOOL_ERR` bounds the whole report. */
 #define AGENT_MAX_PATCH_NOTES  4
+#define AGENT_PATCH_CONTEXT_LINES 5
 #define AGENT_TOOL_ERR         1024
 
 #define AGENT_SPILL_BYTES      (16u << 20)

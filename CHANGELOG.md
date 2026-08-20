@@ -34,6 +34,11 @@
 
 - Improve tool errors for failed patches, invalid JSON, limits and file access.
 
+- Accept common patch envelopes, return current context after failed hunks and
+  keep patch diagnostics valid UTF-8.
+
+- Make the advertised shell output limit match the accepted limit.
+
 - Retry syntax highlighting after a slow response instead of disabling it.
 
 - Exclude omitted older tool output from the context usage estimate.

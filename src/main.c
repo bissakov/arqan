@@ -569,6 +569,44 @@ static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
     return TURN_HANDOFF;
 }
 
+static b8 tool_result_has(Str result, Str needle) {
+    if (!needle.n || needle.n > result.n) return false;
+    for (size_t i = 0; i + needle.n <= result.n; i++)
+        if (!memcmp(result.p + i, needle.p, needle.n)) return true;
+    return false;
+}
+
+static const char *tool_outcome(Str name, Str result, b8 ran) {
+    if (str_eq(name, STR("bash"))) {
+        Str marker = STR("\n[exit ");
+        for (size_t i = result.n; i >= marker.n; i--) {
+            size_t at = i - marker.n;
+            if (!memcmp(result.p + at, marker.p, marker.n)) {
+                size_t digit = at + marker.n;
+                return digit < result.n && result.p[digit] == '0'
+                     ? "success" : "command_nonzero";
+            }
+            if (!at) break;
+        }
+    }
+    if (!str_starts(result, STR("ERROR:"))) return "success";
+    if (tool_result_has(result, STR("must be a whole number")) ||
+        tool_result_has(result, STR("missing ")))
+        return "invalid_arguments";
+    if (str_eq(name, STR("patch")) &&
+        (tool_result_has(result, STR("context not found")) ||
+         tool_result_has(result, STR("context matches"))))
+        return "placement_failure";
+    if (str_eq(name, STR("patch")) &&
+        (tool_result_has(result, STR("apply_patch")) ||
+         tool_result_has(result, STR("file header"))))
+        return "unsupported_input";
+    if (tool_result_has(result, STR("does not exist")) ||
+        tool_result_has(result, STR("ERROR: open ")))
+        return "missing_path";
+    return ran ? "operation_failure" : "invocation_failure";
+}
+
 /* Run the carrier slots in [first, last) and append each result. The agent UI
  * tools wait for the user rather than doing work, so they are answered here
  * instead of through tools_run, which cannot reach the screen. */
@@ -666,6 +704,8 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         TelEvent e;
         tel_open(&e, "tool");
         tel_str(&e, "name", name);
+        const char *outcome = tool_outcome(name, result, ok);
+        tel_str(&e, "outcome", (Str){ outcome, strlen(outcome) });
         tel_bool(&e, "known", tool != TOOL_NONE);
         tel_int(&e, "args_bytes", (i64)args.n);
         tel_arg_keys(&e, "args", args, ag->scratch);

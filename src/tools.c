@@ -996,12 +996,24 @@ static b8 same_but_space(Str a, Str b) {
 static void quote_line(char *dst, size_t cap, Str s) {
     size_t w = 0;
     if (cap < 8) { if (cap) dst[0] = 0; return; }
-    for (size_t i = 0; i < s.n && w + 4 < cap; i++) {
-        char c = s.p[i];
+    for (size_t i = 0; i < s.n && w + 4 < cap;) {
+        unsigned char c = (unsigned char)s.p[i];
         if (c == '\t') { dst[w++] = '\\'; dst[w++] = 't'; }
-        else if ((unsigned char)c < 0x20) { dst[w++] = '?'; }
-        else dst[w++] = c;
-        if (i + 1 < s.n && w + 4 >= cap) {
+        else if (c < 0x20) { dst[w++] = '?'; }
+        else {
+            u32 cp;
+            size_t seq = utf8_decode(s.p + i, s.n - i, &cp);
+            if (!seq || w + seq + 4 >= cap) {
+                dst[w++] = '.', dst[w++] = '.', dst[w++] = '.';
+                break;
+            }
+            memcpy(dst + w, s.p + i, seq);
+            w += seq;
+            i += seq;
+            continue;
+        }
+        i++;
+        if (i < s.n && w + 4 >= cap) {
             dst[w++] = '.', dst[w++] = '.', dst[w++] = '.';
             break;
         }
@@ -1142,6 +1154,45 @@ static void patch_bad_hunk(Patch *p, const char *fmt, ...) {
     size_t w = (size_t)n;
     p->err_n += w < p->err_cap - p->err_n ? w : p->err_cap - p->err_n - 1;
     p->noted++;
+}
+
+/* Append a bounded slice around `off` so the next hunk can use current text. */
+static void patch_current(Patch *p, const char *path, Str body, size_t off) {
+    if (p->err_n + 2 >= p->err_cap) return;
+
+    size_t line = line_of(body, off);
+    size_t first = line > AGENT_PATCH_CONTEXT_LINES / 2
+                 ? line - AGENT_PATCH_CONTEXT_LINES / 2 : 1;
+    size_t last = first + AGENT_PATCH_CONTEXT_LINES - 1;
+    size_t pos = 0, at = 1;
+    Str text;
+    while (at < first && str_line(body, &pos, &text)) at++;
+
+    if (p->err_n) p->err[p->err_n++] = '\n';
+    int n = snprintf(p->err + p->err_n, p->err_cap - p->err_n,
+                     "%s current lines %zu-%zu:", path, first, last);
+    if (n < 0) return;
+    size_t room = p->err_cap - p->err_n;
+    p->err_n += (size_t)n < room ? (size_t)n : room - 1;
+
+    for (; at <= last && str_line(body, &pos, &text); at++) {
+        char quoted[160];
+        quote_line(quoted, sizeof quoted, text);
+        if (p->err_n + 2 >= p->err_cap) break;
+        n = snprintf(p->err + p->err_n, p->err_cap - p->err_n,
+                     "\n%zu: %s", at, quoted);
+        if (n < 0) break;
+        room = p->err_cap - p->err_n;
+        p->err_n += (size_t)n < room ? (size_t)n : room - 1;
+    }
+    if (p->err_n + 2 >= p->err_cap) return;
+    n = snprintf(p->err + p->err_n, p->err_cap - p->err_n,
+                 "\nBuild a new hunk from this exact current text; do not "
+                 "retry the failed hunk unchanged");
+    if (n > 0) {
+        room = p->err_cap - p->err_n;
+        p->err_n += (size_t)n < room ? (size_t)n : room - 1;
+    }
 }
 
 /* The header pair a file's hunks follow. A patch that names one file twice is
@@ -1290,11 +1341,13 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str text, size_t *off) {
                            "(lines %s%s); widen it with a nearby unique line",
                            f->path, f->hunk_n, count, at_lines,
                            count > shown ? ", ..." : "");
+            patch_current(p, f->path, body, hits[0]);
         } else {
             char note[192];
             patch_diverge(body, oldt, note, sizeof note);
             patch_bad_hunk(p, "%s hunk %zu: context not found%s", f->path,
                            f->hunk_n, note);
+            patch_current(p, f->path, body, body.n);
         }
         return true;
     }
@@ -1326,13 +1379,72 @@ static b8 patch_envelope(Str text) {
     return false;
 }
 
-/* No usable file header: name the envelope when that is what arrived, so the
- * next call carries a diff instead of the same text again. */
-static b8 patch_no_header(Patch *p, Str text, const char *plain) {
-    if (patch_envelope(text))
-        return patch_fail(p, "this is an apply_patch envelope, not a unified "
-                          "diff; resend it as '--- path', '+++ path', then "
-                          "'@@' hunks whose lines start with ' ', '-' or '+'");
+/* Normalize the common apply_patch envelope to the unified diff consumed by
+ * patch_parse. The returned text lives in scratch. */
+static b8 patch_normalize(Str text, Arena *scratch, Str *out,
+                          char *err, size_t err_cap) {
+    if (!patch_envelope(text)) { *out = text; return true; }
+
+    Buf b;
+    buf_init(&b, scratch, text.n);
+    size_t off = 0;
+    Str line;
+    b8 begun = false, ended = false, open = false;
+    while (str_line(text, &off, &line)) {
+        if (!begun) {
+            if (str_eq(line, STR("*** Begin Patch"))) { begun = true; continue; }
+            if (!line.n) continue;
+            snprintf(err, err_cap, "text before *** Begin Patch is not allowed");
+            return false;
+        }
+        if (str_eq(line, STR("*** End Patch"))) { ended = true; break; }
+        if (str_starts(line, STR("*** Update File: "))) {
+            Str path = str_drop(line, sizeof("*** Update File: ") - 1);
+            buf_puts(&b, STR("--- ")); buf_puts(&b, path); buf_putc(&b, '\n');
+            buf_puts(&b, STR("+++ ")); buf_puts(&b, path); buf_putc(&b, '\n');
+            open = true;
+        } else if (str_starts(line, STR("*** Add File: "))) {
+            Str path = str_drop(line, sizeof("*** Add File: ") - 1);
+            buf_puts(&b, STR("--- /dev/null\n+++ ")); buf_puts(&b, path);
+            buf_puts(&b, STR("\n@@\n"));
+            open = true;
+        } else if (str_starts(line, STR("*** Delete File: "))) {
+            Str path = str_drop(line, sizeof("*** Delete File: ") - 1);
+            buf_puts(&b, STR("--- ")); buf_puts(&b, path);
+            buf_puts(&b, STR("\n+++ /dev/null\n@@\n"));
+            open = true;
+        } else if (str_starts(line, STR("*** Move to: "))) {
+            snprintf(err, err_cap, "apply_patch Move to is not supported; "
+                     "use delete and create file headers");
+            return false;
+        } else if (str_eq(line, STR("*** End of File"))) {
+            continue;
+        } else if (str_starts(line, STR("*** "))) {
+            snprintf(err, err_cap, "unsupported apply_patch directive: %.*s",
+                     (int)line.n, line.p);
+            return false;
+        } else {
+            if (!open) {
+                snprintf(err, err_cap, "apply_patch content has no file header");
+                return false;
+            }
+            buf_puts(&b, line);
+            buf_putc(&b, '\n');
+        }
+    }
+    if (!begun || !ended) {
+        snprintf(err, err_cap, "incomplete apply_patch envelope");
+        return false;
+    }
+    if (!buf_ok(&b)) {
+        snprintf(err, err_cap, "patch does not fit in memory");
+        return false;
+    }
+    *out = buf_finish(&b);
+    return true;
+}
+
+static b8 patch_no_header(Patch *p, const char *plain) {
     return patch_fail(p, "%s", plain);
 }
 
@@ -1352,14 +1464,13 @@ static b8 patch_parse(Patch *p, Str text) {
             if (!f) return false;
         } else if (str_starts(line, STR("@@"))) {
             if (!f)
-                return patch_no_header(p, text,
-                                       "a hunk before any --- / +++ header");
+                return patch_no_header(p, "a hunk before any --- / +++ header");
             if (!patch_hunk(p, f, text, &off)) return false;
         }
         
     }
     if (!p->n)
-        return patch_no_header(p, text, "no --- / +++ file header in the patch");
+        return patch_no_header(p, "no --- / +++ file header in the patch");
     return true;
 }
 
@@ -1392,6 +1503,7 @@ static b8 tool_patch(Str args, Arena *scratch, Buf *out, char *err, size_t err_c
     if (!j) return false;
     Str text = json_str(j, STR("patch"));
     if (!text.n) { snprintf(err, err_cap, "missing patch"); return false; }
+    if (!patch_normalize(text, scratch, &text, err, err_cap)) return false;
 
     Patch p = { .file = NULL, .n = 0, .hunks = 0, .scratch = scratch,
                 .err = err, .err_cap = err_cap, .err_n = 0, .bad = 0,
@@ -1873,12 +1985,12 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms) {
         "\"offset\":{\"type\":\"integer\",\"minimum\":1,"
           "\"description\":\"first output byte, 1-based\"},"
         "\"limit\":{\"type\":\"integer\",\"minimum\":1,"
-          "\"maximum\":8192,\"description\":\"at most 8KB\"},"
+          "\"maximum\":%u,\"description\":\"at most %u bytes\"},"
         "\"timeout_ms\":{\"type\":\"integer\",\"minimum\":1,"
           "\"maximum\":%d,\"description\":\"turn deadline in milliseconds; "
           "at most %d\"}},"
-        "\"required\":[\"command\"]}", shell_timeout_ms,
-        shell_timeout_ms);
+        "\"required\":[\"command\"]}", AGENT_SHELL_OUT_BYTES,
+        AGENT_SHELL_OUT_BYTES, shell_timeout_ms, shell_timeout_ms);
     if (schema_n < 0 || (size_t)schema_n >= 768) { r->name = NULL; return; }
 
     ADD("read", "Read a page of a text file: up to 2000 lines or 8KB, "
@@ -1971,11 +2083,11 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms) {
         "for it, at most 240000; default 120000\"}},"
         "\"required\":[]}",
         tool_job);
-    ADD("patch", "Change files with a unified diff: hunks are located by "
-        "their context lines, not by @@ numbers, and every file applies or "
-        "none does. --- /dev/null creates a file, +++ /dev/null deletes one. "
-        "The harness may pause for approval; do not ask in prose or retry a "
-        "denial blindly.",
+    ADD("patch", "Change files atomically with unified diff or a *** Begin "
+        "Patch envelope. Hunks use context, not @@ numbers. After failure, "
+        "rebuild from returned current text. --- /dev/null creates a file; "
+        "+++ /dev/null deletes one. The harness may pause for approval; do "
+        "not ask in prose or retry a denial blindly.",
         "Change files with a diff", TOOL_IN_BUILD, TOOL_APPROVAL_PATCH,
         "{\"type\":\"object\",\"properties\":{\"patch\":{\"type\":\"string\","
         "\"description\":\"unified diff over one or more files\"}},"

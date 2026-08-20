@@ -201,22 +201,63 @@ def test_patch_ambiguous_context_names_matching_lines(ctx):
     assert (ctx.work / "edit.txt").read_text() == "repeat\nother\nrepeat\n"
 
 
-def test_patch_explains_apply_patch_envelope(ctx):
+def test_patch_accepts_apply_patch_envelope(ctx):
     ctx.write_file("edit.txt", "old\n")
+    ctx.write_file("delete.txt", "gone\n")
     diff = (
         "*** Begin Patch\n*** Update File: edit.txt\n@@\n-old\n+new\n"
+        "*** Add File: added.txt\n+added\n"
+        "*** Delete File: delete.txt\n-gone\n"
         "*** End Patch"
     )
-    ctx.scenario(patch_call(diff, final_text="wrong format"))
+    ctx.scenario(patch_call(diff, final_text="done"))
     s = ctx.spawn()
     s.submit("apply it")
-    s.wait_text("wrong format")
+    s.wait_text("done")
     s.wait_turn_done()
 
     result = ctx.mock.tool_results()[-1]
-    assert "apply_patch envelope, not a unified diff" in result, result
-    assert "'--- path', '+++ path', then '@@'" in result, result
-    assert (ctx.work / "edit.txt").read_text() == "old\n"
+    assert "edit.txt +1 -1" in result, result
+    assert "added.txt created +1 -0" in result, result
+    assert "delete.txt deleted" in result, result
+    assert (ctx.work / "edit.txt").read_text() == "new\n"
+    assert (ctx.work / "added.txt").read_text() == "added\n"
+    assert not (ctx.work / "delete.txt").exists()
+
+
+def test_patch_error_returns_utf8_current_context(ctx):
+    ctx.write_file(
+        "note.txt",
+        "первая строка\nтекущий длинный текст для проверки\nтретья строка\n",
+    )
+    diff = (
+        "--- note.txt\n+++ note.txt\n@@\n"
+        "-старый длинный текст для проверки\n+новый текст\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("apply it")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    result.encode("utf-8")
+    assert "current lines" in result, result
+    assert "текущий длинный текст" in result, result
+    assert "do not retry the failed hunk unchanged" in result, result
+
+
+def test_bash_schema_limit_matches_runtime(ctx):
+    ctx.scenario("final_text=done")
+    s = ctx.spawn()
+    s.submit("hello")
+    s.wait_turn_done()
+
+    request = ctx.mock.requests[0]
+    bash = next(tool for tool in request["tools"]
+                if tool["function"]["name"] == "bash")
+    limit = bash["function"]["parameters"]["properties"]["limit"]
+    assert limit["maximum"] == 7680, limit
 
 
 def test_bad_tool_json_reports_the_byte_and_input(ctx):
