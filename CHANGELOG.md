@@ -25,6 +25,8 @@
 
 ### Changed
 
+- Store session titles in the first JSONL record instead of separate files.
+
 - Make `read` identify binary files instead of returning invalid text. Image
   results include the type, size and dimensions.
 

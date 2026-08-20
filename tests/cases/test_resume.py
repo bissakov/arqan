@@ -36,8 +36,9 @@ def test_a_turn_is_saved_under_the_data_dir(ctx):
     files = sorted(d.iterdir())
     assert len(files) == 1 and files[0].name.endswith(".jsonl"), files
     lines = files[0].read_text().splitlines()
-    assert '"role":"user"' in lines[0] and "remember this turn" in lines[0]
-    assert '"role":"assistant"' in lines[1] and "sure thing" in lines[1]
+    assert json.loads(lines[0]) == {"type": "session", "title": ""}
+    assert '"role":"user"' in lines[1] and "remember this turn" in lines[1]
+    assert '"role":"assistant"' in lines[2] and "sure thing" in lines[2]
 
 
 def test_a_turn_is_saved_round_by_round(ctx):
@@ -59,11 +60,12 @@ def test_a_turn_is_saved_round_by_round(ctx):
     files = sorted(sessions_dir(ctx).iterdir())
     assert len(files) == 1, files
     lines = [json.loads(l) for l in files[0].read_text().splitlines()]
-    assert [l["role"] for l in lines] == [
+    assert lines[0] == {"type": "session", "title": ""}, lines[0]
+    assert [l["role"] for l in lines[1:]] == [
         "user", "assistant", "assistant", "tool"
-    ], lines
-    assert lines[2]["name"] == "read", lines[2]
-    assert "kept bytes" in lines[3]["content"], lines[3]
+    ], lines[1:]
+    assert lines[3]["name"] == "read", lines[3]
+    assert "kept bytes" in lines[4]["content"], lines[4]
 
     ctx.mock.release()
     s.wait_turn_done()

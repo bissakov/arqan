@@ -25,7 +25,8 @@ def test_a_failed_session_save_is_reported_and_retried(ctx):
     files = sorted(blocked.rglob("*.jsonl"))
     assert len(files) == 1, files
     lines = [json.loads(line) for line in files[0].read_text().splitlines()]
-    assert [(line["role"], line["content"]) for line in lines] == [
+    assert lines[0] == {"type": "session", "title": ""}, lines[0]
+    assert [(line["role"], line["content"]) for line in lines[1:]] == [
         ("user", "first prompt"),
         ("assistant", "first reply"),
         ("user", "second prompt"),

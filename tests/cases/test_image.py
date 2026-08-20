@@ -287,7 +287,9 @@ def test_an_image_is_saved_beside_the_session(ctx):
     s.wait_exit()
 
     d = sessions_dir(ctx)
-    line = json.loads(sorted(d.glob("*.jsonl"))[0].read_text().splitlines()[0])
+    records = sorted(d.glob("*.jsonl"))[0].read_text().splitlines()
+    assert json.loads(records[0]) == {"type": "session", "title": ""}
+    line = json.loads(records[1])
     assert line["content"] == "[Image #1] look", line
     assert len(line["media"]) == 1, line
     entry = line["media"][0]

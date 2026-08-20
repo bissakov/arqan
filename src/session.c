@@ -140,42 +140,100 @@ static size_t sess_title_clean(char *out, size_t cap, Str src) {
 }
 
 
-static size_t sess_title_path(char *out, size_t cap, Str session_path) {
-    Str suffix = AGENT_TITLE_SUFFIX;
-    if (session_path.n <= 6
-        || memcmp(session_path.p + session_path.n - 6, ".jsonl", 6) != 0)
-        return 0;
-    size_t stem = session_path.n - 6;
-    if (stem + suffix.n + 1 > cap) return 0;
-    memcpy(out, session_path.p, stem);
-    memcpy(out + stem, suffix.p, suffix.n);
-    out[stem + suffix.n] = '\0';
-    return stem + suffix.n;
-}
-
-Str session_title_read(Str session_path, Arena *a) {
-    char path[AGENT_MAX_PATH];
-    if (!sess_title_path(path, sizeof path, session_path)) return (Str){0};
+static Str sess_title_read(Str session_path, Arena *a) {
     size_t mark = a->off;
     Str src = {0};
-    file_read(a, path, AGENT_MAX_TITLE * 8, 0, &src, NULL);
+    file_read(a, session_path.p, AGENT_MAX_SESSION_BYTES, 512, &src, NULL);
+    size_t end = 0;
+    while (end < src.n && src.p[end] != '\n') end++;
+    JVal *v = json_parse(a, (Str){ src.p, end });
+    if (!str_eq(json_str(v, STR("type")), STR("session"))) {
+        a->off = mark;
+        return (Str){0};
+    }
     char buf[AGENT_MAX_TITLE + 1];
-    size_t n = sess_title_clean(buf, sizeof buf, src);
+    size_t n = sess_title_clean(buf, sizeof buf, json_str(v, STR("title")));
     a->off = mark;
     return n ? str_dup(a, (Str){ buf, n }) : (Str){0};
 }
 
+static b8 sess_file_json(FILE *f, Str s) {
+    if (fputc('"', f) == EOF) return false;
+    for (size_t i = 0; i < s.n; i++) {
+        const char *escaped = NULL;
+        switch (s.p[i]) {
+            case '"':  escaped = "\\\""; break;
+            case '\\': escaped = "\\\\"; break;
+            case '\b': escaped = "\\b";  break;
+            case '\f': escaped = "\\f";  break;
+            case '\n': escaped = "\\n";  break;
+            case '\r': escaped = "\\r";  break;
+            case '\t': escaped = "\\t";  break;
+            default: break;
+        }
+        if (escaped) {
+            if (fputs(escaped, f) == EOF) return false;
+        } else if (fputc((u8)s.p[i], f) == EOF) {
+            return false;
+        }
+    }
+    return fputc('"', f) != EOF;
+}
+
+static b8 sess_file_metadata(FILE *f, Str title) {
+    return fputs("{\"type\":\"session\",\"title\":", f) != EOF
+        && sess_file_json(f, title)
+        && fputs("}\n", f) != EOF;
+}
+
+typedef struct {
+    const char *path;
+    Str title;
+} SessTitleUpdate;
+
+static b8 sess_title_replace(FILE *dst, void *ud) {
+    const SessTitleUpdate *update = ud;
+    if (!sess_file_metadata(dst, update->title)) return false;
+
+    FILE *src = fopen(update->path, "rb");
+    if (!src) return errno == ENOENT;
+    char first[512];
+    if (!fgets(first, sizeof first, src)) {
+        b8 empty = feof(src) != 0;
+        i32 saved = empty ? 0 : errno ? errno : EIO;
+        if (fclose(src) != 0 && !saved) saved = errno;
+        if (saved) errno = saved;
+        return empty && !saved;
+    }
+    static const char prefix[] = "{\"type\":\"session\",\"title\":";
+    if (!strchr(first, '\n')
+        || strncmp(first, prefix, sizeof prefix - 1) != 0) {
+        fclose(src);
+        errno = EINVAL;
+        return false;
+    }
+
+    char buf[8192];
+    b8 ok = true;
+    for (size_t n; (n = fread(buf, 1, sizeof buf, src)) != 0;)
+        if (fwrite(buf, 1, n, dst) != n) { ok = false; break; }
+    if (ferror(src)) ok = false;
+    i32 saved = ok ? 0 : errno ? errno : EIO;
+    if (fclose(src) != 0 && !saved) saved = errno;
+    if (saved) errno = saved;
+    return !saved;
+}
+
 b8 session_set_title(Session *s, Str title) {
     if (!s->path.n) return false;
-    char path[AGENT_MAX_PATH];
-    size_t n = sess_title_clean(s->title_buf, sizeof s->title_buf, title);
+    char clean[AGENT_MAX_TITLE + 1];
+    size_t n = sess_title_clean(clean, sizeof clean, title);
+    SessTitleUpdate update = { s->path.p, { clean, n } };
+    if (!file_write_atomic(s->path.p, 0600, true, sess_title_replace, &update))
+        return false;
+    memcpy(s->title_buf, clean, n + 1);
     s->title = n ? (Str){ s->title_buf, n } : (Str){0};
-    if (!sess_title_path(path, sizeof path, s->path)) return false;
-    if (!n) {
-        unlink(path);           
-        return true;
-    }
-    return settings_write(str_c(path), s->title, 0600);
+    return true;
 }
 
 
@@ -401,6 +459,12 @@ static void sess_out_json(SessOut *o, Str s) {
     sess_out_putc(o, '"');
 }
 
+static void sess_out_metadata(SessOut *o, Str title) {
+    sess_out_puts(o, STR("{\"type\":\"session\",\"title\":"));
+    sess_out_json(o, title);
+    sess_out_puts(o, STR("}\n"));
+}
+
 static b8 sess_put_media(SessOut *o, Str dir, const Conv *c, size_t i,
                          char *err, size_t err_cap) {
     if (!c->media || !c->media_n[i]) return true;
@@ -493,6 +557,7 @@ b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
     }
     b8 newline = old_end > 0 && last != '\n';
     SessOut out = { .fd = fd };
+    if (created) sess_out_metadata(&out, s->title);
     if (newline) sess_out_putc(&out, '\n');
     b8 serialized = true;
     for (size_t i = s->written; i < c->n && serialized; i++) {
@@ -838,9 +903,7 @@ size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max) {
         out->path[kept] = path;
         out->name[kept] = label;
         out->preview[kept] = sess_preview(a, path.p);
-        /* Read back rather than remembered: the sidecar is a file a reader
-         * may have edited, so it is cleaned again on the way into a row. */
-        out->title[kept] = session_title_read(path, a);
+        out->title[kept] = sess_title_read(path, a);
         kept++;
     }
     out->n = kept;
@@ -861,11 +924,7 @@ b8 session_delete(const Session *s, Str path) {
     Str file = str_drop(path, s->dir.n + 1);
     if (memchr(file.p, '/', file.n) || str_eq(file, STR(".."))) return false;
     if (s->path.n && str_eq(path, s->path)) return false;
-    b8 ok = unlink(path.p) == 0;
-    
-    char title[AGENT_MAX_PATH];
-    if (sess_title_path(title, sizeof title, path)) unlink(title);
-    return ok;
+    return unlink(path.p) == 0;
 }
 
 /* Raw contents of a saved session, held in `scratch`. Reading is separate
@@ -984,7 +1043,7 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
     
     {
         size_t mark = scratch->off;
-        Str title = session_title_read(s->path, scratch);
+        Str title = sess_title_read(s->path, scratch);
         size_t n = sess_title_clean(s->title_buf, sizeof s->title_buf, title);
         s->title = n ? (Str){ s->title_buf, n } : (Str){0};
         s->title_tried = n != 0;

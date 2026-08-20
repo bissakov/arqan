@@ -148,11 +148,8 @@ typedef bool     b8;
 #define AGENT_MAX_AGENTS_FILES 8
 #define AGENT_MAX_SESSIONS     64
 #define AGENT_MAX_SESSION_BYTES (32u << 20) 
-/* A session's name: one short line of display text, not a file name. It is
- * kept beside the session file, so the picker reads it back rather than
- * deriving it from anything on the wire. */
+/* A session's name: one short line of display text, not a file name. */
 #define AGENT_MAX_TITLE        64
-#define AGENT_TITLE_SUFFIX     STR(".title")
 
 #define AGENT_MAX_POPUP        4096
 #define AGENT_MAX_MODELS       AGENT_MAX_POPUP
@@ -1393,8 +1390,6 @@ b8     session_delete(const Session *s, Str path);
 Str    session_read(Str path, Arena *scratch);
 b8     session_apply(Session *s, Str src, Str path, Str name, Conv *c,
                      Arena *persist, Arena *scratch);
-
-Str    session_title_read(Str session_path, Arena *a);
 
 b8     session_set_title(Session *s, Str title);
 
