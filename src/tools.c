@@ -210,19 +210,10 @@ static b8 tool_write(Str args, Arena *scratch, Buf *out, char *err, size_t err_c
     if (!arg_cstr(json_str(j, STR("path")), z, sizeof z, "path", err, err_cap))
         return false;
     if (!content.p) { snprintf(err, err_cap, "missing content"); return false; }
-    FILE *f = fopen(z, "wb");
-    if (!f) {
-        snprintf(err, err_cap, "open %s for write failed: %s", z,
-                 strerror(errno));
-        return false;
-    }
-    size_t wr = content.n ? fwrite(content.p, 1, content.n, f) : 0;
-    b8 failed = wr != content.n || ferror(f) != 0;
-    int e = failed ? errno : 0;
-    if (fclose(f) != 0) { failed = true; if (!e) e = errno; }
-    if (failed) {
+    if (!file_write_atomic_str(z, content, 0666, true)) {
+        i32 saved = errno;
         snprintf(err, err_cap, "write %s failed: %s", z,
-                 strerror(e ? e : EIO));
+                 strerror(saved ? saved : EIO));
         return false;
     }
     buf_putf(out, "wrote %zu bytes to %s", content.n, z);
@@ -1474,27 +1465,9 @@ static b8 patch_parse(Patch *p, Str text) {
     return true;
 }
 
-/* Renamed over the file it replaces, so an interrupted write leaves the
- * previous one rather than half of this. */
 static b8 patch_write(Patch *p, const PatchFile *f) {
-    char tmp[AGENT_MAX_PATH];
-    i32 len = snprintf(tmp, sizeof tmp, "%s." AGENT_NAME "-tmp", f->path);
-    if (len < 0 || (size_t)len >= sizeof tmp)
-        return patch_fail(p, "%s: path too long to write", f->path);
-
-    FILE *o = fopen(tmp, "wb");
-    if (!o)
-        return patch_fail(p, "open %s for write failed: %s", f->path,
-                          strerror(errno));
-    b8 failed = f->body.n && fwrite(f->body.p, 1, f->body.n, o) != f->body.n;
-    if (ferror(o)) failed = true;
-    if (fclose(o) != 0) failed = true;
-    if (!failed && rename(tmp, f->path) != 0) failed = true;
-    if (failed) {
-        int e = errno;
-        unlink(tmp);
-        return patch_fail(p, "write %s failed: %s", f->path, strerror(e));
-    }
+    if (!file_write_atomic_str(f->path, patch_body(f), 0666, true))
+        return patch_fail(p, "write %s failed: %s", f->path, strerror(errno));
     return true;
 }
 

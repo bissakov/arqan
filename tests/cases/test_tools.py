@@ -1,6 +1,7 @@
 """Tool calls: the agent loop, transcript rendering and the follow-up turn."""
 
 import json
+import stat
 
 from .test_image import png
 
@@ -148,6 +149,54 @@ def test_write_tool_creates_a_file(ctx):
     assert (ctx.work / "created.txt").read_text() == "written by a tool"
 
 
+def test_write_tool_replaces_a_symlink_and_keeps_its_target(ctx):
+    """Atomic replacement does not follow a destination symlink."""
+    target = ctx.write_file("target.txt", "original target")
+    link = ctx.work / "link.txt"
+    link.symlink_to(target.name)
+    args = json.dumps({"path": "link.txt", "content": "replacement"})
+    ctx.scenario(f"tool=write:{args},final_text=file+written")
+    s = ctx.spawn()
+    s.submit("replace the link")
+    s.wait_text("file written")
+    s.wait_turn_done()
+
+    assert not link.is_symlink()
+    assert link.read_text() == "replacement"
+    assert target.read_text() == "original target"
+    assert not list(ctx.work.glob("link.txt.arqan-tmp-*"))
+
+
+def test_write_tool_preserves_an_existing_files_mode(ctx):
+    path = ctx.write_file("script.sh", "old\n")
+    path.chmod(0o751)
+    args = json.dumps({"path": "script.sh", "content": "new\n"})
+    ctx.scenario(f"tool=write:{args},final_text=file+written")
+    s = ctx.spawn()
+    s.submit("rewrite the script")
+    s.wait_text("file written")
+    s.wait_turn_done()
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o751
+
+
+def test_write_failure_keeps_the_original_file(ctx):
+    path = ctx.write_file("important.txt", "original")
+    path.chmod(0o640)
+    args = json.dumps({"path": "important.txt", "content": "replacement"})
+    ctx.scenario(f"tool=write:{args},final_text=not+written")
+    s = ctx.spawn(ARQAN_TEST_ATOMIC_FAIL="flush")
+    s.submit("replace the file")
+    s.wait_text("not written")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "No space left on device" in result, result
+    assert path.read_text() == "original"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert not list(ctx.work.glob("important.txt.arqan-tmp-*"))
+
+
 def test_patch_rewrites_a_line_in_place(ctx):
     """A hunk is located by its context and applied to the file."""
     ctx.write_file("edit.txt", "alpha\nBETA\ngamma\n")
@@ -162,6 +211,20 @@ def test_patch_rewrites_a_line_in_place(ctx):
     s.wait_turn_done()
     assert (ctx.work / "edit.txt").read_text() == "alpha\nbeta\ngamma\n"
     assert ctx.mock.tool_results()[-1].strip() == "edit.txt +1 -1"
+
+
+def test_patch_preserves_an_existing_files_mode(ctx):
+    path = ctx.write_file("script.sh", "old\n")
+    path.chmod(0o751)
+    diff = "--- script.sh\n+++ script.sh\n@@\n-old\n+new\n"
+    ctx.scenario(patch_call(diff, final_text="edited"))
+    s = ctx.spawn()
+    s.submit("edit the script")
+    s.wait_text("edited")
+    s.wait_turn_done()
+
+    assert path.read_text() == "new\n"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o751
 
 
 def test_patch_reports_all_bad_hunks_with_locations(ctx):
@@ -293,7 +356,7 @@ def test_write_failure_includes_the_system_reason(ctx):
     s.wait_turn_done()
 
     result = ctx.mock.tool_results()[-1]
-    assert "open missing/file.txt for write failed:" in result, result
+    assert "write missing/file.txt failed:" in result, result
     assert "No such file or directory" in result, result
 
 

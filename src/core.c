@@ -1,11 +1,14 @@
 #include "agent.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 // ---- arena --------------------------------------------------------------
 void arena_init(Arena *a, void *mem, size_t cap) {
@@ -184,6 +187,110 @@ FileStatus file_read(Arena *a, const char *path, size_t max, size_t head,
     buf[rd] = '\0';
     *out = (Str){ buf, rd };
     return FILE_OK;
+}
+
+
+static b8 file_sync_parent(const char *path) {
+    char parent[AGENT_MAX_PATH];
+    const char *slash = strrchr(path, '/');
+    if (!slash) {
+        memcpy(parent, ".", 2);
+    } else {
+        size_t n = slash == path ? 1 : (size_t)(slash - path);
+        if (n >= sizeof parent) { errno = ENAMETOOLONG; return false; }
+        memcpy(parent, path, n);
+        parent[n] = '\0';
+    }
+    i32 fd = open(parent, O_RDONLY | O_DIRECTORY);
+    if (fd < 0) return false;
+    i32 rc;
+    do rc = fsync(fd); while (rc != 0 && errno == EINTR);
+    i32 saved = rc == 0 ? 0 : errno;
+    if (close(fd) != 0 && !saved) saved = errno;
+    if (saved) { errno = saved; return false; }
+    return true;
+}
+
+static mode_t file_atomic_mode(const char *path, u32 create_mode, b8 *ok) {
+    struct stat st;
+    i32 rc = lstat(path, &st);
+    if (rc == 0 && !S_ISLNK(st.st_mode)) {
+        *ok = true;
+        return st.st_mode & 0777;
+    }
+    if (rc != 0 && errno != ENOENT) {
+        *ok = false;
+        return 0;
+    }
+    /* The process is single threaded, so observing the umask cannot race
+     * another file creation. */
+    mode_t mask = umask(0);
+    (void)umask(mask);
+    *ok = true;
+    return (mode_t)create_mode & (mode_t)0777 & ~mask;
+}
+
+b8 file_write_atomic(const char *path, u32 mode, b8 sync_parent,
+                     FileWriteFn write_fn, void *ud) {
+    if (!path || !*path || !write_fn) { errno = EINVAL; return false; }
+    b8 mode_ok;
+    mode_t final_mode = file_atomic_mode(path, mode, &mode_ok);
+    if (!mode_ok) return false;
+
+    char tmp[AGENT_MAX_PATH];
+    i32 n = snprintf(tmp, sizeof tmp, "%s." AGENT_NAME "-tmp-XXXXXX", path);
+    if (n <= 0 || (size_t)n >= sizeof tmp) {
+        errno = ENAMETOOLONG;
+        return false;
+    }
+    i32 fd = mkstemp(tmp);
+    if (fd < 0) return false;
+
+    i32 saved = 0;
+    FILE *f = fdopen(fd, "wb");
+    if (!f) saved = errno;
+    if (!f) {
+        if (close(fd) != 0 && !saved) saved = errno;
+    } else {
+        errno = 0;
+        b8 wrote = write_fn(f, ud) && ferror(f) == 0;
+        if (!wrote) saved = errno ? errno : EIO;
+        if (!saved && fchmod(fileno(f), final_mode) != 0) saved = errno;
+#ifdef AGENT_TESTING
+        const char *fail = getenv(AGENT_ENV_PREFIX "TEST_ATOMIC_FAIL");
+        if (!saved && fail && strcmp(fail, "flush") == 0) saved = ENOSPC;
+#endif
+        if (!saved && fflush(f) != 0) saved = errno;
+        if (!saved) {
+            i32 rc;
+            do rc = fsync(fileno(f)); while (rc != 0 && errno == EINTR);
+            if (rc != 0) saved = errno;
+        }
+        if (fclose(f) != 0 && !saved) saved = errno;
+    }
+    if (saved) {
+        (void)unlink(tmp);
+        errno = saved;
+        return false;
+    }
+    if (rename(tmp, path) != 0) {
+        saved = errno;
+        (void)unlink(tmp);
+        errno = saved;
+        return false;
+    }
+    if (sync_parent && !file_sync_parent(path)) return false;
+    return true;
+}
+
+static b8 file_write_str(FILE *f, void *ud) {
+    const Str *data = ud;
+    return !data->n || fwrite(data->p, 1, data->n, f) == data->n;
+}
+
+b8 file_write_atomic_str(const char *path, Str data, u32 mode,
+                         b8 sync_parent) {
+    return file_write_atomic(path, mode, sync_parent, file_write_str, &data);
 }
 
 

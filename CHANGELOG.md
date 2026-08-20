@@ -32,6 +32,9 @@
 
 ### Fixed
 
+- Keep the previous file when a `write` tool call cannot finish safely. A
+  destination symlink is replaced instead of changing its target.
+
 - Report failed session saves and retry messages that were not persisted.
 
 - Improve tool errors for failed patches, invalid JSON, limits and file access.

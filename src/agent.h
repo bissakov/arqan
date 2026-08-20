@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <stdalign.h>
 #include <signal.h>
+#include <stdio.h>
 
 #include "highlight_protocol.h"
 
@@ -281,6 +282,18 @@ typedef enum {
 
 FileStatus file_read(Arena *a, const char *path, size_t max, size_t head,
                      Str *out, u64 *size_out);
+
+/* Writes a sibling temporary file, flushes and syncs it, then renames it over
+ * `path`. An existing non-symlink keeps its permission bits; a new file uses
+ * `mode` subject to the process umask. A destination symlink is replaced, not
+ * followed. `write_fn` does not own or close the stream. When `sync_parent`
+ * is true, a failure syncing the parent can be reported after the replacement
+ * is visible. On failure errno names the operation that failed. */
+typedef b8 (*FileWriteFn)(FILE *f, void *ud);
+b8 file_write_atomic(const char *path, u32 mode, b8 sync_parent,
+                     FileWriteFn write_fn, void *ud);
+b8 file_write_atomic_str(const char *path, Str data, u32 mode,
+                         b8 sync_parent);
 
 
 enum { AGENT_LOG_DEBUG, AGENT_LOG_INFO, AGENT_LOG_WARN, AGENT_LOG_ERROR };

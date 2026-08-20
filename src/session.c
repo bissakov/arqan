@@ -293,38 +293,13 @@ static b8 sess_media_write(Str dir, const MediaSet *m, size_t id,
                  strerror(errno));
         return false;
     }
-    char tmp[AGENT_MAX_PATH];
-    i32 tn = snprintf(tmp, sizeof tmp, "%s." AGENT_NAME "-tmp", path);
-    if (tn <= 0 || (size_t)tn >= sizeof tmp) {
-        snprintf(err, err_cap, "session media path is too long");
-        return false;
-    }
-    FILE *f = fopen(tmp, "wb");
-    if (!f) {
-        snprintf(err, err_cap, "could not open session image: %s",
-                 strerror(errno));
-        return false;
-    }
-    size_t wr = fwrite(m->bytes[id].p, 1, m->bytes[id].n, f);
-    b8 ok = wr == m->bytes[id].n && ferror(f) == 0;
-    i32 saved = ok ? 0 : errno;
-    if (ok && fflush(f) != 0) { ok = false; saved = errno; }
-    if (ok && fsync(fileno(f)) != 0) { ok = false; saved = errno; }
-    if (fclose(f) != 0 && ok) { ok = false; saved = errno; }
-    if (!ok) {
-        unlink(tmp);
+    if (!file_write_atomic_str(path, m->bytes[id], 0666, true)) {
+        i32 saved = errno;
         snprintf(err, err_cap, "could not write session image: %s",
                  strerror(saved ? saved : EIO));
         return false;
     }
-    if (rename(tmp, path) != 0) {
-        saved = errno;
-        unlink(tmp);
-        snprintf(err, err_cap, "could not install session image: %s",
-                 strerror(saved));
-        return false;
-    }
-    return sess_sync_dir((Str){ sub, (size_t)sn }, err, err_cap);
+    return true;
 }
 
 
@@ -705,6 +680,10 @@ static b8 export_markdown(FILE *f, const Conv *c) {
     return !ferror(f);
 }
 
+static b8 export_atomic(FILE *f, void *ud) {
+    return export_markdown(f, ud);
+}
+
 static b8 export_auto_path(char *path, size_t cap, char *err, size_t err_cap) {
     time_t now = time(NULL);
     struct tm tm;
@@ -748,23 +727,9 @@ b8 session_export_markdown(const Conv *c, Str requested,
         return false;
     }
 
-    char tmp[AGENT_MAX_PATH];
-    i32 n = snprintf(tmp, sizeof tmp, "%s." AGENT_NAME "-tmp", path);
-    if (n <= 0 || (size_t)n >= sizeof tmp) {
-        snprintf(err, err_cap, "export path is too long");
-        return false;
-    }
-    FILE *f = fopen(tmp, "wb");
-    if (!f) {
-        snprintf(err, err_cap, "could not open export file: %s", strerror(errno));
-        return false;
-    }
-    b8 ok = export_markdown(f, c);
-    if (fclose(f) != 0) ok = false;
-    if (ok && rename(tmp, path) == 0) return true;
-    i32 saved = errno;
-    unlink(tmp);
-    snprintf(err, err_cap, "could not write export file: %s", strerror(saved));
+    if (file_write_atomic(path, 0666, true, export_atomic, (void *)c))
+        return true;
+    snprintf(err, err_cap, "could not write export file: %s", strerror(errno));
     return false;
 }
 

@@ -3,15 +3,15 @@
 #include <stdio.h>
 #include <string.h>
 
-static void hist_write(FILE *f, Str s) {
+static b8 hist_write(FILE *f, Str s) {
     for (size_t i = 0; i < s.n; i++) {
         char c = s.p[i];
-        if (c == '\\') fputs("\\\\", f);
-        else if (c == '\n') fputs("\\n", f);
-        else if (c == '\r') fputs("\\r", f);
-        else fputc(c, f);
+        i32 rc = c == '\\' ? fputs("\\\\", f)
+               : c == '\n' ? fputs("\\n", f)
+               : c == '\r' ? fputs("\\r", f) : fputc(c, f);
+        if (rc == EOF) return false;
     }
-    fputc('\n', f);
+    return fputc('\n', f) != EOF;
 }
 
 static Str hist_unescape(Arena *a, Str s) {
@@ -105,12 +105,17 @@ void history_load(History *h, Str path, Arena *scratch) {
     if (h->n == h->cap) history_rewrite(h);
 }
 
+static b8 history_write_all(FILE *f, void *ud) {
+    const History *h = ud;
+    for (size_t i = 0; i < h->n; i++)
+        if (!hist_write(f, h->entry[i])) return false;
+    return true;
+}
+
 void history_rewrite(const History *h) {
-    if (!h->path.n) return;
-    FILE *f = fopen(h->path.p, "wb");
-    if (!f) return;
-    for (size_t i = 0; i < h->n; i++) hist_write(f, h->entry[i]);
-    fclose(f);
+    if (h->path.n)
+        (void)file_write_atomic(h->path.p, 0600, true,
+                                history_write_all, (void *)h);
 }
 
 void history_add(History *h, Str line) {
@@ -129,7 +134,7 @@ void history_add(History *h, Str line) {
     if (dir.n > 1) { dir.n--; paths_ensure_dir(dir); }
     FILE *f = fopen(h->path.p, "ab");
     if (!f) return;
-    hist_write(f, kept);
+    (void)hist_write(f, kept);
     fclose(f);
 }
 
