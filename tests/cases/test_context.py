@@ -214,7 +214,7 @@ def test_a_resumed_session_reports_its_context_before_it_speaks(ctx):
     fresh = tokens(s)
     s.submit("/resume")
     s.wait_status("pick a session")
-    s.key("enter")
+    s.key("enter").sync()
     s.wait_text("a long enough first answer")
     resumed = tokens(s)
     assert field(s).startswith("~"), field(s)
