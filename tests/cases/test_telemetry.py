@@ -94,6 +94,7 @@ def test_the_record_keeps_no_conversation(ctx):
 
     tool = [e for e in events(ctx) if e["ev"] == "tool"][-1]
     assert tool["name"] == "read"
+    assert tool["outcome"] == "success"
     assert tool["args"] == "path", tool          # the key, never the path
     assert tool["ok"] is True
     assert tool["result_bytes"] > 0
@@ -116,6 +117,19 @@ def test_telemetry_off_stops_the_recording(ctx):
     # says why it ends rather than simply stopping.
     assert seen[-1] == {**seen[-1], "ev": "command", "name": "/settings"}
     assert kinds(ctx).count("turn_start") == 1, kinds(ctx)
+
+
+def test_telemetry_distinguishes_nonzero_shell_result(ctx):
+    ctx.scenario('tool=bash:{"command":"sh -c \'exit 7\'"},final_text=done')
+    s = ctx.spawn()
+    s.settings_toggle("Telemetry")
+    s.submit("run it")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    tool = [e for e in events(ctx) if e["ev"] == "tool"][-1]
+    assert tool["name"] == "bash", tool
+    assert tool["outcome"] == "command_nonzero", tool
 
 
 def test_the_setting_survives_the_session(ctx):
