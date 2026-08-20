@@ -1,5 +1,6 @@
 """Shell mode: a composed line starting with '!' runs locally, not remotely."""
 
+import json
 import time
 from pathlib import Path
 
@@ -115,7 +116,9 @@ def test_a_run_is_saved_and_resumes(ctx):
     root = ctx.home / ".local" / "share" / "arqan" / "sessions"
     files = [f for d in root.iterdir() for f in d.iterdir()]
     assert len(files) == 1, files
-    line = files[0].read_text().splitlines()[0]
+    records = files[0].read_text().splitlines()
+    assert json.loads(records[0]) == {"type": "session", "title": ""}
+    line = records[1]
     assert '"name":"shell"' in line and '"content":"echo saved-output"' in line
     assert "saved-output\\n\\n[exit 0]" in line, line
 

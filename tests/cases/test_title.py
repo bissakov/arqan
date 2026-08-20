@@ -1,9 +1,8 @@
 """Session names: /title by hand, and the small model naming a session.
 
-The name lives in a `<session>.title` sidecar beside the session file, so the
-picker reads it back rather than deriving it. The mock answers the naming
-request from the active scenario, so what a session ends up called is fixed
-by the case rather than by a model.
+The name lives in the session metadata record at the head of the JSONL. The
+mock answers the naming request from the active scenario, so what a session
+ends up called is fixed by the case rather than by a model.
 """
 
 import json
@@ -24,6 +23,15 @@ def sessions_dir(ctx):
 
 def session_files(ctx, suffix: str):
     return sorted(p for p in sessions_dir(ctx).iterdir() if p.name.endswith(suffix))
+
+
+def session_titles(ctx):
+    titles = []
+    for path in session_files(ctx, ".jsonl"):
+        record = json.loads(path.read_text().splitlines()[0])
+        assert record["type"] == "session", record
+        titles.append(record["title"])
+    return titles
 
 
 def one_turn(ctx, prompt="remember the cat", reply="noted", **env):
@@ -52,9 +60,8 @@ def test_title_names_the_live_session_and_resume_lists_it(ctx):
     s.submit("/title my session")
     s.wait_text("session named: my session")
 
-    titles = session_files(ctx, ".title")
-    assert len(titles) == 1, titles
-    assert titles[0].read_text() == "my session", titles[0].read_text()
+    assert session_titles(ctx) == ["my session"]
+    assert session_files(ctx, ".title") == []
 
     s.submit("/resume")
     s.wait_status("pick a session")
@@ -90,7 +97,7 @@ def test_bare_title_edits_the_name_and_an_empty_answer_clears_it(ctx):
     s.key("ctrl-u").sync()
     s.key("enter")
     s.wait_text("session title cleared")
-    assert session_files(ctx, ".title") == [], session_files(ctx, ".title")
+    assert session_titles(ctx) == [""]
 
     s.submit("/resume")
     s.wait_status("pick a session")
@@ -115,11 +122,9 @@ def test_the_first_turn_asks_the_small_model_for_a_name(ctx):
     assert "remember the cat" in messages[1]["content"], messages[1]
     assert "noted" in messages[1]["content"], messages[1]
 
-    jsonl = session_files(ctx, ".jsonl")
-    titles = session_files(ctx, ".title")
-    assert len(jsonl) == 1 and len(titles) == 1, (jsonl, titles)
-    assert titles[0].name == jsonl[0].name[: -len(".jsonl")] + ".title", titles
-    assert titles[0].read_text() == "noted", titles[0].read_text()
+    assert len(session_files(ctx, ".jsonl")) == 1
+    assert session_titles(ctx) == ["noted"]
+    assert session_files(ctx, ".title") == []
 
 
 def test_a_reasoning_small_model_is_left_room_to_answer(ctx):
@@ -142,7 +147,7 @@ def test_a_reasoning_small_model_is_left_room_to_answer(ctx):
 
     naming = ctx.mock.requests[-1]
     assert naming["model"] == "mock-small", naming["model"]
-    assert session_files(ctx, ".title")[0].read_text() == "Cat memory notes"
+    assert session_titles(ctx) == ["Cat memory notes"]
 
 
 # The small model answers from a scenario of its own, carried in its name: the
@@ -160,8 +165,8 @@ def test_a_tool_first_turn_is_named_before_its_tools_run(ctx):
     """
     # The tool waits on a file this case owns, so "before its tools run" is
     # a state rather than a head start: nothing can get past the call until
-    # the gate is opened. The name lands in the sidecar, which is what says
-    # the naming happened; the notice that announces it is cleared by the
+    # the gate is opened. The name lands in the metadata record, which is what
+    # says the naming happened; the notice that announces it is cleared by the
     # next line of transcript, so it is not something to wait on.
     gate = ctx.work / "gate"
     command = f"while [ ! -e {gate} ]; do sleep 0.02; done; echo slept"
@@ -169,13 +174,11 @@ def test_a_tool_first_turn_is_named_before_its_tools_run(ctx):
                  'final_text=all+done')
     s = ctx.spawn(ARQAN_SMALL_MODEL=SMALL_NAMES_IT)
     s.submit("remember the cat")
-    named = wait_until(
-        lambda: [p for p in session_files(ctx, ".title") if p.read_text()],
-        "the session to be named",
-    )
+    named = wait_until(lambda: [t for t in session_titles(ctx) if t],
+                       "the session to be named")
     # Still the same turn: its tool has not answered and its reply is unsaid.
     assert "all done" not in s.text(), s.text()
-    assert named[0].read_text() == "Cat memory notes"
+    assert named[0] == "Cat memory notes"
 
     gate.touch()
     s.wait_turn_done()
@@ -204,7 +207,7 @@ def test_an_interrupt_during_naming_ends_the_turn(ctx):
 
     assert "slept" not in s.text(), s.text()
     assert "all done" not in s.text(), s.text()
-    assert session_files(ctx, ".title") == [], session_files(ctx, ".title")
+    assert session_titles(ctx) == [""]
 
 
 def test_a_named_session_is_not_named_again(ctx):
@@ -220,7 +223,7 @@ def test_a_named_session_is_not_named_again(ctx):
     assert len(ctx.mock.requests) == after_first + 1, [
         r["model"] for r in ctx.mock.requests
     ]
-    assert session_files(ctx, ".title")[0].read_text() == "noted"
+    assert session_titles(ctx) == ["noted"]
 
 
 def test_without_a_small_model_nothing_is_named(ctx):
@@ -237,7 +240,7 @@ def test_auto_title_off_suppresses_naming(ctx):
     ctx.write_config("auto_title = false\n")
     s = one_turn(ctx, ARQAN_SMALL_MODEL="mock-small")
     assert len(ctx.mock.requests) == 1, [r["model"] for r in ctx.mock.requests]
-    assert session_files(ctx, ".title") == [], session_files(ctx, ".title")
+    assert session_titles(ctx) == [""]
     assert "session named" not in s.text(), s.text()
 
 
@@ -252,7 +255,7 @@ def test_title_auto_names_on_demand_and_renames(ctx):
     s.submit("/title auto")
     s.wait_text("session named: Cat memory notes")
     assert ctx.mock.requests[-1]["model"] == "mock-small", ctx.mock.requests[-1]
-    assert session_files(ctx, ".title")[0].read_text() == "Cat memory notes"
+    assert session_titles(ctx) == ["Cat memory notes"]
 
 
 def test_title_auto_without_a_small_model_says_so(ctx):
@@ -261,7 +264,7 @@ def test_title_auto_without_a_small_model_says_so(ctx):
     s.submit("/title auto")
     s.wait_text("no small model is configured")
     assert len(ctx.mock.requests) == 1, [r["model"] for r in ctx.mock.requests]
-    assert session_files(ctx, ".title") == [], session_files(ctx, ".title")
+    assert session_titles(ctx) == [""]
 
 
 def test_a_long_quoted_multiline_answer_becomes_one_short_line(ctx):
@@ -273,7 +276,7 @@ def test_a_long_quoted_multiline_answer_becomes_one_short_line(ctx):
     s.wait_turn_done()
     s.wait_text("session named:")
 
-    stored = session_files(ctx, ".title")[0].read_text()
+    stored = session_titles(ctx)[0]
     assert "\n" not in stored, repr(stored)
     assert len(stored) <= 64, (len(stored), stored)
     assert stored[0] != '"' and not stored.endswith("."), repr(stored)
@@ -289,10 +292,9 @@ def test_a_fork_keeps_the_name(ctx):
     s.submit("/fork")
     s.wait_text("forked: this copy continues")
 
-    jsonl = session_files(ctx, ".jsonl")
-    titles = session_files(ctx, ".title")
-    assert len(jsonl) == 2 and len(titles) == 2, (jsonl, titles)
-    assert [p.read_text() for p in titles] == ["kept name", "kept name"], titles
+    assert len(session_files(ctx, ".jsonl")) == 2
+    assert session_titles(ctx) == ["kept name", "kept name"]
+    assert session_files(ctx, ".title") == []
 
 
 # ---- /model ---------------------------------------------------------------
@@ -437,4 +439,4 @@ def test_a_small_provider_that_is_gone_is_reported_on_demand(ctx):
     s.submit("/title auto")
     s.wait_text("provider spare is not usable")
     assert len(ctx.mock.requests) == 1, [r["model"] for r in ctx.mock.requests]
-    assert session_files(ctx, ".title") == [], session_files(ctx, ".title")
+    assert session_titles(ctx) == [""]
