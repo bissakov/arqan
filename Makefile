@@ -1,8 +1,11 @@
 CC      ?= cc
+SIZE_CFLAGS := -ffunction-sections -fdata-sections \
+               -fno-asynchronous-unwind-tables -fno-unwind-tables
+SIZE_LDFLAGS := -Wl,-O1,--gc-sections -s
 CFLAGS  ?= -std=c17 -O2 -Wall -Wextra -Wpedantic -Wconversion \
-           -fno-strict-aliasing -pipe -flto=auto \
+           -fno-strict-aliasing -pipe -flto=auto $(SIZE_CFLAGS) \
            -fstack-protector-strong -D_FORTIFY_SOURCE=2
-LDFLAGS ?= -flto=auto
+LDFLAGS ?= -flto=auto $(SIZE_LDFLAGS)
 LIBS    ?= -lcurl
 
 CFLAGS += $(EXTRA_CFLAGS)
@@ -22,7 +25,8 @@ ASAN_BIN := bin/asan
 FILCC ?= /opt/fil/bin/filcc
 FIL_BUILD := build/fil
 FIL_BIN := bin/fil
-FIL_DROP := -flto=auto -fstack-protector-strong -D_FORTIFY_SOURCE=2
+FIL_DROP := -flto=auto -fstack-protector-strong -D_FORTIFY_SOURCE=2 \
+            $(SIZE_CFLAGS) $(SIZE_LDFLAGS)
 
 STATIC_BUILD := build/musl
 STATIC_BIN := bin/musl
@@ -49,8 +53,9 @@ HL_SCAN := $(addprefix $(BUILDDIR)/highlight/,$(addsuffix -scanner.o,$(HL_SCAN_L
 HL_OBJ  := $(HL_OWN) $(BUILDDIR)/highlight/tree-sitter.o $(HL_PARSE) $(HL_SCAN)
 HL_CPPFLAGS := -Isrc -Ihighlight -Ivendor/tree-sitter/include \
                -Ivendor/tree-sitter/runtime
-VENDOR_CFLAGS ?= -std=c17 -O2 -fno-strict-aliasing -pipe -w \
-                 -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L
+VENDOR_CFLAGS ?= -std=c17 -Os -fno-strict-aliasing -pipe -flto=auto -w \
+                 $(SIZE_CFLAGS) -D_DEFAULT_SOURCE \
+                 -D_POSIX_C_SOURCE=200809L
 
 PYTHON  ?= python3
 
@@ -142,9 +147,9 @@ test-ci: all $(TEST_BIN)
 asan:
 	$(MAKE) all $(ASAN_BIN)/arqan-test \
 	    BUILDDIR='$(ASAN_BUILD)' BINDIR='$(ASAN_BIN)' \
-	    CFLAGS='$(filter-out -flto=auto -D_FORTIFY_SOURCE=2,$(CFLAGS)) $(SANFLAGS)' \
-	    LDFLAGS='$(filter-out -flto=auto,$(LDFLAGS)) $(SANFLAGS)' \
-	    VENDOR_CFLAGS='$(VENDOR_CFLAGS) $(SANFLAGS)'
+	    CFLAGS='$(filter-out -flto=auto -D_FORTIFY_SOURCE=2 $(SIZE_CFLAGS),$(CFLAGS)) $(SANFLAGS)' \
+	    LDFLAGS='$(filter-out -flto=auto $(SIZE_LDFLAGS),$(LDFLAGS)) $(SANFLAGS)' \
+	    VENDOR_CFLAGS='$(filter-out -flto=auto $(SIZE_CFLAGS),$(VENDOR_CFLAGS)) $(SANFLAGS)'
 
 test-asan: asan
 	ASAN_OPTIONS=detect_leaks=0 ARQAN_TEST_BIN=$(ASAN_BIN)/arqan-test \
