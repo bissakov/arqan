@@ -23,7 +23,7 @@ typedef float    f32;
 typedef double   f64;
 typedef bool     b8;
 
-#define AGENT_VERSION "0.5.0"
+#define AGENT_VERSION "0.6.0"
 
 #define AGENT_NAME       "arqan"
 #define AGENT_ENV_PREFIX "ARQAN_"
