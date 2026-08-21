@@ -171,10 +171,17 @@ assistant/tool attribution or trailers.
 - Write a changelog entry without a commit link; a commit cannot carry its
   own hash. `python3 scripts/changelog-links.py` links every bare entry to
   the commit that introduced it, and `--check` reports the ones still bare.
+  It finds an entry by its opening line, so a commit that only rewords the
+  changelog claims that entry. Read the links it writes and retarget any
+  that name a rewording commit instead of the change itself.
 - Prepare a release by updating `AGENT_VERSION` and `CHANGELOG.md` in one
-  commit, running `scripts/changelog-links.py` and then
-  `scripts/release-linux.sh`, then creating and pushing the matching
-  annotated tag. Never move or reuse a published version tag.
+  commit. The version string reaches the golden files, so refresh them in
+  the same commit with `python3 tests/run.py --update`. Then run
+  `scripts/changelog-links.py` and `scripts/release-linux.sh`.
+- `main` is protected: the release commit reaches it through a pull request,
+  and the squash merge gives it a new hash. Tag the merged commit on `main`,
+  never the local one, and push the annotated tag once the merge has landed.
+  Never move or reuse a published version tag.
 - Review the generated draft GitHub Release, use the matching changelog
-  section as its curated notes, verify both attached files, and publish it
-  manually.
+  section as its curated notes, verify every attached package against
+  `SHA256SUMS`, and publish it manually.
