@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep wide table rows inside the table. A row longer than the line buffer,
+  which text in Cyrillic and other non-Latin scripts reaches quickly, closed
+  the table early and printed the remaining rows as raw pipes.
+
+### Changed
+
+- Draw a rule between table rows when a cell wraps, so a row that spans
+  several lines has a visible end. Tables whose rows fit on one line are
+  unchanged.
+
 ## [0.6.0] - 2026-08-21
 
 ### Added

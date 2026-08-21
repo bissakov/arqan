@@ -7,9 +7,13 @@
 #define MD_PEND_MAX 512
 #define MD_RULE_MAX 60
 #define MD_LINE_MAX 256
+/* A line is held only until its block is known, then it streams out as it
+ * arrives. A table row is the exception: it is drawn whole, cell by cell, so
+ * a row is held to this wider cap instead. */
+#define MD_ROW_MAX (4u << 10)
 #define MD_TABLE_ROWS 64
 #define MD_TABLE_COLS 32
-#define MD_TABLE_BYTES (32u << 10)
+#define MD_TABLE_BYTES (64u << 10)
 /* A table cell is laid out before it is drawn, so its inline markup is
  * resolved into styled runs first. A cell past either cap is drawn as
  * written rather than truncated. */
@@ -47,10 +51,11 @@ static struct {
     char   pend[MD_PEND_MAX];
     size_t pend_n;
     char   last;       
-    char   line[MD_LINE_MAX];
+    char   line[MD_ROW_MAX];
     size_t line_n;
+    b8     row_hold;
     b8     line_long;
-    char   held[MD_LINE_MAX];
+    char   held[MD_ROW_MAX];
     size_t held_n;
     b8     held_eol;
     char   table[MD_TABLE_BYTES];
@@ -779,6 +784,7 @@ static void md_table_fit(size_t *width, size_t cols) {
 static void md_table_flush(void) {
     if (!g_md.table_n) return;
     size_t width[MD_TABLE_COLS] = {0};
+    size_t body[MD_TABLE_COLS] = {0};
     for (size_t r = 0; r < g_md.table_n; r++) {
         Str cells[MD_TABLE_COLS];
         Str line = { g_md.table + g_md.table_off[r], g_md.table_len[r] };
@@ -788,18 +794,28 @@ static void md_table_flush(void) {
             md_cell_build(&g_md.measured, cells[i]);
             size_t w = tui_text_cells(g_md.measured.text);
             if (w > width[i]) width[i] = w;
+            if (r && w > body[i]) body[i] = w;
         }
     }
     for (size_t i = 0; i < g_md.table_cols; i++)
         if (!width[i]) width[i] = 1;
     md_table_fit(width, g_md.table_cols);
+    /* A body cell wider than its column wraps, so its row spans several
+     * screen lines and where one row ends stops being obvious. Rule between
+     * body rows only then: a table of single-line rows reads better tight. */
+    b8 rule = false;
+    for (size_t i = 0; i < g_md.table_cols && !rule; i++)
+        rule = body[i] > width[i];
     md_table_border("\u250c", "\u252c", "\u2510", width);
     md_table_line((Str){ g_md.table + g_md.table_off[0],
                          g_md.table_len[0] }, width, true);
     md_table_border("\u251c", "\u253c", "\u2524", width);
-    for (size_t r = 1; r < g_md.table_n; r++)
+    for (size_t r = 1; r < g_md.table_n; r++) {
+        if (rule && r > 1)
+            md_table_border("\u251c", "\u253c", "\u2524", width);
         md_table_line((Str){ g_md.table + g_md.table_off[r],
                              g_md.table_len[r] }, width, false);
+    }
     md_table_border("\u2514", "\u2534", "\u2518", width);
     g_md.table_n = 0;
     g_md.table_bytes = 0;
@@ -896,6 +912,19 @@ static void md_complete_line(Str line, b8 eol) {
     md_regular(line, eol);
 }
 
+/* Whether the buffered prefix can still open a table row, decided once the
+ * line reaches MD_LINE_MAX. A leading pipe is unmistakable; a row without one
+ * is only trusted while a table or a candidate header is already open. */
+static b8 md_row_prefix(void) {
+    size_t i = 0;
+    if (g_md.fence) return false;
+    while (i < g_md.line_n && (g_md.line[i] == ' ' || g_md.line[i] == '\t')) i++;
+    if (i >= g_md.line_n) return false;
+    if (g_md.line[i] == '|') return true;
+    if (!g_md.table_n && !g_md.held_n) return false;
+    return memchr(g_md.line + i, '|', g_md.line_n - i) != NULL;
+}
+
 void md_write(Str delta) {
     if (g_md.raw || !tui_is_fullscreen()) {
         if (g_md.muted && tui_is_fullscreen()) tui_write_muted(delta);
@@ -922,13 +951,18 @@ void md_write(Str delta) {
         if (c == '\n') {
             md_complete_line((Str){ g_md.line, g_md.line_n }, true);
             g_md.line_n = 0;
-        } else if (g_md.line_n < sizeof g_md.line) {
+            g_md.row_hold = false;
+        } else if (g_md.line_n < MD_LINE_MAX) {
+            g_md.line[g_md.line_n++] = c;
+            if (g_md.line_n == MD_LINE_MAX) g_md.row_hold = md_row_prefix();
+        } else if (g_md.row_hold && g_md.line_n < sizeof g_md.line) {
             g_md.line[g_md.line_n++] = c;
         } else {
             md_table_flush();
             md_held_flush();
             md_low_write((Str){ g_md.line, g_md.line_n });
             g_md.line_n = 0;
+            g_md.row_hold = false;
             g_md.line_long = true;
             md_low_write((Str){ delta.p + i, 1 });
         }
@@ -944,6 +978,7 @@ void md_end(void) {
         md_complete_line((Str){ g_md.line, g_md.line_n }, false);
     }
     g_md.line_n = 0;
+    g_md.row_hold = false;
     md_table_flush();
     md_held_flush();
     if (g_md.fence) md_hl_finish();

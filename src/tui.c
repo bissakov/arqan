@@ -3807,8 +3807,26 @@ static void idle_beacon(void) {
         flush_out();
     }
 }
+
+/* Input taken by the poll path, which does not park and so paints no settled
+ * frame: this reports the count alone, and never claims the screen is done.
+ * Silent unless that path has taken input since the last one, so a streaming
+ * turn pays no write and no flush per pump. */
+static void input_notice(void) {
+    static unsigned long last = ~0UL;
+    if (!g_tui.fullscreen) return;
+    if (g_input_bytes == last) return;
+    last = g_input_bytes;
+    char b[64];
+    int  n = snprintf(b, sizeof b, "\033_agent;input;%lu\033\\", g_input_bytes);
+    if (n > 0 && (size_t)n < sizeof b) {
+        put_raw(b, (size_t)n);
+        flush_out();
+    }
+}
 #else
 #define idle_beacon() ((void)0)
+#define input_notice() ((void)0)
 #endif
 
 static b8 input_ready(i32 timeout_ms) {
@@ -5968,7 +5986,18 @@ static void busy_attach(void) {
 }
 
 
+static void poll_input(void);
+
+/* The poll path drains input without ever parking in read, so the beacon
+ * rbyte writes on its way into a read reports a count from before that drain
+ * and nothing corrects it while a turn holds the loop. Report the count on
+ * the way out so a test can tell input taken from a screen at rest. */
 void tui_poll_input(void) {
+    poll_input();
+    input_notice();
+}
+
+static void poll_input(void) {
     if (!g_tui.fullscreen) return;
     if (g_view.active && !g_view.modal) {
         while (g_view.active && !g_tui.input_eof && input_ready(0)) {
