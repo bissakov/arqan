@@ -32,6 +32,10 @@ pull request. Run it before proposing a change to the startup path, the render
 path, tool output, or session replay. Do not widen a tolerance or a budget to
 pass one. `bench/README.md` records what is measured and how.
 
+`bench-guard` runs the binary it built, so rebuilding `bin/arqan` while it is
+in flight makes it fail on a missing or half-written file. Let it finish, and
+read a failure there as invalid rather than as a regression.
+
 `make test-asan` and `make test-fil` are not per-change gates; run one when the
 change touches memory. Prefer `make test-fil` for arena, buffer, bounds and
 pointer-arithmetic work and for any suspected memory bug: Fil-C carries bounds
@@ -61,6 +65,35 @@ and no release target reads them.
   `ToolRegistry` with parallel arrays.
 - Route owned file reads through `file_read`. Build updates atomically through
   a temporary file and rename where the existing code does so.
+
+## Global state
+
+The process is single-threaded, so globals are not a concurrency problem. They
+are a coupling problem: call order becomes API, resets are easy to miss, and
+isolated tests get hard. Each module owns at most one `static` state struct.
+Do not add a loose `g_` variable next to one; add a field.
+
+Four kinds, with different fixes. Classify before changing one.
+
+- Backing storage: `g_persist`, `g_scratch`, `g_screen`. Not coupling, since
+  `Arena *` is already passed explicitly. Leave them. Moving them to the heap
+  would break the no-`malloc` rule and move what `bench-guard` measures.
+- Write-once configuration, read forever. Harmless, but keep it beside the
+  state it configures and set it once at startup.
+- Process singletons: the terminal, libcurl, telemetry, signal flags. A second
+  instance is incoherent, so aggregate and give them a lifecycle, but do not
+  parameterize. Indirection for an instance that cannot exist is a cost with
+  no payer.
+- Per-turn or per-render state, the only kind worth making instanceable. Group
+  it into its own struct that begin and end assign whole, so a new field resets
+  by construction. `RenderBlock` in `render.c` is the model.
+
+Prefer a state struct small enough to assign whole. When it is not, as with
+the ~680KB `MdState`, reset fields explicitly and mark where with an
+`INVARIANT` comment at the reset function.
+
+Do not thread one `App *` through every function. It is thousands of call
+sites, unreviewable, and it lands on the paths `bench-guard` protects.
 
 ## Module map
 
@@ -130,11 +163,21 @@ them in a new path.
 
 ## Code and docs
 
-Use C17 and the project's established style. Keep comments only when they
-state an invariant, rationale, contract, or wire format the code cannot make
-clear. Write concise active sentences in ASCII; no padded preambles, smart
-punctuation, emoji, or AI/tool attributions. Header doc comments describe
-ownership, arena, and failure behaviour.
+Use C17 and the project's established style. Write concise active sentences in
+ASCII; no padded preambles, smart punctuation, emoji, or AI/tool attributions.
+
+Do not comment code. Name things so the code reads without help, and delete a
+comment that only restates what the next line does. Three kinds stay:
+
+- Header doc comments, describing ownership, arena, and failure behaviour.
+- Separator comments that divide a long file into sections.
+- Signal comments, tagged and greppable: `TODO` for deferred work with the
+  reason it was deferred, `NOTE` for a constraint the code cannot show, and
+  `INVARIANT` for something a later edit would otherwise break.
+
+A signal comment earns its place by carrying what the code cannot: a size that
+forbids a copy, a reset that lives in another function, why an obvious change
+is wrong. If it does not survive that test, it is not a signal comment.
 
 README.md and AGENTS.md *must not* be edited without explicit user approval.
 
