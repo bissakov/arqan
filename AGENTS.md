@@ -78,6 +78,10 @@ for the viewport, the picker, input and paint batching. Two exceptions stay
 loose: a `volatile sig_atomic_t` a signal handler writes, and state compiled
 in only under `AGENT_TESTING`.
 
+`make check-globals` enforces this by rejecting a global whose type is a
+primitive, a pointer or a function pointer. It reads `static const` data as
+immutable and lets it pass.
+
 Four kinds, with different fixes. Classify before changing one.
 
 - Backing storage: `g_persist`, `g_scratch`, `g_screen`. Not coupling, since

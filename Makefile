@@ -65,6 +65,7 @@ PYTHON  ?= python3
         clean-el9 el9 test-el9 \
         bench bench-slow bench-baseline \
         bench-guard check-curl-types \
+        check-globals \
         package-linux test-package-linux release-linux
 
 all: $(BIN) $(HL_BIN)
@@ -189,6 +190,9 @@ test-static: static
 
 check-curl-types:
 	$(MAKE) bin/link/arqan CURL_MODE=link BUILDDIR=build/link BINDIR=bin/link
+
+check-globals:
+	$(PYTHON) scripts/check-globals.py
 
 el9:
 	$(MAKE) all $(EL9_BIN)/arqan-test \

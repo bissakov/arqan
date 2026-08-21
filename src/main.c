@@ -58,35 +58,35 @@ static alignas(64) u8 g_scratch[AGENT_ARENA_BYTES];
 static alignas(64) u8 g_screen[AGENT_SCREEN_BYTES];
 
 
-static TuiCmd g_commands[AGENT_MAX_COMMANDS];
-
-static size_t g_command_n;
-
+static struct {
+    TuiCmd v[AGENT_MAX_COMMANDS];
+    size_t n;
+} g_commands;
 
 static size_t commands_init(b8 images) {
     size_t n = 0;
-    g_commands[n++] = (TuiCmd){ STR("/clear"), STR("Start a fresh conversation") };
-    g_commands[n++] = (TuiCmd){ STR("/resume"), STR("Resume a saved session from this directory, or delete one") };
-    g_commands[n++] = (TuiCmd){ STR("/fork"), STR("Continue in a copy, leaving this session as it is") };
-    g_commands[n++] = (TuiCmd){ STR("/compact"), STR("Summarize this session and continue in a new one") };
-    g_commands[n++] = (TuiCmd){ STR("/model"), STR("Pick the model, from any provider") };
-    g_commands[n++] = (TuiCmd){ STR("/provider"), STR("Add, edit or remove a provider") };
-    g_commands[n++] = (TuiCmd){ STR("/mode"), STR("Switch between Build and Plan mode (Shift+Tab)") };
-    g_commands[n++] = (TuiCmd){ STR("/rewind"), STR("Go back to an earlier message and edit it") };
-    g_commands[n++] = (TuiCmd){ STR("/title"), STR("Name this session, or `/title auto` to let the small model name it") };
-    g_commands[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
+    g_commands.v[n++] = (TuiCmd){ STR("/clear"), STR("Start a fresh conversation") };
+    g_commands.v[n++] = (TuiCmd){ STR("/resume"), STR("Resume a saved session from this directory, or delete one") };
+    g_commands.v[n++] = (TuiCmd){ STR("/fork"), STR("Continue in a copy, leaving this session as it is") };
+    g_commands.v[n++] = (TuiCmd){ STR("/compact"), STR("Summarize this session and continue in a new one") };
+    g_commands.v[n++] = (TuiCmd){ STR("/model"), STR("Pick the model, from any provider") };
+    g_commands.v[n++] = (TuiCmd){ STR("/provider"), STR("Add, edit or remove a provider") };
+    g_commands.v[n++] = (TuiCmd){ STR("/mode"), STR("Switch between Build and Plan mode (Shift+Tab)") };
+    g_commands.v[n++] = (TuiCmd){ STR("/rewind"), STR("Go back to an earlier message and edit it") };
+    g_commands.v[n++] = (TuiCmd){ STR("/title"), STR("Name this session, or `/title auto` to let the small model name it") };
+    g_commands.v[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
     if (images)
-        g_commands[n++] = (TuiCmd){ STR("/attach"), STR("Attach an image to the next message, by path or from the clipboard (Ctrl-V)") };
-    g_commands[n++] = (TuiCmd){ STR("/find"), STR("Search the transcript (Ctrl-R)") };
-    g_commands[n++] = (TuiCmd){ STR("/keys"), STR("Show the keyboard shortcuts") };
-    g_commands[n++] = (TuiCmd){ STR("/settings"), STR("Change how " AGENT_NAME " behaves") };
-    g_commands[n++] = (TuiCmd){ STR("/statusline"), STR("Choose what the status line shows") };
-    g_commands[n++] = (TuiCmd){ STR("/about"), STR("About " AGENT_NAME " and its contributors") };
-    g_commands[n++] = (TuiCmd){ STR("/help"), STR("Start a conversation about using " AGENT_NAME) };
-    g_commands[n++] = (TuiCmd){ STR("/restart"), STR("Restart " AGENT_NAME ", resuming this session only if the setting says so") };
-    g_commands[n++] = (TuiCmd){ STR("/exit"), STR("Quit " AGENT_NAME) };
-    g_commands[n++] = (TuiCmd){ STR("/export"), STR("Export this session as Markdown") };
-    g_command_n = n;
+        g_commands.v[n++] = (TuiCmd){ STR("/attach"), STR("Attach an image to the next message, by path or from the clipboard (Ctrl-V)") };
+    g_commands.v[n++] = (TuiCmd){ STR("/find"), STR("Search the transcript (Ctrl-R)") };
+    g_commands.v[n++] = (TuiCmd){ STR("/keys"), STR("Show the keyboard shortcuts") };
+    g_commands.v[n++] = (TuiCmd){ STR("/settings"), STR("Change how " AGENT_NAME " behaves") };
+    g_commands.v[n++] = (TuiCmd){ STR("/statusline"), STR("Choose what the status line shows") };
+    g_commands.v[n++] = (TuiCmd){ STR("/about"), STR("About " AGENT_NAME " and its contributors") };
+    g_commands.v[n++] = (TuiCmd){ STR("/help"), STR("Start a conversation about using " AGENT_NAME) };
+    g_commands.v[n++] = (TuiCmd){ STR("/restart"), STR("Restart " AGENT_NAME ", resuming this session only if the setting says so") };
+    g_commands.v[n++] = (TuiCmd){ STR("/exit"), STR("Quit " AGENT_NAME) };
+    g_commands.v[n++] = (TuiCmd){ STR("/export"), STR("Export this session as Markdown") };
+    g_commands.n = n;
     return n;
 }
 
@@ -131,13 +131,16 @@ static size_t resolve_alias(char *line, size_t ln, size_t cap) {
 }
 
 
-static b8 g_reasoning;
-static b8 g_replying;
-static b8 g_one_shot;
-
+/* Per-turn stream state; `one_shot` is the run mode and outlives every turn. */
+static struct {
+    b8 reasoning;
+    b8 replying;
+    b8 rerender_pending;
+    b8 one_shot;
+} g_turn;
 
 static void one_shot_diag(const char *kind, Str name, Str text) {
-    if (!g_one_shot) return;
+    if (!g_turn.one_shot) return;
     Str head = str_clip_utf8(text, 2048);
     fprintf(stderr, AGENT_NAME ": %s", kind);
     if (name.n) fprintf(stderr, " %.*s", (i32)name.n, name.p);
@@ -155,9 +158,9 @@ static void say_busy(const char *what) {
 
 static void on_reason(Str delta, void *ud) {
     (void)ud;
-    if (g_one_shot) return;
-    if (!g_reasoning) {
-        g_reasoning = true;
+    if (g_turn.one_shot) return;
+    if (!g_turn.reasoning) {
+        g_turn.reasoning = true;
         say_busy("reasoning");
         md_set_muted(true);
         tui_block();
@@ -166,10 +169,10 @@ static void on_reason(Str delta, void *ud) {
 }
 static void on_text(Str delta, void *ud) {
     (void)ud;
-    if (g_one_shot) return;
-    if (!g_replying) {
-        g_replying = true;
-        g_reasoning = false;
+    if (g_turn.one_shot) return;
+    if (!g_turn.replying) {
+        g_turn.replying = true;
+        g_turn.reasoning = false;
         md_set_muted(false);
         tui_set_status("thinking");
         tui_activity(STR("responding"));
@@ -207,7 +210,7 @@ static void on_usage(const Conv *conv, size_t prompt_tokens,
 static void on_retry(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
                      void *ud) {
     (void)ud;
-    if (g_one_shot) {
+    if (g_turn.one_shot) {
         char row[256];
         i32 n = snprintf(row, sizeof row,
                          "%.*s; retrying (attempt %d of %d, %dms)",
@@ -231,8 +234,8 @@ static void on_retry(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
     if (n > 0)
         tui_write_error((Str){ row, (size_t)n < sizeof row ? (size_t)n
                                                            : sizeof row - 1 });
-    g_replying = false;
-    g_reasoning = false;
+    g_turn.replying = false;
+    g_turn.reasoning = false;
 }
 static void on_idle(void *ud) {
     (void)ud;
@@ -277,7 +280,7 @@ static b8 save_session(Agent *ag) {
     char err[256] = {0};
     if (session_save(ag->sess, ag->conv, err, sizeof err)) {
         if (ag->session_save_failed) {
-            if (g_one_shot)
+            if (g_turn.one_shot)
                 one_shot_diag("warning", (Str){0}, STR("session saving recovered"));
             else
                 tui_notice(STR("session saving recovered"));
@@ -292,7 +295,7 @@ static b8 save_session(Agent *ag) {
                          err[0] ? err : "unknown persistence failure");
         Str text = { msg, n > 0 && (size_t)n < sizeof msg
                           ? (size_t)n : sizeof msg - 1 };
-        if (g_one_shot) one_shot_diag("warning", (Str){0}, text);
+        if (g_turn.one_shot) one_shot_diag("warning", (Str){0}, text);
         else tui_notice(text);
     }
     ag->session_save_failed = true;
@@ -354,7 +357,7 @@ static void agent_set_mode(Agent *ag, AgentMode mode) {
     tel_send(&e);
     ag->cfg->mode = mode;
     if (!conf_remember(CONF_MODE, mode_name(mode), ag->scratch)) {
-        if (g_one_shot)
+        if (g_turn.one_shot)
             one_shot_diag("warning", (Str){0},
                           STR("mode changed but was not remembered"));
         else
@@ -376,7 +379,7 @@ static void agent_set_permissions(Agent *ag, PermissionPolicy policy) {
     tel_send(&e);
     ag->cfg->permissions = policy;
     if (!conf_remember(CONF_PERMISSIONS, permission_name(policy), ag->scratch)) {
-        if (g_one_shot)
+        if (g_turn.one_shot)
             one_shot_diag("warning", (Str){0},
                           STR("permissions changed but were not remembered"));
         else
@@ -403,7 +406,7 @@ static Str keep_result(Arena *persist, Str result) {
 /* The one thing a conversation with no room left has to say, in the
  * transcript because it answers the message that did not fit. */
 static void say_conv_full(void) {
-    if (g_one_shot) {
+    if (g_turn.one_shot) {
         one_shot_diag("error", (Str){0}, STR("conversation is full"));
         return;
     }
@@ -419,7 +422,7 @@ static b8 add_result(Agent *ag, size_t call, Str name, Str result, u32 ms) {
         return false;
     }
     conv->ms[slot] = ms;
-    if (g_one_shot) one_shot_diag("tool result", name, result);
+    if (g_turn.one_shot) one_shot_diag("tool result", name, result);
     else render_tool_result(name, conv->text[call], result, ag->scratch,
                             (u32)(slot + 1), conv->expanded[slot], ms);
     /* Saved per result, not per turn: a build that dies in its tenth round
@@ -452,7 +455,7 @@ static Str ask_user_answer(Agent *ag, Str args) {
     if (n > AGENT_MAX_POPUP - 1) n = AGENT_MAX_POPUP - 1;
 
     size_t at = tui_transcript_pos();
-    if (!g_one_shot) render_question(question);
+    if (!g_turn.one_shot) render_question(question);
 
     TuiCmd *items = arena_new(ag->scratch, TuiCmd, n + 1);
     if (!items) return (Str){0};
@@ -521,7 +524,7 @@ static ToolAuthorization tool_authorization(Agent *ag,
         return TOOL_AUTH_GRANTED;
 
     Str cls = tools_approval_name(approval);
-    if (g_one_shot) {
+    if (g_turn.one_shot) {
         one_shot_diag("approval required for assistant", cls,
                       STR("guarded call denied in non-interactive Ask mode; configure permissions=free for trusted automation"));
         ag->permission_blocked_one_shot = true;
@@ -568,7 +571,7 @@ static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
         return TURN_CONTINUE;
     }
     size_t at = tui_transcript_pos();
-    if (!g_one_shot) render_plan(plan);
+    if (!g_turn.one_shot) render_plan(plan);
 
     const TuiCmd items[] = {
         { STR("Yes"), STR("Switch to Build mode and carry the plan out") },
@@ -696,9 +699,9 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         }
         Buf out; buf_init(&out, ag->scratch, 4096);
         char err[AGENT_TOOL_ERR] = {0};
-        if (g_one_shot) one_shot_diag("tool call", name, args);
+        if (g_turn.one_shot) one_shot_diag("tool call", name, args);
         size_t call_at = tui_transcript_pos();
-        if (!g_one_shot)
+        if (!g_turn.one_shot)
             render_tool_call(name, args, ag->scratch, (u32)(i + 1),
                              conv->expanded[i]);
         ToolApprovalClass approval = TOOL_APPROVAL_NONE;
@@ -1050,10 +1053,10 @@ static Str help_build(Agent *ag) {
     }
 
     buf_puts(&b, STR("\n### Slash commands\n"));
-    for (size_t i = 0; i < g_command_n; i++)
-        buf_putf(&b, "- %.*s: %.*s\n", (i32)g_commands[i].name.n,
-                 g_commands[i].name.p, (i32)g_commands[i].desc.n,
-                 g_commands[i].desc.p);
+    for (size_t i = 0; i < g_commands.n; i++)
+        buf_putf(&b, "- %.*s: %.*s\n", (i32)g_commands.v[i].name.n,
+                 g_commands.v[i].name.p, (i32)g_commands.v[i].desc.n,
+                 g_commands.v[i].desc.p);
     buf_puts(&b, STR("\nWhile a turn is running, /settings, /statusline, "
                      "/about and /copy are submitted where they stand; any "
                      "other command and any message wait in the composer "
@@ -1736,8 +1739,8 @@ static void title_command(Agent *ag, Str arg) {
 }
 
 static b8 command_offered(Str name) {
-    for (size_t i = 0; i < g_command_n; i++)
-        if (str_eq(g_commands[i].name, name)) return true;
+    for (size_t i = 0; i < g_commands.n; i++)
+        if (str_eq(g_commands.v[i].name, name)) return true;
     return false;
 }
 
@@ -3119,11 +3122,8 @@ static size_t settings_build(void *ud) {
     return n;
 }
 
-
-static b8 g_rerender_pending;
-
 static void rerender_or_defer(Agent *ag) {
-    if (tui_busy()) { g_rerender_pending = true; return; }
+    if (tui_busy()) { g_turn.rerender_pending = true; return; }
     rerender_conv(ag->conv, ag->cfg, ag->show_instructions, ag->scratch, 0);
 }
 
@@ -3719,7 +3719,7 @@ static void compact_session(Agent *ag) {
 }
 
 static void say_compaction(Str text) {
-    if (g_one_shot) one_shot_diag("context", (Str){0}, text);
+    if (g_turn.one_shot) one_shot_diag("context", (Str){0}, text);
     else tui_notice(text);
 }
 
@@ -3773,7 +3773,7 @@ static b8 compact_auto(Agent *ag, size_t keep, b8 *interrupted) {
     if (saved && title_n)
         session_set_title(ag->sess, (Str){ title, title_n });
 
-    if (!g_one_shot)
+    if (!g_turn.one_shot)
         rerender_conv(conv, ag->cfg, ag->show_instructions, ag->scratch, 0);
     say_compaction(saved
         ? STR("context compacted: the older work is now a summary")
@@ -3967,7 +3967,7 @@ static b8 agent_handoff(Agent *ag) {
     ag->persist->off = ag->mark;
     plan = str_dup(ag->persist, plan);
     if (!plan.p) {
-        if (g_one_shot)
+        if (g_turn.one_shot)
             one_shot_diag("error", (Str){0}, STR("out of memory keeping plan"));
         else
             tui_notice(STR("out of memory keeping the approved plan"));
@@ -3999,7 +3999,7 @@ static Str last_reply(const Conv *conv) {
 
 
 static void announce_interrupt(void) {
-    if (g_one_shot)
+    if (g_turn.one_shot)
         one_shot_diag("error", (Str){0}, STR("interrupted"));
     else {
         tui_block();
@@ -4015,7 +4015,7 @@ static void announce_interrupt(void) {
  * never get there. One attempt per session, which `title_tried` records.
  * True when Ctrl-C landed in the errand, which the turn has to act on. */
 static b8 name_session_now(Agent *ag) {
-    if (g_one_shot || !ag->cfg->auto_title || !ag->cfg->small_model.n
+    if (g_turn.one_shot || !ag->cfg->auto_title || !ag->cfg->small_model.n
         || ag->sess->title.n || ag->sess->title_tried)
         return false;
     b8 interrupted = false;
@@ -4030,7 +4030,7 @@ static b8 agent_turn(Agent *ag, Str text) {
     Str user_text = turn_bind_images(ag, text, &media_off, &media_n);
     ag->pending_n = 0;
     if (text.n && !user_text.p) {
-        if (g_one_shot)
+        if (g_turn.one_shot)
             one_shot_diag("error", (Str){0}, STR("out of memory"));
         else {
             tui_block();
@@ -4090,8 +4090,8 @@ static b8 agent_turn(Agent *ag, Str text) {
         }
         tui_set_status("thinking");
         tui_activity(STR("thinking"));
-        g_reasoning = false;
-        g_replying = false;
+        g_turn.reasoning = false;
+        g_turn.replying = false;
         Provider p = {
             .cfg = ag->cfg,
             .tools = ag->tools,
@@ -4129,7 +4129,7 @@ static b8 agent_turn(Agent *ag, Str text) {
             tel_str(&ee, "where", STR("provider"));
             tel_str(&ee, "detail", str_c(err));
             tel_send(&ee);
-            if (g_one_shot)
+            if (g_turn.one_shot)
                 one_shot_diag("provider error", (Str){0}, str_c(err));
             else {
                 tui_block();
@@ -4208,8 +4208,8 @@ static b8 agent_turn(Agent *ag, Str text) {
     if (ag->handoff.n) return agent_handoff(ag);
     /* The plan a handoff carries lives in the scratch arena this resets, so
      * it runs only on the path that keeps the conversation. */
-    if (g_rerender_pending) {
-        g_rerender_pending = false;
+    if (g_turn.rerender_pending) {
+        g_turn.rerender_pending = false;
         rerender_conv(conv, ag->cfg, ag->show_instructions, ag->scratch, 0);
     }
     return ok;
@@ -4393,7 +4393,7 @@ i32 main(i32 argc, char **argv) {
     sigaction(SIGINT, &sa, NULL);
 
     setvbuf(stdout, NULL, _IONBF, 0);
-    g_one_shot = opts.have_prompt;
+    g_turn.one_shot = opts.have_prompt;
     ctx_init(&g_ctx);
     ctx_set_window(&g_ctx, cfg.context_window);
     ctx_set_tools(&g_ctx, &tools);
@@ -4414,7 +4414,7 @@ i32 main(i32 argc, char **argv) {
     } else if (prefs.show_instructions && !opts.have_prompt) {
         render_instructions(&cfg);
     }
-    tui_set_commands(g_commands, commands_init(cfg.images));
+    tui_set_commands(g_commands.v, commands_init(cfg.images));
     tui_set_aliases(k_aliases, ALIAS_N);
     tui_set_history(&hist);
     tui_set_interrupt_flag(&g_got_sigint);

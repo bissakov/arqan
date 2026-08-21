@@ -929,36 +929,34 @@ static struct {
     SearchEngine chain[ENGINE_N];
     size_t chain_n;
     Str endpoint, api_key, engine_id;   // in the persist arena, or empty
+    f64 started[ENGINE_N];              // last request, for the rate gate
+    f64 paused[ENGINE_N];               // backoff deadline
 } g_search = { {ENGINE_DDG_LITE, ENGINE_DDG_HTML, ENGINE_BRAVE, 0, 0, 0},
-               3, {0}, {0}, {0} };
-
-
-static f64 g_engine_start[ENGINE_N];
-static f64 g_engine_paused[ENGINE_N];
+               3, {0}, {0}, {0}, {0}, {0} };
 
 static b8 search_admit(SearchEngine e, const char *label,
                        char *err, size_t err_cap) {
     f64 now = agent_now_seconds();
-    if (g_engine_paused[e] > now) {
-        i64 seconds = (i64)(g_engine_paused[e] - now) + 1;
+    if (g_search.paused[e] > now) {
+        i64 seconds = (i64)(g_search.paused[e] - now) + 1;
         snprintf(err, err_cap, "the %s search endpoint is paused for %llds "
                  "after a challenge or refusal", label, (long long)seconds);
         return false;
     }
-    if (g_engine_start[e] > 0) {
-        f64 next = g_engine_start[e] + (f64)search_interval_ms() / 1000.0;
+    if (g_search.started[e] > 0) {
+        f64 next = g_search.started[e] + (f64)search_interval_ms() / 1000.0;
         if (!search_wait_until(next)) {
             snprintf(err, err_cap, "interrupted while pacing searches");
             return false;
         }
     }
-    g_engine_start[e] = agent_now_seconds();
+    g_search.started[e] = agent_now_seconds();
     return true;
 }
 
 static void search_pause(SearchEngine e) {
     f64 until = agent_now_seconds() + (f64)AGENT_WEB_SEARCH_PAUSE_MS / 1000.0;
-    if (until > g_engine_paused[e]) g_engine_paused[e] = until;
+    if (until > g_search.paused[e]) g_search.paused[e] = until;
 }
 
 

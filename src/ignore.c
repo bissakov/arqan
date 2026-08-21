@@ -7,10 +7,12 @@
 
 enum { AGIG_NEG = 1, AGIG_DIRONLY = 2, AGIG_PATHNAME = 4 };
 
-static b8 g_show_ignored;
+static struct {
+    b8 show;
+} g_ignore;
 
-void agent_ignore_set_show(b8 on) { g_show_ignored = on; }
-b8 agent_ignore_show(void) { return g_show_ignored; }
+void agent_ignore_set_show(b8 on) { g_ignore.show = on; }
+b8 agent_ignore_show(void) { return g_ignore.show; }
 
 static void agent_ig_add(AgentIgnore *ig, Str pat, size_t base_n) {
     pat = str_trim(pat);
