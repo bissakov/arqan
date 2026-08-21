@@ -818,6 +818,7 @@ static void render_saved_thinking(Str raw, Arena *scratch) {
     size_t mark = scratch->off;
     const JVal *blocks = json_parse(scratch, raw);
     if (!blocks || blocks->type != J_ARR) { scratch->off = mark; return; }
+    b8 was_muted = md_muted();
     for (size_t i = 0; i < blocks->u.arr.n; i++) {
         const JVal *blk = &blocks->u.arr.items[i];
         if (!str_eq(json_str(blk, STR("type")), STR("thinking"))) continue;
@@ -827,7 +828,7 @@ static void render_saved_thinking(Str raw, Arena *scratch) {
         tui_block();
         md_write(thought);
         md_end();
-        md_set_muted(false);
+        md_set_muted(was_muted);
     }
     scratch->off = mark;
 }

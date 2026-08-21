@@ -1896,6 +1896,7 @@ void md_end(void);
 void md_set_muted(b8 on);
 void md_set_raw(b8 on);
 b8   md_raw(void);
+b8   md_muted(void);
 
 
 /* Write one tool call, and later its result, into the transcript. The JSON

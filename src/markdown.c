@@ -38,9 +38,13 @@ typedef struct {
     char   buf[MD_CELL_MAX];
 } MdCell;
 
-static struct {
-    b8     raw;
-    b8     muted;      
+typedef struct {
+    b8 raw;
+    b8 muted;
+} MdModes;
+
+typedef struct {
+    MdModes modes;
     b8     fence;      
     char   fence_mark;
     b8     in_body;    
@@ -79,7 +83,16 @@ static struct {
     u64    hl_epoch;
     b8     hl_active;
     b8     hl_line_open;
-} g_md;
+} MdState;
+
+static MdState g_md;
+
+/* NOTE: ~680KB, mostly the hl_* line tables. Never copy or zero it whole on a
+ * message boundary; reset the fields that need it. A second instance must come
+ * from an arena, not the stack. */
+/* TODO: for a nested renderer, make this `MdState *` over a default instance
+ * and add md_swap. Deferred: no second sink exists, and the extra indirection
+ * lands on the streaming path. */
 
 static b8 md_space(char c) { return c == ' ' || c == '\t'; }
 static b8 md_word(char c) {
@@ -107,7 +120,7 @@ static TuiStyle md_base(void) {
         case MD_BLOCK_HEAD:  return TUI_HEADING;
         case MD_BLOCK_QUOTE: return TUI_QUOTE;
         case MD_BLOCK_CODE:  return TUI_CODE;
-        default:             return g_md.muted ? TUI_QUOTE : TUI_PLAIN;
+        default:             return g_md.modes.muted ? TUI_QUOTE : TUI_PLAIN;
     }
 }
 
@@ -516,7 +529,7 @@ static void md_line_end(void) {
 }
 
 static void md_low_write(Str delta) {
-    if (g_md.raw || !tui_is_fullscreen()) { tui_write(delta); return; }
+    if (g_md.modes.raw || !tui_is_fullscreen()) { tui_write(delta); return; }
     for (size_t i = 0; i < delta.n; i++) {
         char c = delta.p[i];
         if (c == '\r') continue;
@@ -528,7 +541,7 @@ static void md_low_write(Str delta) {
 }
 
 static void md_low_end(void) {
-    if (g_md.raw || !tui_is_fullscreen()) return;
+    if (g_md.modes.raw || !tui_is_fullscreen()) return;
     if (!g_md.in_body) md_resolve(0);
     md_drain(true);
     md_line_reset();
@@ -642,7 +655,7 @@ static void md_cell_build(MdCell *c, Str src) {
 }
 
 static TuiStyle md_cell_base(b8 head) {
-    return head ? TUI_BOLD : g_md.muted ? TUI_QUOTE : TUI_PLAIN;
+    return head ? TUI_BOLD : g_md.modes.muted ? TUI_QUOTE : TUI_PLAIN;
 }
 
 
@@ -926,8 +939,8 @@ static b8 md_row_prefix(void) {
 }
 
 void md_write(Str delta) {
-    if (g_md.raw || !tui_is_fullscreen()) {
-        if (g_md.muted && tui_is_fullscreen()) tui_write_muted(delta);
+    if (g_md.modes.raw || !tui_is_fullscreen()) {
+        if (g_md.modes.muted && tui_is_fullscreen()) tui_write_muted(delta);
         else tui_write(delta);
         return;
     }
@@ -970,7 +983,10 @@ void md_write(Str delta) {
 }
 
 void md_end(void) {
-    if (g_md.raw || !tui_is_fullscreen()) return;
+    if (g_md.modes.raw || !tui_is_fullscreen()) return;
+    /* INVARIANT: this is a full reset, not just a flush. The reset itself is
+     * in md_low_end and md_line_reset, so a new parse-state field belongs
+     * there. Only g_md.modes survives. */
     if (g_md.line_long) {
         md_low_end();
         g_md.line_long = false;
@@ -986,14 +1002,16 @@ void md_end(void) {
 }
 
 void md_set_muted(b8 on) {
-    if (g_md.muted == on) return;
+    if (g_md.modes.muted == on) return;
     md_end();
-    g_md.muted = on;
+    g_md.modes.muted = on;
 }
 
 void md_set_raw(b8 on) {
     md_end();
-    g_md.raw = on;
+    g_md.modes.raw = on;
 }
 
-b8 md_raw(void) { return g_md.raw; }
+b8 md_raw(void) { return g_md.modes.raw; }
+
+b8 md_muted(void) { return g_md.modes.muted; }
