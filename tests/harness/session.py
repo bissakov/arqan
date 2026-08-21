@@ -202,6 +202,10 @@ class Session:
         deadline = time.monotonic() + timeout
         last = time.monotonic()
         seen = not require_output
+        painted = self.term.screen_seq
+        beacon = self.term.idle_seq
+        # A park that had not yet taken the bytes just sent owes a repaint.
+        owed = False
         while time.monotonic() < deadline:
             got = self._read_once(min(0.02, quiet / 3))
             now = time.monotonic()
@@ -212,13 +216,31 @@ class Session:
                     and self.term.idle_size in (None, (self.cols, self.rows))
                     and not self._held):
                 return self
+            # The child writes a beacon on its way into the read that takes
+            # what was just sent, so a beacon behind that count is the gap
+            # before the repaint, not the repaint. It moves no cell, so the
+            # silence after it would otherwise pass for a settled screen and
+            # hand back the frame that answers the previous keystroke.
+            if self.term.idle_seq != beacon:
+                beacon = self.term.idle_seq
+                owed = self.term.idle_consumed < self._sent
+            # Any painting since clears the debt: a child that went on to
+            # stream, or never parks at all, settles on silence as before.
+            if self.term.screen_seq != painted:
+                painted = self.term.screen_seq
+                owed = False
+            # So does word that the bytes have been taken: a turn holding the
+            # loop reads through the poll path, which parks in no read and so
+            # never beacons a frame at all.
+            if self.term.input_consumed >= self._sent:
+                owed = False
             if got:
                 seen = True
                 last = now
                 continue
             # A frame still being written is not a quiet screen, however long
             # the child pauses in the middle of it.
-            if seen and not self._held and now - last >= quiet:
+            if seen and not self._held and not owed and now - last >= quiet:
                 return self
             if self._eof:
                 return self

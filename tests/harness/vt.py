@@ -159,6 +159,9 @@ _STR_END = re.compile(rb"\x07|\x1b\\")
 # painted frame behind it, carrying a sequence number and the number of
 # input bytes it has consumed by then.
 IDLE_PREFIX = "agent;idle;"
+# Bytes taken by the poll path, which paints no settled frame: a count, not a
+# frame the way the idle beacon is.
+INPUT_PREFIX = "agent;input;"
 
 
 class Buffer:
@@ -212,6 +215,11 @@ class Terminal:
         # Sequence number of the last idle beacon the test build emitted. It
         # only ever grows, and each bump is one settled frame.
         self.idle_seq = 0
+        # Highest input count reported by either signal.
+        self.input_consumed = 0
+        # Bumped by every write that can move a cell. A beacon moves none, so
+        # this is what separates a repaint from the child merely parking.
+        self.screen_seq = 0
         # Input bytes the child had consumed when it last parked.
         self.idle_consumed = 0
         # (cols, rows) the frame behind that park was painted for, which is
@@ -371,6 +379,7 @@ class Terminal:
 
     # ---- primitives -------------------------------------------------------
     def _reset(self):
+        self.screen_seq += 1
         self.primary.clear()
         self.alt.clear()
         self.buf = self.primary
@@ -400,6 +409,7 @@ class Terminal:
             self._print(ch)
 
     def _scroll_up(self):
+        self.screen_seq += 1
         b = self.buf
         b.chars.pop(0)
         b.attrs.pop(0)
@@ -418,6 +428,7 @@ class Terminal:
         cols = self.cols
         if cols <= 0:
             return
+        self.screen_seq += 1
         i, n = 0, len(s)
         while i < n:
             if self.row >= self.rows:
@@ -447,6 +458,7 @@ class Terminal:
         w = char_width(ch)
         if w == 0:
             return  # combining marks are not tracked separately
+        self.screen_seq += 1
         if self.col + w > self.cols:
             if self.autowrap:
                 self.col = 0
@@ -532,6 +544,7 @@ class Terminal:
             self.unknown.append(f"CSI {self._params}{final}")
 
     def _switch_alt(self, on: bool):
+        self.screen_seq += 1
         if on and not self.alt_active:
             self.saved_cursor = (self.row, self.col)
             self.alt.clear()
@@ -544,6 +557,7 @@ class Terminal:
             self.row, self.col = self.saved_cursor
 
     def _erase_display(self, mode: int):
+        self.screen_seq += 1
         b = self.buf
         if mode == 2 or mode == 3:
             b.clear()
@@ -561,6 +575,7 @@ class Terminal:
             b.attrs[r][:] = plain
 
     def _erase_line(self, mode: int):
+        self.screen_seq += 1
         b = self.buf
         if mode == 0:
             lo, hi = self.col, self.cols
@@ -633,11 +648,20 @@ class Terminal:
                 size = fields[2] if len(fields) > 2 else ""
                 self.idle_seq = int(seq)
                 self.idle_consumed = int(consumed) if consumed else 0
+                if self.idle_consumed > self.input_consumed:
+                    self.input_consumed = self.idle_consumed
                 if size:
                     cols, _, rows = size.partition("x")
                     self.idle_size = (int(cols), int(rows))
             except ValueError:
                 pass
+        elif payload.startswith(INPUT_PREFIX):
+            try:
+                count = int(payload[len(INPUT_PREFIX):].split(";")[0])
+            except ValueError:
+                return
+            if count > self.input_consumed:
+                self.input_consumed = count
             return
         if payload.startswith("52;"):
             parts = payload.split(";", 2)
