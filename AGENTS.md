@@ -70,8 +70,13 @@ and no release target reads them.
 
 The process is single-threaded, so globals are not a concurrency problem. They
 are a coupling problem: call order becomes API, resets are easy to miss, and
-isolated tests get hard. Each module owns at most one `static` state struct.
-Do not add a loose `g_` variable next to one; add a field.
+isolated tests get hard. Every global belongs to a named `static` state struct
+that owns one concern and has a visible lifecycle. Do not add a loose `g_`
+scalar beside one; add a field to the struct that owns it. A module may hold
+several such structs when the concerns are genuinely separate, as `tui.c` does
+for the viewport, the picker, input and paint batching. Two exceptions stay
+loose: a `volatile sig_atomic_t` a signal handler writes, and state compiled
+in only under `AGENT_TESTING`.
 
 Four kinds, with different fixes. Classify before changing one.
 
