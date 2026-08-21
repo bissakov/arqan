@@ -422,3 +422,79 @@ def test_resumed_session_is_rendered_too(ctx):
     s.wait_text("\u2022 point")
     text = s.text()
     assert "\u2022 point" in text and "# Recap" not in text, text
+
+
+def long_row_scenario(lead: str) -> str:
+    """A table whose body rows are longer than the line hold buffer.
+
+    `lead` is the row prefix: a leading pipe or nothing. The trailing pipe
+    follows it, so both delimited forms of a table are covered.
+    """
+    body = (
+        "Житель+пишет+свободным+текстом+течет+батарея+и+модель+сама+ставит+"
+        "категорию+сантехник+плюс+приоритет+высокий+плюс+выносит+квартиру+"
+        "адрес+и+срочность+что+убирает+ошибку+выбора+категории+жителем"
+    )
+    tail = "+|" if lead else ""
+    return (
+        f"text={lead}Куда+|+Что+делает+|+Модель{tail}\\n"
+        f"{lead}---+|+---+|+---{tail}\\n"
+        f"{lead}Категоризация+|+{body}+|+Любая{tail}\\n"
+        f"{lead}Эскалация+|+{body}+|+Любая{tail}\\n"
+    )
+
+
+def check_long_rows(s):
+    """Every body row is drawn inside the box and none leaks out raw."""
+    s.submit("show a table")
+    s.wait_turn_done()
+    text = s.text()
+    assert "|" not in text.split("show a table", 1)[1], text
+    rows = table_rows(s)
+    assert any("Категоризация" in r for r in rows), text
+    assert any("Эскалация" in r for r in rows), text
+    assert sum("Любая" in r for r in rows) == 2, text
+
+
+def test_a_row_longer_than_the_line_buffer_stays_in_the_table(ctx):
+    """A wide row is held whole: it must not break the table open."""
+    ctx.scenario(long_row_scenario("|+"))
+    s = ctx.spawn(rows=40)
+    check_long_rows(s)
+
+
+def test_a_wide_row_without_a_leading_pipe_stays_in_the_table(ctx):
+    """The pipe-less form of the same table renders the same way."""
+    ctx.scenario(long_row_scenario(""))
+    s = ctx.spawn(rows=40)
+    check_long_rows(s)
+
+
+def interior_rules(s):
+    """Rule rows drawn between body rows, header rule excluded."""
+    rows = table_rows(s)
+    rules = [r for r in rows if r.lstrip().startswith("\u251c")]
+    return rules[1:]
+
+
+def test_wrapped_rows_are_separated_by_a_rule(ctx):
+    """A row spanning several lines needs a boundary to end on."""
+    ctx.scenario(wide_table_scenario())
+    s = ctx.spawn(cols=48, rows=40)
+    s.submit("show a wide table")
+    s.wait_text("Yes")
+    s.wait_turn_done()
+    assert len(interior_rules(s)) == 1, s.text()
+
+
+def test_single_line_rows_stay_tight(ctx):
+    """No cell wraps, so the table keeps its compact frame."""
+    ctx.scenario(
+        "text=Name+|+Score\\n---+|+---\\n"
+        "Ada+|+9\\nGrace+|+8\\nAlan+|+7\\n"
+    )
+    s = ctx.spawn()
+    s.submit("show a table")
+    s.wait_text("Alan")
+    s.wait_turn_done()
+    assert interior_rules(s) == [], s.text()
