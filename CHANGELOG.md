@@ -7,58 +7,69 @@
 ### Added
 
 - Add `resume_last` to reopen the newest session in the current directory. It
-  is off by default.
+  is off by default. ([`da28f93`])
 
-- Add `/restart` to restart the process and reload settings.
+- Add `/restart` to restart the process and reload settings. ([`da28f93`])
 
 - Add PNG, JPEG, GIF and WebP attachments with `/attach <path>`. A message can
   contain four images. Sessions preserve attachments. Images over 5 MB or
-  8000 pixels per side are refused.
+  8000 pixels per side are refused. ([`7c753bd`])
 
 - Add clipboard image attachments with Ctrl-V or `/attach` without a path.
+  ([`7c753bd`])
 
-- Attach supported images selected from the `@` path picker.
+- Attach supported images selected from the `@` path picker. ([`7c753bd`])
 
 - Add `images = off` to disable image tools and resumed attachments. Project
-  configuration cannot enable images.
+  configuration cannot enable images. ([`7c753bd`])
 
 - Add manual and automatic context compaction. It summarizes older messages
   and preserves recent rounds. Settings control the mode, threshold and model.
+  ([`a770655`])
 
 ### Changed
 
 - Store session titles in the first JSONL record instead of separate files.
+  ([`38e87f7`])
 
 - Make `read` identify binary files instead of returning invalid text. Image
-  results include the type, size and dimensions.
+  results include the type, size and dimensions. ([`7c753bd`])
 
 - Add syntax highlighting to tool blocks opened in a separate window.
+  ([`a6777b3`])
 
 ### Fixed
 
 - Keep the previous file when a `write` tool call cannot finish safely. A
-  destination symlink is replaced instead of changing its target.
+  destination symlink is replaced instead of changing its target. ([`4a425a2`])
 
 - Report failed session saves and retry messages that were not persisted.
+  ([`47f24a6`])
 
 - Improve tool errors for failed patches, invalid JSON, limits and file access.
+  ([`7c55970`])
 
 - Accept common patch envelopes, return current context after failed hunks and
-  keep patch diagnostics valid UTF-8.
+  keep patch diagnostics valid UTF-8. ([`49b007e`])
 
 - Make the advertised shell output limit match the accepted limit.
+  ([`49b007e`])
 
 - Retry syntax highlighting after a slow response instead of disabling it.
+  ([`c83b9c2`])
 
 - Exclude omitted older tool output from the context usage estimate.
+  ([`a770655`])
 
 - Preserve recent rounds when `/compact` uses a declared context window.
+  ([`a770655`])
 
 - Show an estimated context size immediately after resuming a session.
+  ([`a770655`])
 
-- Show the delete key when the session picker opens.
+- Show the delete key when the session picker opens. ([`c83b9c2`])
 
-- Preserve output received while a background job exits.
+- Preserve output received while a background job exits. ([`a186c42`])
 
 ## [0.5.0] - 2026-08-16
 
@@ -324,6 +335,17 @@
 [0.2.0]: https://github.com/bissakov/arqan/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bissakov/arqan/releases/tag/v0.1.0
 
+[`7c55970`]: https://github.com/bissakov/arqan/commit/7c55970a96fd013d1ce74b11fcf4fcadef88b814
+[`da28f93`]: https://github.com/bissakov/arqan/commit/da28f9386de009c4327772815dc7058499d52304
+[`7c753bd`]: https://github.com/bissakov/arqan/commit/7c753bdc35cf19af3d93ffddb21cc330901909d6
+[`a770655`]: https://github.com/bissakov/arqan/commit/a770655380d68cb56fe994b4c9af757dca1ce511
+[`a6777b3`]: https://github.com/bissakov/arqan/commit/a6777b3ff277427de140a913ab00010b74aac1f5
+[`c83b9c2`]: https://github.com/bissakov/arqan/commit/c83b9c271832c1e2b67113a6bd3b9a157ba05f02
+[`a186c42`]: https://github.com/bissakov/arqan/commit/a186c426f05a2b9acb16cf1ed38de047c2f5cd44
+[`38e87f7`]: https://github.com/bissakov/arqan/commit/38e87f742998210bf778e12ccca75b959084a305
+[`4a425a2`]: https://github.com/bissakov/arqan/commit/4a425a23804e668662a8d1c983f9f40ce647b0a6
+[`47f24a6`]: https://github.com/bissakov/arqan/commit/47f24a68f77149c28b1d1344fa5be5726a5c4a4c
+[`49b007e`]: https://github.com/bissakov/arqan/commit/49b007eaf2a0f2e9f32eeac6e5b59ce7afde9acc
 [`6efb5bf`]: https://github.com/bissakov/arqan/commit/6efb5bf697325810417ca7e0a0f8c7200e53cbef
 [`3af8d2c`]: https://github.com/bissakov/arqan/commit/3af8d2c7e512f266f87ca341f514e88373ccb32e
 [`0c7a904`]: https://github.com/bissakov/arqan/commit/0c7a9042fb2af783b05a20ba2ed5c5a049b36f80
