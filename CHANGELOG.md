@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- Publish signed apt, dnf and pacman repositories on GitHub Pages, so a
+  release can be installed and upgraded with the system package manager
+  instead of a downloaded file. The landing page carries the install steps
+  and the signing key.
+
 ### Fixed
 
 - Refuse a malformed number in JSON instead of reading part of it. A model
