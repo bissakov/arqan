@@ -100,7 +100,7 @@ def test_multiline_prompt_round_trips(ctx):
     s.submit("/exit")
     s.wait_exit()
 
-    hist = ctx.home / ".local/state/arqan/history"
+    hist = ctx.history_file()
     assert hist.read_text().splitlines()[0] == "line one\\nline two"
 
     s2 = ctx.spawn()
@@ -111,7 +111,7 @@ def test_multiline_prompt_round_trips(ctx):
 
 def test_oversized_file_is_trimmed_to_the_newest(ctx):
     """A file longer than the ring keeps its newest entries and is rewritten."""
-    hist = ctx.home / ".local/state/arqan/history"
+    hist = ctx.history_file()
     hist.parent.mkdir(parents=True)
     hist.write_text("".join(f"prompt {i}\n" for i in range(600)))
 
@@ -123,6 +123,49 @@ def test_oversized_file_is_trimmed_to_the_newest(ctx):
     lines = hist.read_text().splitlines()
     assert len(lines) == 500, len(lines)
     assert lines[0] == "prompt 100" and lines[-1] == "prompt 599", lines[:1] + lines[-1:]
+
+
+def test_history_is_scoped_to_the_workspace(ctx):
+    """Another directory recalls its own prompts, never the first one's."""
+    other = ctx.work / "elsewhere"
+    other.mkdir()
+
+    s = ctx.spawn()
+    submit_all(ctx, s, "c project prompt")
+    s.submit("/exit")
+    s.wait_exit()
+
+    s2 = ctx.spawn(cwd=other)
+    s2.key("up").sync()
+    assert s2.composer_text() == "", s2.composer_lines()
+    submit_all(ctx, s2, "python project prompt")
+    s2.submit("/exit")
+    s2.wait_exit()
+
+    assert ctx.history_file(other).exists(), sorted(ctx.history_file().parent.iterdir())
+
+    s3 = ctx.spawn()
+    s3.key("up").sync()
+    assert s3.composer_text() == "/exit", s3.composer_lines()
+    s3.key("up").sync()
+    assert s3.composer_text() == "c project prompt", s3.composer_lines()
+
+
+def test_a_global_history_file_is_retired(ctx):
+    """The pre-workspace file moves aside instead of blocking the directory."""
+    legacy = ctx.home / ".local/state/arqan/history"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("global prompt\n")
+
+    s = ctx.spawn()
+    s.key("up").sync()
+    assert s.composer_text() == "", s.composer_lines()
+    submit_all(ctx, s, "workspace prompt")
+    s.submit("/exit")
+    s.wait_exit()
+
+    assert legacy.with_suffix(".global").read_text() == "global prompt\n"
+    assert ctx.history_file().read_text().splitlines() == ["workspace prompt", "/exit"]
 
 
 def test_backslash_round_trips(ctx):

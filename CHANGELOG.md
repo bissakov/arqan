@@ -22,6 +22,9 @@
 
 ### Changed
 
+- Keep prompt history per directory, so one project no longer recalls
+  another's prompts. The old shared file is kept as `history.global`.
+
 - Draw a rule between table rows when a cell wraps, so a row that spans
   several lines has a visible end. Tables whose rows fit on one line are
   unchanged.

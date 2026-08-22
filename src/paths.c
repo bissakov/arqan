@@ -80,6 +80,44 @@ Str paths_file(AgentDir kind, Str name, Arena *a) {
     return out.n < AGENT_MAX_PATH ? out : (Str){0};
 }
 
+static b8 slug_unreserved(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+        || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
+}
+
+size_t paths_cwd_slug(char *out, size_t cap) {
+    static const char hex[] = "0123456789abcdef";
+    char cwd[AGENT_MAX_PATH];
+    if (!out || cap < AGENT_SLUG_MAX + 18 || !getcwd(cwd, sizeof cwd)) return 0;
+
+    Str path = str_c(cwd);
+    size_t n = 0;
+    b8 truncated = false;
+    for (size_t i = 0; i < path.n; i++) {
+        char c = path.p[i];
+        size_t need = slug_unreserved(c) ? 1u : 3u;
+        if (n + need > AGENT_SLUG_MAX) {
+            truncated = true;
+            break;
+        }
+        if (need == 1) out[n++] = c;
+        else {
+            out[n++] = '%';
+            out[n++] = hex[((u8)c >> 4) & 0xf];
+            out[n++] = hex[(u8)c & 0xf];
+        }
+    }
+    if (truncated) {
+        u64 h = str_hash64(path);
+        out[n++] = '-';
+        for (i32 shift = 60; shift >= 0; shift -= 4)
+            out[n++] = hex[(h >> shift) & 0xf];
+    }
+    if (!n) out[n++] = '_';
+    out[n] = '\0';
+    return n;
+}
+
 /* mkdir -p with 0700, as the spec requires for created XDG directories.
  * mkdir reports EEXIST for a regular file too, so an existing component is
  * confirmed to be a directory: the caller's next open would otherwise fail

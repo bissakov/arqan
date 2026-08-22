@@ -161,6 +161,14 @@ class Ctx:
     def state_file(self) -> Path:
         return self.home / ".local" / "state" / "arqan" / "state.toml"
 
+    def history_file(self, cwd: Path | str | None = None, state: Path | None = None) -> Path:
+        """Prompt recall for one workspace; the slug mirrors paths_cwd_slug()."""
+        keep = set(b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")
+        path = str(cwd if cwd is not None else self.work).encode()
+        slug = "".join(chr(b) if b in keep else "%%%02x" % b for b in path)
+        base = state if state is not None else self.home / ".local" / "state"
+        return base / "arqan" / "history" / slug
+
     def settings(self, path: Path) -> dict:
         """A settings file as {section: {key: value}}; "" is its head."""
         if not path.exists():

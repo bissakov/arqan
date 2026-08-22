@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static b8 hist_write(FILE *f, Str s) {
     for (size_t i = 0; i < s.n; i++) {
@@ -71,11 +72,49 @@ b8 history_init(History *h, Arena *own, size_t cap) {
     return true;
 }
 
+/* The recall file for this workspace, `<state>/history/<cwd slug>`, so two
+ * projects never offer each other's prompts. `scratch` holds the XDG base for
+ * the length of the call; the result lives in `a`. Empty when the base or the
+ * cwd is unavailable, which leaves recall in memory for the session. */
+Str history_path(Arena *a, Arena *scratch) {
+    Str base = paths_dir(AGENT_DIR_STATE, scratch);
+    if (!base.n) return (Str){0};
+    char slug[AGENT_SLUG_MAX + 32];
+    size_t slug_n = paths_cwd_slug(slug, sizeof slug);
+    if (!slug_n) return (Str){0};
+    Buf b; buf_init(&b, a, base.n + slug_n + 12);
+    buf_puts(&b, base);
+    buf_puts(&b, STR("/history/"));
+    buf_puts(&b, (Str){ slug, slug_n });
+    if (!buf_ok(&b)) return (Str){0};
+    Str out = buf_finish(&b);
+    return out.n < AGENT_MAX_PATH ? out : (Str){0};
+}
+
+/* Versions before per-workspace recall wrote one file where the directory now
+ * goes, and no directory can be created under that name. Renamed rather than
+ * removed so the entries stay recoverable by hand. */
+static void hist_retire_global(Str path) {
+    Str dir = path;
+    while (dir.n && dir.p[dir.n - 1] != '/') dir.n--;
+    if (dir.n < 2 || dir.n + 8 >= AGENT_MAX_PATH) return;
+    dir.n--;
+
+    char old[AGENT_MAX_PATH], retired[AGENT_MAX_PATH];
+    memcpy(old, dir.p, dir.n);
+    old[dir.n] = '\0';
+    struct stat st;
+    if (stat(old, &st) != 0 || !S_ISREG(st.st_mode)) return;
+    i32 n = snprintf(retired, sizeof retired, "%s.global", old);
+    if (n > 0 && (size_t)n < sizeof retired) (void)rename(old, retired);
+}
+
 /* Reads the state file into the entry arena, with `scratch` holding the raw
  * bytes for the length of the call. A missing file is an empty history. */
 void history_load(History *h, Str path, Arena *scratch) {
     if (!h->cap || !path.n) return;
     h->path = path;
+    hist_retire_global(path);
     FILE *f = fopen(path.p, "rb");
     if (!f) return;
     fseek(f, 0, SEEK_END);
