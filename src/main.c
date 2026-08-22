@@ -1115,7 +1115,7 @@ static Str help_build(Agent *ag) {
     help_path(&b, "state file", paths_file(AGENT_DIR_STATE, AGENT_STATE_NAME, a));
     help_path(&b, "credentials file",
               paths_file(AGENT_DIR_STATE, AGENT_CREDENTIALS_NAME, a));
-    help_path(&b, "prompt history", paths_file(AGENT_DIR_STATE, STR("history"), a));
+    help_path(&b, "prompt history", history_path(a, a));
     help_path(&b, "telemetry root", paths_file(AGENT_DIR_STATE, STR("telemetry"), a));
     help_path(&b, "data directory", paths_dir(AGENT_DIR_DATA, a));
     help_path(&b, "session directory", ag->sess->dir);
@@ -4356,9 +4356,7 @@ i32 main(i32 argc, char **argv) {
     if (hist_mem) {
         arena_init(&hist_arena, hist_mem, AGENT_HISTORY_BYTES);
         if (history_init(&hist, &hist_arena, AGENT_MAX_HISTORY))
-            history_load(&hist,
-                         paths_file(AGENT_DIR_STATE, STR("history"), &persist),
-                         &scratch);
+            history_load(&hist, history_path(&persist, &scratch), &scratch);
     }
     arena_reset(&scratch);
 

@@ -10,45 +10,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#define SESSION_SLUG_MAX 200      
 #define SESSION_PREVIEW_BYTES 60  
 #define SESSION_PREVIEW_READ 8192 
-
-static b8 sess_unreserved(char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-        || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
-}
-
-
-static size_t sess_slug(char *out, size_t cap, Str path) {
-    static const char hex[] = "0123456789abcdef";
-    size_t n = 0;
-    b8 truncated = false;
-    for (size_t i = 0; i < path.n; i++) {
-        char c = path.p[i];
-        size_t need = sess_unreserved(c) ? 1u : 3u;
-        if (n + need > SESSION_SLUG_MAX || n + need + 1 > cap) {
-            truncated = true;
-            break;
-        }
-        if (need == 1) out[n++] = c;
-        else {
-            out[n++] = '%';
-            out[n++] = hex[((u8)c >> 4) & 0xf];
-            out[n++] = hex[(u8)c & 0xf];
-        }
-    }
-    if (truncated) {
-        u64 h = str_hash64(path);
-        if (n + 17 >= cap) n = cap > 18 ? cap - 18 : 0;
-        out[n++] = '-';
-        for (i32 shift = 60; shift >= 0; shift -= 4)
-            out[n++] = hex[(h >> shift) & 0xf];
-    }
-    if (!n && cap > 1) out[n++] = '_';
-    out[n] = '\0';
-    return n;
-}
 
 /* Resolve the per-cwd session directory. `scratch` only holds the XDG base
  * for the length of the call; the result is copied into the struct. */
@@ -56,10 +19,9 @@ b8 session_init(Session *s, Arena *scratch) {
     memset(s, 0, sizeof *s);
     Str base = paths_dir(AGENT_DIR_DATA, scratch);
     if (!base.n) return false;
-    char cwd[AGENT_MAX_PATH];
-    if (!getcwd(cwd, sizeof cwd)) return false;
-    char slug[SESSION_SLUG_MAX + 32];
-    size_t slug_n = sess_slug(slug, sizeof slug, str_c(cwd));
+    char slug[AGENT_SLUG_MAX + 32];
+    size_t slug_n = paths_cwd_slug(slug, sizeof slug);
+    if (!slug_n) return false;
 
     i32 n = snprintf(s->dir_buf, sizeof s->dir_buf, "%.*s/sessions/%.*s",
                      (i32)base.n, base.p, (i32)slug_n, slug);

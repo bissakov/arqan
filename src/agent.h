@@ -381,10 +381,17 @@ b8     json_bool(const JVal *obj, Str key);
  */
 typedef enum { AGENT_DIR_CONFIG, AGENT_DIR_DATA, AGENT_DIR_STATE, AGENT_DIR_CACHE } AgentDir;
 
+#define AGENT_SLUG_MAX 200
 
 Str    paths_dir(AgentDir kind, Arena *a);
 Str    paths_file(AgentDir kind, Str name, Arena *a);
 b8     paths_ensure_dir(Str dir);
+
+/* One directory name identifying the workspace: the current working directory
+ * percent-encoded, truncated to AGENT_SLUG_MAX with a hash of the full path
+ * appended. Returns 0 when the cwd is unavailable or `cap` is under
+ * AGENT_SLUG_MAX + 18, the room that suffix and the terminator need. */
+size_t paths_cwd_slug(char *out, size_t cap);
 
 size_t paths_config_files(Str name, Arena *a, Str *out, size_t max);
 
@@ -459,6 +466,7 @@ typedef struct {
 } History;
 
 b8   history_init(History *h, Arena *own, size_t cap);
+Str  history_path(Arena *a, Arena *scratch);
 void history_load(History *h, Str path, Arena *scratch);
 void history_rewrite(const History *h);
 void history_add(History *h, Str line);

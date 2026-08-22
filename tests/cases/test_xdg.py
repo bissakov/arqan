@@ -23,7 +23,7 @@ def test_sessions_land_in_the_data_dir(ctx):
 
 
 def test_history_lands_in_the_state_dir(ctx):
-    """A submitted prompt is mirrored to $HOME/.local/state/arqan/history."""
+    """A submitted prompt is mirrored under $HOME/.local/state/arqan/history."""
     ctx.scenario("text=ok")
     s = ctx.spawn()
     s.submit("remember me")
@@ -31,7 +31,7 @@ def test_history_lands_in_the_state_dir(ctx):
     s.submit("/exit")
     s.wait_exit()
 
-    hist = ctx.home / ".local" / "state" / "arqan" / "history"
+    hist = ctx.history_file()
     assert hist.exists(), sorted(p.name for p in ctx.home.rglob("*"))
     assert hist.read_text().splitlines() == ["remember me", "/exit"]
 
@@ -61,7 +61,8 @@ def test_state_home_env_is_honoured(ctx):
     s.submit("/exit")
     s.wait_exit()
 
-    assert (state / "arqan" / "history").read_text() == "into the state dir\n/exit\n"
+    hist = ctx.history_file(state=state)
+    assert hist.read_text() == "into the state dir\n/exit\n"
     # sessions still default under ~/.local/share; only the state dir moved
     assert not (ctx.home / ".local" / "state").exists(), "the default must stay unused"
 
