@@ -68,7 +68,7 @@ PYTHON  ?= python3
         bench bench-slow bench-baseline \
         bench-guard check-curl-types \
         check-globals test-unit \
-        package-linux test-package-linux release-linux
+        package-linux test-package-linux release-linux publish-repos
 
 all: $(BIN) $(HL_BIN)
 
@@ -238,6 +238,9 @@ test-package-linux: package-linux
 
 release-linux:
 	./scripts/release-linux.sh
+
+publish-repos:
+	./scripts/publish-repos.sh
 
 clean:
 	rm -rf build bin dist
