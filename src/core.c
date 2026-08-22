@@ -21,6 +21,9 @@ void arena_init(Arena *a, void *mem, size_t cap) {
  * checked against the arena's own capacity instead of being computed first and
  * compared afterwards: `off + n` is exactly the addition that wraps. */
 void *arena_alloc(Arena *a, size_t n, size_t align) {
+    /* INVARIANT: alignment is applied to the offset, so a caller gets an
+     * absolutely aligned pointer only when the memory handed to arena_init is
+     * at least as aligned. The startup arenas use alignas(64) for this. */
     if (align == 0 || (align & (align - 1))) return NULL;   
     size_t mask = align - 1;
     size_t pad = (align - (a->off & mask)) & mask;
