@@ -35,10 +35,58 @@ the `.pkg.tar.zst` link the distribution's libraries: the `.deb` wants glibc
 2.31 or newer, the `.rpm` and the Arch package glibc 2.34 or newer, and all
 three `libcurl.so.4` from libcurl 7.66 or newer; the portable archive borrows
 nothing and wants only the kernel. All four read a CA certificate bundle at
-run time. macOS, Windows, aarch64, hosted apt/dnf/pacman repositories, the
-AUR, and package signing are not part of this release milestone. Release
-packages are downloaded directly from the GitHub release rather than from a
-configured package repository.
+run time. macOS, Windows, aarch64 and the AUR are not part of this release
+milestone.
+
+Install from the signed package repository to let the system package manager
+carry upgrades, or take a single package from the release and install it by
+hand.
+
+### Package repositories
+
+The repositories live at <https://bissakov.github.io/arqan>, which also prints
+the fingerprint of the key every index is signed with. They carry x86_64 only.
+
+Debian and Ubuntu:
+
+```sh
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -fsSLo /etc/apt/keyrings/arqan-archive-keyring.asc \
+    https://bissakov.github.io/arqan/arqan-archive-keyring.asc
+sudo curl -fsSLo /etc/apt/sources.list.d/arqan.sources \
+    https://bissakov.github.io/arqan/deb/arqan.sources
+sudo apt update && sudo apt install arqan
+```
+
+RPM-based systems:
+
+```sh
+sudo rpm --import https://bissakov.github.io/arqan/arqan-archive-keyring.asc
+sudo curl -fsSLo /etc/yum.repos.d/arqan.repo \
+    https://bissakov.github.io/arqan/rpm/arqan.repo
+sudo dnf install arqan
+```
+
+Arch and its derivatives take the key, sign it locally with the fingerprint the
+landing page names, then append the repository to `/etc/pacman.conf`:
+
+```sh
+curl -fsSLo /tmp/arqan-archive-keyring.asc \
+    https://bissakov.github.io/arqan/arqan-archive-keyring.asc
+sudo pacman-key --add /tmp/arqan-archive-keyring.asc
+sudo pacman-key --lsign-key 01B3FA5FA91E2672872EC2710430B0C28F7AFB0A
+sudo tee -a /etc/pacman.conf >/dev/null <<'EOF'
+
+[arqan]
+Server = https://bissakov.github.io/arqan/arch/$arch
+EOF
+sudo pacman -Syu arqan
+```
+
+A repository carries the ten newest releases. Older ones stay on the GitHub
+release page.
+
+### Single packages
 
 Download `SHA256SUMS` and the package for your system, then verify and install
 it. Debian and Ubuntu users can install the native package with:
@@ -109,6 +157,13 @@ and Alpine containers, then tests native install, reinstall, and removal in
 disposable Debian, Ubuntu, Fedora-family, and Arch containers, checks the Arch
 package against its own file manifest with `pacman -Qkk`, and runs the archive
 in Alpine and Debian 11.
+
+`make publish-repos` (or `scripts/publish-repos.sh`) rebuilds the signed apt,
+dnf and pacman repositories from the packages attached to the published
+releases, and `.github/workflows/publish-repos.yml` runs it on every published
+release and deploys the result to GitHub Pages.
+`packaging/linux/REPOSITORIES.md` records the layout, what each format signs,
+and how the signing key is held.
 
 ## Configure
 
