@@ -498,3 +498,19 @@ def test_single_line_rows_stay_tight(ctx):
     s.wait_text("Alan")
     s.wait_turn_done()
     assert interior_rules(s) == [], s.text()
+
+
+def test_unclosed_fence_does_not_leak_into_the_next_message(ctx):
+    """A message that ends mid-fence must not make the next one code."""
+    ctx.scenario("text=alpha:\\n```c\\nint+x;")
+    s = ctx.spawn()
+    s.submit("show me code")
+    s.wait_text("int x;")
+    s.wait_turn_done()
+    assert cell(s, "int x;").bg == CODE_BG, "the fence opened"
+
+    ctx.scenario("text=omega+prose")
+    s.submit("now just talk")
+    s.wait_text("omega prose")
+    s.wait_turn_done()
+    assert cell(s, "omega prose").bg is None, s.text()

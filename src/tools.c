@@ -250,23 +250,62 @@ static void ring_put(char *ring, size_t cap, size_t *head, size_t *len,
     }
 }
 
-static void (*g_shell_idle)(void *ud);
-static void *g_shell_idle_ud;
+typedef struct {
+    u32    id;          
+    pid_t  pid;         
+    pid_t  drainer;
+    b8     running;
+    b8     drained;
+    b8     reported;    
+    i32    status;      
+    i32    fd;          
+    f64    started;
+    f64    ended;
+    size_t read_off;    
+    char   path[AGENT_SPILL_PATH_MAX];
+    char   cmd[AGENT_JOB_CMD_CHARS];
+} Job;
+
+typedef struct {
+    void (*idle)(void *ud);
+    void  *idle_ud;
+    volatile sig_atomic_t *interrupt;
+    i32    timeout_ms;
+} ShellHost;
+
+typedef struct {
+    AgentMode mode;
+    b8        interactive;
+} ToolsPolicy;
+
+typedef struct {
+    Job jobs[AGENT_MAX_JOBS];
+    u32 seq;
+} JobTable;
+
+typedef struct {
+    ShellHost   shell;
+    ToolsPolicy policy;
+    JobTable    job;
+} ToolsState;
+
+static ToolsState g_tools = {
+    .shell = { .timeout_ms = AGENT_SHELL_TIMEOUT_MS },
+};
+/* NOTE: the non-zero default puts the whole struct, job table included, in
+ * .data rather than .bss. It is ~2KB today. Weigh that before adding a large
+ * member here. */
 
 void shell_set_idle(void (*fn)(void *ud), void *ud) {
-    g_shell_idle = fn;
-    g_shell_idle_ud = ud;
+    g_tools.shell.idle = fn;
+    g_tools.shell.idle_ud = ud;
 }
-
-static volatile sig_atomic_t *g_shell_interrupt;
 
 void shell_set_interrupt_flag(volatile sig_atomic_t *flag) {
-    g_shell_interrupt = flag;
+    g_tools.shell.interrupt = flag;
 }
 
-static i32 g_shell_timeout_ms = AGENT_SHELL_TIMEOUT_MS;
-
-void shell_set_timeout(i32 ms) { g_shell_timeout_ms = ms > 0 ? ms : 0; }
+void shell_set_timeout(i32 ms) { g_tools.shell.timeout_ms = ms > 0 ? ms : 0; }
 
 /* Long enough that a chatty command is drained in whole blocks, short enough
  * that the caller's idle hook keeps a frame moving. */
@@ -278,7 +317,7 @@ void shell_set_timeout(i32 ms) { g_shell_timeout_ms = ms > 0 ? ms : 0; }
 b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
     static char z[AGENT_MAX_COMMAND];
     if (!arg_cstr(cmd, z, sizeof z, "command", err, err_cap)) return false;
-    if (g_shell_interrupt && *g_shell_interrupt) {
+    if (g_tools.shell.interrupt && *g_tools.shell.interrupt) {
         buf_puts(out, STR("[interrupted]\n[exit 130]"));
         return true;
     }
@@ -310,7 +349,7 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
     b8 interrupted = false;
     b8 killed = false;
     for (;;) {
-        if (g_shell_interrupt && *g_shell_interrupt) {
+        if (g_tools.shell.interrupt && *g_tools.shell.interrupt) {
             interrupted = true;
             if (!killed) {
                 if (kill(-pid, SIGTERM) != 0) kill(pid, SIGTERM);
@@ -318,8 +357,8 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
             }
         }
         i32 ready = poll(&pfd, 1, SHELL_POLL_MS);
-        if (g_shell_idle) g_shell_idle(g_shell_idle_ud);
-        if (g_shell_interrupt && *g_shell_interrupt) {
+        if (g_tools.shell.idle) g_tools.shell.idle(g_tools.shell.idle_ud);
+        if (g_tools.shell.interrupt && *g_tools.shell.interrupt) {
             interrupted = true;
             if (!killed) {
                 if (kill(-pid, SIGTERM) != 0) kill(pid, SIGTERM);
@@ -399,24 +438,6 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
  * one file holds the output from its first byte, and it exits when the last
  * writer closes the pipe.
  */
-typedef struct {
-    u32    id;          
-    pid_t  pid;         
-    pid_t  drainer;
-    b8     running;
-    b8     drained;
-    b8     reported;    
-    i32    status;      
-    i32    fd;          
-    f64    started;
-    f64    ended;
-    size_t read_off;    
-    char   path[AGENT_SPILL_PATH_MAX];
-    char   cmd[AGENT_JOB_CMD_CHARS];
-} Job;
-
-static Job g_jobs[AGENT_MAX_JOBS];
-static u32 g_job_seq;
 
 static void job_release(Job *j) {
     /* The drainer outlives a finished command whenever something it spawned
@@ -450,7 +471,7 @@ static void job_refresh(Job *j) {
 static Job *job_find(u32 id) {
     if (!id) return NULL;
     for (size_t i = 0; i < AGENT_MAX_JOBS; i++)
-        if (g_jobs[i].id == id) return &g_jobs[i];
+        if (g_tools.job.jobs[i].id == id) return &g_tools.job.jobs[i];
     return NULL;
 }
 
@@ -460,7 +481,7 @@ static void job_signal(Job *j) {
     if (kill(-j->pid, SIGTERM) != 0) kill(j->pid, SIGTERM);
     for (i32 i = 0; i < 20 && j->running; i++) {
         poll(NULL, 0, SHELL_POLL_MS);
-        if (g_shell_idle) g_shell_idle(g_shell_idle_ud);
+        if (g_tools.shell.idle) g_tools.shell.idle(g_tools.shell.idle_ud);
         job_refresh(j);
     }
     if (!j->running) return;
@@ -474,7 +495,7 @@ static void job_signal(Job *j) {
 
 void jobs_stop(void) {
     for (size_t i = 0; i < AGENT_MAX_JOBS; i++) {
-        Job *j = &g_jobs[i];
+        Job *j = &g_tools.job.jobs[i];
         if (!j->id) continue;
         if (j->running) {
             if (kill(-j->pid, SIGKILL) != 0) kill(j->pid, SIGKILL);
@@ -539,12 +560,12 @@ static void job_drain(i32 in, i32 out, size_t written) {
 static u32 job_detach(pid_t pid, i32 pipe_fd, Spill *spill, Str cmd) {
     Job *slot = NULL;
     for (size_t i = 0; i < AGENT_MAX_JOBS && !slot; i++)
-        if (!g_jobs[i].id) slot = &g_jobs[i];
+        if (!g_tools.job.jobs[i].id) slot = &g_tools.job.jobs[i];
     for (size_t i = 0; i < AGENT_MAX_JOBS && !slot; i++) {
-        job_refresh(&g_jobs[i]);
-        if (!g_jobs[i].running && g_jobs[i].reported) {
-            job_release(&g_jobs[i]);
-            slot = &g_jobs[i];
+        job_refresh(&g_tools.job.jobs[i]);
+        if (!g_tools.job.jobs[i].running && g_tools.job.jobs[i].reported) {
+            job_release(&g_tools.job.jobs[i]);
+            slot = &g_tools.job.jobs[i];
         }
     }
     if (!slot) return 0;
@@ -570,7 +591,7 @@ static u32 job_detach(pid_t pid, i32 pipe_fd, Spill *spill, Str cmd) {
         close(slot->fd);
         slot->fd = -1;
     }
-    slot->id = ++g_job_seq;
+    slot->id = ++g_tools.job.seq;
     slot->pid = pid;
     slot->drainer = drainer;
     slot->running = true;
@@ -646,7 +667,7 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit,
                              size_t err_cap) {
     static char z[AGENT_MAX_COMMAND];
     if (!arg_cstr(cmd, z, sizeof z, "command", err, err_cap)) return false;
-    if (g_shell_interrupt && *g_shell_interrupt) {
+    if (g_tools.shell.interrupt && *g_tools.shell.interrupt) {
         buf_puts(out, STR("[interrupted]\n[exit 130]"));
         return true;
     }
@@ -686,7 +707,7 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit,
     b8 undetachable = false;
     f64 started = agent_now_seconds();
     for (;;) {
-        if (g_shell_interrupt && *g_shell_interrupt) {
+        if (g_tools.shell.interrupt && *g_tools.shell.interrupt) {
             interrupted = true;
             if (!killed) {
                 if (kill(-pid, SIGTERM) != 0) kill(pid, SIGTERM);
@@ -694,8 +715,8 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit,
             }
         }
         i32 ready = poll(&pfd, 1, SHELL_POLL_MS);
-        if (g_shell_idle) g_shell_idle(g_shell_idle_ud);
-        if (g_shell_interrupt && *g_shell_interrupt) {
+        if (g_tools.shell.idle) g_tools.shell.idle(g_tools.shell.idle_ud);
+        if (g_tools.shell.interrupt && *g_tools.shell.interrupt) {
             interrupted = true;
             if (!killed) {
                 if (kill(-pid, SIGTERM) != 0) kill(pid, SIGTERM);
@@ -817,13 +838,13 @@ static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err, size_t err_ca
      * caller that knows what it started can hand the turn back sooner. It
      * cannot hold it longer, which is what the ceiling is for. */
     const JVal *want = json_get(j, STR("timeout_ms"));
-    if (g_shell_timeout_ms <= 0 && want && want->type != J_NULL) {
+    if (g_tools.shell.timeout_ms <= 0 && want && want->type != J_NULL) {
         snprintf(err, err_cap, "timeout_ms is unavailable: shell_timeout_ms "
                  "is 0, so every command is waited out");
         return false;
     }
-    if (!arg_count(j, STR("timeout_ms"), (size_t)g_shell_timeout_ms,
-                   (size_t)g_shell_timeout_ms, &timeout, err, err_cap))
+    if (!arg_count(j, STR("timeout_ms"), (size_t)g_tools.shell.timeout_ms,
+                   (size_t)g_tools.shell.timeout_ms, &timeout, err, err_cap))
         return false;
     return shell_capture_page(json_str(j, STR("command")), offset, limit,
                               (i32)timeout, out, err, err_cap);
@@ -845,7 +866,7 @@ static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
     if (str_eq(action, STR("list"))) {
         size_t live = 0;
         for (size_t i = 0; i < AGENT_MAX_JOBS; i++) {
-            Job *job = &g_jobs[i];
+            Job *job = &g_tools.job.jobs[i];
             if (!job->id) continue;
             job_refresh(job);
             char state[32], age[16], size[32];
@@ -891,7 +912,7 @@ static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
                 if (job->drained) break;
                 if (exited <= 0.0) exited = agent_now_seconds();
                 if ((agent_now_seconds() - exited) * 1000.0 >= grace) break;
-            } else if (g_shell_interrupt && *g_shell_interrupt) {
+            } else if (g_tools.shell.interrupt && *g_tools.shell.interrupt) {
                 /* An interrupt stops the work, not just the watching: a job
                  * left running behind a cancelled turn is one nobody owns. */
                 interrupted = true;
@@ -902,7 +923,7 @@ static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
                 break;
             }
             poll(NULL, 0, SHELL_POLL_MS);
-            if (g_shell_idle) g_shell_idle(g_shell_idle_ud);
+            if (g_tools.shell.idle) g_tools.shell.idle(g_tools.shell.idle_ud);
         }
     }
 
@@ -1858,16 +1879,13 @@ static b8 tool_agent_only(Str args, Arena *scratch, Buf *out,
 }
 
 
-static AgentMode g_mode;
-static b8 g_interactive;
-
-void tools_set_mode(AgentMode mode) { g_mode = mode; }
-void tools_set_interactive(b8 interactive) { g_interactive = interactive; }
+void tools_set_mode(AgentMode mode) { g_tools.policy.mode = mode; }
+void tools_set_interactive(b8 interactive) { g_tools.policy.interactive = interactive; }
 
 b8 tools_available(const ToolRegistry *r, size_t id, AgentMode mode) {
     if (!r->modes || id >= r->n) return false;
     if (r->off && r->off[id]) return false;
-    if ((r->modes[id] & TOOL_INTERACTIVE) && !g_interactive) return false;
+    if ((r->modes[id] & TOOL_INTERACTIVE) && !g_tools.policy.interactive) return false;
     return (r->modes[id] & (mode == MODE_PLAN ? TOOL_IN_PLAN : TOOL_IN_BUILD))
            != 0;
 }
@@ -2108,7 +2126,7 @@ b8 tools_run(const ToolRegistry *r, size_t id, Str args,
                  (int)r->name[id].n, r->name[id].p);
         return false;
     }
-    if (!tools_available(r, id, g_mode)) {
+    if (!tools_available(r, id, g_tools.policy.mode)) {
         snprintf(err, err_cap, "%.*s is not available in plan mode",
                  (int)r->name[id].n, r->name[id].p);
         return false;
@@ -2134,7 +2152,7 @@ void tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api) {
     if (r->name) {
         b8 first = true;
         for (size_t i = 0; i < r->n; i++) {
-            if (!tools_available(r, i, g_mode)) continue;
+            if (!tools_available(r, i, g_tools.policy.mode)) continue;
             if (!first) buf_putc(b, ',');
             first = false;
             if (api == API_ANTHROPIC) {
@@ -2161,7 +2179,7 @@ size_t tools_schema_bytes(const ToolRegistry *r) {
     size_t total = 0;
     if (!r || !r->name) return 0;
     for (size_t i = 0; i < r->n; i++) {
-        if (!tools_available(r, i, g_mode)) continue;
+        if (!tools_available(r, i, g_tools.policy.mode)) continue;
         total += r->name[i].n + r->desc[i].n + r->schema[i].n + PER_TOOL;
     }
     return total;

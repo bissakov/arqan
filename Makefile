@@ -44,6 +44,8 @@ LEXBOR_OBJ := $(BUILDDIR)/vendor/lexbor.o
 BIN     := $(BINDIR)/arqan
 TEST_OBJ := $(BUILDDIR)/arqan-test.o
 TEST_BIN := $(BINDIR)/arqan-test
+UNIT_SRC := tests/unit/main.c
+UNIT_BIN := $(BINDIR)/arqan-unit
 HL_BIN  := $(BINDIR)/arqan-highlight
 HL_OWN  := $(BUILDDIR)/highlight/arqan-highlight.o $(BUILDDIR)/highlight/queries.o
 HL_LANG := c cpp rust go python javascript typescript tsx bash json toml yaml
@@ -65,6 +67,7 @@ PYTHON  ?= python3
         clean-el9 el9 test-el9 \
         bench bench-slow bench-baseline \
         bench-guard check-curl-types \
+        check-globals test-unit \
         package-linux test-package-linux release-linux
 
 all: $(BIN) $(HL_BIN)
@@ -189,6 +192,17 @@ test-static: static
 
 check-curl-types:
 	$(MAKE) bin/link/arqan CURL_MODE=link BUILDDIR=build/link BINDIR=bin/link
+
+check-globals:
+	$(PYTHON) scripts/check-globals.py
+
+# Standalone: links no libcurl and reads no terminal, so it needs only src/.
+$(UNIT_BIN): $(UNIT_SRC) $(wildcard src/*.c) $(wildcard src/*.h)
+	@mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -Isrc $(UNIT_SRC) -o $@
+
+test-unit: $(UNIT_BIN)
+	$(UNIT_BIN)
 
 el9:
 	$(MAKE) all $(EL9_BIN)/arqan-test \

@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- Refuse a malformed number in JSON instead of reading part of it. A model
+  that wrote `1.2.3` for a tool argument had it silently read as `1.2`, so
+  the tool ran with a value nobody asked for and the agent retried the call
+  until the conversation filled.
+
 - Keep wide table rows inside the table. A row longer than the line buffer,
   which text in Cyrillic and other non-Latin scripts reaches quickly, closed
   the table early and printed the remaining rows as raw pipes.

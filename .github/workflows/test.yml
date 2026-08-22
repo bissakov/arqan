@@ -25,6 +25,9 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      # Static, needs no toolchain, so it fails fast and before the build.
+      - name: Check for loose globals
+        run: make check-globals
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -43,6 +46,10 @@ jobs:
           ccache -M 500M -z
           make -j"$(nproc)" all bin/arqan-test EXTRA_CFLAGS=-Werror
           ccache -s
+      # Arena and JSON invariants, compiled standalone rather than through the
+      # unity build. Seconds, and it fails before the pty suite gets a turn.
+      - name: Run the unit suite
+        run: make test-unit EXTRA_CFLAGS=-Werror
       # The suite drives a pty against a mock provider on loopback and needs
       # no network. A warning is a failure here, as it is in the guidelines.
       - name: Run the end-to-end suite

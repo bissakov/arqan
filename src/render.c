@@ -12,16 +12,26 @@ enum {
     R_CMD_BYTES    = 1024
 };
 
-static b8 g_verbose;
+typedef struct {
+    u32 zone;
+    b8  expanded;
+    b8  head_more;
+} RenderBlock;
+/* INVARIANT: block_begin and block_end assign this whole, so a field added
+ * here resets by construction. Keep block-scoped state in here, not in
+ * RenderState. */
 
-static b8 g_expanded;
-static b8 g_head_more;   
-static u32 g_zone;
+typedef struct {
+    b8          verbose;
+    RenderBlock block;
+} RenderState;
 
-void render_set_verbose(b8 on) { g_verbose = on; }
-b8 render_verbose(void) { return g_verbose; }
+static RenderState g_render;
 
-static b8 uncapped(void) { return g_verbose || g_expanded; }
+void render_set_verbose(b8 on) { g_render.verbose = on; }
+b8 render_verbose(void) { return g_render.verbose; }
+
+static b8 uncapped(void) { return g_render.verbose || g_render.block.expanded; }
 
 static size_t line_cap(size_t max) { return uncapped() ? (size_t)-1 : max; }
 
@@ -52,14 +62,10 @@ static void write_clipped(Str s, size_t max, Sink sink) {
 static void block_begin(u32 id, b8 expanded) {
     
     tui_pin(id);
-    g_zone = id;
-    g_expanded = expanded;
-    g_head_more = false;
+    g_render.block = (RenderBlock){ .zone = id, .expanded = expanded };
 }
 static void block_end(void) {
-    g_zone = 0;
-    g_expanded = false;
-    g_head_more = false;
+    g_render.block = (RenderBlock){0};
 }
 
 static size_t num_arg(const JVal *args, Str key) {
@@ -121,17 +127,17 @@ static void write_tail(Str gutter, size_t rest, size_t shown, size_t max,
     if (rest) {
         len = snprintf(buf, sizeof buf, "\u25be %zu more line%s\n",
                        rest, rest == 1 ? "" : "s");
-    } else if (g_verbose) {
+    } else if (g_render.verbose) {
         return;
-    } else if (g_expanded) {
-        if (shown <= max && !g_head_more) return;
+    } else if (g_render.block.expanded) {
+        if (shown <= max && !g_render.block.head_more) return;
         len = snprintf(buf, sizeof buf, "\u25b4 show less\n");
-    } else if (g_head_more) {
+    } else if (g_render.block.head_more) {
         len = snprintf(buf, sizeof buf, "\u25be show in full\n");
     } else {
         return;
     }
-    tui_zone_begin(g_zone);
+    tui_zone_begin(g_render.block.zone);
     sink(gutter);
     if (len > 0) sink((Str){ buf, (size_t)len });
     tui_zone_end();
@@ -249,7 +255,7 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
     if (target.n) {
         tui_write_tool(STR(" "));
         size_t bytes = target_cmd ? R_CMD_BYTES : R_TARGET_BYTES;
-        g_head_more = target.n > bytes;
+        g_render.block.head_more = target.n > bytes;
         Str shown = clip(target, bytes);
         size_t at = tui_transcript_pos();
         if (source_code && cmd.n) {
@@ -308,7 +314,7 @@ void render_shell_call(Str cmd, u32 id, b8 expanded) {
 
     tui_block();
     tui_write_tool(STR("\u25c6  shell "));
-    g_head_more = first.n > R_CMD_BYTES;
+    g_render.block.head_more = first.n > R_CMD_BYTES;
     Str shown = clip(first, R_CMD_BYTES);
     size_t at = tui_transcript_pos();
     if (cmd.n) {

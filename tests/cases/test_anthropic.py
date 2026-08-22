@@ -270,6 +270,28 @@ def test_malformed_tool_arguments_keep_the_request_valid(ctx):
         ctx.mock.tool_results()
 
 
+def test_malformed_number_in_tool_arguments_is_refused_not_guessed(ctx):
+    """A number the parser cannot read whole must fail, not decay to a prefix.
+    "1.2.3" once reached strtod, which stopped at "1.2" and handed back a
+    limit the model never wrote. Refusing the object is the only honest
+    answer, so the call is recorded as invalid arguments.
+    """
+    bad = '{"path":"notes.txt","limit":1.2.3}'
+    ctx.write_file("notes.txt", "alpha\nbeta\ngamma\n")
+    ctx.scenario("tool=read:" + bad + ",final_text=recovered")
+    s = anth(ctx)
+    s.submit("read the notes")
+    s.wait_text("recovered")
+    s.wait_turn_done()
+    messages = ctx.mock.requests[-1]["messages"]
+    use = next(b for b in messages[1]["content"] if b["type"] == "tool_use")
+    assert use["input"] == {"invalid_arguments": bad}, use
+    assert any("bad args json" in r for r in ctx.mock.tool_results()), \
+        ctx.mock.tool_results()
+    assert not any("alpha" in r for r in ctx.mock.tool_results()), \
+        ctx.mock.tool_results()
+
+
 def test_resumed_tool_arguments_keep_their_shape(ctx):
     """Validity is decided when a call is recorded, so a resume must redecide.
 

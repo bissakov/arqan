@@ -295,6 +295,12 @@ typedef struct {
     char row_text[TUI_SEL_ROWS][TUI_SEL_ROW_BYTES];  
 } TuiBulk;
 
+typedef struct {
+    b8 batch;
+} TuiPaint;
+
+static TuiPaint g_paint;
+
 static TuiState g_tui;
 static TuiBulk g_bulk;
 static volatile sig_atomic_t g_winch = 0;
@@ -315,15 +321,12 @@ typedef struct {
     size_t ckpt_n;
     size_t ckpt_step;
     size_t top_row, left_col, right_col, bottom_row;
+    b8 paint;
 } View;
 
 static View g_view;
-
-
-static b8 g_view_paint;
-
 static b8 view_locks_row(size_t row) {
-    return g_view.active && !g_view_paint
+    return g_view.active && !g_view.paint
         && row >= g_view.top_row && row <= g_view.bottom_row;
 }
 
@@ -470,9 +473,10 @@ static size_t next_glyph(const char *s, size_t n, size_t at) {
     return at + (used ? used : 1);
 }
 
-
-static size_t g_cap_row;   
-static size_t g_cap_col;   
+static struct {
+    size_t row;   
+    size_t col;   
+} g_cap;
 
 /* Byte offset of the first glyph at or after `cell`; *reached is the column
  * landed on, since a wide glyph can straddle the requested one. */
@@ -490,17 +494,17 @@ static size_t row_byte_at(size_t r, size_t cell, size_t *reached) {
 }
 
 static void snap_seek(size_t row, size_t col) {
-    g_cap_row = row && row <= TUI_SEL_ROWS ? row : 0;
-    g_cap_col = col ? col - 1 : 0;
-    if (!g_cap_row) return;
-    size_t r = g_cap_row - 1;
-    if (g_cap_col < g_tui.row_text_w[r]) {
+    g_cap.row = row && row <= TUI_SEL_ROWS ? row : 0;
+    g_cap.col = col ? col - 1 : 0;
+    if (!g_cap.row) return;
+    size_t r = g_cap.row - 1;
+    if (g_cap.col < g_tui.row_text_w[r]) {
         size_t reached = 0;
-        size_t bytes = row_byte_at(r, g_cap_col, &reached);
+        size_t bytes = row_byte_at(r, g_cap.col, &reached);
         g_tui.row_text_n[r] = (u16)bytes;
         g_tui.row_text_w[r] = (u16)reached;
     }
-    while (g_tui.row_text_w[r] < g_cap_col
+    while (g_tui.row_text_w[r] < g_cap.col
            && (size_t)g_tui.row_text_n[r] + 1 < TUI_SEL_ROW_BYTES) {
         g_bulk.row_text[r][g_tui.row_text_n[r]++] = ' ';
         g_tui.row_text_w[r]++;
@@ -508,8 +512,8 @@ static void snap_seek(size_t row, size_t col) {
 }
 
 static void snap_put(const char *s, size_t used, size_t width) {
-    if (g_cap_row) {
-        size_t r = g_cap_row - 1;
+    if (g_cap.row) {
+        size_t r = g_cap.row - 1;
         if ((size_t)g_tui.row_text_n[r] + used < TUI_SEL_ROW_BYTES
             && (size_t)g_tui.row_text_w[r] + width < 0xffffu) {
             memcpy(g_bulk.row_text[r] + g_tui.row_text_n[r], s, used);
@@ -517,7 +521,7 @@ static void snap_put(const char *s, size_t used, size_t width) {
             g_tui.row_text_w[r] = (u16)((size_t)g_tui.row_text_w[r] + width);
         }
     }
-    g_cap_col += width;
+    g_cap.col += width;
 }
 
 
@@ -543,14 +547,14 @@ static void sel_row_range(size_t screen_row, size_t *c0, size_t *c1) {
 
 static void put_text(const char *s, size_t n) {
     size_t sel_c0 = 0, sel_c1 = 0;
-    sel_row_range(g_cap_row, &sel_c0, &sel_c1);
+    sel_row_range(g_cap.row, &sel_c0, &sel_c1);
     /* Styles are re-emitted between calls and can drop reverse video, so the
      * flag is per call rather than per row. */
     b8 reverse = false;
     for (size_t i = 0; i < n;) {
         i32 width = 0;
         size_t used = glyph(s + i, n - i, &width);
-        b8 selected = g_cap_col >= sel_c0 && g_cap_col < sel_c1;
+        b8 selected = g_cap.col >= sel_c0 && g_cap.col < sel_c1;
         if (selected != reverse) {
             put_str(selected ? "\033[7m" : "\033[27m");
             reverse = selected;
@@ -569,7 +573,7 @@ static void paint_sel_tail(size_t screen_row, size_t screen_cols) {
     size_t c0, c1;
     sel_row_range(screen_row, &c0, &c1);
     if (c1 > screen_cols) c1 = screen_cols;
-    size_t start = g_cap_col > c0 ? g_cap_col : c0;
+    size_t start = g_cap.col > c0 ? g_cap.col : c0;
     if (start >= c1) return;
     cup(screen_row, start + 1);
     for (size_t i = start; i < c1; i++) put_text(" ", 1);
@@ -1329,32 +1333,33 @@ static struct {
     size_t b[TUI_FIND_ROW_HITS];
     b8     cur[TUI_FIND_ROW_HITS];
     size_t n;
-} g_find_row;
+    b8     moving;
+} g_find;
 
 static void find_row_build(size_t off, size_t len) {
-    g_find_row.n = 0;
+    g_find.n = 0;
     size_t q = g_tui.find_q_n;
     if (!q || off == SIZE_MAX) return;
     
     size_t from = off > q - 1 ? off - (q - 1) : 0;
     size_t stop = off + len;
     for (size_t i = find_next_in(from, stop);
-         i != SIZE_MAX && g_find_row.n < TUI_FIND_ROW_HITS;
+         i != SIZE_MAX && g_find.n < TUI_FIND_ROW_HITS;
          i = find_next_in(i + 1, stop)) {
         if (i + q <= off) continue;
         size_t a = i > off ? i - off : 0;
         size_t b = i + q < stop ? i + q - off : len;
-        size_t k = g_find_row.n;
+        size_t k = g_find.n;
         
-        if (k && g_find_row.b[k - 1] >= a) {
-            if (b > g_find_row.b[k - 1]) g_find_row.b[k - 1] = b;
-            if (i == g_tui.find_cur) g_find_row.cur[k - 1] = true;
+        if (k && g_find.b[k - 1] >= a) {
+            if (b > g_find.b[k - 1]) g_find.b[k - 1] = b;
+            if (i == g_tui.find_cur) g_find.cur[k - 1] = true;
             continue;
         }
-        g_find_row.a[k] = a;
-        g_find_row.b[k] = b;
-        g_find_row.cur[k] = i == g_tui.find_cur;
-        g_find_row.n = k + 1;
+        g_find.a[k] = a;
+        g_find.b[k] = b;
+        g_find.cur[k] = i == g_tui.find_cur;
+        g_find.n = k + 1;
     }
 }
 
@@ -1362,14 +1367,14 @@ static void find_row_build(size_t off, size_t len) {
 static b8 find_row_run(size_t i, size_t max, size_t *len, b8 *current) {
     *len = max;
     *current = false;
-    for (size_t k = 0; k < g_find_row.n; k++) {
-        if (i < g_find_row.a[k]) {
-            if (g_find_row.a[k] - i < *len) *len = g_find_row.a[k] - i;
+    for (size_t k = 0; k < g_find.n; k++) {
+        if (i < g_find.a[k]) {
+            if (g_find.a[k] - i < *len) *len = g_find.a[k] - i;
             return false;
         }
-        if (i < g_find_row.b[k]) {
-            if (g_find_row.b[k] - i < *len) *len = g_find_row.b[k] - i;
-            *current = g_find_row.cur[k];
+        if (i < g_find.b[k]) {
+            if (g_find.b[k] - i < *len) *len = g_find.b[k] - i;
+            *current = g_find.cur[k];
             return true;
         }
     }
@@ -1377,11 +1382,11 @@ static b8 find_row_run(size_t i, size_t max, size_t *len, b8 *current) {
 }
 
 static u64 hash_find_row(u64 h) {
-    h = hash_add(h, &g_find_row.n, sizeof g_find_row.n);
-    for (size_t i = 0; i < g_find_row.n; i++) {
-        h = hash_add(h, &g_find_row.a[i], sizeof g_find_row.a[i]);
-        h = hash_add(h, &g_find_row.b[i], sizeof g_find_row.b[i]);
-        h = hash_add(h, &g_find_row.cur[i], sizeof g_find_row.cur[i]);
+    h = hash_add(h, &g_find.n, sizeof g_find.n);
+    for (size_t i = 0; i < g_find.n; i++) {
+        h = hash_add(h, &g_find.a[i], sizeof g_find.a[i]);
+        h = hash_add(h, &g_find.b[i], sizeof g_find.b[i]);
+        h = hash_add(h, &g_find.cur[i], sizeof g_find.cur[i]);
     }
     return h;
 }
@@ -1435,7 +1440,7 @@ static void paint_runs(Str text, size_t off, Just *j, u8 base, b8 user) {
         size_t take = end - (off + i);
         RunStyle rs = { kind, base, syntax, user };
         run_style(&rs);
-        if (!g_find_row.n) put_just(text.p + i, take, j);
+        if (!g_find.n) put_just(text.p + i, take, j);
         else put_hits(text.p + i, i, take, j, run_style, &rs);
         i += take;
     }
@@ -1532,7 +1537,7 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
         put_text(text.p, lead);
         RunStyle rs = { kind, kind, 0, false };
         run_style(&rs);
-        if (!g_find_row.n) put_text(text.p + lead, text.n - lead);
+        if (!g_find.n) put_text(text.p + lead, text.n - lead);
         else put_hits(text.p + lead, lead, text.n - lead, NULL, run_style, &rs);
         style(S_RESET);
     } else if (text_off != SIZE_MAX) {
@@ -2149,7 +2154,7 @@ static void paint_view(size_t cols, b8 force) {
     size_t inner_cols = width - 2;
     size_t body_rows = height - 3;
     size_t total = g_view.total_rows;
-    g_view_paint = true;
+    g_view.paint = true;
     paint_view_border(top, left, width, cols,
                       STR("┌"), STR("─"), STR("┐"), force);
     paint_view_header(top + 1, left, width, cols, force);
@@ -2168,7 +2173,7 @@ static void paint_view(size_t cols, b8 force) {
     }
     paint_view_border(top + height - 1, left, width, cols,
                       STR("└"), STR("─"), STR("┘"), force);
-    g_view_paint = false;
+    g_view.paint = false;
 }
 
 /* The search box, and the cells its caret sits at. It is an overlay of its
@@ -2570,16 +2575,13 @@ static Str format_context_size(char *buf, size_t cap) {
     return (Str){buf, len};
 }
 
-
-static b8 g_batch;
-
-void tui_batch_begin(void) { g_batch = true; }
+void tui_batch_begin(void) { g_paint.batch = true; }
 
 static void repaint(void);
 
 void tui_batch_end(void) {
-    if (!g_batch) return;
-    g_batch = false;
+    if (!g_paint.batch) return;
+    g_paint.batch = false;
     repaint();
 }
 
@@ -2588,11 +2590,8 @@ static void find_goto(size_t off);
 static void find_close(void);
 static size_t rows_below(size_t off);
 
-
-static b8 g_find_moving;
-
 static void repaint(void) {
-    if (!g_tui.fullscreen || g_batch) return;
+    if (!g_tui.fullscreen || g_paint.batch) return;
     g_tui.last_paint = agent_now_seconds();
 
     size_t physical_rows, physical_cols;
@@ -2773,13 +2772,13 @@ static void repaint(void) {
                          transcript_rows, 1, body_col, cols, ROW_PLAIN, force);
     }
     
-    if (g_tui.find_open && g_tui.find_cur != SIZE_MAX && !g_find_moving
+    if (g_tui.find_open && g_tui.find_cur != SIZE_MAX && !g_find.moving
         && (g_tui.find_cur < g_tui.view_first_off
             || g_tui.find_cur >= g_tui.view_end_off)) {
-        g_find_moving = true;
+        g_find.moving = true;
         find_goto(g_tui.find_cur);
         repaint();
-        g_find_moving = false;
+        g_find.moving = false;
         return;
     }
     paint_scrollbar(first, all_rows, transcript_rows, cols, force);
@@ -3766,13 +3765,16 @@ void tui_set_interrupt_flag(volatile sig_atomic_t *flag) {
     g_tui.interrupt = flag;
 }
 
+/* NOTE: `pushed` rather than a -1 sentinel on `pushback`, so the whole struct
+ * zero-initializes and its 8KB buffer stays in .bss. */
+static struct {
+    unsigned char b[8192];
+    size_t n, at;
+    i32    pushback;
+    b8     pushed;
+} g_input;
 
-static i32 g_pushback = -1;
-
-
-static struct { unsigned char b[8192]; size_t n, at; } g_inbuf;
-
-static b8 input_buffered(void) { return g_inbuf.at < g_inbuf.n; }
+static b8 input_buffered(void) { return g_input.at < g_input.n; }
 
 #ifdef AGENT_TESTING
 /* A settled screen, announced. The suite drives the UI over a pty, where the
@@ -3830,28 +3832,28 @@ static void input_notice(void) {
 #endif
 
 static b8 input_ready(i32 timeout_ms) {
-    if (g_pushback >= 0 || input_buffered()) return true;
+    if (g_input.pushed || input_buffered()) return true;
     struct pollfd pfd = { STDIN_FILENO, POLLIN, 0 };
     i32 rc = poll(&pfd, 1, timeout_ms);
     return rc > 0 && (pfd.revents & (POLLIN | POLLHUP)) != 0;
 }
 
 static i32 rbyte(void) {
-    if (g_pushback >= 0) { i32 c = g_pushback; g_pushback = -1; return c; }
+    if (g_input.pushed) { g_input.pushed = false; return g_input.pushback; }
     if (!input_buffered()) {
         
         idle_beacon();
         
-        ssize_t n = read(STDIN_FILENO, g_inbuf.b, sizeof g_inbuf.b);
+        ssize_t n = read(STDIN_FILENO, g_input.b, sizeof g_input.b);
         if (n < 0 && errno == EINTR) return g_winch ? -3 : -2;
         if (n <= 0) return -1;
 #ifdef AGENT_TESTING
         g_input_bytes += (unsigned long)n;
 #endif
-        g_inbuf.n = (size_t)n;
-        g_inbuf.at = 0;
+        g_input.n = (size_t)n;
+        g_input.at = 0;
     }
-    return (i32)g_inbuf.b[g_inbuf.at++];
+    return (i32)g_input.b[g_input.at++];
 }
 
 /* Continuation byte of an escape sequence. A bare Esc must not park the
@@ -3919,7 +3921,9 @@ enum {
     KEY_KILL_WORD, KEY_KILL_PREV_WORD
 };
 
-static i32 g_mouse_row, g_mouse_col;
+static struct {
+    i32 row, col;
+} g_mouse;
 
 /* ---- keybindings ---------------------------------------------------------
  * Every key the UI answers is a row of one context's table. A context is one
@@ -3960,7 +3964,7 @@ static i32 read_escape(void) {
     if (first < 0) return KEY_NONE;
     /* Two Escapes in one burst are two keys: the second opens a sequence of
      * its own rather than closing this one. */
-    if (first == 0x1b) { g_pushback = 0x1b; return KEY_NONE; }
+    if (first == 0x1b) { g_input.pushback = 0x1b; g_input.pushed = true; return KEY_NONE; }
     if (first == '\r' || first == '\n') return KEY_NEWLINE;
     if (first == '[') {
         Csi csi;
@@ -3969,8 +3973,8 @@ static i32 read_escape(void) {
             i32 button = csi.p[0];
             if (button & 64) return button & 1 ? KEY_WHEEL_DOWN : KEY_WHEEL_UP;
             if (csi.nparams < 3) return KEY_IGNORE;
-            g_mouse_col = csi.p[1];
-            g_mouse_row = csi.p[2];
+            g_mouse.col = csi.p[1];
+            g_mouse.row = csi.p[2];
             if (final == 'm') return KEY_MOUSE_UP;
             if (button & 32) return (button & 3) == 3 ? KEY_MOUSE_MOVE
                                                       : KEY_MOUSE_DRAG;
@@ -4600,14 +4604,14 @@ static b8 view_feed(i32 c) {
         g_view.top = g_view.total_rows > visible
                    ? g_view.total_rows - visible : 0;
     } else if (key == KEY_MOUSE_DOWN) {
-        g_view.close_down = view_close_cell(g_mouse_row, g_mouse_col);
-        if (!g_view.close_down) sel_begin(g_mouse_row, g_mouse_col);
+        g_view.close_down = view_close_cell(g_mouse.row, g_mouse.col);
+        if (!g_view.close_down) sel_begin(g_mouse.row, g_mouse.col);
     } else if (key == KEY_MOUSE_DRAG) {
         g_view.close_down = false;
-        sel_extend(g_mouse_row, g_mouse_col);
+        sel_extend(g_mouse.row, g_mouse.col);
     } else if (key == KEY_MOUSE_UP) {
         b8 close = g_view.close_down
-                && view_close_cell(g_mouse_row, g_mouse_col);
+                && view_close_cell(g_mouse.row, g_mouse.col);
         g_view.close_down = false;
         sel_finish();
         if (close) return false;
@@ -5539,9 +5543,9 @@ static void find_expand_now(void) {
     X(KEY_DOWN, "Down", "Next match",       find_step(1);)                    \
     X(KEY_NONE, "Esc",  "Close the box",    find_close();)                    \
     X(KEY_MOUSE_DOWN, "Click", "Start a selection",                           \
-                    sel_begin(g_mouse_row, g_mouse_col); keep_sel = true;)    \
+                    sel_begin(g_mouse.row, g_mouse.col); keep_sel = true;)    \
     X(KEY_MOUSE_DRAG, "Drag",  "Extend the selection",                        \
-                    sel_extend(g_mouse_row, g_mouse_col); keep_sel = true;)   \
+                    sel_extend(g_mouse.row, g_mouse.col); keep_sel = true;)   \
     X(KEY_MOUSE_UP,   "",      "",          sel_finish(); keep_sel = true;)   \
     X(KEY_MOUSE_MOVE, "",      "",          keep_sel = true;)
 
@@ -5651,7 +5655,7 @@ static void ed_delete_or_eof(Ed *e) {
 static void ed_mouse_up(Ed *e) {
     
     b8 hit = !g_tui.sel_active && g_tui.click_down
-          && g_tui.click_down == zone_at_cell(g_mouse_row, g_mouse_col);
+          && g_tui.click_down == zone_at_cell(g_mouse.row, g_mouse.col);
     if (hit) { g_tui.click_id = g_tui.click_down; e->action = ED_EXPAND; }
     g_tui.click_down = 0;
     sel_finish();
@@ -5746,14 +5750,14 @@ static void ed_end(Ed *e) {
     X(KEY_SHIFT_TAB, "Shift-Tab", "Switch between Build and Plan mode",       \
                     e->action = ED_MODE;)                                     \
     X(KEY_MOUSE_DOWN, "Click",    "Start a selection",                        \
-                    sel_begin(g_mouse_row, g_mouse_col);                      \
+                    sel_begin(g_mouse.row, g_mouse.col);                      \
                     e->keep_sel = true;                                       \
-                    g_tui.click_down = zone_at_cell(g_mouse_row, g_mouse_col);)\
+                    g_tui.click_down = zone_at_cell(g_mouse.row, g_mouse.col);)\
     X(KEY_MOUSE_DRAG, "Drag",     "Extend the selection",                     \
-                    sel_extend(g_mouse_row, g_mouse_col);                     \
+                    sel_extend(g_mouse.row, g_mouse.col);                     \
                     e->keep_sel = true;)                                      \
     X(KEY_MOUSE_MOVE, "",         "",                                         \
-                    g_tui.hover_id = zone_at_cell(g_mouse_row, g_mouse_col);  \
+                    g_tui.hover_id = zone_at_cell(g_mouse.row, g_mouse.col);  \
                     e->keep_sel = true; e->vertical = true;                   \
                     e->keep_nav = true;)                                      \
     X(KEY_MOUSE_UP,   "",         "",                   ed_mouse_up(e);)
@@ -5909,12 +5913,14 @@ static void composer_clear(void) {
     if (g_tui.hist) history_reset_cursor(g_tui.hist);
 }
 
-static b8 (*g_busy_cmd)(Str line, void *ud);
-static void *g_busy_cmd_ud;
+static struct {
+    b8  (*fn)(Str line, void *ud);
+    void *ud;
+} g_busy;
 
 void tui_set_busy_command(b8 (*fn)(Str line, void *ud), void *ud) {
-    g_busy_cmd = fn;
-    g_busy_cmd_ud = ud;
+    g_busy.fn = fn;
+    g_busy.ud = ud;
 }
 
 /* Enter while a turn is in flight. A slash command is offered to the hook,
@@ -5938,7 +5944,7 @@ static void busy_submit(void) {
         tui_notice(STR("message queued; Esc cancels it"));
         return;
     }
-    if (!g_busy_cmd) return;
+    if (!g_busy.fn) return;
     /* A line longer than any command is prose that happens to start with a
      * slash. It remains a draft because the fixed command handoff cannot hold
      * it, rather than being truncated into a different command. */
@@ -5948,7 +5954,7 @@ static void busy_submit(void) {
     memcpy(cmd, g_bulk.input, n);
     cmd[n] = '\0';
     composer_clear();
-    if (g_busy_cmd((Str){cmd, n}, g_busy_cmd_ud)) {
+    if (g_busy.fn((Str){cmd, n}, g_busy.ud)) {
         if (g_tui.hist) history_add(g_tui.hist, (Str){cmd, n});
         return;
     }
@@ -5959,10 +5965,10 @@ static void busy_submit(void) {
  * mid-turn it reaches the same hook the prompt would send it to. Nothing is
  * recalled from it: the gesture is the request, and it left no draft. */
 static void busy_expand(void) {
-    if (!g_busy_cmd) return;
+    if (!g_busy.fn) return;
     char cmd[32];
     i32 len = snprintf(cmd, sizeof cmd, "/expand %u", g_tui.click_id);
-    if (len > 0) g_busy_cmd((Str){cmd, (size_t)len}, g_busy_cmd_ud);
+    if (len > 0) g_busy.fn((Str){cmd, (size_t)len}, g_busy.ud);
 }
 
 /* Ctrl-V mid-turn. The hook refuses it like any other command that belongs
@@ -5982,7 +5988,7 @@ static size_t attach_command(char *out, size_t cap) {
 static void busy_attach(void) {
     char cmd[AGENT_MAX_PATH + 16];
     size_t n = attach_command(cmd, sizeof cmd);
-    if (g_busy_cmd && n) g_busy_cmd((Str){ cmd, n }, g_busy_cmd_ud);
+    if (g_busy.fn && n) g_busy.fn((Str){ cmd, n }, g_busy.ud);
 }
 
 

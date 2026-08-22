@@ -21,6 +21,9 @@ void arena_init(Arena *a, void *mem, size_t cap) {
  * checked against the arena's own capacity instead of being computed first and
  * compared afterwards: `off + n` is exactly the addition that wraps. */
 void *arena_alloc(Arena *a, size_t n, size_t align) {
+    /* INVARIANT: alignment is applied to the offset, so a caller gets an
+     * absolutely aligned pointer only when the memory handed to arena_init is
+     * at least as aligned. The startup arenas use alignas(64) for this. */
     if (align == 0 || (align & (align - 1))) return NULL;   
     size_t mask = align - 1;
     size_t pad = (align - (a->off & mask)) & mask;
@@ -440,13 +443,16 @@ Str buf_finish(Buf *b) {
 }
 
 
-static i32 g_level = AGENT_LOG_INFO;
-static AgentLogSink g_log_sink;
-static void *g_log_ud;
-void agent_log_set_level(i32 level) { g_level = level; }
-void agent_log_set_sink(AgentLogSink sink, void *ud) { g_log_sink = sink; g_log_ud = ud; }
+static struct {
+    i32          level;
+    AgentLogSink sink;
+    void        *ud;
+} g_log = { .level = AGENT_LOG_INFO };
+
+void agent_log_set_level(i32 level) { g_log.level = level; }
+void agent_log_set_sink(AgentLogSink sink, void *ud) { g_log.sink = sink; g_log.ud = ud; }
 void agent_log(i32 level, const char *fmt, ...) {
-    if (level < g_level) return;
+    if (level < g_log.level) return;
     static const char *tags[] = {"DBG","INF","WRN","ERR"};
     if (level < AGENT_LOG_DEBUG || level > AGENT_LOG_ERROR) level = AGENT_LOG_ERROR;
     char msg[512];
@@ -455,7 +461,7 @@ void agent_log(i32 level, const char *fmt, ...) {
     va_end(ap);
     size_t n = w > 0 ? ((size_t)w < sizeof msg ? (size_t)w : sizeof msg - 1) : 0;
     telemetry_log(level, (Str){ msg, n });
-    if (g_log_sink) { g_log_sink(level, (Str){ msg, n }, g_log_ud); return; }
+    if (g_log.sink) { g_log.sink(level, (Str){ msg, n }, g_log.ud); return; }
     fprintf(stderr, "[" AGENT_NAME " %s] %.*s\n", tags[level], (i32)n, msg);
 }
 
