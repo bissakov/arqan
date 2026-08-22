@@ -10,6 +10,7 @@ read, write, bash, patch, grep, and find tools.
 make             # build bin/arqan
 make run         # build and run
 make test        # end-to-end TUI suite
+make test-unit   # unit suite for arena, string and JSON invariants
 make bench       # benchmark and stress suite
 make bench-guard # measure this tree against the commit under it
 make test-asan   # ASan + UBSan suite
@@ -23,6 +24,13 @@ under `src/`, run `make test`. Behavioural changes need a focused end-to-end
 case in `tests/cases/`; write bug regressions first. Do not weaken assertions
 or update golden files merely to hide a failure. For suspected flakes, use
 `python3 tests/run.py --repeat 5`.
+
+`make test-unit` compiles `tests/unit/main.c` against `src/` directly rather
+than through the unity build, and covers invariants the TUI reaches only
+indirectly: arena alignment and exhaustion, string and buffer bounds, JSON
+parsing and round-trips. CI runs it before the end-to-end suite. It is not a
+per-change gate; run it when the change touches those, and add a case there
+when a bug has no natural end-to-end expression.
 
 Startup time, throughput and footprint are user-visible behaviour: a change
 that costs any of them is a regression. `make bench-guard` builds and measures
