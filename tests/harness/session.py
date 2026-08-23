@@ -34,6 +34,10 @@ from .vt import CONT, Terminal
 # and ARQAN_TEST_QUIET raises the floor for machines too slow for the default.
 QUIET = max(0.06, float(os.environ.get("ARQAN_TEST_QUIET") or 0))
 
+# INTR, QUIT and SUSP under the ISIG the child leaves on: the line discipline
+# raises a signal and drops the byte, so no read can ever report it.
+SIGNAL_BYTES = frozenset(b"\x03\x1c\x1a")
+
 # `arqan` keeps ISIG on, so Ctrl-C is a signal from the line discipline, not a
 # byte, which only happens if the child owns the pty as its controlling
 # terminal. setsid(1) does the setsid + TIOCSCTTY dance before exec with no
@@ -345,7 +349,10 @@ class Session:
             raise AssertionError("session not started")
         # The wait after this write is for the frame these bytes cause, and
         # the beacon that answers it is the one reporting them consumed.
-        self._sent += len(data)
+        # ISIG is left on, so the line discipline turns these into a signal
+        # and discards them: no read ever reports them, and counting them
+        # would owe a repaint that can never be answered.
+        self._sent += sum(1 for b in data if b not in SIGNAL_BYTES)
         off = 0
         while off < len(data):
             try:
