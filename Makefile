@@ -71,7 +71,7 @@ FMT_SRC := $(wildcard src/*.c src/*.h highlight/*.c highlight/*.h \
         clean-fil fil test-fil clean-static static test-static \
         clean-el9 el9 test-el9 \
         bench bench-slow bench-baseline \
-        bench-guard check-curl-types \
+        bench-guard check-curl-types check-cppcheck check-sparse check-flawfinder check-valgrind check-lint lint \
         check-globals test-unit fmt check-format check-clang-format \
         package-linux test-package-linux release-linux publish-repos
 
@@ -200,6 +200,27 @@ check-curl-types:
 
 check-globals:
 	$(PYTHON) scripts/check-globals.py
+
+check-cppcheck:
+	@command -v cppcheck >/dev/null 2>&1 || { echo "cppcheck not found"; exit 0; }
+	cppcheck --enable=warning,performance,portability --inline-suppr --quiet --error-exitcode=1 -Isrc src/
+
+check-sparse:
+	@command -v cgcc >/dev/null 2>&1 || { echo "cgcc not found (sparse)"; exit 0; }
+	@out=$$(cgcc -Isrc -D_DEFAULT_SOURCE -std=c17 -c src/main.c -o /tmp/_sparse.o 2>&1 | grep -v "unknown escape sequence" | grep -v "note: in included" | grep -v "^$$" | grep -v "too many warnings"); \
+	if echo "$$out" | grep -q "warning:"; then echo "$$out"; exit 1; fi
+
+check-flawfinder:
+	@command -v flawfinder >/dev/null 2>&1 || { echo "flawfinder not found"; exit 0; }
+	flawfinder --minlevel=5 --error-level=5 --quiet src/
+
+check-valgrind: all $(UNIT_BIN)
+	@command -v valgrind >/dev/null 2>&1 || { echo "valgrind not found"; exit 0; }
+	valgrind --tool=memcheck --leak-check=full --error-exitcode=1 --errors-for-leak-kinds=definite,indirect ./$(BIN) --help >/dev/null
+	valgrind --tool=memcheck --error-exitcode=1 ./$(UNIT_BIN) >/dev/null
+
+check-lint: check-cppcheck check-sparse check-flawfinder
+lint: check-lint
 
 check-clang-format:
 	@command -v $(CLANG_FORMAT) >/dev/null 2>&1 || { \

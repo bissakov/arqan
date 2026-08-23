@@ -403,7 +403,7 @@ static void http_apply_ca(CURL *curl) {
 
 #ifdef AGENT_TESTING
 void http_print_ca_trust(void) {
-    char err[256];
+    char err[256] = {0};
     if (!curl_load(err, sizeof err)) {
         printf("ca-load: %s\n", err);
         return;
@@ -751,7 +751,7 @@ i32 http_post(const HttpReq *r) {
         agent_log(AGENT_LOG_ERROR, "streaming request without a line arena");
         return 1;
     }
-    char load_err[256];
+    char load_err[256] = {0};
     if (!curl_load(load_err, sizeof load_err)) {
         if (r->fail_out && r->fail_cap)
             snprintf(r->fail_out, r->fail_cap, "%s", load_err);

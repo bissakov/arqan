@@ -931,6 +931,7 @@ static const char *kind_style(u8 kind) {
 static u64 hash_add(u64 h, const void *data, size_t n) {
     const u8 *p = (const u8 *)data;
     for (size_t i = 0; i < n; i++) {
+        // cppcheck-suppress objectIndex
         h ^= p[i];
         h *= UINT64_C(1099511628211);
     }
@@ -2595,10 +2596,10 @@ static void paint_size_warning(size_t rows, size_t cols, size_t reported_rows,
     i32 current_n =
         snprintf(current, sizeof current, "Width = %zu Height = %zu",
                  reported_cols, reported_rows);
-    i32 needed_n = snprintf(needed, sizeof needed, "Width = %u Height = %u",
+    i32 needed_n = snprintf(needed, sizeof needed, "Width = %d Height = %d",
                             TUI_MIN_COLS, TUI_MIN_ROWS);
     i32 compact_n =
-        snprintf(compact, sizeof compact, "%zux%zu; need %ux%u", reported_cols,
+        snprintf(compact, sizeof compact, "%zux%zu; need %dx%d", reported_cols,
                  reported_rows, TUI_MIN_COLS, TUI_MIN_ROWS);
     Str full[] = {
         STR("Terminal size too small:"),

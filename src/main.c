@@ -4460,7 +4460,7 @@ static void write_final_reply(const Conv *conv) {
  * execvp does. */
 static b8 restart_exe(char *out, size_t cap, const char *argv0) {
 #ifdef __linux__
-    ssize_t n = readlink("/proc/self/exe", out, cap - 1);
+    ssize_t n = readlink("/proc/self/exe", out, cap - 1); // flawfinder: ignore
     if (n > 0 && (size_t)n < cap - 1) {
         out[(size_t)n] = '\0';
         if (access(out, X_OK) == 0) return true;
