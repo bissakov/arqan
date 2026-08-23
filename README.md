@@ -237,26 +237,27 @@ carries it rather than claiming success.
 
 ## Performance
 
-Measured at `1566515` on Linux 7.1.8 with GCC 16.2.1 and a Ryzen 7 7800X3D.
+Measured at `af04882` on Linux 7.2.0-1-cachyos with GCC 16.2.1 and a
+Ryzen 7 7800X3D.
 Build times are medians of three clean 16-job builds. Runtime measurements use
 the real TUI and agent loop against the local mock provider, so they exclude
 network and model latency. The harness measures the first visible frame before
 its 60 ms quiet window and reports agent CPU time separately from wall time.
 
-- Clean build: 4.45 s for `make -j16 minimal`; 4.69 s for `make -j16`.
-- Executables: 1.56 MiB for `bin/arqan`; 12.64 MiB for
+- Clean build: 1.90 s for `make -j16 minimal`; 2.50 s for `make -j16`.
+- Executables: 1.28 MiB for `bin/arqan`; 12.40 MiB for
   `bin/arqan-highlight`.
-- Startup: 5.0 ms median and 6.0 ms p95 to the first TUI frame over 80 runs;
-  agent CPU was about 3.0 ms, and idle memory was 2.5 MiB private dirty with
-  12 MiB peak RSS.
-- Streaming: a 2,000-word reply in 500 deltas took 210 ms wall and 11.3 ms
-  CPU, or 0.02 ms CPU per delta.
-- Tool loop: six `read` rounds in one turn took 204 ms wall and 4.5 ms CPU,
-  or 0.75 ms CPU per round.
-- Large context: replaying a 400k-token, 1.7 MB session took 198 ms wall and
-  13.4 ms CPU at 7.3 MiB private dirty with 17 MiB peak RSS.
-- Benchmarks: all 58 default cases completed within budget in 107.3 s.
-- Test suite: 754/754 end-to-end cases passed in 30.9 s.
+- Startup: 1.8 ms median and 2.2 ms p95 to the first TUI frame over 20 runs;
+  agent CPU was about 1.2 ms, and idle memory was 1.6 MiB private dirty with
+  4.4 MiB peak RSS.
+- Streaming: a 2,000-word reply in 500 deltas took 211 ms wall and 12.8 ms
+  CPU, or 0.03 ms CPU per delta.
+- Tool loop: six `read` rounds in one turn took 195 ms wall and 5.5 ms CPU,
+  or 0.92 ms CPU per round.
+- Large context: replaying a 400k-token, 1.7 MB session took 196 ms wall and
+  14.2 ms CPU at 6.4 MiB private dirty with 9.2 MiB peak RSS.
+- Benchmarks: all 61 default cases completed within budget in 122.6 s.
+- Test suite: 988/988 end-to-end cases passed in 7.1 s.
 
 Private dirty is memory written for this process alone; RSS also counts
 resident shared libraries and file-backed pages. Run `make bench` to reproduce
