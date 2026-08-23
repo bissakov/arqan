@@ -257,3 +257,21 @@ def test_escape_in_find_closes_the_box_without_arming_a_rewind(ctx):
     s.key("esc").sync()
     assert "find:" not in s.text(), s.text()
     assert "Press Escape again" not in s.text(), s.text()
+
+
+def test_a_signal_key_leaves_no_input_debt(ctx):
+    """Ctrl-C reaches the child as a signal and the line discipline drops the
+    byte, so counting it would owe a read that can never answer and every
+    later wait would hang until its timeout."""
+    ctx.scenario("text=hello")
+    s = ctx.spawn()
+    s.submit("question")
+    s.wait_turn_done()
+
+    owed = s._sent
+    s.key("ctrl-c")
+    assert s._sent == owed, "a discarded byte must not be owed"
+    s.settle()
+    assert s.term.input_consumed >= s._sent, (
+        f"input debt {s._sent - s.term.input_consumed} outlives the key"
+    )
