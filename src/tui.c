@@ -2258,19 +2258,38 @@ static Str format_elapsed(char *buf, size_t cap, f64 secs) {
 }
 
 
+#ifdef AGENT_TESTING
+static b8 activity_clock_frozen(void) {
+    static i32 frozen = -1;
+    if (frozen < 0) {
+        const char *value =
+            getenv(AGENT_ENV_PREFIX "TEST_FREEZE_ACTIVITY_CLOCK");
+        frozen = value && *value && strcmp(value, "0") != 0;
+    }
+    return frozen > 0;
+}
+#else
+#define activity_clock_frozen() false
+#endif
+
+
 static void update_activity_row(size_t screen_row, size_t screen_col,
                                 size_t screen_cols, size_t body_cols,
                                 b8 force) {
     f64 now = agent_now_seconds();
     f64 elapsed = now - g_tui.activity_started;
+    f64 total_elapsed = now - g_tui.activity_turn;
+    if (activity_clock_frozen()) {
+        elapsed = 0.0;
+        total_elapsed = 0.0;
+    }
     char secs_buf[24];
     Str secs = format_elapsed(secs_buf, sizeof secs_buf, elapsed);
     
     char total_buf[24];
     Str total = {0};
     if (g_tui.activity_started - g_tui.activity_turn >= 1.0)
-        total = format_elapsed(total_buf, sizeof total_buf,
-                               now - g_tui.activity_turn);
+        total = format_elapsed(total_buf, sizeof total_buf, total_elapsed);
     size_t frames = sizeof k_spinner / sizeof k_spinner[0];
     size_t frame = (size_t)(elapsed * 10.0) % frames;
     Str label = { g_tui.activity, g_tui.activity_n };

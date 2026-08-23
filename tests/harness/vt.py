@@ -680,6 +680,18 @@ class Terminal:
             self.title = payload.split(";", 1)[1]
 
     # ---- inspection -------------------------------------------------------
+    @property
+    def visible_seq(self) -> tuple:
+        """Everything a case can observe, so a repaint that paints nothing
+        does not read as activity."""
+        return (
+            self.screen_seq,
+            self.bell_count,
+            len(self.clipboard_writes),
+            len(self.notifications),
+            self.title,
+        )
+
     def row_text(self, r: int) -> str:
         line = "".join(self.buf.chars[r])
         return line.replace(CONT, "") if CONT in line else line

@@ -201,6 +201,7 @@ class Ctx:
             # Most cases exercise tool mechanics rather than approval. They
             # opt into trusted automation; Ask-focused cases override this.
             "ARQAN_PERMISSIONS": "free",
+            "ARQAN_TEST_FREEZE_ACTIVITY_CLOCK": "1",
         }
         for k, v in overrides.items():
             if v is None:
