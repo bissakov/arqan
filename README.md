@@ -12,6 +12,7 @@ with Ctrl-V.
 ```sh
 make                 # bin/arqan and bin/arqan-highlight
 make minimal         # bin/arqan only
+make fmt             # format the sources with clang-format
 make test
 make test-asan
 ```
@@ -19,6 +20,10 @@ make test-asan
 Building requires a C17 compiler and libcurl development files. Lexbor 3.0.0
 is vendored and built as a separate object; no system Lexbor package, browser,
 JavaScript runtime, API key, or web-search daemon is needed.
+
+`.clang-format` is the house style and CI enforces it with
+`make check-format`. The clang-format major version is pinned, since output
+differs between them: `pipx install clang-format==22.1.8`.
 
 Run `./bin/arqan`, or supply a prompt for a non-interactive response:
 

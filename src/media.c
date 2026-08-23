@@ -14,13 +14,13 @@
 b8 media_init(MediaSet *m, Arena *persist, size_t cap) {
     memset(m, 0, sizeof *m);
     if (!cap) return false;
-    m->mime  = arena_new(persist, Str, cap);
+    m->mime = arena_new(persist, Str, cap);
     m->bytes = arena_new(persist, Str, cap);
-    m->b64   = arena_new(persist, Str, cap);
+    m->b64 = arena_new(persist, Str, cap);
     m->label = arena_new(persist, Str, cap);
-    m->file  = arena_new(persist, Str, cap);
-    m->w     = arena_new(persist, u32, cap);
-    m->h     = arena_new(persist, u32, cap);
+    m->file = arena_new(persist, Str, cap);
+    m->w = arena_new(persist, u32, cap);
+    m->h = arena_new(persist, u32, cap);
     if (!m->mime || !m->bytes || !m->b64 || !m->label || !m->file || !m->w
         || !m->h)
         return false;
@@ -29,11 +29,15 @@ b8 media_init(MediaSet *m, Arena *persist, size_t cap) {
     return true;
 }
 
-static u32 be16(const u8 *p) { return (u32)p[0] << 8 | p[1]; }
+static u32 be16(const u8 *p) {
+    return (u32)p[0] << 8 | p[1];
+}
 static u32 be32(const u8 *p) {
     return (u32)p[0] << 24 | (u32)p[1] << 16 | (u32)p[2] << 8 | p[3];
 }
-static u32 le16(const u8 *p) { return (u32)p[1] << 8 | p[0]; }
+static u32 le16(const u8 *p) {
+    return (u32)p[1] << 8 | p[0];
+}
 
 /* The frame header of the first SOFn segment. Every other segment carries its
  * length, so the scan steps over them rather than searching for a signature
@@ -44,16 +48,19 @@ static void jpeg_size(Str s, u32 *w, u32 *h) {
     while (i + 9 < s.n) {
         if (p[i] != 0xff) return;
         u8 marker = p[i + 1];
-        if (marker == 0xff) { i++; continue; }          
+        if (marker == 0xff) {
+            i++;
+            continue;
+        }
         if (marker == 0xd8 || (marker >= 0xd0 && marker <= 0xd9)) {
             i += 2;
             continue;
         }
-        if (marker == 0xda) return;                     
+        if (marker == 0xda) return;
         u32 len = be16(p + i + 2);
         if (len < 2) return;
-        b8 sof = (marker >= 0xc0 && marker <= 0xcf)
-              && marker != 0xc4 && marker != 0xc8 && marker != 0xcc;
+        b8 sof = (marker >= 0xc0 && marker <= 0xcf) && marker != 0xc4
+                 && marker != 0xc8 && marker != 0xcc;
         if (sof) {
             if (i + 9 >= s.n) return;
             *h = be16(p + i + 5);
@@ -77,8 +84,8 @@ static void webp_size(Str s, u32 *w, u32 *h) {
         *h = le16(p + 28) & 0x3fffu;
     } else if (!memcmp(p + 12, "VP8L", 4)) {
         if (p[20] != 0x2f) return;
-        u32 bits = (u32)p[21] | (u32)p[22] << 8 | (u32)p[23] << 16
-                 | (u32)p[24] << 24;
+        u32 bits =
+            (u32)p[21] | (u32)p[22] << 8 | (u32)p[23] << 16 | (u32)p[24] << 24;
         *w = (bits & 0x3fffu) + 1;
         *h = ((bits >> 14) & 0x3fffu) + 1;
     }
@@ -117,35 +124,35 @@ b8 media_sniff(Str bytes, Str *mime, u32 *w, u32 *h) {
 }
 
 Str media_ext(Str mime) {
-    if (str_eq(mime, STR("image/png")))  return STR("png");
+    if (str_eq(mime, STR("image/png"))) return STR("png");
     if (str_eq(mime, STR("image/jpeg"))) return STR("jpg");
-    if (str_eq(mime, STR("image/gif")))  return STR("gif");
+    if (str_eq(mime, STR("image/gif"))) return STR("gif");
     if (str_eq(mime, STR("image/webp"))) return STR("webp");
     return STR("bin");
 }
 
 
 static Str media_kind(Str mime) {
-    return str_starts(mime, STR("image/"))
-         ? (Str){ mime.p + 6, mime.n - 6 } : mime;
+    return str_starts(mime, STR("image/")) ? (Str){mime.p + 6, mime.n - 6}
+                                           : mime;
 }
 
 static size_t media_push(MediaSet *m, Str mime, Str bytes, Str label, Str file,
                          u32 w, u32 h) {
     if (m->n >= m->cap) return MEDIA_NONE;
     size_t i = m->n++;
-    m->mime[i]  = mime;
+    m->mime[i] = mime;
     m->bytes[i] = bytes;
-    m->b64[i]   = (Str){0};
+    m->b64[i] = (Str){0};
     m->label[i] = label;
-    m->file[i]  = file;
+    m->file[i] = file;
     m->w[i] = w;
     m->h[i] = h;
     return i;
 }
 
-size_t media_add(MediaSet *m, Arena *persist, Str bytes, Str label,
-                 char *err, size_t err_cap) {
+size_t media_add(MediaSet *m, Arena *persist, Str bytes, Str label, char *err,
+                 size_t err_cap) {
     if (m->n >= m->cap) {
         snprintf(err, err_cap, "no room for another image in this session");
         return MEDIA_NONE;
@@ -164,8 +171,8 @@ size_t media_add(MediaSet *m, Arena *persist, Str bytes, Str label,
         return MEDIA_NONE;
     }
     if (w > AGENT_MAX_IMAGE_SIDE || h > AGENT_MAX_IMAGE_SIDE) {
-        snprintf(err, err_cap, "image is %ux%u; the limit is %u on a side",
-                 w, h, (unsigned)AGENT_MAX_IMAGE_SIDE);
+        snprintf(err, err_cap, "image is %ux%u; the limit is %u on a side", w,
+                 h, (unsigned)AGENT_MAX_IMAGE_SIDE);
         return MEDIA_NONE;
     }
     Str kept = str_dup(persist, bytes);
@@ -183,8 +190,7 @@ size_t media_add_file(MediaSet *m, Arena *persist, Arena *scratch, Str path,
                       char *err, size_t err_cap) {
     char z[AGENT_MAX_PATH];
     if (!path.n || path.n >= sizeof z) {
-        snprintf(err, err_cap, "path is %s",
-                 path.n ? "too long" : "missing");
+        snprintf(err, err_cap, "path is %s", path.n ? "too long" : "missing");
         return MEDIA_NONE;
     }
     memcpy(z, path.p, path.n);
@@ -193,13 +199,15 @@ size_t media_add_file(MediaSet *m, Arena *persist, Arena *scratch, Str path,
     size_t mark = scratch->off;
     Str body = {0};
     u64 size = 0;
-    FileStatus st = file_read(scratch, z, AGENT_MAX_IMAGE_BYTES, 0, &body,
-                              &size);
+    FileStatus st =
+        file_read(scratch, z, AGENT_MAX_IMAGE_BYTES, 0, &body, &size);
     size_t id = MEDIA_NONE;
     switch (st) {
         case FILE_OK: break;
-        case FILE_MISSING:     snprintf(err, err_cap, "%s: no such file", z); break;
-        case FILE_NOT_REGULAR: snprintf(err, err_cap, "%s is not a file", z); break;
+        case FILE_MISSING: snprintf(err, err_cap, "%s: no such file", z); break;
+        case FILE_NOT_REGULAR:
+            snprintf(err, err_cap, "%s is not a file", z);
+            break;
         case FILE_TOO_LARGE: {
             char have[32], max[32];
             spill_size_text(have, sizeof have, (size_t)size);
@@ -207,14 +215,20 @@ size_t media_add_file(MediaSet *m, Arena *persist, Arena *scratch, Str path,
             snprintf(err, err_cap, "%s is %s; the limit is %s", z, have, max);
             break;
         }
-        case FILE_NO_MEMORY:   snprintf(err, err_cap, "%s does not fit in memory", z); break;
-        case FILE_UNREADABLE:  snprintf(err, err_cap, "%s could not be read", z); break;
+        case FILE_NO_MEMORY:
+            snprintf(err, err_cap, "%s does not fit in memory", z);
+            break;
+        case FILE_UNREADABLE:
+            snprintf(err, err_cap, "%s could not be read", z);
+            break;
     }
     if (st == FILE_OK) {
-        
         Str label = path;
         for (size_t i = path.n; i-- > 0;)
-            if (path.p[i] == '/') { label = str_drop(path, i + 1); break; }
+            if (path.p[i] == '/') {
+                label = str_drop(path, i + 1);
+                break;
+            }
         id = media_add(m, persist, body, label, err, err_cap);
     }
     scratch->off = mark;
@@ -239,11 +253,11 @@ size_t media_keep(MediaSet *m, size_t base, const size_t *ids, size_t n) {
         size_t src = ids[i], dst = base + i;
         if (src >= m->n || src < dst) return m->n;
         if (src == dst) continue;
-        m->mime[dst]  = m->mime[src];
+        m->mime[dst] = m->mime[src];
         m->bytes[dst] = m->bytes[src];
-        m->b64[dst]   = m->b64[src];
+        m->b64[dst] = m->b64[src];
         m->label[dst] = m->label[src];
-        m->file[dst]  = m->file[src];
+        m->file[dst] = m->file[src];
         m->w[dst] = m->w[src];
         m->h[dst] = m->h[src];
     }
@@ -263,8 +277,8 @@ void media_describe(char *out, size_t cap, const MediaSet *m, size_t id) {
     char size[32];
     spill_size_text(size, sizeof size, m->bytes[id].n);
     if (m->w[id] && m->h[id])
-        snprintf(out, cap, "%.*s %ux%u - %s", (i32)kind.n, kind.p,
-                 m->w[id], m->h[id], size);
+        snprintf(out, cap, "%.*s %ux%u - %s", (i32)kind.n, kind.p, m->w[id],
+                 m->h[id], size);
     else
         snprintf(out, cap, "%.*s - %s", (i32)kind.n, kind.p, size);
 }
@@ -286,8 +300,10 @@ static Str media_base64(const MediaSet *m, size_t id) {
 
 static void media_put_base64(Buf *b, const MediaSet *m, size_t id) {
     Str enc = media_base64(m, id);
-    if (enc.n) buf_puts(b, enc);
-    else buf_base64(b, m->bytes[id].p, m->bytes[id].n);
+    if (enc.n)
+        buf_puts(b, enc);
+    else
+        buf_base64(b, m->bytes[id].p, m->bytes[id].n);
 }
 
 void media_write_openai(Buf *b, const MediaSet *m, size_t id) {

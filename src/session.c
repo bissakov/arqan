@@ -10,8 +10,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#define SESSION_PREVIEW_BYTES 60  
-#define SESSION_PREVIEW_READ 8192 
+#define SESSION_PREVIEW_BYTES 60
+#define SESSION_PREVIEW_READ  8192
 
 /* Resolve the per-cwd session directory. `scratch` only holds the XDG base
  * for the length of the call; the result is copied into the struct. */
@@ -25,8 +25,11 @@ b8 session_init(Session *s, Arena *scratch) {
 
     i32 n = snprintf(s->dir_buf, sizeof s->dir_buf, "%.*s/sessions/%.*s",
                      (i32)base.n, base.p, (i32)slug_n, slug);
-    if (n <= 0 || (size_t)n >= sizeof s->dir_buf) { s->dir_buf[0] = '\0'; return false; }
-    s->dir = (Str){ s->dir_buf, (size_t)n };
+    if (n <= 0 || (size_t)n >= sizeof s->dir_buf) {
+        s->dir_buf[0] = '\0';
+        return false;
+    }
+    s->dir = (Str){s->dir_buf, (size_t)n};
     return true;
 }
 
@@ -35,13 +38,17 @@ static void sess_set_current(Session *s, Str path, Str name) {
     size_t nn = name.n < sizeof s->name_buf - 1 ? name.n : 0;
     s->title_buf[0] = '\0';
     s->title = (Str){0};
-    if (!pn) { s->path = (Str){0}; s->name = (Str){0}; return; }
+    if (!pn) {
+        s->path = (Str){0};
+        s->name = (Str){0};
+        return;
+    }
     memcpy(s->path_buf, path.p, pn);
     s->path_buf[pn] = '\0';
-    s->path = (Str){ s->path_buf, pn };
+    s->path = (Str){s->path_buf, pn};
     memcpy(s->name_buf, name.p, nn);
     s->name_buf[nn] = '\0';
-    s->name = (Str){ s->name_buf, nn };
+    s->name = (Str){s->name_buf, nn};
 }
 
 
@@ -52,10 +59,11 @@ static Str sess_label(Arena *a, Str file) {
     for (size_t i = 0; stamp && i < stem.n; i++)
         if (i != 8 && (stem.p[i] < '0' || stem.p[i] > '9')) stamp = false;
     if (!stamp) return str_dup(a, stem);
-    Buf b; buf_init(&b, a, 24);
+    Buf b;
+    buf_init(&b, a, 24);
     const char *p = stem.p;
-    buf_putf(&b, "%.4s-%.2s-%.2s %.2s:%.2s:%.2s",
-             p, p + 4, p + 6, p + 9, p + 11, p + 13);
+    buf_putf(&b, "%.4s-%.2s-%.2s %.2s:%.2s:%.2s", p, p + 4, p + 6, p + 9,
+             p + 11, p + 13);
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
 }
 
@@ -67,9 +75,12 @@ static Str sess_label(Arena *a, Str file) {
 static size_t sess_title_clean(char *out, size_t cap, Str src) {
     if (!cap) return 0;
     for (size_t i = 0; i < src.n; i++)
-        if (src.p[i] == '\n' || src.p[i] == '\r') { src.n = i; break; }
+        if (src.p[i] == '\n' || src.p[i] == '\r') {
+            src.n = i;
+            break;
+        }
     src = str_trim(src);
-    
+
     for (size_t before = 0; before != src.n;) {
         before = src.n;
         while (src.n && (src.p[src.n - 1] == '.' || src.p[src.n - 1] == ' '))
@@ -77,7 +88,7 @@ static size_t sess_title_clean(char *out, size_t cap, Str src) {
         if (src.n >= 2) {
             char q = src.p[0];
             if ((q == '"' || q == '\'' || q == '`') && src.p[src.n - 1] == q)
-                src = str_trim((Str){ src.p + 1, src.n - 2 });
+                src = str_trim((Str){src.p + 1, src.n - 2});
         }
     }
     size_t n = 0;
@@ -87,13 +98,16 @@ static size_t sess_title_clean(char *out, size_t cap, Str src) {
         if (c == ' ' && (!n || out[n - 1] == ' ')) continue;
         out[n++] = c;
     }
-    
+
     size_t last = n;
     while (last && ((u8)out[last - 1] & 0xc0u) == 0x80u) last--;
     if (last) {
         u8 lead = (u8)out[last - 1];
-        size_t len = lead < 0x80 ? 1 : lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3
-                   : lead >= 0xc0 ? 2 : 0;
+        size_t len = lead < 0x80    ? 1
+                     : lead >= 0xf0 ? 4
+                     : lead >= 0xe0 ? 3
+                     : lead >= 0xc0 ? 2
+                                    : 0;
         if (!len || last - 1 + len > n) n = last - 1;
     }
     while (n && (out[n - 1] == ' ' || out[n - 1] == '.')) n--;
@@ -108,7 +122,7 @@ static Str sess_title_read(Str session_path, Arena *a) {
     file_read(a, session_path.p, AGENT_MAX_SESSION_BYTES, 512, &src, NULL);
     size_t end = 0;
     while (end < src.n && src.p[end] != '\n') end++;
-    JVal *v = json_parse(a, (Str){ src.p, end });
+    JVal *v = json_parse(a, (Str){src.p, end});
     if (!str_eq(json_str(v, STR("type")), STR("session"))) {
         a->off = mark;
         return (Str){0};
@@ -116,7 +130,7 @@ static Str sess_title_read(Str session_path, Arena *a) {
     char buf[AGENT_MAX_TITLE + 1];
     size_t n = sess_title_clean(buf, sizeof buf, json_str(v, STR("title")));
     a->off = mark;
-    return n ? str_dup(a, (Str){ buf, n }) : (Str){0};
+    return n ? str_dup(a, (Str){buf, n}) : (Str){0};
 }
 
 static b8 sess_file_json(FILE *f, Str s) {
@@ -124,13 +138,13 @@ static b8 sess_file_json(FILE *f, Str s) {
     for (size_t i = 0; i < s.n; i++) {
         const char *escaped = NULL;
         switch (s.p[i]) {
-            case '"':  escaped = "\\\""; break;
+            case '"': escaped = "\\\""; break;
             case '\\': escaped = "\\\\"; break;
-            case '\b': escaped = "\\b";  break;
-            case '\f': escaped = "\\f";  break;
-            case '\n': escaped = "\\n";  break;
-            case '\r': escaped = "\\r";  break;
-            case '\t': escaped = "\\t";  break;
+            case '\b': escaped = "\\b"; break;
+            case '\f': escaped = "\\f"; break;
+            case '\n': escaped = "\\n"; break;
+            case '\r': escaped = "\\r"; break;
+            case '\t': escaped = "\\t"; break;
             default: break;
         }
         if (escaped) {
@@ -144,8 +158,7 @@ static b8 sess_file_json(FILE *f, Str s) {
 
 static b8 sess_file_metadata(FILE *f, Str title) {
     return fputs("{\"type\":\"session\",\"title\":", f) != EOF
-        && sess_file_json(f, title)
-        && fputs("}\n", f) != EOF;
+           && sess_file_json(f, title) && fputs("}\n", f) != EOF;
 }
 
 typedef struct {
@@ -178,7 +191,10 @@ static b8 sess_title_replace(FILE *dst, void *ud) {
     char buf[8192];
     b8 ok = true;
     for (size_t n; (n = fread(buf, 1, sizeof buf, src)) != 0;)
-        if (fwrite(buf, 1, n, dst) != n) { ok = false; break; }
+        if (fwrite(buf, 1, n, dst) != n) {
+            ok = false;
+            break;
+        }
     if (ferror(src)) ok = false;
     i32 saved = ok ? 0 : errno ? errno : EIO;
     if (fclose(src) != 0 && !saved) saved = errno;
@@ -190,11 +206,11 @@ b8 session_set_title(Session *s, Str title) {
     if (!s->path.n) return false;
     char clean[AGENT_MAX_TITLE + 1];
     size_t n = sess_title_clean(clean, sizeof clean, title);
-    SessTitleUpdate update = { s->path.p, { clean, n } };
+    SessTitleUpdate update = {s->path.p, {clean, n}};
     if (!file_write_atomic(s->path.p, 0600, true, sess_title_replace, &update))
         return false;
     memcpy(s->title_buf, clean, n + 1);
-    s->title = n ? (Str){ s->title_buf, n } : (Str){0};
+    s->title = n ? (Str){s->title_buf, n} : (Str){0};
     return true;
 }
 
@@ -203,7 +219,7 @@ b8 session_begin(Session *s) {
     s->written = 0;
     s->save_blocked = false;
     s->sync_dir = false;
-    
+
     s->title_tried = false;
     /* The name is reserved here, but the conversation starts with its first
      * message: the record follows the file rather than the reservation, so
@@ -221,11 +237,11 @@ b8 session_begin(Session *s) {
                           tm.tm_hour, tm.tm_min, tm.tm_sec);
         if (fn <= 0) return false;
         char path[AGENT_MAX_PATH];
-        i32 pn = snprintf(path, sizeof path, "%.*s/%s",
-                          (i32)s->dir.n, s->dir.p, file);
+        i32 pn = snprintf(path, sizeof path, "%.*s/%s", (i32)s->dir.n, s->dir.p,
+                          file);
         if (pn <= 0 || (size_t)pn >= sizeof path) return false;
-        if (access(path, F_OK) == 0) continue;   
-        sess_set_current(s, (Str){ path, (size_t)pn }, str_c(file));
+        if (access(path, F_OK) == 0) continue;
+        sess_set_current(s, (Str){path, (size_t)pn}, str_c(file));
         return s->path.n != 0;
     }
     return false;
@@ -278,8 +294,8 @@ static b8 sess_media_name(char *rel, size_t cap, const MediaSet *m, size_t id) {
     }
     Str ext = media_ext(m->mime[id]);
     i32 rn = snprintf(rel, cap, "media/%016llx.%.*s",
-                      (unsigned long long)str_hash64(m->bytes[id]),
-                      (i32)ext.n, ext.p);
+                      (unsigned long long)str_hash64(m->bytes[id]), (i32)ext.n,
+                      ext.p);
     return rn > 0 && (size_t)rn < cap;
 }
 
@@ -295,7 +311,7 @@ static b8 sess_media_write(Str dir, const MediaSet *m, size_t id,
         snprintf(err, err_cap, "session media path is too long");
         return false;
     }
-    if (!paths_ensure_dir((Str){ sub, (size_t)sn })) {
+    if (!paths_ensure_dir((Str){sub, (size_t)sn})) {
         snprintf(err, err_cap, "could not create session media directory");
         return false;
     }
@@ -307,7 +323,7 @@ static b8 sess_media_write(Str dir, const MediaSet *m, size_t id,
     }
 
     if (access(path, F_OK) == 0)
-        return sess_sync_dir((Str){ sub, (size_t)sn }, err, err_cap);
+        return sess_sync_dir((Str){sub, (size_t)sn}, err, err_cap);
     if (errno != ENOENT) {
         snprintf(err, err_cap, "could not inspect session image: %s",
                  strerror(errno));
@@ -327,7 +343,10 @@ static b8 sess_write_all(i32 fd, const char *p, size_t n) {
     for (size_t off = 0; off < n;) {
         ssize_t wr = write(fd, p + off, n - off);
         if (wr < 0 && errno == EINTR) continue;
-        if (wr <= 0) { if (!wr) errno = EIO; return false; }
+        if (wr <= 0) {
+            if (!wr) errno = EIO;
+            return false;
+        }
         off += (size_t)wr;
     }
     return true;
@@ -395,18 +414,42 @@ static void sess_out_json(SessOut *o, Str s) {
         size_t escaped_n = 0;
         char control[7];
         switch (s.p[i]) {
-            case '"':  escaped = "\\\""; escaped_n = 2; break;
-            case '\\': escaped = "\\\\"; escaped_n = 2; break;
-            case '\b': escaped = "\\b";  escaped_n = 2; break;
-            case '\f': escaped = "\\f";  escaped_n = 2; break;
-            case '\n': escaped = "\\n";  escaped_n = 2; break;
-            case '\r': escaped = "\\r";  escaped_n = 2; break;
-            case '\t': escaped = "\\t";  escaped_n = 2; break;
+            case '"':
+                escaped = "\\\"";
+                escaped_n = 2;
+                break;
+            case '\\':
+                escaped = "\\\\";
+                escaped_n = 2;
+                break;
+            case '\b':
+                escaped = "\\b";
+                escaped_n = 2;
+                break;
+            case '\f':
+                escaped = "\\f";
+                escaped_n = 2;
+                break;
+            case '\n':
+                escaped = "\\n";
+                escaped_n = 2;
+                break;
+            case '\r':
+                escaped = "\\r";
+                escaped_n = 2;
+                break;
+            case '\t':
+                escaped = "\\t";
+                escaped_n = 2;
+                break;
             default:
                 if ((u8)s.p[i] < 0x20) {
                     i32 n = snprintf(control, sizeof control, "\\u%04x",
                                      (u8)s.p[i]);
-                    if (n != 6) { o->error = EILSEQ; return; }
+                    if (n != 6) {
+                        o->error = EILSEQ;
+                        return;
+                    }
                     escaped = control;
                     escaped_n = 6;
                 }
@@ -440,11 +483,12 @@ static b8 sess_put_media(SessOut *o, Str dir, const Conv *c, size_t i,
         }
         char rel[64];
         b8 named = sess_media_name(rel, sizeof rel, m, id)
-                && (!media_live(m, id)
-                    || sess_media_write(dir, m, id, rel, err, err_cap));
+                   && (!media_live(m, id)
+                       || sess_media_write(dir, m, id, rel, err, err_cap));
         if (!named) {
             if (!err[0])
-                snprintf(err, err_cap, "could not construct session media path");
+                snprintf(err, err_cap,
+                         "could not construct session media path");
             return false;
         }
         if (k) sess_out_putc(o, ',');
@@ -468,7 +512,8 @@ static b8 sess_put_media(SessOut *o, Str dir, const Conv *c, size_t i,
 b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
     if (err_cap) err[0] = '\0';
     if (s->save_blocked) {
-        snprintf(err, err_cap, "a previous failed append could not be rolled back");
+        snprintf(err, err_cap,
+                 "a previous failed append could not be rolled back");
         return false;
     }
     if (s->sync_dir) {
@@ -478,8 +523,14 @@ b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
     if (s->written >= c->n) return true;
     b8 pending = false;
     for (size_t i = s->written; i < c->n; i++)
-        if (c->role[i] != M_SYSTEM) { pending = true; break; }
-    if (!pending) { s->written = c->n; return true; }
+        if (c->role[i] != M_SYSTEM) {
+            pending = true;
+            break;
+        }
+    if (!pending) {
+        s->written = c->n;
+        return true;
+    }
     if (!s->path.n) {
         snprintf(err, err_cap, "session storage is unavailable");
         return false;
@@ -493,8 +544,10 @@ b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
 
     b8 created = false;
     i32 fd = open(s->path.p, O_RDWR | O_CREAT | O_EXCL, 0600);
-    if (fd >= 0) created = true;
-    else if (errno == EEXIST) fd = open(s->path.p, O_RDWR);
+    if (fd >= 0)
+        created = true;
+    else if (errno == EEXIST)
+        fd = open(s->path.p, O_RDWR);
     if (fd < 0) {
         snprintf(err, err_cap, "could not open session file: %s",
                  strerror(errno));
@@ -518,14 +571,15 @@ b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
         return false;
     }
     b8 newline = old_end > 0 && last != '\n';
-    SessOut out = { .fd = fd };
+    SessOut out = {.fd = fd};
     if (created) sess_out_metadata(&out, s->title);
     if (newline) sess_out_putc(&out, '\n');
     b8 serialized = true;
     for (size_t i = s->written; i < c->n && serialized; i++) {
         if (c->role[i] == M_SYSTEM) continue;
-        const char *role = c->role[i] == M_USER ? "user"
-                         : c->role[i] == M_TOOL ? "tool" : "assistant";
+        const char *role = c->role[i] == M_USER   ? "user"
+                           : c->role[i] == M_TOOL ? "tool"
+                                                  : "assistant";
         sess_out_putf(&out, "{\"role\":\"%s\"", role);
         if (c->tool_call_id[i].n) {
             sess_out_puts(&out, STR(",\"id\":"));
@@ -582,9 +636,7 @@ b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
     s->written = c->n;
     if (created) {
         s->sync_dir = true;
-        if (!sess_sync_dir(dir, err, err_cap)) {
-            return false;
-        }
+        if (!sess_sync_dir(dir, err, err_cap)) { return false; }
         s->sync_dir = false;
     }
     return true;
@@ -611,7 +663,7 @@ b8 session_fork(Session *s, const Conv *c, char *err, size_t err_cap) {
         sess_rebind(s);
         return false;
     }
-    if (old.title.n) session_set_title(s, (Str){ old.title_buf, old.title.n });
+    if (old.title.n) session_set_title(s, (Str){old.title_buf, old.title.n});
     return true;
 }
 
@@ -641,12 +693,15 @@ static size_t export_fence_len(Str body) {
 
 static b8 export_code(FILE *f, Str language, Str body) {
     size_t fence = export_fence_len(body);
-    for (size_t i = 0; i < fence; i++) if (fputc('`', f) == EOF) return false;
-    if (!export_put(f, language) || fputc('\n', f) == EOF || !export_put(f, body))
+    for (size_t i = 0; i < fence; i++)
+        if (fputc('`', f) == EOF) return false;
+    if (!export_put(f, language) || fputc('\n', f) == EOF
+        || !export_put(f, body))
         return false;
     if ((!body.n || body.p[body.n - 1] != '\n') && fputc('\n', f) == EOF)
         return false;
-    for (size_t i = 0; i < fence; i++) if (fputc('`', f) == EOF) return false;
+    for (size_t i = 0; i < fence; i++)
+        if (fputc('`', f) == EOF) return false;
     return fputc('\n', f) != EOF;
 }
 
@@ -658,8 +713,8 @@ static Str export_call_name(const Conv *c, size_t result) {
     return STR("tool");
 }
 
-static b8 export_tool_section(FILE *f, const char *kind, Str name,
-                              Str language, Str body) {
+static b8 export_tool_section(FILE *f, const char *kind, Str name, Str language,
+                              Str body) {
     if (fprintf(f, "\n## %s", kind) < 0) return false;
     if (name.n) {
         if (fputs(": `", f) == EOF || !export_put(f, name)
@@ -673,8 +728,7 @@ static b8 export_markdown(FILE *f, const Conv *c) {
     if (fputs("# " AGENT_NAME " session\n", f) == EOF) return false;
     for (size_t i = 0; i < c->n; i++) {
         switch (c->role[i]) {
-            case M_SYSTEM:
-                break;
+            case M_SYSTEM: break;
             case M_USER:
                 if (conv_is_shell(c, i)) {
                     if (!export_tool_section(f, "Shell", (Str){0}, STR("sh"),
@@ -692,7 +746,8 @@ static b8 export_markdown(FILE *f, const Conv *c) {
                                              STR("json"), c->text[i]))
                         return false;
                 } else if (c->text[i].n
-                           && !export_text_section(f, "Assistant", c->text[i])) {
+                           && !export_text_section(f, "Assistant",
+                                                   c->text[i])) {
                     return false;
                 }
                 break;
@@ -720,13 +775,14 @@ static b8 export_auto_path(char *path, size_t cap, char *err, size_t err_cap) {
     }
     char stamp[32];
     i32 n = snprintf(stamp, sizeof stamp, "%04d%02d%02d-%02d%02d%02d",
-                     tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                     tm.tm_hour, tm.tm_min, tm.tm_sec);
+                     tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
+                     tm.tm_min, tm.tm_sec);
     if (n <= 0 || (size_t)n >= sizeof stamp) return false;
     for (i32 suffix = 1; suffix <= 999; suffix++) {
         n = suffix == 1
-          ? snprintf(path, cap, AGENT_NAME "-session-%s.md", stamp)
-          : snprintf(path, cap, AGENT_NAME "-session-%s-%d.md", stamp, suffix);
+                ? snprintf(path, cap, AGENT_NAME "-session-%s.md", stamp)
+                : snprintf(path, cap, AGENT_NAME "-session-%s-%d.md", stamp,
+                           suffix);
         if (n <= 0 || (size_t)n >= cap) break;
         if (access(path, F_OK) != 0) {
             if (errno == ENOENT) return true;
@@ -739,9 +795,8 @@ static b8 export_auto_path(char *path, size_t cap, char *err, size_t err_cap) {
     return false;
 }
 
-b8 session_export_markdown(const Conv *c, Str requested,
-                           char *path, size_t path_cap,
-                           char *err, size_t err_cap) {
+b8 session_export_markdown(const Conv *c, Str requested, char *path,
+                           size_t path_cap, char *err, size_t err_cap) {
     requested = str_trim(requested);
     if (requested.n) {
         if (requested.n >= path_cap) {
@@ -771,16 +826,19 @@ static Str sess_preview(Arena *a, const char *path) {
     size_t start = 0;
     for (size_t i = 0; i <= src.n && !out.n; i++) {
         if (i != src.n && src.p[i] != '\n') continue;
-        Str line = { src.p + start, i - start };
+        Str line = {src.p + start, i - start};
         start = i + 1;
         if (line.n < 2) continue;
         JVal *v = json_parse(a, line);
         if (!str_eq(json_str(v, STR("role")), STR("user"))) continue;
         out = json_str(v, STR("content"));
     }
-    if (!out.n) { a->off = mark; return (Str){0}; }
+    if (!out.n) {
+        a->off = mark;
+        return (Str){0};
+    }
 
-    
+
     char tmp[SESSION_PREVIEW_BYTES + 8];
     size_t n = 0;
     for (size_t i = 0; i < out.n && n < SESSION_PREVIEW_BYTES; i++) {
@@ -790,7 +848,8 @@ static Str sess_preview(Arena *a, const char *path) {
     while (n && ((u8)tmp[n - 1] & 0xc0u) == 0x80u) n--;
     b8 cut = out.n > n;
     a->off = mark;
-    Buf b; buf_init(&b, a, n + 8);
+    Buf b;
+    buf_init(&b, a, n + 8);
     buf_put(&b, tmp, n);
     if (cut) buf_puts(&b, STR("..."));
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
@@ -798,9 +857,9 @@ static Str sess_preview(Arena *a, const char *path) {
 
 
 typedef struct {
-    char   name[64];
+    char name[64];
     time_t sec;
-    long   nsec;
+    long nsec;
 } SessEntry;
 
 /* Whether `e` sorts before a candidate, which is what an insertion walks
@@ -839,7 +898,7 @@ size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max) {
         }
         size_t pos = n;
         while (pos > 0 && !sess_before(&ents[pos - 1], &cand)) pos--;
-        if (pos >= max) continue;               
+        if (pos >= max) continue;
         if (n < max) n++;
         for (size_t i = n - 1; i > pos; i--) ents[i] = ents[i - 1];
         ents[pos] = cand;
@@ -847,14 +906,15 @@ size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max) {
     closedir(d);
     if (!n) return 0;
 
-    out->name    = arena_new(a, Str, n);
-    out->path    = arena_new(a, Str, n);
+    out->name = arena_new(a, Str, n);
+    out->path = arena_new(a, Str, n);
     out->preview = arena_new(a, Str, n);
-    out->title   = arena_new(a, Str, n);
+    out->title = arena_new(a, Str, n);
     if (!out->name || !out->path || !out->preview || !out->title) return 0;
     size_t kept = 0;
     for (size_t i = 0; i < n; i++) {
-        Buf b; buf_init(&b, a, s->dir.n + sizeof ents[0].name + 2);
+        Buf b;
+        buf_init(&b, a, s->dir.n + sizeof ents[0].name + 2);
         buf_puts(&b, s->dir);
         buf_putc(&b, '/');
         buf_puts(&b, str_c(ents[i].name));
@@ -895,8 +955,8 @@ b8 session_delete(const Session *s, Str path) {
  * before anything is thrown away. */
 Str session_read(Str path, Arena *scratch) {
     Str src = {0};
-    if (path.n) file_read(scratch, path.p, AGENT_MAX_SESSION_BYTES, 0, &src,
-                          NULL);
+    if (path.n)
+        file_read(scratch, path.p, AGENT_MAX_SESSION_BYTES, 0, &src, NULL);
     return src;
 }
 
@@ -917,8 +977,9 @@ static Str sess_thinking(Arena *persist, const JVal *v) {
         if (str_eq(kind, STR("thinking"))) {
             const JVal *thought = json_get(blk, STR("thinking"));
             const JVal *signature = json_get(blk, STR("signature"));
-            if (!thought || thought->type != J_STR
-                || !signature || signature->type != J_STR) return (Str){0};
+            if (!thought || thought->type != J_STR || !signature
+                || signature->type != J_STR)
+                return (Str){0};
         } else if (str_eq(kind, STR("redacted_thinking"))) {
             const JVal *data = json_get(blk, STR("data"));
             if (!data || data->type != J_STR) return (Str){0};
@@ -926,7 +987,8 @@ static Str sess_thinking(Arena *persist, const JVal *v) {
             return (Str){0};
         }
     }
-    Buf out; buf_init(&out, persist, 1024);
+    Buf out;
+    buf_init(&out, persist, 1024);
     json_write(&out, blocks);
     return buf_ok(&out) ? buf_finish(&out) : (Str){0};
 }
@@ -949,7 +1011,8 @@ static void sess_apply_media(const Session *s, const JVal *v, Conv *c,
     const JVal *arr = json_get(v, STR("media"));
     if (!c->media || !arr || arr->type != J_ARR || !arr->u.arr.n) return;
     size_t off = c->media->n, kept = 0;
-    for (size_t i = 0; i < arr->u.arr.n && kept < AGENT_MAX_MEDIA_PER_TURN; i++) {
+    for (size_t i = 0; i < arr->u.arr.n && kept < AGENT_MAX_MEDIA_PER_TURN;
+         i++) {
         const JVal *e = &arr->u.arr.items[i];
         if (e->type != J_OBJ) continue;
         Str file = json_str(e, STR("file"));
@@ -957,14 +1020,14 @@ static void sess_apply_media(const Session *s, const JVal *v, Conv *c,
         char path[AGENT_MAX_PATH], err[128];
         size_t id = MEDIA_NONE;
         if (sess_media_path(path, sizeof path, s->dir, file))
-            id = media_add_file(c->media, persist, scratch, str_c(path),
-                                err, sizeof err);
+            id = media_add_file(c->media, persist, scratch, str_c(path), err,
+                                sizeof err);
         if (id != MEDIA_NONE && label.n)
             c->media->label[id] = str_dup(persist, label);
         if (id == MEDIA_NONE)
             id = media_add_missing(c->media, persist, label,
                                    json_str(e, STR("mime")), file);
-        if (id == MEDIA_NONE) break;   
+        if (id == MEDIA_NONE) break;
         kept++;
     }
     if (kept) conv_attach_media(c, slot, off, kept);
@@ -1000,14 +1063,14 @@ static b8 sess_answer_pending(Conv *c) {
 b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
                  Arena *persist, Arena *scratch) {
     sess_set_current(s, path, name);
-    telemetry_bind(s->path);          
+    telemetry_bind(s->path);
     s->written = c->n;
-    
+
     {
         size_t mark = scratch->off;
         Str title = sess_title_read(s->path, scratch);
         size_t n = sess_title_clean(s->title_buf, sizeof s->title_buf, title);
-        s->title = n ? (Str){ s->title_buf, n } : (Str){0};
+        s->title = n ? (Str){s->title_buf, n} : (Str){0};
         s->title_tried = n != 0;
         scratch->off = mark;
     }
@@ -1018,13 +1081,16 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
     b8 ok = true;
     for (size_t i = 0; i <= src.n; i++) {
         if (i != src.n && src.p[i] != '\n') continue;
-        Str line = { src.p + start, i - start };
+        Str line = {src.p + start, i - start};
         start = i + 1;
         if (line.n < 2) continue;
         size_t line_mark = scratch->off;
         JVal *v = json_parse(scratch, line);
         Str role = json_str(v, STR("role"));
-        if (!role.n) { scratch->off = line_mark; continue; }
+        if (!role.n) {
+            scratch->off = line_mark;
+            continue;
+        }
         const JVal *ms = json_get(v, STR("ms"));
         Str text = sess_field(persist, v, STR("content"));
         Str call_id = sess_field(persist, v, STR("id"));
@@ -1044,14 +1110,16 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
             slot = conv_add(c, M_ASSISTANT, text);
         }
         if (slot != CONV_NONE && ms && ms->type == J_NUM && ms->u.n > 0)
-            c->ms[slot] = ms->u.n > (f64)UINT32_MAX ? UINT32_MAX
-                                                    : (u32)ms->u.n;
+            c->ms[slot] = ms->u.n > (f64)UINT32_MAX ? UINT32_MAX : (u32)ms->u.n;
         if (slot != CONV_NONE && c->role[slot] == M_USER)
             sess_apply_media(s, v, c, slot, persist, scratch);
         if (slot != CONV_NONE && c->role[slot] == M_ASSISTANT)
             c->anthropic_thinking[slot] = sess_thinking(persist, v);
         scratch->off = line_mark;
-        if (slot == CONV_NONE) { ok = false; break; }
+        if (slot == CONV_NONE) {
+            ok = false;
+            break;
+        }
     }
     scratch->off = mark;
     s->written = c->n;

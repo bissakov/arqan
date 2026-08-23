@@ -61,13 +61,18 @@ VENDOR_CFLAGS ?= -std=c17 -Os -fno-strict-aliasing -pipe -flto=auto -w \
 
 PYTHON  ?= python3
 
+CLANG_FORMAT ?= clang-format
+CLANG_FORMAT_VERSION := 22
+FMT_SRC := $(wildcard src/*.c src/*.h highlight/*.c highlight/*.h \
+                      tests/unit/*.c tests/unit/*.h)
+
 .PHONY: all minimal clean clean-asan run test test-update asan test-asan mock \
         test-ci \
         clean-fil fil test-fil clean-static static test-static \
         clean-el9 el9 test-el9 \
         bench bench-slow bench-baseline \
         bench-guard check-curl-types \
-        check-globals test-unit \
+        check-globals test-unit fmt check-format check-clang-format \
         package-linux test-package-linux release-linux publish-repos
 
 all: $(BIN) $(HL_BIN)
@@ -195,6 +200,27 @@ check-curl-types:
 
 check-globals:
 	$(PYTHON) scripts/check-globals.py
+
+check-clang-format:
+	@command -v $(CLANG_FORMAT) >/dev/null 2>&1 || { \
+	    echo "$(CLANG_FORMAT) not found. Install clang-format"; \
+	    echo "$(CLANG_FORMAT_VERSION), for example with"; \
+	    echo "'pipx install clang-format==$(CLANG_FORMAT_VERSION).1.8'."; \
+	    exit 1; }
+	@v=`$(CLANG_FORMAT) --version | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p'`; \
+	    [ "$$v" = "$(CLANG_FORMAT_VERSION)" ] || { \
+	    echo "clang-format $$v formats differently from the pinned"; \
+	    echo "$(CLANG_FORMAT_VERSION). Install that major version and point"; \
+	    echo "CLANG_FORMAT at it."; \
+	    exit 1; }
+
+fmt: check-clang-format
+	$(CLANG_FORMAT) -i $(FMT_SRC)
+
+check-format: check-clang-format
+	@$(CLANG_FORMAT) --dry-run -Werror $(FMT_SRC) || { \
+	    echo "Formatting differs from .clang-format. Run 'make fmt'."; \
+	    exit 1; }
 
 # Standalone: links no libcurl and reads no terminal, so it needs only src/.
 $(UNIT_BIN): $(UNIT_SRC) $(wildcard src/*.c) $(wildcard src/*.h)

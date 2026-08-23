@@ -146,19 +146,18 @@ static Str prompt_project(Str dir, const char *suffix, size_t suffix_size,
                           size_t err_cap) {
     char path[AGENT_MAX_PATH];
     size_t n = dir.n;
-    if (!n || dir.p[0] != '/' || n + suffix_size > sizeof path)
-        return (Str){0};
+    if (!n || dir.p[0] != '/' || n + suffix_size > sizeof path) return (Str){0};
     memcpy(path, dir.p, n);
     while (n > 1 && path[n - 1] == '/') n--;
     for (;;) {
         size_t off = n == 1 ? 0 : n;
         memcpy(path + off, suffix, suffix_size);
-        Str body = prompt_read((Str){ path, off + suffix_size - 1 }, scratch,
-                               err, err_cap);
+        Str body = prompt_read((Str){path, off + suffix_size - 1}, scratch, err,
+                               err_cap);
         if (body.n || *err) {
             if (body.n && path_out)
-                *path_out = str_dup(scratch,
-                                    (Str){ path, off + suffix_size - 1 });
+                *path_out =
+                    str_dup(scratch, (Str){path, off + suffix_size - 1});
             return body;
         }
         if (n == 1) return (Str){0};
@@ -170,8 +169,7 @@ static Str prompt_project(Str dir, const char *suffix, size_t suffix_size,
 static Str prompt_global(Str name, Arena *scratch, Str *path_out, char *err,
                          size_t err_cap) {
     Str cand[AGENT_MAX_CONFIG_FILES];
-    size_t n = paths_config_files(name, scratch, cand,
-                                  AGENT_MAX_CONFIG_FILES);
+    size_t n = paths_config_files(name, scratch, cand, AGENT_MAX_CONFIG_FILES);
     for (size_t i = n; i > 0; i--) {
         Str body = prompt_read(cand[i - 1], scratch, err, err_cap);
         if (body.n || *err) {
@@ -196,7 +194,7 @@ static size_t prompt_agents(Str dir, Arena *scratch, Str *body, Str *path_out,
     for (;;) {
         size_t off = n == 1 ? 0 : n;
         memcpy(path + off, suffix, sizeof suffix);
-        Str full = { path, off + sizeof suffix - 1 };
+        Str full = {path, off + sizeof suffix - 1};
         Str text = prompt_read(full, scratch, err, err_cap);
         if (*err) return found;
         if (text.n && found < cap) {
@@ -216,14 +214,12 @@ static void prompt_tools(Buf *b, const ToolRegistry *tools, AgentMode mode) {
     if (!tools) return;
     for (size_t i = 0; i < tools->n; i++) {
         if (!tools_available(tools, i, mode)) continue;
-        buf_putf(b, "- %.*s: %.*s\n",
-                 (int)tools->name[i].n, tools->name[i].p,
+        buf_putf(b, "- %.*s: %.*s\n", (int)tools->name[i].n, tools->name[i].p,
                  (int)tools->desc[i].n, tools->desc[i].p);
     }
 }
 
-static void prompt_ask_user(Buf *b, const ToolRegistry *tools,
-                            AgentMode mode) {
+static void prompt_ask_user(Buf *b, const ToolRegistry *tools, AgentMode mode) {
     size_t id = tools ? tools_find(tools, STR("ask_user")) : TOOL_NONE;
     if (id == TOOL_NONE || !tools_available(tools, id, mode)) return;
     if (mode == MODE_PLAN) {
@@ -245,16 +241,27 @@ static void prompt_ask_user(Buf *b, const ToolRegistry *tools,
 static void prompt_expand(Buf *b, Str tmpl, const ToolRegistry *tools,
                           AgentMode mode, Str cwd) {
     for (size_t i = 0; i < tmpl.n; i++) {
-        if (tmpl.p[i] != '{') { buf_putc(b, tmpl.p[i]); continue; }
+        if (tmpl.p[i] != '{') {
+            buf_putc(b, tmpl.p[i]);
+            continue;
+        }
         size_t end = i + 1;
         while (end < tmpl.n && tmpl.p[end] != '}' && tmpl.p[end] != '\n') end++;
-        Str name = { tmpl.p + i + 1, end - i - 1 };
-        if (end == tmpl.n || tmpl.p[end] != '}') { buf_putc(b, '{'); continue; }
-        if (str_eq(name, STR("tools")))    prompt_tools(b, tools, mode);
-        else if (str_eq(name, STR("cwd"))) buf_puts(b, cwd);
+        Str name = {tmpl.p + i + 1, end - i - 1};
+        if (end == tmpl.n || tmpl.p[end] != '}') {
+            buf_putc(b, '{');
+            continue;
+        }
+        if (str_eq(name, STR("tools")))
+            prompt_tools(b, tools, mode);
+        else if (str_eq(name, STR("cwd")))
+            buf_puts(b, cwd);
         else if (str_eq(name, STR("ask_user_guidance")))
             prompt_ask_user(b, tools, mode);
-        else { buf_putc(b, '{'); continue; }
+        else {
+            buf_putc(b, '{');
+            continue;
+        }
         i = end;
     }
 }
@@ -321,8 +328,9 @@ static Str prompt_for(const ToolRegistry *tools, AgentMode mode, Str configured,
         buf_puts(&b, STR("\n\nProject-specific instructions and "
                          "guidelines:\n"));
         for (size_t i = n_agents; i > 0; i--)
-            buf_putf(&b, "\n<project_instructions path=\"%.*s\">\n%.*s\n"
-                         "</project_instructions>\n",
+            buf_putf(&b,
+                     "\n<project_instructions path=\"%.*s\">\n%.*s\n"
+                     "</project_instructions>\n",
                      (int)agent_paths[i - 1].n, agent_paths[i - 1].p,
                      (int)agents[i - 1].n, agents[i - 1].p);
     }
@@ -339,9 +347,8 @@ Str prompt_build(const ToolRegistry *tools, Str configured, Arena *persist,
                       sources, err, err_cap);
 }
 
-Str prompt_build_plan(const ToolRegistry *tools, Arena *persist,
-                      Arena *scratch, PromptSources *sources, char *err,
-                      size_t err_cap) {
+Str prompt_build_plan(const ToolRegistry *tools, Arena *persist, Arena *scratch,
+                      PromptSources *sources, char *err, size_t err_cap) {
     static const char project[] = "/." AGENT_NAME "/PLAN.md";
     return prompt_for(tools, MODE_PLAN, (Str){0}, project, sizeof project,
                       STR("PLAN.md"), PROMPT_PLAN_BUILTIN, persist, scratch,
@@ -349,17 +356,17 @@ Str prompt_build_plan(const ToolRegistry *tools, Arena *persist,
 }
 
 Str prompt_compact(void) {
-    return (Str){ PROMPT_COMPACT_BUILTIN, sizeof PROMPT_COMPACT_BUILTIN - 1 };
+    return (Str){PROMPT_COMPACT_BUILTIN, sizeof PROMPT_COMPACT_BUILTIN - 1};
 }
 
 Str prompt_compact_ask(void) {
-    return (Str){ PROMPT_COMPACT_ASK, sizeof PROMPT_COMPACT_ASK - 1 };
+    return (Str){PROMPT_COMPACT_ASK, sizeof PROMPT_COMPACT_ASK - 1};
 }
 
 Str prompt_title(void) {
-    return (Str){ PROMPT_TITLE_BUILTIN, sizeof PROMPT_TITLE_BUILTIN - 1 };
+    return (Str){PROMPT_TITLE_BUILTIN, sizeof PROMPT_TITLE_BUILTIN - 1};
 }
 
 Str prompt_title_ask(void) {
-    return (Str){ PROMPT_TITLE_ASK, sizeof PROMPT_TITLE_ASK - 1 };
+    return (Str){PROMPT_TITLE_ASK, sizeof PROMPT_TITLE_ASK - 1};
 }

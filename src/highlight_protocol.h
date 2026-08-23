@@ -1,15 +1,15 @@
 #ifndef AGENT_HIGHLIGHT_PROTOCOL_H
 #define AGENT_HIGHLIGHT_PROTOCOL_H
 
-#define YHL_MAGIC "YHL1"
-#define YHL_REQUEST_HEADER 20u
+#define YHL_MAGIC           "YHL1"
+#define YHL_REQUEST_HEADER  20u
 #define YHL_RESPONSE_HEADER 16u
-#define YHL_RUN_BYTES 12u
+#define YHL_RUN_BYTES       12u
 
-#define YHL_SOURCE_MAX (64u << 10)
-#define YHL_ALIAS_MAX 32u
+#define YHL_SOURCE_MAX   (64u << 10)
+#define YHL_ALIAS_MAX    32u
 #define YHL_FILENAME_MAX 4096u
-#define YHL_RUN_MAX 16384u
+#define YHL_RUN_MAX      16384u
 
 enum {
     YHL_HINT_ALIAS = 1,

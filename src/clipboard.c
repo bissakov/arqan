@@ -20,39 +20,40 @@
  * folding two different contracts into one runner would serve neither.
  */
 
-#define CLIP_POLL_MS   20
-#define CLIP_LIST_MAX  4096   
-#define CLIP_ARGV_MAX  8
+#define CLIP_POLL_MS  20
+#define CLIP_LIST_MAX 4096
+#define CLIP_ARGV_MAX 8
 
 #define CLIP_TYPE_MARK "%t"
 
 typedef struct {
-    const char *list[CLIP_ARGV_MAX];    
-    const char *fetch[CLIP_ARGV_MAX];   
+    const char *list[CLIP_ARGV_MAX];
+    const char *fetch[CLIP_ARGV_MAX];
 } ClipHelper;
 
 static const ClipHelper k_clip[] = {
-    { { "wl-paste", "--list-types", NULL },
-      { "wl-paste", "--no-newline", "--type", CLIP_TYPE_MARK, NULL } },
-    { { "xclip", "-selection", "clipboard", "-t", "TARGETS", "-o", NULL },
-      { "xclip", "-selection", "clipboard", "-t", CLIP_TYPE_MARK, "-o",
-        NULL } },
-    
-    { { NULL }, { "pngpaste", "-", NULL } },
+    {{"wl-paste", "--list-types", NULL},
+     {"wl-paste", "--no-newline", "--type", CLIP_TYPE_MARK, NULL}},
+    {{"xclip", "-selection", "clipboard", "-t", "TARGETS", "-o", NULL},
+     {"xclip", "-selection", "clipboard", "-t", CLIP_TYPE_MARK, "-o", NULL}},
+
+    {{NULL}, {"pngpaste", "-", NULL}},
 };
 
 
 static const Str k_clip_types[] = {
-    { "image/png", 9 }, { "image/jpeg", 10 },
-    { "image/gif", 9 }, { "image/webp", 10 },
+    {"image/png", 9},
+    {"image/jpeg", 10},
+    {"image/gif", 9},
+    {"image/webp", 10},
 };
 
 typedef enum {
     CLIP_OK = 0,
-    CLIP_ABSENT,   
-    CLIP_NONE,     
-    CLIP_BIG,      
-    CLIP_FAILED,   
+    CLIP_ABSENT,
+    CLIP_NONE,
+    CLIP_BIG,
+    CLIP_FAILED,
 } ClipStatus;
 
 
@@ -63,9 +64,12 @@ static i32 clip_wait(i32 fd, f64 deadline) {
         i32 ms = (i32)(left * 1000.0);
         if (ms > CLIP_POLL_MS) ms = CLIP_POLL_MS;
         if (ms < 1) ms = 1;
-        struct pollfd pfd = { fd, POLLIN, 0 };
+        struct pollfd pfd = {fd, POLLIN, 0};
         i32 rc = poll(&pfd, 1, ms);
-        if (rc < 0) { if (errno == EINTR) continue; return -1; }
+        if (rc < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
         if (rc > 0) return 1;
     }
 }
@@ -79,7 +83,7 @@ static ClipStatus clip_exec(const char *const *argv, Str type, char *out,
     char typez[32];
     size_t argc = 0;
     if (type.n >= sizeof typez) return CLIP_FAILED;
-    
+
     if (type.n) memcpy(typez, type.p, type.n);
     typez[type.n] = '\0';
     for (; argc + 1 < CLIP_ARGV_MAX && argv[argc]; argc++)
@@ -91,7 +95,11 @@ static ClipStatus clip_exec(const char *const *argv, Str type, char *out,
     i32 fds[2];
     if (pipe(fds) != 0) return CLIP_FAILED;
     pid_t pid = fork();
-    if (pid < 0) { close(fds[0]); close(fds[1]); return CLIP_FAILED; }
+    if (pid < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return CLIP_FAILED;
+    }
     if (pid == 0) {
         i32 null_rd = open("/dev/null", O_RDONLY);
         i32 null_wr = open("/dev/null", O_WRONLY);
@@ -100,28 +108,43 @@ static ClipStatus clip_exec(const char *const *argv, Str type, char *out,
         if (null_wr >= 0) dup2(null_wr, STDERR_FILENO);
         if (null_rd > STDERR_FILENO) close(null_rd);
         if (null_wr > STDERR_FILENO) close(null_wr);
-        close(fds[0]); close(fds[1]);
+        close(fds[0]);
+        close(fds[1]);
         execvp(args[0], (char *const *)(uintptr_t)args);
         _exit(127);
     }
     close(fds[1]);
 
-    f64 deadline = agent_now_seconds()
-                 + (f64)AGENT_CLIPBOARD_TIMEOUT_MS / 1000.0;
+    f64 deadline =
+        agent_now_seconds() + (f64)AGENT_CLIPBOARD_TIMEOUT_MS / 1000.0;
     b8 ok = true, timed_out = false, over = false;
     while (ok) {
         i32 rc = clip_wait(fds[0], deadline);
-        if (rc == 0) { timed_out = true; ok = false; break; }
-        if (rc < 0) { ok = false; break; }
-        if (*n >= cap) {   
+        if (rc == 0) {
+            timed_out = true;
+            ok = false;
+            break;
+        }
+        if (rc < 0) {
+            ok = false;
+            break;
+        }
+        if (*n >= cap) {
             char sink[4096];
             ssize_t got = read(fds[0], sink, sizeof sink);
-            if (got <= 0) { if (got < 0 && errno == EINTR) continue; break; }
+            if (got <= 0) {
+                if (got < 0 && errno == EINTR) continue;
+                break;
+            }
             over = true;
             continue;
         }
         ssize_t got = read(fds[0], out + *n, cap - *n);
-        if (got < 0) { if (errno == EINTR) continue; ok = false; break; }
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            ok = false;
+            break;
+        }
         if (got == 0) break;
         *n += (size_t)got;
     }
@@ -134,7 +157,7 @@ static ClipStatus clip_exec(const char *const *argv, Str type, char *out,
     if (over) return CLIP_BIG;
     i32 code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     if (code == 127) return CLIP_ABSENT;
-    
+
     if (code != 0) return CLIP_NONE;
     return *n ? CLIP_OK : CLIP_NONE;
 }
@@ -145,13 +168,16 @@ static b8 clip_pick_type(Str listing, Str *type) {
         Str want = k_clip_types[t];
         for (size_t i = 0; i + want.n <= listing.n; i++) {
             if (memcmp(listing.p + i, want.p, want.n)) continue;
-            
-            b8 head = i == 0 || listing.p[i - 1] == '\n'
-                   || listing.p[i - 1] == '\r';
+
+            b8 head =
+                i == 0 || listing.p[i - 1] == '\n' || listing.p[i - 1] == '\r';
             size_t end = i + want.n;
             b8 tail = end == listing.n || listing.p[end] == '\n'
-                   || listing.p[end] == '\r';
-            if (head && tail) { *type = want; return true; }
+                      || listing.p[end] == '\r';
+            if (head && tail) {
+                *type = want;
+                return true;
+            }
         }
     }
     return false;
@@ -178,16 +204,19 @@ b8 clipboard_image(Arena *scratch, Str *out, char *err, size_t err_cap) {
                                       CLIP_LIST_MAX, &got);
             if (st == CLIP_ABSENT) continue;
             present = true;
-            if (st != CLIP_OK || !clip_pick_type((Str){ listing, got }, &type))
+            if (st != CLIP_OK || !clip_pick_type((Str){listing, got}, &type))
                 continue;
         }
         size_t got = 0;
         ClipStatus st = clip_exec(k_clip[h].fetch, type, buf, cap, &got);
         if (st == CLIP_ABSENT) continue;
         present = true;
-        if (st == CLIP_BIG) { over = true; continue; }
+        if (st == CLIP_BIG) {
+            over = true;
+            continue;
+        }
         if (st != CLIP_OK) continue;
-        *out = (Str){ buf, got };
+        *out = (Str){buf, got};
         return true;
     }
 

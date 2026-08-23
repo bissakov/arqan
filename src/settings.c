@@ -23,7 +23,7 @@ static Str setting_unquote(Str v) {
         }
         p[out++] = c;
     }
-    return (Str){ p, out };
+    return (Str){p, out};
 }
 
 /* The value part of a line: quoted to its closing quote, else bare to a
@@ -34,14 +34,20 @@ static Str setting_val(Str rest) {
     if (rest.n >= 2 && (rest.p[0] == '"' || rest.p[0] == '\'')) {
         char q = rest.p[0];
         for (size_t i = 1; i < rest.n; i++) {
-            if (q == '"' && rest.p[i] == '\\') { i++; continue; }
-            if (rest.p[i] == q) return setting_unquote((Str){ rest.p, i + 1 });
+            if (q == '"' && rest.p[i] == '\\') {
+                i++;
+                continue;
+            }
+            if (rest.p[i] == q) return setting_unquote((Str){rest.p, i + 1});
         }
-        return rest;   
+        return rest;
     }
     for (size_t i = 1; i < rest.n; i++)
-        if (rest.p[i] == '#' && (rest.p[i - 1] == ' ' || rest.p[i - 1] == '\t'))
-            { rest.n = i; break; }
+        if (rest.p[i] == '#'
+            && (rest.p[i - 1] == ' ' || rest.p[i - 1] == '\t')) {
+            rest.n = i;
+            break;
+        }
     return str_trim(rest);
 }
 
@@ -79,12 +85,22 @@ static b8 setting_bare(Str v) {
 static void setting_put_kv(Buf *b, Str key, Str val) {
     buf_puts(b, key);
     buf_puts(b, STR(" = "));
-    if (setting_bare(val)) { buf_puts(b, val); buf_putc(b, '\n'); return; }
+    if (setting_bare(val)) {
+        buf_puts(b, val);
+        buf_putc(b, '\n');
+        return;
+    }
     buf_putc(b, '"');
     for (size_t i = 0; i < val.n; i++) {
         char c = val.p[i];
-        if (c == '\n') { buf_puts(b, STR("\\n")); continue; }
-        if (c == '\t') { buf_puts(b, STR("\\t")); continue; }
+        if (c == '\n') {
+            buf_puts(b, STR("\\n"));
+            continue;
+        }
+        if (c == '\t') {
+            buf_puts(b, STR("\\t"));
+            continue;
+        }
         if (c == '"' || c == '\\') buf_putc(b, '\\');
         buf_putc(b, c);
     }
@@ -109,7 +125,10 @@ static size_t settings_parse(Settings *s, Str src) {
     Str line;
     while (str_line(src, &off, &line)) {
         Str sec = setting_section(line);
-        if (sec.n) { section = sec; continue; }
+        if (sec.n) {
+            section = sec;
+            continue;
+        }
         Str k, v;
         if (!setting_kv(line, &k, &v)) continue;
         if (s->n >= AGENT_MAX_SETTINGS) break;
@@ -143,7 +162,8 @@ size_t settings_sections(const Settings *s, Str prefix, Str *out, size_t max) {
         Str sec = s->section[i];
         if (!sec.n || !str_starts(sec, prefix)) continue;
         b8 seen = false;
-        for (size_t j = 0; j < n; j++) if (str_eq(out[j], sec)) seen = true;
+        for (size_t j = 0; j < n; j++)
+            if (str_eq(out[j], sec)) seen = true;
         if (!seen) out[n++] = sec;
     }
     return n;
@@ -166,22 +186,29 @@ b8 settings_set(Str path, Str section, const Str *keys, const Str *vals,
     Buf b;
     buf_init(&b, scratch, src.n + 512);
 
-    
+
     Str cur = {0}, line;
     size_t off = 0;
     /* The unnamed section is the head of the file, which always exists: a
      * key added to it belongs above the first header rather than under it. */
     b8 seen_section = section.n == 0, section_open = false;
-    size_t tail = 0;   
+    size_t tail = 0;
     while (str_line(src, &off, &line)) {
         b8 mine = in_section(&cur, line, section);
-        if (mine) { seen_section = true; section_open = true; }
-        else if (section_open) { section_open = false; }
+        if (mine) {
+            seen_section = true;
+            section_open = true;
+        } else if (section_open) {
+            section_open = false;
+        }
         Str k, v;
         if (mine && setting_kv(line, &k, &v)) {
             size_t at = n;
             for (size_t i = 0; i < n; i++)
-                if (!done[i] && str_eq(keys[i], k)) { at = i; break; }
+                if (!done[i] && str_eq(keys[i], k)) {
+                    at = i;
+                    break;
+                }
             if (at < n) {
                 done[at] = true;
                 if (vals[at].n) setting_put_kv(&b, keys[at], vals[at]);
@@ -194,14 +221,17 @@ b8 settings_set(Str path, Str section, const Str *keys, const Str *vals,
         if (section_open) tail = b.n;
     }
 
-    
+
     Buf add;
     buf_init(&add, scratch, 256);
     for (size_t i = 0; i < n; i++) {
         if (done[i] || !vals[i].n) continue;
         setting_put_kv(&add, keys[i], vals[i]);
     }
-    if (!buf_ok(&add) || !buf_ok(&b)) { scratch->off = mark; return false; }
+    if (!buf_ok(&add) || !buf_ok(&b)) {
+        scratch->off = mark;
+        return false;
+    }
     Str extra = buf_finish(&add);
 
     Buf out;
@@ -222,7 +252,10 @@ b8 settings_set(Str path, Str section, const Str *keys, const Str *vals,
             buf_puts(&out, extra);
         }
     }
-    if (!buf_ok(&out)) { scratch->off = mark; return false; }
+    if (!buf_ok(&out)) {
+        scratch->off = mark;
+        return false;
+    }
     b8 ok = settings_write(path, buf_finish(&out), mode);
     scratch->off = mark;
     return ok;
@@ -242,7 +275,10 @@ b8 settings_remove_section(Str path, Str section, Arena *scratch) {
         return errno == ENOENT;
     }
     Str src = settings_src(path, scratch, AGENT_MAX_SETTINGS_BYTES);
-    if (!src.p) { scratch->off = mark; return false; }
+    if (!src.p) {
+        scratch->off = mark;
+        return false;
+    }
 
     Buf out;
     buf_init(&out, scratch, src.n + 1);
@@ -253,13 +289,19 @@ b8 settings_remove_section(Str path, Str section, Arena *scratch) {
         Str sec = setting_section(line);
         if (sec.n) {
             dropping = str_eq(sec, section);
-            if (dropping) { found = true; continue; }
+            if (dropping) {
+                found = true;
+                continue;
+            }
         }
         if (dropping) continue;
         buf_puts(&out, line);
         buf_putc(&out, '\n');
     }
-    if (!buf_ok(&out)) { scratch->off = mark; return false; }
+    if (!buf_ok(&out)) {
+        scratch->off = mark;
+        return false;
+    }
     b8 ok = !found || settings_write(path, buf_finish(&out), 0600);
     scratch->off = mark;
     return ok;

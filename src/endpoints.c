@@ -20,14 +20,15 @@ b8 endpoint_name_ok(Str name) {
     for (size_t i = 0; i < name.n; i++) {
         char c = name.p[i];
         b8 ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-             || (c >= '0' && c <= '9') || c == '-' || c == '_';
+                || (c >= '0' && c <= '9') || c == '-' || c == '_';
         if (!ok) return false;
     }
     return true;
 }
 
 static Str endpoint_section(Str name, Arena *a) {
-    Buf b; buf_init(&b, a, ENDPOINT_SECTION.n + name.n + 1);
+    Buf b;
+    buf_init(&b, a, ENDPOINT_SECTION.n + name.n + 1);
     buf_puts(&b, ENDPOINT_SECTION);
     buf_puts(&b, name);
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
@@ -44,29 +45,29 @@ static Str endpoint_field(const Settings *s, Str section, Str key, size_t max) {
  * way to choose what arqan runs, so the line is reported and dropped. */
 static void endpoint_warn_credential_keys(const Settings *s, Str section,
                                           Str name) {
-    const Str keys[3] = { STR("key"), STR("key_source"),
-                          STR("key_command") };
+    const Str keys[3] = {STR("key"), STR("key_source"), STR("key_command")};
     for (size_t i = 0; i < 3; i++) {
         if (!settings_get(s, section, keys[i]).n) continue;
         agent_log(AGENT_LOG_WARN,
-                 "ignoring %.*s in the config file for provider %.*s: "
-                 "it belongs in the credentials file",
-                 (i32)keys[i].n, keys[i].p, (i32)name.n, name.p);
+                  "ignoring %.*s in the config file for provider %.*s: "
+                  "it belongs in the credentials file",
+                  (i32)keys[i].n, keys[i].p, (i32)name.n, name.p);
     }
 }
 
 static void endpoints_collect(Endpoints *e, const Settings *s, Arena *a) {
     Str sections[AGENT_MAX_ENDPOINTS];
-    size_t n = settings_sections(s, ENDPOINT_SECTION, sections,
-                                 AGENT_MAX_ENDPOINTS);
+    size_t n =
+        settings_sections(s, ENDPOINT_SECTION, sections, AGENT_MAX_ENDPOINTS);
     for (size_t i = 0; i < n; i++) {
         Str name = str_trim(str_drop(sections[i], ENDPOINT_SECTION.n));
         if (!endpoint_name_ok(name)) continue;
         endpoint_warn_credential_keys(s, sections[i], name);
-        Str url = endpoint_field(s, sections[i], STR("base_url"), AGENT_MAX_URL);
+        Str url =
+            endpoint_field(s, sections[i], STR("base_url"), AGENT_MAX_URL);
         if (!url.n) continue;
-        Str model = endpoint_field(s, sections[i], STR("model"),
-                                   AGENT_MAX_MODEL_NAME);
+        Str model =
+            endpoint_field(s, sections[i], STR("model"), AGENT_MAX_MODEL_NAME);
         Str small = endpoint_field(s, sections[i], STR("small_model"),
                                    AGENT_MAX_MODEL_NAME);
         ApiKind api = api_from_str(settings_get(s, sections[i], STR("api")));
@@ -84,12 +85,12 @@ static void endpoints_collect(Endpoints *e, const Settings *s, Arena *a) {
 size_t endpoints_load(Endpoints *e, Arena *a) {
     memset(e, 0, sizeof *e);
     Str files[AGENT_MAX_CONFIG_FILES + AGENT_MAX_PROJECT_FILES];
-    size_t n = paths_config_files(AGENT_CONFIG_NAME, a, files,
-                                  AGENT_MAX_CONFIG_FILES);
-    
+    size_t n =
+        paths_config_files(AGENT_CONFIG_NAME, a, files, AGENT_MAX_CONFIG_FILES);
+
     n += paths_project_files(AGENT_CONFIG_NAME, a, files + n,
                              AGENT_MAX_PROJECT_FILES);
-    
+
     for (size_t i = 0; i < n; i++) {
         Settings s;
         if (settings_load(&s, files[i], a)) endpoints_collect(e, &s, a);
@@ -130,15 +131,15 @@ b8 endpoints_put(Endpoints *e, Str name, Str base_url, ApiKind api, Arena *a) {
  * the user's own default and is left exactly as they wrote it. */
 b8 endpoints_save_one(Str name, Str base_url, ApiKind api, Arena *scratch) {
     size_t mark = scratch->off;
-    Str dir  = paths_dir(AGENT_DIR_CONFIG, scratch);
+    Str dir = paths_dir(AGENT_DIR_CONFIG, scratch);
     Str path = paths_file(AGENT_DIR_CONFIG, AGENT_CONFIG_NAME, scratch);
     Str section = endpoint_section(name, scratch);
     if (!dir.n || !path.n || !section.n || !paths_ensure_dir(dir)) {
         scratch->off = mark;
         return false;
     }
-    Str keys[2] = { STR("base_url"), STR("api") };
-    Str vals[2] = { base_url, api_name(api) };
+    Str keys[2] = {STR("base_url"), STR("api")};
+    Str vals[2] = {base_url, api_name(api)};
     b8 ok = settings_set(path, section, keys, vals, 2, 0600, scratch);
     scratch->off = mark;
     return ok;
@@ -153,17 +154,20 @@ Str endpoints_small_model(Str name, Arena *scratch) {
 }
 
 
-static b8 creds_open(Settings *s, Arena *a, Str *path_out,
-                     char *err, size_t err_cap) {
+static b8 creds_open(Settings *s, Arena *a, Str *path_out, char *err,
+                     size_t err_cap) {
     s->n = 0;
     Str path = paths_file(AGENT_DIR_STATE, AGENT_CREDENTIALS_NAME, a);
     if (path_out) *path_out = path;
     if (!path.n) return false;
     struct stat st;
-    if (stat(path.p, &st) != 0) return true;   // no file is not a failure
+    if (stat(path.p, &st) != 0) return true; // no file is not a failure
     if (st.st_mode & (S_IRWXG | S_IRWXO)) {
-        if (err) snprintf(err, err_cap, "credentials are readable by others: "
-                          "chmod 600 %.*s", (i32)path.n, path.p);
+        if (err)
+            snprintf(err, err_cap,
+                     "credentials are readable by others: "
+                     "chmod 600 %.*s",
+                     (i32)path.n, path.p);
         return false;
     }
     settings_load(s, path, a);
@@ -179,8 +183,11 @@ static SecretSource creds_source(const Settings *s, Str section, Str name,
     b8 known = true;
     SecretSource src = secret_source_from_str(v, &known);
     if (!known) {
-        if (err) snprintf(err, err_cap, "provider %.*s names an unknown "
-                          "key_source", (i32)name.n, name.p);
+        if (err)
+            snprintf(err, err_cap,
+                     "provider %.*s names an unknown "
+                     "key_source",
+                     (i32)name.n, name.p);
         return SECRET_STORED;
     }
     return src;
@@ -197,16 +204,16 @@ SecretSource endpoints_key_source(Str name, Arena *scratch) {
     return src;
 }
 
-Str endpoints_key(Str name, Arena *out, Arena *scratch,
-                  char *err, size_t err_cap) {
+Str endpoints_key(Str name, Arena *out, Arena *scratch, char *err,
+                  size_t err_cap) {
     Settings s;
     size_t mark = scratch->off;
     Str key = {0};
     Str section = endpoint_section(name, scratch);
     if (section.n && creds_open(&s, scratch, NULL, err, err_cap)) {
         char src_err[160] = {0};
-        SecretSource src = creds_source(&s, section, name, src_err,
-                                        sizeof src_err);
+        SecretSource src =
+            creds_source(&s, section, name, src_err, sizeof src_err);
         if (src_err[0]) {
             if (err) snprintf(err, err_cap, "%s", src_err);
         } else if (src == SECRET_STORED) {
@@ -216,8 +223,8 @@ Str endpoints_key(Str name, Arena *out, Arena *scratch,
             Str cmd = settings_get(&s, section, STR("key_command"));
             key = secret_lookup(src, name, cmd, out, src_err, sizeof src_err);
             if (!key.n && src_err[0] && err)
-                snprintf(err, err_cap, "%.*s key store: %s",
-                         (i32)name.n, name.p, src_err);
+                snprintf(err, err_cap, "%.*s key store: %s", (i32)name.n,
+                         name.p, src_err);
         }
     }
     scratch->off = mark;
@@ -228,8 +235,10 @@ b8 endpoints_set_key(Str name, Str key, SecretSource src, Arena *scratch,
                      char *err, size_t err_cap) {
     if (!name.n || key.n > AGENT_MAX_API_KEY) return false;
     if (src == SECRET_COMMAND) {
-        if (err) snprintf(err, err_cap, "a key_command provider is filled in "
-                          "with its own tool");
+        if (err)
+            snprintf(err, err_cap,
+                     "a key_command provider is filled in "
+                     "with its own tool");
         return false;
     }
     size_t mark = scratch->off;
@@ -237,10 +246,10 @@ b8 endpoints_set_key(Str name, Str key, SecretSource src, Arena *scratch,
     Str path = {0};
     Str section = endpoint_section(name, scratch);
     Str dir = paths_dir(AGENT_DIR_STATE, scratch);
-    b8 ok = section.n && creds_open(&s, scratch, &path, err, err_cap)
-         && path.n && dir.n && paths_ensure_dir(dir);
+    b8 ok = section.n && creds_open(&s, scratch, &path, err, err_cap) && path.n
+            && dir.n && paths_ensure_dir(dir);
 
-    
+
     if (ok) {
         SecretSource old = creds_source(&s, section, name, NULL, 0);
         if (secret_source_external(old) && (old != src || !key.n))
@@ -248,10 +257,10 @@ b8 endpoints_set_key(Str name, Str key, SecretSource src, Arena *scratch,
         if (secret_source_external(src) && key.n)
             ok = secret_store(src, name, key, err, err_cap);
     }
-    Str keys[2] = { STR("key"), STR("key_source") };
-    Str vals[2] = { secret_source_external(src) ? (Str){0} : key,
-                    secret_source_external(src) ? secret_source_name(src)
-                                                : (Str){0} };
+    Str keys[2] = {STR("key"), STR("key_source")};
+    Str vals[2] = {secret_source_external(src) ? (Str){0} : key,
+                   secret_source_external(src) ? secret_source_name(src)
+                                               : (Str){0}};
     ok = ok && settings_set(path, section, keys, vals, 2, 0600, scratch);
     scratch->off = mark;
     return ok;
@@ -278,7 +287,7 @@ b8 endpoints_delete(Str name, Arena *scratch, char *err, size_t err_cap) {
     char store_err[160] = {0};
     SecretSource src = creds_source(&credentials, section, name, NULL, 0);
     b8 erased = !secret_source_external(src)
-             || secret_erase(src, name, store_err, sizeof store_err);
+                || secret_erase(src, name, store_err, sizeof store_err);
     b8 cleared = settings_remove_section(credential_path, section, scratch);
     b8 profiles_removed = model_profiles_delete(name, scratch);
     b8 removed = settings_remove_section(config_path, section, scratch);
@@ -289,8 +298,10 @@ b8 endpoints_delete(Str name, Arena *scratch, char *err, size_t err_cap) {
         snprintf(err, err_cap, "the key could not be removed from %.*s",
                  (i32)credential_path.n, credential_path.p);
     else if (!profiles_removed || !removed)
-        snprintf(err, err_cap, "the key is gone, but its settings could not "
-                 "be removed from %.*s", (i32)config_path.n, config_path.p);
+        snprintf(err, err_cap,
+                 "the key is gone, but its settings could not "
+                 "be removed from %.*s",
+                 (i32)config_path.n, config_path.p);
     scratch->off = mark;
     return erased && cleared && profiles_removed && removed;
 }

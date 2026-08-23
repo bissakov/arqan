@@ -23,9 +23,9 @@ static Str paths_home(void) {
 static const char *dir_env(AgentDir kind) {
     switch (kind) {
         case AGENT_DIR_CONFIG: return "XDG_CONFIG_HOME";
-        case AGENT_DIR_DATA:   return "XDG_DATA_HOME";
-        case AGENT_DIR_STATE:  return "XDG_STATE_HOME";
-        case AGENT_DIR_CACHE:  return "XDG_CACHE_HOME";
+        case AGENT_DIR_DATA: return "XDG_DATA_HOME";
+        case AGENT_DIR_STATE: return "XDG_STATE_HOME";
+        case AGENT_DIR_CACHE: return "XDG_CACHE_HOME";
     }
     return "";
 }
@@ -33,16 +33,16 @@ static const char *dir_env(AgentDir kind) {
 static Str dir_default(AgentDir kind) {
     switch (kind) {
         case AGENT_DIR_CONFIG: return STR(".config");
-        case AGENT_DIR_DATA:   return STR(".local/share");
-        case AGENT_DIR_STATE:  return STR(".local/state");
-        case AGENT_DIR_CACHE:  return STR(".cache");
+        case AGENT_DIR_DATA: return STR(".local/share");
+        case AGENT_DIR_STATE: return STR(".local/state");
+        case AGENT_DIR_CACHE: return STR(".cache");
     }
     return (Str){0};
 }
 
 static Str paths_base(AgentDir kind, Arena *a) {
     const char *env = getenv(dir_env(kind));
-    if (env && env[0] == '/') {   
+    if (env && env[0] == '/') {
         Str s = str_c(env);
         while (s.n > 1 && s.p[s.n - 1] == '/') s.n--;
         return str_dup(a, s);
@@ -50,7 +50,8 @@ static Str paths_base(AgentDir kind, Arena *a) {
     Str home = paths_home();
     if (!home.n) return (Str){0};
     Str def = dir_default(kind);
-    Buf b; buf_init(&b, a, home.n + def.n + 2);
+    Buf b;
+    buf_init(&b, a, home.n + def.n + 2);
     buf_puts(&b, home);
     buf_putc(&b, '/');
     buf_puts(&b, def);
@@ -60,7 +61,8 @@ static Str paths_base(AgentDir kind, Arena *a) {
 Str paths_dir(AgentDir kind, Arena *a) {
     Str base = paths_base(kind, a);
     if (!base.n) return (Str){0};
-    Buf b; buf_init(&b, a, base.n + 6);
+    Buf b;
+    buf_init(&b, a, base.n + 6);
     buf_puts(&b, base);
     buf_puts(&b, STR("/" AGENT_NAME));
     if (!buf_ok(&b)) return (Str){0};
@@ -71,7 +73,8 @@ Str paths_dir(AgentDir kind, Arena *a) {
 Str paths_file(AgentDir kind, Str name, Arena *a) {
     Str dir = paths_dir(kind, a);
     if (!dir.n || !name.n) return (Str){0};
-    Buf b; buf_init(&b, a, dir.n + name.n + 2);
+    Buf b;
+    buf_init(&b, a, dir.n + name.n + 2);
     buf_puts(&b, dir);
     buf_putc(&b, '/');
     buf_puts(&b, name);
@@ -82,7 +85,7 @@ Str paths_file(AgentDir kind, Str name, Arena *a) {
 
 static b8 slug_unreserved(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-        || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
+           || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
 }
 
 size_t paths_cwd_slug(char *out, size_t cap) {
@@ -100,7 +103,8 @@ size_t paths_cwd_slug(char *out, size_t cap) {
             truncated = true;
             break;
         }
-        if (need == 1) out[n++] = c;
+        if (need == 1)
+            out[n++] = c;
         else {
             out[n++] = '%';
             out[n++] = hex[((u8)c >> 4) & 0xf];
@@ -202,18 +206,19 @@ size_t paths_config_files(Str name, Arena *a, Str *out, size_t max) {
     const char *dirs = getenv("XDG_CONFIG_DIRS");
     if (!dirs || !*dirs) dirs = "/etc/xdg";
 
-    
+
     Str sys[8];
     size_t sys_n = 0;
     Str all = str_c(dirs);
     size_t start = 0;
     for (size_t i = 0; i <= all.n && sys_n < 8; i++) {
         if (i != all.n && all.p[i] != ':') continue;
-        Str d = { all.p + start, i - start };
+        Str d = {all.p + start, i - start};
         start = i + 1;
         while (d.n > 1 && d.p[d.n - 1] == '/') d.n--;
-        if (!d.n || d.p[0] != '/') continue;   
-        Buf b; buf_init(&b, a, d.n + name.n + 8);
+        if (!d.n || d.p[0] != '/') continue;
+        Buf b;
+        buf_init(&b, a, d.n + name.n + 8);
         buf_puts(&b, d);
         buf_puts(&b, STR("/" AGENT_NAME "/"));
         buf_puts(&b, name);

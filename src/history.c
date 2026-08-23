@@ -7,22 +7,30 @@
 static b8 hist_write(FILE *f, Str s) {
     for (size_t i = 0; i < s.n; i++) {
         char c = s.p[i];
-        i32 rc = c == '\\' ? fputs("\\\\", f)
-               : c == '\n' ? fputs("\\n", f)
-               : c == '\r' ? fputs("\\r", f) : fputc(c, f);
+        i32 rc = c == '\\'   ? fputs("\\\\", f)
+                 : c == '\n' ? fputs("\\n", f)
+                 : c == '\r' ? fputs("\\r", f)
+                             : fputc(c, f);
         if (rc == EOF) return false;
     }
     return fputc('\n', f) != EOF;
 }
 
 static Str hist_unescape(Arena *a, Str s) {
-    Buf b; buf_init(&b, a, s.n + 1);
+    Buf b;
+    buf_init(&b, a, s.n + 1);
     for (size_t i = 0; i < s.n; i++) {
-        if (s.p[i] != '\\' || i + 1 == s.n) { buf_putc(&b, s.p[i]); continue; }
+        if (s.p[i] != '\\' || i + 1 == s.n) {
+            buf_putc(&b, s.p[i]);
+            continue;
+        }
         char c = s.p[++i];
-        if (c == 'n') buf_putc(&b, '\n');
-        else if (c == 'r') buf_putc(&b, '\r');
-        else buf_putc(&b, c);
+        if (c == 'n')
+            buf_putc(&b, '\n');
+        else if (c == 'r')
+            buf_putc(&b, '\r');
+        else
+            buf_putc(&b, c);
     }
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
 }
@@ -30,7 +38,7 @@ static Str hist_unescape(Arena *a, Str s) {
 // A full ring drops its oldest entry rather than refusing the new one.
 static void hist_push(History *h, Str line) {
     if (!h->entry || !h->cap) return;
-    if (h->n && str_eq(h->entry[h->n - 1], line)) return;  
+    if (h->n && str_eq(h->entry[h->n - 1], line)) return;
     if (h->n == h->cap) {
         memmove(h->entry, h->entry + 1, (h->cap - 1) * sizeof *h->entry);
         h->n--;
@@ -47,7 +55,7 @@ static void hist_compact(History *h) {
         Str e = h->entry[i];
         char *dst = (char *)h->a->base + off;
         memmove(dst, e.p, e.n + 1);
-        h->entry[i] = (Str){ dst, e.n };
+        h->entry[i] = (Str){dst, e.n};
         off += e.n + 1;
     }
     h->a->off = off;
@@ -82,10 +90,11 @@ Str history_path(Arena *a, Arena *scratch) {
     char slug[AGENT_SLUG_MAX + 32];
     size_t slug_n = paths_cwd_slug(slug, sizeof slug);
     if (!slug_n) return (Str){0};
-    Buf b; buf_init(&b, a, base.n + slug_n + 12);
+    Buf b;
+    buf_init(&b, a, base.n + slug_n + 12);
     buf_puts(&b, base);
     buf_puts(&b, STR("/history/"));
-    buf_puts(&b, (Str){ slug, slug_n });
+    buf_puts(&b, (Str){slug, slug_n});
     if (!buf_ok(&b)) return (Str){0};
     Str out = buf_finish(&b);
     return out.n < AGENT_MAX_PATH ? out : (Str){0};
@@ -121,17 +130,21 @@ void history_load(History *h, Str path, Arena *scratch) {
     i64 sz = ftell(f);
     fseek(f, 0, SEEK_SET);
     char *buf = sz > 0 && sz <= (i64)AGENT_MAX_HISTORY_BYTES
-              ? arena_new(scratch, char, (size_t)sz + 1) : NULL;
-    if (!buf) { fclose(f); return; }
+                    ? arena_new(scratch, char, (size_t)sz + 1)
+                    : NULL;
+    if (!buf) {
+        fclose(f);
+        return;
+    }
     size_t rd = fread(buf, 1, (size_t)sz, f);
     fclose(f);
     buf[rd] = '\0';
 
-    Str src = { buf, rd };
+    Str src = {buf, rd};
     size_t start = 0;
     for (size_t i = 0; i <= src.n; i++) {
         if (i != src.n && src.p[i] != '\n') continue;
-        Str raw = { src.p + start, i - start };
+        Str raw = {src.p + start, i - start};
         start = i + 1;
         if (!raw.n) continue;
         Str line = hist_unescape(scratch, raw);
@@ -140,7 +153,7 @@ void history_load(History *h, Str path, Arena *scratch) {
         if (kept.n) hist_push(h, kept);
     }
     h->cursor = h->n;
-    
+
     if (h->n == h->cap) history_rewrite(h);
 }
 
@@ -153,24 +166,33 @@ static b8 history_write_all(FILE *f, void *ud) {
 
 void history_rewrite(const History *h) {
     if (h->path.n)
-        (void)file_write_atomic(h->path.p, 0600, true,
-                                history_write_all, (void *)h);
+        (void)file_write_atomic(h->path.p, 0600, true, history_write_all,
+                                (void *)h);
 }
 
 void history_add(History *h, Str line) {
     if (!h->cap) return;
     Str t = str_trim(line);
-    if (!t.n || t.n > AGENT_MAX_HISTORY_LINE) { h->cursor = h->n; return; }
+    if (!t.n || t.n > AGENT_MAX_HISTORY_LINE) {
+        h->cursor = h->n;
+        return;
+    }
     b8 dup = h->n && str_eq(h->entry[h->n - 1], t);
     Str kept = dup ? h->entry[h->n - 1] : hist_store(h, t);
-    if (!kept.n) { h->cursor = h->n; return; }
+    if (!kept.n) {
+        h->cursor = h->n;
+        return;
+    }
     hist_push(h, kept);
     h->cursor = h->n;
     if (dup || !h->path.n) return;
 
     Str dir = h->path;
     while (dir.n && dir.p[dir.n - 1] != '/') dir.n--;
-    if (dir.n > 1) { dir.n--; paths_ensure_dir(dir); }
+    if (dir.n > 1) {
+        dir.n--;
+        paths_ensure_dir(dir);
+    }
     FILE *f = fopen(h->path.p, "ab");
     if (!f) return;
     (void)hist_write(f, kept);
@@ -189,10 +211,17 @@ b8 history_prev(History *h, Str *out) {
 b8 history_next(History *h, Str *out) {
     if (h->cursor >= h->n) return false;
     h->cursor++;
-    if (h->cursor == h->n) { *out = (Str){0}; return false; }
+    if (h->cursor == h->n) {
+        *out = (Str){0};
+        return false;
+    }
     *out = h->entry[h->cursor];
     return true;
 }
 
-void history_reset_cursor(History *h) { h->cursor = h->n; }
-b8 history_browsing(const History *h) { return h->cursor < h->n; }
+void history_reset_cursor(History *h) {
+    h->cursor = h->n;
+}
+b8 history_browsing(const History *h) {
+    return h->cursor < h->n;
+}

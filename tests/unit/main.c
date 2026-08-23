@@ -9,7 +9,7 @@
  * Built by `make test-unit` into bin/arqan-unit. No release target reads it.
  */
 
-#define _XOPEN_SOURCE 700
+#define _XOPEN_SOURCE   700
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE 1
 
@@ -18,7 +18,10 @@
 /* core.c reports through telemetry, which the unity build supplies from
  * telemetry.c. Stub it rather than pull that module and its dependencies in:
  * these cases assert on return values, not on what was reported. */
-void telemetry_log(i32 level, Str msg) { (void)level; (void)msg; }
+void telemetry_log(i32 level, Str msg) {
+    (void)level;
+    (void)msg;
+}
 
 #include "core.c"
 #include "width.c"
@@ -28,22 +31,28 @@ static int g_fail;
 static int g_ran;
 static const char *g_case;
 
-#define CHECK(cond) do {                                                      \
-    if (!(cond)) {                                                            \
-        printf("  %s:%d: %s\n", g_case, __LINE__, #cond);                     \
-        g_fail++;                                                             \
-    }                                                                         \
-} while (0)
+#define CHECK(cond)                                           \
+    do {                                                      \
+        if (!(cond)) {                                        \
+            printf("  %s:%d: %s\n", g_case, __LINE__, #cond); \
+            g_fail++;                                         \
+        }                                                     \
+    } while (0)
 
-#define RUN(fn) do { g_case = #fn; g_ran++; fn(); } while (0)
+#define RUN(fn)       \
+    do {              \
+        g_case = #fn; \
+        g_ran++;      \
+        fn();         \
+    } while (0)
 
 /* Arenas are the allocator, so a case gets its own rather than sharing one.
  * alignas mirrors what main.c does for the real arenas: arena_alloc aligns an
  * offset within the arena, so an absolute alignment holds only when the base
  * is at least as aligned. */
-#define WITH_ARENA(name, bytes)                                               \
-    static alignas(64) u8 name##_mem[bytes];                                  \
-    Arena name;                                                               \
+#define WITH_ARENA(name, bytes)              \
+    static alignas(64) u8 name##_mem[bytes]; \
+    Arena name;                              \
     arena_init(&name, name##_mem, sizeof name##_mem)
 
 /* ---- arenas ------------------------------------------------------------ */
@@ -130,16 +139,16 @@ static void buf_json_str_escapes(void) {
     buf_init(&b, &a, 64);
     buf_json_str(&b, STR("a\"b\\c\nd\te"));
     CHECK(buf_ok(&b));
-    CHECK(str_eq((Str){ b.p, b.n }, STR("\"a\\\"b\\\\c\\nd\\te\"")));
+    CHECK(str_eq((Str){b.p, b.n}, STR("\"a\\\"b\\\\c\\nd\\te\"")));
 }
 
 static void buf_json_str_escapes_control(void) {
     WITH_ARENA(a, 4096);
     Buf b;
     buf_init(&b, &a, 64);
-    buf_json_str(&b, (Str){ "\x01", 1 });
+    buf_json_str(&b, (Str){"\x01", 1});
     CHECK(buf_ok(&b));
-    CHECK(str_eq((Str){ b.p, b.n }, STR("\"\\u0001\"")));
+    CHECK(str_eq((Str){b.p, b.n}, STR("\"\\u0001\"")));
 }
 
 /* ---- json -------------------------------------------------------------- */
@@ -147,18 +156,32 @@ static void buf_json_str_escapes_control(void) {
 static void json_rejects_malformed(void) {
     WITH_ARENA(a, 8192);
     static const char *const bad[] = {
-        "", "{", "}", "[", "[,]", "{\"a\"}", "{\"a\":}", "{a:1}",
-        "\"unterminated", "tru",
+        "",
+        "{",
+        "}",
+        "[",
+        "[,]",
+        "{\"a\"}",
+        "{\"a\":}",
+        "{a:1}",
+        "\"unterminated",
+        "tru",
         /* A number the scanner accepts but strtod would not consume whole.
          * Each of these silently parsed as a wrong value before. */
-        "--1", "1e", "1-2-3", "1.2.3", "1e+", "{\"v\":--1}", "[1.2.3]",
+        "--1",
+        "1e",
+        "1-2-3",
+        "1.2.3",
+        "1e+",
+        "{\"v\":--1}",
+        "[1.2.3]",
     };
     for (size_t i = 0; i < sizeof bad / sizeof *bad; i++) {
         arena_reset(&a);
-        Str s = (Str){ bad[i], strlen(bad[i]) };
+        Str s = (Str){bad[i], strlen(bad[i])};
         if (json_parse(&a, s) != NULL) {
-            printf("  %s:%d: parsed malformed input: %s\n",
-                   g_case, __LINE__, bad[i]);
+            printf("  %s:%d: parsed malformed input: %s\n", g_case, __LINE__,
+                   bad[i]);
             g_fail++;
         }
     }
@@ -167,16 +190,29 @@ static void json_rejects_malformed(void) {
 static void json_accepts_wellformed(void) {
     WITH_ARENA(a, 8192);
     static const char *const good[] = {
-        "{}", "[]", "null", "true", "false", "0", "-1.5e3", "\"\"",
-        "{\"a\":[1,2,{\"b\":null}]}", " \t\r\n{} \t\r\n",
-        "1e5", "-0", "0.0", "1E+5", "1e-5", "123456789012345678901234567890",
+        "{}",
+        "[]",
+        "null",
+        "true",
+        "false",
+        "0",
+        "-1.5e3",
+        "\"\"",
+        "{\"a\":[1,2,{\"b\":null}]}",
+        " \t\r\n{} \t\r\n",
+        "1e5",
+        "-0",
+        "0.0",
+        "1E+5",
+        "1e-5",
+        "123456789012345678901234567890",
     };
     for (size_t i = 0; i < sizeof good / sizeof *good; i++) {
         arena_reset(&a);
-        Str s = (Str){ good[i], strlen(good[i]) };
+        Str s = (Str){good[i], strlen(good[i])};
         if (json_parse(&a, s) == NULL) {
-            printf("  %s:%d: rejected valid input: %s\n",
-                   g_case, __LINE__, good[i]);
+            printf("  %s:%d: rejected valid input: %s\n", g_case, __LINE__,
+                   good[i]);
             g_fail++;
         }
     }
@@ -244,18 +280,19 @@ static void json_bounds_nesting(void) {
     for (int i = 0; i < 4096; i++) buf_putc(&b, '[');
     for (int i = 0; i < 4096; i++) buf_putc(&b, ']');
     CHECK(buf_ok(&b));
-    CHECK(json_parse(&a, (Str){ b.p, b.n }) == NULL);
+    CHECK(json_parse(&a, (Str){b.p, b.n}) == NULL);
 }
 
 static void json_round_trips(void) {
     WITH_ARENA(a, 1 << 16);
-    JVal *v = json_parse(&a, STR("{\"a\":[1,true,null,\"x\"],\"b\":{\"c\":-2.5}}"));
+    JVal *v =
+        json_parse(&a, STR("{\"a\":[1,true,null,\"x\"],\"b\":{\"c\":-2.5}}"));
     CHECK(v != NULL);
     Buf b;
     buf_init(&b, &a, 256);
     json_write(&b, v);
     CHECK(buf_ok(&b));
-    JVal *again = json_parse(&a, (Str){ b.p, b.n });
+    JVal *again = json_parse(&a, (Str){b.p, b.n});
     CHECK(again != NULL);
     const JVal *arr = json_get(again, STR("a"));
     CHECK(arr && arr->type == J_ARR);
@@ -291,9 +328,9 @@ static void str_handles_empty(void) {
 
 static void width_classifies_glyphs(void) {
     CHECK(agent_width('a') == 1);
-    CHECK(agent_width(0x4E00) == 2);      /* CJK */
-    CHECK(agent_width(0x1F600) == 2);     /* emoji */
-    CHECK(agent_width(0x0301) == 0);      /* combining acute */
+    CHECK(agent_width(0x4E00) == 2);  /* CJK */
+    CHECK(agent_width(0x1F600) == 2); /* emoji */
+    CHECK(agent_width(0x0301) == 0);  /* combining acute */
 }
 
 int main(void) {
