@@ -191,9 +191,51 @@ static Str patch_target(Str patch, char *buf, size_t cap, Str *hint) {
                    : first;
 }
 
+static void render_todo_call(Str args, Arena *scratch) {
+    char err[AGENT_TOOL_ERR];
+    TodoList l;
+    if (!todo_parse(args, scratch, &l, err, sizeof err)) {
+        tui_write_tool(STR("\u25c6  todo\n"));
+        tui_write_muted(STR("\u2502 "));
+        tui_write_error(clip(str_c(err), R_LINE_BYTES));
+        tui_write(STR("\n"));
+        return;
+    }
+
+    char head[64];
+    i32 n = snprintf(head, sizeof head, "\u25c6  todo %zu/%zu\n", todo_done(&l),
+                     l.n);
+    if (n > 0) tui_write_tool((Str){head, (size_t)n});
+
+    for (size_t i = 0; i < l.n; i++) {
+        tui_write_muted(STR("\u2502 "));
+        switch (l.status[i]) {
+            case TODO_DONE:
+                tui_write_result(STR("\u2713 "));
+                tui_write_muted(clip(todo_text(&l, i), R_LINE_BYTES));
+                break;
+            case TODO_ACTIVE:
+                tui_write_tool(STR("\u25b8 "));
+                tui_write(clip(todo_text(&l, i), R_LINE_BYTES));
+                break;
+            default:
+                tui_write_muted(STR("\u25cb "));
+                tui_write_muted(clip(todo_text(&l, i), R_LINE_BYTES));
+                break;
+        }
+        tui_write(STR("\n"));
+    }
+}
+
 void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
     block_begin(id, expanded);
     size_t mark = scratch->off;
+    if (str_eq(name, STR("todo"))) {
+        render_todo_call(args, scratch);
+        scratch->off = mark;
+        block_end();
+        return;
+    }
     JVal *j = json_parse(scratch, args);
 
     Str path = json_str(j, STR("path"));

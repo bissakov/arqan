@@ -68,7 +68,7 @@ def test_enter_submits_the_highlighted_entry(ctx):
     """Enter runs whatever the popup highlights, not what was typed."""
     s = ctx.spawn()
     s.type("/").sync()
-    s.key(*(["down"] * 18)).sync()        # highlight '/exit', one from the end
+    s.key(*(["down"] * 19)).sync()        # highlight '/exit', one from the end
     s.key("enter")
     assert s.wait_exit() == 0, "Enter should have run the highlighted entry"
 
@@ -115,7 +115,7 @@ def test_ctrl_n_p_move_the_selection(ctx):
     """Ctrl-N / Ctrl-P cycle the popup the same way as the arrows."""
     s = ctx.spawn()
     s.type("/").sync()
-    s.key(*(["ctrl-n"] * 20)).sync()  # one per command: wraps to the first
+    s.key(*(["ctrl-n"] * 21)).sync()  # one per command: wraps to the first
     s.key("tab").sync()
     assert s.composer_text() == "/clear", s.composer_lines()
 

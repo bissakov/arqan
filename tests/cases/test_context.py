@@ -216,9 +216,14 @@ def test_a_resumed_session_reports_its_context_before_it_speaks(ctx):
     """A resumed conversation costs what it costs whether or not this run has
     heard a reply yet, so the field estimates it on the frame it is replayed
     and gives way to the measurement when one arrives."""
-    ctx.scenario("text=a+long+enough+first+answer+to+be+worth+counting")
+    # NOTE: the field rounds to the nearest thousand above 999, so the first
+    # answer has to outweigh a bucket for the replay to be visible at all.
+    ctx.scenario("words=1200")
     s = ctx.spawn()
     s.submit("a question with some words in it to give the fit something")
+    s.wait_turn_done()
+    ctx.scenario("text=a+long+enough+first+answer+to+be+worth+counting")
+    s.submit("and one short answer to land at the foot of the replay")
     s.wait_turn_done()
     s.submit("/exit")
     s.wait_exit()

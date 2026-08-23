@@ -37,7 +37,7 @@ def test_request_shape(ctx):
     names = sorted(t["function"]["name"] for t in req["tools"])
     assert names == [
         "ask_user", "bash", "find", "grep", "internet_search", "job",
-        "page_fetch", "patch", "read", "write"
+        "page_fetch", "patch", "read", "todo", "write"
     ], names
 
 

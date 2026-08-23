@@ -109,6 +109,7 @@ typedef struct {
     b8 context_known;
     b8 context_exact;
     size_t context_window;
+    size_t todo_done, todo_total;
     b8 status_visible[TUI_STATUS_N];
     char status[32];
 
@@ -2996,6 +2997,10 @@ static void repaint(void) {
         hash_add(status_hash, &g_tui.context_exact, sizeof g_tui.context_exact);
     status_hash = hash_add(status_hash, &g_tui.context_window,
                            sizeof g_tui.context_window);
+    status_hash =
+        hash_add(status_hash, &g_tui.todo_done, sizeof g_tui.todo_done);
+    status_hash =
+        hash_add(status_hash, &g_tui.todo_total, sizeof g_tui.todo_total);
     status_hash = hash_add(status_hash, g_tui.status_visible,
                            sizeof g_tui.status_visible);
     status_hash = hash_add(status_hash, &cols, sizeof cols);
@@ -3071,6 +3076,16 @@ static void repaint(void) {
             put_status_field(cwd, S_TEXT, body_cols, &used, &have_field);
         if (g_tui.status_visible[TUI_STATUS_CONTEXT])
             put_status_field(context, S_TEXT, body_cols, &used, &have_field);
+        if (g_tui.todo_total && g_tui.status_visible[TUI_STATUS_TODO]) {
+            char todo[24];
+            i32 n = snprintf(todo, sizeof todo, "todo %zu/%zu", g_tui.todo_done,
+                             g_tui.todo_total);
+            if (n > 0)
+                put_status_field((Str){todo, (size_t)n},
+                                 g_tui.todo_done == g_tui.todo_total ? S_GREEN
+                                                                     : S_TEXT,
+                                 body_cols, &used, &have_field);
+        }
         if (copied && g_tui.status_visible[TUI_STATUS_COPY])
             put_status_field(STR("copied"), S_GREEN, body_cols, &used,
                              &have_field);
@@ -3362,6 +3377,13 @@ void tui_set_context(size_t tokens, b8 known, b8 exact, size_t window) {
     g_tui.context_known = known;
     g_tui.context_exact = known && exact;
     g_tui.context_window = window;
+    repaint();
+}
+
+void tui_set_todo(size_t done, size_t total) {
+    if (g_tui.todo_done == done && g_tui.todo_total == total) return;
+    g_tui.todo_done = done;
+    g_tui.todo_total = total;
     repaint();
 }
 

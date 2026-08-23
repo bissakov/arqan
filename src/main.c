@@ -24,6 +24,7 @@
 #include "cli.c"
 #include "ignore.c"
 #include "tools.c"
+#include "todo.c"
 #include "prompt.c"
 #include "provider.c"
 #include "catalog.c"
@@ -91,6 +92,8 @@ static size_t commands_init(b8 images) {
         STR("Name this session, or `/title auto` to let the small model name it")};
     g_commands.v[n++] =
         (TuiCmd){STR("/copy"), STR("Copy the last response to the clipboard")};
+    g_commands.v[n++] =
+        (TuiCmd){STR("/todo"), STR("Show the step list for the work in hand")};
     if (images)
         g_commands.v[n++] = (TuiCmd){
             STR("/attach"),
@@ -1674,6 +1677,30 @@ static void copy_last_reply(const Conv *conv) {
         return;
     }
     tui_notice(STR("no response to copy"));
+}
+
+/* The step list as its own screen, since the transcript only holds the
+ * checklist as it stood when each call was made. */
+static void show_todo(void) {
+    /* Static: a screen opened during a turn outlives the frame that opened
+     * it, and the rows point into the list, which is static too. */
+    static struct {
+        TuiCmd rows[AGENT_MAX_TODOS];
+    } view;
+
+    const TodoList *l = todo_current();
+    if (!l->n) {
+        tui_notice(STR("no step list yet; the model writes one for work of "
+                       "several steps"));
+        return;
+    }
+    for (size_t i = 0; i < l->n; i++) {
+        view.rows[i].name = l->status[i] == TODO_DONE     ? STR("done")
+                            : l->status[i] == TODO_ACTIVE ? STR("now")
+                                                          : STR("next");
+        view.rows[i].desc = todo_text(l, i);
+    }
+    tui_info(STR("step list"), view.rows, l->n);
 }
 
 static void notice_fmt(const char *fmt, ...)
@@ -3949,11 +3976,19 @@ static CompactOutcome compact_summarize(Agent *ag, size_t upto, Str *out,
 
     if (outcome == COMPACT_SUM_OK) {
         Buf b;
-        buf_init(&b, ag->scratch, summary.n + 256);
+        const TodoList *todos = todo_current();
+        buf_init(&b, ag->scratch,
+                 summary.n + 256 + todos->n * (AGENT_MAX_TODO_TEXT + 24));
         buf_puts(&b, STR("# Context checkpoint\n\nThe conversation before this "
                          "point was compacted into the summary below. Continue "
                          "the work from it.\n\n"));
         buf_puts(&b, summary);
+        if (todos->n) {
+            buf_puts(&b, STR("\n\n## Step list\n\nThe todo call that carried "
+                             "this list was compacted away. Send the whole "
+                             "list again with the next update.\n\n"));
+            todo_write_md(&b, todos);
+        }
         *out = buf_ok(&b) ? buf_finish(&b) : (Str){0};
         if (!out->n) outcome = COMPACT_SUM_NOMEM;
     }
@@ -4529,6 +4564,7 @@ static b8 agent_turn(Agent *ag, Str text) {
         TurnAction act = run_tool_calls(ag, before, tail);
 
         ctx_sync(&g_ctx, conv);
+        todo_sync(conv, ag->scratch);
         if (act == TURN_FULL) {
             tui_set_status("ready");
             ending_text = STR("the conversation is full");
@@ -4868,6 +4904,7 @@ i32 main(i32 argc, char **argv) {
          * back here, so the field is restated once rather than at each of
          * them. */
         ctx_sync(&g_ctx, &conv);
+        todo_sync(&conv, &scratch);
         if (!tui_readline("> ", line, sizeof line, &ln)) break;
         if (ln == 0) {
             g_got_sigint = 0;
@@ -4976,6 +5013,10 @@ i32 main(i32 argc, char **argv) {
         }
         if (!strcmp(line, "/keys")) {
             tui_info(STR("keyboard shortcuts"), g_keys, keys_rows());
+            continue;
+        }
+        if (!strcmp(line, "/todo")) {
+            show_todo();
             continue;
         }
         if (!strcmp(line, "/help")) {
