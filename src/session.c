@@ -217,6 +217,7 @@ b8 session_set_title(Session *s, Str title) {
 
 b8 session_begin(Session *s) {
     s->written = 0;
+    s->elide_written = 0;
     s->save_blocked = false;
     s->sync_dir = false;
 
@@ -520,13 +521,11 @@ b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
         if (!sess_sync_dir(s->dir, err, err_cap)) return false;
         s->sync_dir = false;
     }
-    if (s->written >= c->n) return true;
-    b8 pending = false;
-    for (size_t i = s->written; i < c->n; i++)
-        if (c->role[i] != M_SYSTEM) {
-            pending = true;
-            break;
-        }
+    b8 elide_moved = c->elide_start != s->elide_written;
+    if (s->written >= c->n && !elide_moved) return true;
+    b8 pending = elide_moved;
+    for (size_t i = s->written; i < c->n && !pending; i++)
+        if (c->role[i] != M_SYSTEM) pending = true;
     if (!pending) {
         s->written = c->n;
         return true;
@@ -574,6 +573,9 @@ b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
     SessOut out = {.fd = fd};
     if (created) sess_out_metadata(&out, s->title);
     if (newline) sess_out_putc(&out, '\n');
+    if (elide_moved)
+        sess_out_putf(&out, "{\"type\":\"elide\",\"start\":%zu}\n",
+                      c->elide_start);
     b8 serialized = true;
     for (size_t i = s->written; i < c->n && serialized; i++) {
         if (c->role[i] == M_SYSTEM) continue;
@@ -628,12 +630,14 @@ b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
     if (close(fd) != 0) {
         saved = errno;
         s->written = c->n;
+        s->elide_written = c->elide_start;
         if (created) s->sync_dir = true;
         snprintf(err, err_cap, "could not close session file: %s",
                  strerror(saved));
         return false;
     }
     s->written = c->n;
+    s->elide_written = c->elide_start;
     if (created) {
         s->sync_dir = true;
         if (!sess_sync_dir(dir, err, err_cap)) { return false; }
@@ -1077,7 +1081,7 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
     if (!src.n) return false;
     size_t mark = scratch->off;
 
-    size_t start = 0;
+    size_t start = 0, elide = 0;
     b8 ok = true;
     for (size_t i = 0; i <= src.n; i++) {
         if (i != src.n && src.p[i] != '\n') continue;
@@ -1088,6 +1092,11 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
         JVal *v = json_parse(scratch, line);
         Str role = json_str(v, STR("role"));
         if (!role.n) {
+            if (str_eq(json_str(v, STR("type")), STR("elide"))) {
+                const JVal *at = json_get(v, STR("start"));
+                if (at && at->type == J_NUM && at->u.n > 0)
+                    elide = (size_t)at->u.n;
+            }
             scratch->off = line_mark;
             continue;
         }
@@ -1122,7 +1131,11 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
         }
     }
     scratch->off = mark;
+    /* A session that stopped short of what the marker names would elide text
+     * it no longer holds, so the boundary follows what was replayed. */
+    c->elide_start = elide < c->n ? elide : 0;
     s->written = c->n;
+    s->elide_written = c->elide_start;
     /* The repair belongs to the file as much as to this conversation: saving
      * it now means the next resume of the same file finds it already whole,
      * rather than appending a new turn behind calls nothing answers. The

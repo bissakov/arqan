@@ -87,8 +87,30 @@ def test_short_command_output_is_untouched(ctx):
     assert result == "hello\n\n[exit 0]", repr(result)
 
 
-def big_read(ctx, s, reply):
-    ctx.write_file("big.txt", numbered(80))
+def windowed(ctx, window=1000, **env):
+    """A model that declares a small window, with compaction off.
+
+    Eliding answers context pressure, so a case about the boundary has to
+    declare a window and fill it. Compaction is the other answer to the same
+    pressure and would rewrite the conversation out from under the case.
+    """
+    ctx.write_config(
+        "compact = off\n"
+        "[providers.work]\n"
+        f"base_url = {ctx.mock.base_url}\n"
+        "model = alpha\n"
+        '[providers.work.models."alpha"]\n'
+        f"context_window = {window}\n"
+    )
+    state = ctx.state_file()
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text("provider = work\n")
+    return ctx.spawn(ARQAN_MODEL="alpha", ARQAN_BASE_URL=None,
+                     ARQAN_API_KEY=None, **env)
+
+
+def big_read(ctx, s, reply, lines=400):
+    ctx.write_file("big.txt", numbered(lines))
     ctx.scenario(
         f'tool=read:{{"path":"big.txt"}},final_text={reply.replace(" ", "+")}'
     )
@@ -103,7 +125,7 @@ def tool_messages(ctx):
 
 def test_an_old_tool_result_is_elided_on_the_wire(ctx):
     """A result older than the last two user turns costs a line, not a file."""
-    s = ctx.spawn()
+    s = windowed(ctx)
     big_read(ctx, s, "that is a lot")
 
     ctx.scenario("text=sure,final_text=sure")
@@ -124,8 +146,10 @@ def test_an_old_tool_result_is_elided_on_the_wire(ctx):
 def test_a_small_result_is_never_elided(ctx):
     """Under the threshold, saying it was elided costs more than sending it."""
     ctx.write_file("tiny.txt", "hello from disk\n")
-    ctx.scenario('tool=read:{"path":"tiny.txt"},final_text=read+it')
-    s = ctx.spawn()
+    ctx.write_file("big.txt", numbered(400))
+    ctx.scenario('tool=read:{"path":"tiny.txt"},'
+                 'tool=read:{"path":"big.txt"},final_text=read+it')
+    s = windowed(ctx)
     s.submit("read tiny.txt")
     s.wait_text("read it")
     s.wait_turn_done()
@@ -134,12 +158,15 @@ def test_a_small_result_is_never_elided(ctx):
     for prompt in ("thanks", "and again"):
         s.submit(prompt)
         s.wait_turn_done()
-    assert tool_messages(ctx)[0]["content"] == "hello from disk\n", tool_messages(ctx)
+    results = [m["content"] for m in tool_messages(ctx)]
+    # The big result beside it is what moved the boundary over both.
+    assert results[1].startswith("[older read result elided:"), results
+    assert results[0] == "hello from disk\n", results
 
 
 def test_an_elided_result_keeps_answering_its_call(ctx):
     """The message stays a tool result: a call left unanswered breaks the turn."""
-    s = ctx.spawn()
+    s = windowed(ctx)
     big_read(ctx, s, "plenty")
     ctx.scenario("text=sure,final_text=sure")
     for prompt in ("thanks", "and again"):
@@ -150,6 +177,8 @@ def test_an_elided_result_keeps_answering_its_call(ctx):
     calls = [c["id"] for m in messages if m.get("tool_calls") for c in m["tool_calls"]]
     answered = [m["tool_call_id"] for m in messages if m["role"] == "tool"]
     assert calls and answered == calls, (calls, answered)
+    assert any(m["content"].startswith("[older read result elided:")
+               for m in tool_messages(ctx)), tool_messages(ctx)
 
 
 def test_results_older_than_the_last_rounds_are_elided_inside_one_turn(ctx):
@@ -163,7 +192,7 @@ def test_results_older_than_the_last_rounds_are_elided_inside_one_turn(ctx):
     """
     args = json.dumps({"command": "seq 1 300"})
     ctx.scenario(f"tool=bash:{args},tool_rounds=9,text=ok,final_text=done")
-    s = ctx.spawn(ARQAN_PERMISSIONS="free")
+    s = windowed(ctx, ARQAN_PERMISSIONS="free")
     s.submit("go")
     s.wait_text("done")
     s.wait_turn_done()
@@ -193,7 +222,7 @@ def test_a_run_under_two_blocks_of_rounds_elides_nothing(ctx):
     """
     args = json.dumps({"command": "seq 1 300"})
     ctx.scenario(f"tool=bash:{args},tool_rounds=6,text=ok,final_text=done")
-    s = ctx.spawn(ARQAN_PERMISSIONS="free")
+    s = windowed(ctx, ARQAN_PERMISSIONS="free")
     s.submit("go")
     s.wait_text("done")
     s.wait_turn_done()

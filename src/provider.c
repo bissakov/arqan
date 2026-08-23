@@ -23,6 +23,8 @@ b8 conv_init(Conv *c, Arena *persist, size_t cap) {
     c->media_off = arena_new(persist, u32, cap);
     c->media_n = arena_new(persist, u16, cap);
     c->media = NULL;
+    c->elide_start = 0;
+    c->checkpoint = 0;
     c->n = 0;
     c->cap = cap;
     if (!c->role || !c->text || !c->anthropic_thinking || !c->tool_name
@@ -57,6 +59,14 @@ static size_t conv_media_end(const Conv *c, size_t i) {
 void conv_truncate(Conv *c, size_t keep) {
     if (keep > c->n) return;
     c->n = keep;
+    /* Below `keep` nothing moved, so a boundary that still names a live slot
+     * describes the same text it did; above it there is no conversation left
+     * to elide. A rewind to the system prompt alone elides nothing. */
+    if (keep < 2)
+        c->elide_start = 0;
+    else if (c->elide_start > keep)
+        c->elide_start = keep;
+    if (c->checkpoint >= keep) c->checkpoint = 0;
     if (!c->media) return;
     size_t live = 0;
     for (size_t i = 0; i < keep; i++)
@@ -87,6 +97,8 @@ b8 conv_clone_head(Conv *dst, const Conv *src, size_t keep, Arena *a,
     memcpy(dst->media_off, src->media_off, n * sizeof *dst->media_off);
     memcpy(dst->media_n, src->media_n, n * sizeof *dst->media_n);
     dst->media = src->media;
+    dst->elide_start = src->elide_start > n ? n : src->elide_start;
+    dst->checkpoint = src->checkpoint < n ? src->checkpoint : 0;
     dst->n = n;
     return true;
 }
@@ -182,14 +194,46 @@ static size_t conv_rounds_back(const Conv *c, size_t block) {
 }
 
 size_t conv_elide_start(const Conv *c) {
+    return c->elide_start;
+}
+
+size_t conv_elide_next(const Conv *c) {
     size_t turns = conv_turns_back(c, AGENT_ELIDE_TURNS);
     size_t rounds = conv_rounds_back(c, AGENT_ELIDE_ROUNDS);
-    return turns > rounds ? turns : rounds;
+    size_t at = turns > rounds ? turns : rounds;
+    return at > c->elide_start ? at : c->elide_start;
+}
+
+b8 conv_elide_advance(Conv *c) {
+    size_t at = conv_elide_next(c);
+    if (at <= c->elide_start) return false;
+    c->elide_start = at;
+    return true;
+}
+
+/* A call the tool refused: the change it asked for never happened, the model
+ * saw the refusal and its retry is already in the conversation, so neither
+ * the arguments nor the message survives being read again. */
+static b8 conv_call_failed(const Conv *c, size_t call) {
+    for (size_t i = call + 1; i < c->n; i++)
+        if (c->role[i] == M_TOOL
+            && str_eq(c->tool_call_id[i], c->tool_call_id[call]))
+            return str_starts(c->text[i], STR("ERROR: "));
+    return false;
+}
+
+static b8 conv_result_failed(const Conv *c, size_t result) {
+    return str_starts(c->text[result], STR("ERROR: "));
 }
 
 b8 conv_result_elided(const Conv *c, size_t i, size_t recent) {
-    return c->role[i] == M_TOOL && i < recent
-           && c->text[i].n > AGENT_ELIDE_BYTES;
+    if (c->role[i] != M_TOOL || i >= recent) return false;
+    return c->text[i].n > AGENT_ELIDE_BYTES || conv_result_failed(c, i);
+}
+
+b8 conv_args_elided(const Conv *c, size_t i, size_t recent) {
+    if (!conv_is_call(c, i) || i >= recent) return false;
+    return c->text[i].n > AGENT_ELIDE_BYTES || conv_call_failed(c, i);
 }
 
 b8 conv_round_start(const Conv *c, size_t i) {
@@ -231,7 +275,15 @@ b8 conv_compact_head(Conv *c, size_t keep, Str checkpoint) {
     c->media_off[1] = 0;
     c->media_n[1] = 0;
     c->n = 2 + tail;
+    /* The head the boundary described is a summary now, so nothing it named
+     * is still there to elide. The valve advances it again under pressure. */
+    c->elide_start = 0;
+    c->checkpoint = 1;
     return true;
+}
+
+void conv_set_checkpoint(Conv *c, size_t i) {
+    if (i && i < c->n) c->checkpoint = i;
 }
 
 static Str conv_call_name(const Conv *c, size_t result) {
@@ -252,6 +304,40 @@ static size_t conv_media_live(const Conv *c, size_t i) {
     return live;
 }
 
+
+/* Room for the stub below: the fixed part, a length, and as much of the tool
+ * name as reads as a name. */
+#define ARGS_STUB_NAME  48
+#define ARGS_STUB_BYTES 128
+
+/* The name as a bare identifier. The stub below is built into a fixed buffer
+ * rather than escaped through the writer, and a model may call a tool
+ * anything it likes: a quote in that name must not reach the wire as JSON. */
+static size_t stub_name(char *out, size_t cap, Str name) {
+    size_t n = 0;
+    for (size_t i = 0; i < name.n && n + 1 < cap; i++) {
+        char ch = name.p[i];
+        b8 bare = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+                  || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-';
+        if (bare) out[n++] = ch;
+    }
+    return n;
+}
+
+/* What goes out in place of a call's arguments once the boundary has passed
+ * them. A valid JSON object, so args_object handling reads it the way it
+ * reads any other call. */
+static Str args_stub(char *buf, size_t cap, const Conv *c, size_t i) {
+    char name[ARGS_STUB_NAME];
+    size_t n = stub_name(name, sizeof name, c->tool_name[i]);
+    i32 len = snprintf(buf, cap,
+                       "{\"elided\":\"older %.*s arguments removed: %zu "
+                       "bytes\"}",
+                       (i32)n, name, c->text[i].n);
+    return len > 0 && (size_t)len < cap
+               ? (Str){buf, (size_t)len}
+               : STR("{\"elided\":\"older arguments removed\"}");
+}
 
 static void write_tool_result(Buf *b, const Conv *c, size_t i, size_t recent) {
     if (conv_result_elided(c, i, recent)) {
@@ -342,7 +428,12 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
                 buf_putf(b, ",\"type\":\"function\",\"function\":{\"name\":");
                 buf_json_str(b, c->tool_name[j]);
                 buf_putf(b, ",\"arguments\":");
-                buf_json_str(b, c->text[j]);
+                if (conv_args_elided(c, j, recent)) {
+                    char stub[ARGS_STUB_BYTES];
+                    buf_json_str(b, args_stub(stub, sizeof stub, c, j));
+                } else {
+                    buf_json_str(b, c->text[j]);
+                }
                 buf_puts(b, STR("}}"));
                 j++;
             }
@@ -408,7 +499,13 @@ static void anth_write_cache(Buf *b, b8 cache) {
  * says so; splicing that text into "input" would instead make every later
  * request of the session unparseable, so it goes out as a string the model
  * can see it wrote. */
-static void anth_write_input(Buf *b, const Conv *c, size_t i) {
+static void anth_write_input(Buf *b, const Conv *c, size_t i, size_t recent) {
+    if (conv_args_elided(c, i, recent)) {
+        char stub[ARGS_STUB_BYTES];
+        Str s = args_stub(stub, sizeof stub, c, i);
+        buf_put(b, s.p, s.n);
+        return;
+    }
     Str args = str_trim(c->text[i]);
     if (!args.n) {
         buf_puts(b, STR("{}"));
@@ -450,7 +547,7 @@ static void anth_write_block(Buf *b, const Conv *c, size_t i, size_t recent,
         buf_puts(b, STR(",\"name\":"));
         buf_json_str(b, c->tool_name[i]);
         buf_puts(b, STR(",\"input\":"));
-        anth_write_input(b, c, i);
+        anth_write_input(b, c, i, recent);
         buf_putc(b, '}');
         return;
     }
@@ -460,16 +557,47 @@ static void anth_write_block(Buf *b, const Conv *c, size_t i, size_t recent,
     buf_putc(b, '}');
 }
 
+/* A slot whose block carries cache_control: a tool_use block takes none, and
+ * a slot with nothing to say writes no block to hang one on. */
+static b8 anth_cache_ok(const Conv *c, size_t i) {
+    return i < c->n && !conv_is_call(c, i) && anth_has_plain_block(c, i);
+}
+
+/* Where this request breaks the prefix, past the system block build_request
+ * writes: the compaction checkpoint, the last block the elision boundary has
+ * passed, and the newest block.
+ *
+ * The second is what makes an advance partial. Moving the boundary from B0
+ * to B1 rewrites only the slots in [B0, B1); everything below B0 is already
+ * a note and is byte-identical, so a breakpoint the previous request left
+ * under B0 keeps that head readable.
+ *
+ * INVARIANT: these must come back in ascending slot order and must never
+ * number more than three, or the request carries more than the four
+ * cache_control blocks the API accepts, in an order it refuses. */
+#define ANTH_CACHE_POINTS 3
+static size_t anth_cache_points(const Conv *c, size_t *out) {
+    size_t n = 0;
+    if (c->checkpoint && anth_cache_ok(c, c->checkpoint))
+        out[n++] = c->checkpoint;
+    for (size_t j = c->elide_start; j-- > 0;) {
+        if (!anth_cache_ok(c, j)) continue;
+        if (!n || out[n - 1] < j) out[n++] = j;
+        break;
+    }
+    for (size_t j = c->n; j-- > 0;) {
+        if (c->role[j] != M_USER && c->role[j] != M_TOOL) continue;
+        if (!anth_has_plain_block(c, j)) continue;
+        if (!n || out[n - 1] < j) out[n++] = j;
+        break;
+    }
+    return n;
+}
+
 void conv_write_json_anthropic(Buf *b, const Conv *c) {
     size_t recent = conv_elide_start(c);
-    size_t cache_at = CONV_NONE;
-    for (size_t j = c->n; j-- > 0;) {
-        if ((c->role[j] == M_USER || c->role[j] == M_TOOL)
-            && anth_has_plain_block(c, j)) {
-            cache_at = j;
-            break;
-        }
-    }
+    size_t cache_at[ANTH_CACHE_POINTS];
+    size_t cache_n = anth_cache_points(c, cache_at);
     buf_putc(b, '[');
     b8 first_msg = true;
     size_t i = 0;
@@ -493,7 +621,10 @@ void conv_write_json_anthropic(Buf *b, const Conv *c) {
             if (!anth_has_plain_block(c, i)) continue;
             if (!first_block) buf_putc(b, ',');
             first_block = false;
-            anth_write_block(b, c, i, recent, i == cache_at);
+            b8 cache = false;
+            for (size_t k = 0; k < cache_n && !cache; k++)
+                cache = cache_at[k] == i;
+            anth_write_block(b, c, i, recent, cache);
         }
         buf_puts(b, STR("]}"));
     }

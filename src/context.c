@@ -23,11 +23,13 @@ void ctx_init(CtxGauge *g) {
 
 
 /* What slot `i` costs a request whose recent window begins at `recent`: a
- * tool result the writer elides for age costs its note instead of its
- * bytes, or a fit would be made from bytes no request ever sent. */
+ * tool result or an argument list the writer elides for age costs its note
+ * instead of its bytes, or a fit would be made from bytes no request ever
+ * sent. */
 static f64 ctx_slot_bytes(const Conv *c, size_t i, size_t recent) {
-    size_t text = conv_result_elided(c, i, recent) ? AGENT_ELIDE_NOTE_BYTES
-                                                   : c->text[i].n;
+    b8 elided =
+        conv_result_elided(c, i, recent) || conv_args_elided(c, i, recent);
+    size_t text = elided ? AGENT_ELIDE_NOTE_BYTES : c->text[i].n;
     size_t b = text + c->tool_name[i].n + c->tool_call_id[i].n
                + c->shell_out[i].n + c->anthropic_thinking[i].n;
     return (f64)b + (f64)CTX_SLOT_BYTES;
@@ -216,6 +218,39 @@ size_t ctx_compact_split(const CtxGauge *g, const Conv *c) {
     }
     if (!keep) keep = newest;
     return keep >= 2 ? keep : 0;
+}
+
+/* Only the slots the advance would newly cover: below the standing boundary
+ * both requests already send the note, and above the candidate both send the
+ * text. */
+size_t ctx_elide_gain(const CtxGauge *g, const Conv *c) {
+    if (!g || !c) return 0;
+    size_t from = conv_elide_start(c), to = conv_elide_next(c);
+    if (to <= from) return 0;
+    f64 slope = g->slope > 0 ? g->slope : CTX_SLOPE_DEFAULT;
+    f64 saved = 0;
+    for (size_t i = from; i < to; i++) {
+        f64 before = ctx_slot_bytes(c, i, from);
+        f64 after = ctx_slot_bytes(c, i, to);
+        if (before > after) saved += slope * (before - after);
+    }
+    return saved > 0 ? (size_t)saved : 0;
+}
+
+Str cache_cause_name(CacheCause cause) {
+    switch (cause) {
+        case CACHE_CAUSE_NONE: return STR("none");
+        case CACHE_CAUSE_FIRST: return STR("first request");
+        case CACHE_CAUSE_ELIDE: return STR("eliding");
+        case CACHE_CAUSE_COMPACT: return STR("compacting");
+        case CACHE_CAUSE_MODE: return STR("a mode change");
+        case CACHE_CAUSE_TOOLS: return STR("a tool change");
+        case CACHE_CAUSE_MODEL: return STR("a model change");
+        case CACHE_CAUSE_MEDIA: return STR("an image change");
+        case CACHE_CAUSE_RESUME: return STR("resuming");
+        case CACHE_CAUSE_TTL: return STR("the cache expiring");
+    }
+    return STR("none");
 }
 
 b8 ctx_compact_worth(const CtxGauge *g, const Conv *c, size_t keep) {

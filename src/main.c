@@ -220,6 +220,127 @@ static void on_tool_call(i32 idx, Str id, Str name, Str args_delta, void *ud) {
  * fit it holds is what lets the field answer between requests. */
 static CtxGauge g_ctx;
 
+/* What the provider's prompt cache is expected to do, and why it would not.
+ * Every rewrite of text already sent stamps its cause here as it happens;
+ * cache_guard_observe reads the response back against it. One concern, begun
+ * with the session and reset wherever the conversation stops being the one
+ * the cache holds. */
+static CacheGuard g_cache;
+
+static void cache_guard_begin(CacheGuard *g) {
+    *g = (CacheGuard){0};
+}
+
+/* The first cause of a round stands. A second rewrite in the same round does
+ * not make the miss any more expected, and the row names what began it. */
+static void cache_guard_cause(CacheGuard *g, CacheCause cause, size_t freed) {
+    if (g->cause != CACHE_CAUSE_NONE) return;
+    g->cause = cause;
+    g->freed_tokens = freed;
+}
+
+/* 88412 as "88,412": a rebuild is read as a price, and a price is read in
+ * groups. */
+static Str fmt_grouped(char *out, size_t cap, size_t v) {
+    char digits[24];
+    size_t n = 0;
+    do {
+        digits[n++] = (char)('0' + v % 10);
+        v /= 10;
+    } while (v && n < sizeof digits);
+    size_t w = 0;
+    for (size_t i = n; i-- > 0 && w + 1 < cap;) {
+        out[w++] = digits[i];
+        if (i && i % 3 == 0 && w + 1 < cap) out[w++] = ',';
+    }
+    out[w] = '\0';
+    return (Str){out, w};
+}
+
+/* Said in the transcript rather than in a notice, the way a retry is: it
+ * belongs to the turn being read, and it never reaches Conv. */
+static void say_cache(const char *kind, Str row, b8 bad) {
+    if (g_turn.one_shot) {
+        one_shot_diag(kind, (Str){0}, row);
+        return;
+    }
+    tui_block();
+    if (bad) {
+        tui_write_error(row);
+    } else {
+        tui_write_muted(row);
+    }
+    g_turn.replying = false;
+    g_turn.reasoning = false;
+}
+
+/* One request's answer to what the guard expected. True when the tool loop
+ * has to stop: the prefix was rebuilt and nothing declared a rewrite, which
+ * is a defect rather than a price.
+ *
+ * A response carrying no usage measures nothing and leaves the guard where
+ * it stood; the next one is still read against the same prefix. */
+static b8 cache_guard_observe(CacheGuard *g, size_t prompt_tokens,
+                              size_t cache_read, size_t cache_creation) {
+    if (!prompt_tokens) return false;
+    f64 now = agent_now_seconds();
+    if (cache_read) g->armed = true;
+    /* The proxy strips cache_control.ttl, so only the five minute lifetime is
+     * available: a longer gap than that is a miss nobody caused. */
+    if (g->last_send_s && now - g->last_send_s > AGENT_CACHE_TTL_S)
+        cache_guard_cause(g, CACHE_CAUSE_TTL, 0);
+    if (!g->expect_tokens) cache_guard_cause(g, CACHE_CAUSE_FIRST, 0);
+
+    b8 miss =
+        g->armed && g->expect_tokens && cache_read < g->expect_tokens * 9 / 10;
+    CacheCause cause = g->cause;
+    size_t freed = g->freed_tokens, expect = g->expect_tokens;
+    size_t wasted =
+        cache_creation ? cache_creation : prompt_tokens - cache_read;
+
+    g->expect_tokens = prompt_tokens;
+    g->last_send_s = now;
+    g->cause = CACHE_CAUSE_NONE;
+    g->freed_tokens = 0;
+    if (!miss) return false;
+
+    g->misses++;
+    g->wasted_tokens += wasted;
+    TelEvent te;
+    tel_open(&te, "cache_miss");
+    tel_int(&te, "expected", (i64)expect);
+    tel_int(&te, "read", (i64)cache_read);
+    tel_int(&te, "rewritten", (i64)wasted);
+    tel_str(&te, "cause", cache_cause_name(cause));
+    tel_send(&te);
+
+    char a[24], b[24], c[24];
+    char row[256];
+    i32 n;
+    if (cause != CACHE_CAUSE_NONE) {
+        Str name = cache_cause_name(cause);
+        Str freed_s = fmt_grouped(a, sizeof a, freed);
+        if (freed)
+            n = snprintf(row, sizeof row,
+                         "[cache rebuilt after %.*s: %.*s tokens freed]\n",
+                         (i32)name.n, name.p, (i32)freed_s.n, freed_s.p);
+        else
+            n = snprintf(row, sizeof row, "[cache rebuilt after %.*s]\n",
+                         (i32)name.n, name.p);
+        if (n > 0) say_cache("cache", (Str){row, (size_t)n}, false);
+        return false;
+    }
+    Str e = fmt_grouped(a, sizeof a, expect);
+    Str r = fmt_grouped(b, sizeof b, cache_read);
+    Str w = fmt_grouped(c, sizeof c, wasted);
+    n = snprintf(row, sizeof row,
+                 "[unexpected cache miss: %.*s expected, %.*s read, %.*s "
+                 "rewritten\nstopped. this is a bug: %s]\n",
+                 (i32)e.n, e.p, (i32)r.n, r.p, (i32)w.n, w.p, AGENT_ISSUES_URL);
+    if (n > 0) say_cache("cache", (Str){row, (size_t)n}, true);
+    return !g_turn.one_shot;
+}
+
 /* Every image this session holds. The table outlives a turn and is indexed
  * by the conversation, which is what lets a slot keep its attachments
  * through a replay; the bytes behind it live in the conversation's own
@@ -399,6 +520,7 @@ static void agent_set_mode(Agent *ag, AgentMode mode) {
     tel_str(&e, "from", mode_name(ag->cfg->mode));
     tel_str(&e, "to", mode_name(mode));
     tel_send(&e);
+    if (ag->cfg->mode != mode) cache_guard_cause(&g_cache, CACHE_CAUSE_MODE, 0);
     ag->cfg->mode = mode;
     if (!conf_remember(CONF_MODE, mode_name(mode), ag->scratch)) {
         if (g_turn.one_shot)
@@ -1234,6 +1356,7 @@ static Str help_build(Agent *ag) {
 static void start_help_session(Agent *ag) {
     Conv *conv = ag->conv;
     conv_truncate(conv, 1);
+    cache_guard_begin(&g_cache);
     ag->pending_n = 0;
     ag->persist->off = ag->mark;
     arena_reset(ag->scratch);
@@ -1384,6 +1507,7 @@ static void resume_session(Agent *ag) {
         return;
     }
     conv_truncate(conv, 1);
+    cache_guard_begin(&g_cache);
     ag->pending_n = 0;
     persist->off = session_mark;
     b8 whole = session_apply(sess, src, sp.list.path[pick], sp.list.name[pick],
@@ -1489,6 +1613,7 @@ static void rewind_conversation(Agent *ag) {
     size_t img_off = conv->media_off[slot], img_n = conv->media_n[slot];
     tui_set_input(conv->text[slot]);
     conv_truncate(conv, slot);
+    cache_guard_begin(&g_cache);
     ag->pending_n = 0;
     if (img_n && conv->media && img_n <= AGENT_MAX_MEDIA_PER_TURN) {
         conv->media->n = img_off + img_n;
@@ -2408,6 +2533,10 @@ static b8 use_model(Config *cfg, const Endpoints *eps, Str provider, Str model,
     tui_set_provider(cfg->provider);
     tui_set_model(cfg->model);
     ctx_model_changed(&g_ctx);
+    /* Begun rather than blamed: the new endpoint may not report cache reads
+     * at all, and a guard still armed from the old one would read every
+     * request it answers as a miss. */
+    cache_guard_begin(&g_cache);
     ctx_set_window(&g_ctx, cfg->context_window);
     tui_set_reasoning(cfg->reasoning_effort, cfg->thinking_budget);
     tui_set_setup_hint((Str){0});
@@ -3342,6 +3471,7 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
             size_t t = v->tool[row];
             tools_set_disabled(ag->tools, t, !tools_disabled(ag->tools, t));
             remember_tools(ag->tools, scratch);
+            cache_guard_cause(&g_cache, CACHE_CAUSE_TOOLS, 0);
             break;
         }
         case SET_EFFORT:
@@ -3898,6 +4028,7 @@ static void compact_session(Agent *ag) {
     }
 
     conv_truncate(conv, 1);
+    cache_guard_cause(&g_cache, CACHE_CAUSE_COMPACT, 0);
     ag->pending_n = 0;
     persist->off = ag->mark;
     Str stored = str_dup(persist, built);
@@ -3912,6 +4043,7 @@ static void compact_session(Agent *ag) {
         say_conv_full();
         return;
     }
+    conv_set_checkpoint(conv, conv->n - 1);
     render_user_message(conv, conv->n - 1);
     if (!save_session(ag)) {
         ctx_sync(&g_ctx, conv);
@@ -3973,6 +4105,7 @@ static b8 compact_auto(Agent *ag, size_t keep, b8 *interrupted) {
                            "continues whole"));
         return false;
     }
+    cache_guard_cause(&g_cache, CACHE_CAUSE_COMPACT, 0);
 
     char title[AGENT_MAX_TITLE + 1];
     size_t title_n = ag->sess->title.n < sizeof title ? ag->sess->title.n : 0;
@@ -3989,6 +4122,24 @@ static b8 compact_auto(Agent *ag, size_t keep, b8 *interrupted) {
             : STR("context compacted in memory but the new session was not saved"));
     ctx_sync(&g_ctx, conv);
     return true;
+}
+
+/* Move the elision boundary up, once the conversation is heavy enough for the
+ * rewrite to pay for the cached prefix it discards. Checked between rounds
+ * beside the compaction check, and before it: eliding is what buys room while
+ * a compaction is still avoidable.
+ *
+ * The gain guard keeps a conversation of prose from paying a full rebuild for
+ * a few hundred tokens; there compaction is the cheaper answer, and it runs
+ * one threshold later. */
+static void elide_if_needed(Agent *ag) {
+    const Config *cfg = ag->cfg;
+    if (!cfg->elide_at || !ctx_over(&g_ctx, ag->conv, cfg->elide_at)) return;
+    size_t gain = ctx_elide_gain(&g_ctx, ag->conv);
+    if (gain < g_ctx.window * AGENT_ELIDE_MIN_GAIN_PCT / 100) return;
+    if (!conv_elide_advance(ag->conv)) return;
+    cache_guard_cause(&g_cache, CACHE_CAUSE_ELIDE, gain);
+    ctx_sync(&g_ctx, ag->conv);
 }
 
 /* Checked between rounds, where the conversation is consistent and the usage
@@ -4177,6 +4328,7 @@ static b8 agent_handoff(Agent *ag) {
     Str plan = ag->handoff;
     ag->handoff = (Str){0};
     conv_truncate(ag->conv, 1);
+    cache_guard_begin(&g_cache);
     ag->pending_n = 0;
     ag->persist->off = ag->mark;
     plan = str_dup(ag->persist, plan);
@@ -4298,6 +4450,7 @@ static b8 agent_turn(Agent *ag, Str text) {
         /* Before the request rather than during it: here the conversation is
          * consistent, and a summary that arrives is what the next request is
          * built from. */
+        elide_if_needed(ag);
         if (compact_if_needed(ag)) {
             announce_interrupt();
             ending = NOTIFY_INTERRUPTED;
@@ -4355,6 +4508,11 @@ static b8 agent_turn(Agent *ag, Str text) {
             break;
         }
 
+        /* Read before the round ends, so a rebuild nothing asked for is said
+         * next to the request that paid for it. */
+        b8 cache_bad =
+            cache_guard_observe(&g_cache, p.prompt_tokens, p.cache_read_tokens,
+                                p.cache_creation_tokens);
         if (name_session_now(ag)) {
             announce_interrupt();
             ending = NOTIFY_INTERRUPTED;
@@ -4390,6 +4548,16 @@ static b8 agent_turn(Agent *ag, Str text) {
             tui_set_status("ready");
             ok = true;
             ending = NOTIFY_TURN_DONE;
+            break;
+        }
+        /* The round the model asked for still runs: its results belong to the
+         * calls already in the conversation, and leaving a call unanswered
+         * would cost the next request more than the miss did. The loop stops
+         * once they are in, the way an interrupt does. */
+        if (cache_bad) {
+            tui_set_status("ready");
+            ending = NOTIFY_INTERRUPTED;
+            ending_text = STR("an unexplained cache miss stopped the turn");
             break;
         }
         /* A follow-up cannot precede results for the tool calls it observed:
@@ -4739,6 +4907,7 @@ i32 main(i32 argc, char **argv) {
         if (!strcmp(line, "/exit")) break;
         if (!strcmp(line, "/clear")) {
             conv_truncate(&conv, 1);
+            cache_guard_begin(&g_cache);
             agent.pending_n = 0;
             persist.off = session_mark;
             arena_reset(&scratch);

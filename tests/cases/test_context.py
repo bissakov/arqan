@@ -165,9 +165,22 @@ def test_the_field_follows_the_wire_when_old_results_are_elided(ctx):
     reports what a request sent now would carry, and that is what decides
     whether there is room for one.
     """
-    args = json.dumps({"command": "seq 1 200"})
+    ctx.write_config(
+        "compact = off\n"
+        "[providers.work]\n"
+        f"base_url = {ctx.mock.base_url}\n"
+        "model = alpha\n"
+        '[providers.work.models."alpha"]\n'
+        "context_window = 1000\n"
+    )
+    state = ctx.state_file()
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text("provider = work\n")
+    args = json.dumps({"command": "seq 1 800"})
     ctx.scenario(f"tool=bash:{args},tool_rounds=1,text=ok,final_text=ok")
-    s = ctx.spawn(ARQAN_PERMISSIONS="free")
+    # A window the run fills: the boundary only advances under pressure.
+    s = ctx.spawn(ARQAN_PERMISSIONS="free", ARQAN_MODEL="alpha",
+                  ARQAN_BASE_URL=None, ARQAN_API_KEY=None)
     s.submit("run it")
     s.wait_turn_done()
     ctx.scenario("text=ok")
