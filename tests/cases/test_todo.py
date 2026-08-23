@@ -2,6 +2,9 @@
 
 import json
 
+from .test_budget import windowed
+from .test_telemetry import body, events
+
 
 def todo(*items, **kw):
     """Build a todo call from (text, status) pairs."""
@@ -178,6 +181,27 @@ def test_the_status_field_counts_the_list(ctx):
     assert "todo 1/3" in s.status_line(), s.status_line()
 
 
+def test_the_count_outranks_the_ambient_fields_on_a_narrow_screen(ctx):
+    """Progress through the work survives where the session-long facts do not."""
+    ctx.scenario(
+        todo(
+            ("read the decoder", "done"),
+            ("wire the parser", "in_progress"),
+            ("add a regression case", "pending"),
+            final="all+set",
+        )
+    )
+    s = ctx.spawn(cols=60, rows=14)
+    s.submit("do the long thing")
+    s.wait_turn_done()
+
+    line = s.status_line()
+    assert "todo 1/3" in line, line
+    assert "~/work" not in line, line          # cwd yields the columns first
+    fields = [f.strip() for f in line.split("\u00b7")]
+    assert fields.index("todo 1/3") < len(fields), line
+
+
 def test_the_command_shows_the_current_list(ctx):
     """/todo answers from the state, not from the transcript."""
     ctx.scenario(
@@ -264,3 +288,123 @@ def test_compaction_carries_the_list_into_the_checkpoint(ctx):
     assert "## Step list" in checkpoint, checkpoint
     assert "- [x] read the decoder" in checkpoint, checkpoint
     assert "- [ ] wire the parser (in progress)" in checkpoint, checkpoint
+
+
+def test_rewinding_past_the_call_drops_the_list(ctx):
+    """The call is the state, so trimming it away leaves no list behind."""
+    ctx.scenario("text=hello+there")
+    s = ctx.spawn()
+    s.submit("say hi")
+    s.wait_turn_done()
+
+    ctx.scenario(
+        todo(
+            ("read the decoder", "done"),
+            ("wire the parser", "in_progress"),
+            final="all+set",
+        )
+    )
+    s.submit("do the long thing")
+    s.wait_turn_done()
+    assert "todo 1/2" in s.status_line(), s.status_line()
+
+    s.submit("/rewind")
+    s.wait_status("rewind to a message")
+    s.key("enter")
+    s.wait_gone("wire the parser")
+    assert "todo" not in s.status_line(), s.status_line()
+    s.key("end", "ctrl-u")            # rewind reloaded the message it dropped
+    s.submit("/todo")
+    s.wait_text("no step list yet")
+
+
+def test_the_record_keeps_the_shape_of_the_list_and_none_of_its_text(ctx):
+    """Telemetry counts steps and progress; the steps themselves are content."""
+    ctx.scenario(
+        todo(
+            ("read the decoder", "done"),
+            ("wire the parser", "in_progress"),
+            ("add a regression case", "pending"),
+            final="all+set",
+        )
+    )
+    s = ctx.spawn()
+    s.settings_toggle("Telemetry")
+    s.submit("do the long thing")
+    s.wait_turn_done()
+
+    turn = [e for e in events(ctx) if e["ev"] == "turn_end"][-1]
+    assert turn["todo_calls"] == 1, turn
+    assert turn["todos"] == 2, turn            # the bucket below three items
+    assert turn["todo_done_pct"] == 33, turn
+
+    text = body(ctx)
+    for leaked in ("read the decoder", "wire the parser", "regression"):
+        assert leaked not in text, text
+
+
+def test_a_session_without_a_list_records_nothing_of_one(ctx):
+    """The fields are absent, not zero, where the tool never ran."""
+    ctx.scenario("text=hello+there")
+    s = ctx.spawn()
+    s.settings_toggle("Telemetry")
+    s.submit("say hi")
+    s.wait_turn_done()
+
+    turn = [e for e in events(ctx) if e["ev"] == "turn_end"][-1]
+    assert "todo_calls" not in turn, turn
+    assert "todos" not in turn, turn
+
+
+def todo_args_on_the_wire(ctx):
+    """Every todo call's arguments in the last request, oldest first."""
+    return [
+        c["function"]["arguments"]
+        for m in ctx.mock.requests[-1]["messages"]
+        for c in (m.get("tool_calls") or [])
+        if c["function"]["name"] == "todo"
+    ]
+
+
+def test_eliding_never_takes_the_live_list_off_the_wire(ctx):
+    """The boundary measures age, and the current list is not history.
+
+    A list of a few items passes AGENT_ELIDE_BYTES, so once the elide
+    boundary moves past the call that carried it the arguments would be
+    stubbed like any other tool's. That leaves the model working without the
+    plan it wrote, in exactly the long session the list exists for, while the
+    status line still counts it.
+    """
+    items = [
+        {"text": f"step number {i:02d} of the long piece of work",
+         "status": "in_progress" if i == 0 else "pending"}
+        for i in range(8)
+    ]
+    args = json.dumps({"items": items})
+    assert len(args) > 512, "the case needs a list over AGENT_ELIDE_BYTES"
+    bash = json.dumps({"command": "seq 1 300"})
+
+    # The list is written once, then left behind: the boundary reaches back
+    # two user turns, so the turns of ordinary work after it are what put the
+    # call that carried it under the boundary.
+    ctx.scenario(f"tool=todo:{args},final_text=planned")
+    s = windowed(ctx, ARQAN_PERMISSIONS="free")
+    s.submit("plan the long thing")
+    s.wait_text("planned")
+    s.wait_turn_done()
+
+    for i in range(3):
+        ctx.scenario(f"tool=bash:{bash},tool_rounds=2,text=ok,final_text=step+{i}")
+        s.submit(f"carry on {i}")
+        s.wait_text(f"step {i}")
+        s.wait_turn_done()
+
+    sent = todo_args_on_the_wire(ctx)
+    assert sent, "the run made no todo call"
+    assert "elided" not in sent[-1], sent[-1]
+    assert "step number 00 of the long piece of work" in sent[-1], sent[-1]
+    # The work after it did go, or the boundary never moved and the case
+    # would pass without testing anything.
+    results = [m["content"] for m in ctx.mock.requests[-1]["messages"]
+               if m.get("role") == "tool"]
+    assert any(r.startswith("[older bash result elided:") for r in results), results

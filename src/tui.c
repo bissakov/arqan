@@ -3072,10 +3072,11 @@ static void repaint(void) {
         if (g_tui.status_visible[TUI_STATUS_PROVIDER])
             put_status_field(g_tui.provider, S_TEXT, body_cols, &used,
                              &have_field);
-        if (g_tui.status_visible[TUI_STATUS_CWD])
-            put_status_field(cwd, S_TEXT, body_cols, &used, &have_field);
-        if (g_tui.status_visible[TUI_STATUS_CONTEXT])
-            put_status_field(context, S_TEXT, body_cols, &used, &have_field);
+        /* Ahead of cwd and context: the line is painted left to right and
+         * truncated where it runs out, so position is priority. Progress
+         * through the work in hand outranks facts that hold all session.
+         * INVARIANT: paint order only. TuiStatusItem is the bit layout of
+         * the status_fields setting and may not be reordered with it. */
         if (g_tui.todo_total && g_tui.status_visible[TUI_STATUS_TODO]) {
             char todo[24];
             i32 n = snprintf(todo, sizeof todo, "todo %zu/%zu", g_tui.todo_done,
@@ -3086,6 +3087,10 @@ static void repaint(void) {
                                                                      : S_TEXT,
                                  body_cols, &used, &have_field);
         }
+        if (g_tui.status_visible[TUI_STATUS_CWD])
+            put_status_field(cwd, S_TEXT, body_cols, &used, &have_field);
+        if (g_tui.status_visible[TUI_STATUS_CONTEXT])
+            put_status_field(context, S_TEXT, body_cols, &used, &have_field);
         if (copied && g_tui.status_visible[TUI_STATUS_COPY])
             put_status_field(STR("copied"), S_GREEN, body_cols, &used,
                              &have_field);

@@ -1408,6 +1408,10 @@ b8 conv_result_elided(const Conv *c, size_t i, size_t recent);
 /* The same question for a tool call's arguments: true when the call sits
  * below `recent` and its arguments are large enough to be worth a stub, or
  * when the call failed and neither side of it is worth replaying. */
+/* True when slot `i`'s call arguments are sent as a stub. The newest todo
+ * call is exempt: it is the live step list rather than a record of a past
+ * one. The context estimator asks through here too, so what it counts and
+ * what the writers send cannot drift apart. */
 b8 conv_args_elided(const Conv *c, size_t i, size_t recent);
 
 /* True when a request may begin at slot `i`: a user turn, a plain assistant
@@ -1471,6 +1475,9 @@ b8 todo_parse_md(Str doc, TodoList *out);
 b8 todo_run(Str args_json, Arena *scratch, Buf *out, char *err, size_t err_cap);
 const TodoList *todo_current(void);
 void todo_clear(void);
+/* The size, completion and rewrite count of the list, for a turn event.
+ * Silent until the tool has run, and never carries item text. */
+void todo_telemetry(TelEvent *e);
 /* Derives the current list from the last todo call in `c`, clearing it when
  * there is none. Cheap when the call it last read is still the last one, so
  * every path that changes history can call it: resume, /clear, rewind,

@@ -4,6 +4,7 @@ static struct {
     TodoList list;
     const char *src;
     size_t slot;
+    size_t calls;
 } g_todo;
 
 Str todo_text(const TodoList *l, size_t i) {
@@ -187,6 +188,7 @@ b8 todo_run(Str args_json, Arena *scratch, Buf *out, char *err,
     TodoList l;
     if (!todo_parse(args_json, scratch, &l, err, err_cap)) return false;
     g_todo.list = l;
+    g_todo.calls++;
     /* INVARIANT: Conv does not hold this call yet, so the source is left
      * unset and the next todo_sync rederives from the recorded one. */
     g_todo.src = NULL;
@@ -194,6 +196,17 @@ b8 todo_run(Str args_json, Arena *scratch, Buf *out, char *err,
     todo_publish();
     todo_summary(out, &l);
     return buf_ok(out);
+}
+
+/* Shape only: how big the lists are, how much of one is finished, and how
+ * often the model rewrites it. Item text is model content and never leaves. */
+void todo_telemetry(TelEvent *e) {
+    if (!g_todo.calls) return;
+    tel_int(e, "todo_calls", (i64)g_todo.calls);
+    tel_bucket(e, "todos", g_todo.list.n);
+    if (g_todo.list.n)
+        tel_int(e, "todo_done_pct",
+                (i64)(todo_done(&g_todo.list) * 100 / g_todo.list.n));
 }
 
 /* The newest slot that can state the list: a todo call, or the compaction

@@ -4620,6 +4620,7 @@ static b8 agent_turn(Agent *ag, Str text) {
      * arenas stand. */
     tel_int(&te, "persist_used", (i64)arena_used(ag->persist));
     tel_int(&te, "scratch_used", (i64)arena_used(ag->scratch));
+    todo_telemetry(&te);
     tel_send(&te);
 
     if (!ag->handoff.n && !tui_queued_pending()) {
