@@ -36,7 +36,7 @@ b8 catalog_add(Catalog *c, Str provider, Str model) {
 size_t catalog_endpoints(const Config *cfg, const Endpoints *e, Str *out,
                          size_t max) {
     size_t n = 0;
-    
+
     if (n < max && cfg && !cfg->provider.n && cfg->base_url_set)
         out[n++] = (Str){0};
     for (size_t i = 0; e && i < e->n && n < max; i++) out[n++] = e->name[i];
@@ -45,8 +45,8 @@ size_t catalog_endpoints(const Config *cfg, const Endpoints *e, Str *out,
 
 
 static b8 catalog_probe(Config *probe, Str name, const Config *cfg,
-                        const Endpoints *e, Arena *tmp,
-                        char *err, size_t err_cap) {
+                        const Endpoints *e, Arena *tmp, char *err,
+                        size_t err_cap) {
     *probe = *cfg;
     probe->provider = (Str){0};
     probe->model = (Str){0};
@@ -80,8 +80,7 @@ size_t catalog_load(Catalog *c, const Config *cfg, const Endpoints *e,
                     void *ud) {
     if (!catalog_init(c, cap, out)) return 0;
     Str names[AGENT_MAX_ENDPOINTS + 1];
-    size_t n_names = catalog_endpoints(cfg, e, names,
-                                      AGENT_MAX_ENDPOINTS + 1);
+    size_t n_names = catalog_endpoints(cfg, e, names, AGENT_MAX_ENDPOINTS + 1);
     if (!n_names) return 0;
 
     void *mem = arena_alloc(out, CATALOG_REPLY_BYTES, 64);
@@ -97,8 +96,8 @@ size_t catalog_load(Catalog *c, const Config *cfg, const Endpoints *e,
         char err[AGENT_MAX_PATH + 160] = {0};
         size_t got = 0;
         if (catalog_probe(&probe, names[i], cfg, e, &tmp, err, sizeof err))
-            got = provider_models(&probe, &tmp, ids, AGENT_MAX_MODELS,
-                                  err, sizeof err);
+            got = provider_models(&probe, &tmp, ids, AGENT_MAX_MODELS, err,
+                                  sizeof err);
         if (!got) {
             catalog_failed(c, names[i], str_c(err), out);
             continue;

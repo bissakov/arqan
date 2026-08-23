@@ -10,7 +10,8 @@
  * same escaping used in the file is used for lookup. */
 static Str model_section(Str provider, Str model, Arena *a) {
     if (!endpoint_name_ok(provider) || !model.n
-        || model.n > AGENT_MAX_MODEL_NAME) return (Str){0};
+        || model.n > AGENT_MAX_MODEL_NAME)
+        return (Str){0};
     Buf b;
     buf_init(&b, a, MODEL_SECTION_PREFIX.n + provider.n + model.n + 16);
     buf_puts(&b, MODEL_SECTION_PREFIX);
@@ -40,7 +41,7 @@ static b8 model_list_ok(Str list, b8 budgets) {
     while (off < list.n) {
         size_t end = off;
         while (end < list.n && list.p[end] != ',') end++;
-        Str item = str_trim((Str){ list.p + off, end - off });
+        Str item = str_trim((Str){list.p + off, end - off});
         if (!item.n || ++count > AGENT_MAX_ENDPOINTS) return false;
         if (budgets) {
             b8 ok = false;
@@ -50,7 +51,7 @@ static b8 model_list_ok(Str list, b8 budgets) {
         for (size_t prev = 0; prev < off;) {
             size_t pend = prev;
             while (pend < list.n && list.p[pend] != ',') pend++;
-            if (str_eq(item, str_trim((Str){ list.p + prev, pend - prev })))
+            if (str_eq(item, str_trim((Str){list.p + prev, pend - prev})))
                 return false;
             prev = pend + 1;
         }
@@ -64,7 +65,7 @@ static b8 model_selected_ok(Str list, Str selected) {
     for (size_t off = 0; off < list.n;) {
         size_t end = off;
         while (end < list.n && list.p[end] != ',') end++;
-        if (str_eq(selected, str_trim((Str){ list.p + off, end - off })))
+        if (str_eq(selected, str_trim((Str){list.p + off, end - off})))
             return true;
         off = end + 1;
     }
@@ -127,7 +128,8 @@ b8 model_profile_save(Str provider, Str model, const ModelProfile *p,
         || !model_selected_ok(p->reasoning_efforts, p->reasoning_effort)
         || !model_selected_ok(p->thinking_budgets, p->thinking_budget)
         || p->reasoning_template.n > AGENT_MAX_REASONING_TEMPLATE
-        || p->context_window > AGENT_MAX_CONTEXT_WINDOW) return false;
+        || p->context_window > AGENT_MAX_CONTEXT_WINDOW)
+        return false;
     size_t mark = scratch->off;
     Str dir = paths_dir(AGENT_DIR_CONFIG, scratch);
     Str path = paths_file(AGENT_DIR_CONFIG, AGENT_CONFIG_NAME, scratch);
@@ -135,13 +137,14 @@ b8 model_profile_save(Str provider, Str model, const ModelProfile *p,
     char window[32] = {0};
     if (p->context_window)
         snprintf(window, sizeof window, "%zu", p->context_window);
-    Str keys[6] = { STR("context_window"), STR("reasoning_efforts"),
-        STR("thinking_budgets"), STR("reasoning_effort"),
-        STR("thinking_budget"), STR("reasoning_template") };
-    Str vals[6] = { str_c(window), p->reasoning_efforts, p->thinking_budgets,
-        p->reasoning_effort, p->thinking_budget, p->reasoning_template };
+    Str keys[6] = {STR("context_window"),   STR("reasoning_efforts"),
+                   STR("thinking_budgets"), STR("reasoning_effort"),
+                   STR("thinking_budget"),  STR("reasoning_template")};
+    Str vals[6] = {str_c(window),       p->reasoning_efforts,
+                   p->thinking_budgets, p->reasoning_effort,
+                   p->thinking_budget,  p->reasoning_template};
     b8 ok = dir.n && path.n && section.n && paths_ensure_dir(dir)
-         && settings_set(path, section, keys, vals, 6, 0600, scratch);
+            && settings_set(path, section, keys, vals, 6, 0600, scratch);
     scratch->off = mark;
     return ok;
 }
@@ -155,7 +158,10 @@ b8 model_profiles_delete(Str provider, Arena *scratch) {
     buf_puts(&prefix, MODEL_SECTION_PREFIX);
     buf_puts(&prefix, provider);
     buf_puts(&prefix, STR(".models."));
-    if (!path.n || !buf_ok(&prefix)) { scratch->off = mark; return false; }
+    if (!path.n || !buf_ok(&prefix)) {
+        scratch->off = mark;
+        return false;
+    }
     Settings s;
     if (!settings_load(&s, path, scratch)) {
         scratch->off = mark;

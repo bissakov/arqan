@@ -10,7 +10,7 @@
 #include <curl/curl.h>
 
 #define WEB_EXTRACT_BYTES (4u << 20)
-#define WEB_TITLE_BYTES 512u
+#define WEB_TITLE_BYTES   512u
 #define WEB_SNIPPET_BYTES 1024u
 
 typedef struct {
@@ -48,9 +48,9 @@ static b8 search_wait_until(f64 until) {
         f64 left = until - agent_now_seconds();
         if (left <= 0) return true;
         if (g_web_hooks.idle) g_web_hooks.idle(g_web_hooks.idle_ud);
-        i32 ms = left * 1000.0 < (f64)SLICE_MS
-               ? (i32)(left * 1000.0) + 1 : SLICE_MS;
-        struct timespec ts = { 0, (long)ms * 1000000L };
+        i32 ms =
+            left * 1000.0 < (f64)SLICE_MS ? (i32)(left * 1000.0) + 1 : SLICE_MS;
+        struct timespec ts = {0, (long)ms * 1000000L};
         nanosleep(&ts, NULL);
     }
 }
@@ -64,8 +64,8 @@ static void search_attempts_add(char *dst, size_t cap, size_t *n,
     *n = (size_t)w >= cap - *n ? cap - 1 : *n + (size_t)w;
 }
 
-static b8 web_arg_cstr(Str s, char *z, size_t cap, const char *what,
-                       char *err, size_t err_cap) {
+static b8 web_arg_cstr(Str s, char *z, size_t cap, const char *what, char *err,
+                       size_t err_cap) {
     if (!s.p) {
         snprintf(err, err_cap, "missing %s", what);
         return false;
@@ -75,8 +75,8 @@ static b8 web_arg_cstr(Str s, char *z, size_t cap, const char *what,
         return false;
     }
     if (s.n >= cap) {
-        snprintf(err, err_cap, "%s too long: %zu bytes, limit %zu",
-                 what, s.n, cap - 1);
+        snprintf(err, err_cap, "%s too long: %zu bytes, limit %zu", what, s.n,
+                 cap - 1);
         return false;
     }
     if (memchr(s.p, '\0', s.n)) {
@@ -151,8 +151,8 @@ static b8 tag_is(AgentHtmlNode *node, const char *name) {
 
 static b8 ignored_tag(AgentHtmlNode *node) {
     static const char *const ignored[] = {
-        "script", "style", "noscript", "template", "svg", "canvas",
-        "iframe", "form", "button", "nav", "footer", "aside",
+        "script", "style", "noscript", "template", "svg",    "canvas",
+        "iframe", "form",  "button",   "nav",      "footer", "aside",
     };
     for (size_t i = 0; i < sizeof ignored / sizeof ignored[0]; i++)
         if (tag_is(node, ignored[i])) return true;
@@ -170,7 +170,8 @@ static void html_walk(AgentHtmlNode *root, HtmlEnter enter, HtmlLeave leave,
     for (;;) {
         if (entering) {
             b8 descend = !enter || enter(node, ud);
-            AgentHtmlNode *child = descend ? agent_html_first_child(node) : NULL;
+            AgentHtmlNode *child =
+                descend ? agent_html_first_child(node) : NULL;
             if (child) {
                 node = child;
                 continue;
@@ -209,16 +210,19 @@ static void normal_put(Normal *n, const char *p, size_t len) {
 static size_t utf8_char(const u8 *p, size_t n) {
     if (!n) return 0;
     if (p[0] < 0x80) return 1;
-    size_t need = p[0] >= 0xc2 && p[0] <= 0xdf ? 2
-                : p[0] >= 0xe0 && p[0] <= 0xef ? 3
-                : p[0] >= 0xf0 && p[0] <= 0xf4 ? 4 : 0;
+    size_t need = p[0] >= 0xc2 && p[0] <= 0xdf   ? 2
+                  : p[0] >= 0xe0 && p[0] <= 0xef ? 3
+                  : p[0] >= 0xf0 && p[0] <= 0xf4 ? 4
+                                                 : 0;
     if (!need || need > n) return 0;
     for (size_t i = 1; i < need; i++)
         if ((p[i] & 0xc0u) != 0x80u) return 0;
-    if (need == 3 && ((p[0] == 0xe0 && p[1] < 0xa0)
-                  || (p[0] == 0xed && p[1] >= 0xa0))) return 0;
-    if (need == 4 && ((p[0] == 0xf0 && p[1] < 0x90)
-                  || (p[0] == 0xf4 && p[1] >= 0x90))) return 0;
+    if (need == 3
+        && ((p[0] == 0xe0 && p[1] < 0xa0) || (p[0] == 0xed && p[1] >= 0xa0)))
+        return 0;
+    if (need == 4
+        && ((p[0] == 0xf0 && p[1] < 0x90) || (p[0] == 0xf4 && p[1] >= 0x90)))
+        return 0;
     return need;
 }
 
@@ -254,8 +258,9 @@ static void normal_words(Normal *n, Str s, b8 pre) {
 
 static void normal_break(Normal *n, size_t lines) {
     n->pending_space = false;
-    while (n->buf->n && (n->buf->p[n->buf->n - 1] == ' '
-                          || n->buf->p[n->buf->n - 1] == '\t'))
+    while (n->buf->n
+           && (n->buf->p[n->buf->n - 1] == ' '
+               || n->buf->p[n->buf->n - 1] == '\t'))
         n->buf->n--;
     size_t have = 0;
     for (size_t i = n->buf->n; i && n->buf->p[i - 1] == '\n'; i--) have++;
@@ -303,7 +308,8 @@ static b8 count_enter(AgentHtmlNode *node, void *ud) {
     size_t n = 0;
     const char *text = agent_html_text(node, &n);
     for (size_t i = 0; text && i < n && c->chars < 200; i++)
-        if (!isspace((u8)text[i]) || (i && !isspace((u8)text[i - 1]))) c->chars++;
+        if (!isspace((u8)text[i]) || (i && !isspace((u8)text[i - 1])))
+            c->chars++;
     return c->chars < 200;
 }
 
@@ -323,11 +329,13 @@ static b8 find_enter(AgentHtmlNode *node, void *ud) {
     FindCtx *f = (FindCtx *)ud;
     if (ignored_tag(node)) return false;
     if (!f->found && tag_is(node, f->tag)
-        && (!f->qualify || qualifying_text(node))) f->found = node;
+        && (!f->qualify || qualifying_text(node)))
+        f->found = node;
     return f->found == NULL;
 }
 
-static AgentHtmlNode *find_tag(AgentHtmlNode *root, const char *tag, b8 qualify) {
+static AgentHtmlNode *find_tag(AgentHtmlNode *root, const char *tag,
+                               b8 qualify) {
     FindCtx f = {tag, qualify, NULL};
     html_walk(root, find_enter, NULL, &f);
     return f.found;
@@ -344,15 +352,19 @@ static b8 http_url_ok(const char *url) {
     CURLUcode urc = curl_url_get(u, CURLUPART_USER, &user, 0);
     CURLUcode prc = curl_url_get(u, CURLUPART_PASSWORD, &pass, 0);
     b8 ok = rc == CURLUE_OK && scheme && host && *host
-         && (!strcasecmp(scheme, "http") || !strcasecmp(scheme, "https"))
-         && !(urc == CURLUE_OK && user && *user)
-         && !(prc == CURLUE_OK && pass && *pass);
-    curl_free(scheme); curl_free(host); curl_free(user); curl_free(pass);
+            && (!strcasecmp(scheme, "http") || !strcasecmp(scheme, "https"))
+            && !(urc == CURLUE_OK && user && *user)
+            && !(prc == CURLUE_OK && pass && *pass);
+    curl_free(scheme);
+    curl_free(host);
+    curl_free(user);
+    curl_free(pass);
     curl_url_cleanup(u);
     return ok;
 }
 
-static b8 resolve_url(const char *base, Str ref, char out[AGENT_WEB_URL_BYTES]) {
+static b8 resolve_url(const char *base, Str ref,
+                      char out[AGENT_WEB_URL_BYTES]) {
     if (!ref.n || ref.n >= AGENT_WEB_URL_BYTES || memchr(ref.p, '\0', ref.n))
         return false;
     char z[AGENT_WEB_URL_BYTES];
@@ -366,7 +378,7 @@ static b8 resolve_url(const char *base, Str ref, char out[AGENT_WEB_URL_BYTES]) 
     char *url = NULL;
     if (rc == CURLUE_OK) rc = curl_url_get(u, CURLUPART_URL, &url, 0);
     b8 ok = rc == CURLUE_OK && url && strlen(url) < AGENT_WEB_URL_BYTES
-         && http_url_ok(url);
+            && http_url_ok(url);
     if (ok) memcpy(out, url, strlen(url) + 1);
     curl_free(url);
     curl_url_cleanup(u);
@@ -457,14 +469,15 @@ static void extract_leave(AgentHtmlNode *node, void *ud) {
     }
 }
 
-static Str html_extract(AgentHtmlDoc *doc, const char *effective, Arena *scratch,
-                        Str *title, char base[AGENT_WEB_URL_BYTES],
-                        b8 *too_large) {
+static Str html_extract(AgentHtmlDoc *doc, const char *effective,
+                        Arena *scratch, Str *title,
+                        char base[AGENT_WEB_URL_BYTES], b8 *too_large) {
     AgentHtmlNode *root = agent_html_root(doc);
     AgentHtmlNode *title_node = find_tag(root, "title", false);
     b8 title_large = false;
     *title = title_node ? visible_text(title_node, scratch, WEB_TITLE_BYTES,
-                                      &title_large) : (Str){0};
+                                       &title_large)
+                        : (Str){0};
     (void)title_large;
 
     memcpy(base, effective, strlen(effective) + 1);
@@ -502,17 +515,19 @@ static Str plain_extract(Str source, Arena *scratch, b8 *too_large) {
         normal_words(&n, (Str){source.p + start, off - start}, true);
         normal_break(&n, 1);
         if (off < source.n && source.p[off] == '\r' && off + 1 < source.n
-            && source.p[off + 1] == '\n') off += 2;
-        else if (off < source.n) off++;
+            && source.p[off + 1] == '\n')
+            off += 2;
+        else if (off < source.n)
+            off++;
     }
     Str out = normal_finish(&n);
     *too_large = n.too_large || !buf_ok(&b);
     return out;
 }
 
-static b8 page_output(Buf *out, Str title, const char *effective, const char *input,
-                      Str body, size_t first, size_t limit, Arena *scratch,
-                      char *err, size_t err_cap) {
+static b8 page_output(Buf *out, Str title, const char *effective,
+                      const char *input, Str body, size_t first, size_t limit,
+                      Arena *scratch, char *err, size_t err_cap) {
     /* The extraction is done either way, so the lines this page does not
      * carry go to disk rather than back over the network. */
     static Spill spill;
@@ -536,8 +551,9 @@ static b8 page_output(Buf *out, Str title, const char *effective, const char *in
     size_t total = str_lines(body);
     if (first > total && !(first == 1 && total == 0)) {
         spill_finish(&spill, out, false);
-        snprintf(err, err_cap, "page has %zu body lines; offset %zu is past its end",
-                 total, first);
+        snprintf(err, err_cap,
+                 "page has %zu body lines; offset %zu is past its end", total,
+                 first);
         return false;
     }
     size_t off = 0;
@@ -546,7 +562,8 @@ static b8 page_output(Buf *out, Str title, const char *effective, const char *in
     size_t shown = 0;
     size_t reserve = strlen(input) * 2 + 192;
     if (spill.fd >= 0) reserve += AGENT_SPILL_NOTE_BYTES;
-    if (reserve > AGENT_TOOL_RESULT_BYTES / 2) reserve = AGENT_TOOL_RESULT_BYTES / 2;
+    if (reserve > AGENT_TOOL_RESULT_BYTES / 2)
+        reserve = AGENT_TOOL_RESULT_BYTES / 2;
     while (shown < limit && str_line(body, &off, &line)) {
         if (line.n + 1 > AGENT_TOOL_RESULT_BYTES - out->n
             || out->n + line.n + 1 + reserve > AGENT_TOOL_RESULT_BYTES)
@@ -560,12 +577,13 @@ static b8 page_output(Buf *out, Str title, const char *effective, const char *in
         buf_init(&note, scratch, 256);
         buf_puts(&note, STR("[continue with page_fetch {\"url\":"));
         buf_json_str(&note, str_c(input));
-        buf_putf(&note, ",\"offset\":%zu,\"limit\":%zu}]",
-                 first + shown, limit);
+        buf_putf(&note, ",\"offset\":%zu,\"limit\":%zu}]", first + shown,
+                 limit);
         Str n = buf_finish(&note);
         if (!buf_ok(&note) || n.n + out->n > AGENT_TOOL_RESULT_BYTES) {
             spill_finish(&spill, out, false);
-            snprintf(err, err_cap, "continuation call exceeds the result limit");
+            snprintf(err, err_cap,
+                     "continuation call exceeds the result limit");
             return false;
         }
         buf_puts(out, n);
@@ -595,13 +613,14 @@ static b8 type_suffix(const char *type, const char *suffix) {
     return tn >= sn && !memcmp(type + tn - sn, suffix, sn);
 }
 
-b8 page_fetch_run(Str args, Arena *scratch, Buf *out,
-                  char *err, size_t err_cap) {
+b8 page_fetch_run(Str args, Arena *scratch, Buf *out, char *err,
+                  size_t err_cap) {
     JVal *j = web_args(args, scratch, err, err_cap);
     if (!j) return false;
     char url[AGENT_WEB_URL_BYTES];
-    if (!web_arg_cstr(json_str(j, STR("url")), url, sizeof url, "URL",
-                      err, err_cap)) return false;
+    if (!web_arg_cstr(json_str(j, STR("url")), url, sizeof url, "URL", err,
+                      err_cap))
+        return false;
     if (!http_url_ok(url)) {
         snprintf(err, err_cap,
                  "URL must be a well-formed HTTP(S) URL without credentials");
@@ -610,17 +629,19 @@ b8 page_fetch_run(Str args, Arena *scratch, Buf *out,
     size_t first, limit;
     if (!web_arg_count(j, STR("offset"), 1, 1u << 30, &first, err, err_cap)
         || !web_arg_count(j, STR("limit"), AGENT_READ_LINES, AGENT_READ_LINES,
-                          &limit, err, err_cap)) return false;
+                          &limit, err, err_cap))
+        return false;
 
     Buf source;
     buf_init(&source, scratch, 65536);
     HttpUrlReq req;
     i32 rc = web_request(url, "page_fetch", &source, NULL, &req);
     if (rc != 0) {
-        if (rc < 0) snprintf(err, err_cap, "HTTP status %lld",
-                             (long long)-rc);
-        else snprintf(err, err_cap, "%s", req.failure[0] ? req.failure
-                                                           : "web request failed");
+        if (rc < 0)
+            snprintf(err, err_cap, "HTTP status %lld", (long long)-rc);
+        else
+            snprintf(err, err_cap, "%s",
+                     req.failure[0] ? req.failure : "web request failed");
         return false;
     }
     Str raw = buf_finish(&source);
@@ -717,7 +738,8 @@ static Str result_url(Str href, Arena *scratch, b8 *ok) {
         size_t off = (size_t)(q - href.p) + 1;
         while (off < href.n) {
             size_t start = off;
-            while (off < href.n && href.p[off] != '=' && href.p[off] != '&') off++;
+            while (off < href.n && href.p[off] != '=' && href.p[off] != '&')
+                off++;
             Str key = {href.p + start, off - start};
             if (off < href.n && href.p[off] == '=') {
                 size_t val = ++off;
@@ -726,7 +748,8 @@ static Str result_url(Str href, Arena *scratch, b8 *ok) {
                 if (str_eq(key, STR("uddg"))) {
                     Str decoded = percent_decode(raw, scratch, ok);
                     if (*ok && decoded.n < AGENT_WEB_URL_BYTES
-                        && http_url_ok(decoded.p)) return decoded;
+                        && http_url_ok(decoded.p))
+                        return decoded;
                     *ok = false;
                     return (Str){0};
                 }
@@ -745,8 +768,9 @@ static b8 contains_ci(Str haystack, const char *needle) {
     if (!nn || nn > haystack.n) return false;
     for (size_t i = 0; i + nn <= haystack.n; i++) {
         size_t k = 0;
-        while (k < nn && tolower((u8)haystack.p[i + k])
-                          == tolower((u8)needle[k])) k++;
+        while (k < nn
+               && tolower((u8)haystack.p[i + k]) == tolower((u8)needle[k]))
+            k++;
         if (k == nn) return true;
     }
     return false;
@@ -761,11 +785,11 @@ typedef struct {
 /* One engine's markup, as class tokens rather than selectors: a token match
  * survives the hashed class names single-page engines add to every element. */
 typedef struct {
-    const char *result;     
-    const char *link[2];    
-    const char *title;      
+    const char *result;
+    const char *link[2];
+    const char *title;
     const char *snippet[2];
-    b8 link_in_heading;     
+    b8 link_in_heading;
 } SearchLayout;
 
 typedef struct {
@@ -775,9 +799,9 @@ typedef struct {
     size_t n;
     size_t layout_links;
     size_t current;
-    size_t heading;         
-    b8 in_result;           
-    b8 linked;              
+    size_t heading;
+    b8 in_result;
+    b8 linked;
     b8 oom;
     b8 challenge;
     b8 explicit_empty;
@@ -822,17 +846,18 @@ static b8 search_enter(AgentHtmlNode *node, void *ud) {
         size_t hn = 0;
         const char *href = agent_html_attr(node, "href", 4, &hn);
         b8 ok = false;
-        Str url = href ? result_url((Str){href, hn}, s->scratch, &ok) : (Str){0};
-        
-        Str title = lay->title ? (Str){0}
-                               : search_text(s, node, WEB_TITLE_BYTES);
+        Str url =
+            href ? result_url((Str){href, hn}, s->scratch, &ok) : (Str){0};
+
+        Str title =
+            lay->title ? (Str){0} : search_text(s, node, WEB_TITLE_BYTES);
         if (!ok || (!lay->title && !title.n) || s->n == 10) return true;
         for (size_t i = 0; i < s->n; i++)
             if (str_eq(s->result[i].url, url)) return true;
         s->result[s->n] = (SearchResult){title, url, {0}};
         s->current = s->n++;
-    } else if (lay->title && class_has(node, lay->title)
-               && s->current < s->n && !s->result[s->current].title.n) {
+    } else if (lay->title && class_has(node, lay->title) && s->current < s->n
+               && !s->result[s->current].title.n) {
         s->result[s->current].title = search_text(s, node, WEB_TITLE_BYTES);
     } else if (class_any(node, lay->snippet) && s->current < s->n
                && !s->result[s->current].snippet.n) {
@@ -873,12 +898,17 @@ static b8 encode_query(Str query, Buf *url) {
 
 
 typedef enum {
-    ENGINE_DDG_LITE, ENGINE_DDG_HTML, ENGINE_BRAVE,
-    ENGINE_BRAVE_API, ENGINE_GOOGLE, ENGINE_SEARXNG, ENGINE_N
+    ENGINE_DDG_LITE,
+    ENGINE_DDG_HTML,
+    ENGINE_BRAVE,
+    ENGINE_BRAVE_API,
+    ENGINE_GOOGLE,
+    ENGINE_SEARXNG,
+    ENGINE_N
 } SearchEngine;
 
 typedef struct {
-    const char *object;    
+    const char *object;
     const char *array;
     const char *title, *url, *snippet;
 } SearchShape;
@@ -886,10 +916,10 @@ typedef struct {
 enum { NEED_KEY = 1u, NEED_ENGINE_ID = 2u, NEED_ENDPOINT = 4u };
 
 typedef struct {
-    const char *label;     
-    const char *base;      
-    const char *path;      
-    const char *header;    
+    const char *label;
+    const char *base;
+    const char *path;
+    const char *header;
     u8 needs;
     b8 json;
     SearchLayout layout;
@@ -897,50 +927,91 @@ typedef struct {
 } SearchEngineSpec;
 
 static const SearchEngineSpec k_engine[ENGINE_N] = {
-    [ENGINE_DDG_LITE] = {
-        "lite", "https://lite.duckduckgo.com", "/lite/?q=", NULL, 0, false,
-        { NULL, {"result-link", "result__a"}, NULL,
-          {"result-snippet", "result__snippet"}, false }, {0} },
-    [ENGINE_DDG_HTML] = {
-        "html", "https://html.duckduckgo.com", "/html/?q=", NULL, 0, false,
-        { NULL, {"result-link", "result__a"}, NULL,
-          {"result-snippet", "result__snippet"}, false }, {0} },
-    [ENGINE_BRAVE] = {
-        "brave", "https://search.brave.com", "/search?q=", NULL, 0, false,
-        { "snippet", {NULL, NULL}, "search-snippet-title",
-          {"generic-snippet", "snippet-description"}, false }, {0} },
-    [ENGINE_BRAVE_API] = {
-        "brave_api", "https://api.search.brave.com",
-        "/res/v1/web/search?count=10&q=", "X-Subscription-Token: %k",
-        NEED_KEY, true, {0},
-        { "web", "results", "title", "url", "description" } },
-    [ENGINE_GOOGLE] = {
-        "google", "https://www.googleapis.com",
-        "/customsearch/v1?key=%k&cx=%c&num=10&q=", NULL,
-        NEED_KEY | NEED_ENGINE_ID, true, {0},
-        { NULL, "items", "title", "link", "snippet" } },
-    [ENGINE_SEARXNG] = {
-        "searxng", "", "/search?format=json&language=en&q=", NULL,
-        NEED_ENDPOINT, true, {0},
-        { NULL, "results", "title", "url", "content" } },
+    [ENGINE_DDG_LITE] = {"lite",
+                         "https://lite.duckduckgo.com",
+                         "/lite/?q=",
+                         NULL,
+                         0,
+                         false,
+                         {NULL,
+                          {"result-link", "result__a"},
+                          NULL,
+                          {"result-snippet", "result__snippet"},
+                          false},
+                         {0}},
+    [ENGINE_DDG_HTML] = {"html",
+                         "https://html.duckduckgo.com",
+                         "/html/?q=",
+                         NULL,
+                         0,
+                         false,
+                         {NULL,
+                          {"result-link", "result__a"},
+                          NULL,
+                          {"result-snippet", "result__snippet"},
+                          false},
+                         {0}},
+    [ENGINE_BRAVE] = {"brave",
+                      "https://search.brave.com",
+                      "/search?q=",
+                      NULL,
+                      0,
+                      false,
+                      {"snippet",
+                       {NULL, NULL},
+                       "search-snippet-title",
+                       {"generic-snippet", "snippet-description"},
+                       false},
+                      {0}},
+    [ENGINE_BRAVE_API] = {"brave_api",
+                          "https://api.search.brave.com",
+                          "/res/v1/web/search?count=10&q=",
+                          "X-Subscription-Token: %k",
+                          NEED_KEY,
+                          true,
+                          {0},
+                          {"web", "results", "title", "url", "description"}},
+    [ENGINE_GOOGLE] = {"google",
+                       "https://www.googleapis.com",
+                       "/customsearch/v1?key=%k&cx=%c&num=10&q=",
+                       NULL,
+                       NEED_KEY | NEED_ENGINE_ID,
+                       true,
+                       {0},
+                       {NULL, "items", "title", "link", "snippet"}},
+    [ENGINE_SEARXNG] = {"searxng",
+                        "",
+                        "/search?format=json&language=en&q=",
+                        NULL,
+                        NEED_ENDPOINT,
+                        true,
+                        {0},
+                        {NULL, "results", "title", "url", "content"}},
 };
 
 static struct {
     SearchEngine chain[ENGINE_N];
     size_t chain_n;
-    Str endpoint, api_key, engine_id;   // in the persist arena, or empty
-    f64 started[ENGINE_N];              // last request, for the rate gate
-    f64 paused[ENGINE_N];               // backoff deadline
-} g_search = { {ENGINE_DDG_LITE, ENGINE_DDG_HTML, ENGINE_BRAVE, 0, 0, 0},
-               3, {0}, {0}, {0}, {0}, {0} };
+    Str endpoint, api_key, engine_id; // in the persist arena, or empty
+    f64 started[ENGINE_N];            // last request, for the rate gate
+    f64 paused[ENGINE_N];             // backoff deadline
+} g_search = {{ENGINE_DDG_LITE, ENGINE_DDG_HTML, ENGINE_BRAVE, 0, 0, 0},
+              3,
+              {0},
+              {0},
+              {0},
+              {0},
+              {0}};
 
-static b8 search_admit(SearchEngine e, const char *label,
-                       char *err, size_t err_cap) {
+static b8 search_admit(SearchEngine e, const char *label, char *err,
+                       size_t err_cap) {
     f64 now = agent_now_seconds();
     if (g_search.paused[e] > now) {
         i64 seconds = (i64)(g_search.paused[e] - now) + 1;
-        snprintf(err, err_cap, "the %s search endpoint is paused for %llds "
-                 "after a challenge or refusal", label, (long long)seconds);
+        snprintf(err, err_cap,
+                 "the %s search endpoint is paused for %llds "
+                 "after a challenge or refusal",
+                 label, (long long)seconds);
         return false;
     }
     if (g_search.started[e] > 0) {
@@ -997,12 +1068,14 @@ static Str search_setting(Arena *persist, Str value) {
 }
 
 void web_search_init(const Conf *c, Arena *persist) {
-    g_search.chain_n = search_chain_for(conf_str(c, CONF_SEARCH_BACKEND),
-                                        g_search.chain);
-    g_search.endpoint = search_setting(persist, conf_str(c, CONF_SEARCH_ENDPOINT));
-    g_search.api_key = search_setting(persist, conf_str(c, CONF_SEARCH_API_KEY));
-    g_search.engine_id = search_setting(persist,
-                                        conf_str(c, CONF_SEARCH_ENGINE_ID));
+    g_search.chain_n =
+        search_chain_for(conf_str(c, CONF_SEARCH_BACKEND), g_search.chain);
+    g_search.endpoint =
+        search_setting(persist, conf_str(c, CONF_SEARCH_ENDPOINT));
+    g_search.api_key =
+        search_setting(persist, conf_str(c, CONF_SEARCH_API_KEY));
+    g_search.engine_id =
+        search_setting(persist, conf_str(c, CONF_SEARCH_ENGINE_ID));
     if (g_search.chain_n == 1) {
         const SearchEngineSpec *spec = &k_engine[g_search.chain[0]];
         const char *missing = NULL;
@@ -1013,14 +1086,15 @@ void web_search_init(const Conf *c, Arena *persist) {
         else if ((spec->needs & NEED_ENDPOINT) && !g_search.endpoint.n)
             missing = "search_endpoint";
         if (missing) {
-            agent_log(AGENT_LOG_WARN, "ignoring search_backend %s: it needs %s; "
-                      "searching the keyless engines instead", spec->label,
-                      missing);
+            agent_log(AGENT_LOG_WARN,
+                      "ignoring search_backend %s: it needs %s; "
+                      "searching the keyless engines instead",
+                      spec->label, missing);
             g_search.chain_n = search_chain_for(STR("auto"), g_search.chain);
         }
     } else if (g_search.endpoint.n) {
         agent_log(AGENT_LOG_WARN, "ignoring search_endpoint: it belongs to one "
-                  "engine, so search_backend must name one");
+                                  "engine, so search_backend must name one");
         g_search.endpoint = (Str){0};
     }
 #ifdef AGENT_TESTING
@@ -1034,8 +1108,8 @@ void web_search_init(const Conf *c, Arena *persist) {
 
 
 static b8 search_url(const SearchEngineSpec *spec, size_t slot,
-                     const char *query, Arena *scratch, Str *out,
-                     char *err, size_t err_cap) {
+                     const char *query, Arena *scratch, Str *out, char *err,
+                     size_t err_cap) {
     Buf url;
     buf_init(&url, scratch, 2048);
     const char *prefix = NULL;
@@ -1082,23 +1156,24 @@ static const char *search_header(const SearchEngineSpec *spec, Arena *scratch) {
         if (*p == '%' && p[1] == 'k') {
             buf_puts(&h, g_search.api_key);
             p++;
-        } else buf_putc(&h, *p);
+        } else
+            buf_putc(&h, *p);
     }
     Str s = buf_finish(&h);
     return buf_ok(&h) ? s.p : NULL;
 }
 
 typedef enum {
-    SEARCH_OK,      
-    SEARCH_BLOCKED, 
+    SEARCH_OK,
+    SEARCH_BLOCKED,
     SEARCH_UNKNOWN, // transport failure or unfamiliar layout
     SEARCH_ERROR,   // local failure; give up without trying another backend
 } SearchOutcome;
 
 
 static SearchOutcome search_json(Str raw, const SearchEngineSpec *spec,
-                                 Arena *scratch, SearchCtx *found,
-                                 char *err, size_t err_cap) {
+                                 Arena *scratch, SearchCtx *found, char *err,
+                                 size_t err_cap) {
     JVal *root = json_parse(scratch, raw);
     if (!root) {
         snprintf(err, err_cap, "the %s search response was not JSON",
@@ -1107,10 +1182,13 @@ static SearchOutcome search_json(Str raw, const SearchEngineSpec *spec,
     }
     const JVal *holder = root;
     if (spec->shape.object) holder = json_get(root, str_c(spec->shape.object));
-    const JVal *arr = holder ? json_get(holder, str_c(spec->shape.array)) : NULL;
+    const JVal *arr =
+        holder ? json_get(holder, str_c(spec->shape.array)) : NULL;
     if (!arr || arr->type != J_ARR) {
-        snprintf(err, err_cap, "the %s search response carried no results "
-                 "array; the service may have changed", spec->label);
+        snprintf(err, err_cap,
+                 "the %s search response carried no results "
+                 "array; the service may have changed",
+                 spec->label);
         return SEARCH_UNKNOWN;
     }
     for (size_t i = 0; i < arr->u.arr.n && found->n < 10; i++) {
@@ -1127,7 +1205,7 @@ static SearchOutcome search_json(Str raw, const SearchEngineSpec *spec,
             if (str_eq(found->result[k].url, url)) seen = true;
         if (seen) continue;
         found->result[found->n++] = (SearchResult){
-            title, url, json_str(item, str_c(spec->shape.snippet)) };
+            title, url, json_str(item, str_c(spec->shape.snippet))};
     }
     found->explicit_empty = arr->u.arr.n == 0;
     return SEARCH_OK;
@@ -1135,8 +1213,8 @@ static SearchOutcome search_json(Str raw, const SearchEngineSpec *spec,
 
 static SearchOutcome search_backend_run(SearchEngine engine, size_t slot,
                                         const char *query, Arena *scratch,
-                                        SearchCtx *found,
-                                        char *err, size_t err_cap) {
+                                        SearchCtx *found, char *err,
+                                        size_t err_cap) {
     const SearchEngineSpec *spec = &k_engine[engine];
     Str request_url;
     if (!search_url(spec, slot, query, scratch, &request_url, err, err_cap))
@@ -1162,7 +1240,8 @@ static SearchOutcome search_backend_run(SearchEngine engine, size_t slot,
          * engine's URL carries the key, so only a keyless one may say it. */
         else if ((spec->needs & NEED_KEY) || !req.failure[0])
             snprintf(err, err_cap, "the %s search request failed", spec->label);
-        else snprintf(err, err_cap, "%s", req.failure);
+        else
+            snprintf(err, err_cap, "%s", req.failure);
         return SEARCH_UNKNOWN;
     }
     Str raw = buf_finish(&source);
@@ -1170,8 +1249,8 @@ static SearchOutcome search_backend_run(SearchEngine engine, size_t slot,
         snprintf(err, err_cap, "search response does not fit in memory");
         return SEARCH_ERROR;
     }
-    *found = (SearchCtx){.scratch = scratch, .layout = &spec->layout,
-                         .current = SIZE_MAX};
+    *found = (SearchCtx){
+        .scratch = scratch, .layout = &spec->layout, .current = SIZE_MAX};
     if (spec->json) return search_json(raw, spec, scratch, found, err, err_cap);
     AgentHtmlDoc *doc = agent_html_parse(raw.p, raw.n);
     if (!doc) {
@@ -1182,7 +1261,8 @@ static SearchOutcome search_backend_run(SearchEngine engine, size_t slot,
     agent_html_destroy(doc);
     search_compact(found);
     if (found->challenge || contains_ci(raw, "verify you are human")) {
-        snprintf(err, err_cap, "the %s search endpoint returned a challenge page",
+        snprintf(err, err_cap,
+                 "the %s search endpoint returned a challenge page",
                  spec->label);
         search_pause(engine);
         return SEARCH_BLOCKED;
@@ -1194,21 +1274,24 @@ static SearchOutcome search_backend_run(SearchEngine engine, size_t slot,
     if (!found->layout_links && !found->explicit_empty) {
         snprintf(err, err_cap,
                  "the %s search result layout was not recognized; the service "
-                 "may have changed", spec->label);
+                 "may have changed",
+                 spec->label);
         return SEARCH_UNKNOWN;
     }
     return SEARCH_OK;
 }
 
-b8 internet_search_run(Str args, Arena *scratch, Buf *out,
-                       char *err, size_t err_cap) {
+b8 internet_search_run(Str args, Arena *scratch, Buf *out, char *err,
+                       size_t err_cap) {
     JVal *j = web_args(args, scratch, err, err_cap);
     if (!j) return false;
     char query[AGENT_WEB_QUERY_BYTES];
     if (!web_arg_cstr(json_str(j, STR("query")), query, sizeof query, "query",
-                      err, err_cap)) return false;
+                      err, err_cap))
+        return false;
     size_t limit;
-    if (!web_arg_count(j, STR("limit"), 8, 10, &limit, err, err_cap)) return false;
+    if (!web_arg_count(j, STR("limit"), 8, 10, &limit, err, err_cap))
+        return false;
 
     SearchCtx found = {.scratch = scratch, .current = SIZE_MAX};
     char attempts[512] = {0};
@@ -1217,9 +1300,8 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out,
     b8 answered = false;
     for (size_t i = 0; i < g_search.chain_n && !answered; i++) {
         SearchCtx attempt = {.scratch = scratch, .current = SIZE_MAX};
-        SearchOutcome outcome = search_backend_run(g_search.chain[i], i, query,
-                                                   scratch, &attempt,
-                                                   err, err_cap);
+        SearchOutcome outcome = search_backend_run(
+            g_search.chain[i], i, query, scratch, &attempt, err, err_cap);
         if (outcome == SEARCH_ERROR) return false;
         if (outcome != SEARCH_OK) {
             if (outcome == SEARCH_BLOCKED) blocked = true;
@@ -1234,8 +1316,10 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out,
             search_attempts_add(attempts, sizeof attempts, &attempts_n,
                                 "no search endpoint is configured");
         if (blocked) {
-            snprintf(err, err_cap, "%s; each refusing endpoint is paused for "
-                     "one hour; do not retry", attempts);
+            snprintf(err, err_cap,
+                     "%s; each refusing endpoint is paused for "
+                     "one hour; do not retry",
+                     attempts);
         } else {
             snprintf(err, err_cap, "%s", attempts);
         }
@@ -1244,7 +1328,7 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out,
 
     if (found.n > limit) found.n = limit;
     Str records[10];
-    
+
     static Spill spill;
     spill_open(&spill, "internet_search", "txt", str_c(query));
     size_t emitted = 0, bytes = 0;

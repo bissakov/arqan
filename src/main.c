@@ -1,4 +1,4 @@
-#define _XOPEN_SOURCE 700
+#define _XOPEN_SOURCE   700
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE 1
 
@@ -48,7 +48,10 @@
 #include <unistd.h>
 
 static volatile sig_atomic_t g_got_sigint = 0;
-static void on_sigint(i32 sig) { (void)sig; g_got_sigint = 1; }
+static void on_sigint(i32 sig) {
+    (void)sig;
+    g_got_sigint = 1;
+}
 
 static alignas(64) u8 g_persist[AGENT_PERSIST_BYTES];
 static alignas(64) u8 g_scratch[AGENT_ARENA_BYTES];
@@ -65,33 +68,58 @@ static struct {
 
 static size_t commands_init(b8 images) {
     size_t n = 0;
-    g_commands.v[n++] = (TuiCmd){ STR("/clear"), STR("Start a fresh conversation") };
-    g_commands.v[n++] = (TuiCmd){ STR("/resume"), STR("Resume a saved session from this directory, or delete one") };
-    g_commands.v[n++] = (TuiCmd){ STR("/fork"), STR("Continue in a copy, leaving this session as it is") };
-    g_commands.v[n++] = (TuiCmd){ STR("/compact"), STR("Summarize this session and continue in a new one") };
-    g_commands.v[n++] = (TuiCmd){ STR("/model"), STR("Pick the model, from any provider") };
-    g_commands.v[n++] = (TuiCmd){ STR("/provider"), STR("Add, edit or remove a provider") };
-    g_commands.v[n++] = (TuiCmd){ STR("/mode"), STR("Switch between Build and Plan mode (Shift+Tab)") };
-    g_commands.v[n++] = (TuiCmd){ STR("/rewind"), STR("Go back to an earlier message and edit it") };
-    g_commands.v[n++] = (TuiCmd){ STR("/title"), STR("Name this session, or `/title auto` to let the small model name it") };
-    g_commands.v[n++] = (TuiCmd){ STR("/copy"), STR("Copy the last response to the clipboard") };
+    g_commands.v[n++] =
+        (TuiCmd){STR("/clear"), STR("Start a fresh conversation")};
+    g_commands.v[n++] = (TuiCmd){
+        STR("/resume"),
+        STR("Resume a saved session from this directory, or delete one")};
+    g_commands.v[n++] = (TuiCmd){
+        STR("/fork"), STR("Continue in a copy, leaving this session as it is")};
+    g_commands.v[n++] =
+        (TuiCmd){STR("/compact"),
+                 STR("Summarize this session and continue in a new one")};
+    g_commands.v[n++] =
+        (TuiCmd){STR("/model"), STR("Pick the model, from any provider")};
+    g_commands.v[n++] =
+        (TuiCmd){STR("/provider"), STR("Add, edit or remove a provider")};
+    g_commands.v[n++] = (TuiCmd){
+        STR("/mode"), STR("Switch between Build and Plan mode (Shift+Tab)")};
+    g_commands.v[n++] = (TuiCmd){
+        STR("/rewind"), STR("Go back to an earlier message and edit it")};
+    g_commands.v[n++] = (TuiCmd){
+        STR("/title"),
+        STR("Name this session, or `/title auto` to let the small model name it")};
+    g_commands.v[n++] =
+        (TuiCmd){STR("/copy"), STR("Copy the last response to the clipboard")};
     if (images)
-        g_commands.v[n++] = (TuiCmd){ STR("/attach"), STR("Attach an image to the next message, by path or from the clipboard (Ctrl-V)") };
-    g_commands.v[n++] = (TuiCmd){ STR("/find"), STR("Search the transcript (Ctrl-R)") };
-    g_commands.v[n++] = (TuiCmd){ STR("/keys"), STR("Show the keyboard shortcuts") };
-    g_commands.v[n++] = (TuiCmd){ STR("/settings"), STR("Change how " AGENT_NAME " behaves") };
-    g_commands.v[n++] = (TuiCmd){ STR("/statusline"), STR("Choose what the status line shows") };
-    g_commands.v[n++] = (TuiCmd){ STR("/about"), STR("About " AGENT_NAME " and its contributors") };
-    g_commands.v[n++] = (TuiCmd){ STR("/help"), STR("Start a conversation about using " AGENT_NAME) };
-    g_commands.v[n++] = (TuiCmd){ STR("/restart"), STR("Restart " AGENT_NAME ", resuming this session only if the setting says so") };
-    g_commands.v[n++] = (TuiCmd){ STR("/exit"), STR("Quit " AGENT_NAME) };
-    g_commands.v[n++] = (TuiCmd){ STR("/export"), STR("Export this session as Markdown") };
+        g_commands.v[n++] = (TuiCmd){
+            STR("/attach"),
+            STR("Attach an image to the next message, by path or from the clipboard (Ctrl-V)")};
+    g_commands.v[n++] =
+        (TuiCmd){STR("/find"), STR("Search the transcript (Ctrl-R)")};
+    g_commands.v[n++] =
+        (TuiCmd){STR("/keys"), STR("Show the keyboard shortcuts")};
+    g_commands.v[n++] =
+        (TuiCmd){STR("/settings"), STR("Change how " AGENT_NAME " behaves")};
+    g_commands.v[n++] =
+        (TuiCmd){STR("/statusline"), STR("Choose what the status line shows")};
+    g_commands.v[n++] = (TuiCmd){
+        STR("/about"), STR("About " AGENT_NAME " and its contributors")};
+    g_commands.v[n++] = (TuiCmd){
+        STR("/help"), STR("Start a conversation about using " AGENT_NAME)};
+    g_commands.v[n++] =
+        (TuiCmd){STR("/restart"),
+                 STR("Restart " AGENT_NAME
+                     ", resuming this session only if the setting says so")};
+    g_commands.v[n++] = (TuiCmd){STR("/exit"), STR("Quit " AGENT_NAME)};
+    g_commands.v[n++] =
+        (TuiCmd){STR("/export"), STR("Export this session as Markdown")};
     g_commands.n = n;
     return n;
 }
 
 
-#define ALIAS(a, b) { { (a), sizeof(a) - 1 }, { (b), sizeof(b) - 1 } }
+#define ALIAS(a, b) {{(a), sizeof(a) - 1}, {(b), sizeof(b) - 1}}
 static const TuiAlias k_aliases[] = {
     ALIAS("/config", "/settings"),
     ALIAS("/new", "/clear"),
@@ -101,7 +129,7 @@ static const TuiAlias k_aliases[] = {
 #define ALIAS_N (sizeof k_aliases / sizeof k_aliases[0])
 
 #define INFO_ROW(name, desc) \
-    { { (name), sizeof(name) - 1 }, { (desc), sizeof(desc) - 1 } }
+    {{(name), sizeof(name) - 1}, {(desc), sizeof(desc) - 1}}
 static const TuiCmd k_about[] = {
     INFO_ROW(AGENT_NAME " " AGENT_VERSION, "A tiny C17 terminal coding agent"),
     INFO_ROW("Created by", "Alikhan Bissakov"),
@@ -121,7 +149,7 @@ static size_t keys_rows(void) {
 static size_t resolve_alias(char *line, size_t ln, size_t cap) {
     for (size_t i = 0; i < ALIAS_N; i++) {
         Str name = k_aliases[i].name;
-        if (!str_eq((Str){ line, ln }, k_aliases[i].alias)) continue;
+        if (!str_eq((Str){line, ln}, k_aliases[i].alias)) continue;
         if (name.n + 1 > cap) break;
         memcpy(line, name.p, name.n);
         line[name.n] = '\0';
@@ -181,7 +209,11 @@ static void on_text(Str delta, void *ud) {
     md_write(delta);
 }
 static void on_tool_call(i32 idx, Str id, Str name, Str args_delta, void *ud) {
-    (void)ud; (void)idx; (void)id; (void)name; (void)args_delta;
+    (void)ud;
+    (void)idx;
+    (void)id;
+    (void)name;
+    (void)args_delta;
     say_busy("preparing tool call");
 }
 /* The gauge behind the status line's context field. It outlives a turn: the
@@ -200,7 +232,8 @@ static MediaSet g_media;
  * built from, the reply being appended only once the stream ends. */
 static void on_usage(const Conv *conv, size_t prompt_tokens,
                      size_t completion_tokens, void *ud) {
-    (void)completion_tokens; (void)ud;
+    (void)completion_tokens;
+    (void)ud;
     if (!conv) return;
     ctx_note_usage(&g_ctx, conv, prompt_tokens);
     ctx_sync(&g_ctx, conv);
@@ -212,28 +245,29 @@ static void on_retry(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
     (void)ud;
     if (g_turn.one_shot) {
         char row[256];
-        i32 n = snprintf(row, sizeof row,
-                         "%.*s; retrying (attempt %d of %d, %dms)",
-                         (i32)reason.n, reason.p, attempt + 1, attempts,
-                         delay_ms);
+        i32 n =
+            snprintf(row, sizeof row, "%.*s; retrying (attempt %d of %d, %dms)",
+                     (i32)reason.n, reason.p, attempt + 1, attempts, delay_ms);
         if (n > 0)
             one_shot_diag("retry", (Str){0},
-                          (Str){row, (size_t)n < sizeof row
-                                      ? (size_t)n : sizeof row - 1});
+                          (Str){row, (size_t)n < sizeof row ? (size_t)n
+                                                            : sizeof row - 1});
         return;
     }
     say_busy("retrying");
     tui_block();
     char wait[32];
-    if (delay_ms < 1000) snprintf(wait, sizeof wait, "%dms", delay_ms);
-    else snprintf(wait, sizeof wait, "%.1fs", (f64)delay_ms / 1000.0);
+    if (delay_ms < 1000)
+        snprintf(wait, sizeof wait, "%dms", delay_ms);
+    else
+        snprintf(wait, sizeof wait, "%.1fs", (f64)delay_ms / 1000.0);
     char row[256];
-    i32 n = snprintf(row, sizeof row,
-                     "[%.*s; retrying in %s (attempt %d of %d)]\n",
-                     (i32)reason.n, reason.p, wait, attempt + 1, attempts);
+    i32 n =
+        snprintf(row, sizeof row, "[%.*s; retrying in %s (attempt %d of %d)]\n",
+                 (i32)reason.n, reason.p, wait, attempt + 1, attempts);
     if (n > 0)
-        tui_write_error((Str){ row, (size_t)n < sizeof row ? (size_t)n
-                                                           : sizeof row - 1 });
+        tui_write_error(
+            (Str){row, (size_t)n < sizeof row ? (size_t)n : sizeof row - 1});
     g_turn.replying = false;
     g_turn.reasoning = false;
 }
@@ -243,37 +277,37 @@ static void on_idle(void *ud) {
 }
 
 typedef struct {
-    Config       *cfg;
+    Config *cfg;
     ToolRegistry *tools;
-    Conv         *conv;
-    Arena        *persist;
-    Arena        *scratch;
-    Session      *sess;
-    size_t        mark;   // persist offset a conversation starts at
+    Conv *conv;
+    Arena *persist;
+    Arena *scratch;
+    Session *sess;
+    size_t mark; // persist offset a conversation starts at
     /* An approved plan on its way to a session of its own. It lives in the
      * scratch arena until the turn carrying it re-anchors it in persist,
      * which is what lets the conversation it came from be dropped whole. */
-    Str           handoff;
+    Str handoff;
     /* Process-lifetime grants are neither conversation nor configuration:
      * rewinds and handoffs leave them alone, and no persistence path sees it. */
-    u8            permission_grants;
-    b8            permission_blocked_one_shot;
-    b8            echo;   
-    b8            show_instructions;
+    u8 permission_grants;
+    b8 permission_blocked_one_shot;
+    b8 echo;
+    b8 show_instructions;
     /* One attempt, or one word about it, per crossing: cleared when the next
      * turn starts, when a compaction succeeds, and as soon as the
      * conversation is back under the threshold. */
-    b8            compact_seen;
+    b8 compact_seen;
     /* The same, for the crossing that had nothing old enough to compact.
      * Kept apart because that one is not an attempt: a turn still running
      * grows a tail as it goes, and the next round may well have one. */
-    b8            compact_short;
+    b8 compact_short;
     /* Session writes retry silently after the first warning, then announce
      * the transition back to durable checkpoints once. */
-    b8            session_save_failed;
-    
-    size_t        pending[AGENT_MAX_MEDIA_PER_TURN];
-    size_t        pending_n;
+    b8 session_save_failed;
+
+    size_t pending[AGENT_MAX_MEDIA_PER_TURN];
+    size_t pending_n;
 } Agent;
 
 static b8 save_session(Agent *ag) {
@@ -281,7 +315,8 @@ static b8 save_session(Agent *ag) {
     if (session_save(ag->sess, ag->conv, err, sizeof err)) {
         if (ag->session_save_failed) {
             if (g_turn.one_shot)
-                one_shot_diag("warning", (Str){0}, STR("session saving recovered"));
+                one_shot_diag("warning", (Str){0},
+                              STR("session saving recovered"));
             else
                 tui_notice(STR("session saving recovered"));
         }
@@ -293,10 +328,12 @@ static b8 save_session(Agent *ag) {
         i32 n = snprintf(msg, sizeof msg,
                          "session was not saved: %s; it remains in memory",
                          err[0] ? err : "unknown persistence failure");
-        Str text = { msg, n > 0 && (size_t)n < sizeof msg
-                          ? (size_t)n : sizeof msg - 1 };
-        if (g_turn.one_shot) one_shot_diag("warning", (Str){0}, text);
-        else tui_notice(text);
+        Str text = {msg, n > 0 && (size_t)n < sizeof msg ? (size_t)n
+                                                         : sizeof msg - 1};
+        if (g_turn.one_shot)
+            one_shot_diag("warning", (Str){0}, text);
+        else
+            tui_notice(text);
     }
     ag->session_save_failed = true;
     return false;
@@ -334,7 +371,10 @@ static void telemetry_session(const Config *cfg, const ToolRegistry *tools) {
     tel_send(&e);
 }
 
-typedef struct { const Config *cfg; const ToolRegistry *tools; } TelHead;
+typedef struct {
+    const Config *cfg;
+    const ToolRegistry *tools;
+} TelHead;
 
 static void telemetry_header(void *ud) {
     const TelHead *h = (const TelHead *)ud;
@@ -342,7 +382,11 @@ static void telemetry_header(void *ud) {
 }
 
 typedef enum {
-    TURN_CONTINUE, TURN_DONE, TURN_HANDOFF, TURN_FULL, TURN_DENIED
+    TURN_CONTINUE,
+    TURN_DONE,
+    TURN_HANDOFF,
+    TURN_FULL,
+    TURN_DENIED
 } TurnAction;
 
 static void rerender_conv(const Conv *c, const Config *cfg,
@@ -361,12 +405,13 @@ static void agent_set_mode(Agent *ag, AgentMode mode) {
             one_shot_diag("warning", (Str){0},
                           STR("mode changed but was not remembered"));
         else
-            tui_notice(STR("setting changed but was not remembered: could not write state"));
+            tui_notice(STR(
+                "setting changed but was not remembered: could not write state"));
     }
     tools_set_mode(mode);
     if (ag->conv->n && ag->conv->role[0] == M_SYSTEM)
-        ag->conv->text[0] = mode == MODE_PLAN ? ag->cfg->plan_prompt
-                                              : ag->cfg->system_prompt;
+        ag->conv->text[0] =
+            mode == MODE_PLAN ? ag->cfg->plan_prompt : ag->cfg->system_prompt;
     tui_set_mode(mode);
     if (ag->show_instructions)
         rerender_conv(ag->conv, ag->cfg, true, ag->scratch, 0);
@@ -378,12 +423,14 @@ static void agent_set_permissions(Agent *ag, PermissionPolicy policy) {
     tel_bool(&e, "free", policy == PERMISSION_FREE);
     tel_send(&e);
     ag->cfg->permissions = policy;
-    if (!conf_remember(CONF_PERMISSIONS, permission_name(policy), ag->scratch)) {
+    if (!conf_remember(CONF_PERMISSIONS, permission_name(policy),
+                       ag->scratch)) {
         if (g_turn.one_shot)
             one_shot_diag("warning", (Str){0},
                           STR("permissions changed but were not remembered"));
         else
-            tui_notice(STR("setting changed but was not remembered: could not write state"));
+            tui_notice(STR(
+                "setting changed but was not remembered: could not write state"));
     }
     tui_set_permissions(policy);
 }
@@ -422,9 +469,11 @@ static b8 add_result(Agent *ag, size_t call, Str name, Str result, u32 ms) {
         return false;
     }
     conv->ms[slot] = ms;
-    if (g_turn.one_shot) one_shot_diag("tool result", name, result);
-    else render_tool_result(name, conv->text[call], result, ag->scratch,
-                            (u32)(slot + 1), conv->expanded[slot], ms);
+    if (g_turn.one_shot)
+        one_shot_diag("tool result", name, result);
+    else
+        render_tool_result(name, conv->text[call], result, ag->scratch,
+                           (u32)(slot + 1), conv->expanded[slot], ms);
     /* Saved per result, not per turn: a build that dies in its tenth round
      * must still be resumable up to its ninth. */
     save_session(ag);
@@ -468,17 +517,21 @@ static Str ask_user_answer(Agent *ag, Str args) {
         if (json_bool(o, STR("recommended"))) {
             start = i;
             recommended = true;
-            Buf b; buf_init(&b, ag->scratch, detail.n + 24);
+            Buf b;
+            buf_init(&b, ag->scratch, detail.n + 24);
             buf_puts(&b, STR("recommended"));
-            if (detail.n) { buf_puts(&b, STR(" \u00b7 ")); buf_puts(&b, detail); }
+            if (detail.n) {
+                buf_puts(&b, STR(" \u00b7 "));
+                buf_puts(&b, detail);
+            }
             if (buf_ok(&b)) detail = buf_finish(&b);
         }
-        items[i] = (TuiCmd){ label, detail };
+        items[i] = (TuiCmd){label, detail};
     }
-    items[n] = (TuiCmd){ STR("+ something else"),
-                         STR("Answer in your own words") };
+    items[n] =
+        (TuiCmd){STR("+ something else"), STR("Answer in your own words")};
 
-    
+
     i32 wait_ms = recommended ? ag->cfg->ask_timeout_ms : 0;
     if (wait_ms > 0) {
         char hint[96];
@@ -486,7 +539,7 @@ static Str ask_user_answer(Agent *ag, Str args) {
                           "no answer in %ds picks the recommended option",
                           wait_ms / 1000 > 0 ? wait_ms / 1000 : 1);
         if (hn > 0 && (size_t)hn < sizeof hint)
-            tui_notice((Str){ hint, (size_t)hn });
+            tui_notice((Str){hint, (size_t)hn});
     }
 
     size_t pick = 0;
@@ -497,8 +550,9 @@ static Str ask_user_answer(Agent *ag, Str args) {
         return (Str){0};
     if (pick < n) {
         if (!expired) return str_dup(ag->persist, items[pick].name);
-        
-        Buf b; buf_init(&b, ag->persist, items[pick].name.n + 160);
+
+        Buf b;
+        buf_init(&b, ag->persist, items[pick].name.n + 160);
         buf_puts(&b, items[pick].name);
         buf_puts(&b, STR("\n\n(Nobody answered in time, so the recommended "
                          "option was taken automatically. The user has not "
@@ -515,9 +569,8 @@ static Str ask_user_answer(Agent *ag, Str args) {
 }
 
 
-static ToolAuthorization tool_authorization(Agent *ag,
-                                             ToolApprovalClass approval,
-                                             size_t at) {
+static ToolAuthorization
+tool_authorization(Agent *ag, ToolApprovalClass approval, size_t at) {
     if (approval == TOOL_APPROVAL_NONE
         || ag->cfg->permissions == PERMISSION_FREE
         || (ag->permission_grants & ((u8)1u << (u8)approval)))
@@ -525,8 +578,9 @@ static ToolAuthorization tool_authorization(Agent *ag,
 
     Str cls = tools_approval_name(approval);
     if (g_turn.one_shot) {
-        one_shot_diag("approval required for assistant", cls,
-                      STR("guarded call denied in non-interactive Ask mode; configure permissions=free for trusted automation"));
+        one_shot_diag(
+            "approval required for assistant", cls,
+            STR("guarded call denied in non-interactive Ask mode; configure permissions=free for trusted automation"));
         ag->permission_blocked_one_shot = true;
         return TOOL_AUTH_DENIED;
     }
@@ -540,25 +594,26 @@ static ToolAuthorization tool_authorization(Agent *ag,
         remembered = STR("Run future shell commands until the process exits");
     } else if (approval == TOOL_APPROVAL_WRITE) {
         once = STR("Write this file");
-        remembered = STR("Allow future whole-file writes until the process exits");
+        remembered =
+            STR("Allow future whole-file writes until the process exits");
     } else if (approval == TOOL_APPROVAL_PATCH) {
         once = STR("Apply this patch");
         remembered = STR("Allow future patches until the process exits");
     }
     TuiCmd items[] = {
-        { STR("Yes"), once },
-        { STR("Yes and remember"), remembered },
-        { STR("No"), STR("Execute nothing and report the denial") },
+        {STR("Yes"), once},
+        {STR("Yes and remember"), remembered},
+        {STR("No"), STR("Execute nothing and report the denial")},
     };
     char title[32];
     i32 n = snprintf(title, sizeof title, "allow %.*s?", (i32)cls.n, cls.p);
     size_t pick = 2;
     tui_keep_visible(at);
-    if (n <= 0 || !tui_pick((Str){ title, (size_t)n }, items, 3,
-                            TUI_PICK_FIRST, 0, &pick))
+    if (n <= 0
+        || !tui_pick((Str){title, (size_t)n}, items, 3, TUI_PICK_FIRST, 0,
+                     &pick))
         pick = 2;
-    if (pick == 1)
-        ag->permission_grants |= (u8)((u8)1u << (u8)approval);
+    if (pick == 1) ag->permission_grants |= (u8)((u8)1u << (u8)approval);
     return pick < 2 ? TOOL_AUTH_GRANTED : TOOL_AUTH_DENIED;
 }
 
@@ -574,10 +629,10 @@ static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
     if (!g_turn.one_shot) render_plan(plan);
 
     const TuiCmd items[] = {
-        { STR("Yes"), STR("Switch to Build mode and carry the plan out") },
-        { STR("Yes, but from a new session"),
-          STR("Start over with the plan as the only context") },
-        { STR("No"), STR("Keep planning; say what to change") },
+        {STR("Yes"), STR("Switch to Build mode and carry the plan out")},
+        {STR("Yes, but from a new session"),
+         STR("Start over with the plan as the only context")},
+        {STR("No"), STR("Keep planning; say what to change")},
     };
     size_t pick = 2;
     tui_keep_visible(at);
@@ -616,25 +671,26 @@ static const char *tool_outcome(Str name, Str result, b8 ran) {
             if (!memcmp(result.p + at, marker.p, marker.n)) {
                 size_t digit = at + marker.n;
                 return digit < result.n && result.p[digit] == '0'
-                     ? "success" : "command_nonzero";
+                           ? "success"
+                           : "command_nonzero";
             }
             if (!at) break;
         }
     }
     if (!str_starts(result, STR("ERROR:"))) return "success";
-    if (tool_result_has(result, STR("must be a whole number")) ||
-        tool_result_has(result, STR("missing ")))
+    if (tool_result_has(result, STR("must be a whole number"))
+        || tool_result_has(result, STR("missing ")))
         return "invalid_arguments";
-    if (str_eq(name, STR("patch")) &&
-        (tool_result_has(result, STR("context not found")) ||
-         tool_result_has(result, STR("context matches"))))
+    if (str_eq(name, STR("patch"))
+        && (tool_result_has(result, STR("context not found"))
+            || tool_result_has(result, STR("context matches"))))
         return "placement_failure";
-    if (str_eq(name, STR("patch")) &&
-        (tool_result_has(result, STR("apply_patch")) ||
-         tool_result_has(result, STR("file header"))))
+    if (str_eq(name, STR("patch"))
+        && (tool_result_has(result, STR("apply_patch"))
+            || tool_result_has(result, STR("file header"))))
         return "unsupported_input";
-    if (tool_result_has(result, STR("does not exist")) ||
-        tool_result_has(result, STR("ERROR: open ")))
+    if (tool_result_has(result, STR("does not exist"))
+        || tool_result_has(result, STR("ERROR: open ")))
         return "missing_path";
     return ran ? "operation_failure" : "invocation_failure";
 }
@@ -645,39 +701,41 @@ static const char *tool_outcome(Str name, Str result, b8 ran) {
 static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
     Conv *conv = ag->conv;
     ag->permission_blocked_one_shot = false;
-    
+
     TurnAction pending = TURN_CONTINUE;
     for (size_t i = first; i < last; i++) {
         if (!conv_is_call(conv, i)) continue;
         Str name = conv->tool_name[i];
         Str args = conv->text[i];
         size_t tool = tools_find(ag->tools, name);
-        b8 agent_ui = str_eq(name, STR("submit_plan"))
-                   || str_eq(name, STR("ask_user"));
-        if (agent_ui && (tool == TOOL_NONE
-                         || !tools_available(ag->tools, tool,
-                                             ag->cfg->mode))) {
+        b8 agent_ui =
+            str_eq(name, STR("submit_plan")) || str_eq(name, STR("ask_user"));
+        if (agent_ui
+            && (tool == TOOL_NONE
+                || !tools_available(ag->tools, tool, ag->cfg->mode))) {
             char msg[128];
-            u8 mode = ag->cfg->mode == MODE_PLAN ? TOOL_IN_PLAN
-                                                 : TOOL_IN_BUILD;
-            i32 n = tool != TOOL_NONE && !(ag->tools->modes[tool] & mode)
-                  ? snprintf(msg, sizeof msg,
-                             "ERROR: %.*s is not available in %s mode",
-                             (i32)name.n, name.p,
-                             ag->cfg->mode == MODE_PLAN ? "plan" : "build")
-                  : snprintf(msg, sizeof msg,
-                             "ERROR: %.*s is not available in this "
-                             "non-interactive session", (i32)name.n, name.p);
-            size_t len = n > 0 && (size_t)n < sizeof msg
-                       ? (size_t)n : sizeof msg - 1;
+            u8 mode = ag->cfg->mode == MODE_PLAN ? TOOL_IN_PLAN : TOOL_IN_BUILD;
+            i32 n =
+                tool != TOOL_NONE && !(ag->tools->modes[tool] & mode)
+                    ? snprintf(msg, sizeof msg,
+                               "ERROR: %.*s is not available in %s mode",
+                               (i32)name.n, name.p,
+                               ag->cfg->mode == MODE_PLAN ? "plan" : "build")
+                    : snprintf(msg, sizeof msg,
+                               "ERROR: %.*s is not available in this "
+                               "non-interactive session",
+                               (i32)name.n, name.p);
+            size_t len =
+                n > 0 && (size_t)n < sizeof msg ? (size_t)n : sizeof msg - 1;
             Str result = keep_result(ag->persist, (Str){msg, len});
             if (!add_result(ag, i, name, result, 0)) return TURN_FULL;
             continue;
         }
-        
+
         if (str_eq(name, STR("submit_plan"))) {
             tui_activity_end();
-            notify_event(NOTIFY_INPUT_NEEDED, STR("a plan is ready to review"), 0);
+            notify_event(NOTIFY_INPUT_NEEDED, STR("a plan is ready to review"),
+                         0);
             Str result = {0};
             TurnAction act = submit_plan_answer(ag, args, &result);
             if (!add_result(ag, i, STR("plan"), result, 0)) return TURN_FULL;
@@ -686,7 +744,8 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         }
         if (str_eq(name, STR("ask_user"))) {
             tui_activity_end();
-            notify_event(NOTIFY_INPUT_NEEDED, STR("the assistant asked a question"), 0);
+            notify_event(NOTIFY_INPUT_NEEDED,
+                         STR("the assistant asked a question"), 0);
             Str answer = ask_user_answer(ag, args);
             b8 dismissed = !answer.n;
             if (dismissed)
@@ -697,7 +756,8 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
             if (dismissed) pending = TURN_DONE;
             continue;
         }
-        Buf out; buf_init(&out, ag->scratch, 4096);
+        Buf out;
+        buf_init(&out, ag->scratch, 4096);
         char err[AGENT_TOOL_ERR] = {0};
         if (g_turn.one_shot) one_shot_diag("tool call", name, args);
         size_t call_at = tui_transcript_pos();
@@ -708,16 +768,18 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         if (tool != TOOL_NONE && !tools_disabled(ag->tools, tool)
             && tools_available(ag->tools, tool, ag->cfg->mode))
             approval = tools_approval_class(ag->tools, tool);
-        ToolAuthorization authorization = tool_authorization(ag, approval,
-                                                             call_at);
+        ToolAuthorization authorization =
+            tool_authorization(ag, approval, call_at);
         if (authorization == TOOL_AUTH_DENIED
             && approval != TOOL_APPROVAL_NONE) {
             Str cls = tools_approval_name(approval);
             (void)tools_run(ag->tools, tool, args, authorization, ag->scratch,
                             &out, err, sizeof err);
             out.n = 0;
-            buf_putf(&out, "DENIED: the user did not approve this %.*s call. "
-                     "Do not retry it blindly.", (i32)cls.n, cls.p);
+            buf_putf(&out,
+                     "DENIED: the user did not approve this %.*s call. "
+                     "Do not retry it blindly.",
+                     (i32)cls.n, cls.p);
             Str result = buf_finish(&out);
             if (!add_result(ag, i, name, keep_result(ag->persist, result), 0))
                 return TURN_FULL;
@@ -732,12 +794,12 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
                           &out, err, sizeof err);
         if (!ok) buf_error(&out, err, "tool failed");
         Str result = buf_finish(&out);
-        
+
         TelEvent e;
         tel_open(&e, "tool");
         tel_str(&e, "name", name);
         const char *outcome = tool_outcome(name, result, ok);
-        tel_str(&e, "outcome", (Str){ outcome, strlen(outcome) });
+        tel_str(&e, "outcome", (Str){outcome, strlen(outcome)});
         tel_bool(&e, "known", tool != TOOL_NONE);
         tel_int(&e, "args_bytes", (i64)args.n);
         tel_arg_keys(&e, "args", args, ag->scratch);
@@ -755,8 +817,8 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
 
 static size_t call_slot(const Conv *c, size_t result) {
     for (size_t i = result; i-- > 0;)
-        if (conv_is_call(c, i) && str_eq(c->tool_call_id[i],
-                                         c->tool_call_id[result]))
+        if (conv_is_call(c, i)
+            && str_eq(c->tool_call_id[i], c->tool_call_id[result]))
             return i;
     return CONV_NONE;
 }
@@ -776,8 +838,8 @@ static void render_instruction_source(Str label, Str path, Str text) {
 }
 
 static void render_instructions(const Config *cfg) {
-    const PromptSources *sources = cfg->mode == MODE_PLAN
-                                 ? &cfg->plan_sources : &cfg->system_sources;
+    const PromptSources *sources =
+        cfg->mode == MODE_PLAN ? &cfg->plan_sources : &cfg->system_sources;
     tui_block();
     tui_write_tool(cfg->mode == MODE_PLAN ? STR("Instructions · Plan\n")
                                           : STR("Instructions · Build\n"));
@@ -799,10 +861,10 @@ static void render_user_media(const Conv *c, size_t i) {
         char what[64];
         media_describe(what, sizeof what, c->media, id);
         char row[192];
-        i32 n = snprintf(row, sizeof row, "\n[Image #%zu] %.*s - %s", k + 1,
-                         (i32)c->media->label[id].n, c->media->label[id].p,
-                         what);
-        if (n > 0) tui_write_styled((Str){ row, (size_t)n }, TUI_QUOTE);
+        i32 n =
+            snprintf(row, sizeof row, "\n[Image #%zu] %.*s - %s", k + 1,
+                     (i32)c->media->label[id].n, c->media->label[id].p, what);
+        if (n > 0) tui_write_styled((Str){row, (size_t)n}, TUI_QUOTE);
     }
 }
 
@@ -820,7 +882,10 @@ static void render_saved_thinking(Str raw, Arena *scratch) {
     if (!raw.n) return;
     size_t mark = scratch->off;
     const JVal *blocks = json_parse(scratch, raw);
-    if (!blocks || blocks->type != J_ARR) { scratch->off = mark; return; }
+    if (!blocks || blocks->type != J_ARR) {
+        scratch->off = mark;
+        return;
+    }
     b8 was_muted = md_muted();
     for (size_t i = 0; i < blocks->u.arr.n; i++) {
         const JVal *blk = &blocks->u.arr.items[i];
@@ -836,10 +901,9 @@ static void render_saved_thinking(Str raw, Arena *scratch) {
     scratch->off = mark;
 }
 
-static void render_conv(const Conv *c, const Config *cfg,
-                        b8 show_instructions, Arena *scratch) {
+static void render_conv(const Conv *c, const Config *cfg, b8 show_instructions,
+                        Arena *scratch) {
     for (size_t i = 0; i < c->n; i++) {
-        
         tui_pin((u32)(i + 1));
         switch (c->role[i]) {
             case M_SYSTEM:
@@ -855,15 +919,13 @@ static void render_conv(const Conv *c, const Config *cfg,
                     render_user_message(c, i);
                 }
                 break;
-            case M_TOOL:
-                {
-                    size_t call = call_slot(c, i);
-                    Str name = call == CONV_NONE ? (Str){0} : c->tool_name[call];
-                    Str args = call == CONV_NONE ? (Str){0} : c->text[call];
-                    render_tool_result(name, args, c->text[i], scratch,
-                                       (u32)(i + 1), c->expanded[i], c->ms[i]);
-                }
-                break;
+            case M_TOOL: {
+                size_t call = call_slot(c, i);
+                Str name = call == CONV_NONE ? (Str){0} : c->tool_name[call];
+                Str args = call == CONV_NONE ? (Str){0} : c->text[call];
+                render_tool_result(name, args, c->text[i], scratch,
+                                   (u32)(i + 1), c->expanded[i], c->ms[i]);
+            } break;
             case M_ASSISTANT:
                 if (conv_is_call(c, i)) {
                     render_tool_call(c->tool_name[i], c->text[i], scratch,
@@ -885,7 +947,10 @@ static void render_conv(const Conv *c, const Config *cfg,
 static void rerender_conv(const Conv *conv, const Config *cfg,
                           b8 show_instructions, Arena *scratch, u32 zone) {
     arena_reset(scratch);
-    if (zone) tui_anchor_zone(zone); else tui_anchor_view();
+    if (zone)
+        tui_anchor_zone(zone);
+    else
+        tui_anchor_view();
     tui_batch_begin();
     tui_clear_transcript();
     render_conv(conv, cfg, show_instructions, scratch);
@@ -894,7 +959,9 @@ static void rerender_conv(const Conv *conv, const Config *cfg,
     arena_reset(scratch);
 }
 
-static const char *help_toggle(b8 on) { return on ? "on" : "off"; }
+static const char *help_toggle(b8 on) {
+    return on ? "on" : "off";
+}
 
 
 static void help_path(Buf *b, const char *label, Str path) {
@@ -910,15 +977,16 @@ static void help_path(Buf *b, const char *label, Str path) {
     z[path.n] = '\0';
     struct stat st;
     if (stat(z, &st) != 0) {
-        if (errno == ENOENT) buf_puts(b, STR(" - missing\n"));
-        else buf_putf(b, " - inaccessible: %s\n", strerror(errno));
+        if (errno == ENOENT)
+            buf_puts(b, STR(" - missing\n"));
+        else
+            buf_putf(b, " - inaccessible: %s\n", strerror(errno));
         return;
     }
-    const char *kind = S_ISDIR(st.st_mode) ? "directory"
-                     : S_ISREG(st.st_mode) ? "regular file"
-                     : "other";
-    buf_putf(b, " - %s, mode %04o, %s", kind,
-             (unsigned)(st.st_mode & 07777u),
+    const char *kind = S_ISDIR(st.st_mode)   ? "directory"
+                       : S_ISREG(st.st_mode) ? "regular file"
+                                             : "other";
+    buf_putf(b, " - %s, mode %04o, %s", kind, (unsigned)(st.st_mode & 07777u),
              access(z, W_OK) == 0 ? "writable" : "not writable");
     if (S_ISREG(st.st_mode)) buf_putf(b, ", %lld bytes", (long long)st.st_size);
     buf_putc(b, '\n');
@@ -936,10 +1004,12 @@ static void help_path_candidates(Buf *b, Arena *a, Str name,
  * summarized by the effective prompt source instead of flooding the report. */
 static void help_project_paths(Buf *b, Str cwd) {
     static const char *const suffixes[] = {
-        "/." AGENT_NAME "/config.toml", "/." AGENT_NAME "/SYSTEM.md",
+        "/." AGENT_NAME "/config.toml",
+        "/." AGENT_NAME "/SYSTEM.md",
         "/." AGENT_NAME "/PLAN.md",
         "/AGENTS.md",
-        "/.gitignore", "/.ignore",
+        "/.gitignore",
+        "/.ignore",
     };
     if (!cwd.n || cwd.n >= AGENT_MAX_PATH || cwd.p[0] != '/') return;
     char dir[AGENT_MAX_PATH], full[AGENT_MAX_PATH];
@@ -956,7 +1026,7 @@ static void help_project_paths(Buf *b, Str cwd) {
             full[base + sn] = '\0';
             struct stat st;
             if (stat(full, &st) == 0)
-                help_path(b, "project discovery", (Str){ full, base + sn });
+                help_path(b, "project discovery", (Str){full, base + sn});
         }
         if (n == 1) break;
         while (n > 1 && dir[n - 1] != '/') n--;
@@ -967,7 +1037,8 @@ static void help_project_paths(Buf *b, Str cwd) {
 static void help_prompt_sources(Buf *b, const char *mode,
                                 const PromptSources *s) {
     buf_putf(b, "### %s mode\n", mode);
-    if (s->primary_path.n) help_path(b, "primary prompt", s->primary_path);
+    if (s->primary_path.n)
+        help_path(b, "primary prompt", s->primary_path);
     else
         buf_putf(b, "- primary prompt: %.*s (no file)\n",
                  (i32)s->primary_label.n, s->primary_label.p);
@@ -981,25 +1052,32 @@ static Str help_build(Agent *ag) {
     Arena *a = ag->scratch;
     Buf b;
     buf_init(&b, a, 16384);
-    buf_puts(&b, STR(
-        "# " AGENT_NAME " help context\n\n"
-        "I am using " AGENT_NAME " " AGENT_VERSION ", a C17 terminal coding agent. "
-        "This is a live snapshot generated by /help. Help me understand, "
-        "configure, or troubleshoot " AGENT_NAME " using this context. Never "
-        "reveal "
-        "or request API key values.\n\n"
-        "## Effective configuration\n"));
+    buf_puts(
+        &b,
+        STR("# " AGENT_NAME " help context\n\n"
+            "I am using " AGENT_NAME " " AGENT_VERSION
+            ", a C17 terminal coding agent. "
+            "This is a live snapshot generated by /help. Help me understand, "
+            "configure, or troubleshoot " AGENT_NAME
+            " using this context. Never "
+            "reveal "
+            "or request API key values.\n\n"
+            "## Effective configuration\n"));
     buf_putf(&b, "- mode: %s\n", cfg->mode == MODE_PLAN ? "plan" : "build");
     buf_putf(&b, "- permissions: %s\n",
              cfg->permissions == PERMISSION_FREE ? "free" : "ask");
     buf_putf(&b, "- API: %.*s\n", (i32)api_name(cfg->api).n,
              api_name(cfg->api).p);
-    buf_putf(&b, "- provider serving it: %.*s\n",
-             (i32)(cfg->provider.n ? cfg->provider.n : STR("unnamed override").n),
-             cfg->provider.n ? cfg->provider.p : STR("unnamed override").p);
+    buf_putf(
+        &b, "- provider serving it: %.*s\n",
+        (i32)(cfg->provider.n ? cfg->provider.n : STR("unnamed override").n),
+        cfg->provider.n ? cfg->provider.p : STR("unnamed override").p);
     buf_putf(&b, "- model: %.*s\n", (i32)cfg->model.n, cfg->model.p);
-    buf_puts(&b, STR("- base URL: ")); buf_json_str(&b, cfg->base_url); buf_putc(&b, '\n');
-    buf_putf(&b, "- active API key: %s\n", cfg->api_key.n ? "present" : "missing");
+    buf_puts(&b, STR("- base URL: "));
+    buf_json_str(&b, cfg->base_url);
+    buf_putc(&b, '\n');
+    buf_putf(&b, "- active API key: %s\n",
+             cfg->api_key.n ? "present" : "missing");
     if (cfg->provider.n) {
         Str src = secret_source_name(endpoints_key_source(cfg->provider, a));
         buf_putf(&b, "- API key store: %.*s\n", (i32)src.n, src.p);
@@ -1007,8 +1085,10 @@ static Str help_build(Agent *ag) {
     buf_putf(&b, "- streaming: %s\n", help_toggle(cfg->stream));
     buf_putf(&b, "- verbose tool output: %s\n", help_toggle(render_verbose()));
     buf_putf(&b, "- raw Markdown: %s\n", help_toggle(md_raw()));
-    buf_putf(&b, "- ignored files in picker: %s\n", help_toggle(tui_show_ignored()));
-    buf_putf(&b, "- show instructions: %s\n", help_toggle(ag->show_instructions));
+    buf_putf(&b, "- ignored files in picker: %s\n",
+             help_toggle(tui_show_ignored()));
+    buf_putf(&b, "- show instructions: %s\n",
+             help_toggle(ag->show_instructions));
     buf_putf(&b, "- telemetry: %s\n", help_toggle(telemetry_on()));
     buf_putf(&b, "- text wrap: %s\n", tui_justify() ? "justified" : "word");
     buf_putf(&b, "- max reply tokens: %d\n", cfg->max_tokens);
@@ -1019,10 +1099,12 @@ static Str help_build(Agent *ag) {
         buf_puts(&b, STR("- context window: not configured, so automatic "
                          "compaction never fires and /compact sizes its "
                          "tail from the conversation\n"));
-    buf_putf(&b, "- compact context: %s, at %u%% of the window, with the %s "
+    buf_putf(&b,
+             "- compact context: %s, at %u%% of the window, with the %s "
              "model\n",
-             cfg->compact == COMPACT_OFF ? "off"
-             : cfg->compact == COMPACT_MANUAL ? "manual" : "auto",
+             cfg->compact == COMPACT_OFF      ? "off"
+             : cfg->compact == COMPACT_MANUAL ? "manual"
+                                              : "auto",
              cfg->compact_at, cfg->compact_small ? "small" : "main");
     buf_putf(&b, "- retries after an empty response: %d\n", cfg->retries);
     buf_putf(&b, "- initial retry delay: %d ms\n", cfg->retry_delay_ms);
@@ -1034,8 +1116,15 @@ static Str help_build(Agent *ag) {
              cfg->thinking_budget.n ? cfg->thinking_budget.p : "off");
 
     static const char *const status_names[TUI_STATUS_N] = {
-        "state", "model", "reasoning effort", "thinking budget", "mode",
-        "provider", "working directory", "context tokens", "copy confirmation",
+        "state",
+        "model",
+        "reasoning effort",
+        "thinking budget",
+        "mode",
+        "provider",
+        "working directory",
+        "context tokens",
+        "copy confirmation",
         "permissions",
     };
     buf_puts(&b, STR("\n### Status fields\n"));
@@ -1046,10 +1135,11 @@ static Str help_build(Agent *ag) {
     buf_puts(&b, STR("\n### Tools\n"));
     for (size_t i = 0; i < tools->n; i++) {
         const char *state = tools_disabled(tools, i) ? "disabled"
-                          : tools_available(tools, i, cfg->mode) ? "enabled"
-                          : "unavailable in this mode";
-        buf_putf(&b, "- %.*s: %s\n", (i32)tools->name[i].n,
-                 tools->name[i].p, state);
+                            : tools_available(tools, i, cfg->mode)
+                                ? "enabled"
+                                : "unavailable in this mode";
+        buf_putf(&b, "- %.*s: %s\n", (i32)tools->name[i].n, tools->name[i].p,
+                 state);
     }
 
     buf_puts(&b, STR("\n### Slash commands\n"));
@@ -1074,22 +1164,26 @@ static Str help_build(Agent *ag) {
     for (size_t i = 0; i < endpoints.n; i++) {
         size_t mark = a->off;
         char key_err[AGENT_MAX_PATH + 96] = {0};
-        Str key = endpoints_key(endpoints.name[i], a, a, key_err,
-                                sizeof key_err);
+        Str key =
+            endpoints_key(endpoints.name[i], a, a, key_err, sizeof key_err);
         b8 has_key = key.n != 0;
         a->off = mark;
         buf_putf(&b, "### %.*s%s\n", (i32)endpoints.name[i].n,
                  endpoints.name[i].p,
                  str_eq(endpoints.name[i], cfg->provider)
-                 ? " (serving the chosen model)" : "");
+                     ? " (serving the chosen model)"
+                     : "");
         buf_putf(&b, "- API: %.*s\n", (i32)api_name(endpoints.api[i]).n,
                  api_name(endpoints.api[i]).p);
         buf_puts(&b, STR("- base URL: "));
-        buf_json_str(&b, endpoints.base_url[i]); buf_putc(&b, '\n');
+        buf_json_str(&b, endpoints.base_url[i]);
+        buf_putc(&b, '\n');
         buf_putf(&b, "- default model: %.*s\n", (i32)endpoints.model[i].n,
                  endpoints.model[i].p);
         buf_putf(&b, "- API key: %s\n",
-                 key_err[0] ? key_err : has_key ? "present" : "missing");
+                 key_err[0] ? key_err
+                 : has_key  ? "present"
+                            : "missing");
     }
 
     buf_puts(&b, STR("\n## Effective prompt sources\n"));
@@ -1109,14 +1203,17 @@ static Str help_build(Agent *ag) {
         for (size_t i = 0; i < pn; i++)
             help_path(&b, "project config", project[i]);
     }
-    help_path_candidates(&b, a, STR("SYSTEM.md"), "global Build prompt candidate");
+    help_path_candidates(&b, a, STR("SYSTEM.md"),
+                         "global Build prompt candidate");
     help_path_candidates(&b, a, STR("PLAN.md"), "global Plan prompt candidate");
     help_path(&b, "state directory", paths_dir(AGENT_DIR_STATE, a));
-    help_path(&b, "state file", paths_file(AGENT_DIR_STATE, AGENT_STATE_NAME, a));
+    help_path(&b, "state file",
+              paths_file(AGENT_DIR_STATE, AGENT_STATE_NAME, a));
     help_path(&b, "credentials file",
               paths_file(AGENT_DIR_STATE, AGENT_CREDENTIALS_NAME, a));
     help_path(&b, "prompt history", history_path(a, a));
-    help_path(&b, "telemetry root", paths_file(AGENT_DIR_STATE, STR("telemetry"), a));
+    help_path(&b, "telemetry root",
+              paths_file(AGENT_DIR_STATE, STR("telemetry"), a));
     help_path(&b, "data directory", paths_dir(AGENT_DIR_DATA, a));
     help_path(&b, "session directory", ag->sess->dir);
     if (ag->sess->path.n) {
@@ -1126,9 +1223,10 @@ static Str help_build(Agent *ag) {
     }
     help_project_paths(&b, cwd);
 
-    buf_puts(&b, STR(
-        "\nThis snapshot intentionally contains no API key values. Wait for "
-        "my next message before taking action.\n"));
+    buf_puts(
+        &b,
+        STR("\nThis snapshot intentionally contains no API key values. Wait for "
+            "my next message before taking action.\n"));
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
 }
 
@@ -1159,13 +1257,13 @@ static void start_help_session(Agent *ag) {
 
 
 typedef struct {
-    Agent      *ag;
+    Agent *ag;
     SessionList list;
-    TuiCmd     *rows;
-    size_t      n;
-    size_t      armed;
-    b8          has_armed;
-    size_t      deleted;
+    TuiCmd *rows;
+    size_t n;
+    size_t armed;
+    b8 has_armed;
+    size_t deleted;
 } SessionPick;
 
 /* Ctrl-X on a session row. The first press arms the row and says so; the
@@ -1189,7 +1287,8 @@ static size_t session_delete_row(void *ud, size_t row, size_t *moved) {
         return sp->n;
     }
     sp->has_armed = false;
-    if (sp->ag->sess->path.n && str_eq(sp->list.path[row], sp->ag->sess->path)) {
+    if (sp->ag->sess->path.n
+        && str_eq(sp->list.path[row], sp->ag->sess->path)) {
         tui_notice(STR("that session is the one running: /clear first"));
         return sp->n;
     }
@@ -1201,10 +1300,10 @@ static size_t session_delete_row(void *ud, size_t row, size_t *moved) {
     sp->n--;
     sp->deleted++;
     for (size_t i = row; i < sp->n; i++) {
-        sp->list.name[i]    = sp->list.name[i + 1];
-        sp->list.path[i]    = sp->list.path[i + 1];
+        sp->list.name[i] = sp->list.name[i + 1];
+        sp->list.path[i] = sp->list.path[i + 1];
         sp->list.preview[i] = sp->list.preview[i + 1];
-        sp->rows[i]         = sp->rows[i + 1];
+        sp->rows[i] = sp->rows[i + 1];
     }
     sp->list.n = sp->n;
     *moved = row < sp->n ? row : (sp->n ? sp->n - 1 : 0);
@@ -1226,7 +1325,7 @@ static void resume_session(Agent *ag) {
     Arena *scratch = ag->scratch;
     size_t session_mark = ag->mark;
     arena_reset(scratch);
-    SessionPick sp = { ag, {0}, NULL, 0, 0, false, 0 };
+    SessionPick sp = {ag, {0}, NULL, 0, 0, false, 0};
     size_t n = session_list(sess, scratch, &sp.list, AGENT_MAX_SESSIONS);
     if (!n) {
         tui_notice(STR("no saved sessions in this directory"));
@@ -1237,10 +1336,10 @@ static void resume_session(Agent *ag) {
         tui_notice(STR("out of memory listing sessions"));
         return;
     }
-    
+
     for (size_t i = 0; i < n; i++) {
         if (!sp.list.title[i].n) {
-            items[i] = (TuiCmd){ sp.list.name[i], sp.list.preview[i] };
+            items[i] = (TuiCmd){sp.list.name[i], sp.list.preview[i]};
             continue;
         }
         Buf desc;
@@ -1250,9 +1349,9 @@ static void resume_session(Agent *ag) {
             buf_puts(&desc, STR(" \xc2\xb7 "));
             buf_puts(&desc, sp.list.preview[i]);
         }
-        items[i] = (TuiCmd){ sp.list.title[i],
-                             buf_ok(&desc) ? buf_finish(&desc)
-                                           : sp.list.preview[i] };
+        items[i] =
+            (TuiCmd){sp.list.title[i],
+                     buf_ok(&desc) ? buf_finish(&desc) : sp.list.preview[i]};
     }
     sp.rows = items;
     sp.n = n;
@@ -1262,9 +1361,9 @@ static void resume_session(Agent *ag) {
      * and a directory with a hundred sessions never scrolls it out of
      * reach. */
     size_t pick = 0;
-    TuiPickBinding binding = { session_delete_row, &sp, 0x18 };
-    TuiPickAction act = { items, n, &binding, 1,
-                          STR("Ctrl-X deletes the selected session") };
+    TuiPickBinding binding = {session_delete_row, &sp, 0x18};
+    TuiPickAction act = {items, n, &binding, 1,
+                         STR("Ctrl-X deletes the selected session")};
     b8 chosen = tui_pick_action(STR("pick a session"), n, n, TUI_PICK_FIRST,
                                 TUI_PICK_NONE, &act, &pick);
     /* The screen restores the notice slot it borrowed, so what the deletes
@@ -1275,8 +1374,7 @@ static void resume_session(Agent *ag) {
                  sp.deleted == 1 ? "" : "s");
         tui_notice(str_c(msg));
     }
-    if (!chosen || pick >= sp.n)
-        return;
+    if (!chosen || pick >= sp.n) return;
 
     /* Read first: replaying overwrites the live conversation's storage, so a
      * session that cannot be read must not cost the one that is running. */
@@ -1333,7 +1431,8 @@ static Str preview_line(Arena *a, Str s) {
         tmp[n++] = c < 0x20 ? ' ' : (char)c;
     }
     while (n && ((u8)tmp[n - 1] & 0xc0u) == 0x80u) n--;
-    Buf b; buf_init(&b, a, n + 8);
+    Buf b;
+    buf_init(&b, a, n + 8);
     buf_put(&b, tmp, n);
     if (s.n > n) buf_puts(&b, STR("..."));
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
@@ -1368,13 +1467,16 @@ static void rewind_conversation(Agent *ag) {
     size_t n = 0;
     for (size_t i = 0; i < conv->n; i++) {
         if (conv->role[i] != M_USER || conv_is_shell(conv, i)) continue;
-        if (skip) { skip--; continue; }
+        if (skip) {
+            skip--;
+            continue;
+        }
         at[n] = i;
-        items[n] = (TuiCmd){ preview_line(scratch, conv->text[i]), (Str){0} };
+        items[n] = (TuiCmd){preview_line(scratch, conv->text[i]), (Str){0}};
         n++;
     }
 
-    
+
     size_t pick = 0;
     if (!tui_pick(STR("rewind to a message"), items, n, TUI_PICK_LAST,
                   TUI_PICK_NONE, &pick))
@@ -1397,7 +1499,7 @@ static void rewind_conversation(Agent *ag) {
     tui_clear();
     render_conv(conv, ag->cfg, ag->show_instructions, scratch);
     tui_batch_end();
-    
+
     char err[256] = {0};
     if (!session_fork(sess, conv, err, sizeof err)) {
         /* The old append-only file cannot represent a rewind. Reserve a new
@@ -1442,8 +1544,8 @@ static void copy_last_reply(const Conv *conv) {
             tui_notice(STR("that response is too large to copy"));
         else
             tui_notice(tui_clipboard_via_tmux()
-                       ? AGENT_TMUX_COPY_NOTICE
-                       : STR("copied the last response"));
+                           ? AGENT_TMUX_COPY_NOTICE
+                           : STR("copied the last response"));
         return;
     }
     tui_notice(STR("no response to copy"));
@@ -1459,7 +1561,7 @@ static void notice_fmt(const char *fmt, ...) {
     va_end(ap);
     if (len <= 0) return;
     size_t n = (size_t)len < sizeof msg ? (size_t)len : sizeof msg - 1;
-    tui_notice((Str){ msg, n });
+    tui_notice((Str){msg, n});
 }
 
 
@@ -1475,7 +1577,7 @@ static b8 draft_names_image(Str draft, size_t num) {
     char tag[24];
     i32 n = snprintf(tag, sizeof tag, "[Image #%zu]", num);
     if (n <= 0) return false;
-    Str want = { tag, (size_t)n };
+    Str want = {tag, (size_t)n};
     for (size_t i = 0; i + want.n <= draft.n; i++)
         if (str_starts(str_drop(draft, i), want)) return true;
     return false;
@@ -1484,8 +1586,9 @@ static b8 draft_names_image(Str draft, size_t num) {
 
 static b8 image_tag_at(Str text, size_t i, size_t pending_n, size_t *num,
                        size_t *len) {
-    static const Str lead = { "[Image #", 8 };
-    if (i + lead.n >= text.n || memcmp(text.p + i, lead.p, lead.n)) return false;
+    static const Str lead = {"[Image #", 8};
+    if (i + lead.n >= text.n || memcmp(text.p + i, lead.p, lead.n))
+        return false;
     size_t j = i + lead.n, n = 0;
     while (j < text.n && text.p[j] >= '0' && text.p[j] <= '9') {
         n = n * 10 + (size_t)(text.p[j++] - '0');
@@ -1512,16 +1615,22 @@ static void pending_drop_unnamed(Agent *ag, Str carried) {
     size_t live = 0;
     for (size_t i = 0; i < ag->pending_n; i++) {
         named[i] = draft_names_image(draft, i + 1)
-                || draft_names_image(carried, i + 1);
+                   || draft_names_image(carried, i + 1);
         if (named[i]) live++;
     }
-    if (live == ag->pending_n) { ag->scratch->off = mark; return; }
+    if (live == ag->pending_n) {
+        ag->scratch->off = mark;
+        return;
+    }
 
     size_t renum[AGENT_MAX_MEDIA_PER_TURN] = {0};
     size_t kept[AGENT_MAX_MEDIA_PER_TURN];
     size_t n = 0;
     for (size_t i = 0; i < ag->pending_n; i++)
-        if (named[i]) { kept[n] = ag->pending[i]; renum[i] = ++n; }
+        if (named[i]) {
+            kept[n] = ag->pending[i];
+            renum[i] = ++n;
+        }
 
     Buf b;
     buf_init(&b, ag->scratch, draft.n + 32);
@@ -1536,10 +1645,12 @@ static void pending_drop_unnamed(Agent *ag, Str carried) {
     }
     Str line = buf_finish(&b);
     if (buf_ok(&b) && !str_eq(line, draft)) tui_set_input(line);
-    
+
     size_t base = ag->pending[0];
-    if (n) media_keep(&g_media, base, kept, n);
-    else if (base <= g_media.n) g_media.n = base;
+    if (n)
+        media_keep(&g_media, base, kept, n);
+    else if (base <= g_media.n)
+        g_media.n = base;
     for (size_t i = 0; i < n; i++) ag->pending[i] = base + i;
     ag->pending_n = n;
     ag->scratch->off = mark;
@@ -1569,19 +1680,19 @@ static void composer_restore_pending(const Agent *ag) {
 static size_t attach_from_clipboard(Agent *ag, char *err, size_t err_cap) {
     Str bytes;
     if (!clipboard_image(ag->scratch, &bytes, err, err_cap)) return MEDIA_NONE;
-    return media_add(&g_media, ag->persist, bytes, STR("clipboard"),
-                     err, err_cap);
+    return media_add(&g_media, ag->persist, bytes, STR("clipboard"), err,
+                     err_cap);
 }
 
 static void attach_image(Agent *ag, Str path, Str carried) {
     path = str_trim(path);
-    
+
     if (!ag->conv->media) {
         notice_fmt("images are off: set images = auto to attach one");
         return;
     }
     pending_drop_unnamed(ag, carried);
-    
+
     TelEvent e;
     tel_open(&e, "attach");
     tel_bool(&e, "clipboard", !path.n);
@@ -1595,7 +1706,7 @@ static void attach_image(Agent *ag, Str path, Str carried) {
     }
     char err[256] = {0};
     size_t mark = ag->scratch->off;
-    
+
     size_t id = path.n ? media_add_file(&g_media, ag->persist, ag->scratch,
                                         path, err, sizeof err)
                        : attach_from_clipboard(ag, err, sizeof err);
@@ -1620,7 +1731,7 @@ static void attach_image(Agent *ag, Str path, Str carried) {
 
 
 static size_t pending_prefix(const Agent *ag, const char *line, size_t n) {
-    Str text = { line, n };
+    Str text = {line, n};
     size_t at = 0;
     while (at < n) {
         size_t num, len;
@@ -1649,16 +1760,20 @@ static Str turn_bind_images(Agent *ag, Str text, size_t *off, size_t *count) {
         named[num - 1] = true;
         i += len - 1;
     }
-    
+
     b8 none = true;
     for (size_t i = 0; i < ag->pending_n; i++) none = none && !named[i];
-    if (none) for (size_t i = 0; i < ag->pending_n; i++) named[i] = true;
+    if (none)
+        for (size_t i = 0; i < ag->pending_n; i++) named[i] = true;
 
     size_t renum[AGENT_MAX_MEDIA_PER_TURN] = {0};
     size_t kept[AGENT_MAX_MEDIA_PER_TURN];
     size_t n = 0;
     for (size_t i = 0; i < ag->pending_n; i++)
-        if (named[i]) { kept[n] = ag->pending[i]; renum[i] = ++n; }
+        if (named[i]) {
+            kept[n] = ag->pending[i];
+            renum[i] = ++n;
+        }
 
     Buf b;
     buf_init(&b, ag->scratch, text.n + 32);
@@ -1681,7 +1796,7 @@ static Str turn_bind_images(Agent *ag, Str text, size_t *off, size_t *count) {
         buf_putf(&b, "[Image #%zu]", renum[i]);
     }
     Str full = buf_finish(&b);
-    
+
     Str stored = buf_ok(&b) ? str_dup(ag->persist, str_trim(full)) : (Str){0};
     ag->scratch->off = mark;
     if (!stored.p) return (Str){0};
@@ -1697,8 +1812,8 @@ static void export_session(const Conv *conv, Str requested) {
     }
     char path[AGENT_MAX_PATH];
     char err[256];
-    if (!session_export_markdown(conv, requested, path, sizeof path,
-                                 err, sizeof err)) {
+    if (!session_export_markdown(conv, requested, path, sizeof path, err,
+                                 sizeof err)) {
         notice_fmt("could not export session: %s", err);
         return;
     }
@@ -1712,7 +1827,7 @@ static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out);
 static void title_command(Agent *ag, Str arg) {
     Session *sess = ag->sess;
     arg = str_trim(arg);
-    
+
     if (!sess->path.n || ag->conv->n <= 1) {
         tui_notice(STR("nothing to name yet"));
         return;
@@ -1748,7 +1863,10 @@ static b8 command_offered(Str name) {
 static void telemetry_command(Str line) {
     Str word = line;
     for (size_t i = 0; i < line.n; i++)
-        if (line.p[i] == ' ') { word = str_take(line, i); break; }
+        if (line.p[i] == ' ') {
+            word = str_take(line, i);
+            break;
+        }
     b8 offered = command_offered(word);
     TelEvent e;
     tel_open(&e, "command");
@@ -1779,23 +1897,23 @@ enum { MODEL_ACTION_NONE, MODEL_ACTION_MANUAL, MODEL_ACTION_CONFIGURE };
  * is no longer a row.
  */
 typedef struct {
-    Catalog   *cat;
-    Str       *label;
-    Str       *starred;
-    size_t    *order;
-    TuiCmd    *rows;
-    size_t     live;
-    Favorites  fav;
-    b8         named;        
-    Str        provider;     
-    Str        current;
-    Str        small;
-    Str        small_owner;  
-    Config    *cfg;          
-    Arena     *arena;
-    u8         requested;
-    size_t     acted;        
-    char       msg[192];     
+    Catalog *cat;
+    Str *label;
+    Str *starred;
+    size_t *order;
+    TuiCmd *rows;
+    size_t live;
+    Favorites fav;
+    b8 named;
+    Str provider;
+    Str current;
+    Str small;
+    Str small_owner;
+    Config *cfg;
+    Arena *arena;
+    u8 requested;
+    size_t acted;
+    char msg[192];
 } ModelPick;
 
 
@@ -1817,45 +1935,53 @@ static b8 edit_model_profile(Config *cfg, Str provider, Str model,
     if (old.context_window)
         snprintf(window, sizeof window, "%zu", old.context_window);
     const TuiCmd modes[] = {
-        { STR("Off"), STR("Send no reasoning fields") },
-        { STR("Named efforts"), STR("Choose from user-defined string values") },
-        { STR("Token budgets"), STR("Choose from user-defined token counts") },
-        { STR("Custom JSON"), STR("Add a user-defined request object") },
+        {STR("Off"), STR("Send no reasoning fields")},
+        {STR("Named efforts"), STR("Choose from user-defined string values")},
+        {STR("Token budgets"), STR("Choose from user-defined token counts")},
+        {STR("Custom JSON"), STR("Add a user-defined request object")},
     };
-    size_t mode = old.reasoning_template.n ? 3 : old.reasoning_efforts.n ? 1
-                : old.thinking_budgets.n ? 2 : 0;
+    size_t mode = old.reasoning_template.n  ? 3
+                  : old.reasoning_efforts.n ? 1
+                  : old.thinking_budgets.n  ? 2
+                                            : 0;
     if (!tui_ask_edit(STR("context window (tokens; empty is unknown)"), true,
                       window, sizeof window)
         || !tui_pick(STR("reasoning control for this model"), modes, 4,
-                     TUI_PICK_FIRST, mode, &mode)) return false;
+                     TUI_PICK_FIRST, mode, &mode))
+        return false;
     if (mode == 1) {
-        snprintf(efforts, sizeof efforts, "%.*s",
-                 (i32)old.reasoning_efforts.n, old.reasoning_efforts.p);
+        snprintf(efforts, sizeof efforts, "%.*s", (i32)old.reasoning_efforts.n,
+                 old.reasoning_efforts.p);
         snprintf(effort, sizeof effort, "%.*s", (i32)old.reasoning_effort.n,
                  old.reasoning_effort.p);
         if (!tui_ask_edit(STR("reasoning efforts (comma separated)"), false,
                           efforts, sizeof efforts)
-            || !tui_ask_edit(STR("active effort (empty is Off)"), true,
-                             effort, sizeof effort)) return false;
+            || !tui_ask_edit(STR("active effort (empty is Off)"), true, effort,
+                             sizeof effort))
+            return false;
     } else if (mode == 2) {
-        snprintf(budgets, sizeof budgets, "%.*s",
-                 (i32)old.thinking_budgets.n, old.thinking_budgets.p);
+        snprintf(budgets, sizeof budgets, "%.*s", (i32)old.thinking_budgets.n,
+                 old.thinking_budgets.p);
         snprintf(budget, sizeof budget, "%.*s", (i32)old.thinking_budget.n,
                  old.thinking_budget.p);
         if (!tui_ask_edit(STR("thinking budgets (comma separated)"), false,
                           budgets, sizeof budgets)
-            || !tui_ask_edit(STR("active budget (empty is Off)"), true,
-                             budget, sizeof budget)) return false;
+            || !tui_ask_edit(STR("active budget (empty is Off)"), true, budget,
+                             sizeof budget))
+            return false;
     } else if (mode == 3) {
         snprintf(templ, sizeof templ, "%.*s", (i32)old.reasoning_template.n,
                  old.reasoning_template.p);
         if (!tui_ask_edit(STR("request JSON object"), false, templ,
-                          sizeof templ)) return false;
+                          sizeof templ))
+            return false;
     }
-    ModelProfile p = { .reasoning_efforts = str_c(efforts),
-        .thinking_budgets = str_c(budgets), .reasoning_effort = str_c(effort),
-        .thinking_budget = str_c(budget), .reasoning_template = str_c(templ),
-        .configured = true };
+    ModelProfile p = {.reasoning_efforts = str_c(efforts),
+                      .thinking_budgets = str_c(budgets),
+                      .reasoning_effort = str_c(effort),
+                      .thinking_budget = str_c(budget),
+                      .reasoning_template = str_c(templ),
+                      .configured = true};
     if (window[0]) {
         b8 ok = false;
         i64 n = str_int(str_c(window), &ok);
@@ -1915,7 +2041,7 @@ static Str model_starred(ModelPick *mp, size_t i) {
 
 static b8 model_is_current(const ModelPick *mp, size_t i) {
     return str_eq(mp->cat->model[i], mp->current)
-        && str_eq(mp->cat->provider[i], mp->provider);
+           && str_eq(mp->cat->provider[i], mp->provider);
 }
 
 static b8 model_is_small(const ModelPick *mp, size_t i) {
@@ -1930,15 +2056,18 @@ static void model_row(ModelPick *mp, size_t row, size_t i, b8 fav) {
     b8 current = model_is_current(mp, i);
     b8 small = model_is_small(mp, i);
     Str desc = current && small ? STR("current \xc2\xb7 small")
-             : current ? STR("current") : small ? STR("small") : (Str){0};
-    mp->rows[row] = (TuiCmd){ name, desc };
+               : current        ? STR("current")
+               : small          ? STR("small")
+                                : (Str){0};
+    mp->rows[row] = (TuiCmd){name, desc};
 }
 
 
 static size_t model_entry(const ModelPick *mp, Str provider, Str model) {
     for (size_t i = 0; i < mp->cat->n; i++)
         if (mp->cat->model[i].n && str_eq(mp->cat->model[i], model)
-            && str_eq(mp->cat->provider[i], provider)) return i;
+            && str_eq(mp->cat->provider[i], provider))
+            return i;
     return SIZE_MAX;
 }
 
@@ -1960,21 +2089,27 @@ static size_t model_build(void *ud) {
 
 static size_t model_favorite(void *ud, size_t row, size_t *moved) {
     ModelPick *mp = ud;
-    if (row == SIZE_MAX) { *moved = 0; return model_build(mp); }
+    if (row == SIZE_MAX) {
+        *moved = 0;
+        return model_build(mp);
+    }
     size_t i = mp->order[row];
     b8 on = false;
     char err[128] = {0};
-    
+
     if (!favorites_toggle(&mp->fav, mp->cat->provider[i], mp->cat->model[i],
                           mp->arena, &on, err, sizeof err))
-        snprintf(mp->msg, sizeof mp->msg, "%s", err[0] ? err
-                 : "could not save the favorites");
-    
+        snprintf(mp->msg, sizeof mp->msg, "%s",
+                 err[0] ? err : "could not save the favorites");
+
     if (!on && i >= mp->live) mp->cat->model[i] = (Str){0};
     size_t rows = model_build(mp);
     *moved = row < rows ? row : rows ? rows - 1 : 0;
     for (size_t r = 0; r < rows; r++)
-        if (mp->order[r] == i) { *moved = r; break; }
+        if (mp->order[r] == i) {
+            *moved = r;
+            break;
+        }
     return rows;
 }
 
@@ -1998,13 +2133,16 @@ static size_t model_configure_action(void *ud, size_t row, size_t *moved) {
 
 static size_t model_small_action(void *ud, size_t row, size_t *moved) {
     ModelPick *mp = ud;
-    if (row == SIZE_MAX) { *moved = 0; return model_build(mp); }
+    if (row == SIZE_MAX) {
+        *moved = 0;
+        return model_build(mp);
+    }
     size_t i = mp->order[row];
     b8 on = model_is_small(mp, i);
     Str next = on ? (Str){0} : mp->cat->model[i];
     Str owner = on ? (Str){0} : mp->cat->provider[i];
-    b8 saved = conf_remember_pair(CONF_SMALL_MODEL, next,
-                                  CONF_SMALL_PROVIDER, owner, mp->arena);
+    b8 saved = conf_remember_pair(CONF_SMALL_MODEL, next, CONF_SMALL_PROVIDER,
+                                  owner, mp->arena);
     if (!config_set_small_model(mp->cfg, next, owner))
         snprintf(mp->msg, sizeof mp->msg,
                  "out of memory storing the small model");
@@ -2022,19 +2160,21 @@ static b8 manual_provider(const Config *cfg, const Endpoints *eps,
     Str names[AGENT_MAX_ENDPOINTS + 1];
     size_t n = catalog_endpoints(cfg, eps, names, AGENT_MAX_ENDPOINTS + 1);
     if (!n) return false;
-    if (n == 1) { *out = names[0]; return true; }
+    if (n == 1) {
+        *out = names[0];
+        return true;
+    }
     TuiCmd *items = arena_new(scratch, TuiCmd, n);
     if (!items) return false;
     size_t at = 0;
     for (size_t i = 0; i < n; i++) {
-        items[i] = (TuiCmd){ names[i].n ? names[i]
-                                        : STR("(the configured base URL)"),
-                             (Str){0} };
+        items[i] = (TuiCmd){
+            names[i].n ? names[i] : STR("(the configured base URL)"), (Str){0}};
         if (str_eq(names[i], cfg->provider)) at = i;
     }
     size_t pick = 0;
-    if (!tui_pick(STR("which provider serves it"), items, n, TUI_PICK_FIRST,
-                  at, &pick))
+    if (!tui_pick(STR("which provider serves it"), items, n, TUI_PICK_FIRST, at,
+                  &pick))
         return false;
     *out = names[pick];
     return true;
@@ -2064,7 +2204,7 @@ static b8 manual_model_id(Arena *scratch, const char *why, Str *model) {
 static b8 manual_model(const Config *cfg, const Endpoints *eps, Arena *scratch,
                        const char *why, Str *provider, Str *model) {
     return manual_provider(cfg, eps, scratch, provider)
-        && manual_model_id(scratch, why, model);
+           && manual_model_id(scratch, why, model);
 }
 
 /* What the list is missing, in one line: the providers that did not answer,
@@ -2085,12 +2225,12 @@ static void catalog_report(const Catalog *cat, Arena *scratch) {
         } else {
             buf_puts(&b, STR("models: "));
         }
-        buf_puts(&b, cat->reason[0].n ? cat->reason[0]
-                                      : STR("no models returned"));
+        buf_puts(&b,
+                 cat->reason[0].n ? cat->reason[0] : STR("no models returned"));
     } else if (cat->n_failed) {
         char head[64];
-        snprintf(head, sizeof head, "could not list %zu providers: ",
-                 cat->n_failed);
+        snprintf(head, sizeof head,
+                 "could not list %zu providers: ", cat->n_failed);
         buf_puts(&b, str_c(head));
         for (size_t i = 0; i < cat->n_failed; i++) {
             if (i) buf_puts(&b, STR(", "));
@@ -2122,15 +2262,14 @@ static b8 catalog_missed(const Catalog *cat, Str provider) {
  * into `scratch`; `*verified` is false for an id entered by hand. `cat` is
  * appended to and its entries are edited, so it belongs to this call. */
 static b8 pick_model(Config *cfg, const Endpoints *eps, Catalog *cat,
-                     Arena *scratch, Str *provider, Str *model,
-                     b8 *verified) {
+                     Arena *scratch, Str *provider, Str *model, b8 *verified) {
     *verified = false;
     ModelPick mp = {0};
     mp.cat = cat;
     mp.live = cat->n;
     mp.arena = scratch;
     favorites_load(&mp.fav, eps, scratch);
-    
+
     for (size_t f = 0; f < mp.fav.n; f++) {
         if (model_entry(&mp, mp.fav.provider[f], mp.fav.model[f]) != SIZE_MAX)
             continue;
@@ -2139,48 +2278,53 @@ static b8 pick_model(Config *cfg, const Endpoints *eps, Catalog *cat,
     }
     if (!cat->n) {
         const char *why = cat->n_failed && cat->reason[0].n
-                        ? cat->reason[0].p : "no models returned";
+                              ? cat->reason[0].p
+                              : "no models returned";
         return manual_model(cfg, eps, scratch, why, provider, model);
     }
 
-    
+
     for (size_t i = 1; i < cat->n && !mp.named; i++)
         mp.named = !str_eq(cat->provider[i], cat->provider[0]);
-    mp.label    = arena_new(scratch, Str, cat->n);
-    mp.starred  = arena_new(scratch, Str, cat->n);
-    mp.order    = arena_new(scratch, size_t, cat->n);
-    mp.rows     = arena_new(scratch, TuiCmd, cat->n);
+    mp.label = arena_new(scratch, Str, cat->n);
+    mp.starred = arena_new(scratch, Str, cat->n);
+    mp.order = arena_new(scratch, size_t, cat->n);
+    mp.rows = arena_new(scratch, TuiCmd, cat->n);
     if (!mp.label || !mp.starred || !mp.order || !mp.rows) {
         tui_notice(STR("out of memory listing models"));
         return false;
     }
-    memset(mp.label, 0, cat->n * sizeof *mp.label);      
+    memset(mp.label, 0, cat->n * sizeof *mp.label);
     memset(mp.starred, 0, cat->n * sizeof *mp.starred);
     mp.provider = cfg->provider;
-    mp.current  = cfg->model;
-    mp.small    = cfg->small_model;
+    mp.current = cfg->model;
+    mp.small = cfg->small_model;
     mp.small_owner = cfg->small_provider;
-    mp.cfg      = cfg;
-    mp.acted    = SIZE_MAX;
+    mp.cfg = cfg;
+    mp.acted = SIZE_MAX;
 
     size_t rows = model_build(&mp);
     TuiPickBinding bindings[] = {
-        { model_favorite, &mp, 0x06 },
-        { model_manual_action, &mp, 0x0f },
-        { model_configure_action, &mp, 0x05 },
-        
-        { model_small_action, &mp, 0x13 },
+        {model_favorite, &mp, 0x06},
+        {model_manual_action, &mp, 0x0f},
+        {model_configure_action, &mp, 0x05},
+
+        {model_small_action, &mp, 0x13},
     };
-    
-    TuiPickAction act = { mp.rows, cat->n, bindings, 4,
+
+    TuiPickAction act = {
+        mp.rows, cat->n, bindings, 4,
         STR("Ctrl-F pins \xc2\xb7 Ctrl-O manual entry \xc2\xb7 "
-            "Ctrl-E configures \xc2\xb7 Ctrl-S small model") };
+            "Ctrl-E configures \xc2\xb7 Ctrl-S small model")};
     size_t pick = 0;
     /* The cursor opens on the model the session is on when it is a row, so
      * the first keystroke is a move rather than a change. */
     size_t start = 0;
     for (size_t r = 0; r < rows; r++)
-        if (model_is_current(&mp, mp.order[r])) { start = r; break; }
+        if (model_is_current(&mp, mp.order[r])) {
+            start = r;
+            break;
+        }
     b8 chosen = tui_pick_action(STR("pick a model"), rows, cat->n,
                                 TUI_PICK_FIRST, start, &act, &pick);
     if (mp.msg[0]) tui_notice(str_c(mp.msg));
@@ -2223,14 +2367,14 @@ static Str setup_hint(const Config *cfg, Arena *scratch) {
 }
 
 
-static b8 use_model(Config *cfg, const Endpoints *eps, Str provider,
-                    Str model, Arena *scratch, b8 remember, b8 *saved) {
+static b8 use_model(Config *cfg, const Endpoints *eps, Str provider, Str model,
+                    Arena *scratch, b8 remember, b8 *saved) {
     size_t mark = scratch->off;
     if (provider.n) {
         size_t i = endpoints_find(eps, provider);
         if (i == ENDPOINT_NONE) {
-            notice_fmt("provider %.*s is no longer configured",
-                       (i32)provider.n, provider.p);
+            notice_fmt("provider %.*s is no longer configured", (i32)provider.n,
+                       provider.p);
             return false;
         }
         char err[AGENT_MAX_PATH + 96] = {0};
@@ -2257,10 +2401,10 @@ static b8 use_model(Config *cfg, const Endpoints *eps, Str provider,
         tui_notice(STR("out of memory storing model settings"));
         return false;
     }
-    
+
     if (!cfg->small_provider.n)
-        config_set_small_model(cfg, endpoints_small_model(cfg->provider,
-                                                         scratch), (Str){0});
+        config_set_small_model(
+            cfg, endpoints_small_model(cfg->provider, scratch), (Str){0});
     tui_set_provider(cfg->provider);
     tui_set_model(cfg->model);
     ctx_model_changed(&g_ctx);
@@ -2268,8 +2412,8 @@ static b8 use_model(Config *cfg, const Endpoints *eps, Str provider,
     tui_set_reasoning(cfg->reasoning_effort, cfg->thinking_budget);
     tui_set_setup_hint((Str){0});
     tui_set_setup(false);
-    b8 wrote = !remember
-            || config_remember_model(cfg->provider, cfg->model, scratch);
+    b8 wrote =
+        !remember || config_remember_model(cfg->provider, cfg->model, scratch);
     if (saved) *saved = wrote;
     TelEvent e;
     tel_open(&e, "model");
@@ -2295,8 +2439,8 @@ static void model_status(Str provider, void *ud) {
     (void)ud;
     char status[AGENT_MAX_ENDPOINT_NAME + 32];
     if (provider.n)
-        snprintf(status, sizeof status, "listing models: %.*s",
-                 (i32)provider.n, provider.p);
+        snprintf(status, sizeof status, "listing models: %.*s", (i32)provider.n,
+                 provider.p);
     else
         snprintf(status, sizeof status, "loading models");
     tui_set_status(status);
@@ -2308,7 +2452,7 @@ static void choose_model(Config *cfg, Arena *scratch) {
     Endpoints eps;
     endpoints_load(&eps, scratch);
     Str names[AGENT_MAX_ENDPOINTS + 1];
-    
+
     if (!catalog_endpoints(cfg, &eps, names, AGENT_MAX_ENDPOINTS + 1)) {
         tui_notice(NO_PROVIDER_HINT);
         return;
@@ -2335,16 +2479,16 @@ static void choose_model(Config *cfg, Arena *scratch) {
  * the user's choosing is set up by editing the credentials file. */
 static b8 pick_key_source(SecretSource *out) {
     const TuiCmd stores[] = {
-        { STR("Credentials file"), STR("$XDG_STATE_HOME/" AGENT_NAME "/credentials.toml, mode 0600") },
-        { STR("System keyring"),   STR("Secret Service, through secret-tool") },
-        { STR("Password store"),   STR("pass, under " AGENT_NAME "/<provider>") },
+        {STR("Credentials file"),
+         STR("$XDG_STATE_HOME/" AGENT_NAME "/credentials.toml, mode 0600")},
+        {STR("System keyring"), STR("Secret Service, through secret-tool")},
+        {STR("Password store"), STR("pass, under " AGENT_NAME "/<provider>")},
     };
     size_t pick = *out == SECRET_SERVICE ? 1 : *out == SECRET_PASS ? 2 : 0;
     if (!tui_pick(STR("where should the key be kept"), stores, 3,
                   TUI_PICK_FIRST, pick, &pick))
         return false;
-    *out = pick == 1 ? SECRET_SERVICE : pick == 2 ? SECRET_PASS
-                                                  : SECRET_STORED;
+    *out = pick == 1 ? SECRET_SERVICE : pick == 2 ? SECRET_PASS : SECRET_STORED;
     return true;
 }
 
@@ -2352,12 +2496,12 @@ static b8 pick_key_source(SecretSource *out) {
  * it is what most of them are. */
 static b8 pick_api(ApiKind *out) {
     const TuiCmd apis[] = {
-        { STR("openai"),    STR("OpenAI-compatible chat completions") },
-        { STR("anthropic"), STR("Anthropic-compatible messages API") },
+        {STR("openai"), STR("OpenAI-compatible chat completions")},
+        {STR("anthropic"), STR("Anthropic-compatible messages API")},
     };
     size_t pick = *out == API_ANTHROPIC ? 1 : 0;
-    if (!tui_pick(STR("which API does it speak"), apis, 2, TUI_PICK_FIRST,
-                  pick, &pick))
+    if (!tui_pick(STR("which API does it speak"), apis, 2, TUI_PICK_FIRST, pick,
+                  &pick))
         return false;
     *out = pick == 1 ? API_ANTHROPIC : API_OPENAI;
     return true;
@@ -2387,8 +2531,8 @@ static size_t probe_endpoint(const Config *cfg, Str base_url, ApiKind api,
  * the one who knows which. */
 static b8 keep_unlisted_endpoint(Str name, const char *why, Arena *scratch) {
     const TuiCmd actions[] = {
-        { STR("Cancel"), STR("Change nothing; the provider is not stored") },
-        { STR("Store anyway"), STR("Keep it; /model says if it stays silent") },
+        {STR("Cancel"), STR("Change nothing; the provider is not stored")},
+        {STR("Store anyway"), STR("Keep it; /model says if it stays silent")},
     };
     Buf title;
     buf_init(&title, scratch, name.n + strlen(why) + 32);
@@ -2399,7 +2543,7 @@ static b8 keep_unlisted_endpoint(Str name, const char *why, Arena *scratch) {
     return tui_pick(buf_ok(&title) ? buf_finish(&title)
                                    : STR("the provider could not be listed"),
                     actions, 2, TUI_PICK_FIRST, 0, &action)
-        && action == 1;
+           && action == 1;
 }
 
 
@@ -2457,13 +2601,13 @@ static b8 add_endpoint(Config *cfg, Arena *scratch) {
         return false;
     }
     char list_err[192] = {0};
-    size_t n_listed = probe_endpoint(cfg, str_c(url), api,
-                                     key[0] ? str_c(key) : (Str){0}, scratch,
-                                     listed, AGENT_MAX_MODELS, list_err,
-                                     sizeof list_err);
-    if (!n_listed && !keep_unlisted_endpoint(str_c(name), list_err[0]
-                                             ? list_err : "no models returned",
-                                             scratch))
+    size_t n_listed = probe_endpoint(
+        cfg, str_c(url), api, key[0] ? str_c(key) : (Str){0}, scratch, listed,
+        AGENT_MAX_MODELS, list_err, sizeof list_err);
+    if (!n_listed
+        && !keep_unlisted_endpoint(
+            str_c(name), list_err[0] ? list_err : "no models returned",
+            scratch))
         return false;
 
     char err[AGENT_MAX_PATH + 64] = {0};
@@ -2472,9 +2616,9 @@ static b8 add_endpoint(Config *cfg, Arena *scratch) {
         tui_notice(STR("could not write the provider store"));
         return false;
     }
-    
-    if (!endpoints_set_key(str_c(name), str_c(key), key_source, scratch,
-                           err, sizeof err)) {
+
+    if (!endpoints_set_key(str_c(name), str_c(key), key_source, scratch, err,
+                           sizeof err)) {
         tui_notice(str_c(err[0] ? err : "could not store the API key"));
         return false;
     }
@@ -2501,11 +2645,12 @@ static b8 add_endpoint(Config *cfg, Arena *scratch) {
         } else {
             tui_notice(STR("out of memory listing models"));
         }
-    } else if (!manual_model_id(scratch, list_err[0] ? list_err
-                                : "no models returned", &model)) {
+    } else if (!manual_model_id(scratch,
+                                list_err[0] ? list_err : "no models returned",
+                                &model)) {
         model = (Str){0};
     }
-    
+
     if (!model.n
         || !use_model(cfg, &eps, provider, model, scratch, true, &saved)) {
         notice_fmt("provider: %.*s (no model chosen yet: type /model)",
@@ -2518,8 +2663,8 @@ static b8 add_endpoint(Config *cfg, Arena *scratch) {
 }
 
 
-static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
-                        Arena *persist, Arena *scratch) {
+static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i, Arena *persist,
+                        Arena *scratch) {
     char url[AGENT_MAX_URL + 1];
     char key[AGENT_MAX_API_KEY + 1];
     snprintf(url, sizeof url, "%.*s", (i32)eps->base_url[i].n,
@@ -2532,7 +2677,7 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
     }
     ApiKind api = eps->api[i];
     if (!pick_api(&api)) return false;
-    
+
     SecretSource key_source = endpoints_key_source(eps->name[i], scratch);
     Str store = secret_source_name(key_source);
     Buf keep_desc;
@@ -2540,16 +2685,18 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
     buf_puts(&keep_desc, STR("Leave it where it is, in: "));
     buf_puts(&keep_desc, store);
     const TuiCmd key_actions[] = {
-        { STR("Keep current"), buf_ok(&keep_desc) ? buf_finish(&keep_desc)
-                             : STR("Leave the stored credential unchanged") },
-        { STR("Replace"), STR("Enter and store a different credential") },
-        { STR("Move"), STR("Keep the same key, change which store holds it") },
-        { STR("Clear"), STR("Remove the stored credential") },
+        {STR("Keep current"),
+         buf_ok(&keep_desc) ? buf_finish(&keep_desc)
+                            : STR("Leave the stored credential unchanged")},
+        {STR("Replace"), STR("Enter and store a different credential")},
+        {STR("Move"), STR("Keep the same key, change which store holds it")},
+        {STR("Clear"), STR("Remove the stored credential")},
     };
     enum { KEY_KEEP, KEY_REPLACE, KEY_MOVE, KEY_CLEAR };
     size_t key_action = KEY_KEEP;
-    if (!tui_pick(STR("API key"), key_actions, 4, TUI_PICK_FIRST,
-                  KEY_KEEP, &key_action)) return false;
+    if (!tui_pick(STR("API key"), key_actions, 4, TUI_PICK_FIRST, KEY_KEEP,
+                  &key_action))
+        return false;
     if (key_action == KEY_REPLACE
         && (!tui_ask(STR("replacement API key"), true, key, sizeof key)
             || !pick_key_source(&key_source)))
@@ -2560,9 +2707,12 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
     /* Moving reads the key arqan already holds rather than asking for it
      * again: requiring the value is what keeps keys in the file. */
     if (key_action == KEY_KEEP || key_action == KEY_MOVE) {
-        saved_key = endpoints_key(eps->name[i], persist, scratch,
-                                  err, sizeof err);
-        if (err[0]) { tui_notice(str_c(err)); return false; }
+        saved_key =
+            endpoints_key(eps->name[i], persist, scratch, err, sizeof err);
+        if (err[0]) {
+            tui_notice(str_c(err));
+            return false;
+        }
         if (key_action == KEY_MOVE && !saved_key.n) {
             tui_notice(STR("this provider has no stored key to move"));
             return false;
@@ -2576,7 +2726,7 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
     }
 
     b8 changed = !str_eq(str_c(url), eps->base_url[i]) || api != eps->api[i]
-              || key_action != KEY_KEEP;
+                 || key_action != KEY_KEEP;
     size_t n_listed = 0;
     char list_err[192] = {0};
     if (changed) {
@@ -2585,12 +2735,13 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
             tui_notice(STR("out of memory listing models"));
             return false;
         }
-        n_listed = probe_endpoint(cfg, str_c(url), api, saved_key, scratch,
-                                  listed, AGENT_MAX_MODELS, list_err,
-                                  sizeof list_err);
+        n_listed =
+            probe_endpoint(cfg, str_c(url), api, saved_key, scratch, listed,
+                           AGENT_MAX_MODELS, list_err, sizeof list_err);
         if (!n_listed
-            && !keep_unlisted_endpoint(eps->name[i], list_err[0] ? list_err
-                                       : "no models returned", scratch))
+            && !keep_unlisted_endpoint(
+                eps->name[i], list_err[0] ? list_err : "no models returned",
+                scratch))
             return false;
     }
     if (!endpoints_put(eps, eps->name[i], str_c(url), api, scratch)
@@ -2600,16 +2751,16 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
     }
     if (key_action != KEY_KEEP
         && !endpoints_set_key(eps->name[i],
-            key_action == KEY_CLEAR ? (Str){0}
-          : key_action == KEY_MOVE ? saved_key : str_c(key),
-            key_source, scratch, err, sizeof err)) {
+                              key_action == KEY_CLEAR  ? (Str){0}
+                              : key_action == KEY_MOVE ? saved_key
+                                                       : str_c(key),
+                              key_source, scratch, err, sizeof err)) {
         tui_notice(str_c(err[0] ? err : "could not store the API key"));
         return false;
     }
-    
+
     if (str_eq(eps->name[i], cfg->provider) && cfg->model.n
-        && !use_model(cfg, eps, eps->name[i], cfg->model, scratch, false,
-                      NULL))
+        && !use_model(cfg, eps, eps->name[i], cfg->model, scratch, false, NULL))
         return false;
     if (changed && n_listed)
         notice_models(eps->name[i], n_listed);
@@ -2622,8 +2773,8 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i,
 static b8 delete_endpoint(Config *cfg, const Endpoints *eps, size_t i,
                           Arena *scratch) {
     const TuiCmd actions[] = {
-        { STR("Keep provider"), STR("Cancel without changing either store") },
-        { STR("Delete provider"), STR("Remove its settings and credential") },
+        {STR("Keep provider"), STR("Cancel without changing either store")},
+        {STR("Delete provider"), STR("Remove its settings and credential")},
     };
     Buf title;
     buf_init(&title, scratch, eps->name[i].n + 20);
@@ -2643,7 +2794,7 @@ static b8 delete_endpoint(Config *cfg, const Endpoints *eps, size_t i,
         tui_notice(str_c(err[0] ? err : "could not delete the provider"));
         return false;
     }
-    
+
     favorites_forget(name, scratch);
     if (serving) {
         /* The model went with the connection, so the choice is forgotten
@@ -2684,26 +2835,27 @@ static void manage_providers(Config *cfg, Arena *persist, Arena *scratch) {
     }
     for (size_t i = 0; i < n; i++) {
         Str desc = eps.base_url[i];
-        
+
         b8 serving = str_eq(eps.name[i], cfg->provider);
         b8 anth = eps.api[i] == API_ANTHROPIC;
         if (serving || anth) {
-            Buf b; buf_init(&b, scratch, desc.n + 32);
+            Buf b;
+            buf_init(&b, scratch, desc.n + 32);
             if (serving) buf_puts(&b, STR("in use \xc2\xb7 "));
             if (anth) buf_puts(&b, STR("anthropic \xc2\xb7 "));
             buf_puts(&b, eps.base_url[i]);
             if (buf_ok(&b)) desc = buf_finish(&b);
         }
-        items[i] = (TuiCmd){ eps.name[i], desc };
+        items[i] = (TuiCmd){eps.name[i], desc};
     }
-    items[n] = (TuiCmd){ STR("+ add a provider"),
-                         STR("An OpenAI- or Anthropic-compatible endpoint") };
-    items[n + 1] = (TuiCmd){ STR("+ delete a provider"),
-                             STR("Remove its settings and stored credential") };
+    items[n] = (TuiCmd){STR("+ add a provider"),
+                        STR("An OpenAI- or Anthropic-compatible endpoint")};
+    items[n + 1] = (TuiCmd){STR("+ delete a provider"),
+                            STR("Remove its settings and stored credential")};
 
     size_t pick = 0;
-    if (!tui_pick(STR("providers"), items, n + 2, TUI_PICK_FIRST,
-                  TUI_PICK_NONE, &pick))
+    if (!tui_pick(STR("providers"), items, n + 2, TUI_PICK_FIRST, TUI_PICK_NONE,
+                  &pick))
         return;
     if (pick == n) {
         add_endpoint(cfg, scratch);
@@ -2737,11 +2889,24 @@ static void manage_providers(Config *cfg, Arena *persist, Arena *scratch) {
  * Checkboxes come first, then the tools, then the rows that step between
  * options: a list a reader scans is a list whose answers look alike. */
 enum {
-    SET_VERBOSE, SET_RAW, SET_STREAM, SET_IGNORED, SET_TELEMETRY,
-    SET_SHOW_INSTRUCTIONS, SET_AUTO_TITLE, SET_TOOL, SET_WRAP, SET_MODE,
+    SET_VERBOSE,
+    SET_RAW,
+    SET_STREAM,
+    SET_IGNORED,
+    SET_TELEMETRY,
+    SET_SHOW_INSTRUCTIONS,
+    SET_AUTO_TITLE,
+    SET_TOOL,
+    SET_WRAP,
+    SET_MODE,
     SET_MAX_TOKENS,
-    SET_EFFORT, SET_BUDGET, SET_PERMISSIONS, SET_RESUME_LAST,
-    SET_COMPACT, SET_COMPACT_AT, SET_COMPACT_MODEL
+    SET_EFFORT,
+    SET_BUDGET,
+    SET_PERMISSIONS,
+    SET_RESUME_LAST,
+    SET_COMPACT,
+    SET_COMPACT_AT,
+    SET_COMPACT_MODEL
 };
 #define SET_MAX_ROWS (21 + AGENT_MAX_TOOLS)
 
@@ -2749,7 +2914,8 @@ enum {
  * kinds read as one list. A row that lost its checkbox to a full arena is
  * still the row it was. */
 static Str setting_label(Arena *a, Str label, const char *box) {
-    Buf b; buf_init(&b, a, label.n + 8);
+    Buf b;
+    buf_init(&b, a, label.n + 8);
     buf_puts(&b, str_c(box));
     buf_puts(&b, label);
     return buf_ok(&b) ? buf_finish(&b) : label;
@@ -2766,20 +2932,25 @@ static Str setting_value(Arena *a, Str label) {
  * reader steps through once rather than twice. */
 static Str setting_options(Arena *a, const Str *opts, size_t n, size_t cur,
                            TuiMark *mark) {
-    *mark = (TuiMark){ 0, 0 };
-    Buf b; buf_init(&b, a, 64);
+    *mark = (TuiMark){0, 0};
+    Buf b;
+    buf_init(&b, a, 64);
     for (size_t i = 0; i < n; i++) {
         if (i) buf_puts(&b, STR("  "));
-        if (i == cur) *mark = (TuiMark){ b.n, opts[i].n };
+        if (i == cur) *mark = (TuiMark){b.n, opts[i].n};
         buf_puts(&b, opts[i]);
     }
-    if (!buf_ok(&b)) { *mark = (TuiMark){ 0, 0 }; return (Str){0}; }
+    if (!buf_ok(&b)) {
+        *mark = (TuiMark){0, 0};
+        return (Str){0};
+    }
     return buf_finish(&b);
 }
 
 static void remember_ui(Arena *scratch, ConfKey key, Str value) {
     if (!conf_remember(key, value, scratch))
-        tui_notice(STR("setting changed but was not remembered: could not write state"));
+        tui_notice(STR(
+            "setting changed but was not remembered: could not write state"));
 }
 
 static void remember_ui_bool(Arena *scratch, ConfKey key, b8 on) {
@@ -2795,7 +2966,8 @@ static void remember_tools(const ToolRegistry *reg, Arena *scratch) {
         buf_puts(&list, reg->name[i]);
     }
     if (!buf_ok(&list)) {
-        tui_notice(STR("setting changed but was not remembered: out of memory"));
+        tui_notice(
+            STR("setting changed but was not remembered: out of memory"));
         return;
     }
     Str value = list.n ? buf_finish(&list) : STR("none");
@@ -2806,18 +2978,23 @@ static void remember_tools(const ToolRegistry *reg, Arena *scratch) {
  * strings live in the scratch arena, which each rebuild resets, so nothing
  * outside a build call may hold one. */
 typedef struct {
-    Arena  *scratch;       
-    Arena   rows_arena;    
-    TuiCmd  rows[TUI_STATUS_N];
+    Arena *scratch;
+    Arena rows_arena;
+    TuiCmd rows[TUI_STATUS_N];
 } StatusView;
 
 static size_t statusline_build(void *ud) {
-    
     const Str labels[TUI_STATUS_N] = {
-        STR("State"), STR("Model"), STR("Reasoning effort"),
-        STR("Thinking budget"), STR("Mode"), STR("Provider"),
-        STR("Working directory"), STR("Context tokens"),
-        STR("Copy confirmation"), STR("Permissions"),
+        STR("State"),
+        STR("Model"),
+        STR("Reasoning effort"),
+        STR("Thinking budget"),
+        STR("Mode"),
+        STR("Provider"),
+        STR("Working directory"),
+        STR("Context tokens"),
+        STR("Copy confirmation"),
+        STR("Permissions"),
     };
     const Str descriptions[TUI_STATUS_N] = {
         STR("Current ready, thinking, or error state"),
@@ -2869,8 +3046,12 @@ static const TuiSettings *statusline_screen(Arena *scratch) {
     view.scratch = scratch;
     arena_init(&view.rows_arena, g_screen, sizeof g_screen);
     set = (TuiSettings){
-        .rows = view.rows, .marks = NULL, .max = TUI_STATUS_N,
-        .build = statusline_build, .act = statusline_act, .ud = &view,
+        .rows = view.rows,
+        .marks = NULL,
+        .max = TUI_STATUS_N,
+        .build = statusline_build,
+        .act = statusline_act,
+        .ud = &view,
     };
     return &set;
 }
@@ -2883,9 +3064,8 @@ static void choose_statusline(Arena *scratch) {
  * is a screen away from the row it belongs to. A setting that arrived from a
  * config file or a flag sits wherever it sits: a step moves to the nearest
  * rung past it in the direction asked for, and the ends hold. */
-static const i32 g_token_steps[] = {
-    1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144
-};
+static const i32 g_token_steps[] = {1024,  2048,  4096,   8192,  16384,
+                                    32768, 65536, 131072, 262144};
 
 static i32 max_tokens_step(i32 cur, i32 dir) {
     size_t n = sizeof g_token_steps / sizeof g_token_steps[0];
@@ -2908,10 +3088,10 @@ static i32 max_tokens_step(i32 cur, i32 dir) {
 
 static u32 compact_at_step(u32 cur, i32 dir) {
     if (dir > 0)
-        return cur + COMPACT_AT_STEP > COMPACT_AT_MAX
-             ? COMPACT_AT_MAX : cur + COMPACT_AT_STEP;
-    return cur < COMPACT_AT_MIN + COMPACT_AT_STEP
-         ? COMPACT_AT_MIN : cur - COMPACT_AT_STEP;
+        return cur + COMPACT_AT_STEP > COMPACT_AT_MAX ? COMPACT_AT_MAX
+                                                      : cur + COMPACT_AT_STEP;
+    return cur < COMPACT_AT_MIN + COMPACT_AT_STEP ? COMPACT_AT_MIN
+                                                  : cur - COMPACT_AT_STEP;
 }
 
 /* A configured comma list as the options a row offers: "Off" first, since a
@@ -2921,8 +3101,9 @@ static size_t list_options(Str list, Str *out, size_t max) {
     size_t n = 0, off = 0;
     out[n++] = STR("Off");
     while (off < list.n && n < max) {
-        size_t end = off; while (end < list.n && list.p[end] != ',') end++;
-        Str item = str_trim((Str){ list.p + off, end - off });
+        size_t end = off;
+        while (end < list.n && list.p[end] != ',') end++;
+        Str item = str_trim((Str){list.p + off, end - off});
         if (item.n) out[n++] = item;
         off = end + 1;
     }
@@ -2930,7 +3111,8 @@ static size_t list_options(Str list, Str *out, size_t max) {
 }
 
 static size_t list_at(const Str *opts, size_t n, Str current) {
-    for (size_t i = 1; i < n; i++) if (str_eq(opts[i], current)) return i;
+    for (size_t i = 1; i < n; i++)
+        if (str_eq(opts[i], current)) return i;
     return 0;
 }
 
@@ -2943,8 +3125,8 @@ static Str list_step(Str list, Str current, i32 dir) {
     return pos ? opt[(size_t)pos] : (Str){0};
 }
 
-static b8 remember_reasoning(Config *cfg, Arena *scratch,
-                             b8 effort, Str value) {
+static b8 remember_reasoning(Config *cfg, Arena *scratch, b8 effort,
+                             Str value) {
     if (!cfg->provider.n) return false;
     size_t mark = scratch->off;
     ModelProfile p;
@@ -2954,8 +3136,10 @@ static b8 remember_reasoning(Config *cfg, Arena *scratch,
         return false;
     }
     tui_set_reasoning(cfg->reasoning_effort, cfg->thinking_budget);
-    if (effort) p.reasoning_effort = value;
-    else p.thinking_budget = value;
+    if (effort)
+        p.reasoning_effort = value;
+    else
+        p.thinking_budget = value;
     b8 ok = model_profile_save(cfg->provider, cfg->model, &p, scratch);
     scratch->off = mark;
     return ok;
@@ -2965,13 +3149,13 @@ static b8 remember_reasoning(Config *cfg, Arena *scratch,
  * the status line view, every string points into the scratch arena that the
  * next build resets. */
 typedef struct {
-    Agent  *ag;
-    Arena   rows_arena;
-    TuiCmd  rows[SET_MAX_ROWS];
+    Agent *ag;
+    Arena rows_arena;
+    TuiCmd rows[SET_MAX_ROWS];
     TuiMark marks[SET_MAX_ROWS];
-    u8      kind[SET_MAX_ROWS];
-    size_t  tool[SET_MAX_ROWS];
-    size_t  n;
+    u8 kind[SET_MAX_ROWS];
+    size_t tool[SET_MAX_ROWS];
+    size_t n;
 } SettingsView;
 
 static size_t settings_build(void *ud) {
@@ -2990,39 +3174,37 @@ static size_t settings_build(void *ud) {
     kind[n] = SET_VERBOSE;
     rows[n++] = (TuiCmd){
         setting_check(rows_arena, render_verbose(), STR("Verbose tool output")),
-        STR("Every line a tool printed, untruncated") };
+        STR("Every line a tool printed, untruncated")};
     kind[n] = SET_RAW;
-    rows[n++] = (TuiCmd){
-        setting_check(rows_arena, md_raw(), STR("Display raw")),
-        md_raw() ? STR("No Markdown or syntax highlighting")
-                 : STR("Markdown and syntax highlighting") };
+    rows[n++] =
+        (TuiCmd){setting_check(rows_arena, md_raw(), STR("Display raw")),
+                 md_raw() ? STR("No Markdown or syntax highlighting")
+                          : STR("Markdown and syntax highlighting")};
     kind[n] = SET_STREAM;
-    rows[n++] = (TuiCmd){
-        setting_check(rows_arena, cfg->stream, STR("Stream replies")),
-        STR("Paint a reply as it arrives, not once it is whole") };
+    rows[n++] =
+        (TuiCmd){setting_check(rows_arena, cfg->stream, STR("Stream replies")),
+                 STR("Paint a reply as it arrives, not once it is whole")};
     kind[n] = SET_IGNORED;
     rows[n++] = (TuiCmd){
         setting_check(rows_arena, tui_show_ignored(), STR("Ignored files")),
-        STR("Offer what .gitignore and .ignore exclude") };
+        STR("Offer what .gitignore and .ignore exclude")};
     kind[n] = SET_TELEMETRY;
-    rows[n++] = (TuiCmd){
-        setting_check(rows_arena, telemetry_on(), STR("Telemetry")),
-        STR("An anonymized debug log, for a bug report") };
+    rows[n++] =
+        (TuiCmd){setting_check(rows_arena, telemetry_on(), STR("Telemetry")),
+                 STR("An anonymized debug log, for a bug report")};
     kind[n] = SET_SHOW_INSTRUCTIONS;
     rows[n++] = (TuiCmd){
         setting_check(rows_arena, ag->show_instructions,
                       STR("Show instructions")),
-        STR("Reveal the active system and project instructions in the transcript") };
+        STR("Reveal the active system and project instructions in the transcript")};
     kind[n] = SET_AUTO_TITLE;
     rows[n++] = (TuiCmd){
-        setting_check(rows_arena, cfg->auto_title,
-                      STR("Name sessions")),
-        STR("Name a session after its first turn, with a small model configured") };
+        setting_check(rows_arena, cfg->auto_title, STR("Name sessions")),
+        STR("Name a session after its first turn, with a small model configured")};
     kind[n] = SET_RESUME_LAST;
     rows[n++] = (TuiCmd){
-        setting_check(rows_arena, cfg->resume_last,
-                      STR("Resume last session")),
-        STR("Start in this directory's newest session instead of the welcome screen") };
+        setting_check(rows_arena, cfg->resume_last, STR("Resume last session")),
+        STR("Start in this directory's newest session instead of the welcome screen")};
 
     /* One checkbox per tool a turn may call. A tool the mode does not offer
      * is still listed, since turning bash off is a statement about the
@@ -3038,27 +3220,29 @@ static size_t settings_build(void *ud) {
         v->tool[n] = i;
         rows[n++] = (TuiCmd){
             setting_check(rows_arena, !tools_disabled(reg, i), reg->name[i]),
-            reg->brief[i] };
+            reg->brief[i]};
     }
 
-    const Str wrap_opts[2] = { STR("Word"), STR("Justified") };
+    const Str wrap_opts[2] = {STR("Word"), STR("Justified")};
     kind[n] = SET_WRAP;
-    rows[n] = (TuiCmd){ setting_value(rows_arena, STR("Text wrap")),
-        setting_options(rows_arena, wrap_opts, 2, tui_justify() ? 1 : 0,
-                        &marks[n]) };
+    rows[n] = (TuiCmd){setting_value(rows_arena, STR("Text wrap")),
+                       setting_options(rows_arena, wrap_opts, 2,
+                                       tui_justify() ? 1 : 0, &marks[n])};
     n++;
-    const Str mode_opts[2] = { STR("Build"), STR("Plan") };
+    const Str mode_opts[2] = {STR("Build"), STR("Plan")};
     kind[n] = SET_MODE;
-    rows[n] = (TuiCmd){ setting_value(rows_arena, STR("Mode")),
-        setting_options(rows_arena, mode_opts, 2, cfg->mode == MODE_PLAN ? 1 : 0,
-                        &marks[n]) };
+    rows[n] =
+        (TuiCmd){setting_value(rows_arena, STR("Mode")),
+                 setting_options(rows_arena, mode_opts, 2,
+                                 cfg->mode == MODE_PLAN ? 1 : 0, &marks[n])};
     n++;
-    const Str permission_opts[2] = { STR("Ask"), STR("Free") };
+    const Str permission_opts[2] = {STR("Ask"), STR("Free")};
     kind[n] = SET_PERMISSIONS;
-    rows[n] = (TuiCmd){ setting_value(rows_arena, STR("Permissions")),
-        setting_options(rows_arena, permission_opts, 2,
-                        cfg->permissions == PERMISSION_FREE ? 1 : 0,
-                        &marks[n]) };
+    rows[n] =
+        (TuiCmd){setting_value(rows_arena, STR("Permissions")),
+                 setting_options(rows_arena, permission_opts, 2,
+                                 cfg->permissions == PERMISSION_FREE ? 1 : 0,
+                                 &marks[n])};
     n++;
     /* The rungs are too many to list beside the row, so this one says where
      * it stands and the arrows walk it. The rows outlive this call, so the
@@ -3067,15 +3251,14 @@ static size_t settings_build(void *ud) {
     char tokens[16];
     snprintf(tokens, sizeof tokens, "%d", cfg->max_tokens);
     kind[n] = SET_MAX_TOKENS;
-    rows[n++] = (TuiCmd){
-        setting_value(rows_arena, STR("Max tokens")),
-        str_dup(rows_arena, str_c(tokens)) };
+    rows[n++] = (TuiCmd){setting_value(rows_arena, STR("Max tokens")),
+                         str_dup(rows_arena, str_c(tokens))};
 
-    const Str compact_opts[3] = { STR("Off"), STR("Manual"), STR("Auto") };
+    const Str compact_opts[3] = {STR("Off"), STR("Manual"), STR("Auto")};
     kind[n] = SET_COMPACT;
-    rows[n] = (TuiCmd){ setting_value(rows_arena, STR("Compact context")),
-        setting_options(rows_arena, compact_opts, 3, (size_t)cfg->compact,
-                        &marks[n]) };
+    rows[n] = (TuiCmd){setting_value(rows_arena, STR("Compact context")),
+                       setting_options(rows_arena, compact_opts, 3,
+                                       (size_t)cfg->compact, &marks[n])};
     n++;
     /* Only ever a share of a window the user configured: without one there
      * is no percentage to be past, and the row says so. */
@@ -3085,37 +3268,35 @@ static size_t settings_build(void *ud) {
     else
         snprintf(at, sizeof at, "%u%% (no window set)", cfg->compact_at);
     kind[n] = SET_COMPACT_AT;
-    rows[n++] = (TuiCmd){
-        setting_value(rows_arena, STR("Compact at")),
-        str_dup(rows_arena, str_c(at)) };
-    const Str compact_model_opts[2] = { STR("Main"), STR("Small") };
+    rows[n++] = (TuiCmd){setting_value(rows_arena, STR("Compact at")),
+                         str_dup(rows_arena, str_c(at))};
+    const Str compact_model_opts[2] = {STR("Main"), STR("Small")};
     kind[n] = SET_COMPACT_MODEL;
-    rows[n] = (TuiCmd){ setting_value(rows_arena, STR("Compact with")),
-        setting_options(rows_arena, compact_model_opts, 2,
-                        cfg->compact_small ? 1 : 0, &marks[n]) };
+    rows[n] = (TuiCmd){setting_value(rows_arena, STR("Compact with")),
+                       setting_options(rows_arena, compact_model_opts, 2,
+                                       cfg->compact_small ? 1 : 0, &marks[n])};
     n++;
 
     Str opt[SET_MAX_OPTIONS];
     if (cfg->reasoning_efforts.n && n < SET_MAX_ROWS) {
-        size_t opts = list_options(cfg->reasoning_efforts, opt,
-                                   SET_MAX_OPTIONS);
+        size_t opts =
+            list_options(cfg->reasoning_efforts, opt, SET_MAX_OPTIONS);
         kind[n] = SET_EFFORT;
-        rows[n] = (TuiCmd){
-            setting_value(rows_arena, STR("Reasoning effort")),
-            setting_options(rows_arena, opt, opts,
-                            list_at(opt, opts, cfg->reasoning_effort),
-                            &marks[n]) };
+        rows[n] =
+            (TuiCmd){setting_value(rows_arena, STR("Reasoning effort")),
+                     setting_options(rows_arena, opt, opts,
+                                     list_at(opt, opts, cfg->reasoning_effort),
+                                     &marks[n])};
         n++;
     }
     if (cfg->thinking_budgets.n && n < SET_MAX_ROWS) {
-        size_t opts = list_options(cfg->thinking_budgets, opt,
-                                   SET_MAX_OPTIONS);
+        size_t opts = list_options(cfg->thinking_budgets, opt, SET_MAX_OPTIONS);
         kind[n] = SET_BUDGET;
-        rows[n] = (TuiCmd){
-            setting_value(rows_arena, STR("Thinking budget")),
-            setting_options(rows_arena, opt, opts,
-                            list_at(opt, opts, cfg->thinking_budget),
-                            &marks[n]) };
+        rows[n] =
+            (TuiCmd){setting_value(rows_arena, STR("Thinking budget")),
+                     setting_options(rows_arena, opt, opts,
+                                     list_at(opt, opts, cfg->thinking_budget),
+                                     &marks[n])};
         n++;
     }
     v->n = n;
@@ -3123,7 +3304,10 @@ static size_t settings_build(void *ud) {
 }
 
 static void rerender_or_defer(Agent *ag) {
-    if (tui_busy()) { g_turn.rerender_pending = true; return; }
+    if (tui_busy()) {
+        g_turn.rerender_pending = true;
+        return;
+    }
     rerender_conv(ag->conv, ag->cfg, ag->show_instructions, ag->scratch, 0);
 }
 
@@ -3139,8 +3323,12 @@ static void find_expand(void *ud) {
 
 static b8 setting_shapes_request(u8 kind) {
     switch (kind) {
-        case SET_TOOL: case SET_MODE: case SET_STREAM:
-        case SET_MAX_TOKENS: case SET_EFFORT: case SET_BUDGET: return true;
+        case SET_TOOL:
+        case SET_MODE:
+        case SET_STREAM:
+        case SET_MAX_TOKENS:
+        case SET_EFFORT:
+        case SET_BUDGET: return true;
         default: return false;
     }
 }
@@ -3159,12 +3347,13 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
         case SET_EFFORT:
         case SET_BUDGET: {
             b8 is_effort = v->kind[row] == SET_EFFORT;
-            Str next = list_step(is_effort ? cfg->reasoning_efforts
-                                           : cfg->thinking_budgets,
-                                 is_effort ? cfg->reasoning_effort
-                                           : cfg->thinking_budget, delta);
+            Str next = list_step(
+                is_effort ? cfg->reasoning_efforts : cfg->thinking_budgets,
+                is_effort ? cfg->reasoning_effort : cfg->thinking_budget,
+                delta);
             if (!remember_reasoning(cfg, scratch, is_effort, next))
-                tui_notice(STR("setting changed but was not remembered: could not write provider settings"));
+                tui_notice(STR(
+                    "setting changed but was not remembered: could not write provider settings"));
             break;
         }
         case SET_VERBOSE:
@@ -3187,7 +3376,8 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
             break;
         case SET_TELEMETRY:
             if (!telemetry_set(!telemetry_on(), scratch))
-                tui_notice(STR("setting changed but was not remembered: could not write state"));
+                tui_notice(STR(
+                    "setting changed but was not remembered: could not write state"));
             break;
         case SET_WRAP:
             tui_set_justify(!tui_justify());
@@ -3195,13 +3385,12 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
                         tui_justify() ? STR("justified") : STR("word"));
             break;
         case SET_MODE:
-            agent_set_mode(ag, cfg->mode == MODE_PLAN ? MODE_BUILD
-                                                      : MODE_PLAN);
+            agent_set_mode(ag, cfg->mode == MODE_PLAN ? MODE_BUILD : MODE_PLAN);
             break;
         case SET_PERMISSIONS:
-            agent_set_permissions(ag,
-                cfg->permissions == PERMISSION_ASK ? PERMISSION_FREE
-                                                   : PERMISSION_ASK);
+            agent_set_permissions(ag, cfg->permissions == PERMISSION_ASK
+                                          ? PERMISSION_FREE
+                                          : PERMISSION_ASK);
             break;
         case SET_SHOW_INSTRUCTIONS:
             ag->show_instructions = !ag->show_instructions;
@@ -3226,7 +3415,7 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
             }
             break;
         case SET_COMPACT: {
-            const Str names[3] = { STR("off"), STR("manual"), STR("auto") };
+            const Str names[3] = {STR("off"), STR("manual"), STR("auto")};
             i32 next = (i32)cfg->compact + (delta > 0 ? 1 : -1);
             if (next > 2) next = 0;
             if (next < 0) next = 2;
@@ -3257,7 +3446,10 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
 static void settings_act(void *ud, size_t row, i32 delta) {
     SettingsView *v = ud;
     if (row >= v->n) return;
-    if (!tui_busy()) { settings_apply(v, row, delta); return; }
+    if (!tui_busy()) {
+        settings_apply(v, row, delta);
+        return;
+    }
     if (setting_shapes_request(v->kind[row])) {
         tui_notice(STR("that one shapes the request; it changes once the "
                        "turn ends"));
@@ -3281,8 +3473,12 @@ static const TuiSettings *settings_screen(Agent *ag) {
     view.ag = ag;
     arena_init(&view.rows_arena, g_screen, sizeof g_screen);
     set = (TuiSettings){
-        .rows = view.rows, .marks = view.marks, .max = SET_MAX_ROWS,
-        .build = settings_build, .act = settings_act, .ud = &view,
+        .rows = view.rows,
+        .marks = view.marks,
+        .max = SET_MAX_ROWS,
+        .build = settings_build,
+        .act = settings_act,
+        .ud = &view,
     };
     return &set;
 }
@@ -3304,16 +3500,16 @@ static b8 open_block_view(Agent *ag, size_t i) {
     char name_buf[64];
     i32 len = 0;
     size_t scratch_mark = ag->scratch->off;
-    YhlResult *syntax = arena_alloc(ag->scratch, sizeof *syntax,
-                                    alignof(YhlResult));
+    YhlResult *syntax =
+        arena_alloc(ag->scratch, sizeof *syntax, alignof(YhlResult));
     if (c->role[i] == M_USER && conv_is_shell(c, i)) {
-        parts[part_n].text = render_shell_text(c->text[i], &shown[part_n],
-                                               syntax);
+        parts[part_n].text =
+            render_shell_text(c->text[i], &shown[part_n], syntax);
         parts[part_n].syntax = syntax;
         part_n++;
-        parts[part_n].text = render_result_text(STR("shell"), (Str){0},
-                                                c->shell_out[i], NULL,
-                                                &shown[part_n], NULL);
+        parts[part_n].text =
+            render_result_text(STR("shell"), (Str){0}, c->shell_out[i], NULL,
+                               &shown[part_n], NULL);
         part_n++;
         len = snprintf(name_buf, 32, "shell run");
     } else if (c->role[i] == M_ASSISTANT && conv_is_call(c, i)) {
@@ -3328,9 +3524,8 @@ static b8 open_block_view(Agent *ag, size_t i) {
         size_t call = call_slot(c, i);
         Str name = call == CONV_NONE ? (Str){0} : c->tool_name[call];
         Str args = call == CONV_NONE ? (Str){0} : c->text[call];
-        parts[part_n].text = render_result_text(name, args, c->text[i],
-                                                ag->scratch, &shown[part_n],
-                                                syntax);
+        parts[part_n].text = render_result_text(
+            name, args, c->text[i], ag->scratch, &shown[part_n], syntax);
         parts[part_n].syntax = syntax;
         part_n++;
         len = snprintf(name_buf, sizeof name_buf, "%.*s output", (i32)name.n,
@@ -3339,12 +3534,12 @@ static b8 open_block_view(Agent *ag, size_t i) {
         ag->scratch->off = scratch_mark;
         return false;
     }
-    Str title = { name_buf, len > 0 && (size_t)len < sizeof name_buf
-                            ? (size_t)len : 0 };
+    Str title = {name_buf,
+                 len > 0 && (size_t)len < sizeof name_buf ? (size_t)len : 0};
     size_t start = 0, lines = 0;
     for (size_t p = 0; p < part_n; p++) {
         if (!parts[p].text.n) continue;
-        if (lines) lines++;             
+        if (lines) lines++;
         size_t part_top = lines;
         size_t part_lines = str_lines(parts[p].text);
         lines += part_lines;
@@ -3391,7 +3586,7 @@ static b8 on_busy_command(Str line, void *ud) {
         rerender_or_defer(ag);
         return true;
     }
-    Str name = { cmd, resolve_alias(cmd, line.n, sizeof cmd) };
+    Str name = {cmd, resolve_alias(cmd, line.n, sizeof cmd)};
 
     b8 ran;
     if (str_eq(name, STR("/settings")))
@@ -3435,12 +3630,13 @@ static void run_shell(Agent *ag, Str cmd) {
         say_conv_full();
         return;
     }
-    
+
     g_got_sigint = 0;
     say_busy("running shell");
     render_shell_call(stored, (u32)(slot + 1), false);
     f64 started = agent_now_seconds();
-    Buf out; buf_init(&out, ag->scratch, 4096);
+    Buf out;
+    buf_init(&out, ag->scratch, 4096);
     char err[256] = {0};
     if (!shell_capture(cmd, &out, err, sizeof err))
         buf_error(&out, err, "shell failed");
@@ -3457,7 +3653,7 @@ static void run_shell(Agent *ag, Str cmd) {
     render_tool_result(STR("shell"), (Str){0}, result, ag->scratch,
                        (u32)(slot + 1), false, ms);
     save_session(ag);
-    
+
     tui_set_status("ready");
     tui_activity_end();
 }
@@ -3482,15 +3678,16 @@ static b8 small_model_endpoint(Config *small, Str name, Str model, b8 manual,
     endpoints_load(&eps, scratch);
     size_t i = endpoints_find(&eps, name);
     char err[AGENT_MAX_PATH + 96] = {0};
-    Str key = i == ENDPOINT_NONE ? (Str){0}
-            : endpoints_key(name, scratch, scratch, err, sizeof err);
+    Str key = i == ENDPOINT_NONE
+                  ? (Str){0}
+                  : endpoints_key(name, scratch, scratch, err, sizeof err);
     b8 ok = i != ENDPOINT_NONE && !err[0]
-         && config_set_endpoint(small, name, eps.base_url[i], model,
-                                eps.api[i], key);
+            && config_set_endpoint(small, name, eps.base_url[i], model,
+                                   eps.api[i], key);
     scratch->off = mark;
     if (!ok && manual)
-        notice_fmt("the small model's provider %.*s is not usable",
-                   (i32)name.n, name.p);
+        notice_fmt("the small model's provider %.*s is not usable", (i32)name.n,
+                   name.p);
     return ok;
 }
 
@@ -3519,8 +3716,11 @@ static b8 small_config(Config *small, const Config *cfg, Arena *scratch,
 }
 
 typedef enum {
-    COMPACT_SUM_OK, COMPACT_SUM_NOMEM, COMPACT_SUM_INTERRUPTED,
-    COMPACT_SUM_EMPTY, COMPACT_SUM_ERROR
+    COMPACT_SUM_OK,
+    COMPACT_SUM_NOMEM,
+    COMPACT_SUM_INTERRUPTED,
+    COMPACT_SUM_EMPTY,
+    COMPACT_SUM_ERROR
 } CompactOutcome;
 
 /* One request that condenses slots [0, upto) into a checkpoint message.
@@ -3560,8 +3760,8 @@ static CompactOutcome compact_summarize(Agent *ag, size_t upto, Str *out,
     /* Static: a Config carries kilobytes of owned buffers, and this runs from
      * a turn's frame rather than from one with room for them. */
     static Config small;
-    b8 use_small = cfg->compact_small
-                && small_config(&small, cfg, ag->scratch, false);
+    b8 use_small =
+        cfg->compact_small && small_config(&small, cfg, ag->scratch, false);
 
     /* Busy is restored rather than cleared: this also runs inside a turn,
      * which stays busy until it ends. */
@@ -3592,7 +3792,10 @@ static CompactOutcome compact_summarize(Agent *ag, size_t upto, Str *out,
     if (rc >= 0) {
         for (size_t i = tmp.n; i-- > upto;) {
             if (tmp.role[i] != M_ASSISTANT || conv_is_call(&tmp, i)) continue;
-            if (tmp.text[i].n) { summary = str_trim(tmp.text[i]); break; }
+            if (tmp.text[i].n) {
+                summary = str_trim(tmp.text[i]);
+                break;
+            }
         }
     }
 
@@ -3608,12 +3811,11 @@ static CompactOutcome compact_summarize(Agent *ag, size_t upto, Str *out,
 
     b8 interrupted = g_got_sigint != 0;
     if (interrupted) g_got_sigint = 0;
-    CompactOutcome outcome =
-          interrupted          ? COMPACT_SUM_INTERRUPTED
-        : rc == PROVIDER_EMPTY ? COMPACT_SUM_EMPTY
-        : rc < 0               ? COMPACT_SUM_ERROR
-        : !summary.n           ? COMPACT_SUM_EMPTY
-                               : COMPACT_SUM_OK;
+    CompactOutcome outcome = interrupted            ? COMPACT_SUM_INTERRUPTED
+                             : rc == PROVIDER_EMPTY ? COMPACT_SUM_EMPTY
+                             : rc < 0               ? COMPACT_SUM_ERROR
+                             : !summary.n           ? COMPACT_SUM_EMPTY
+                                                    : COMPACT_SUM_OK;
 
     if (outcome == COMPACT_SUM_OK) {
         Buf b;
@@ -3657,10 +3859,12 @@ static void compact_session(Agent *ag) {
             tui_notice(STR("out of memory compacting"));
             return;
         case COMPACT_SUM_INTERRUPTED:
-            tui_notice(STR("compaction interrupted: this session is unchanged"));
+            tui_notice(
+                STR("compaction interrupted: this session is unchanged"));
             return;
         case COMPACT_SUM_EMPTY:
-            tui_notice(STR("the model sent no summary: this session is unchanged"));
+            tui_notice(
+                STR("the model sent no summary: this session is unchanged"));
             return;
         case COMPACT_SUM_ERROR:
             notice_fmt("could not compact: %s; this session is unchanged", err);
@@ -3686,7 +3890,7 @@ static void compact_session(Agent *ag) {
             ctx_sync(&g_ctx, conv);
             return;
         }
-        if (title_n) session_set_title(ag->sess, (Str){ title, title_n });
+        if (title_n) session_set_title(ag->sess, (Str){title, title_n});
         ctx_sync(&g_ctx, conv);
         tui_notice(STR("compacted: a new session continues from the summary "
                        "and the newest work"));
@@ -3713,14 +3917,16 @@ static void compact_session(Agent *ag) {
         ctx_sync(&g_ctx, conv);
         return;
     }
-    if (title_n) session_set_title(ag->sess, (Str){ title, title_n });
+    if (title_n) session_set_title(ag->sess, (Str){title, title_n});
     ctx_sync(&g_ctx, conv);
     tui_notice(STR("compacted: a new session continues from the summary"));
 }
 
 static void say_compaction(Str text) {
-    if (g_turn.one_shot) one_shot_diag("context", (Str){0}, text);
-    else tui_notice(text);
+    if (g_turn.one_shot)
+        one_shot_diag("context", (Str){0}, text);
+    else
+        tui_notice(text);
 }
 
 /* Compaction that keeps the thread: the older turns become one checkpoint
@@ -3747,7 +3953,10 @@ static b8 compact_auto(Agent *ag, size_t keep, b8 *interrupted) {
     Str built = {0};
     char err[256] = {0};
     CompactOutcome rc = compact_summarize(ag, keep, &built, err, sizeof err);
-    if (rc == COMPACT_SUM_INTERRUPTED) { *interrupted = true; return false; }
+    if (rc == COMPACT_SUM_INTERRUPTED) {
+        *interrupted = true;
+        return false;
+    }
     if (rc == COMPACT_SUM_ERROR) {
         notice_fmt("could not compact the context: %s", err);
         return false;
@@ -3770,14 +3979,14 @@ static b8 compact_auto(Agent *ag, size_t keep, b8 *interrupted) {
     if (title_n) memcpy(title, ag->sess->title.p, title_n);
     session_begin(ag->sess);
     b8 saved = save_session(ag);
-    if (saved && title_n)
-        session_set_title(ag->sess, (Str){ title, title_n });
+    if (saved && title_n) session_set_title(ag->sess, (Str){title, title_n});
 
     if (!g_turn.one_shot)
         rerender_conv(conv, ag->cfg, ag->show_instructions, ag->scratch, 0);
-    say_compaction(saved
-        ? STR("context compacted: the older work is now a summary")
-        : STR("context compacted in memory but the new session was not saved"));
+    say_compaction(
+        saved
+            ? STR("context compacted: the older work is now a summary")
+            : STR("context compacted in memory but the new session was not saved"));
     ctx_sync(&g_ctx, conv);
     return true;
 }
@@ -3844,8 +4053,7 @@ static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out) {
     if (interrupted_out) *interrupted_out = false;
     Str first_user = {0}, first_reply = {0};
     for (size_t i = 0; i < conv->n && !first_reply.n; i++) {
-        if (conv->role[i] == M_USER && !conv_is_shell(conv, i)
-            && !first_user.n)
+        if (conv->role[i] == M_USER && !conv_is_shell(conv, i) && !first_user.n)
             first_user = conv->text[i];
         else if (first_user.n && conv->role[i] == M_ASSISTANT
                  && !conv_is_call(conv, i) && conv->text[i].n)
@@ -3874,7 +4082,7 @@ static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out) {
     buf_puts(&ask, prompt_title_ask());
     buf_puts(&ask, STR("\n\nUser: "));
     buf_puts(&ask, str_clip_utf8(first_user, TITLE_EXCERPT_BYTES));
-    
+
     if (first_reply.n) {
         buf_puts(&ask, STR("\n\nAssistant: "));
         buf_puts(&ask, str_clip_utf8(first_reply, TITLE_EXCERPT_BYTES));
@@ -3900,7 +4108,7 @@ static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out) {
         small.max_tokens = TITLE_MAX_TOKENS;
 
     say_busy("naming");
-    
+
     Provider p = {
         .cfg = &small,
         .tools = NULL,
@@ -3915,7 +4123,7 @@ static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out) {
     f64 started = agent_now_seconds();
     arena_reset(ag->scratch);
     i32 rc = provider_run(&p, err, sizeof err);
-    
+
     if (manual) {
         tui_activity_end();
         tui_set_status("ready");
@@ -3931,7 +4139,10 @@ static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out) {
     if (rc >= 0 && !interrupted) {
         for (size_t i = tmp.n; i-- > 0;) {
             if (tmp.role[i] != M_ASSISTANT || conv_is_call(&tmp, i)) continue;
-            if (tmp.text[i].n) { title = str_trim(tmp.text[i]); break; }
+            if (tmp.text[i].n) {
+                title = str_trim(tmp.text[i]);
+                break;
+            }
         }
     }
     b8 named = title.n && session_set_title(sess, title);
@@ -3950,9 +4161,12 @@ static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out) {
         return true;
     }
     if (!manual) return false;
-    if (interrupted) tui_notice(STR("naming interrupted"));
-    else if (rc < 0) notice_fmt("could not name this session: %s", err);
-    else tui_notice(STR("the model sent no name for this session"));
+    if (interrupted)
+        tui_notice(STR("naming interrupted"));
+    else if (rc < 0)
+        notice_fmt("could not name this session: %s", err);
+    else
+        tui_notice(STR("the model sent no name for this session"));
     return false;
 }
 
@@ -3974,12 +4188,12 @@ static b8 agent_handoff(Agent *ag) {
         return false;
     }
     agent_set_mode(ag, MODE_BUILD);
-    
+
     char title[AGENT_MAX_TITLE + 1];
     size_t title_n = ag->sess->title.n < sizeof title ? ag->sess->title.n : 0;
     if (title_n) memcpy(title, ag->sess->title.p, title_n);
     session_begin(ag->sess);
-    if (title_n) session_set_title(ag->sess, (Str){ title, title_n });
+    if (title_n) session_set_title(ag->sess, (Str){title, title_n});
     tui_clear();
     return agent_turn(ag, plan);
 }
@@ -3989,8 +4203,9 @@ static Str last_reply(const Conv *conv) {
     for (size_t i = conv->n; i-- > 0;) {
         if (conv->role[i] != M_ASSISTANT || conv_is_call(conv, i)) continue;
         Str reply = conv->text[i];
-        while (reply.n && (reply.p[reply.n - 1] == '\n'
-                           || reply.p[reply.n - 1] == '\r'))
+        while (
+            reply.n
+            && (reply.p[reply.n - 1] == '\n' || reply.p[reply.n - 1] == '\r'))
             reply.n--;
         return reply;
     }
@@ -4053,7 +4268,7 @@ static b8 agent_turn(Agent *ag, Str text) {
         render_user_message(conv, conv->n - 1);
     }
     save_session(ag);
-    
+
     ctx_sync(&g_ctx, conv);
 
     TelEvent te;
@@ -4072,7 +4287,7 @@ static b8 agent_turn(Agent *ag, Str text) {
     char ending_buf[256] = {0};
     g_got_sigint = 0;
     tui_set_busy(true);
-    
+
     for (;;) {
         rounds++;
         if (g_got_sigint) {
@@ -4112,10 +4327,10 @@ static b8 agent_turn(Agent *ag, Str text) {
         arena_reset(ag->scratch);
         size_t before = conv->n;
         i32 rc = provider_run(&p, err, sizeof err);
-        
+
         md_end();
         md_set_muted(false);
-        
+
         save_session(ag);
         if (g_got_sigint) {
             announce_interrupt();
@@ -4123,7 +4338,6 @@ static b8 agent_turn(Agent *ag, Str text) {
             break;
         }
         if (rc < 0) {
-            
             TelEvent ee;
             tel_open(&ee, "error");
             tel_str(&ee, "where", STR("provider"));
@@ -4140,7 +4354,7 @@ static b8 agent_turn(Agent *ag, Str text) {
             ending_text = str_c(ending_buf);
             break;
         }
-        
+
         if (name_session_now(ag)) {
             announce_interrupt();
             ending = NOTIFY_INTERRUPTED;
@@ -4152,10 +4366,10 @@ static b8 agent_turn(Agent *ag, Str text) {
             ending = NOTIFY_TURN_DONE;
             break;
         }
-        
+
         size_t tail = conv->n;
         TurnAction act = run_tool_calls(ag, before, tail);
-        
+
         ctx_sync(&g_ctx, conv);
         if (act == TURN_FULL) {
             tui_set_status("ready");
@@ -4167,7 +4381,11 @@ static b8 agent_turn(Agent *ag, Str text) {
             ending_text = STR("approval was required for a guarded tool call");
             break;
         }
-        if (act == TURN_HANDOFF) { ok = true; ending = NOTIFY_TURN_DONE; break; }
+        if (act == TURN_HANDOFF) {
+            ok = true;
+            ending = NOTIFY_TURN_DONE;
+            break;
+        }
         if (act == TURN_DONE) {
             tui_set_status("ready");
             ok = true;
@@ -4199,7 +4417,7 @@ static b8 agent_turn(Agent *ag, Str text) {
     tel_int(&te, "persist_used", (i64)arena_used(ag->persist));
     tel_int(&te, "scratch_used", (i64)arena_used(ag->scratch));
     tel_send(&te);
-    
+
     if (!ag->handoff.n && !tui_queued_pending()) {
         if (ending == NOTIFY_TURN_DONE) ending_text = last_reply(conv);
         notify_event(ending, ending_text,
@@ -4222,15 +4440,13 @@ static b8 agent_turn(Agent *ag, Str text) {
  * while Ctrl-C only stops the operation currently on screen. */
 static b8 agent_turn_interactive(Agent *ag, Str text) {
     b8 ok = agent_turn(ag, text);
-    while (tui_queued_pending())
-        ok = agent_turn(ag, tui_queued_take());
+    while (tui_queued_pending()) ok = agent_turn(ag, tui_queued_take());
     return ok;
 }
 
 static void write_final_reply(const Conv *conv) {
     for (size_t i = conv->n; i-- > 0;) {
-        if (conv->role[i] != M_ASSISTANT || conv_is_call(conv, i))
-            continue;
+        if (conv->role[i] != M_ASSISTANT || conv_is_call(conv, i)) continue;
         Str reply = last_reply(conv);
         if (reply.n) fwrite(reply.p, 1, reply.n, stdout);
         fputc('\n', stdout);
@@ -4273,8 +4489,10 @@ static void restart_agent(char **argv) {
     highlight_close();
     telemetry_close();
     tui_stop();
-    if (have) execv(exe, argv);
-    else execvp(argv[0], argv);
+    if (have)
+        execv(exe, argv);
+    else
+        execvp(argv[0], argv);
     fprintf(stderr, AGENT_NAME ": could not restart: %s\n", strerror(errno));
     exit(1);
 }
@@ -4288,9 +4506,9 @@ i32 main(i32 argc, char **argv) {
 #endif
     CliOpts opts;
     switch (cli_parse(argc, argv, &opts)) {
-        case CLI_DONE:  return 0;
+        case CLI_DONE: return 0;
         case CLI_ERROR: return 2;
-        case CLI_RUN:   break;
+        case CLI_RUN: break;
     }
     if (opts.have_prompt && !opts.prompt.n) {
         fprintf(stderr, AGENT_NAME ": the prompt is empty\n");
@@ -4299,7 +4517,7 @@ i32 main(i32 argc, char **argv) {
 
     Arena persist, scratch;
     arena_init(&persist, g_persist, sizeof g_persist);
-    arena_init(&scratch,  g_scratch, sizeof g_scratch);
+    arena_init(&scratch, g_scratch, sizeof g_scratch);
 
     Config cfg;
     Conf conf;
@@ -4318,21 +4536,21 @@ i32 main(i32 argc, char **argv) {
 
     ToolRegistry tools;
     tools_init(&tools, &persist, cfg.shell_timeout_ms);
-    b8 interactive = !opts.have_prompt && isatty(STDIN_FILENO)
-                     && isatty(STDOUT_FILENO);
+    b8 interactive =
+        !opts.have_prompt && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
     tools_set_interactive(interactive);
-    
+
     char tools_err[128] = {0};
-    if (cfg.disable_tools.n &&
-        !tools_disable_list(&tools, cfg.disable_tools, tools_err,
-                            sizeof tools_err)) {
+    if (cfg.disable_tools.n
+        && !tools_disable_list(&tools, cfg.disable_tools, tools_err,
+                               sizeof tools_err)) {
         fprintf(stderr, AGENT_NAME ": %s\n", tools_err);
         return 2;
     }
     char prompt_err[AGENT_MAX_PATH + 128] = {0};
-    cfg.system_prompt = prompt_build(&tools, cfg.system_prompt, &persist,
-                                     &scratch, &cfg.system_sources, prompt_err,
-                                     sizeof prompt_err);
+    cfg.system_prompt =
+        prompt_build(&tools, cfg.system_prompt, &persist, &scratch,
+                     &cfg.system_sources, prompt_err, sizeof prompt_err);
     if (!cfg.system_prompt.n) {
         fprintf(stderr, AGENT_NAME ": %s\n", prompt_err);
         return 2;
@@ -4340,9 +4558,9 @@ i32 main(i32 argc, char **argv) {
     arena_reset(&scratch);
     /* Built up front, so switching mode later is an assignment rather than a
      * file read mid-turn. */
-    cfg.plan_prompt = prompt_build_plan(&tools, &persist, &scratch,
-                                        &cfg.plan_sources, prompt_err,
-                                        sizeof prompt_err);
+    cfg.plan_prompt =
+        prompt_build_plan(&tools, &persist, &scratch, &cfg.plan_sources,
+                          prompt_err, sizeof prompt_err);
     if (!cfg.plan_prompt.n) {
         fprintf(stderr, AGENT_NAME ": %s\n", prompt_err);
         return 2;
@@ -4366,12 +4584,12 @@ i32 main(i32 argc, char **argv) {
                 cfg.max_messages);
         return 1;
     }
-    
+
     if (cfg.images && media_init(&g_media, &persist, AGENT_MAX_MEDIA))
         conv_set_media(&conv, &g_media);
 
-    conv_add(&conv, M_SYSTEM, cfg.mode == MODE_PLAN ? cfg.plan_prompt
-                                                    : cfg.system_prompt);
+    conv_add(&conv, M_SYSTEM,
+             cfg.mode == MODE_PLAN ? cfg.plan_prompt : cfg.system_prompt);
     size_t session_mark = persist.off;
 
     // Without a resolvable data dir the conversation is not persisted.
@@ -4383,11 +4601,13 @@ i32 main(i32 argc, char **argv) {
      * clean whatever the setting says. */
     b8 truncated = false;
     b8 resumed = interactive && cfg.resume_last
-              && resume_latest(&sess, &conv, &persist, &scratch, &truncated);
+                 && resume_latest(&sess, &conv, &persist, &scratch, &truncated);
     if (!resumed) session_begin(&sess);
 
-    struct sigaction sa = {0}; sa.sa_handler = on_sigint;
-    sigemptyset(&sa.sa_mask); sa.sa_flags = 0;
+    struct sigaction sa = {0};
+    sa.sa_handler = on_sigint;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
     sigaction(SIGINT, &sa, NULL);
 
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -4399,8 +4619,8 @@ i32 main(i32 argc, char **argv) {
     md_set_raw(prefs.raw_markdown);
     b8 setup = no_provider(&cfg);
     tui_start(cfg.model, cfg.base_url, !cfg.api_key.p, setup, tools.n,
-              prefs.show_ignored, prefs.justify, prefs.status_fields,
-              cfg.mode, opts.have_prompt);
+              prefs.show_ignored, prefs.justify, prefs.status_fields, cfg.mode,
+              opts.have_prompt);
     tui_set_permissions(cfg.permissions);
     if (cfg.provider.n) tui_set_provider(cfg.provider);
     tui_set_reasoning(cfg.reasoning_effort, cfg.thinking_budget);
@@ -4416,11 +4636,11 @@ i32 main(i32 argc, char **argv) {
     tui_set_aliases(k_aliases, ALIAS_N);
     tui_set_history(&hist);
     tui_set_interrupt_flag(&g_got_sigint);
-    
+
     shell_set_idle(on_idle, NULL);
     shell_set_interrupt_flag(&g_got_sigint);
     shell_set_timeout(cfg.shell_timeout_ms);
-    
+
     atexit(jobs_stop);
     web_set_idle(on_idle, NULL, tui_input_fd(), &g_got_sigint);
     atexit(tui_stop);
@@ -4435,8 +4655,12 @@ i32 main(i32 argc, char **argv) {
     atexit(telemetry_close);
 
     Agent agent = {
-        .cfg = &cfg, .tools = &tools, .conv = &conv,
-        .persist = &persist, .scratch = &scratch, .sess = &sess,
+        .cfg = &cfg,
+        .tools = &tools,
+        .conv = &conv,
+        .persist = &persist,
+        .scratch = &scratch,
+        .sess = &sess,
         .mark = session_mark,
         .echo = !opts.have_prompt,
         .show_instructions = prefs.show_instructions,
@@ -4445,13 +4669,15 @@ i32 main(i32 argc, char **argv) {
     if (!render_verbose()) tui_set_find_expand(find_expand, &agent);
     b8 resumed_saved = !resumed || save_session(&agent);
 
-    
+
     if (opts.have_prompt) {
         if (no_provider(&cfg)) {
             Str hint = setup_hint(&cfg, &scratch);
             tui_stop();
-            fprintf(stderr, AGENT_NAME ": nothing to talk to; run " AGENT_NAME
-                            " without -p, then %.*s\n", (i32)hint.n, hint.p);
+            fprintf(stderr,
+                    AGENT_NAME ": nothing to talk to; run " AGENT_NAME
+                               " without -p, then %.*s\n",
+                    (i32)hint.n, hint.p);
             return 1;
         }
         b8 ok = agent_turn(&agent, opts.prompt);
@@ -4466,7 +4692,7 @@ i32 main(i32 argc, char **argv) {
     if (truncated && resumed_saved)
         tui_notice(STR("session truncated: the conversation is full"));
 
-    
+
     static char line[AGENT_LINE_BUF];
     for (;;) {
         size_t ln = 0;
@@ -4475,8 +4701,11 @@ i32 main(i32 argc, char **argv) {
          * them. */
         ctx_sync(&g_ctx, &conv);
         if (!tui_readline("> ", line, sizeof line, &ln)) break;
-        if (ln == 0) { g_got_sigint = 0; continue; }
-        
+        if (ln == 0) {
+            g_got_sigint = 0;
+            continue;
+        }
+
         /* The markers a command was typed behind leave the composer with it,
          * so an attachment reads them from here rather than from the box the
          * submission emptied. */
@@ -4485,24 +4714,27 @@ i32 main(i32 argc, char **argv) {
         if (agent.pending_n) {
             size_t skip = pending_prefix(&agent, line, ln);
             if (skip) {
-                if (skip <= sizeof shed) { memcpy(shed, line, skip); shed_n = skip; }
+                if (skip <= sizeof shed) {
+                    memcpy(shed, line, skip);
+                    shed_n = skip;
+                }
                 memmove(line, line + skip, ln - skip + 1);
                 ln -= skip;
             }
         }
-        b8 escaped = ln >= 2 && line[0] == '\\'
-                  && (line[1] == '/' || line[1] == '!');
+        b8 escaped =
+            ln >= 2 && line[0] == '\\' && (line[1] == '/' || line[1] == '!');
         if (escaped) {
             memmove(line, line + 1, ln);
             ln--;
             goto send_message;
         } else if (line[0] == '!') {
-            run_shell(&agent, (Str){ line + 1, ln - 1 });
+            run_shell(&agent, (Str){line + 1, ln - 1});
             continue;
         }
         if (!escaped && line[0] == '/') {
             ln = resolve_alias(line, ln, sizeof line);
-            telemetry_command((Str){ line, ln });
+            telemetry_command((Str){line, ln});
         }
         if (!strcmp(line, "/exit")) break;
         if (!strcmp(line, "/clear")) {
@@ -4510,8 +4742,8 @@ i32 main(i32 argc, char **argv) {
             agent.pending_n = 0;
             persist.off = session_mark;
             arena_reset(&scratch);
-            session_begin(&sess);   
-            
+            session_begin(&sess);
+
             tui_batch_begin();
             tui_clear();
             ctx_sync(&g_ctx, &conv);
@@ -4519,13 +4751,14 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
         if (!strcmp(line, "/mode")) {
-            agent_set_mode(&agent, cfg.mode == MODE_PLAN ? MODE_BUILD
-                                                         : MODE_PLAN);
-            tui_notice(cfg.mode == MODE_PLAN
-                       ? STR("plan mode: read-only, and it ends with a plan "
-                             "to approve")
-                       : STR("build mode: the agent edits files and runs "
-                             "commands"));
+            agent_set_mode(&agent,
+                           cfg.mode == MODE_PLAN ? MODE_BUILD : MODE_PLAN);
+            tui_notice(
+                cfg.mode == MODE_PLAN
+                    ? STR("plan mode: read-only, and it ends with a plan "
+                          "to approve")
+                    : STR("build mode: the agent edits files and runs "
+                          "commands"));
             continue;
         }
         if (!strcmp(line, "/fork")) {
@@ -4549,16 +4782,15 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
         if (!strncmp(line, "/attach", 7) && (ln == 7 || line[7] == ' ')) {
-            attach_image(&agent, (Str){ line + 7, ln - 7 },
-                         (Str){ shed, shed_n });
+            attach_image(&agent, (Str){line + 7, ln - 7}, (Str){shed, shed_n});
             continue;
         }
         if (!strcmp(line, "/export") || !strncmp(line, "/export ", 8)) {
-            export_session(&conv, (Str){ line + 7, ln - 7 });
+            export_session(&conv, (Str){line + 7, ln - 7});
             continue;
         }
         if (!strcmp(line, "/title") || !strncmp(line, "/title ", 7)) {
-            title_command(&agent, (Str){ line + 6, ln - 6 });
+            title_command(&agent, (Str){line + 6, ln - 6});
             continue;
         }
         if (!strcmp(line, "/settings")) {
@@ -4582,7 +4814,6 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
         if (!strncmp(line, "/expand ", 8)) {
-            
             unsigned long id = strtoul(line + 8, NULL, 10);
             if (id && id <= conv.n) {
                 conv.expanded[id - 1] = !conv.expanded[id - 1];
@@ -4608,16 +4839,16 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
         if (!escaped && line[0] == '/') {
-            notice_fmt("unknown command: %.*s; type / to see commands",
-                       (i32)ln, line);
+            notice_fmt("unknown command: %.*s; type / to see commands", (i32)ln,
+                       line);
             continue;
         }
-send_message:
+    send_message:
         if (no_provider(&cfg)) {
             tui_notice(setup_hint(&cfg, &scratch));
             continue;
         }
-        agent_turn_interactive(&agent, (Str){ line, ln });
+        agent_turn_interactive(&agent, (Str){line, ln});
     }
 
     tui_stop();

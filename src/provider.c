@@ -10,34 +10,38 @@
  * conversation is reported to the caller rather than written past.
  */
 b8 conv_init(Conv *c, Arena *persist, size_t cap) {
-    c->role           = arena_new(persist, MRole, cap);
-    c->text           = arena_new(persist, Str,   cap);
+    c->role = arena_new(persist, MRole, cap);
+    c->text = arena_new(persist, Str, cap);
     c->anthropic_thinking = arena_new(persist, Str, cap);
-    c->tool_name      = arena_new(persist, Str,   cap);
-    c->tool_call_id   = arena_new(persist, Str,   cap);
-    c->shell_out      = arena_new(persist, Str,   cap);
-    c->has_tool_call  = arena_new(persist, b8,  cap);
-    c->expanded       = arena_new(persist, b8,  cap);
-    c->args_object    = arena_new(persist, b8,  cap);
-    c->ms             = arena_new(persist, u32, cap);
-    c->media_off      = arena_new(persist, u32, cap);
-    c->media_n        = arena_new(persist, u16, cap);
-    c->media          = NULL;
+    c->tool_name = arena_new(persist, Str, cap);
+    c->tool_call_id = arena_new(persist, Str, cap);
+    c->shell_out = arena_new(persist, Str, cap);
+    c->has_tool_call = arena_new(persist, b8, cap);
+    c->expanded = arena_new(persist, b8, cap);
+    c->args_object = arena_new(persist, b8, cap);
+    c->ms = arena_new(persist, u32, cap);
+    c->media_off = arena_new(persist, u32, cap);
+    c->media_n = arena_new(persist, u16, cap);
+    c->media = NULL;
     c->n = 0;
     c->cap = cap;
     if (!c->role || !c->text || !c->anthropic_thinking || !c->tool_name
-        || !c->tool_call_id
-        || !c->shell_out || !c->has_tool_call || !c->expanded
-        || !c->args_object || !c->ms || !c->media_off || !c->media_n) {
+        || !c->tool_call_id || !c->shell_out || !c->has_tool_call
+        || !c->expanded || !c->args_object || !c->ms || !c->media_off
+        || !c->media_n) {
         c->cap = 0;
         return false;
     }
     return true;
 }
 
-size_t conv_room(const Conv *c) { return c->cap - c->n; }
+size_t conv_room(const Conv *c) {
+    return c->cap - c->n;
+}
 
-void conv_set_media(Conv *c, MediaSet *m) { c->media = m; }
+void conv_set_media(Conv *c, MediaSet *m) {
+    c->media = m;
+}
 
 void conv_attach_media(Conv *c, size_t i, size_t off, size_t n) {
     if (i >= c->n || !n || off > UINT32_MAX || n > UINT16_MAX) return;
@@ -75,7 +79,8 @@ b8 conv_clone_head(Conv *dst, const Conv *src, size_t keep, Arena *a,
     memcpy(dst->tool_name, src->tool_name, n * sizeof *dst->tool_name);
     memcpy(dst->tool_call_id, src->tool_call_id, n * sizeof *dst->tool_call_id);
     memcpy(dst->shell_out, src->shell_out, n * sizeof *dst->shell_out);
-    memcpy(dst->has_tool_call, src->has_tool_call, n * sizeof *dst->has_tool_call);
+    memcpy(dst->has_tool_call, src->has_tool_call,
+           n * sizeof *dst->has_tool_call);
     memcpy(dst->expanded, src->expanded, n * sizeof *dst->expanded);
     memcpy(dst->args_object, src->args_object, n * sizeof *dst->args_object);
     memcpy(dst->ms, src->ms, n * sizeof *dst->ms);
@@ -139,12 +144,12 @@ size_t conv_add_shell(Conv *c, Str cmd, Str out) {
 }
 b8 conv_is_shell(const Conv *c, size_t i) {
     return i < c->n && c->role[i] == M_USER
-        && str_eq(c->tool_name[i], STR("shell"));
+           && str_eq(c->tool_name[i], STR("shell"));
 }
 
 b8 conv_is_call(const Conv *c, size_t i) {
     return i < c->n && c->role[i] == M_ASSISTANT && c->has_tool_call[i]
-        && c->tool_name[i].p != NULL;
+           && c->tool_name[i].p != NULL;
 }
 
 static size_t conv_turns_back(const Conv *c, size_t turns) {
@@ -158,7 +163,7 @@ static size_t conv_turns_back(const Conv *c, size_t turns) {
  * the call slots after it and the results that answer them belong to it. */
 static b8 conv_round_head(const Conv *c, size_t i) {
     return c->role[i] == M_ASSISTANT && c->has_tool_call[i]
-        && !conv_is_call(c, i);
+           && !conv_is_call(c, i);
 }
 
 /* The slot the oldest round still sent whole begins at, `block` rounds at a
@@ -184,7 +189,7 @@ size_t conv_elide_start(const Conv *c) {
 
 b8 conv_result_elided(const Conv *c, size_t i, size_t recent) {
     return c->role[i] == M_TOOL && i < recent
-        && c->text[i].n > AGENT_ELIDE_BYTES;
+           && c->text[i].n > AGENT_ELIDE_BYTES;
 }
 
 b8 conv_round_start(const Conv *c, size_t i) {
@@ -253,8 +258,10 @@ static void write_tool_result(Buf *b, const Conv *c, size_t i, size_t recent) {
         Str name = conv_call_name(c, i);
         buf_puts(b, STR("\"[older "));
         buf_json_chars(b, name);
-        buf_putf(b, " result elided: %zu bytes. "
-                 "Call it again if you still need it.]\"", c->text[i].n);
+        buf_putf(b,
+                 " result elided: %zu bytes. "
+                 "Call it again if you still need it.]\"",
+                 c->text[i].n);
     } else {
         buf_json_str(b, c->text[i]);
     }
@@ -264,7 +271,10 @@ static void write_tool_result(Buf *b, const Conv *c, size_t i, size_t recent) {
  * then: a turn with nothing attached goes out in the shape every endpoint
  * that ever spoke to arqan already accepts. */
 static void oai_write_content(Buf *b, const Conv *c, size_t i) {
-    if (!conv_media_live(c, i)) { buf_json_str(b, c->text[i]); return; }
+    if (!conv_media_live(c, i)) {
+        buf_json_str(b, c->text[i]);
+        return;
+    }
     buf_putc(b, '[');
     b8 first = true;
     if (c->text[i].n) {
@@ -292,10 +302,10 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
         if (i) buf_putc(b, ',');
         const char *role = "user";
         switch (c->role[i]) {
-            case M_SYSTEM:    role = "system"; break;
-            case M_USER:      role = "user"; break;
+            case M_SYSTEM: role = "system"; break;
+            case M_USER: role = "user"; break;
             case M_ASSISTANT: role = "assistant"; break;
-            case M_TOOL:      role = "tool"; break;
+            case M_TOOL: role = "tool"; break;
         }
         buf_putc(b, '{');
         buf_putf(b, "\"role\":\"%s\"", role);
@@ -338,7 +348,7 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
             }
             buf_putc(b, ']');
             buf_putc(b, '}');
-            i = j - 1;   
+            i = j - 1;
             continue;
         }
         buf_putf(b, ",\"content\":");
@@ -365,7 +375,7 @@ static b8 anth_has_plain_block(const Conv *c, size_t i) {
 
 static b8 anth_has_block(const Conv *c, size_t i) {
     return c->anthropic_thinking[i].n || anth_has_plain_block(c, i)
-        || conv_media_live(c, i) > 0;
+           || conv_media_live(c, i) > 0;
 }
 
 
@@ -382,7 +392,7 @@ static void anth_write_media(Buf *b, const Conv *c, size_t i, b8 *first) {
 
 static void anth_write_thinking(Buf *b, Str raw, b8 *first) {
     if (raw.n < 2 || raw.p[0] != '[' || raw.p[raw.n - 1] != ']') return;
-    Str inner = { raw.p + 1, raw.n - 2 };
+    Str inner = {raw.p + 1, raw.n - 2};
     if (!inner.n) return;
     if (!*first) buf_putc(b, ',');
     *first = false;
@@ -390,8 +400,7 @@ static void anth_write_thinking(Buf *b, Str raw, b8 *first) {
 }
 
 static void anth_write_cache(Buf *b, b8 cache) {
-    if (cache)
-        buf_puts(b, STR(",\"cache_control\":{\"type\":\"ephemeral\"}"));
+    if (cache) buf_puts(b, STR(",\"cache_control\":{\"type\":\"ephemeral\"}"));
 }
 
 /* The arguments as the model wrote them, when they are an object. A model can
@@ -401,15 +410,21 @@ static void anth_write_cache(Buf *b, b8 cache) {
  * can see it wrote. */
 static void anth_write_input(Buf *b, const Conv *c, size_t i) {
     Str args = str_trim(c->text[i]);
-    if (!args.n) { buf_puts(b, STR("{}")); return; }
-    if (c->args_object[i]) { buf_put(b, args.p, args.n); return; }
+    if (!args.n) {
+        buf_puts(b, STR("{}"));
+        return;
+    }
+    if (c->args_object[i]) {
+        buf_put(b, args.p, args.n);
+        return;
+    }
     buf_puts(b, STR("{\"invalid_arguments\":"));
     buf_json_str(b, args);
     buf_putc(b, '}');
 }
 
-static void anth_write_block(Buf *b, const Conv *c, size_t i,
-                             size_t recent, b8 cache) {
+static void anth_write_block(Buf *b, const Conv *c, size_t i, size_t recent,
+                             b8 cache) {
     if (conv_is_shell(c, i)) {
         buf_puts(b, STR("{\"type\":\"text\",\"text\":\"!"));
         buf_json_chars(b, c->text[i]);
@@ -450,13 +465,19 @@ void conv_write_json_anthropic(Buf *b, const Conv *c) {
     size_t cache_at = CONV_NONE;
     for (size_t j = c->n; j-- > 0;) {
         if ((c->role[j] == M_USER || c->role[j] == M_TOOL)
-            && anth_has_plain_block(c, j)) { cache_at = j; break; }
+            && anth_has_plain_block(c, j)) {
+            cache_at = j;
+            break;
+        }
     }
     buf_putc(b, '[');
     b8 first_msg = true;
     size_t i = 0;
     while (i < c->n) {
-        if (!anth_has_block(c, i)) { i++; continue; }
+        if (!anth_has_block(c, i)) {
+            i++;
+            continue;
+        }
         b8 assistant = c->role[i] == M_ASSISTANT;
         if (!first_msg) buf_putc(b, ',');
         first_msg = false;
@@ -464,7 +485,8 @@ void conv_write_json_anthropic(Buf *b, const Conv *c) {
                  assistant ? "assistant" : "user");
         b8 first_block = true;
         for (; i < c->n && c->role[i] != M_SYSTEM
-               && (c->role[i] == M_ASSISTANT) == assistant; i++) {
+               && (c->role[i] == M_ASSISTANT) == assistant;
+             i++) {
             if (!anth_has_block(c, i)) continue;
             anth_write_thinking(b, c->anthropic_thinking[i], &first_block);
             anth_write_media(b, c, i, &first_block);
@@ -484,42 +506,45 @@ typedef struct {
     /* Each SSE event is parsed into its own region and thrown away, so a
      * turn's scratch use follows the size of the reply rather than the number
      * of events. */
-    Arena  ev;
-    Str  id[AGENT_MAX_TOOL_CALLS];
-    Str  name[AGENT_MAX_TOOL_CALLS];
-    Buf  args[AGENT_MAX_TOOL_CALLS];
-    b8   used[AGENT_MAX_TOOL_CALLS];
-    i32  count;
-    i32  dropped;      
-    Buf  text;
+    Arena ev;
+    Str id[AGENT_MAX_TOOL_CALLS];
+    Str name[AGENT_MAX_TOOL_CALLS];
+    Buf args[AGENT_MAX_TOOL_CALLS];
+    b8 used[AGENT_MAX_TOOL_CALLS];
+    i32 count;
+    i32 dropped;
+    Buf text;
     /* Canonical JSON array of signed Anthropic thinking blocks. The readable
      * summary is also sent to on_reason, but this whole form is what a later
      * tool-result request must return. */
-    Buf  anth_blocks;
-    b8   anth_first;
-    b8   anth_thinking_open;
-    b8   anth_thinking_closed;
-    b8   anth_signature_open;
-    b8   text_started;
-    b8   reason_started;
+    Buf anth_blocks;
+    b8 anth_first;
+    b8 anth_thinking_open;
+    b8 anth_thinking_closed;
+    b8 anth_signature_open;
+    b8 text_started;
+    b8 reason_started;
     char reason_last;
-    b8   anth_reason_new;
-    b8   reason_detail_seen;
-    b8   reason_detail_has_index;
-    f64  reason_detail_index;
-    b8   reason_detail_has_id;
-    u64  reason_detail_id;
-    
-    i32  open_slot;
-    i32  blocks;        
-    size_t events;       
-    size_t bad_events;   
-    size_t reason_bytes; 
-    b8 stream_error;     
+    b8 anth_reason_new;
+    b8 reason_detail_seen;
+    b8 reason_detail_has_index;
+    f64 reason_detail_index;
+    b8 reason_detail_has_id;
+    u64 reason_detail_id;
+
+    i32 open_slot;
+    i32 blocks;
+    size_t events;
+    size_t bad_events;
+    size_t reason_bytes;
+    b8 stream_error;
 } StreamState;
 
 static i32 slot(StreamState *s, i32 idx) {
-    if (idx < 0 || idx >= AGENT_MAX_TOOL_CALLS) { s->dropped++; return -1; }
+    if (idx < 0 || idx >= AGENT_MAX_TOOL_CALLS) {
+        s->dropped++;
+        return -1;
+    }
     if (!s->used[idx]) {
         s->used[idx] = true;
         buf_init(&s->args[idx], s->scratch, 256);
@@ -529,8 +554,8 @@ static i32 slot(StreamState *s, i32 idx) {
 }
 
 static b8 usage_size(const JVal *v, size_t *out) {
-    if (!v || v->type != J_NUM || !(v->u.n >= 0)
-        || v->u.n >= (f64)SIZE_MAX) return false;
+    if (!v || v->type != J_NUM || !(v->u.n >= 0) || v->u.n >= (f64)SIZE_MAX)
+        return false;
     *out = (size_t)v->u.n;
     return true;
 }
@@ -549,7 +574,8 @@ static void read_usage(Provider *p, const JVal *root) {
     const JVal *details = json_get(usage, STR("prompt_tokens_details"));
     size_t n = 0;
     if (!usage_size(prompt, &p->prompt_tokens)
-        || !usage_size(completion, &p->completion_tokens)) return;
+        || !usage_size(completion, &p->completion_tokens))
+        return;
     if (usage_size(total, &n))
         p->total_tokens = n;
     else
@@ -592,11 +618,11 @@ static void take_reason(Provider *p, StreamState *s, Str raw) {
 }
 
 
-static void take_reason_part(Provider *p, StreamState *s, Str raw, b8 new_part) {
+static void take_reason_part(Provider *p, StreamState *s, Str raw,
+                             b8 new_part) {
     if (!raw.n) return;
-    if (new_part && s->reason_started
-        && s->reason_last != '\n' && s->reason_last != '\r'
-        && raw.p[0] != '\n' && raw.p[0] != '\r'
+    if (new_part && s->reason_started && s->reason_last != '\n'
+        && s->reason_last != '\r' && raw.p[0] != '\n' && raw.p[0] != '\r'
         && p->on_reason)
         p->on_reason(STR("\n"), p->ud);
     take_reason(p, s, raw);
@@ -624,7 +650,7 @@ static void take_call(Provider *p, StreamState *s, const JVal *tc, i32 idx) {
     if (args.n) buf_puts(&s->args[sl], args);
     if (p->on_tool_call && s->name[sl].p)
         p->on_tool_call(sl, s->id[sl], s->name[sl],
-                        (Str){ s->args[sl].p, s->args[sl].n }, p->ud);
+                        (Str){s->args[sl].p, s->args[sl].n}, p->ud);
 }
 
 static void openai_event(Provider *p, StreamState *s, const JVal *ev) {
@@ -642,9 +668,10 @@ static void openai_event(Provider *p, StreamState *s, const JVal *ev) {
             const JVal *d = &details->u.arr.items[i];
             Str kind = json_str(d, STR("type"));
             Str text = str_eq(kind, STR("reasoning.summary"))
-                     ? json_str(d, STR("summary"))
-                     : str_eq(kind, STR("reasoning.text"))
-                     ? json_str(d, STR("text")) : (Str){0};
+                           ? json_str(d, STR("summary"))
+                       : str_eq(kind, STR("reasoning.text"))
+                           ? json_str(d, STR("text"))
+                           : (Str){0};
             if (!text.n) continue;
 
             const JVal *iv = json_get(d, STR("index"));
@@ -654,7 +681,7 @@ static void openai_event(Provider *p, StreamState *s, const JVal *ev) {
             b8 new_part = !s->reason_detail_seen;
             if (s->reason_detail_seen) {
                 new_part = has_index && s->reason_detail_has_index
-                         && s->reason_detail_index != iv->u.n;
+                           && s->reason_detail_index != iv->u.n;
                 if (id.n && s->reason_detail_has_id
                     && s->reason_detail_id != id_hash)
                     new_part = true;
@@ -672,7 +699,7 @@ static void openai_event(Provider *p, StreamState *s, const JVal *ev) {
             structured = true;
         }
     }
-    
+
     if (!structured) take_reason(p, s, reasoning_of(delta));
     take_text(p, s, json_str(delta, STR("content")));
     const JVal *tcs = json_get(delta, STR("tool_calls"));
@@ -680,10 +707,11 @@ static void openai_event(Provider *p, StreamState *s, const JVal *ev) {
         for (size_t i = 0; i < tcs->u.arr.n; i++) {
             const JVal *tc = &tcs->u.arr.items[i];
             const JVal *idxv = json_get(tc, STR("index"));
-            
+
             i32 idx = idxv && idxv->type == J_NUM && idxv->u.n >= 0
-                   && idxv->u.n < (f64)AGENT_MAX_TOOL_CALLS
-                    ? (i32)idxv->u.n : 0;
+                              && idxv->u.n < (f64)AGENT_MAX_TOOL_CALLS
+                          ? (i32)idxv->u.n
+                          : 0;
             take_call(p, s, tc, idx);
         }
     }
@@ -703,9 +731,9 @@ static void read_usage_anth(Provider *p, const JVal *owner) {
     if (usage_size(created, &uncached)) p->cache_creation_tokens = uncached;
     if (usage_size(cached, &uncached)) p->cache_read_tokens = uncached;
     if (usage_size(in, &uncached))
-        p->prompt_tokens = usage_add(usage_add(uncached,
-                                      p->cache_creation_tokens),
-                                      p->cache_read_tokens);
+        p->prompt_tokens =
+            usage_add(usage_add(uncached, p->cache_creation_tokens),
+                      p->cache_read_tokens);
     if (usage_size(out, &uncached)) p->completion_tokens = uncached;
     if (!p->prompt_tokens && !p->completion_tokens) return;
     p->total_tokens = usage_add(p->prompt_tokens, p->completion_tokens);
@@ -725,7 +753,7 @@ static void anth_open_tool(Provider *p, StreamState *s, const JVal *blk) {
     if (name.n) s->name[sl] = str_dup(s->scratch, name);
     if (p->on_tool_call && s->name[sl].p)
         p->on_tool_call(sl, s->id[sl], s->name[sl],
-                        (Str){ s->args[sl].p, s->args[sl].n }, p->ud);
+                        (Str){s->args[sl].p, s->args[sl].n}, p->ud);
 }
 
 static void anth_block_sep(StreamState *s) {
@@ -799,12 +827,14 @@ static void anth_event(Provider *p, StreamState *s, const JVal *ev) {
         const JVal *blk = json_get(ev, STR("content_block"));
         Str kind = json_str(blk, STR("type"));
         s->open_slot = -1;
-        if (str_eq(kind, STR("tool_use"))) anth_open_tool(p, s, blk);
+        if (str_eq(kind, STR("tool_use")))
+            anth_open_tool(p, s, blk);
         else if (str_eq(kind, STR("thinking")))
             anth_open_thinking(p, s, blk);
         else if (str_eq(kind, STR("redacted_thinking")))
             anth_save_block(s, blk);
-        else take_text(p, s, json_str(blk, STR("text")));
+        else
+            take_text(p, s, json_str(blk, STR("text")));
         return;
     }
     if (str_eq(type, STR("content_block_delta"))) {
@@ -821,7 +851,7 @@ static void anth_event(Provider *p, StreamState *s, const JVal *ev) {
             buf_puts(&s->args[sl], json_str(d, STR("partial_json")));
             if (p->on_tool_call && s->name[sl].p)
                 p->on_tool_call(sl, s->id[sl], s->name[sl],
-                                (Str){ s->args[sl].p, s->args[sl].n }, p->ud);
+                                (Str){s->args[sl].p, s->args[sl].n}, p->ud);
         }
         return;
     }
@@ -836,7 +866,7 @@ static b8 on_line(Str line, void *ud) {
     StreamState *s = p->ud;
     if (line.n >= 6 && !memcmp(line.p, "data:", 5)) {
         Str payload = str_trim(str_drop(line, 5));
-        
+
         if (str_eq(payload, STR("[DONE]"))) return false;
         s->events++;
         arena_reset(&s->ev);
@@ -844,13 +874,18 @@ static b8 on_line(Str line, void *ud) {
         /* The per-event arena is a fixed slice, so an event larger than it
          * parses into the turn's scratch rather than being dropped. */
         if (!ev) ev = json_parse(s->scratch, payload);
-        if (!ev) { s->bad_events++; return true; }
+        if (!ev) {
+            s->bad_events++;
+            return true;
+        }
         if (json_get(ev, STR("error"))) {
             s->stream_error = true;
             return false;
         }
-        if (p->cfg->api == API_ANTHROPIC) anth_event(p, s, ev);
-        else openai_event(p, s, ev);
+        if (p->cfg->api == API_ANTHROPIC)
+            anth_event(p, s, ev);
+        else
+            openai_event(p, s, ev);
     }
     return true;
 }
@@ -867,8 +902,8 @@ static b8 read_completion(Provider *p, StreamState *s, Str raw, Arena *scratch,
         return false;
     }
     read_usage(p, doc);
-    const JVal *msg = json_get(json_at(json_get(doc, STR("choices")), 0),
-                               STR("message"));
+    const JVal *msg =
+        json_get(json_at(json_get(doc, STR("choices")), 0), STR("message"));
     if (!msg) {
         snprintf(err, err_cap, "the reply carries no message");
         return false;
@@ -881,9 +916,10 @@ static b8 read_completion(Provider *p, StreamState *s, Str raw, Arena *scratch,
             const JVal *d = &details->u.arr.items[i];
             Str kind = json_str(d, STR("type"));
             Str text = str_eq(kind, STR("reasoning.summary"))
-                     ? json_str(d, STR("summary"))
-                     : str_eq(kind, STR("reasoning.text"))
-                     ? json_str(d, STR("text")) : (Str){0};
+                           ? json_str(d, STR("summary"))
+                       : str_eq(kind, STR("reasoning.text"))
+                           ? json_str(d, STR("text"))
+                           : (Str){0};
             if (!text.n) continue;
             take_reason_part(p, s, text, structured);
             structured = true;
@@ -936,20 +972,22 @@ static b8 read_message_anth(Provider *p, StreamState *s, Str raw,
     return true;
 }
 
-size_t provider_models(const Config *cfg, Arena *scratch, Str *out,
-                       size_t max, char *err, size_t err_cap) {
+size_t provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
+                       char *err, size_t err_cap) {
     if (!out || !max) return 0;
-    Buf body; buf_init(&body, scratch, AGENT_MAX_MODEL_BYTES);
+    Buf body;
+    buf_init(&body, scratch, AGENT_MAX_MODEL_BYTES);
     char why[192] = {0};
     i32 rc = http_get(cfg->base_url.p, "/models", cfg->api_key.p, cfg->api,
                       &body, why, sizeof why);
     if (rc != 0) {
-        
-        if (why[0] >= 'A' && why[0] <= 'Z')
-            why[0] = (char)(why[0] - 'A' + 'a');
-        if (rc < 0) snprintf(err, err_cap, "models: HTTP %d", -rc);
-        else if (why[0]) snprintf(err, err_cap, "models: %s", why);
-        else snprintf(err, err_cap, "models: request failed (%d)", rc);
+        if (why[0] >= 'A' && why[0] <= 'Z') why[0] = (char)(why[0] - 'A' + 'a');
+        if (rc < 0)
+            snprintf(err, err_cap, "models: HTTP %d", -rc);
+        else if (why[0])
+            snprintf(err, err_cap, "models: %s", why);
+        else
+            snprintf(err, err_cap, "models: request failed (%d)", rc);
         return 0;
     }
     Str raw = buf_finish(&body);
@@ -980,8 +1018,13 @@ size_t provider_models(const Config *cfg, Arena *scratch, Str *out,
 static b8 retryable(i32 rc) {
     if (rc == 2) return true;
     switch (-rc) {
-        case 408: case 425: case 429:
-        case 500: case 502: case 503: case 504: return true;
+        case 408:
+        case 425:
+        case 429:
+        case 500:
+        case 502:
+        case 503:
+        case 504: return true;
         default: return false;
     }
 }
@@ -1011,7 +1054,7 @@ static b8 retry_wait(const Provider *p, i32 delay_ms) {
         if (p->interrupt_flag && *p->interrupt_flag) return false;
         if (p->on_idle) p->on_idle(p->ud);
         i32 slice = delay_ms - waited < SLICE_MS ? delay_ms - waited : SLICE_MS;
-        struct timespec ts = { 0, (long)slice * 1000000L };
+        struct timespec ts = {0, (long)slice * 1000000L};
         nanosleep(&ts, NULL);
     }
     return !(p->interrupt_flag && *p->interrupt_flag);
@@ -1022,43 +1065,64 @@ static b8 template_owned(Str key, const Provider *p) {
     if (str_eq(key, STR("model")) || str_eq(key, STR("messages"))
         || str_eq(key, STR("system")) || str_eq(key, STR("tools"))
         || str_eq(key, STR("max_tokens")) || str_eq(key, STR("stream"))
-        || str_eq(key, STR("stream_options"))) return true;
+        || str_eq(key, STR("stream_options")))
+        return true;
     if (str_eq(key, STR("reasoning_effort")) && p->cfg->api == API_OPENAI
-        && p->cfg->reasoning_effort.n) return true;
+        && p->cfg->reasoning_effort.n)
+        return true;
     if (p->cfg->api != API_ANTHROPIC) return false;
-    if (str_eq(key, STR("output_config"))
-        && p->cfg->reasoning_effort.n) return true;
+    if (str_eq(key, STR("output_config")) && p->cfg->reasoning_effort.n)
+        return true;
     return str_eq(key, STR("thinking"))
-        && (p->cfg->thinking_budget.n || p->cfg->reasoning_effort.n);
+           && (p->cfg->thinking_budget.n || p->cfg->reasoning_effort.n);
 }
 
 static b8 write_template_value(Buf *b, const JVal *v, const Config *c,
                                char *err, size_t err_cap) {
     if (v->type == J_STR && str_eq(v->u.s, STR("$reasoning_effort"))) {
-        if (!c->reasoning_effort.n) { snprintf(err, err_cap, "reasoning template references an effort that is Off"); return false; }
-        buf_json_str(b, c->reasoning_effort); return true;
+        if (!c->reasoning_effort.n) {
+            snprintf(err, err_cap,
+                     "reasoning template references an effort that is Off");
+            return false;
+        }
+        buf_json_str(b, c->reasoning_effort);
+        return true;
     }
     if (v->type == J_STR && str_eq(v->u.s, STR("$thinking_budget"))) {
-        b8 ok = false; i64 n = str_int(c->thinking_budget, &ok);
-        if (!c->thinking_budget.n || !ok || n <= 0) { snprintf(err, err_cap, "reasoning template references a budget that is Off"); return false; }
-        buf_putf(b, "%lld", (long long)n); return true;
+        b8 ok = false;
+        i64 n = str_int(c->thinking_budget, &ok);
+        if (!c->thinking_budget.n || !ok || n <= 0) {
+            snprintf(err, err_cap,
+                     "reasoning template references a budget that is Off");
+            return false;
+        }
+        buf_putf(b, "%lld", (long long)n);
+        return true;
     }
     if (v->type == J_ARR) {
         buf_putc(b, '[');
-        for (size_t i = 0; i < v->u.arr.n; i++) { if (i) buf_putc(b, ','); if (!write_template_value(b, &v->u.arr.items[i], c, err, err_cap)) return false; }
-        buf_putc(b, ']'); return true;
+        for (size_t i = 0; i < v->u.arr.n; i++) {
+            if (i) buf_putc(b, ',');
+            if (!write_template_value(b, &v->u.arr.items[i], c, err, err_cap))
+                return false;
+        }
+        buf_putc(b, ']');
+        return true;
     }
     if (v->type == J_OBJ) {
-        buf_putc(b, '{'); size_t n = 0;
+        buf_putc(b, '{');
+        size_t n = 0;
         for (const JVal *m = v->u.obj.head; m; m = m->next) {
             if (n++) buf_putc(b, ',');
             buf_json_str(b, m->key);
             buf_putc(b, ':');
             if (!write_template_value(b, m, c, err, err_cap)) return false;
         }
-        buf_putc(b, '}'); return true;
+        buf_putc(b, '}');
+        return true;
     }
-    json_write(b, v); return true;
+    json_write(b, v);
+    return true;
 }
 
 static b8 build_request(Buf *b, const Provider *p, char *err, size_t err_cap) {
@@ -1072,14 +1136,17 @@ static b8 build_request(Buf *b, const Provider *p, char *err, size_t err_cap) {
             if (c->text[i].n) {
                 buf_puts(b, STR(",\"system\":[{\"type\":\"text\",\"text\":"));
                 buf_json_str(b, c->text[i]);
-                buf_puts(b, STR(",\"cache_control\":{\"type\":\"ephemeral\"}}]"));
+                buf_puts(b,
+                         STR(",\"cache_control\":{\"type\":\"ephemeral\"}}]"));
             }
             break;
         }
     }
     buf_puts(b, STR(",\"messages\":"));
-    if (anth) conv_write_json_anthropic(b, p->conv);
-    else conv_write_json(b, p->conv, p->tools);
+    if (anth)
+        conv_write_json_anthropic(b, p->conv);
+    else
+        conv_write_json(b, p->conv, p->tools);
     if (p->tools && p->tools->n) {
         buf_puts(b, STR(",\"tools\":"));
         tools_write_schemas(b, p->tools, p->cfg->api);
@@ -1093,7 +1160,8 @@ static b8 build_request(Buf *b, const Provider *p, char *err, size_t err_cap) {
         buf_puts(b, STR(",\"thinking\":{\"type\":\"adaptive\","
                         "\"display\":\"summarized\"}"));
     } else if (anth && p->cfg->thinking_budget.n) {
-        buf_putf(b, ",\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":%.*s,"
+        buf_putf(b,
+                 ",\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":%.*s,"
                  "\"display\":\"summarized\"}",
                  (i32)p->cfg->thinking_budget.n, p->cfg->thinking_budget.p);
     }
@@ -1104,12 +1172,28 @@ static b8 build_request(Buf *b, const Provider *p, char *err, size_t err_cap) {
     }
     if (p->cfg->reasoning_template.n) {
         JVal *root = json_parse(p->scratch, p->cfg->reasoning_template);
-        if (!root || root->type != J_OBJ) { snprintf(err, err_cap, "reasoning template must be a JSON object"); return false; }
+        if (!root || root->type != J_OBJ) {
+            snprintf(err, err_cap, "reasoning template must be a JSON object");
+            return false;
+        }
         for (const JVal *m = root->u.obj.head; m; m = m->next) {
-            if (template_owned(m->key, p)) { snprintf(err, err_cap, "reasoning template conflicts with request field %.*s", (i32)m->key.n, m->key.p); return false; }
-            for (const JVal *other = root->u.obj.head; other != m; other = other->next)
-                if (str_eq(m->key, other->key)) { snprintf(err, err_cap, "reasoning template has duplicate field %.*s", (i32)m->key.n, m->key.p); return false; }
-            buf_putc(b, ','); buf_json_str(b, m->key); buf_putc(b, ':');
+            if (template_owned(m->key, p)) {
+                snprintf(err, err_cap,
+                         "reasoning template conflicts with request field %.*s",
+                         (i32)m->key.n, m->key.p);
+                return false;
+            }
+            for (const JVal *other = root->u.obj.head; other != m;
+                 other = other->next)
+                if (str_eq(m->key, other->key)) {
+                    snprintf(err, err_cap,
+                             "reasoning template has duplicate field %.*s",
+                             (i32)m->key.n, m->key.p);
+                    return false;
+                }
+            buf_putc(b, ',');
+            buf_json_str(b, m->key);
+            buf_putc(b, ':');
             if (!write_template_value(b, m, p->cfg, err, err_cap)) return false;
         }
     }
@@ -1117,9 +1201,11 @@ static b8 build_request(Buf *b, const Provider *p, char *err, size_t err_cap) {
         buf_puts(b, p->cfg->stream ? STR(",\"stream\":true}")
                                    : STR(",\"stream\":false}"));
     else
-        buf_puts(b, p->cfg->stream
-                 ? STR(",\"stream\":true,\"stream_options\":{\"include_usage\":true}}")
-                 : STR(",\"stream\":false}"));
+        buf_puts(
+            b,
+            p->cfg->stream
+                ? STR(",\"stream\":true,\"stream_options\":{\"include_usage\":true}}")
+                : STR(",\"stream\":false}"));
     return true;
 }
 
@@ -1134,13 +1220,19 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     p->usage_valid = false;
 
     StreamState *s = arena_new(scratch, StreamState, 1);
-    if (!s) { snprintf(err, err_cap, "out of memory starting a turn"); return -1; }
+    if (!s) {
+        snprintf(err, err_cap, "out of memory starting a turn");
+        return -1;
+    }
     memset(s, 0, sizeof *s);
     s->scratch = scratch;
     s->open_slot = -1;
     enum { EVENT_ARENA_BYTES = 4u << 20 };
     void *ev_mem = arena_alloc(scratch, EVENT_ARENA_BYTES, 16);
-    if (!ev_mem) { snprintf(err, err_cap, "out of memory starting a turn"); return -1; }
+    if (!ev_mem) {
+        snprintf(err, err_cap, "out of memory starting a turn");
+        return -1;
+    }
     arena_init(&s->ev, ev_mem, EVENT_ARENA_BYTES);
     buf_init(&s->text, scratch, 1024);
     buf_init(&s->anth_blocks, scratch, 1024);
@@ -1150,7 +1242,8 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     void *saved_ud = p->ud;
     p->ud = s;
 
-    Buf body; buf_init(&body, scratch, 4096);
+    Buf body;
+    buf_init(&body, scratch, 4096);
     if (!build_request(&body, p, err, err_cap)) {
         p->ud = saved_ud;
         return -1;
@@ -1168,17 +1261,17 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     if (!p->cfg->stream) buf_init(&whole, scratch, 1u << 16);
     HttpReq r = {
         .base_url = p->cfg->base_url.p,
-        .api_key  = p->cfg->api_key.p,
-        .api      = p->cfg->api,
-        .on_line  = on_line,
-        .ud       = p,
+        .api_key = p->cfg->api_key.p,
+        .api = p->cfg->api,
+        .on_line = on_line,
+        .ud = p,
         .line_arena = scratch,
         .body_out = p->cfg->stream ? NULL : &whole,
-        .body     = bstr.p,
+        .body = bstr.p,
         .interrupt_flag = p->interrupt_flag,
-        .idle_fd  = p->on_idle ? p->idle_fd : -1,
-        .on_idle  = p->on_idle,
-        .idle_ud  = saved_ud,
+        .idle_fd = p->on_idle ? p->idle_fd : -1,
+        .on_idle = p->on_idle,
+        .idle_ud = saved_ud,
         .fail_out = NULL,
         .fail_cap = 0,
     };
@@ -1205,12 +1298,12 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
                 read_completion(p, s, buf_finish(&whole), scratch, parse_err,
                                 sizeof parse_err);
         }
-        empty_reply = rc == 0 && !parse_err[0] && !s->stream_error
-                   && response_empty(s);
+        empty_reply =
+            rc == 0 && !parse_err[0] && !s->stream_error && response_empty(s);
         b8 retry_candidate = empty_reply || s->stream_error || retryable(rc);
-        if ((rc == 0 && !empty_reply && !s->stream_error)
-            || !retry_candidate || attempt >= attempts
-            || !output_untouched(s)) break;
+        if ((rc == 0 && !empty_reply && !s->stream_error) || !retry_candidate
+            || attempt >= attempts || !output_untouched(s))
+            break;
 
         i32 delay = backoff_ms(p->cfg->retry_delay_ms, attempt);
         char reason[160];
@@ -1220,9 +1313,11 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         else if (empty_reply)
             snprintf(reason, sizeof reason,
                      "the provider returned an empty response");
-        else if (rc < 0) snprintf(reason, sizeof reason, "HTTP %d", -rc);
-        else snprintf(reason, sizeof reason, "%s",
-                      fail[0] ? fail : "the connection failed");
+        else if (rc < 0)
+            snprintf(reason, sizeof reason, "HTTP %d", -rc);
+        else
+            snprintf(reason, sizeof reason, "%s",
+                     fail[0] ? fail : "the connection failed");
         TelEvent re;
         tel_open(&re, "retry");
         tel_int(&re, "attempt", attempt);
@@ -1232,9 +1327,12 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         tel_send(&re);
         if (p->on_retry)
             p->on_retry(attempt, attempts, delay, str_c(reason), saved_ud);
-        if (!retry_wait(p, delay)) { rc = 3; break; }
+        if (!retry_wait(p, delay)) {
+            rc = 3;
+            break;
+        }
 
-        
+
         s->events = 0;
         s->bad_events = 0;
         s->stream_error = false;
@@ -1258,7 +1356,10 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         s->anth_thinking_open = false;
         s->anth_thinking_closed = false;
         s->anth_signature_open = false;
-        if (!p->cfg->stream) { whole.n = 0; whole.oom = false; }
+        if (!p->cfg->stream) {
+            whole.n = 0;
+            whole.oom = false;
+        }
         parse_err[0] = '\0';
         p->prompt_tokens = 0;
         p->completion_tokens = 0;
@@ -1284,7 +1385,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     tel_bool(&tev, "stream", p->cfg->stream);
     tel_int(&tev, "sse_events", (i64)s->events);
     tel_int(&tev, "bad_events", (i64)s->bad_events);
-    tel_shape(&tev, "reply", (Str){ s->text.p, s->text.n });
+    tel_shape(&tev, "reply", (Str){s->text.p, s->text.n});
     tel_int(&tev, "reason_bytes", (i64)s->reason_bytes);
     tel_int(&tev, "dropped_calls", s->dropped);
     tel_bool(&tev, "empty", empty_reply);
@@ -1292,8 +1393,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     if (p->usage_valid) {
         tel_int(&tev, "prompt_tokens", (i64)p->prompt_tokens);
         tel_int(&tev, "completion_tokens", (i64)p->completion_tokens);
-        tel_int(&tev, "cache_creation_tokens",
-                (i64)p->cache_creation_tokens);
+        tel_int(&tev, "cache_creation_tokens", (i64)p->cache_creation_tokens);
         tel_int(&tev, "cache_read_tokens", (i64)p->cache_read_tokens);
         tel_int(&tev, "total_tokens", (i64)p->total_tokens);
     }
@@ -1304,9 +1404,12 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         return -1;
     }
     if (rc != 0) {
-        if (rc < 0) snprintf(err, err_cap, "HTTP %d", -rc);
-        else if (fail[0]) snprintf(err, err_cap, "%s", fail);
-        else snprintf(err, err_cap, "request failed (%d)", rc);
+        if (rc < 0)
+            snprintf(err, err_cap, "HTTP %d", -rc);
+        else if (fail[0])
+            snprintf(err, err_cap, "%s", fail);
+        else
+            snprintf(err, err_cap, "request failed (%d)", rc);
         return -1;
     }
     if (s->stream_error) {
@@ -1315,14 +1418,17 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     }
 
     if (s->dropped)
-        agent_log(AGENT_LOG_WARN, "dropped %d tool call(s) past the per-turn cap of %d",
-                 s->dropped, (i32)AGENT_MAX_TOOL_CALLS);
+        agent_log(AGENT_LOG_WARN,
+                  "dropped %d tool call(s) past the per-turn cap of %d",
+                  s->dropped, (i32)AGENT_MAX_TOOL_CALLS);
     /* A turn that said nothing because every event was unreadable is an error
      * rather than an empty reply, which would otherwise reach the transcript
      * as silence. */
     if (s->bad_events && !s->text.n && !s->count && !s->reason_bytes) {
-        snprintf(err, err_cap, "the provider sent %zu event(s) arqan could not "
-                 "read", s->bad_events);
+        snprintf(err, err_cap,
+                 "the provider sent %zu event(s) arqan could not "
+                 "read",
+                 s->bad_events);
         return -1;
     }
     if (response_empty(s)) {
@@ -1352,14 +1458,15 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         }
     }
 
-    
+
     i32 calls = 0;
     for (i32 i = 0; i < s->count; i++)
         if (s->used[i] && s->name[i].p) calls++;
 
     size_t needed = calls ? (size_t)calls + 1 : 1;
     if (conv_room(p->conv) < needed) {
-        snprintf(err, err_cap, "conversation is full (%zu messages)", p->conv->cap);
+        snprintf(err, err_cap, "conversation is full (%zu messages)",
+                 p->conv->cap);
         return -1;
     }
 

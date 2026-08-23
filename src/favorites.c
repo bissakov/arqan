@@ -28,7 +28,7 @@ static void favorites_parse(Favorites *f, Str provider, Str list) {
     while (off < list.n && f->n < AGENT_MAX_FAVORITES) {
         size_t end = off;
         while (end < list.n && list.p[end] != ',') end++;
-        Str item = str_trim((Str){ list.p + off, end - off });
+        Str item = str_trim((Str){list.p + off, end - off});
         off = end + 1;
         if (!item.n || item.n > AGENT_MAX_MODEL_NAME) continue;
         if (favorites_has(f, provider, item)) continue;
@@ -44,13 +44,13 @@ size_t favorites_load(Favorites *f, const Endpoints *e, Arena *a) {
     Settings s;
     // The state file is read once here rather than once per provider.
     if (!path.n || !settings_load(&s, path, a)) return 0;
-    favorites_parse(f, (Str){0}, settings_get(&s, FAVORITES_SECTION,
-                                              FAVORITES_KEY));
+    favorites_parse(f, (Str){0},
+                    settings_get(&s, FAVORITES_SECTION, FAVORITES_KEY));
     for (size_t i = 0; e && i < e->n; i++) {
         Str section = favorites_section(e->name[i], a);
         if (!section.n) continue;
-        favorites_parse(f, e->name[i], settings_get(&s, section,
-                                                    FAVORITES_KEY));
+        favorites_parse(f, e->name[i],
+                        settings_get(&s, section, FAVORITES_KEY));
     }
     return f->n;
 }
@@ -85,11 +85,12 @@ b8 favorites_toggle(Favorites *f, Str provider, Str model, Arena *scratch,
                     b8 *on, char *err, size_t err_cap) {
     if (on) *on = favorites_has(f, provider, model);
     if (!model.n || model.n > AGENT_MAX_MODEL_NAME) return false;
-    
+
     for (size_t i = 0; i < model.n; i++)
         if (model.p[i] == ',') {
-            if (err) snprintf(err, err_cap,
-                              "a model id with a comma cannot be favorited");
+            if (err)
+                snprintf(err, err_cap,
+                         "a model id with a comma cannot be favorited");
             return false;
         }
 
@@ -107,9 +108,11 @@ b8 favorites_toggle(Favorites *f, Str provider, Str model, Arena *scratch,
         f->n--;
     } else {
         if (f->n >= AGENT_MAX_FAVORITES) {
-            if (err) snprintf(err, err_cap, "no room for another favorite "
-                              "(%d); unfavorite one first",
-                              (i32)AGENT_MAX_FAVORITES);
+            if (err)
+                snprintf(err, err_cap,
+                         "no room for another favorite "
+                         "(%d); unfavorite one first",
+                         (i32)AGENT_MAX_FAVORITES);
             return false;
         }
         f->provider[f->n] = provider;
@@ -122,7 +125,7 @@ b8 favorites_toggle(Favorites *f, Str provider, Str model, Arena *scratch,
     Str section = favorites_section(provider, scratch);
     Str value = favorites_join(f, provider, scratch);
     b8 ok = section.n && (value.p || !favorites_count(f, provider))
-         && state_set_in(section, FAVORITES_KEY, value, scratch);
+            && state_set_in(section, FAVORITES_KEY, value, scratch);
     scratch->off = mark;
     if (!ok && err) snprintf(err, err_cap, "could not write the state file");
     return ok;
@@ -133,9 +136,9 @@ b8 favorites_forget(Str provider, Arena *scratch) {
     size_t mark = scratch->off;
     Str path = paths_file(AGENT_DIR_STATE, AGENT_STATE_NAME, scratch);
     Str section = favorites_section(provider, scratch);
-    
-    b8 ok = path.n && section.n
-         && settings_remove_section(path, section, scratch);
+
+    b8 ok =
+        path.n && section.n && settings_remove_section(path, section, scratch);
     scratch->off = mark;
     return ok;
 }

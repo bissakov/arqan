@@ -12,71 +12,71 @@
 #include <termios.h>
 #include <unistd.h>
 
-#define TUI_TRANSCRIPT_CAP (8u << 20)
-#define TUI_MAX_ROWS 4096
-#define TUI_BODY_GUTTER 2
-#define TUI_MIN_COLS 40
-#define TUI_MIN_ROWS 12
-#define TUI_OUT_CAP (1u << 16)   
-#define TUI_SEL_ROWS 512         
-#define TUI_SEL_ROW_BYTES 2048   
-#define TUI_SEL_BYTES (1u << 16) 
-#define TUI_VIEW_BYTES AGENT_RESP_BUF 
-#define TUI_VIEW_RUNS YHL_RUN_MAX     
-#define TUI_POPUP_ROWS 8         
-#define TUI_PICK_NOTICE_ROWS 4   
-#define TUI_PICK_SEARCH_MIN 10   
-#define TUI_PATH_ENTS 256        
-#define TUI_PATH_SLOT 512        
-#define TUI_PATH_DEPTH 12        
+#define TUI_TRANSCRIPT_CAP   (8u << 20)
+#define TUI_MAX_ROWS         4096
+#define TUI_BODY_GUTTER      2
+#define TUI_MIN_COLS         40
+#define TUI_MIN_ROWS         12
+#define TUI_OUT_CAP          (1u << 16)
+#define TUI_SEL_ROWS         512
+#define TUI_SEL_ROW_BYTES    2048
+#define TUI_SEL_BYTES        (1u << 16)
+#define TUI_VIEW_BYTES       AGENT_RESP_BUF
+#define TUI_VIEW_RUNS        YHL_RUN_MAX
+#define TUI_POPUP_ROWS       8
+#define TUI_PICK_NOTICE_ROWS 4
+#define TUI_PICK_SEARCH_MIN  10
+#define TUI_PATH_ENTS        256
+#define TUI_PATH_SLOT        512
+#define TUI_PATH_DEPTH       12
 
 _Static_assert(TUI_STATUS_N == AGENT_STATUS_FIELDS,
                "status preference mask must cover every field");
-#define TUI_PATH_SCAN 20000      
-#define TUI_PICK_QUERY 64        
-#define TUI_FIND_QUERY 128       
-#define TUI_FIND_ROW_HITS 64     
-#define TUI_ASK_MAX AGENT_MAX_REASONING_TEMPLATE
+#define TUI_PATH_SCAN     20000
+#define TUI_PICK_QUERY    64
+#define TUI_FIND_QUERY    128
+#define TUI_FIND_ROW_HITS 64
+#define TUI_ASK_MAX       AGENT_MAX_REASONING_TEMPLATE
 /* Markdown claims one span per emphasis run, so this counts words of a reply
  * rather than messages. */
-#define TUI_MAX_SPANS 4096
+#define TUI_MAX_SPANS  4096
 #define TUI_MAX_SYNTAX 16384
-#define TUI_CKPTS 4096           
-#define TUI_MAX_ZONES 512        
-#define TUI_MAX_PINS  512        
-#define TUI_MAX_USERS 512        
+#define TUI_CKPTS      4096
+#define TUI_MAX_ZONES  512
+#define TUI_MAX_PINS   512
+#define TUI_MAX_USERS  512
 
 
-#define S_RESET       "\033[0m"
-#define S_PANEL_BG    "\033[48;5;236m"
-#define S_TEXT        "\033[38;5;253m"
-#define S_MUTED       "\033[38;5;245m"
-#define S_CYAN        "\033[1;38;5;81m"
-#define S_BLUE        "\033[1;38;5;75m"
-#define S_GREEN       "\033[1;38;5;114m"
-#define S_YELLOW      "\033[1;38;5;221m"
-#define S_RED         "\033[1;38;5;203m"
-#define S_PURPLE      "\033[1;38;5;177m"
-#define S_BOLD        "\033[1m"
+#define S_RESET    "\033[0m"
+#define S_PANEL_BG "\033[48;5;236m"
+#define S_TEXT     "\033[38;5;253m"
+#define S_MUTED    "\033[38;5;245m"
+#define S_CYAN     "\033[1;38;5;81m"
+#define S_BLUE     "\033[1;38;5;75m"
+#define S_GREEN    "\033[1;38;5;114m"
+#define S_YELLOW   "\033[1;38;5;221m"
+#define S_RED      "\033[1;38;5;203m"
+#define S_PURPLE   "\033[1;38;5;177m"
+#define S_BOLD     "\033[1m"
 
-#define S_NOBOLD      "\033[22m"
-#define S_ITALIC      "\033[3m"
-#define S_MONO        "\033[38;5;180m"
-#define S_STRIKE      "\033[9;38;5;245m"
-#define S_USER_BG     "\033[48;5;238m"
-#define S_CODE_BG     "\033[48;5;235m"
+#define S_NOBOLD  "\033[22m"
+#define S_ITALIC  "\033[3m"
+#define S_MONO    "\033[38;5;180m"
+#define S_STRIKE  "\033[9;38;5;245m"
+#define S_USER_BG "\033[48;5;238m"
+#define S_CODE_BG "\033[48;5;235m"
 /* A fence inside a user turn stays inside the panel: it takes a shade of its
  * own rather than the assistant's code slab, so the block never breaks. */
 #define S_USER_CODE_BG "\033[48;5;236m"
 
-#define S_USER_RULE   "\033[38;5;81m"
-#define S_POPUP_BG    "\033[48;5;237m"
-#define S_POPUP_SEL   "\033[48;5;24m"
-#define S_LINK        "\033[4;38;5;81m"
-#define S_LINK_HOVER  "\033[1;4;38;5;81m"
+#define S_USER_RULE  "\033[38;5;81m"
+#define S_POPUP_BG   "\033[48;5;237m"
+#define S_POPUP_SEL  "\033[48;5;24m"
+#define S_LINK       "\033[4;38;5;81m"
+#define S_LINK_HOVER "\033[1;4;38;5;81m"
 
-#define S_FIND        "\033[48;5;94m"
-#define S_FIND_CUR    "\033[48;5;214m\033[38;5;16m"
+#define S_FIND     "\033[48;5;94m"
+#define S_FIND_CUR "\033[48;5;214m\033[38;5;16m"
 
 typedef struct {
     struct termios original_termios;
@@ -85,20 +85,20 @@ typedef struct {
     b8 tty;
     b8 fullscreen;
     b8 editing;
-    b8 busy;          
-    b8 input_eof;     
+    b8 busy;
+    b8 input_eof;
     b8 color;
     /* Between a bracketed paste's start and end markers every byte is text:
      * a newline in it is a line break in the draft rather than a submit. */
     b8 pasting;
-    b8 paste_cr;      
+    b8 paste_cr;
     Str model;
     Str provider;
     Str reasoning_effort;
     Str thinking_budget;
-    AgentMode mode;   
+    AgentMode mode;
     PermissionPolicy permissions;
-    Str base_url;     
+    Str base_url;
     /* A modal question owns the composer. Its answer is not a message, so it
      * reaches neither the transcript nor the prompt history. */
     b8 ask;
@@ -111,66 +111,66 @@ typedef struct {
     size_t context_window;
     b8 status_visible[TUI_STATUS_N];
     char status[32];
-    
+
     char activity[48];
     size_t activity_n;
-    f64 activity_started;      
-    f64 activity_turn;         
+    f64 activity_started;
+    f64 activity_turn;
     size_t transcript_n;
     /* Newlines written but not committed. The transcript never ends with one,
      * so the air between two blocks is decided in tui_block alone instead of
      * being split between the block that ended and the one that starts. */
     size_t pend_nl;
-    size_t trail_nl;   
-    b8 wrote_any;      
+    size_t trail_nl;
+    b8 wrote_any;
     size_t scroll_rows;
-    
-    size_t wrap_cols;        
-    size_t wrap_scanned;     
-    size_t wrap_rows;        
+
+    size_t wrap_cols;
+    size_t wrap_scanned;
+    size_t wrap_rows;
     size_t ckpt_off[TUI_CKPTS];
     size_t ckpt_n;
-    size_t ckpt_step;        
-    
+    size_t ckpt_step;
+
     size_t span_a[TUI_MAX_SPANS];
     size_t span_b[TUI_MAX_SPANS];
-    u8     span_k[TUI_MAX_SPANS];
+    u8 span_k[TUI_MAX_SPANS];
     size_t span_head;
     size_t span_n;
-    
+
     size_t syntax_a[TUI_MAX_SYNTAX];
     size_t syntax_b[TUI_MAX_SYNTAX];
-    u8     syntax_k[TUI_MAX_SYNTAX];
+    u8 syntax_k[TUI_MAX_SYNTAX];
     size_t syntax_head;
     size_t syntax_n;
-    u64    transcript_epoch;
-    
+    u64 transcript_epoch;
+
     size_t user_a[TUI_MAX_USERS];
     size_t user_b[TUI_MAX_USERS];
     size_t user_n;
     size_t user_open_a;
-    b8     user_open;
+    b8 user_open;
     /* Byte ranges a click acts on, each carrying the caller's id, kept beside
      * the transcript like spans. */
     size_t zone_a[TUI_MAX_ZONES];
     size_t zone_b[TUI_MAX_ZONES];
-    u32    zone_id[TUI_MAX_ZONES];
+    u32 zone_id[TUI_MAX_ZONES];
     size_t zone_n;
-    u32    zone_open;        
+    u32 zone_open;
     size_t zone_open_a;
-    u32    click_down;       
-    u32    click_id;         
-    u32    hover_id;         
-    
+    u32 click_down;
+    u32 click_id;
+    u32 hover_id;
+
     size_t pin_off[TUI_MAX_PINS];
-    u32    pin_id[TUI_MAX_PINS];
+    u32 pin_id[TUI_MAX_PINS];
     size_t pin_n;
-    
-    u32    anchor_id;
-    b8     anchor_is_pin;    
+
+    u32 anchor_id;
+    b8 anchor_is_pin;
     size_t anchor_below;
     size_t anchor_scroll;
-    
+
     volatile sig_atomic_t *interrupt;
     f64 last_paint;
     size_t painted_rows;
@@ -184,7 +184,7 @@ typedef struct {
      * running is still here when the next prompt opens. */
     size_t input_n;
     size_t input_cur;
-    
+
     size_t queued_n;
     /* Vertical motion inside the composer. `input_top` is the visual row the
      * composer window starts at, kept across frames so a tall draft scrolls
@@ -196,11 +196,11 @@ typedef struct {
     b8 goal_col_valid;
     size_t kill_n;
     const TuiCmd *cmds;
-    const TuiMark *marks;   
+    const TuiMark *marks;
     size_t cmd_n;
     const TuiAlias *aliases;
     size_t alias_n;
-    u16 comp_idx[AGENT_MAX_POPUP];      
+    u16 comp_idx[AGENT_MAX_POPUP];
     /* The popup also completes a filesystem path: while `path_mode` is set it
      * is offering these entries instead of the command table, listed from the
      * directory the word at the cursor names. */
@@ -209,24 +209,24 @@ typedef struct {
     char path_slot[TUI_PATH_ENTS][TUI_PATH_SLOT];
     u8 path_rank[TUI_PATH_ENTS];
     u16 path_depth[TUI_PATH_ENTS];
-    u16 path_ord[TUI_PATH_ENTS];     
+    u16 path_ord[TUI_PATH_ENTS];
     size_t path_n;
-    size_t path_at;                  
-    
+    size_t path_at;
+
     size_t attach_n;
-    
+
     b8 justify;
-    AgentIgnore ignore;              
+    AgentIgnore ignore;
     size_t comp_n;
     size_t comp_sel;
-    b8 pick_end;                     
-    b8 comp_dismissed;               
-    
+    b8 pick_end;
+    b8 comp_dismissed;
+
     b8 esc_armed;
-    
+
     char notice[160];
     size_t notice_n;
-    
+
     char pick_notice[512];
     size_t pick_notice_n;
     /* A modal picker owns the frame until it is answered, so the popup is
@@ -239,38 +239,38 @@ typedef struct {
     /* What a run with nothing to talk to is missing, empty when it wants for
      * nothing. Not owned: the caller passes a literal. */
     Str setup_hint;
-    
+
     History *hist;
     size_t draft_n;
-    
+
     b8 hist_nav;
-    
+
     u16 row_text_n[TUI_SEL_ROWS];
     u16 row_text_w[TUI_SEL_ROWS];
-    
+
     size_t row_src[TUI_SEL_ROWS];
-    
-    b8 find_open;            // the box owns the keyboard
-    void (*find_expand)(void *ud);   
+
+    b8 find_open; // the box owns the keyboard
+    void (*find_expand)(void *ud);
     void *find_expand_ud;
-    b8 find_wrapped;         
+    b8 find_wrapped;
     char find_q[TUI_FIND_QUERY];
     size_t find_q_n;
-    size_t find_cur;         
+    size_t find_cur;
     size_t find_count;
-    size_t find_index;       
-    size_t find_scanned;     
-    u64    find_epoch;       
-    
+    size_t find_index;
+    size_t find_scanned;
+    u64 find_epoch;
+
     size_t view_first_off;
     size_t view_end_off;
-    b8 sel_active;    
-    b8 sel_drag;      
-    size_t sel_ar, sel_ac;   
-    size_t sel_br, sel_bc;   
+    b8 sel_active;
+    b8 sel_drag;
+    size_t sel_ar, sel_ac;
+    size_t sel_br, sel_bc;
     char sel_text[TUI_SEL_BYTES];
-    f64 copy_notice;  
-    b8 tmux_copy_hinted;  
+    f64 copy_notice;
+    b8 tmux_copy_hinted;
     char out[TUI_OUT_CAP];
     size_t out_n;
 } TuiState;
@@ -281,18 +281,18 @@ typedef struct {
  * and these pages stay untouched until something is actually written into
  * them: a session that never fills the scrollback never pays for it. */
 typedef struct {
-    char transcript[TUI_TRANSCRIPT_CAP];   
-    char input[AGENT_LINE_BUF];             
-    char queued[AGENT_LINE_BUF];            
-    char draft[AGENT_LINE_BUF];             
-    char kill[AGENT_LINE_BUF];              
-    char attach[AGENT_MAX_PATH];            
-    char view[TUI_VIEW_BYTES];               
-    
-    u32  view_syn_a[TUI_VIEW_RUNS];
-    u32  view_syn_b[TUI_VIEW_RUNS];
-    u8   view_syn_k[TUI_VIEW_RUNS];
-    char row_text[TUI_SEL_ROWS][TUI_SEL_ROW_BYTES];  
+    char transcript[TUI_TRANSCRIPT_CAP];
+    char input[AGENT_LINE_BUF];
+    char queued[AGENT_LINE_BUF];
+    char draft[AGENT_LINE_BUF];
+    char kill[AGENT_LINE_BUF];
+    char attach[AGENT_MAX_PATH];
+    char view[TUI_VIEW_BYTES];
+
+    u32 view_syn_a[TUI_VIEW_RUNS];
+    u32 view_syn_b[TUI_VIEW_RUNS];
+    u8 view_syn_k[TUI_VIEW_RUNS];
+    char row_text[TUI_SEL_ROWS][TUI_SEL_ROW_BYTES];
 } TuiBulk;
 
 typedef struct {
@@ -326,8 +326,8 @@ typedef struct {
 
 static View g_view;
 static b8 view_locks_row(size_t row) {
-    return g_view.active && !g_view.paint
-        && row >= g_view.top_row && row <= g_view.bottom_row;
+    return g_view.active && !g_view.paint && row >= g_view.top_row
+           && row <= g_view.bottom_row;
 }
 
 
@@ -336,16 +336,22 @@ static void view_unlock(void) {
     g_view.bottom_row = 0;
 }
 
-static void on_winch(i32 sig) { (void)sig; g_winch = 1; }
+static void on_winch(i32 sig) {
+    (void)sig;
+    g_winch = 1;
+}
 
 
 static void flush_out(void) {
     size_t off = 0;
     while (off < g_tui.out_n) {
         ssize_t w = write(STDOUT_FILENO, g_tui.out + off, g_tui.out_n - off);
-        if (w > 0) { off += (size_t)w; continue; }
+        if (w > 0) {
+            off += (size_t)w;
+            continue;
+        }
         if (w < 0 && errno == EINTR) continue;
-        break;   // closed or full pipe: drop the frame rather than spin
+        break; // closed or full pipe: drop the frame rather than spin
     }
     g_tui.out_n = 0;
 }
@@ -353,19 +359,29 @@ static void flush_out(void) {
 static void put_raw(const char *s, size_t n) {
     while (n) {
         size_t room = TUI_OUT_CAP - g_tui.out_n;
-        if (!room) { flush_out(); room = TUI_OUT_CAP; }
+        if (!room) {
+            flush_out();
+            room = TUI_OUT_CAP;
+        }
         size_t take = n < room ? n : room;
         memcpy(g_tui.out + g_tui.out_n, s, take);
         g_tui.out_n += take;
-        s += take; n -= take;
+        s += take;
+        n -= take;
     }
 }
 
-static void put_str(const char *s) { put_raw(s, strlen(s)); }
-static void style(const char *s) { if (g_tui.color) put_str(s); }
+static void put_str(const char *s) {
+    put_raw(s, strlen(s));
+}
+static void style(const char *s) {
+    if (g_tui.color) put_str(s);
+}
 
 
-static void frame_begin(void) { put_str("\033[?2026h"); }
+static void frame_begin(void) {
+    put_str("\033[?2026h");
+}
 
 static void frame_end(void) {
     put_str("\033[?2026l");
@@ -405,7 +421,8 @@ static void capture_cwd(void) {
     size_t home_n = home ? strlen(home) : 0;
     if (home_n && !strncmp(full, home, home_n)
         && (full[home_n] == '/' || full[home_n] == '\0')) {
-        i32 n = snprintf(g_tui.cwd_buf, sizeof g_tui.cwd_buf, "~%s", full + home_n);
+        i32 n =
+            snprintf(g_tui.cwd_buf, sizeof g_tui.cwd_buf, "~%s", full + home_n);
         g_tui.cwd = (Str){g_tui.cwd_buf, n > 0 ? (size_t)n : 0};
     } else {
         size_t n = strlen(full);
@@ -443,16 +460,25 @@ static void cup(size_t row, size_t col) {
 
 
 static size_t glyph(const char *s, size_t n, i32 *width) {
-    if (n == 0) { *width = 0; return 0; }
+    if (n == 0) {
+        *width = 0;
+        return 0;
+    }
     u8 c = (u8)s[0];
-    if (c < 0x80) { *width = 1; return 1; }
+    if (c < 0x80) {
+        *width = 1;
+        return 1;
+    }
     u32 cp = 0;
     size_t used = utf8_decode(s, n, &cp);
     /* Bytes the terminal will print as something take a cell each: a
      * malformed sequence advances one byte rather than stalling the walk. */
-    if (used == 0) { *width = 1; return 1; }
+    if (used == 0) {
+        *width = 1;
+        return 1;
+    }
     i32 w = agent_width(cp);
-    
+
     if (w == 0 && cp < 0xA0) w = 1;
     *width = w;
     return used;
@@ -474,8 +500,8 @@ static size_t next_glyph(const char *s, size_t n, size_t at) {
 }
 
 static struct {
-    size_t row;   
-    size_t col;   
+    size_t row;
+    size_t col;
 } g_cap;
 
 /* Byte offset of the first glyph at or after `cell`; *reached is the column
@@ -526,8 +552,9 @@ static void snap_put(const char *s, size_t used, size_t width) {
 
 
 static void sel_norm(size_t *r0, size_t *c0, size_t *r1, size_t *c1) {
-    b8 forward = g_tui.sel_ar < g_tui.sel_br
-              || (g_tui.sel_ar == g_tui.sel_br && g_tui.sel_ac <= g_tui.sel_bc);
+    b8 forward =
+        g_tui.sel_ar < g_tui.sel_br
+        || (g_tui.sel_ar == g_tui.sel_br && g_tui.sel_ac <= g_tui.sel_bc);
     *r0 = forward ? g_tui.sel_ar : g_tui.sel_br;
     *c0 = forward ? g_tui.sel_ac : g_tui.sel_bc;
     *r1 = forward ? g_tui.sel_br : g_tui.sel_ar;
@@ -535,14 +562,15 @@ static void sel_norm(size_t *r0, size_t *c0, size_t *r1, size_t *c1) {
 }
 
 static void sel_row_range(size_t screen_row, size_t *c0, size_t *c1) {
-    *c0 = 0; *c1 = 0;
+    *c0 = 0;
+    *c1 = 0;
     if (!g_tui.sel_active || !screen_row) return;
     size_t r0, s0, r1, s1;
     sel_norm(&r0, &s0, &r1, &s1);
     size_t r = screen_row - 1;
     if (r < r0 || r > r1) return;
     *c0 = r == r0 ? s0 : 0;
-    *c1 = r == r1 ? s1 : (size_t)-1;   
+    *c1 = r == r1 ? s1 : (size_t)-1;
 }
 
 static void put_text(const char *s, size_t n) {
@@ -588,7 +616,7 @@ static size_t sel_extract(char *out, size_t cap) {
         size_t reached = 0;
         size_t a = row_byte_at(r, r == r0 ? c0 : 0, &reached);
         size_t b = row_byte_at(r, r == r1 ? c1 : (size_t)-1, &reached);
-        while (b > a && g_bulk.row_text[r][b - 1] == ' ') b--;  
+        while (b > a && g_bulk.row_text[r][b - 1] == ' ') b--;
         for (size_t i = a; i < b && n + 1 < cap; i++)
             out[n++] = g_bulk.row_text[r][i];
         if (r < r1 && n + 1 < cap) out[n++] = '\n';
@@ -604,20 +632,26 @@ static void b64_put(const u8 *p, size_t n) {
     size_t i = 0;
     for (; i + 3 <= n; i += 3) {
         u32 v = (u32)p[i] << 16 | (u32)p[i + 1] << 8 | (u32)p[i + 2];
-        q[0] = t[v >> 18 & 63]; q[1] = t[v >> 12 & 63];
-        q[2] = t[v >> 6 & 63];  q[3] = t[v & 63];
+        q[0] = t[v >> 18 & 63];
+        q[1] = t[v >> 12 & 63];
+        q[2] = t[v >> 6 & 63];
+        q[3] = t[v & 63];
         put_raw(q, 4);
     }
     if (i < n) {
         b8 two = i + 1 < n;
         u32 v = (u32)p[i] << 16 | (two ? (u32)p[i + 1] << 8 : 0u);
-        q[0] = t[v >> 18 & 63]; q[1] = t[v >> 12 & 63];
-        q[2] = two ? t[v >> 6 & 63] : '='; q[3] = '=';
+        q[0] = t[v >> 18 & 63];
+        q[1] = t[v >> 12 & 63];
+        q[2] = two ? t[v >> 6 & 63] : '=';
+        q[3] = '=';
         put_raw(q, 4);
     }
 }
 
-b8 tui_clipboard_via_tmux(void) { return getenv("TMUX") != NULL; }
+b8 tui_clipboard_via_tmux(void) {
+    return getenv("TMUX") != NULL;
+}
 
 /* The clipboard is written blind: OSC 52 carries no reply, so nothing here
  * learns whether it landed. Under tmux the odds are worth saying out loud,
@@ -644,7 +678,7 @@ static void sel_clear(void) {
     if (!g_tui.sel_active && !g_tui.sel_drag) return;
     g_tui.sel_active = false;
     g_tui.sel_drag = false;
-    g_tui.bar_valid = false;   
+    g_tui.bar_valid = false;
 }
 
 static void sel_point(i32 mouse_row, i32 mouse_col, size_t *row, size_t *col) {
@@ -661,7 +695,7 @@ static void sel_begin(i32 mouse_row, i32 mouse_col) {
     sel_point(mouse_row, mouse_col, &g_tui.sel_ar, &g_tui.sel_ac);
     g_tui.sel_br = g_tui.sel_ar;
     g_tui.sel_bc = g_tui.sel_ac;
-    g_tui.sel_active = false;   
+    g_tui.sel_active = false;
     g_tui.sel_drag = true;
     g_tui.bar_valid = false;
 }
@@ -669,8 +703,8 @@ static void sel_begin(i32 mouse_row, i32 mouse_col) {
 static void sel_extend(i32 mouse_row, i32 mouse_col) {
     if (!g_tui.sel_drag) return;
     sel_point(mouse_row, mouse_col, &g_tui.sel_br, &g_tui.sel_bc);
-    g_tui.sel_active = g_tui.sel_br != g_tui.sel_ar
-                    || g_tui.sel_bc != g_tui.sel_ac;
+    g_tui.sel_active =
+        g_tui.sel_br != g_tui.sel_ar || g_tui.sel_bc != g_tui.sel_ac;
     g_tui.bar_valid = false;
 }
 
@@ -690,10 +724,10 @@ static void sel_finish(void) {
  * breaks inside itself, since the alternative is a row that cannot be shown.
  */
 typedef struct {
-    size_t end;    
-    size_t next;   
-    size_t width;  
-    b8 hard;       
+    size_t end;
+    size_t next;
+    size_t width;
+    b8 hard;
 } Row;
 
 static size_t skip_spaces(Str s, size_t i) {
@@ -703,31 +737,34 @@ static size_t skip_spaces(Str s, size_t i) {
 
 static Row row_break(Str s, size_t from, size_t cols, size_t col0) {
     size_t col = col0;
-    size_t sp = SIZE_MAX;      
+    size_t sp = SIZE_MAX;
     size_t sp_col = 0;
-    b8 word = false;           
+    b8 word = false;
     Row brk = {0};
     b8 have_brk = false;
     for (size_t i = from; i < s.n;) {
-        if (s.p[i] == '\n') return (Row){ i, i + 1, col - col0, true };
+        if (s.p[i] == '\n') return (Row){i, i + 1, col - col0, true};
         i32 gw = 0;
         size_t used = glyph(s.p + i, s.n - i, &gw);
         size_t w = gw > 0 ? (size_t)gw : 0;
-        
+
         if (w && col > 0 && col + w > cols && i > from) {
             if (s.p[i] == ' ') {
                 size_t at = sp == SIZE_MAX ? i : sp;
                 size_t at_col = sp == SIZE_MAX ? col : sp_col;
-                return (Row){ at, skip_spaces(s, at), at_col - col0, false };
+                return (Row){at, skip_spaces(s, at), at_col - col0, false};
             }
             if (have_brk) return brk;
-            return (Row){ i, i, col - col0, false };
+            return (Row){i, i, col - col0, false};
         }
         if (s.p[i] == ' ') {
-            if (sp == SIZE_MAX) { sp = i; sp_col = col; }
+            if (sp == SIZE_MAX) {
+                sp = i;
+                sp_col = col;
+            }
         } else {
             if (sp != SIZE_MAX && word) {
-                brk = (Row){ sp, i, sp_col - col0, false };
+                brk = (Row){sp, i, sp_col - col0, false};
                 have_brk = true;
             }
             sp = SIZE_MAX;
@@ -736,12 +773,12 @@ static Row row_break(Str s, size_t from, size_t cols, size_t col0) {
         i += used;
         col += w;
     }
-    return (Row){ s.n, s.n, col - col0, true };
+    return (Row){s.n, s.n, col - col0, true};
 }
 
 
-static size_t text_rows(Str s, size_t cols, size_t prompt_cells,
-                        size_t cursor, size_t *cursor_row, size_t *cursor_col) {
+static size_t text_rows(Str s, size_t cols, size_t prompt_cells, size_t cursor,
+                        size_t *cursor_row, size_t *cursor_col) {
     size_t row = 0, col0 = prompt_cells;
     for (size_t i = 0;;) {
         Row r = row_break(s, i, cols, col0);
@@ -797,13 +834,17 @@ static size_t put_safe_clipped(Str s, size_t max_cells, size_t *used_cells) {
     size_t i = 0;
     for (; i < s.n;) {
         unsigned char c = (unsigned char)s.p[i];
-        if (c < 0x20 || c == 0x7f) { i++; continue; }
+        if (c < 0x20 || c == 0x7f) {
+            i++;
+            continue;
+        }
         i32 width = 0;
         size_t used = glyph(s.p + i, s.n - i, &width);
         size_t w = width > 0 ? (size_t)width : 0;
         if (cells + w > max_cells) break;
         put_text(s.p + i, used);
-        cells += w; i += used;
+        cells += w;
+        i += used;
     }
     if (used_cells) *used_cells += cells;
     return i;
@@ -827,45 +868,63 @@ static void pad_row(size_t used, size_t cols) {
 }
 
 enum {
-    ROW_PLAIN = 1, ROW_COMPOSER, ROW_STATUS,
-    ROW_USER, ROW_REASON, ROW_TOOL, ROW_RESULT, ROW_ERROR, ROW_NOTICE,
-    ROW_POPUP, ROW_WELCOME_ART, ROW_WELCOME_TEXT,
-    ROW_HEADING, ROW_CODE, ROW_QUOTE,      
-    ROW_ZONE, ROW_ZONE_HOVER,              
-    ROW_SOURCE,                            
-    ROW_BOLD, ROW_EMPH, ROW_MONO, ROW_MARKER, ROW_STRIKE
+    ROW_PLAIN = 1,
+    ROW_COMPOSER,
+    ROW_STATUS,
+    ROW_USER,
+    ROW_REASON,
+    ROW_TOOL,
+    ROW_RESULT,
+    ROW_ERROR,
+    ROW_NOTICE,
+    ROW_POPUP,
+    ROW_WELCOME_ART,
+    ROW_WELCOME_TEXT,
+    ROW_HEADING,
+    ROW_CODE,
+    ROW_QUOTE,
+    ROW_ZONE,
+    ROW_ZONE_HOVER,
+    ROW_SOURCE,
+    ROW_BOLD,
+    ROW_EMPH,
+    ROW_MONO,
+    ROW_MARKER,
+    ROW_STRIKE
 };
 
-static b8 kind_is_block(u8 kind) { return kind && kind < ROW_BOLD; }
+static b8 kind_is_block(u8 kind) {
+    return kind && kind < ROW_BOLD;
+}
 
 
 static const char *kind_style(u8 kind) {
     switch (kind) {
-        case ROW_USER:         return S_USER_BG S_TEXT;
-        case ROW_REASON:       return S_MUTED;
-        case ROW_TOOL:         return S_YELLOW;
-        case ROW_RESULT:       return S_GREEN;
-        case ROW_ERROR:        return S_RED;
-        case ROW_NOTICE:       return S_YELLOW;
-        case ROW_WELCOME_ART:  return S_CYAN;
+        case ROW_USER: return S_USER_BG S_TEXT;
+        case ROW_REASON: return S_MUTED;
+        case ROW_TOOL: return S_YELLOW;
+        case ROW_RESULT: return S_GREEN;
+        case ROW_ERROR: return S_RED;
+        case ROW_NOTICE: return S_YELLOW;
+        case ROW_WELCOME_ART: return S_CYAN;
         case ROW_WELCOME_TEXT: return S_MUTED;
-        case ROW_HEADING:      return S_CYAN;
-        case ROW_CODE:         return S_CODE_BG S_TEXT;
+        case ROW_HEADING: return S_CYAN;
+        case ROW_CODE: return S_CODE_BG S_TEXT;
         /* Wrapped composer rows are painted from a reset, so they name the
          * panel's text colour rather than inherit the terminal's. */
-        case ROW_COMPOSER:     return S_PANEL_BG S_TEXT;
-        case ROW_ZONE:         return S_LINK;
-        case ROW_ZONE_HOVER:   return S_POPUP_BG S_LINK_HOVER;
-        case ROW_QUOTE:        return S_MUTED;
-        
-        case ROW_SOURCE:       return S_TEXT;
-        case ROW_BOLD:         return S_BOLD S_TEXT;
-        case ROW_EMPH:         return S_ITALIC S_MUTED;
-        case ROW_MONO:         return S_MONO;
-        case ROW_MARKER:       return S_BLUE;
-        case ROW_STRIKE:       return S_STRIKE;
-        case ROW_PLAIN:        return S_TEXT;
-        default:               return NULL;
+        case ROW_COMPOSER: return S_PANEL_BG S_TEXT;
+        case ROW_ZONE: return S_LINK;
+        case ROW_ZONE_HOVER: return S_POPUP_BG S_LINK_HOVER;
+        case ROW_QUOTE: return S_MUTED;
+
+        case ROW_SOURCE: return S_TEXT;
+        case ROW_BOLD: return S_BOLD S_TEXT;
+        case ROW_EMPH: return S_ITALIC S_MUTED;
+        case ROW_MONO: return S_MONO;
+        case ROW_MARKER: return S_BLUE;
+        case ROW_STRIKE: return S_STRIKE;
+        case ROW_PLAIN: return S_TEXT;
+        default: return NULL;
     }
 }
 
@@ -881,7 +940,7 @@ static u64 hash_add(u64 h, const void *data, size_t n) {
 static u64 row_hash(Str prefix, Str text, u8 kind) {
     u64 h = UINT64_C(1469598103934665603);
     h = hash_add(h, &kind, sizeof kind);
-    
+
     if (kind == ROW_COMPOSER) {
         h = hash_add(h, &g_tui.busy, sizeof g_tui.busy);
         h = hash_add(h, &g_tui.ask, sizeof g_tui.ask);
@@ -939,8 +998,7 @@ static size_t syntax_slot(size_t i) {
  * previous span extends it rather than claiming a slot. */
 static void span_add(size_t a, size_t b, u8 kind) {
     size_t last = g_tui.span_n ? span_slot(g_tui.span_n - 1) : 0;
-    if (g_tui.span_n && g_tui.span_k[last] == kind
-        && g_tui.span_b[last] == a) {
+    if (g_tui.span_n && g_tui.span_k[last] == kind && g_tui.span_b[last] == a) {
         g_tui.span_b[last] = b;
         return;
     }
@@ -957,28 +1015,28 @@ static void span_add(size_t a, size_t b, u8 kind) {
 
 static void spans_shift(size_t delta) {
     size_t drop = 0;
-    while (drop < g_tui.span_n
-           && g_tui.span_b[span_slot(drop)] <= delta) drop++;
+    while (drop < g_tui.span_n && g_tui.span_b[span_slot(drop)] <= delta)
+        drop++;
     g_tui.span_head = span_slot(drop);
     g_tui.span_n -= drop;
     for (size_t i = 0; i < g_tui.span_n; i++) {
         size_t slot = span_slot(i);
-        g_tui.span_a[slot] = g_tui.span_a[slot] > delta
-                           ? g_tui.span_a[slot] - delta : 0;
+        g_tui.span_a[slot] =
+            g_tui.span_a[slot] > delta ? g_tui.span_a[slot] - delta : 0;
         g_tui.span_b[slot] -= delta;
     }
 }
 
 static void syntax_shift(size_t delta) {
     size_t drop = 0;
-    while (drop < g_tui.syntax_n
-           && g_tui.syntax_b[syntax_slot(drop)] <= delta) drop++;
+    while (drop < g_tui.syntax_n && g_tui.syntax_b[syntax_slot(drop)] <= delta)
+        drop++;
     g_tui.syntax_head = syntax_slot(drop);
     g_tui.syntax_n -= drop;
     for (size_t i = 0; i < g_tui.syntax_n; i++) {
         size_t slot = syntax_slot(i);
-        g_tui.syntax_a[slot] = g_tui.syntax_a[slot] > delta
-                             ? g_tui.syntax_a[slot] - delta : 0;
+        g_tui.syntax_a[slot] =
+            g_tui.syntax_a[slot] > delta ? g_tui.syntax_a[slot] - delta : 0;
         g_tui.syntax_b[slot] -= delta;
     }
 }
@@ -1001,8 +1059,7 @@ static void users_shift(size_t delta) {
     size_t w = 0;
     for (size_t i = 0; i < g_tui.user_n; i++) {
         if (g_tui.user_b[i] <= delta) continue;
-        g_tui.user_a[w] = g_tui.user_a[i] > delta
-                        ? g_tui.user_a[i] - delta : 0;
+        g_tui.user_a[w] = g_tui.user_a[i] > delta ? g_tui.user_a[i] - delta : 0;
         g_tui.user_b[w] = g_tui.user_b[i] - delta;
         w++;
     }
@@ -1013,7 +1070,10 @@ static b8 user_at_off(size_t off) {
     size_t lo = 0, hi = g_tui.user_n;
     while (lo < hi) {
         size_t mid = lo + (hi - lo) / 2;
-        if (g_tui.user_b[mid] <= off) lo = mid + 1; else hi = mid;
+        if (g_tui.user_b[mid] <= off)
+            lo = mid + 1;
+        else
+            hi = mid;
     }
     return lo < g_tui.user_n && off >= g_tui.user_a[lo];
 }
@@ -1079,7 +1139,10 @@ static u32 zone_at_off(size_t off) {
     size_t lo = 0, hi = g_tui.zone_n;
     while (lo < hi) {
         size_t mid = lo + (hi - lo) / 2;
-        if (g_tui.zone_b[mid] <= off) lo = mid + 1; else hi = mid;
+        if (g_tui.zone_b[mid] <= off)
+            lo = mid + 1;
+        else
+            hi = mid;
     }
     return lo < g_tui.zone_n && off >= g_tui.zone_a[lo] ? g_tui.zone_id[lo] : 0;
 }
@@ -1088,7 +1151,10 @@ static size_t span_first(size_t off) {
     size_t lo = 0, hi = g_tui.span_n;
     while (lo < hi) {
         size_t mid = lo + (hi - lo) / 2;
-        if (g_tui.span_b[span_slot(mid)] <= off) lo = mid + 1; else hi = mid;
+        if (g_tui.span_b[span_slot(mid)] <= off)
+            lo = mid + 1;
+        else
+            hi = mid;
     }
     return lo;
 }
@@ -1119,8 +1185,7 @@ static u8 span_run(size_t off, size_t limit, size_t *end) {
 
 
 static u64 hash_spans(u64 h, size_t off, size_t n) {
-    for (size_t i = span_first(off);
-         i < g_tui.span_n; i++) {
+    for (size_t i = span_first(off); i < g_tui.span_n; i++) {
         size_t slot = span_slot(i);
         if (g_tui.span_a[slot] >= off + n) break;
         h = hash_add(h, &g_tui.span_a[slot], sizeof g_tui.span_a[slot]);
@@ -1134,7 +1199,10 @@ static size_t syntax_first(size_t off) {
     size_t lo = 0, hi = g_tui.syntax_n;
     while (lo < hi) {
         size_t mid = lo + (hi - lo) / 2;
-        if (g_tui.syntax_b[syntax_slot(mid)] <= off) lo = mid + 1; else hi = mid;
+        if (g_tui.syntax_b[syntax_slot(mid)] <= off)
+            lo = mid + 1;
+        else
+            hi = mid;
     }
     return lo;
 }
@@ -1157,8 +1225,7 @@ static u8 syntax_run(size_t off, size_t limit, size_t *end) {
 }
 
 static u64 hash_syntax(u64 h, size_t off, size_t n) {
-    for (size_t i = syntax_first(off);
-         i < g_tui.syntax_n; i++) {
+    for (size_t i = syntax_first(off); i < g_tui.syntax_n; i++) {
         size_t slot = syntax_slot(i);
         if (g_tui.syntax_a[slot] >= off + n) break;
         h = hash_add(h, &g_tui.syntax_a[slot], sizeof g_tui.syntax_a[slot]);
@@ -1170,11 +1237,11 @@ static u64 hash_syntax(u64 h, size_t off, size_t n) {
 
 
 typedef struct {
-    size_t gaps;    
-    size_t extra;   
-    size_t seen;    
-    b8 word;        
-    b8 pending;     
+    size_t gaps;
+    size_t extra;
+    size_t seen;
+    b8 word;
+    b8 pending;
 } Just;
 
 /* Space runs with a word on each side; the indent a row opens with is not
@@ -1183,8 +1250,13 @@ static size_t row_gaps(Str text) {
     size_t gaps = 0;
     b8 word = false, in_sp = false;
     for (size_t i = 0; i < text.n; i++) {
-        if (text.p[i] == ' ') { if (word) in_sp = true; }
-        else { if (in_sp) gaps++; in_sp = false; word = true; }
+        if (text.p[i] == ' ') {
+            if (word) in_sp = true;
+        } else {
+            if (in_sp) gaps++;
+            in_sp = false;
+            word = true;
+        }
     }
     return gaps;
 }
@@ -1193,8 +1265,8 @@ static size_t row_gaps(Str text) {
  * that ask, so a row two cells short widens two gaps a word apart instead of
  * opening a hole after its first word. */
 static void just_gap(Just *j) {
-    size_t take = (j->seen + 1) * j->extra / j->gaps
-                - j->seen * j->extra / j->gaps;
+    size_t take =
+        (j->seen + 1) * j->extra / j->gaps - j->seen * j->extra / j->gaps;
     j->seen++;
     while (take--) put_text(" ", 1);
 }
@@ -1202,7 +1274,10 @@ static void just_gap(Just *j) {
 /* `j` carries the row's state across fragments, since a style run may end
  * inside the space run a gap is opened at. */
 static void put_just(const char *p, size_t n, Just *j) {
-    if (!j || !j->gaps) { put_text(p, n); return; }
+    if (!j || !j->gaps) {
+        put_text(p, n);
+        return;
+    }
     for (size_t i = 0; i < n;) {
         size_t k = i;
         if (p[i] == ' ') {
@@ -1222,14 +1297,14 @@ static void put_just(const char *p, size_t n, Just *j) {
 
 static const char *syntax_style(u8 kind) {
     switch (kind) {
-        case YHL_SEM_COMMENT:  return S_MUTED S_ITALIC;
-        case YHL_SEM_STRING:   return "\033[38;5;114m";
-        case YHL_SEM_NUMBER:   return "\033[38;5;221m";
-        case YHL_SEM_KEYWORD:  return "\033[38;5;177m";
-        case YHL_SEM_TYPE:     return "\033[38;5;81m";
+        case YHL_SEM_COMMENT: return S_MUTED S_ITALIC;
+        case YHL_SEM_STRING: return "\033[38;5;114m";
+        case YHL_SEM_NUMBER: return "\033[38;5;221m";
+        case YHL_SEM_KEYWORD: return "\033[38;5;177m";
+        case YHL_SEM_TYPE: return "\033[38;5;81m";
         case YHL_SEM_FUNCTION: return "\033[38;5;75m";
-        case YHL_SEM_BUILTIN:  return S_MONO;
-        default:               return NULL;
+        case YHL_SEM_BUILTIN: return S_MONO;
+        default: return NULL;
     }
 }
 
@@ -1238,7 +1313,9 @@ static const char *syntax_style(u8 kind) {
  * UTF-8 query is matched literally rather than half-folded. The query is held
  * as it was typed, since the box shows it back.
  */
-static u8 fold(u8 c) { return c >= 'A' && c <= 'Z' ? (u8)(c + 32) : c; }
+static u8 fold(u8 c) {
+    return c >= 'A' && c <= 'Z' ? (u8)(c + 32) : c;
+}
 
 static b8 find_match_at(size_t off) {
     size_t n = g_tui.find_q_n;
@@ -1315,8 +1392,8 @@ static size_t find_count_from(size_t from) {
 
 static void find_shift(size_t delta) {
     if (g_tui.find_cur != SIZE_MAX)
-        g_tui.find_cur = g_tui.find_cur >= delta ? g_tui.find_cur - delta
-                                                 : SIZE_MAX;
+        g_tui.find_cur =
+            g_tui.find_cur >= delta ? g_tui.find_cur - delta : SIZE_MAX;
     g_tui.find_scanned = SIZE_MAX;
 }
 
@@ -1331,16 +1408,16 @@ static void find_invalidate(void) {
 static struct {
     size_t a[TUI_FIND_ROW_HITS];
     size_t b[TUI_FIND_ROW_HITS];
-    b8     cur[TUI_FIND_ROW_HITS];
+    b8 cur[TUI_FIND_ROW_HITS];
     size_t n;
-    b8     moving;
+    b8 moving;
 } g_find;
 
 static void find_row_build(size_t off, size_t len) {
     g_find.n = 0;
     size_t q = g_tui.find_q_n;
     if (!q || off == SIZE_MAX) return;
-    
+
     size_t from = off > q - 1 ? off - (q - 1) : 0;
     size_t stop = off + len;
     for (size_t i = find_next_in(from, stop);
@@ -1350,7 +1427,7 @@ static void find_row_build(size_t off, size_t len) {
         size_t a = i > off ? i - off : 0;
         size_t b = i + q < stop ? i + q - off : len;
         size_t k = g_find.n;
-        
+
         if (k && g_find.b[k - 1] >= a) {
             if (b > g_find.b[k - 1]) g_find.b[k - 1] = b;
             if (i == g_tui.find_cur) g_find.cur[k - 1] = true;
@@ -1407,7 +1484,10 @@ static void put_hits(const char *p, size_t rel, size_t n, Just *j,
     }
 }
 
-typedef struct { u8 kind, base, syntax; b8 user; } RunStyle;
+typedef struct {
+    u8 kind, base, syntax;
+    b8 user;
+} RunStyle;
 
 
 static const char *user_bg(u8 kind) {
@@ -1426,7 +1506,7 @@ static void run_style(void *ud) {
     const RunStyle *r = ud;
     style(S_RESET);
     style(kind_style(r->kind ? r->kind : r->base));
-    
+
     if (r->user) style(user_bg(r->base));
     if (r->syntax) style(syntax_style(r->syntax));
 }
@@ -1438,10 +1518,12 @@ static void paint_runs(Str text, size_t off, Just *j, u8 base, b8 user) {
         u8 syntax = syntax_run(off + i, off + text.n, &syntax_end);
         if (syntax_end < end) end = syntax_end;
         size_t take = end - (off + i);
-        RunStyle rs = { kind, base, syntax, user };
+        RunStyle rs = {kind, base, syntax, user};
         run_style(&rs);
-        if (!g_find.n) put_just(text.p + i, take, j);
-        else put_hits(text.p + i, i, take, j, run_style, &rs);
+        if (!g_find.n)
+            put_just(text.p + i, take, j);
+        else
+            put_hits(text.p + i, i, take, j, run_style, &rs);
         i += take;
     }
 }
@@ -1457,7 +1539,7 @@ static u8 display_kind(u8 kind, Str text) {
 static Str prompt_indent(size_t cells) {
     static const char blanks[] = "        ";
     if (cells > sizeof blanks - 1) cells = sizeof blanks - 1;
-    return (Str){ blanks, cells };
+    return (Str){blanks, cells};
 }
 
 /* Whether a composer prefix is the marker itself rather than the indent that
@@ -1468,12 +1550,12 @@ static b8 is_marker(Str prefix) {
 
 
 static void update_text_row(size_t screen_row, Str prefix, Str text,
-                            size_t screen_col, size_t screen_cols,
-                            u8 kind, size_t text_off, size_t pad, b8 force) {
+                            size_t screen_col, size_t screen_cols, u8 kind,
+                            size_t text_off, size_t pad, b8 force) {
     kind = display_kind(kind, text);
     b8 user = text_off != SIZE_MAX && user_at_off(text_off);
-    Just just = { pad ? row_gaps(text) : 0, pad, 0, false, false };
-    
+    Just just = {pad ? row_gaps(text) : 0, pad, 0, false, false};
+
     find_row_build(text_off, text.n);
     u64 hash = row_hash(prefix, text, kind);
     hash = hash_find_row(hash);
@@ -1496,8 +1578,7 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
     if (kind == ROW_COMPOSER || user || kind == ROW_CODE) {
         /* The whole row carries the panel colour, so a user turn or a fenced
          * code block reads as a block of screen rather than a prefixed line. */
-        style(user ? user_bg(kind)
-            : kind == ROW_CODE ? S_CODE_BG : S_PANEL_BG);
+        style(user ? user_bg(kind) : kind == ROW_CODE ? S_CODE_BG : S_PANEL_BG);
         pad_row(0, screen_cols);
         if (user) paint_user_rule(screen_row, screen_col);
         cup(screen_row, screen_col);
@@ -1506,22 +1587,25 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
     }
 
     if (kind == ROW_COMPOSER && is_marker(prefix)) {
-        const char *mark = prefix.p[0] == '!' ? S_PANEL_BG S_RED
-                                              : S_PANEL_BG S_CYAN;
+        const char *mark =
+            prefix.p[0] == '!' ? S_PANEL_BG S_RED : S_PANEL_BG S_CYAN;
         style(g_tui.busy ? S_PANEL_BG S_MUTED : mark);
         put_text(prefix.p, prefix.n);
-        
+
         style(S_PANEL_BG S_NOBOLD S_TEXT);
     } else if (prefix.n) {
-        
-        if (kind == ROW_WELCOME_ART) style(S_CYAN);
-        else if (kind == ROW_WELCOME_TEXT) style(S_MUTED);
-        else if (kind == ROW_COMPOSER) style(S_PANEL_BG);
+        if (kind == ROW_WELCOME_ART)
+            style(S_CYAN);
+        else if (kind == ROW_WELCOME_TEXT)
+            style(S_MUTED);
+        else if (kind == ROW_COMPOSER)
+            style(S_PANEL_BG);
         put_text(prefix.p, prefix.n);
     }
 
-    
-    if (kind == ROW_COMPOSER && is_marker(prefix) && text.n == 0 && !g_tui.ask) {
+
+    if (kind == ROW_COMPOSER && is_marker(prefix) && text.n == 0
+        && !g_tui.ask) {
         size_t gutter = screen_col - 1;
         size_t body = screen_cols > gutter * 2 ? screen_cols - gutter * 2 : 0;
         size_t room = body > 2 ? body - 2 : 0;
@@ -1535,10 +1619,12 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
         size_t lead = 0;
         while (lead < text.n && text.p[lead] == ' ') lead++;
         put_text(text.p, lead);
-        RunStyle rs = { kind, kind, 0, false };
+        RunStyle rs = {kind, kind, 0, false};
         run_style(&rs);
-        if (!g_find.n) put_text(text.p + lead, text.n - lead);
-        else put_hits(text.p + lead, lead, text.n - lead, NULL, run_style, &rs);
+        if (!g_find.n)
+            put_text(text.p + lead, text.n - lead);
+        else
+            put_hits(text.p + lead, lead, text.n - lead, NULL, run_style, &rs);
         style(S_RESET);
     } else if (text_off != SIZE_MAX) {
         paint_runs(text, text_off, &just, kind, user);
@@ -1564,12 +1650,12 @@ static void ckpt_record(size_t row, size_t off) {
     if (!g_tui.ckpt_step) g_tui.ckpt_step = 64;
     if (row % g_tui.ckpt_step || row / g_tui.ckpt_step != g_tui.ckpt_n) return;
     if (g_tui.ckpt_n == TUI_CKPTS) {
-        
         for (size_t i = 0; i * 2 < g_tui.ckpt_n; i++)
             g_tui.ckpt_off[i] = g_tui.ckpt_off[i * 2];
         g_tui.ckpt_n = (g_tui.ckpt_n + 1) / 2;
         g_tui.ckpt_step *= 2;
-        if (row % g_tui.ckpt_step || row / g_tui.ckpt_step != g_tui.ckpt_n) return;
+        if (row % g_tui.ckpt_step || row / g_tui.ckpt_step != g_tui.ckpt_n)
+            return;
     }
     g_tui.ckpt_off[g_tui.ckpt_n++] = off;
 }
@@ -1582,7 +1668,7 @@ static size_t wrap_scan(size_t cols) {
         g_tui.wrap_cols = cols;
         ckpt_record(0, 0);
     }
-    Str s = { g_bulk.transcript, g_tui.transcript_n };
+    Str s = {g_bulk.transcript, g_tui.transcript_n};
     size_t i = g_tui.wrap_scanned, row = g_tui.wrap_rows;
     for (;;) {
         Row r = row_break(s, i, cols, 0);
@@ -1601,7 +1687,10 @@ static size_t wrap_scan(size_t cols) {
 
 static size_t wrap_seek(size_t row, size_t *at_row) {
     size_t k = g_tui.ckpt_step ? row / g_tui.ckpt_step : 0;
-    if (g_tui.ckpt_n == 0) { *at_row = 0; return 0; }
+    if (g_tui.ckpt_n == 0) {
+        *at_row = 0;
+        return 0;
+    }
     if (k >= g_tui.ckpt_n) k = g_tui.ckpt_n - 1;
     *at_row = k * g_tui.ckpt_step;
     return g_tui.ckpt_off[k];
@@ -1615,8 +1704,7 @@ static size_t wrap_seek(size_t row, size_t *at_row) {
  * a diff would move columns their reader is lining up. A row left far short
  * by a word too wide to join it keeps its gaps rather than opening a river
  * through them. */
-static size_t justify_pad(Str text, u8 kind, Row r, size_t cols,
-                          size_t col0) {
+static size_t justify_pad(Str text, u8 kind, Row r, size_t cols, size_t col0) {
     if (!g_tui.justify || r.hard) return 0;
     if (kind != ROW_PLAIN && kind != ROW_USER && kind != ROW_QUOTE) return 0;
     size_t used = col0 + r.width;
@@ -1641,10 +1729,10 @@ static b8 composer_shell(void) {
 
 
 static void update_text_rows(Str s, size_t base_off, size_t cols,
-                             size_t prompt_cells,
-                             size_t first_row, size_t visible_rows,
-                             size_t screen_row, size_t screen_col,
-                             size_t screen_cols, u8 kind, b8 force) {
+                             size_t prompt_cells, size_t first_row,
+                             size_t visible_rows, size_t screen_row,
+                             size_t screen_col, size_t screen_cols, u8 kind,
+                             b8 force) {
     size_t row = 0, col0 = prompt_cells, painted = 0;
     for (size_t start = 0;;) {
         Row r = row_break(s, start, cols, col0);
@@ -1658,29 +1746,31 @@ static void update_text_rows(Str s, size_t base_off, size_t cols,
             size_t text_off = SIZE_MAX;
             if (kind == ROW_PLAIN) {
                 u8 sk = span_kind(base_off + start);
-                if (kind_is_block(sk)) row_kind = sk;
-                else if (user_at_off(base_off + start)) row_kind = ROW_USER;
+                if (kind_is_block(sk))
+                    row_kind = sk;
+                else if (user_at_off(base_off + start))
+                    row_kind = ROW_USER;
                 text_off = base_off + start;
                 size_t sr = screen_row + row - first_row - 1;
                 if (sr < TUI_SEL_ROWS) g_tui.row_src[sr] = base_off + start;
-                
+
                 u32 zone = zone_at_off(base_off + start);
                 if (zone)
-                    row_kind = zone == g_tui.hover_id ? ROW_ZONE_HOVER
-                                                      : ROW_ZONE;
+                    row_kind =
+                        zone == g_tui.hover_id ? ROW_ZONE_HOVER : ROW_ZONE;
             }
-            
+
             if (kind == ROW_PLAIN) {
                 if (painted == 0) g_tui.view_first_off = base_off + start;
                 g_tui.view_end_off = base_off + r.next;
             }
-            Str text = { s.p + start, r.end - start };
+            Str text = {s.p + start, r.end - start};
             size_t pad = justify_pad(text, row_kind, r, cols, col0);
             update_text_row(screen_row + row - first_row, prefix, text,
                             screen_col, screen_cols, row_kind, text_off, pad,
                             force);
             painted++;
-            
+
             if (painted == visible_rows) break;
         }
         if (r.hard && r.end >= s.n) break;
@@ -1705,7 +1795,7 @@ static b8 popup_separator(const TuiCmd *cmd) {
 }
 
 TuiCmd tui_separator(Str label) {
-    return (TuiCmd){ label, { NULL, SIZE_MAX } };
+    return (TuiCmd){label, {NULL, SIZE_MAX}};
 }
 
 static void update_popup_row(size_t screen_row, Str name, Str desc,
@@ -1723,7 +1813,7 @@ static void update_popup_row(size_t screen_row, Str name, Str desc,
     hash = hash_add(hash, &sel_c0, sizeof sel_c0);
     hash = hash_add(hash, &sel_c1, sizeof sel_c1);
     if (!row_changed(screen_row, hash, force)) return;
-    
+
     g_tui.bar_valid = false;
 
     const char *bg = selected ? S_POPUP_SEL : S_POPUP_BG;
@@ -1738,8 +1828,7 @@ static void update_popup_row(size_t screen_row, Str name, Str desc,
     if (separator) {
         style(S_CYAN);
         put_safe_clipped(STR("  "), body_cols, &used);
-        if (used < body_cols)
-            put_safe_clipped(name, body_cols - used, &used);
+        if (used < body_cols) put_safe_clipped(name, body_cols - used, &used);
         paint_sel_tail(screen_row, screen_cols);
         style(S_RESET);
         return;
@@ -1747,29 +1836,32 @@ static void update_popup_row(size_t screen_row, Str name, Str desc,
     style(selected ? S_CYAN : S_TEXT);
     put_safe_clipped(selected && first_line ? STR("\u203a ") : STR("  "),
                      body_cols, &used);
-    
+
     size_t name_room = name_cells > used + 2 ? name_cells - used - 2 : 0;
     put_safe_clipped(name, name_room, &used);
-    while (used < name_cells && used < body_cols) { put_text(" ", 1); used++; }
+    while (used < name_cells && used < body_cols) {
+        put_text(" ", 1);
+        used++;
+    }
     style(bg);
     style(S_MUTED);
-    
+
     size_t m0 = mark.n && mark.off < desc.n ? mark.off : desc.n;
     size_t m1 = m0 + mark.n <= desc.n ? m0 + mark.n : desc.n;
     if (used < body_cols)
-        put_safe_clipped((Str){ desc.p, m0 }, body_cols - used, &used);
+        put_safe_clipped((Str){desc.p, m0}, body_cols - used, &used);
     if (m1 > m0) {
         style(bg);
         style(S_GREEN);
         if (used < body_cols)
-            put_safe_clipped((Str){ desc.p + m0, m1 - m0 },
-                             body_cols - used, &used);
+            put_safe_clipped((Str){desc.p + m0, m1 - m0}, body_cols - used,
+                             &used);
         style(bg);
         style(S_MUTED);
     }
     if (m1 < desc.n && used < body_cols)
-        put_safe_clipped((Str){ desc.p + m1, desc.n - m1 },
-                         body_cols - used, &used);
+        put_safe_clipped((Str){desc.p + m1, desc.n - m1}, body_cols - used,
+                         &used);
     paint_sel_tail(screen_row, screen_cols);
     style(S_RESET);
 }
@@ -1813,7 +1905,7 @@ static size_t popup_name_cells(size_t body_cols) {
         size_t cells = tui_text_cells(cmd->name);
         if (cells > widest) widest = cells;
     }
-    widest += 4;   
+    widest += 4;
     size_t cap = body_cols / 2;
     return widest < cap ? widest : cap;
 }
@@ -1861,7 +1953,7 @@ static void update_notice_row(size_t screen_row, Str text, size_t screen_col,
     hash = hash_add(hash, &sel_c0, sizeof sel_c0);
     hash = hash_add(hash, &sel_c1, sizeof sel_c1);
     if (!row_changed(screen_row, hash, force)) return;
-    
+
     g_tui.bar_valid = false;
 
     cup(screen_row, 1);
@@ -1903,7 +1995,7 @@ static void update_notice_rows(size_t screen_row, Str text, size_t rows,
     size_t painted = 0;
     for (size_t start = 0; painted < rows;) {
         Row r = row_break(text, start, cols, 0);
-        Str line = { text.p + start, r.end - start };
+        Str line = {text.p + start, r.end - start};
         update_notice_row(screen_row + painted, line, screen_col, screen_cols,
                           body_cols, force);
         painted++;
@@ -1918,16 +2010,14 @@ static void update_notice_rows(size_t screen_row, Str text, size_t rows,
 }
 
 static void view_ckpt_record(size_t row, size_t off) {
-    if (row % g_view.ckpt_step
-        || row / g_view.ckpt_step != g_view.ckpt_n)
+    if (row % g_view.ckpt_step || row / g_view.ckpt_step != g_view.ckpt_n)
         return;
     if (g_view.ckpt_n == TUI_CKPTS) {
         for (size_t i = 0; i * 2 < g_view.ckpt_n; i++)
             g_view.ckpt_off[i] = g_view.ckpt_off[i * 2];
         g_view.ckpt_n = (g_view.ckpt_n + 1) / 2;
         g_view.ckpt_step *= 2;
-        if (row % g_view.ckpt_step
-            || row / g_view.ckpt_step != g_view.ckpt_n)
+        if (row % g_view.ckpt_step || row / g_view.ckpt_step != g_view.ckpt_n)
             return;
     }
     g_view.ckpt_off[g_view.ckpt_n++] = off;
@@ -1935,7 +2025,7 @@ static void view_ckpt_record(size_t row, size_t off) {
 
 
 static void view_reindex(size_t cols) {
-    Str text = { g_bulk.view, g_view.text_n };
+    Str text = {g_bulk.view, g_view.text_n};
     g_view.wrap_cols = cols;
     g_view.ckpt_n = 0;
     g_view.ckpt_step = 64;
@@ -1952,7 +2042,7 @@ static void view_reindex(size_t cols) {
 }
 
 static size_t view_line_row(size_t line, size_t cols) {
-    Str text = { g_bulk.view, g_view.text_n };
+    Str text = {g_bulk.view, g_view.text_n};
     size_t row = 0, logical = 0;
     for (size_t off = 0;;) {
         if (logical >= line) return row;
@@ -1965,7 +2055,7 @@ static size_t view_line_row(size_t line, size_t cols) {
 }
 
 static size_t view_seek_row(size_t want, size_t cols) {
-    Str text = { g_bulk.view, g_view.text_n };
+    Str text = {g_bulk.view, g_view.text_n};
     size_t slot = want / g_view.ckpt_step;
     if (slot >= g_view.ckpt_n) slot = g_view.ckpt_n - 1;
     size_t row = slot * g_view.ckpt_step;
@@ -1980,8 +2070,8 @@ static size_t view_seek_row(size_t want, size_t cols) {
 }
 
 static void paint_view_border(size_t row, size_t col, size_t width,
-                              size_t screen_cols, Str left, Str fill,
-                              Str right, b8 force) {
+                              size_t screen_cols, Str left, Str fill, Str right,
+                              b8 force) {
     u64 hash = row_hash(left, right, ROW_POPUP);
     hash = hash_add(hash, &width, sizeof width);
     hash = hash_add(hash, &g_view.top, sizeof g_view.top);
@@ -1990,7 +2080,7 @@ static void paint_view_border(size_t row, size_t col, size_t width,
     hash = hash_add(hash, &c0, sizeof c0);
     hash = hash_add(hash, &c1, sizeof c1);
     if (!row_changed(row, hash, force)) return;
-    
+
     g_tui.bar_valid = false;
     cup(row, 1);
     put_str(S_RESET "\033[2K");
@@ -2006,7 +2096,7 @@ static void paint_view_border(size_t row, size_t col, size_t width,
 
 static void paint_view_header(size_t row, size_t col, size_t width,
                               size_t screen_cols, b8 force) {
-    Str title = { g_view.title, g_view.title_n };
+    Str title = {g_view.title, g_view.title_n};
     u64 hash = row_hash(title, STR("[x]"), ROW_POPUP);
     hash = hash_add(hash, &width, sizeof width);
     size_t c0, c1;
@@ -2027,9 +2117,15 @@ static void paint_view_header(size_t row, size_t col, size_t width,
     size_t title_room = inner > used + 5 ? inner - used - 5 : 0;
     put_safe_clipped(title, title_room, &used);
     style(S_POPUP_BG S_MUTED);
-    while (used + 4 < inner) { put_text(" ", 1); used++; }
+    while (used + 4 < inner) {
+        put_text(" ", 1);
+        used++;
+    }
     if (used < inner) put_safe_clipped(STR("[x]"), inner - used, &used);
-    while (used < inner) { put_text(" ", 1); used++; }
+    while (used < inner) {
+        put_text(" ", 1);
+        used++;
+    }
     style(S_POPUP_BG S_CYAN);
     put_text("│", sizeof "│" - 1);
     style(S_RESET);
@@ -2042,7 +2138,10 @@ static size_t view_syn_first(size_t off) {
     size_t lo = 0, hi = g_view.syn_n;
     while (lo < hi) {
         size_t mid = lo + (hi - lo) / 2;
-        if (g_bulk.view_syn_b[mid] <= off) lo = mid + 1; else hi = mid;
+        if (g_bulk.view_syn_b[mid] <= off)
+            lo = mid + 1;
+        else
+            hi = mid;
     }
     return lo;
 }
@@ -2103,13 +2202,16 @@ static void paint_view_body_row(size_t screen_row, size_t col, size_t width,
         style(kind ? syntax_style(kind) : S_TEXT);
         /* A glyph too wide for what is left ends the row here rather than
          * letting a narrower one from the next run past it. */
-        if (put_safe_clipped((Str){ text.p + i, take }, inner - used, &used)
+        if (put_safe_clipped((Str){text.p + i, take}, inner - used, &used)
             < take)
             break;
         i += take;
     }
     style(S_POPUP_BG S_TEXT);
-    while (used < inner) { put_text(" ", 1); used++; }
+    while (used < inner) {
+        put_text(" ", 1);
+        used++;
+    }
     style(S_POPUP_BG S_CYAN);
     put_text("│", sizeof "│" - 1);
     style(S_RESET);
@@ -2121,7 +2223,10 @@ static void paint_view_body_row(size_t screen_row, size_t col, size_t width,
  * window owns are known while the transcript beneath it is still deciding
  * what to write. */
 static void view_layout(size_t rows, size_t cols) {
-    if (!g_view.active || rows < 7 || cols < 20) { view_unlock(); return; }
+    if (!g_view.active || rows < 7 || cols < 20) {
+        view_unlock();
+        return;
+    }
     size_t width = cols * 4 / 5;
     if (width < 20) width = 20;
     if (width > cols - 2) width = cols - 2;
@@ -2155,24 +2260,24 @@ static void paint_view(size_t cols, b8 force) {
     size_t body_rows = height - 3;
     size_t total = g_view.total_rows;
     g_view.paint = true;
-    paint_view_border(top, left, width, cols,
-                      STR("┌"), STR("─"), STR("┐"), force);
+    paint_view_border(top, left, width, cols, STR("┌"), STR("─"), STR("┐"),
+                      force);
     paint_view_header(top + 1, left, width, cols, force);
-    Str all = { g_bulk.view, g_view.text_n };
+    Str all = {g_bulk.view, g_view.text_n};
     size_t off = view_seek_row(g_view.top, inner_cols);
     for (size_t r = 0; r < body_rows; r++) {
         Str line = {0};
         size_t line_off = off;
         if (g_view.top + r < total) {
             Row br = row_break(all, off, inner_cols, 0);
-            line = (Str){ all.p + off, br.end - off };
+            line = (Str){all.p + off, br.end - off};
             off = br.next;
         }
         paint_view_body_row(top + 2 + r, left, width, cols, line, line_off,
                             force);
     }
-    paint_view_border(top + height - 1, left, width, cols,
-                      STR("└"), STR("─"), STR("┘"), force);
+    paint_view_border(top + height - 1, left, width, cols, STR("└"), STR("─"),
+                      STR("┘"), force);
     g_view.paint = false;
 }
 
@@ -2182,13 +2287,13 @@ static void paint_view(size_t cols, b8 force) {
  * typed into and every line the transcript grows by. */
 static size_t find_row_caret(size_t body_cols) {
     size_t caret = 2 + tui_text_cells(STR("find: "))
-                 + tui_text_cells((Str){ g_tui.find_q, g_tui.find_q_n });
+                   + tui_text_cells((Str){g_tui.find_q, g_tui.find_q_n});
     return caret < body_cols ? caret : body_cols;
 }
 
 static void update_find_row(size_t screen_row, size_t screen_col,
                             size_t screen_cols, size_t body_cols, b8 force) {
-    Str query = { g_tui.find_q, g_tui.find_q_n };
+    Str query = {g_tui.find_q, g_tui.find_q_n};
     char tail[64];
     i32 written;
     if (!g_tui.find_q_n)
@@ -2196,16 +2301,17 @@ static void update_find_row(size_t screen_row, size_t screen_col,
     else if (!g_tui.find_count)
         written = snprintf(tail, sizeof tail, "no match");
     else
-        written = snprintf(tail, sizeof tail, "%zu of %zu%s", g_tui.find_index,
-                           g_tui.find_count,
-                           g_tui.find_wrapped ? " (wrapped)" : "");
-    size_t tail_n = written > 0 && (size_t)written < sizeof tail
-                  ? (size_t)written : 0;
-    Str status = { tail, tail_n };
-    Str hint = g_tui.find_expand
-             ? STR("\u2191 older \u00b7 \u2193 newer \u00b7 "
-                   "^E all output \u00b7 Esc")
-             : STR("Enter/\u2191 older \u00b7 \u2193 newer \u00b7 Esc close");
+        written =
+            snprintf(tail, sizeof tail, "%zu of %zu%s", g_tui.find_index,
+                     g_tui.find_count, g_tui.find_wrapped ? " (wrapped)" : "");
+    size_t tail_n =
+        written > 0 && (size_t)written < sizeof tail ? (size_t)written : 0;
+    Str status = {tail, tail_n};
+    Str hint =
+        g_tui.find_expand
+            ? STR("\u2191 older \u00b7 \u2193 newer \u00b7 "
+                  "^E all output \u00b7 Esc")
+            : STR("Enter/\u2191 older \u00b7 \u2193 newer \u00b7 Esc close");
 
     u64 hash = row_hash(query, status, ROW_POPUP);
     size_t sel_c0, sel_c1;
@@ -2234,7 +2340,10 @@ static void update_find_row(size_t screen_row, size_t screen_col,
     size_t hint_cells = tui_text_cells(hint);
     if (used + hint_cells < body_cols) {
         size_t pad = body_cols - used - hint_cells;
-        while (pad--) { put_text(" ", 1); used++; }
+        while (pad--) {
+            put_text(" ", 1);
+            used++;
+        }
         put_safe_clipped(hint, body_cols - used, &used);
     }
     paint_sel_tail(screen_row, screen_cols);
@@ -2242,16 +2351,15 @@ static void update_find_row(size_t screen_row, size_t screen_col,
 }
 
 
-static const char *const k_spinner[] = {
-    "\u280b", "\u2819", "\u2839", "\u2838", "\u283c",
-    "\u2834", "\u2826", "\u2827", "\u2807", "\u280f"
-};
+static const char *const k_spinner[] = {"\u280b", "\u2819", "\u2839", "\u2838",
+                                        "\u283c", "\u2834", "\u2826", "\u2827",
+                                        "\u2807", "\u280f"};
 
 static Str format_elapsed(char *buf, size_t cap, f64 secs) {
     u32 whole = secs > 0 ? (u32)secs : 0;
-    i32 written = whole < 60
-        ? snprintf(buf, cap, "%us", whole)
-        : snprintf(buf, cap, "%um%02us", whole / 60u, whole % 60u);
+    i32 written =
+        whole < 60 ? snprintf(buf, cap, "%us", whole)
+                   : snprintf(buf, cap, "%um%02us", whole / 60u, whole % 60u);
     size_t len = written > 0 ? (size_t)written : 0;
     if (len >= cap) len = cap ? cap - 1 : 0;
     return (Str){buf, len};
@@ -2265,7 +2373,7 @@ static void update_activity_row(size_t screen_row, size_t screen_col,
     f64 elapsed = now - g_tui.activity_started;
     char secs_buf[24];
     Str secs = format_elapsed(secs_buf, sizeof secs_buf, elapsed);
-    
+
     char total_buf[24];
     Str total = {0};
     if (g_tui.activity_started - g_tui.activity_turn >= 1.0)
@@ -2273,7 +2381,7 @@ static void update_activity_row(size_t screen_row, size_t screen_col,
                                now - g_tui.activity_turn);
     size_t frames = sizeof k_spinner / sizeof k_spinner[0];
     size_t frame = (size_t)(elapsed * 10.0) % frames;
-    Str label = { g_tui.activity, g_tui.activity_n };
+    Str label = {g_tui.activity, g_tui.activity_n};
     b8 queued = g_tui.queued_n != 0;
     b8 stoppable = g_tui.busy && g_tui.interrupt != NULL;
 
@@ -2304,8 +2412,7 @@ static void update_activity_row(size_t screen_row, size_t screen_col,
     if (used < body_cols) put_safe_clipped(secs, body_cols - used, &used);
     if (total.n && used + 3 <= body_cols) {
         put_safe_clipped(STR(" \u00b7 "), body_cols - used, &used);
-        if (used < body_cols)
-            put_safe_clipped(total, body_cols - used, &used);
+        if (used < body_cols) put_safe_clipped(total, body_cols - used, &used);
         if (used < body_cols)
             put_safe_clipped(STR(" total"), body_cols - used, &used);
     }
@@ -2329,15 +2436,15 @@ static void paint_completions(size_t top_row, size_t rows, size_t screen_col,
                               size_t screen_cols, size_t body_cols, b8 force) {
     if (!rows) return;
     size_t name_cells = popup_name_cells(body_cols);
-    
+
     size_t first = g_tui.comp_sel;
-    size_t need = popup_entry_rows(
-        &popup_items()[g_tui.comp_idx[first]], body_cols, name_cells, rows);
+    size_t need = popup_entry_rows(&popup_items()[g_tui.comp_idx[first]],
+                                   body_cols, name_cells, rows);
     while (first) {
         const TuiCmd *prev = &popup_items()[g_tui.comp_idx[first - 1]];
         size_t room = rows - need;
-        size_t prev_rows = popup_entry_rows(prev, body_cols, name_cells,
-                                            room + 1);
+        size_t prev_rows =
+            popup_entry_rows(prev, body_cols, name_cells, room + 1);
         if (prev_rows > room) break;
         need += prev_rows;
         first--;
@@ -2354,8 +2461,8 @@ static void paint_completions(size_t top_row, size_t rows, size_t screen_col,
             painted++;
             continue;
         }
-        TuiMark whole = g_tui.marks && !g_tui.path_mode ? g_tui.marks[at]
-                                                        : (TuiMark){0};
+        TuiMark whole =
+            g_tui.marks && !g_tui.path_mode ? g_tui.marks[at] : (TuiMark){0};
         size_t name_start = 0, desc_start = 0;
         size_t name_cols = name_cells > 2 ? name_cells - 2 : name_cells;
         for (b8 first_line = true; painted < rows; first_line = false) {
@@ -2363,21 +2470,19 @@ static void paint_completions(size_t top_row, size_t rows, size_t screen_col,
             Row dr = row_break(cmd->desc, desc_start, body_cols, name_cells);
             TuiMark mark = {0};
             size_t m0 = whole.off > desc_start ? whole.off : desc_start;
-            size_t mend = whole.off <= cmd->desc.n
-                        && whole.n <= cmd->desc.n - whole.off
-                        ? whole.off + whole.n : cmd->desc.n;
+            size_t mend =
+                whole.off <= cmd->desc.n && whole.n <= cmd->desc.n - whole.off
+                    ? whole.off + whole.n
+                    : cmd->desc.n;
             size_t m1 = mend < dr.end ? mend : dr.end;
-            if (whole.n && m1 > m0)
-                mark = (TuiMark){ m0 - desc_start, m1 - m0 };
+            if (whole.n && m1 > m0) mark = (TuiMark){m0 - desc_start, m1 - m0};
             const char *name = cmd->name.p ? cmd->name.p + name_start : NULL;
             const char *desc = cmd->desc.p ? cmd->desc.p + desc_start : NULL;
             update_popup_row(top_row + painted,
-                             (Str){ name, nr.end - name_start },
-                             (Str){ desc, dr.end - desc_start }, mark,
-                             i == g_tui.comp_sel,
-                             first_line, false,
-                             name_cells, screen_col, screen_cols, body_cols,
-                             force);
+                             (Str){name, nr.end - name_start},
+                             (Str){desc, dr.end - desc_start}, mark,
+                             i == g_tui.comp_sel, first_line, false, name_cells,
+                             screen_col, screen_cols, body_cols, force);
             painted++;
             b8 name_done = nr.hard && nr.end >= cmd->name.n;
             b8 desc_done = dr.hard && dr.end >= cmd->desc.n;
@@ -2386,7 +2491,7 @@ static void paint_completions(size_t top_row, size_t rows, size_t screen_col,
             desc_start = desc_done ? cmd->desc.n : dr.next;
         }
     }
-    
+
     while (painted < rows) {
         update_popup_row(top_row + painted, (Str){0}, (Str){0}, (TuiMark){0},
                          false, false, false, name_cells, screen_col,
@@ -2396,27 +2501,30 @@ static void paint_completions(size_t top_row, size_t rows, size_t screen_col,
 }
 
 
-typedef struct { Str text; b8 art; } WelcomeLine;
+typedef struct {
+    Str text;
+    b8 art;
+} WelcomeLine;
 
 
-#define WLINE(lit, is_art) { { (lit), sizeof(lit) - 1 }, (is_art) }
+#define WLINE(lit, is_art) {{(lit), sizeof(lit) - 1}, (is_art)}
 static const WelcomeLine k_welcome[] = {
-    WLINE("  __ _ _ __ __ _  __ _ _ __",       true),
-    WLINE(" / _` | '__/ _` |/ _` | '_ \\",      true),
-    WLINE("| (_| | | | (_| | (_| | | | |",     true),
-    WLINE(" \\__,_|_|  \\__, |\\__,_|_| |_|",     true),
-    WLINE("              |_|",                 true),
-    WLINE("",              false),
-    WLINE(AGENT_NAME " " AGENT_VERSION " · a tiny terminal coding agent", false),
-    WLINE("",              false),
-    WLINE("type a message and press Enter to begin",          false),
+    WLINE("  __ _ _ __ __ _  __ _ _ __", true),
+    WLINE(" / _` | '__/ _` |/ _` | '_ \\", true),
+    WLINE("| (_| | | | (_| | (_| | | | |", true),
+    WLINE(" \\__,_|_|  \\__, |\\__,_|_| |_|", true),
+    WLINE("              |_|", true),
+    WLINE("", false),
+    WLINE(AGENT_NAME " " AGENT_VERSION " · a tiny terminal coding agent",
+          false),
+    WLINE("", false),
+    WLINE("type a message and press Enter to begin", false),
 };
 
 #define WELCOME_LINES (sizeof k_welcome / sizeof k_welcome[0])
 
 static Str welcome_text(size_t i) {
-    if (g_tui.setup_hint.n && i + 1 == WELCOME_LINES)
-        return g_tui.setup_hint;
+    if (g_tui.setup_hint.n && i + 1 == WELCOME_LINES) return g_tui.setup_hint;
     return k_welcome[i].text;
 }
 
@@ -2433,12 +2541,12 @@ static size_t welcome_widest(b8 art_only) {
 
 static b8 welcome_fits(size_t body_cols, size_t transcript_rows) {
     return welcome_widest(false) <= body_cols
-        && WELCOME_LINES + 2 <= transcript_rows;
+           && WELCOME_LINES + 2 <= transcript_rows;
 }
 
 static void paint_welcome(size_t body_rows, size_t transcript_rows,
-                          size_t body_col, size_t body_cols,
-                          size_t screen_cols, b8 force) {
+                          size_t body_col, size_t body_cols, size_t screen_cols,
+                          b8 force) {
     static char blanks[256];
     if (blanks[0] != ' ') memset(blanks, ' ', sizeof blanks);
     size_t top = (body_rows - WELCOME_LINES) / 2;
@@ -2453,44 +2561,41 @@ static void paint_welcome(size_t body_rows, size_t transcript_rows,
         }
         const WelcomeLine *line = &k_welcome[row - top - 1];
         Str text = welcome_text(row - top - 1);
-        size_t pad = line->art ? art_pad
-                   : (body_cols - tui_text_cells(text)) / 2;
+        size_t pad =
+            line->art ? art_pad : (body_cols - tui_text_cells(text)) / 2;
         if (pad > sizeof blanks) pad = sizeof blanks;
-        update_text_row(row, (Str){blanks, text.n ? pad : 0}, text,
-                        body_col, screen_cols,
-                        line->art ? ROW_WELCOME_ART : ROW_WELCOME_TEXT,
-                        SIZE_MAX, 0, force);
+        update_text_row(
+            row, (Str){blanks, text.n ? pad : 0}, text, body_col, screen_cols,
+            line->art ? ROW_WELCOME_ART : ROW_WELCOME_TEXT, SIZE_MAX, 0, force);
     }
 }
 
-static void paint_size_warning(size_t rows, size_t cols,
-                               size_t reported_rows, size_t reported_cols,
-                               b8 force) {
+static void paint_size_warning(size_t rows, size_t cols, size_t reported_rows,
+                               size_t reported_cols, b8 force) {
     char current[96], needed[96], compact[96];
-    i32 current_n = snprintf(current, sizeof current,
-                             "Width = %zu Height = %zu",
-                             reported_cols, reported_rows);
-    i32 needed_n = snprintf(needed, sizeof needed,
-                            "Width = %u Height = %u",
+    i32 current_n =
+        snprintf(current, sizeof current, "Width = %zu Height = %zu",
+                 reported_cols, reported_rows);
+    i32 needed_n = snprintf(needed, sizeof needed, "Width = %u Height = %u",
                             TUI_MIN_COLS, TUI_MIN_ROWS);
-    i32 compact_n = snprintf(compact, sizeof compact,
-                             "%zux%zu; need %ux%u",
-                             reported_cols, reported_rows,
-                             TUI_MIN_COLS, TUI_MIN_ROWS);
+    i32 compact_n =
+        snprintf(compact, sizeof compact, "%zux%zu; need %ux%u", reported_cols,
+                 reported_rows, TUI_MIN_COLS, TUI_MIN_ROWS);
     Str full[] = {
         STR("Terminal size too small:"),
-        { current, current_n > 0 ? (size_t)current_n : 0 },
+        {current, current_n > 0 ? (size_t)current_n : 0},
         STR("Needed for current config:"),
-        { needed, needed_n > 0 ? (size_t)needed_n : 0 },
+        {needed, needed_n > 0 ? (size_t)needed_n : 0},
     };
     Str compact_lines[] = {
         STR("Terminal too small"),
-        { compact, compact_n > 0 ? (size_t)compact_n : 0 },
+        {compact, compact_n > 0 ? (size_t)compact_n : 0},
     };
-    Str *lines = cols >= sizeof "Needed for current config:" - 1
-               ? full : compact_lines;
-    size_t line_n = lines == full ? sizeof full / sizeof full[0]
-                                  : sizeof compact_lines / sizeof compact_lines[0];
+    Str *lines =
+        cols >= sizeof "Needed for current config:" - 1 ? full : compact_lines;
+    size_t line_n = lines == full
+                        ? sizeof full / sizeof full[0]
+                        : sizeof compact_lines / sizeof compact_lines[0];
     size_t shown = rows < line_n ? rows : line_n;
     size_t top = (rows - shown) / 2;
     for (size_t i = 0; i < shown && cols; i++) {
@@ -2498,8 +2603,7 @@ static void paint_size_warning(size_t rows, size_t cols,
         if (line.n > cols) line.n = cols;
         size_t col = (cols - line.n) / 2 + 1;
         update_text_row(top + i + 1, (Str){0}, line, col, cols,
-                        i == 0 ? ROW_ERROR : ROW_PLAIN,
-                        SIZE_MAX, 0, force);
+                        i == 0 ? ROW_ERROR : ROW_PLAIN, SIZE_MAX, 0, force);
     }
 }
 
@@ -2538,9 +2642,11 @@ static void paint_scrollbar(size_t first_row, size_t total_rows,
         if (!scrollable) {
             put_str(" ");
         } else if (i >= thumb_top && i < thumb_top + thumb_rows) {
-            style(S_CYAN); put_str("┃");
+            style(S_CYAN);
+            put_str("┃");
         } else {
-            style(S_MUTED); put_str("│");
+            style(S_MUTED);
+            put_str("│");
         }
     }
     style(S_RESET);
@@ -2548,9 +2654,12 @@ static void paint_scrollbar(size_t first_row, size_t total_rows,
 
 
 static void format_context_count(char *buf, size_t cap, size_t n) {
-    if (n >= 1000000) snprintf(buf, cap, "%zuM", (n + 500000) / 1000000);
-    else if (n >= 1000) snprintf(buf, cap, "%zuk", (n + 500) / 1000);
-    else snprintf(buf, cap, "%zu", n);
+    if (n >= 1000000)
+        snprintf(buf, cap, "%zuM", (n + 500000) / 1000000);
+    else if (n >= 1000)
+        snprintf(buf, cap, "%zuk", (n + 500) / 1000);
+    else
+        snprintf(buf, cap, "%zu", n);
 }
 
 static Str format_context_size(char *buf, size_t cap) {
@@ -2575,7 +2684,9 @@ static Str format_context_size(char *buf, size_t cap) {
     return (Str){buf, len};
 }
 
-void tui_batch_begin(void) { g_paint.batch = true; }
+void tui_batch_begin(void) {
+    g_paint.batch = true;
+}
 
 static void repaint(void);
 
@@ -2602,8 +2713,8 @@ static void repaint(void) {
         size_t paint_cols = physical_cols ? physical_cols : 80;
         if (paint_rows > TUI_MAX_ROWS) paint_rows = TUI_MAX_ROWS;
         b8 force = !g_tui.frame_valid || !g_tui.size_warning || g_winch
-                 || paint_rows != g_tui.painted_rows
-                 || paint_cols != g_tui.painted_cols;
+                   || paint_rows != g_tui.painted_rows
+                   || paint_cols != g_tui.painted_cols;
         memset(g_tui.row_src, 0xff, sizeof g_tui.row_src);
         g_winch = 0;
         frame_begin();
@@ -2616,8 +2727,8 @@ static void repaint(void) {
         } else {
             put_str("\033[?25l");
         }
-        paint_size_warning(paint_rows, paint_cols,
-                           physical_rows, physical_cols, force);
+        paint_size_warning(paint_rows, paint_cols, physical_rows, physical_cols,
+                           force);
         g_tui.painted_rows = paint_rows;
         g_tui.painted_cols = paint_cols;
         g_tui.frame_valid = true;
@@ -2632,7 +2743,7 @@ static void repaint(void) {
     size_t rows, cols;
     screen_size(&rows, &cols);
     b8 force = !g_tui.frame_valid || g_tui.size_warning || g_winch
-             || rows != g_tui.painted_rows || cols != g_tui.painted_cols;
+               || rows != g_tui.painted_rows || cols != g_tui.painted_cols;
     /* Measured here rather than where it paints: the rows it covers neither
      * paint nor invalidate from the transcript, and that has to be known
      * before the transcript writes them. */
@@ -2655,36 +2766,37 @@ static void repaint(void) {
     size_t body_cols = cols - gutter * 2;
     size_t body_col = gutter + 1;
     size_t cursor_row = 0, cursor_col = 2;
-    Str input = { g_bulk.input, g_tui.input_n };
+    Str input = {g_bulk.input, g_tui.input_n};
     size_t input_cur = g_tui.input_cur;
     char mask[TUI_ASK_MAX];
     if (g_tui.ask_secret) {
         size_t n = input.n < sizeof mask ? input.n : sizeof mask;
         memset(mask, '*', n);
-        input = (Str){ mask, n };
+        input = (Str){mask, n};
         if (input_cur > n) input_cur = n;
     }
     if (composer_shell()) {
-        
         input = str_drop(input, 1);
         if (input_cur) input_cur--;
     }
-    size_t input_rows = text_rows(input, body_cols, 2, input_cur,
-                                  &cursor_row, &cursor_col);
+    size_t input_rows =
+        text_rows(input, body_cols, 2, input_cur, &cursor_row, &cursor_col);
     size_t composer_padding = rows >= 6 ? 1 : 0;
     size_t status_gap = composer_padding;
-    
+
     size_t body_gap = composer_padding;
     size_t composer_cap = rows / 3;
     if (composer_cap < 1) composer_cap = 1;
     if (composer_cap > 8) composer_cap = 8;
-    size_t composer_rows = input_rows < composer_cap ? input_rows : composer_cap;
+    size_t composer_rows =
+        input_rows < composer_cap ? input_rows : composer_cap;
     size_t chrome_rows = 1 + composer_padding * 2 + status_gap + body_gap;
     size_t max_composer = rows > chrome_rows ? rows - chrome_rows : 1;
-    if (max_composer > 1) max_composer--;   
+    if (max_composer > 1) max_composer--;
     if (composer_rows > max_composer) composer_rows = max_composer;
     size_t body_rows = rows > composer_rows + chrome_rows
-                     ? rows - composer_rows - chrome_rows : 1;
+                           ? rows - composer_rows - chrome_rows
+                           : 1;
     /* Overlays stack upward from the composer and cover the bottom of the
      * transcript rather than pushing it up, so opening one hides the last
      * rows and leaves every other where the reader last saw it. One row
@@ -2700,15 +2812,14 @@ static void repaint(void) {
         popup_cap = overlay_cap * 2 / 3;
     size_t popup_rows = popup_visual_rows(body_cols, popup_cap);
     size_t notice_rows = g_tui.notice_n ? 1 : 0;
-    
+
     size_t pick_notice_cap = overlay_cap / 3;
     if (pick_notice_cap > TUI_PICK_NOTICE_ROWS)
         pick_notice_cap = TUI_PICK_NOTICE_ROWS;
     if (pick_notice_cap < 1) pick_notice_cap = 1;
     size_t pick_notice_rows =
         g_tui.pick_notice_n
-            ? notice_visual_rows((Str){ g_tui.pick_notice,
-                                        g_tui.pick_notice_n },
+            ? notice_visual_rows((Str){g_tui.pick_notice, g_tui.pick_notice_n},
                                  body_cols, pick_notice_cap)
             : 0;
     size_t find_rows = g_tui.find_open ? 1 : 0;
@@ -2716,9 +2827,8 @@ static void repaint(void) {
      * against the transcript with a block's row of air above it rather than
      * among the overlays below. */
     size_t activity_rows = g_tui.activity_n ? 2 : 0;
-    
-    if (popup_rows && pick_notice_rows && overlay_cap < 2)
-        pick_notice_rows = 0;
+
+    if (popup_rows && pick_notice_rows && overlay_cap < 2) pick_notice_rows = 0;
     if (pick_notice_rows > overlay_cap) pick_notice_rows = overlay_cap;
     if (popup_rows + pick_notice_rows > overlay_cap)
         popup_rows = overlay_cap - pick_notice_rows;
@@ -2726,13 +2836,13 @@ static void repaint(void) {
         notice_rows = overlay_cap - pick_notice_rows - popup_rows;
     if (find_rows + pick_notice_rows + notice_rows + popup_rows > overlay_cap)
         find_rows = overlay_cap - pick_notice_rows - notice_rows - popup_rows;
-    if (activity_rows + find_rows + pick_notice_rows + notice_rows
-        + popup_rows > overlay_cap)
-        activity_rows = overlay_cap - find_rows - pick_notice_rows
-                      - notice_rows - popup_rows;
-    
-    size_t overlay_rows = find_rows + pick_notice_rows + notice_rows
-                        + popup_rows;
+    if (activity_rows + find_rows + pick_notice_rows + notice_rows + popup_rows
+        > overlay_cap)
+        activity_rows = overlay_cap - find_rows - pick_notice_rows - notice_rows
+                        - popup_rows;
+
+    size_t overlay_rows =
+        find_rows + pick_notice_rows + notice_rows + popup_rows;
     size_t transcript_rows = body_rows - overlay_rows - activity_rows;
 
     /* Pinned to the bottom unless PageUp moved the viewport. Overlays stay in
@@ -2750,9 +2860,9 @@ static void repaint(void) {
      * is open the notice covers like the rest. */
     size_t notice_lift = g_tui.picking || g_view.active ? 0 : notice_rows;
     size_t view_rows = body_rows - activity_rows - notice_lift;
-    if (g_tui.find_open) view_rows = transcript_rows;
+    if (g_tui.find_open)
+        view_rows = transcript_rows;
     else if (g_tui.keep_off != SIZE_MAX) {
-        
         size_t need = rows_below(g_tui.keep_off);
         if (need < transcript_rows) need = transcript_rows;
         if (need < view_rows) view_rows = need;
@@ -2760,18 +2870,19 @@ static void repaint(void) {
     size_t max_scroll = all_rows > view_rows ? all_rows - view_rows : 0;
     if (g_tui.scroll_rows > max_scroll) g_tui.scroll_rows = max_scroll;
     size_t first = all_rows > view_rows + g_tui.scroll_rows
-                 ? all_rows - view_rows - g_tui.scroll_rows : 0;
+                       ? all_rows - view_rows - g_tui.scroll_rows
+                       : 0;
     if (g_tui.transcript_n == 0 && welcome_fits(body_cols, transcript_rows))
         paint_welcome(body_rows, transcript_rows, body_col, body_cols, cols,
                       force);
     else {
         size_t at_row = 0;
         size_t off = wrap_seek(first, &at_row);
-        Str slice = { g_bulk.transcript + off, g_tui.transcript_n - off };
+        Str slice = {g_bulk.transcript + off, g_tui.transcript_n - off};
         update_text_rows(slice, off, body_cols, 0, first - at_row,
                          transcript_rows, 1, body_col, cols, ROW_PLAIN, force);
     }
-    
+
     if (g_tui.find_open && g_tui.find_cur != SIZE_MAX && !g_find.moving
         && (g_tui.find_cur < g_tui.view_first_off
             || g_tui.find_cur >= g_tui.view_end_off)) {
@@ -2783,27 +2894,26 @@ static void repaint(void) {
     }
     paint_scrollbar(first, all_rows, transcript_rows, cols, force);
     if (activity_rows > 1)
-        update_text_row(transcript_rows + 1, (Str){0}, (Str){0}, body_col,
-                        cols, ROW_PLAIN, SIZE_MAX, 0, force);
+        update_text_row(transcript_rows + 1, (Str){0}, (Str){0}, body_col, cols,
+                        ROW_PLAIN, SIZE_MAX, 0, force);
     if (activity_rows)
         update_activity_row(transcript_rows + activity_rows, body_col, cols,
                             body_cols, force);
     if (body_gap)
-        update_text_row(transcript_rows + activity_rows + 1, (Str){0},
-                        (Str){0}, body_col, cols, ROW_PLAIN, SIZE_MAX, 0,
-                        force);
+        update_text_row(transcript_rows + activity_rows + 1, (Str){0}, (Str){0},
+                        body_col, cols, ROW_PLAIN, SIZE_MAX, 0, force);
 
-    
+
     size_t overlay_top = transcript_rows + activity_rows + body_gap + 1;
     if (find_rows)
         update_find_row(overlay_top, body_col, cols, body_cols, force);
     if (pick_notice_rows)
         update_notice_rows(overlay_top + find_rows,
-                           (Str){ g_tui.pick_notice, g_tui.pick_notice_n },
+                           (Str){g_tui.pick_notice, g_tui.pick_notice_n},
                            pick_notice_rows, body_col, cols, body_cols, force);
     if (notice_rows)
         update_notice_row(overlay_top + find_rows + pick_notice_rows,
-                          (Str){ g_tui.notice, g_tui.notice_n }, body_col, cols,
+                          (Str){g_tui.notice, g_tui.notice_n}, body_col, cols,
                           body_cols, force);
     paint_completions(overlay_top + find_rows + pick_notice_rows + notice_rows,
                       popup_rows, body_col, cols, body_cols, force);
@@ -2814,27 +2924,28 @@ static void repaint(void) {
      * them. It is only ever moved far enough to keep the caret in view, and
      * never past the last row of the text. */
     size_t input_first = g_tui.input_top;
-    size_t input_max_top = input_rows > composer_rows
-                         ? input_rows - composer_rows : 0;
+    size_t input_max_top =
+        input_rows > composer_rows ? input_rows - composer_rows : 0;
     if (input_first > input_max_top) input_first = input_max_top;
-    if (cursor_row < input_first) input_first = cursor_row;
+    if (cursor_row < input_first)
+        input_first = cursor_row;
     else if (cursor_row >= input_first + composer_rows)
         input_first = cursor_row - composer_rows + 1;
     g_tui.input_top = input_first;
     size_t composer_top_row = overlay_top + overlay_rows;
     size_t composer_screen_row = composer_top_row + composer_padding;
     if (composer_padding)
-        update_text_row(composer_top_row, (Str){0}, (Str){0}, body_col,
-                        cols, ROW_COMPOSER, SIZE_MAX, 0, force);
+        update_text_row(composer_top_row, (Str){0}, (Str){0}, body_col, cols,
+                        ROW_COMPOSER, SIZE_MAX, 0, force);
     update_text_rows(input, 0, body_cols, 2, input_first, composer_rows,
                      composer_screen_row, body_col, cols, ROW_COMPOSER, force);
     if (composer_padding)
         update_text_row(composer_screen_row + composer_rows, (Str){0}, (Str){0},
                         body_col, cols, ROW_COMPOSER, SIZE_MAX, 0, force);
 
-    
-    size_t status_row = composer_screen_row + composer_rows + composer_padding
-                      + status_gap;
+
+    size_t status_row =
+        composer_screen_row + composer_rows + composer_padding + status_gap;
     if (status_gap)
         update_text_row(status_row - status_gap, (Str){0}, (Str){0}, body_col,
                         cols, ROW_PLAIN, SIZE_MAX, 0, force);
@@ -2845,31 +2956,32 @@ static void repaint(void) {
     u64 status_hash = row_hash(g_tui.model, g_tui.provider, ROW_STATUS);
     status_hash = hash_add(status_hash, g_tui.reasoning_effort.p,
                            g_tui.reasoning_effort.n);
-    status_hash = hash_add(status_hash, g_tui.thinking_budget.p,
-                           g_tui.thinking_budget.n);
+    status_hash =
+        hash_add(status_hash, g_tui.thinking_budget.p, g_tui.thinking_budget.n);
     status_hash = hash_add(status_hash, &copied, sizeof copied);
     status_hash = hash_add(status_hash, &g_tui.mode, sizeof g_tui.mode);
-    status_hash = hash_add(status_hash, &g_tui.permissions,
-                           sizeof g_tui.permissions);
+    status_hash =
+        hash_add(status_hash, &g_tui.permissions, sizeof g_tui.permissions);
     status_hash = hash_add(status_hash, &status_sel_c0, sizeof status_sel_c0);
     status_hash = hash_add(status_hash, &status_sel_c1, sizeof status_sel_c1);
     status_hash = hash_add(status_hash, g_tui.cwd.p, g_tui.cwd.n);
     status_hash = hash_add(status_hash, status, strlen(status));
-    status_hash = hash_add(status_hash, &g_tui.activity_n,
-                           sizeof g_tui.activity_n);
+    status_hash =
+        hash_add(status_hash, &g_tui.activity_n, sizeof g_tui.activity_n);
     status_hash = hash_add(status_hash, &g_tui.context_tokens,
                            sizeof g_tui.context_tokens);
-    status_hash = hash_add(status_hash, &g_tui.context_known,
-                           sizeof g_tui.context_known);
-    status_hash = hash_add(status_hash, &g_tui.context_exact,
-                           sizeof g_tui.context_exact);
+    status_hash =
+        hash_add(status_hash, &g_tui.context_known, sizeof g_tui.context_known);
+    status_hash =
+        hash_add(status_hash, &g_tui.context_exact, sizeof g_tui.context_exact);
     status_hash = hash_add(status_hash, &g_tui.context_window,
                            sizeof g_tui.context_window);
     status_hash = hash_add(status_hash, g_tui.status_visible,
                            sizeof g_tui.status_visible);
     status_hash = hash_add(status_hash, &cols, sizeof cols);
     if (row_changed(status_row, status_hash, force)) {
-        cup(status_row, 1); put_str(S_RESET "\033[2K");
+        cup(status_row, 1);
+        put_str(S_RESET "\033[2K");
         cup(status_row, body_col);
         char context_buf[48];
         Str context = format_context_size(context_buf, sizeof context_buf);
@@ -2884,9 +2996,12 @@ static void repaint(void) {
         }
         size_t used = 0;
         const char *status_style = S_BLUE;
-        if (!strcmp(status, "ready")) status_style = S_GREEN;
-        else if (strstr(status, "error")) status_style = S_RED;
-        else if (!strcmp(status, "thinking")) status_style = S_PURPLE;
+        if (!strcmp(status, "ready"))
+            status_style = S_GREEN;
+        else if (strstr(status, "error"))
+            status_style = S_RED;
+        else if (!strcmp(status, "thinking"))
+            status_style = S_PURPLE;
         b8 have_field = false;
         /* Spelled out rather than only coloured, since the bullet says
          * nothing on a NO_COLOR terminal, and first so a narrow screen clips
@@ -2907,15 +3022,14 @@ static void repaint(void) {
         if (g_tui.status_visible[TUI_STATUS_REASONING]) {
             Str effort = g_tui.reasoning_effort;
             b8 off = str_eq(effort, STR("off")) || str_eq(effort, STR("Off"))
-                  || str_eq(effort, STR("OFF"));
+                     || str_eq(effort, STR("OFF"));
             if (!off)
-                put_status_field(effort, S_TEXT, body_cols, &used,
-                                 &have_field);
+                put_status_field(effort, S_TEXT, body_cols, &used, &have_field);
         }
         if (g_tui.status_visible[TUI_STATUS_THINKING]) {
             Str budget = g_tui.thinking_budget;
             b8 off = str_eq(budget, STR("off")) || str_eq(budget, STR("Off"))
-                  || str_eq(budget, STR("OFF"));
+                     || str_eq(budget, STR("OFF"));
             if (budget.n && !off) {
                 char thinking[AGENT_MAX_REASONING_LIST + 10];
                 i32 n = snprintf(thinking, sizeof thinking, "thinking %.*s",
@@ -2941,11 +3055,10 @@ static void repaint(void) {
             put_status_field(STR("copied"), S_GREEN, body_cols, &used,
                              &have_field);
         if (g_tui.status_visible[TUI_STATUS_PERMISSIONS])
-            put_status_field(g_tui.permissions == PERMISSION_FREE
-                             ? STR("free") : STR("ask"),
-                             g_tui.permissions == PERMISSION_ASK
-                             ? S_YELLOW : S_TEXT,
-                             body_cols, &used, &have_field);
+            put_status_field(
+                g_tui.permissions == PERMISSION_FREE ? STR("free") : STR("ask"),
+                g_tui.permissions == PERMISSION_ASK ? S_YELLOW : S_TEXT,
+                body_cols, &used, &have_field);
         paint_sel_tail(status_row, cols);
         style(S_RESET);
     }
@@ -2958,12 +3071,12 @@ static void repaint(void) {
     if (g_tui.editing && !g_view.active) {
         /* The caret belongs to whatever is being typed into: while the search
          * box holds the keyboard, that is the query rather than the draft. */
-        size_t screen_cursor_row = find_rows
-                                 ? overlay_top
-                                 : composer_screen_row + cursor_row - input_first;
+        size_t screen_cursor_row =
+            find_rows ? overlay_top
+                      : composer_screen_row + cursor_row - input_first;
         size_t screen_cursor_col = find_rows
-                                 ? gutter + find_row_caret(body_cols) + 1
-                                 : gutter + cursor_col + 1;
+                                       ? gutter + find_row_caret(body_cols) + 1
+                                       : gutter + cursor_col + 1;
         if (screen_cursor_col > cols) screen_cursor_col = cols;
         cup(screen_cursor_row, screen_cursor_col);
         put_str("\033[?25h");
@@ -2991,7 +3104,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
                size_t tool_count, b8 show_ignored, b8 justify,
                u64 status_fields, AgentMode mode, b8 plain) {
     if (g_tui.raw) return;
-    
+
     memset(&g_tui, 0, sizeof g_tui);
     memset(&g_view, 0, sizeof g_view);
     keys_selfcheck();
@@ -3009,24 +3122,24 @@ void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
     tui_set_status(setup ? "setup" : "ready");
     capture_cwd();
     const char *term = getenv("TERM");
-    g_tui.color = getenv("NO_COLOR") == NULL
-               && (!term || strcmp(term, "dumb"));
-    
+    g_tui.color = getenv("NO_COLOR") == NULL && (!term || strcmp(term, "dumb"));
+
 
     if (!g_tui.tty) {
         g_tui.raw = true;
         if (plain) return;
         char banner[512];
-        i32 n = setup
-              ? snprintf(banner, sizeof banner,
-                         AGENT_NAME " %s · setup tools=%zu\n",
-                         AGENT_VERSION, tool_count)
-              : snprintf(banner, sizeof banner,
-                         AGENT_NAME " %s · model=%.*s base=%.*s tools=%zu\n",
-                         AGENT_VERSION, (i32)model.n, model.p,
-                         (i32)base_url.n, base_url.p, tool_count);
-        if (n > 0) put_raw(banner, (size_t)n < sizeof banner
-                                   ? (size_t)n : sizeof banner - 1);
+        i32 n = setup ? snprintf(banner, sizeof banner,
+                                 AGENT_NAME " %s · setup tools=%zu\n",
+                                 AGENT_VERSION, tool_count)
+                      : snprintf(banner, sizeof banner,
+                                 AGENT_NAME
+                                 " %s · model=%.*s base=%.*s tools=%zu\n",
+                                 AGENT_VERSION, (i32)model.n, model.p,
+                                 (i32)base_url.n, base_url.p, tool_count);
+        if (n > 0)
+            put_raw(banner,
+                    (size_t)n < sizeof banner ? (size_t)n : sizeof banner - 1);
         if (missing_key && !setup) put_str("warn: no API key set\n");
         flush_out();
         return;
@@ -3038,8 +3151,9 @@ void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
         return;
     }
     struct termios raw = g_tui.original_termios;
-    raw.c_lflag &= (tcflag_t)~(tcflag_t)(ECHO | ICANON | IEXTEN);
-    raw.c_iflag &= (tcflag_t)~(tcflag_t)(IXON | IXOFF | ICRNL | INLCR | ISTRIP);
+    raw.c_lflag &= (tcflag_t) ~(tcflag_t)(ECHO | ICANON | IEXTEN);
+    raw.c_iflag &=
+        (tcflag_t) ~(tcflag_t)(IXON | IXOFF | ICRNL | INLCR | ISTRIP);
     raw.c_oflag |= (OPOST | ONLCR);
     raw.c_cc[VMIN] = 1;
     raw.c_cc[VTIME] = 0;
@@ -3059,13 +3173,12 @@ void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
     g_tui.fullscreen = true;
     agent_log_set_sink(tui_log_sink, NULL);
     g_tui.editing = true;
-    
+
     put_str("\033[?1049h\033[?7l\033[?25l\033[?1003h\033[?1006h\033[?2004h");
     repaint();
 }
 
 void tui_stop(void) {
-    
     if (!g_tui.fullscreen && g_tui.wrote_any && !g_tui.trail_nl) {
         put_raw("\n", 1);
         g_tui.trail_nl = 1;
@@ -3086,12 +3199,16 @@ void tui_stop(void) {
     g_tui.raw = false;
 }
 
-b8 tui_busy(void) { return g_tui.busy; }
+b8 tui_busy(void) {
+    return g_tui.busy;
+}
 
-b8 tui_queued_pending(void) { return g_tui.queued_n != 0; }
+b8 tui_queued_pending(void) {
+    return g_tui.queued_n != 0;
+}
 
 Str tui_queued_take(void) {
-    Str out = { g_bulk.queued, g_tui.queued_n };
+    Str out = {g_bulk.queued, g_tui.queued_n};
     if (!out.n) return out;
     g_tui.queued_n = 0;
     g_tui.notice_n = 0;
@@ -3115,11 +3232,14 @@ void tui_activity_end(void) {
 
 void tui_activity(Str label) {
     if (!g_tui.fullscreen) return;
-    if (!label.n) { tui_activity_end(); return; }
-    size_t n = label.n < sizeof g_tui.activity ? label.n
-                                               : sizeof g_tui.activity;
+    if (!label.n) {
+        tui_activity_end();
+        return;
+    }
+    size_t n =
+        label.n < sizeof g_tui.activity ? label.n : sizeof g_tui.activity;
     if (g_tui.activity_n == n && !memcmp(g_tui.activity, label.p, n)) return;
-    
+
     if (!g_tui.activity_n) g_tui.activity_turn = agent_now_seconds();
     g_tui.activity_started = agent_now_seconds();
     memcpy(g_tui.activity, label.p, n);
@@ -3127,7 +3247,9 @@ void tui_activity(Str label) {
     repaint();
 }
 
-b8 tui_is_fullscreen(void) { return g_tui.fullscreen; }
+b8 tui_is_fullscreen(void) {
+    return g_tui.fullscreen;
+}
 
 size_t tui_body_cols(void) {
     if (!g_tui.fullscreen) return 0;
@@ -3242,12 +3364,16 @@ void tui_desktop_notify(Str text) {
      * text out of that space, and a payload that lost it is not sent. */
     if (text.p[0] >= '0' && text.p[0] <= '9') return;
     size_t n = 0;
-    memcpy(seq + n, "\033]9;", 4); n += 4;
-    memcpy(seq + n, text.p, text.n); n += text.n;
+    memcpy(seq + n, "\033]9;", 4);
+    n += 4;
+    memcpy(seq + n, text.p, text.n);
+    n += text.n;
     seq[n++] = '\a';
-    Str s = { seq, n };
-    if (getenv("TMUX")) put_passthrough(s);
-    else put_raw(s.p, s.n);
+    Str s = {seq, n};
+    if (getenv("TMUX"))
+        put_passthrough(s);
+    else
+        put_raw(s.p, s.n);
     flush_out();
 }
 
@@ -3258,8 +3384,12 @@ void tui_bell(void) {
 }
 
 void tui_notice(Str msg) {
-    if (!g_tui.fullscreen) {   
-        if (msg.n) { tui_block(); tui_write(msg); tui_write(STR("\n")); }
+    if (!g_tui.fullscreen) {
+        if (msg.n) {
+            tui_block();
+            tui_write(msg);
+            tui_write(STR("\n"));
+        }
         return;
     }
     size_t n = msg.n < sizeof g_tui.notice ? msg.n : sizeof g_tui.notice;
@@ -3294,7 +3424,7 @@ void tui_clear_transcript(void) {
 
 void tui_zone_begin(u32 id) {
     if (!g_tui.fullscreen || !id) return;
-    nl_commit();   
+    nl_commit();
     g_tui.zone_open = id;
     g_tui.zone_open_a = g_tui.transcript_n;
 }
@@ -3327,10 +3457,13 @@ static size_t rows_below(size_t off) {
         size_t lo = 0, hi = g_tui.ckpt_n;
         while (lo < hi) {
             size_t mid = lo + (hi - lo) / 2;
-            if (g_tui.ckpt_off[mid] <= off) lo = mid + 1; else hi = mid;
+            if (g_tui.ckpt_off[mid] <= off)
+                lo = mid + 1;
+            else
+                hi = mid;
         }
         size_t k = lo ? lo - 1 : 0;
-        Str s = { g_bulk.transcript, g_tui.transcript_n };
+        Str s = {g_bulk.transcript, g_tui.transcript_n};
         size_t row = k * g_tui.ckpt_step, i = g_tui.ckpt_off[k];
         while (i < off) {
             Row r = row_break(s, i, cols, 0);
@@ -3341,7 +3474,7 @@ static size_t rows_below(size_t off) {
         size_t all = g_tui.wrap_rows + 1;
         return all > row ? all - row : 1;
     }
-    Str tail = { g_bulk.transcript + off, g_tui.transcript_n - off };
+    Str tail = {g_bulk.transcript + off, g_tui.transcript_n - off};
     return text_rows(tail, cols, 0, 0, NULL, NULL);
 }
 
@@ -3350,7 +3483,10 @@ static void find_survey(size_t limit, size_t *count, size_t *last,
                         size_t *rank) {
     size_t n = 0, best = SIZE_MAX, best_rank = 0;
     for (size_t i = find_next_at(0); i != SIZE_MAX; i = find_next_at(i + 1)) {
-        if (i < limit) { best = i; best_rank = n; }
+        if (i < limit) {
+            best = i;
+            best_rank = n;
+        }
         n++;
     }
     *count = n;
@@ -3382,7 +3518,6 @@ static void find_seek(void) {
     size_t off = SIZE_MAX, rank = 0;
     find_survey(limit, &g_tui.find_count, &off, &rank);
     if (off == SIZE_MAX) {
-        
         off = find_next_at(0);
         rank = 0;
     }
@@ -3406,11 +3541,10 @@ static void find_refresh(void) {
     if (g_tui.find_epoch != g_tui.transcript_epoch
         || g_tui.find_scanned == SIZE_MAX
         || g_tui.find_scanned > g_tui.transcript_n) {
-        
         if (g_tui.find_cur != SIZE_MAX && find_match_at(g_tui.find_cur)) {
             size_t last = SIZE_MAX, rank = 0;
             find_survey(g_tui.find_cur, &g_tui.find_count, &last, &rank);
-            
+
             g_tui.find_index = last == SIZE_MAX ? 1 : rank + 2;
             g_tui.find_epoch = g_tui.transcript_epoch;
             g_tui.find_scanned = g_tui.transcript_n;
@@ -3419,7 +3553,7 @@ static void find_refresh(void) {
         }
         return;
     }
-    
+
     size_t q = g_tui.find_q_n;
     size_t from = g_tui.find_scanned > q - 1 ? g_tui.find_scanned - (q - 1) : 0;
     g_tui.find_count += find_count_from(from);
@@ -3430,7 +3564,10 @@ static void find_refresh(void) {
 static void find_step(i32 dir) {
     find_refresh();
     if (!g_tui.find_count) return;
-    if (g_tui.find_cur == SIZE_MAX) { find_seek(); return; }
+    if (g_tui.find_cur == SIZE_MAX) {
+        find_seek();
+        return;
+    }
     size_t off = dir < 0 ? find_prev_before(g_tui.find_cur)
                          : find_next_at(g_tui.find_cur + 1);
     g_tui.find_wrapped = off == SIZE_MAX;
@@ -3438,8 +3575,8 @@ static void find_step(i32 dir) {
         off = dir < 0 ? find_prev_before(g_tui.transcript_n) : find_next_at(0);
         g_tui.find_index = dir < 0 ? g_tui.find_count : 1;
     } else {
-        g_tui.find_index = dir < 0 ? g_tui.find_index - 1
-                                   : g_tui.find_index + 1;
+        g_tui.find_index =
+            dir < 0 ? g_tui.find_index - 1 : g_tui.find_index + 1;
     }
     if (off == SIZE_MAX) return;
     g_tui.find_cur = off;
@@ -3480,15 +3617,18 @@ void tui_anchor_view(void) {
     g_tui.anchor_is_pin = true;
     g_tui.anchor_scroll = g_tui.scroll_rows;
     g_tui.anchor_below = 0;
-    
+
     if (!g_tui.scroll_rows || !g_tui.pin_n) return;
-    
+
     size_t need = g_tui.scroll_rows + g_tui.bar_visible;
-    
+
     size_t lo = 0, hi = g_tui.pin_n;
     while (lo < hi) {
         size_t mid = lo + (hi - lo) / 2;
-        if (rows_below(g_tui.pin_off[mid]) >= need) lo = mid + 1; else hi = mid;
+        if (rows_below(g_tui.pin_off[mid]) >= need)
+            lo = mid + 1;
+        else
+            hi = mid;
     }
     size_t i = lo ? lo - 1 : 0;
     g_tui.anchor_id = g_tui.pin_id[i];
@@ -3498,11 +3638,10 @@ void tui_anchor_view(void) {
 void tui_restore_anchor(void) {
     u32 id = g_tui.anchor_id;
     g_tui.anchor_id = 0;
-    
+
     if (!g_tui.anchor_scroll) return;
     size_t off = id ? anchor_start(id) : SIZE_MAX;
     if (off == SIZE_MAX) {
-        
         if (g_tui.anchor_is_pin) {
             g_tui.scroll_rows = g_tui.anchor_scroll;
             repaint();
@@ -3510,11 +3649,13 @@ void tui_restore_anchor(void) {
         return;
     }
     size_t below = rows_below(off);
-    g_tui.scroll_rows = below > g_tui.anchor_below
-                      ? g_tui.anchor_scroll + (below - g_tui.anchor_below)
-                      : g_tui.anchor_scroll
-                        - (g_tui.anchor_below - below < g_tui.anchor_scroll
-                           ? g_tui.anchor_below - below : g_tui.anchor_scroll);
+    g_tui.scroll_rows =
+        below > g_tui.anchor_below
+            ? g_tui.anchor_scroll + (below - g_tui.anchor_below)
+            : g_tui.anchor_scroll
+                  - (g_tui.anchor_below - below < g_tui.anchor_scroll
+                         ? g_tui.anchor_below - below
+                         : g_tui.anchor_scroll);
     repaint();
 }
 
@@ -3528,7 +3669,7 @@ void tui_clear(void) {
  * on, since those are held in `pend_nl` until content follows them. */
 static void transcript_put(Str s) {
     g_tui.notice_n = 0;
-    
+
     if (!g_tui.sel_drag && !g_view.active) sel_clear();
 
     if (s.n >= TUI_TRANSCRIPT_CAP) {
@@ -3545,7 +3686,7 @@ static void transcript_put(Str s) {
         g_tui.pin_n = 0;
         g_tui.keep_off = SIZE_MAX;
         find_invalidate();
-        wrap_invalidate();   
+        wrap_invalidate();
     } else if (g_tui.transcript_n + s.n >= TUI_TRANSCRIPT_CAP) {
         size_t room_for_old = TUI_TRANSCRIPT_CAP - 1 - s.n;
         size_t keep = g_tui.transcript_n;
@@ -3562,18 +3703,19 @@ static void transcript_put(Str s) {
         find_shift(g_tui.transcript_n - keep);
         if (g_tui.keep_off != SIZE_MAX) {
             size_t delta = g_tui.transcript_n - keep;
-            g_tui.keep_off = g_tui.keep_off > delta ? g_tui.keep_off - delta
-                                                    : 0;
+            g_tui.keep_off =
+                g_tui.keep_off > delta ? g_tui.keep_off - delta : 0;
         }
         g_tui.transcript_n = keep;
-        wrap_invalidate();   
+        wrap_invalidate();
     }
 
-    
+
     size_t cols = g_tui.scroll_rows ? tui_body_cols() : 0;
     size_t rows_before = cols ? wrap_scan(cols) : 0;
 
-    for (size_t i = 0; i < s.n && g_tui.transcript_n + 4 < TUI_TRANSCRIPT_CAP; i++) {
+    for (size_t i = 0; i < s.n && g_tui.transcript_n + 4 < TUI_TRANSCRIPT_CAP;
+         i++) {
         unsigned char c = (unsigned char)s.p[i];
         if (c == '\r') continue;
         if (c == '\t') {
@@ -3611,7 +3753,7 @@ static void nl_commit(void) {
     g_tui.pend_nl = 0;
     if (n > 2) n = 2;
     if (g_tui.fullscreen) {
-        transcript_put((Str){ "\n\n", n });
+        transcript_put((Str){"\n\n", n});
     } else {
         put_raw("\n\n", n);
         g_tui.trail_nl += n;
@@ -3620,9 +3762,10 @@ static void nl_commit(void) {
 
 void tui_block(void) {
     b8 empty = g_tui.fullscreen ? g_tui.transcript_n == 0 : !g_tui.wrote_any;
-    
-    size_t need = empty ? (g_tui.fullscreen ? 1 : 0)
-                : g_tui.trail_nl < 2 ? 2 - g_tui.trail_nl : 0;
+
+    size_t need = empty                ? (g_tui.fullscreen ? 1 : 0)
+                  : g_tui.trail_nl < 2 ? 2 - g_tui.trail_nl
+                                       : 0;
     if (g_tui.pend_nl < need) g_tui.pend_nl = need;
 }
 
@@ -3640,18 +3783,24 @@ void tui_write(Str s) {
     }
     if (!s.p || s.n == 0) return;
     for (size_t i = 0; i < s.n;) {
-        if (s.p[i] == '\n') { g_tui.pend_nl++; i++; continue; }
+        if (s.p[i] == '\n') {
+            g_tui.pend_nl++;
+            i++;
+            continue;
+        }
         size_t k = i;
         while (k < s.n && s.p[k] != '\n') k++;
         nl_commit();
-        content_put((Str){ s.p + i, k - i });
+        content_put((Str){s.p + i, k - i});
         i = k;
     }
-    if (!g_tui.fullscreen) { flush_out(); return; }
-    
+    if (!g_tui.fullscreen) {
+        flush_out();
+        return;
+    }
+
     f64 now = agent_now_seconds();
-    if (g_winch || now - g_tui.last_paint >= 1.0 / 15.0)
-        repaint();
+    if (g_winch || now - g_tui.last_paint >= 1.0 / 15.0) repaint();
 }
 
 void tui_printf(const char *fmt, ...) {
@@ -3667,7 +3816,10 @@ void tui_printf(const char *fmt, ...) {
 
 
 static void write_span(Str s, u8 kind) {
-    if (!g_tui.fullscreen) { tui_write(s); return; }
+    if (!g_tui.fullscreen) {
+        tui_write(s);
+        return;
+    }
     nl_commit();
     size_t a = g_tui.transcript_n;
     tui_write(s);
@@ -3677,29 +3829,47 @@ static void write_span(Str s, u8 kind) {
 
 void tui_write_styled(Str s, TuiStyle st) {
     static const u8 kinds[] = {
-        [TUI_PLAIN] = ROW_PLAIN, [TUI_HEADING] = ROW_HEADING,
-        [TUI_CODE] = ROW_CODE,   [TUI_QUOTE] = ROW_QUOTE,
-        [TUI_BOLD] = ROW_BOLD,   [TUI_EMPH] = ROW_EMPH,
-        [TUI_MONO] = ROW_MONO,   [TUI_MARKER] = ROW_MARKER,
+        [TUI_PLAIN] = ROW_PLAIN,   [TUI_HEADING] = ROW_HEADING,
+        [TUI_CODE] = ROW_CODE,     [TUI_QUOTE] = ROW_QUOTE,
+        [TUI_BOLD] = ROW_BOLD,     [TUI_EMPH] = ROW_EMPH,
+        [TUI_MONO] = ROW_MONO,     [TUI_MARKER] = ROW_MARKER,
         [TUI_STRIKE] = ROW_STRIKE,
     };
-    if (st == TUI_PLAIN || (size_t)st >= sizeof kinds) tui_write(s);
-    else write_span(s, kinds[st]);
+    if (st == TUI_PLAIN || (size_t)st >= sizeof kinds)
+        tui_write(s);
+    else
+        write_span(s, kinds[st]);
 }
 
-void tui_write_muted(Str s)  { write_span(s, ROW_REASON); }
-void tui_write_text(Str s)   { write_span(s, ROW_PLAIN); }
-void tui_write_source(Str s) { write_span(s, ROW_SOURCE); }
-void tui_write_tool(Str s)   { write_span(s, ROW_TOOL); }
-void tui_write_result(Str s) { write_span(s, ROW_RESULT); }
-void tui_write_error(Str s)  { write_span(s, ROW_ERROR); }
+void tui_write_muted(Str s) {
+    write_span(s, ROW_REASON);
+}
+void tui_write_text(Str s) {
+    write_span(s, ROW_PLAIN);
+}
+void tui_write_source(Str s) {
+    write_span(s, ROW_SOURCE);
+}
+void tui_write_tool(Str s) {
+    write_span(s, ROW_TOOL);
+}
+void tui_write_result(Str s) {
+    write_span(s, ROW_RESULT);
+}
+void tui_write_error(Str s) {
+    write_span(s, ROW_ERROR);
+}
 
 b8 tui_highlight_enabled(void) {
     return g_tui.fullscreen && g_tui.color;
 }
 
-size_t tui_transcript_pos(void) { return g_tui.transcript_n; }
-u64 tui_transcript_epoch(void) { return g_tui.transcript_epoch; }
+size_t tui_transcript_pos(void) {
+    return g_tui.transcript_n;
+}
+u64 tui_transcript_epoch(void) {
+    return g_tui.transcript_epoch;
+}
 
 void tui_keep_visible(size_t off) {
     if (off <= g_tui.transcript_n) g_tui.keep_off = off;
@@ -3726,7 +3896,9 @@ void tui_syntax_add(size_t a, size_t b, u8 kind) {
     g_tui.syntax_n++;
 }
 
-void tui_syntax_commit(void) { repaint(); }
+void tui_syntax_commit(void) {
+    repaint();
+}
 
 /* A user turn is a block of screen rather than a labelled line: a padding row
  * above and below, and the whole range recorded so every row it wraps onto
@@ -3737,10 +3909,10 @@ void tui_user_begin(void) {
         tui_write(STR("> "));
         return;
     }
-    nl_commit();                          
+    nl_commit();
     g_tui.user_open_a = g_tui.transcript_n;
     g_tui.user_open = true;
-    tui_write(STR("\n"));                 
+    tui_write(STR("\n"));
 }
 
 void tui_user_end(void) {
@@ -3770,11 +3942,13 @@ void tui_set_interrupt_flag(volatile sig_atomic_t *flag) {
 static struct {
     unsigned char b[8192];
     size_t n, at;
-    i32    pushback;
-    b8     pushed;
+    i32 pushback;
+    b8 pushed;
 } g_input;
 
-static b8 input_buffered(void) { return g_input.at < g_input.n; }
+static b8 input_buffered(void) {
+    return g_input.at < g_input.n;
+}
 
 #ifdef AGENT_TESTING
 /* A settled screen, announced. The suite drives the UI over a pty, where the
@@ -3820,30 +3994,32 @@ static void input_notice(void) {
     if (g_input_bytes == last) return;
     last = g_input_bytes;
     char b[64];
-    int  n = snprintf(b, sizeof b, "\033_agent;input;%lu\033\\", g_input_bytes);
+    int n = snprintf(b, sizeof b, "\033_agent;input;%lu\033\\", g_input_bytes);
     if (n > 0 && (size_t)n < sizeof b) {
         put_raw(b, (size_t)n);
         flush_out();
     }
 }
 #else
-#define idle_beacon() ((void)0)
+#define idle_beacon()  ((void)0)
 #define input_notice() ((void)0)
 #endif
 
 static b8 input_ready(i32 timeout_ms) {
     if (g_input.pushed || input_buffered()) return true;
-    struct pollfd pfd = { STDIN_FILENO, POLLIN, 0 };
+    struct pollfd pfd = {STDIN_FILENO, POLLIN, 0};
     i32 rc = poll(&pfd, 1, timeout_ms);
     return rc > 0 && (pfd.revents & (POLLIN | POLLHUP)) != 0;
 }
 
 static i32 rbyte(void) {
-    if (g_input.pushed) { g_input.pushed = false; return g_input.pushback; }
+    if (g_input.pushed) {
+        g_input.pushed = false;
+        return g_input.pushback;
+    }
     if (!input_buffered()) {
-        
         idle_beacon();
-        
+
         ssize_t n = read(STDIN_FILENO, g_input.b, sizeof g_input.b);
         if (n < 0 && errno == EINTR) return g_winch ? -3 : -2;
         if (n <= 0) return -1;
@@ -3882,7 +4058,12 @@ static void paste_retire_if_drained(void) {
     g_tui.paste_cr = false;
 }
 
-typedef struct { i32 final; i32 nparams; i32 p[4]; b8 mouse; } Csi;
+typedef struct {
+    i32 final;
+    i32 nparams;
+    i32 p[4];
+    b8 mouse;
+} Csi;
 
 static i32 read_csi(Csi *out) {
     memset(out, 0, sizeof *out);
@@ -3895,10 +4076,17 @@ static i32 read_csi(Csi *out) {
             out->mouse = true;
             continue;
         }
-        if (c >= '0' && c <= '9') { cur = cur * 10 + c - '0'; got = true; continue; }
+        if (c >= '0' && c <= '9') {
+            cur = cur * 10 + c - '0';
+            got = true;
+            continue;
+        }
         if (c == ';') {
             if (out->nparams < 4) out->p[out->nparams] = cur;
-            out->nparams++; cur = 0; got = false; continue;
+            out->nparams++;
+            cur = 0;
+            got = false;
+            continue;
         }
         if (c >= 0x20 && c <= 0x2f) continue;
         if (got) {
@@ -3911,14 +4099,33 @@ static i32 read_csi(Csi *out) {
 }
 
 enum {
-    KEY_NONE = 0, KEY_IGNORE, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN, KEY_HOME,
+    KEY_NONE = 0,
+    KEY_IGNORE,
+    KEY_LEFT,
+    KEY_RIGHT,
+    KEY_UP,
+    KEY_DOWN,
+    KEY_HOME,
     KEY_END,
-    KEY_PREV_WORD, KEY_NEXT_WORD, KEY_NEWLINE, KEY_PAGE_UP, KEY_PAGE_DOWN,
-    KEY_WHEEL_UP, KEY_WHEEL_DOWN, KEY_MOUSE_DOWN, KEY_MOUSE_DRAG, KEY_MOUSE_UP,
-    KEY_MOUSE_MOVE, KEY_SHIFT_TAB, KEY_PASTE,
-    KEY_DELETE, KEY_TOP, KEY_BOTTOM,
-    
-    KEY_KILL_WORD, KEY_KILL_PREV_WORD
+    KEY_PREV_WORD,
+    KEY_NEXT_WORD,
+    KEY_NEWLINE,
+    KEY_PAGE_UP,
+    KEY_PAGE_DOWN,
+    KEY_WHEEL_UP,
+    KEY_WHEEL_DOWN,
+    KEY_MOUSE_DOWN,
+    KEY_MOUSE_DRAG,
+    KEY_MOUSE_UP,
+    KEY_MOUSE_MOVE,
+    KEY_SHIFT_TAB,
+    KEY_PASTE,
+    KEY_DELETE,
+    KEY_TOP,
+    KEY_BOTTOM,
+
+    KEY_KILL_WORD,
+    KEY_KILL_PREV_WORD
 };
 
 static struct {
@@ -3953,18 +4160,32 @@ static struct {
  * the same paste state without binding the key itself.
  */
 
-#define KEY_CASE(key, label, help, ...) case key: { __VA_ARGS__ } break;
-#define KEY_DOC(key, label, help, ...)  { label, help },
+#define KEY_CASE(key, label, help, ...) \
+    case key: {                         \
+        __VA_ARGS__                     \
+    } break;
+#define KEY_DOC(key, label, help, ...) {label, help},
 
-typedef struct { const char *key; const char *help; } KeyRow;
-typedef struct { const char *name; const KeyRow *rows; size_t n; } KeyContext;
+typedef struct {
+    const char *key;
+    const char *help;
+} KeyRow;
+typedef struct {
+    const char *name;
+    const KeyRow *rows;
+    size_t n;
+} KeyContext;
 
 static i32 read_escape(void) {
     i32 first = rbyte_soon();
     if (first < 0) return KEY_NONE;
     /* Two Escapes in one burst are two keys: the second opens a sequence of
      * its own rather than closing this one. */
-    if (first == 0x1b) { g_input.pushback = 0x1b; g_input.pushed = true; return KEY_NONE; }
+    if (first == 0x1b) {
+        g_input.pushback = 0x1b;
+        g_input.pushed = true;
+        return KEY_NONE;
+    }
     if (first == '\r' || first == '\n') return KEY_NEWLINE;
     if (first == '[') {
         Csi csi;
@@ -3976,8 +4197,8 @@ static i32 read_escape(void) {
             g_mouse.col = csi.p[1];
             g_mouse.row = csi.p[2];
             if (final == 'm') return KEY_MOUSE_UP;
-            if (button & 32) return (button & 3) == 3 ? KEY_MOUSE_MOVE
-                                                      : KEY_MOUSE_DRAG;
+            if (button & 32)
+                return (button & 3) == 3 ? KEY_MOUSE_MOVE : KEY_MOUSE_DRAG;
             if ((button & 3) == 0) return KEY_MOUSE_DOWN;
             return KEY_IGNORE;
         }
@@ -3993,8 +4214,7 @@ static i32 read_escape(void) {
             case 'Z': return KEY_SHIFT_TAB;
             case '~':
                 if (csi.nparams < 1) return KEY_IGNORE;
-                if (csi.nparams >= 3 && csi.p[0] == 27
-                    && csi.p[1] == 2
+                if (csi.nparams >= 3 && csi.p[0] == 27 && csi.p[1] == 2
                     && (csi.p[2] == '\r' || csi.p[2] == '\n'))
                     return KEY_NEWLINE;
                 if (csi.p[0] == 1 || csi.p[0] == 7)
@@ -4004,7 +4224,7 @@ static i32 read_escape(void) {
                     return ctrl ? KEY_BOTTOM : KEY_END;
                 if (csi.p[0] == 5) return KEY_PAGE_UP;
                 if (csi.p[0] == 6) return KEY_PAGE_DOWN;
-                
+
                 if (csi.p[0] == 200 || csi.p[0] == 201) {
                     g_tui.pasting = csi.p[0] == 200;
                     g_tui.paste_cr = false;
@@ -4019,7 +4239,7 @@ static i32 read_escape(void) {
             default: return KEY_IGNORE;
         }
     }
-    
+
     if (first == 'O') {
         switch (rbyte_soon()) {
             case 'A': return KEY_UP;
@@ -4028,15 +4248,19 @@ static i32 read_escape(void) {
             case 'D': return KEY_LEFT;
             case 'H': return KEY_HOME;
             case 'F': return KEY_END;
-            default:  return KEY_IGNORE;
+            default: return KEY_IGNORE;
         }
     }
-    
+
     switch (first) {
-        case 'b': case 'B': return KEY_PREV_WORD;
-        case 'f': case 'F': return KEY_NEXT_WORD;
-        case 'd': case 'D': return KEY_KILL_WORD;
-        case 0x7f: case 0x08: return KEY_KILL_PREV_WORD;
+        case 'b':
+        case 'B': return KEY_PREV_WORD;
+        case 'f':
+        case 'F': return KEY_NEXT_WORD;
+        case 'd':
+        case 'D': return KEY_KILL_WORD;
+        case 0x7f:
+        case 0x08: return KEY_KILL_PREV_WORD;
         default: break;
     }
     return KEY_IGNORE;
@@ -4073,8 +4297,8 @@ static size_t next_word(const char *buf, size_t n, size_t cur) {
 }
 
 
-static b8 entry_before(u8 rank_a, u16 depth_a, const char *name_a,
-                       u8 rank_b, u16 depth_b, const char *name_b) {
+static b8 entry_before(u8 rank_a, u16 depth_a, const char *name_a, u8 rank_b,
+                       u16 depth_b, const char *name_b) {
     if (rank_a != rank_b) return rank_a < rank_b;
     if (depth_a != depth_b) return depth_a < depth_b;
     for (size_t i = 0;; i++) {
@@ -4091,9 +4315,9 @@ static void path_insert(const char *rel, size_t rel_n, u8 rank, u16 depth) {
     size_t pos = 0;
     while (pos < g_tui.path_n) {
         u16 s = g_tui.path_ord[pos];
-        if (entry_before(rank, depth, rel,
-                         g_tui.path_rank[s], g_tui.path_depth[s],
-                         g_tui.path_slot[s])) break;
+        if (entry_before(rank, depth, rel, g_tui.path_rank[s],
+                         g_tui.path_depth[s], g_tui.path_slot[s]))
+            break;
         pos++;
     }
     u16 slot;
@@ -4103,7 +4327,7 @@ static void path_insert(const char *rel, size_t rel_n, u8 rank, u16 depth) {
         shift = g_tui.path_n - pos;
         g_tui.path_n++;
     } else {
-        if (pos + 1 >= TUI_PATH_ENTS) return;   
+        if (pos + 1 >= TUI_PATH_ENTS) return;
         slot = g_tui.path_ord[TUI_PATH_ENTS - 1];
         shift = TUI_PATH_ENTS - 1 - pos;
     }
@@ -4114,15 +4338,24 @@ static void path_insert(const char *rel, size_t rel_n, u8 rank, u16 depth) {
     g_tui.path_slot[slot][rel_n] = '\0';
     g_tui.path_rank[slot] = rank;
     g_tui.path_depth[slot] = depth;
-    g_tui.path_ents[slot].name = (Str){ g_tui.path_slot[slot], rel_n };
+    g_tui.path_ents[slot].name = (Str){g_tui.path_slot[slot], rel_n};
     g_tui.path_ents[slot].desc = (Str){0};
 }
 
 
 static b8 path_rank_of(Str rel, Str name, Str q, u8 *out) {
-    if (str_starts_ci(name, q))   { *out = 0; return true; }
-    if (str_contains_ci(name, q)) { *out = 1; return true; }
-    if (str_contains_ci(rel, q))  { *out = 2; return true; }
+    if (str_starts_ci(name, q)) {
+        *out = 0;
+        return true;
+    }
+    if (str_contains_ci(name, q)) {
+        *out = 1;
+        return true;
+    }
+    if (str_contains_ci(rel, q)) {
+        *out = 2;
+        return true;
+    }
     size_t k = 0;
     for (size_t i = 0; i < rel.n && k < q.n; i++)
         if (lower_ascii(rel.p[i]) == lower_ascii(q.p[k])) k++;
@@ -4153,18 +4386,21 @@ static void path_walk(char *path, size_t n, size_t root_n, Str q, u16 depth,
         size_t end = n + name.n;
         path[end] = '\0';
         b8 is_dir;
-        
-        if (e->d_type == DT_DIR) is_dir = true;
+
+        if (e->d_type == DT_DIR)
+            is_dir = true;
         else if (e->d_type == DT_UNKNOWN || e->d_type == DT_LNK)
             is_dir = path_is_dir(path);
-        else is_dir = false;
-        
+        else
+            is_dir = false;
+
         if (is_dir && str_eq(name, STR(".git"))) continue;
         if (!agent_ignore_show()
-            && agent_ignore_match(&g_tui.ignore, path, end, is_dir)) continue;
+            && agent_ignore_match(&g_tui.ignore, path, end, is_dir))
+            continue;
 
-        u8 rank = is_dir ? 0 : 1;   
-        Str rel = { path + root_n, end - root_n };
+        u8 rank = is_dir ? 0 : 1;
+        Str rel = {path + root_n, end - root_n};
         b8 hit = !q.n || path_rank_of(rel, name, q, &rank);
         if (is_dir) {
             path[end] = '/';
@@ -4173,8 +4409,8 @@ static void path_walk(char *path, size_t n, size_t root_n, Str q, u16 depth,
             if (depth < max_depth && *budget) {
                 AgentIgnoreMark mark = agent_ignore_mark(&g_tui.ignore);
                 agent_ignore_push(&g_tui.ignore, path, end + 1, end + 1);
-                path_walk(path, end + 1, root_n, q, (u16)(depth + 1),
-                          max_depth, budget);
+                path_walk(path, end + 1, root_n, q, (u16)(depth + 1), max_depth,
+                          budget);
                 agent_ignore_restore(&g_tui.ignore, mark);
             }
         } else if (hit) {
@@ -4188,9 +4424,12 @@ static void path_walk(char *path, size_t n, size_t root_n, Str q, u16 depth,
 static void path_refresh(Str prefix, Str keep) {
     size_t cut = 0;
     for (size_t i = prefix.n; i-- > 0;)
-        if (prefix.p[i] == '/') { cut = i + 1; break; }
-    Str dir = { prefix.p, cut };
-    Str base = { prefix.p + cut, prefix.n - cut };
+        if (prefix.p[i] == '/') {
+            cut = i + 1;
+            break;
+        }
+    Str dir = {prefix.p, cut};
+    Str base = {prefix.p + cut, prefix.n - cut};
     char path[AGENT_MAX_PATH];
     if (dir.n + 1 >= sizeof path) return;
     memcpy(path, dir.p, dir.n);
@@ -4201,14 +4440,14 @@ static void path_refresh(Str prefix, Str keep) {
     /* The walk is bounded rather than complete: a tree nobody ignored is
      * still answered in the time a keystroke has. */
     size_t budget = TUI_PATH_SCAN;
-    path_walk(path, dir.n, dir.n, base, 0,
-              base.n ? TUI_PATH_DEPTH : 0, &budget);
+    path_walk(path, dir.n, dir.n, base, 0, base.n ? TUI_PATH_DEPTH : 0,
+              &budget);
 
     size_t n = g_tui.path_n;
     for (size_t i = 0; i < n; i++) g_tui.comp_idx[i] = g_tui.path_ord[i];
     g_tui.comp_n = n;
     g_tui.comp_sel = 0;
-    
+
     for (size_t i = 0; keep.n && i < n; i++)
         if (str_eq(g_tui.path_ents[g_tui.comp_idx[i]].name, keep)) {
             g_tui.comp_sel = i;
@@ -4229,7 +4468,7 @@ static b8 path_prefix(Str *out) {
     }
     if (start >= cur || g_bulk.input[start] != '@') return false;
     g_tui.path_at = start;
-    *out = (Str){ g_bulk.input + start + 1, cur - start - 1 };
+    *out = (Str){g_bulk.input + start + 1, cur - start - 1};
     return true;
 }
 
@@ -4242,7 +4481,8 @@ static void completion_refresh(void) {
     size_t previous = SIZE_MAX;
     if (g_tui.comp_n) {
         Str sel = popup_items()[g_tui.comp_idx[g_tui.comp_sel]].name;
-        if (!g_tui.path_mode) previous = g_tui.comp_idx[g_tui.comp_sel];
+        if (!g_tui.path_mode)
+            previous = g_tui.comp_idx[g_tui.comp_sel];
         else if (sel.n <= sizeof keep) {
             memcpy(keep, sel.p, sel.n);
             keep_n = sel.n;
@@ -4254,22 +4494,23 @@ static void completion_refresh(void) {
     if (g_tui.comp_dismissed) return;
     Str prefix;
     if (path_prefix(&prefix)) {
-        path_refresh(prefix, (Str){ keep, keep_n });
+        path_refresh(prefix, (Str){keep, keep_n});
         return;
     }
     if (!g_tui.cmds || !g_tui.cmd_n) return;
-    Str in = { g_bulk.input, g_tui.input_n };
+    Str in = {g_bulk.input, g_tui.input_n};
     if (in.n == 0 || in.p[0] != '/') return;
     for (size_t i = 0; i < in.n; i++)
         if (in.p[i] == ' ' || in.p[i] == '\t' || in.p[i] == '\n') return;
     size_t exact = SIZE_MAX;
-    for (size_t i = 0; i < g_tui.cmd_n && g_tui.comp_n < AGENT_MAX_COMMANDS; i++) {
+    for (size_t i = 0; i < g_tui.cmd_n && g_tui.comp_n < AGENT_MAX_COMMANDS;
+         i++) {
         if (!str_starts_ci(g_tui.cmds[i].name, in)) continue;
         if (i == previous) g_tui.comp_sel = g_tui.comp_n;
         if (g_tui.cmds[i].name.n == in.n) exact = g_tui.comp_n;
         g_tui.comp_idx[g_tui.comp_n++] = (u16)i;
     }
-    
+
     for (size_t a = 0; a < g_tui.alias_n && g_tui.comp_n < AGENT_MAX_COMMANDS;
          a++) {
         if (!str_starts_ci(g_tui.aliases[a].alias, in)) continue;
@@ -4282,7 +4523,10 @@ static void completion_refresh(void) {
         if (cmd == SIZE_MAX) continue;
         b8 listed = false;
         for (size_t i = 0; i < g_tui.comp_n; i++)
-            if (g_tui.comp_idx[i] == cmd) { listed = true; break; }
+            if (g_tui.comp_idx[i] == cmd) {
+                listed = true;
+                break;
+            }
         if (listed) continue;
         if (cmd == previous) g_tui.comp_sel = g_tui.comp_n;
         if (g_tui.aliases[a].alias.n == in.n) exact = g_tui.comp_n;
@@ -4312,8 +4556,7 @@ static b8 completion_would_change(void) {
     if (!g_tui.comp_n) return false;
     if (g_tui.path_mode) return true;
     Str name = g_tui.cmds[g_tui.comp_idx[g_tui.comp_sel]].name;
-    return name.n != g_tui.input_n
-        || memcmp(name.p, g_bulk.input, name.n) != 0;
+    return name.n != g_tui.input_n || memcmp(name.p, g_bulk.input, name.n) != 0;
 }
 
 /* An image is attached rather than typed: the bytes are what a model that
@@ -4321,8 +4564,8 @@ static b8 completion_would_change(void) {
  * The type is decided by the name here and by the header in media_add, which
  * is what refuses a file that only looks like an image. */
 static b8 path_is_image(Str name) {
-    static const char *const k_ext[] = { ".png", ".jpg", ".jpeg", ".gif",
-                                         ".webp" };
+    static const char *const k_ext[] = {".png", ".jpg", ".jpeg", ".gif",
+                                        ".webp"};
     for (size_t i = 0; i < sizeof k_ext / sizeof k_ext[0]; i++) {
         size_t n = strlen(k_ext[i]);
         if (name.n <= n) continue;
@@ -4388,7 +4631,8 @@ static void completion_accept(void) {
         return;
     }
     Str name = g_tui.cmds[g_tui.comp_idx[g_tui.comp_sel]].name;
-    size_t n = name.n < sizeof g_bulk.input - 1 ? name.n : sizeof g_bulk.input - 1;
+    size_t n =
+        name.n < sizeof g_bulk.input - 1 ? name.n : sizeof g_bulk.input - 1;
     memcpy(g_bulk.input, name.p, n);
     g_bulk.input[n] = '\0';
     g_tui.input_n = n;
@@ -4398,13 +4642,17 @@ static void completion_accept(void) {
     g_tui.comp_dismissed = true;
 }
 
-b8 tui_show_ignored(void) { return agent_ignore_show(); }
+b8 tui_show_ignored(void) {
+    return agent_ignore_show();
+}
 
 void tui_set_show_ignored(b8 on) {
     agent_ignore_set_show(on);
 }
 
-b8 tui_justify(void) { return g_tui.justify; }
+b8 tui_justify(void) {
+    return g_tui.justify;
+}
 
 
 void tui_set_justify(b8 on) {
@@ -4426,7 +4674,7 @@ static void composer_load(char *buf, size_t *n, size_t *cur, Str s) {
     buf[take] = '\0';
     *n = take;
     *cur = take;
-    
+
     g_tui.input_top = 0;
     g_tui.goal_col_valid = false;
 }
@@ -4436,7 +4684,7 @@ static void composer_load(char *buf, size_t *n, size_t *cur, Str s) {
  * that way, which is the caller's cue to hand the key to history recall. */
 static b8 composer_move_row(i32 dir, const char *buf, size_t n, size_t *cur) {
     size_t mark = composer_marker(buf, n);
-    Str s = { (char *)buf + mark, n - mark };
+    Str s = {(char *)buf + mark, n - mark};
     size_t view_cur = *cur > mark ? *cur - mark : 0;
     size_t cols = tui_body_cols();
     if (!cols) return false;
@@ -4467,8 +4715,11 @@ static b8 history_recall(i32 dir, char *buf, size_t *n, size_t *cur) {
         return true;
     }
     if (!history_browsing(h)) return false;
-    if (history_next(h, &entry)) { composer_load(buf, n, cur, entry); return true; }
-    composer_load(buf, n, cur, (Str){ g_bulk.draft, g_tui.draft_n });
+    if (history_next(h, &entry)) {
+        composer_load(buf, n, cur, entry);
+        return true;
+    }
+    composer_load(buf, n, cur, (Str){g_bulk.draft, g_tui.draft_n});
     return true;
 }
 
@@ -4483,7 +4734,7 @@ void tui_set_input(Str s) {
 
 Str tui_input(void) {
     if (!g_tui.fullscreen) return (Str){0};
-    return (Str){ g_bulk.input, g_tui.input_n };
+    return (Str){g_bulk.input, g_tui.input_n};
 }
 
 void tui_set_commands(const TuiCmd *cmds, size_t n) {
@@ -4508,7 +4759,7 @@ static void pick_filter(Str query, b8 fuzzy) {
                   : str_contains_ci(g_tui.cmds[i].name, query))
             g_tui.comp_idx[g_tui.comp_n++] = (u16)i;
     }
-    
+
     g_tui.comp_sel = g_tui.pick_end && g_tui.comp_n ? g_tui.comp_n - 1 : 0;
     if (g_tui.comp_n
         && popup_separator(&g_tui.cmds[g_tui.comp_idx[g_tui.comp_sel]]))
@@ -4524,18 +4775,24 @@ static void scroll_to_top(void) {
 
 static b8 scroll_key(i32 key) {
     size_t rows, cols;
-    screen_size(&rows, &cols); (void)cols;
+    screen_size(&rows, &cols);
+    (void)cols;
     size_t page = rows > 4 ? rows - 4 : 1;
-    if (key == KEY_PAGE_UP) g_tui.scroll_rows += page;
+    if (key == KEY_PAGE_UP)
+        g_tui.scroll_rows += page;
     else if (key == KEY_PAGE_DOWN)
-        g_tui.scroll_rows = g_tui.scroll_rows > page ? g_tui.scroll_rows - page
-                                                     : 0;
-    else if (key == KEY_WHEEL_UP) g_tui.scroll_rows += 3;
+        g_tui.scroll_rows =
+            g_tui.scroll_rows > page ? g_tui.scroll_rows - page : 0;
+    else if (key == KEY_WHEEL_UP)
+        g_tui.scroll_rows += 3;
     else if (key == KEY_WHEEL_DOWN)
         g_tui.scroll_rows = g_tui.scroll_rows > 3 ? g_tui.scroll_rows - 3 : 0;
-    else if (key == KEY_TOP || key == KEY_HOME) scroll_to_top();
-    else if (key == KEY_BOTTOM || key == KEY_END) tui_scroll_to_bottom();
-    else return false;
+    else if (key == KEY_TOP || key == KEY_HOME)
+        scroll_to_top();
+    else if (key == KEY_BOTTOM || key == KEY_END)
+        tui_scroll_to_bottom();
+    else
+        return false;
     return true;
 }
 
@@ -4553,21 +4810,23 @@ static void view_close(void) {
 
 static size_t view_visible_rows(void) {
     return g_view.bottom_row > g_view.top_row + 2
-         ? g_view.bottom_row - g_view.top_row - 2 : 1;
+               ? g_view.bottom_row - g_view.top_row - 2
+               : 1;
 }
 
 static void view_move(i32 delta) {
     size_t visible = view_visible_rows();
-    size_t max_top = g_view.total_rows > visible
-                   ? g_view.total_rows - visible : 0;
+    size_t max_top =
+        g_view.total_rows > visible ? g_view.total_rows - visible : 0;
     if (delta < 0) {
         size_t step = (size_t)(-delta);
         g_view.top = g_view.top > step ? g_view.top - step : 0;
     } else {
         size_t step = (size_t)delta;
-        g_view.top = step > max_top - (g_view.top < max_top ? g_view.top
-                                                            : max_top)
-                   ? max_top : g_view.top + step;
+        g_view.top =
+            step > max_top - (g_view.top < max_top ? g_view.top : max_top)
+                ? max_top
+                : g_view.top + step;
     }
 }
 
@@ -4575,34 +4834,48 @@ static b8 view_close_cell(i32 row, i32 col) {
     if (row < 1 || col < 1) return false;
     size_t r = (size_t)row, c = (size_t)col;
     return r == g_view.top_row + 1 && c >= g_view.right_col - 4
-        && c < g_view.right_col;
+           && c < g_view.right_col;
 }
 
 
 static b8 view_feed(i32 c) {
     if (!g_view.active) return false;
-    if (c == -3) { repaint(); return true; }
+    if (c == -3) {
+        repaint();
+        return true;
+    }
     if (c < 0) return false;
     if (c == 0x03 || c == 0x04 || c == '\r' || c == '\n' || c == 'q')
         return false;
-    if (c == 0x0c) { g_tui.frame_valid = false; repaint(); return true; }
+    if (c == 0x0c) {
+        g_tui.frame_valid = false;
+        repaint();
+        return true;
+    }
     if (c != 0x1b) return true;
 
     i32 key = read_escape();
     size_t page = view_visible_rows();
     if (page > 1) page--;
     if (key == KEY_NONE) return false;
-    if (key == KEY_UP) view_move(-1);
-    else if (key == KEY_DOWN) view_move(1);
-    else if (key == KEY_PAGE_UP) view_move(-(i32)page);
-    else if (key == KEY_PAGE_DOWN) view_move((i32)page);
-    else if (key == KEY_WHEEL_UP) view_move(-3);
-    else if (key == KEY_WHEEL_DOWN) view_move(3);
-    else if (key == KEY_TOP || key == KEY_HOME) g_view.top = 0;
+    if (key == KEY_UP)
+        view_move(-1);
+    else if (key == KEY_DOWN)
+        view_move(1);
+    else if (key == KEY_PAGE_UP)
+        view_move(-(i32)page);
+    else if (key == KEY_PAGE_DOWN)
+        view_move((i32)page);
+    else if (key == KEY_WHEEL_UP)
+        view_move(-3);
+    else if (key == KEY_WHEEL_DOWN)
+        view_move(3);
+    else if (key == KEY_TOP || key == KEY_HOME)
+        g_view.top = 0;
     else if (key == KEY_BOTTOM || key == KEY_END) {
         size_t visible = view_visible_rows();
-        g_view.top = g_view.total_rows > visible
-                   ? g_view.total_rows - visible : 0;
+        g_view.top =
+            g_view.total_rows > visible ? g_view.total_rows - visible : 0;
     } else if (key == KEY_MOUSE_DOWN) {
         g_view.close_down = view_close_cell(g_mouse.row, g_mouse.col);
         if (!g_view.close_down) sel_begin(g_mouse.row, g_mouse.col);
@@ -4610,8 +4883,8 @@ static b8 view_feed(i32 c) {
         g_view.close_down = false;
         sel_extend(g_mouse.row, g_mouse.col);
     } else if (key == KEY_MOUSE_UP) {
-        b8 close = g_view.close_down
-                && view_close_cell(g_mouse.row, g_mouse.col);
+        b8 close =
+            g_view.close_down && view_close_cell(g_mouse.row, g_mouse.col);
         g_view.close_down = false;
         sel_finish();
         if (close) return false;
@@ -4622,7 +4895,7 @@ static b8 view_feed(i32 c) {
 
 static void view_run(void) {
     g_view.modal = true;
-    while (g_view.active && view_feed(rbyte())) { }
+    while (g_view.active && view_feed(rbyte())) {}
     view_close();
 }
 
@@ -4631,15 +4904,15 @@ static void view_run(void) {
  * carries the keys that act. */
 static void pick_search_row(Str query, b8 settings) {
     char row[sizeof g_tui.notice];
-    i32 n = snprintf(row, sizeof row, "search: %.*s%s%s", (i32)query.n,
-                     query.p, g_tui.comp_n ? "" : "  (no match)",
+    i32 n = snprintf(row, sizeof row, "search: %.*s%s%s", (i32)query.n, query.p,
+                     g_tui.comp_n ? "" : "  (no match)",
                      settings && !query.n
                          ? " · Space or Left/Right changes the selected "
                            "row · Esc closes"
                          : "");
     if (n < 0) return;
     size_t len = (size_t)n < sizeof row ? (size_t)n : sizeof row - 1;
-    tui_notice((Str){row, len});   
+    tui_notice((Str){row, len});
 }
 
 
@@ -4649,8 +4922,7 @@ typedef enum { PICK_CHOOSE, PICK_SETTINGS, PICK_INFO } PickKind;
 static void pick_reselect(Str query, b8 fuzzy, size_t keep) {
     pick_filter(query, fuzzy);
     for (size_t i = 0; i < g_tui.comp_n; i++)
-        if (g_tui.comp_idx[i] == keep
-            && !popup_separator(&g_tui.cmds[keep])) {
+        if (g_tui.comp_idx[i] == keep && !popup_separator(&g_tui.cmds[keep])) {
             g_tui.comp_sel = i;
             return;
         }
@@ -4665,7 +4937,7 @@ static void pick_settings_act(const TuiSettings *set, Str query, i32 delta) {
     size_t n = set->build(set->ud);
     if (n > set->max) n = set->max;
     if (n > AGENT_MAX_POPUP) n = AGENT_MAX_POPUP;
-    if (!n) return;   
+    if (!n) return;
     g_tui.cmd_n = n;
     pick_reselect(query, true, row < n ? row : n - 1);
 }
@@ -4676,20 +4948,20 @@ static void pick_settings_act(const TuiSettings *set, Str query, i32 delta) {
  * rows and `ud` it points at belong to the caller and must outlive it too. */
 typedef struct {
     b8 active;
-    b8 modal;              
+    b8 modal;
     b8 search;
     b8 has_set;
     b8 chosen;
     b8 has_action;
-    b8 expired;            
+    b8 expired;
     PickKind kind;
     TuiSettings set;
-    TuiPickAction action;   
-    size_t out;            
-    
+    TuiPickAction action;
+    size_t out;
+
     i32 timeout_ms;
     size_t fallback;
-    f64 deadline;          
+    f64 deadline;
     char query[TUI_PICK_QUERY];
     size_t query_n;
     const TuiCmd *saved_cmds;
@@ -4718,7 +4990,7 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
         repaint();
         return false;
     }
-    
+
     if (g_tui.find_open) find_close();
     /* A screen left open during a turn yields to a modal caller, whose answer
      * the agent loop is waiting for. Two screens have no keyboard to share,
@@ -4733,7 +5005,10 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
     g_pick.active = true;
     g_pick.modal = modal;
     g_pick.kind = kind;
-    if (set) { g_pick.set = *set; g_pick.has_set = true; }
+    if (set) {
+        g_pick.set = *set;
+        g_pick.has_set = true;
+    }
     g_pick.saved_cmds = g_tui.cmds;
     g_pick.saved_marks = g_tui.marks;
     g_pick.saved_cmd_n = g_tui.cmd_n;
@@ -4742,20 +5017,21 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
     memcpy(g_pick.saved_status, g_tui.status, sizeof g_pick.saved_status);
     memcpy(g_pick.saved_notice, g_tui.notice, sizeof g_pick.saved_notice);
     size_t notice_n = notice.n < sizeof g_tui.pick_notice
-                    ? notice.n : sizeof g_tui.pick_notice;
+                          ? notice.n
+                          : sizeof g_tui.pick_notice;
     if (notice_n) memcpy(g_tui.pick_notice, notice.p, notice_n);
     g_tui.pick_notice_n = notice_n;
     g_tui.keep_off = keep_off;
 
     b8 settings = kind == PICK_SETTINGS;
-    
-    g_pick.search = settings
-                 || (kind == PICK_CHOOSE && search_n > TUI_PICK_SEARCH_MIN);
+
+    g_pick.search =
+        settings || (kind == PICK_CHOOSE && search_n > TUI_PICK_SEARCH_MIN);
 
     g_tui.cmds = items;
     g_tui.marks = marks;
     g_tui.cmd_n = n;
-    g_tui.path_mode = false;   
+    g_tui.path_mode = false;
     g_tui.picking = true;
     g_tui.comp_n = n;
     g_tui.pick_end = anchor == TUI_PICK_LAST;
@@ -4763,7 +5039,7 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
     for (size_t i = 0; i < n; i++) g_tui.comp_idx[i] = (u16)i;
     if (popup_separator(&items[g_tui.comp_idx[g_tui.comp_sel]]))
         completion_move(g_tui.pick_end ? -1 : 1);
-    
+
     if (g_pick.search)
         pick_search_row((Str){g_pick.query, g_pick.query_n}, settings);
     if (kind == PICK_INFO && !g_tui.notice_n)
@@ -4771,18 +5047,18 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
     if (act) {
         g_pick.action = *act;
         g_pick.has_action = true;
-        
+
         if (act->hint.n && !g_tui.notice_n) tui_notice(act->hint);
     }
     char status[sizeof g_tui.status];
     snprintf(status, sizeof status, "%.*s", (i32)title.n, title.p);
-    tui_set_status(status);   
+    tui_set_status(status);
     return true;
 }
 
 static b8 pick_requery(void) {
     b8 settings = g_pick.kind == PICK_SETTINGS;
-    Str query = { g_pick.query, g_pick.query_n };
+    Str query = {g_pick.query, g_pick.query_n};
     pick_filter(query, settings);
     pick_search_row(query, settings);
     return true;
@@ -4790,7 +5066,10 @@ static b8 pick_requery(void) {
 
 
 static b8 pick_typed(i32 c) {
-    if (!g_pick.search) { repaint(); return true; }
+    if (!g_pick.search) {
+        repaint();
+        return true;
+    }
     b8 printable = (c >= 0x20 && c < 0x7f) || c >= 0x80;
     if (!printable || g_pick.query_n + 1 >= sizeof g_pick.query) return true;
     g_pick.query[g_pick.query_n++] = (char)c;
@@ -4798,21 +5077,27 @@ static b8 pick_typed(i32 c) {
 }
 
 static b8 pick_erase(void) {
-    if (!g_pick.search) { repaint(); return true; }
+    if (!g_pick.search) {
+        repaint();
+        return true;
+    }
     if (g_pick.query_n)
         g_pick.query_n = prev_glyph(g_pick.query, g_pick.query_n);
     return pick_requery();
 }
 
 static b8 pick_clear(void) {
-    if (!g_pick.search) { repaint(); return true; }
+    if (!g_pick.search) {
+        repaint();
+        return true;
+    }
     g_pick.query_n = 0;
     return pick_requery();
 }
 
 static b8 pick_act(const TuiSettings *set, i32 delta) {
     if (!g_tui.comp_n) return true;
-    pick_settings_act(set, (Str){ g_pick.query, g_pick.query_n }, delta);
+    pick_settings_act(set, (Str){g_pick.query, g_pick.query_n}, delta);
     repaint();
     return true;
 }
@@ -4827,7 +5112,10 @@ static b8 pick_row_action(i32 key) {
     if (!g_pick.has_action) return true;
     const TuiPickBinding *binding = NULL;
     for (size_t i = 0; i < a->n_bindings; i++)
-        if (a->bindings[i].key == key) { binding = &a->bindings[i]; break; }
+        if (a->bindings[i].key == key) {
+            binding = &a->bindings[i];
+            break;
+        }
     if (!binding) return true;
     size_t row = g_tui.comp_n ? g_tui.comp_idx[g_tui.comp_sel] : SIZE_MAX;
     size_t moved = row;
@@ -4836,7 +5124,7 @@ static b8 pick_row_action(i32 key) {
     if (n > AGENT_MAX_POPUP) n = AGENT_MAX_POPUP;
     if (!n) return false;
     g_tui.cmd_n = n;
-    pick_reselect((Str){ g_pick.query, g_pick.query_n }, false,
+    pick_reselect((Str){g_pick.query, g_pick.query_n}, false,
                   moved < n ? moved : n - 1);
     repaint();
     return true;
@@ -4860,42 +5148,41 @@ static b8 pick_enter(const TuiSettings *set) {
  * a read-only page. It owns the keyboard while it is up, so the composer
  * under it never sees a byte and binds none of these. */
 #define PICK_KEYS(X)                                                          \
-    X(0x0d, "Enter",     "Choose the row, or act on it",                      \
-                                              return pick_enter(set);)        \
-    X(0x0a, "",          "",                  return pick_enter(set);)        \
-    X(0x03, "Ctrl-C",    "Close without choosing",     return false;)         \
-    X(0x04, "",          "",                           return false;)         \
-    X(' ',  "Space",     "Act on the settings row",                           \
-                        if (!settings) return pick_typed(c);                  \
-                        return pick_act(set, 1);)                             \
-    X(0x0e, "Ctrl-N",    "Next row",          completion_move(1);)            \
-    X(0x10, "Ctrl-P",    "Previous row",      completion_move(-1);)           \
-    X(0x06, "Ctrl-F",    "Favorite the row, on a list that offers it",        \
-                                              return pick_row_action(0x06);)  \
-    X(0x05, "Ctrl-E",    "Configure, on a list that offers it",               \
-                                              return pick_row_action(0x05);)  \
-    X(0x0f, "Ctrl-O",    "Enter another value, on a list that offers it",     \
-                                              return pick_row_action(0x0f);)  \
-    X(0x18, "Ctrl-X",    "Delete the row, on a list that offers it",          \
-                                              return pick_row_action(0x18);)  \
-    X(0x13, "Ctrl-S",    "Set the small model, on a list that offers it",     \
-                                              return pick_row_action(0x13);)  \
+    X(0x0d, "Enter", "Choose the row, or act on it", return pick_enter(set);) \
+    X(0x0a, "", "", return pick_enter(set);)                                  \
+    X(0x03, "Ctrl-C", "Close without choosing", return false;)                \
+    X(0x04, "", "", return false;)                                            \
+    X(' ', "Space", "Act on the settings row",                                \
+      if (!settings) return pick_typed(c);                                    \
+      return pick_act(set, 1);)                                               \
+    X(0x0e, "Ctrl-N", "Next row", completion_move(1);)                        \
+    X(0x10, "Ctrl-P", "Previous row", completion_move(-1);)                   \
+    X(0x06, "Ctrl-F", "Favorite the row, on a list that offers it",           \
+      return pick_row_action(0x06);)                                          \
+    X(0x05, "Ctrl-E", "Configure, on a list that offers it",                  \
+      return pick_row_action(0x05);)                                          \
+    X(0x0f, "Ctrl-O", "Enter another value, on a list that offers it",        \
+      return pick_row_action(0x0f);)                                          \
+    X(0x18, "Ctrl-X", "Delete the row, on a list that offers it",             \
+      return pick_row_action(0x18);)                                          \
+    X(0x13, "Ctrl-S", "Set the small model, on a list that offers it",        \
+      return pick_row_action(0x13);)                                          \
     X(0x7f, "Backspace", "Delete the query glyph before",                     \
-                                              return pick_erase();)           \
-    X(0x08, "",          "",                  return pick_erase();)           \
-    X(0x15, "Ctrl-U",    "Clear the query",   return pick_clear();)
+      return pick_erase();)                                                   \
+    X(0x08, "", "", return pick_erase();)                                     \
+    X(0x15, "Ctrl-U", "Clear the query", return pick_clear();)
 
-#define PICK_ESCAPE_KEYS(X)                                                   \
-    X(KEY_NONE,  "Esc",   "Close without choosing",    return false;)         \
-    X(KEY_DOWN,  "Down",  "Next row",         completion_move(1);)            \
-    X(KEY_UP,    "Up",    "Previous row",     completion_move(-1);)           \
-    X(KEY_RIGHT, "Right", "Act on the settings row forwards",                 \
-                        if (settings) return pick_act(set, 1);)               \
-    X(KEY_LEFT,  "Left",  "Act on the settings row backwards",                \
-                        if (settings) return pick_act(set, -1);)
+#define PICK_ESCAPE_KEYS(X)                                     \
+    X(KEY_NONE, "Esc", "Close without choosing", return false;) \
+    X(KEY_DOWN, "Down", "Next row", completion_move(1);)        \
+    X(KEY_UP, "Up", "Previous row", completion_move(-1);)       \
+    X(KEY_RIGHT, "Right", "Act on the settings row forwards",   \
+      if (settings) return pick_act(set, 1);)                   \
+    X(KEY_LEFT, "Left", "Act on the settings row backwards",    \
+      if (settings) return pick_act(set, -1);)
 
-static const KeyRow k_pick_rows[]        = { PICK_KEYS(KEY_DOC) };
-static const KeyRow k_pick_escape_rows[] = { PICK_ESCAPE_KEYS(KEY_DOC) };
+static const KeyRow k_pick_rows[] = {PICK_KEYS(KEY_DOC)};
+static const KeyRow k_pick_escape_rows[] = {PICK_ESCAPE_KEYS(KEY_DOC)};
 
 /* One input byte applied to the open screen. False once it has closed, and
  * the caller answers with pick_close. Painting happens here, so a caller
@@ -4905,8 +5192,11 @@ static b8 pick_feed(i32 c) {
     b8 settings = g_pick.kind == PICK_SETTINGS;
     const TuiSettings *set = g_pick.has_set ? &g_pick.set : NULL;
 
-    if (c == -3) { repaint(); return true; }
-    
+    if (c == -3) {
+        repaint();
+        return true;
+    }
+
     if (c < 0) return false;
     /* Pasted text is a query rather than keys, so nothing in it picks, acts
      * on a row or cancels. The escape sequence still runs: the paste-end
@@ -4939,7 +5229,7 @@ static void pick_close(void) {
     g_tui.cmds = g_pick.saved_cmds;
     g_tui.marks = g_pick.saved_marks;
     g_tui.cmd_n = g_pick.saved_cmd_n;
-    
+
     g_tui.comp_n = 0;
     g_tui.comp_sel = 0;
     g_tui.pick_end = false;
@@ -4971,15 +5261,14 @@ static void pick_run(void) {
                 g_pick.expired = true;
                 break;
             }
-            
+
             i32 ms = left > 3600.0 ? 3600 * 1000 : (i32)(left * 1000.0) + 1;
             if (!input_ready(ms)) {
-                
                 if (g_winch) repaint();
                 continue;
             }
-            g_pick.deadline = agent_now_seconds()
-                            + (f64)g_pick.timeout_ms / 1000.0;
+            g_pick.deadline =
+                agent_now_seconds() + (f64)g_pick.timeout_ms / 1000.0;
         }
         if (!pick_feed(rbyte())) break;
     }
@@ -4995,7 +5284,7 @@ static b8 pick_impl(Str title, const TuiCmd *items, const TuiMark *marks,
     if (!pick_open(title, items, marks, n, search_n, anchor, start, kind, set,
                    act, notice, true))
         return false;
-    
+
     if (timeout_ms > 0 && start < g_tui.cmd_n) {
         g_pick.timeout_ms = timeout_ms;
         g_pick.fallback = start;
@@ -5022,8 +5311,8 @@ b8 tui_pick_timed(Str title, Str notice, const TuiCmd *items, size_t n,
                   TuiPickAnchor anchor, size_t start, i32 timeout_ms,
                   size_t *out, b8 *expired) {
     if (expired) *expired = false;
-    b8 ok = pick_impl(title, items, NULL, n, n, anchor, start, PICK_CHOOSE,
-                      out, NULL, NULL, notice, timeout_ms);
+    b8 ok = pick_impl(title, items, NULL, n, n, anchor, start, PICK_CHOOSE, out,
+                      NULL, NULL, notice, timeout_ms);
     /* g_pick outlives its screen up to the next one, which is what lets the
      * answer be read after pick_close, and this beside it. */
     if (ok && expired) *expired = g_pick.expired;
@@ -5069,9 +5358,8 @@ void tui_info(Str title, const TuiCmd *rows, size_t n) {
             if (popup_separator(&rows[i]))
                 tui_printf("%.*s\n", (i32)rows[i].name.n, rows[i].name.p);
             else
-                tui_printf("%.*s  %.*s\n", (i32)rows[i].name.n,
-                           rows[i].name.p, (i32)rows[i].desc.n,
-                           rows[i].desc.p);
+                tui_printf("%.*s  %.*s\n", (i32)rows[i].name.n, rows[i].name.p,
+                           (i32)rows[i].desc.n, rows[i].desc.p);
         }
         return;
     }
@@ -5092,8 +5380,8 @@ b8 tui_info_open(Str title, const TuiCmd *rows, size_t n) {
 typedef struct {
     const YhlRun *run;
     size_t n;
-    size_t k;      
-    size_t at;     
+    size_t k;
+    size_t at;
     b8 open;
 } ViewRuns;
 
@@ -5114,7 +5402,10 @@ static void view_syn_step(ViewRuns *v, size_t i, size_t out, b8 last) {
     }
     if (last) return;
     while (!v->open && v->k < v->n && v->run[v->k].start <= i) {
-        if (v->run[v->k].end <= i) { v->k++; continue; }
+        if (v->run[v->k].end <= i) {
+            v->k++;
+            continue;
+        }
         v->at = out;
         v->open = true;
     }
@@ -5131,8 +5422,10 @@ b8 tui_view_open(Str title, const TuiViewPart *parts, size_t n, size_t start) {
         if (nonempty) need++;
         for (size_t i = 0; i < parts[p].text.n; i++) {
             u8 c = (u8)parts[p].text.p[i];
-            size_t add = c == '\t' ? 4 : c == '\r' || (c < 0x20 && c != '\n')
-                                              || c == 0x7f ? 0 : 1;
+            size_t add = c == '\t' ? 4
+                         : c == '\r' || (c < 0x20 && c != '\n') || c == 0x7f
+                             ? 0
+                             : 1;
             if (add > TUI_VIEW_BYTES - need) return false;
             need += add;
         }
@@ -5140,7 +5433,7 @@ b8 tui_view_open(Str title, const TuiViewPart *parts, size_t n, size_t start) {
     }
     if (!need || !nonempty) return false;
 
-    
+
     memset(&g_view, 0, sizeof g_view);
     size_t out = 0;
     nonempty = 0;
@@ -5169,15 +5462,17 @@ b8 tui_view_open(Str title, const TuiViewPart *parts, size_t n, size_t start) {
     g_view.active = true;
     g_view.start_line = start;
     g_view.text_n = out;
-    g_view.title_n = title.n < sizeof g_view.title ? title.n
-                                                   : sizeof g_view.title - 1;
+    g_view.title_n =
+        title.n < sizeof g_view.title ? title.n : sizeof g_view.title - 1;
     if (g_view.title_n) memcpy(g_view.title, title.p, g_view.title_n);
     sel_clear();
     repaint();
     return true;
 }
 
-b8 tui_screen_open(void) { return g_pick.active || g_view.active; }
+b8 tui_screen_open(void) {
+    return g_pick.active || g_view.active;
+}
 
 /* Remember what a kill key removed, so Ctrl-Y can put it back. Text longer
  * than the buffer is dropped rather than truncated: half a kill is not what
@@ -5236,50 +5531,46 @@ static void edit_yank(char *buf, size_t *n, size_t *cur, size_t cap) {
     if (!k || *n + k >= cap) return;
     memmove(buf + *cur + k, buf + *cur, *n - *cur);
     memcpy(buf + *cur, g_bulk.kill, k);
-    *cur += k; *n += k; buf[*n] = '\0';
+    *cur += k;
+    *n += k;
+    buf[*n] = '\0';
 }
 
 
 #define EDIT_KEYS(X)                                                          \
-    X(0x01, "Ctrl-A",    "Start of line, then the previous line",             \
-                                        *cur = ctrl_a_start(buf, *cur);)        \
-    X(0x02, "Ctrl-B",    "Back one glyph",  *cur = prev_glyph(buf, *cur);)    \
-    X(0x04, "Ctrl-D",    "Delete forward",  edit_delete(buf, n, cur);)        \
-    X(0x05, "Ctrl-E",    "End of line",     *cur = line_end(buf, *n, *cur);)  \
-    X(0x06, "Ctrl-F",    "Forward one glyph",                                 \
-                                    *cur = next_glyph(buf, *n, *cur);)        \
-    X(0x7f, "Backspace", "Delete back",     edit_backspace(buf, n, cur);)     \
-    X(0x08, "",          "",                edit_backspace(buf, n, cur);)     \
-    X(0x0b, "Ctrl-K",    "Kill to end of line",  edit_kill_line(buf, n, cur);)\
-    X(0x15, "Ctrl-U",    "Kill to start of line",                             \
-               kill_range(buf, n, cur, line_start(buf, *cur), *cur);)         \
-    X(0x17, "Ctrl-W",    "Kill the word before",                              \
-               kill_range(buf, n, cur, prev_word(buf, *cur), *cur);)          \
-    X(0x19, "Ctrl-Y",    "Put back the last kill",                            \
-                                            edit_yank(buf, n, cur, cap);)
+    X(0x01, "Ctrl-A", "Start of line, then the previous line",                \
+      *cur = ctrl_a_start(buf, *cur);)                                        \
+    X(0x02, "Ctrl-B", "Back one glyph", *cur = prev_glyph(buf, *cur);)        \
+    X(0x04, "Ctrl-D", "Delete forward", edit_delete(buf, n, cur);)            \
+    X(0x05, "Ctrl-E", "End of line", *cur = line_end(buf, *n, *cur);)         \
+    X(0x06, "Ctrl-F", "Forward one glyph", *cur = next_glyph(buf, *n, *cur);) \
+    X(0x7f, "Backspace", "Delete back", edit_backspace(buf, n, cur);)         \
+    X(0x08, "", "", edit_backspace(buf, n, cur);)                             \
+    X(0x0b, "Ctrl-K", "Kill to end of line", edit_kill_line(buf, n, cur);)    \
+    X(0x15, "Ctrl-U", "Kill to start of line",                                \
+      kill_range(buf, n, cur, line_start(buf, *cur), *cur);)                  \
+    X(0x17, "Ctrl-W", "Kill the word before",                                 \
+      kill_range(buf, n, cur, prev_word(buf, *cur), *cur);)                   \
+    X(0x19, "Ctrl-Y", "Put back the last kill", edit_yank(buf, n, cur, cap);)
 
-#define EDIT_ESCAPE_KEYS(X)                                                   \
-    X(KEY_LEFT,      "Left",       "Back one glyph",                          \
-                                        *cur = prev_glyph(buf, *cur);)        \
-    X(KEY_RIGHT,     "Right",      "Forward one glyph",                       \
-                                        *cur = next_glyph(buf, *n, *cur);)    \
-    X(KEY_HOME,      "Home",       "Start of line",                           \
-                                        *cur = line_start(buf, *cur);)        \
-    X(KEY_END,       "End",        "End of line",                             \
-                                        *cur = line_end(buf, *n, *cur);)      \
-    X(KEY_PREV_WORD, "Ctrl-Left",  "Back one word",                           \
-                                        *cur = prev_word(buf, *cur);)         \
-    X(KEY_NEXT_WORD, "Ctrl-Right", "Forward one word",                        \
-                                        *cur = next_word(buf, *n, *cur);)     \
-    X(KEY_DELETE,    "Delete",     "Delete forward",                          \
-                                        edit_delete(buf, n, cur);)            \
-    X(KEY_KILL_WORD, "Alt-D",      "Kill the word after",                     \
-               kill_range(buf, n, cur, *cur, next_word(buf, *n, *cur));)      \
-    X(KEY_KILL_PREV_WORD, "Alt-Backspace", "Kill the word before",            \
-               kill_range(buf, n, cur, prev_word(buf, *cur), *cur);)
+#define EDIT_ESCAPE_KEYS(X)                                              \
+    X(KEY_LEFT, "Left", "Back one glyph", *cur = prev_glyph(buf, *cur);) \
+    X(KEY_RIGHT, "Right", "Forward one glyph",                           \
+      *cur = next_glyph(buf, *n, *cur);)                                 \
+    X(KEY_HOME, "Home", "Start of line", *cur = line_start(buf, *cur);)  \
+    X(KEY_END, "End", "End of line", *cur = line_end(buf, *n, *cur);)    \
+    X(KEY_PREV_WORD, "Ctrl-Left", "Back one word",                       \
+      *cur = prev_word(buf, *cur);)                                      \
+    X(KEY_NEXT_WORD, "Ctrl-Right", "Forward one word",                   \
+      *cur = next_word(buf, *n, *cur);)                                  \
+    X(KEY_DELETE, "Delete", "Delete forward", edit_delete(buf, n, cur);) \
+    X(KEY_KILL_WORD, "Alt-D", "Kill the word after",                     \
+      kill_range(buf, n, cur, *cur, next_word(buf, *n, *cur));)          \
+    X(KEY_KILL_PREV_WORD, "Alt-Backspace", "Kill the word before",       \
+      kill_range(buf, n, cur, prev_word(buf, *cur), *cur);)
 
-static const KeyRow k_edit_rows[]        = { EDIT_KEYS(KEY_DOC) };
-static const KeyRow k_edit_escape_rows[] = { EDIT_ESCAPE_KEYS(KEY_DOC) };
+static const KeyRow k_edit_rows[] = {EDIT_KEYS(KEY_DOC)};
+static const KeyRow k_edit_escape_rows[] = {EDIT_ESCAPE_KEYS(KEY_DOC)};
 
 /* One plain editing byte applied to `buf`. The composer and a question share
  * this, so both answer the same readline keys. Returns whether the byte was
@@ -5312,8 +5603,8 @@ static b8 edit_escape(i32 key, char *buf, size_t *n, size_t *cur) {
  * completion or shell mode, and a secret answer must not survive in a buffer
  * the next frame paints. The question itself sits in the notice row, where
  * every other answer to a command appears. */
-static b8 ask_impl(Str question, b8 secret, char *out, size_t cap,
-                   b8 edit, b8 allow_empty) {
+static b8 ask_impl(Str question, b8 secret, char *out, size_t cap, b8 edit,
+                   b8 allow_empty) {
     if (!g_tui.fullscreen || !out || cap < 2) return false;
     if (g_tui.find_open) find_close();
     if (g_view.active && !g_view.modal) view_close();
@@ -5349,17 +5640,20 @@ static b8 ask_impl(Str question, b8 secret, char *out, size_t cap,
     g_tui.input_cur = initial_n;
     g_tui.comp_n = 0;
     char row[sizeof g_tui.notice];
-    i32 rn = snprintf(row, sizeof row, "%.*s  (Esc cancels)",
-                      (i32)question.n, question.p);
-    tui_notice(rn > 0 ? (Str){ row, (size_t)rn < sizeof row ? (size_t)rn
-                                                            : sizeof row - 1 }
-                      : question);   
+    i32 rn = snprintf(row, sizeof row, "%.*s  (Esc cancels)", (i32)question.n,
+                      question.p);
+    tui_notice(rn > 0 ? (Str){row, (size_t)rn < sizeof row ? (size_t)rn
+                                                           : sizeof row - 1}
+                      : question);
 
     b8 answered = false;
     for (;;) {
         paste_retire_if_drained();
         i32 c = rbyte();
-        if (c == -3) { repaint(); continue; }
+        if (c == -3) {
+            repaint();
+            continue;
+        }
         if (c < 0) break;
         if ((c == 0x03 || c == 0x04) && !g_tui.pasting) break;
         if ((c == '\r' || c == '\n') && !g_tui.pasting) {
@@ -5373,12 +5667,11 @@ static b8 ask_impl(Str question, b8 secret, char *out, size_t cap,
                 edit_insert((char)c, g_bulk.input, &n, &cur, limit + 1);
         } else if (c == 0x1b) {
             i32 key = read_escape();
-            if (key == KEY_NONE) break;             
+            if (key == KEY_NONE) break;
             if (!edit_escape(key, g_bulk.input, &n, &cur)) scroll_key(key);
         } else if (c == 0x0c) {
             g_tui.frame_valid = false;
         } else {
-            
             edit_byte(c, g_bulk.input, &n, &cur, limit + 1);
         }
         g_tui.input_n = n;
@@ -5390,7 +5683,7 @@ static b8 ask_impl(Str question, b8 secret, char *out, size_t cap,
     memcpy(out, g_bulk.input, n);
     out[n] = '\0';
 
-    
+
     memset(g_bulk.input, 0, g_tui.input_n);
     g_tui.ask = false;
     g_tui.ask_secret = false;
@@ -5417,14 +5710,21 @@ b8 tui_ask_edit(Str question, b8 allow_empty, char *inout, size_t cap) {
     return ask_impl(question, false, inout, cap, true, allow_empty);
 }
 
-typedef enum { ED_EDIT = 0, ED_SUBMIT, ED_EOF, ED_REWIND, ED_EXPAND,
-               ED_MODE, ED_ATTACH } EdAction;
+typedef enum {
+    ED_EDIT = 0,
+    ED_SUBMIT,
+    ED_EOF,
+    ED_REWIND,
+    ED_EXPAND,
+    ED_MODE,
+    ED_ATTACH
+} EdAction;
 
 
 static b8 composer_vertical(i32 dir, char *buf, size_t *n, size_t *cur) {
     if (!g_tui.hist_nav && composer_move_row(dir, buf, *n, cur)) return false;
     b8 recalled = history_recall(dir, buf, n, cur);
-    
+
     g_tui.hist_nav = recalled && g_tui.hist && history_browsing(g_tui.hist);
     return recalled;
 }
@@ -5443,21 +5743,27 @@ static u32 zone_at_cell(i32 mouse_row, i32 mouse_col) {
 static void paste_byte(i32 c) {
     b8 was_cr = g_tui.paste_cr;
     g_tui.paste_cr = c == '\r';
-    if (c == '\n' && was_cr) return;   
+    if (c == '\n' && was_cr) return;
 
     char run[4];
     size_t run_n = 0;
-    if (c == '\r' || c == '\n') run[run_n++] = '\n';
-    else if (c == '\t') while (run_n < sizeof run) run[run_n++] = ' ';
-    else if ((c >= 0x20 && c < 0x7f) || c >= 0x80) run[run_n++] = (char)c;
-    else return;
+    if (c == '\r' || c == '\n')
+        run[run_n++] = '\n';
+    else if (c == '\t')
+        while (run_n < sizeof run) run[run_n++] = ' ';
+    else if ((c >= 0x20 && c < 0x7f) || c >= 0x80)
+        run[run_n++] = (char)c;
+    else
+        return;
 
     char *buf = g_bulk.input;
     size_t n = g_tui.input_n, cur = g_tui.input_cur;
     if (n + run_n >= sizeof g_bulk.input) return;
     memmove(buf + cur + run_n, buf + cur, n - cur);
     memcpy(buf + cur, run, run_n);
-    cur += run_n; n += run_n; buf[n] = '\0';
+    cur += run_n;
+    n += run_n;
+    buf[n] = '\0';
     g_tui.input_n = n;
     g_tui.input_cur = cur;
 }
@@ -5467,7 +5773,9 @@ static void paste_byte(i32 c) {
  * the same byte-at-a-time editor, so it works at the prompt and while a turn
  * streams, and the draft it covers is never touched.
  */
-static void find_requery(void) { find_seek(); }
+static void find_requery(void) {
+    find_seek();
+}
 
 void tui_set_find_expand(void (*fn)(void *ud), void *ud) {
     g_tui.find_expand = fn;
@@ -5478,12 +5786,12 @@ void tui_find_open(void) {
     if (!g_tui.fullscreen) return;
     g_tui.find_open = true;
     g_tui.find_wrapped = false;
-    
+
     g_tui.comp_n = 0;
     g_tui.comp_sel = 0;
     g_tui.comp_dismissed = true;
     g_tui.esc_armed = false;
-    find_requery();   
+    find_requery();
     repaint();
 }
 
@@ -5524,33 +5832,34 @@ static void find_expand_now(void) {
     if (g_tui.find_expand) g_tui.find_expand(g_tui.find_expand_ud);
 }
 
-#define FIND_KEYS(X)                                                          \
-    X(0x0d, "Enter",     "Previous match",             find_step(-1);)        \
-    X(0x0a, "",          "",                           find_step(-1);)        \
-    X(0x10, "Ctrl-P",    "Previous match",             find_step(-1);)        \
-    X(0x0e, "Ctrl-N",    "Next match",                 find_step(1);)         \
-    X(0x07, "Ctrl-G",    "Close the box",              find_close();)         \
-    X(0x05, "Ctrl-E",    "Show a capped tool output in full",                 \
-                                                       find_expand_now();)    \
-    X(0x0c, "Ctrl-L",    "Repaint the screen",  g_tui.frame_valid = false;)   \
-    X(0x7f, "Backspace", "Delete the glyph before",     find_erase();)        \
-    X(0x08, "",          "",                            find_erase();)        \
-    X(0x15, "Ctrl-U",    "Clear the query",             find_clear();)        \
-    X(0x17, "Ctrl-W",    "Delete the word before",      find_kill_word();)
+#define FIND_KEYS(X)                                                           \
+    X(0x0d, "Enter", "Previous match", find_step(-1);)                         \
+    X(0x0a, "", "", find_step(-1);)                                            \
+    X(0x10, "Ctrl-P", "Previous match", find_step(-1);)                        \
+    X(0x0e, "Ctrl-N", "Next match", find_step(1);)                             \
+    X(0x07, "Ctrl-G", "Close the box", find_close();)                          \
+    X(0x05, "Ctrl-E", "Show a capped tool output in full", find_expand_now();) \
+    X(0x0c, "Ctrl-L", "Repaint the screen", g_tui.frame_valid = false;)        \
+    X(0x7f, "Backspace", "Delete the glyph before", find_erase();)             \
+    X(0x08, "", "", find_erase();)                                             \
+    X(0x15, "Ctrl-U", "Clear the query", find_clear();)                        \
+    X(0x17, "Ctrl-W", "Delete the word before", find_kill_word();)
 
-#define FIND_ESCAPE_KEYS(X)                                                   \
-    X(KEY_UP,   "Up",   "Previous match",   find_step(-1);)                   \
-    X(KEY_DOWN, "Down", "Next match",       find_step(1);)                    \
-    X(KEY_NONE, "Esc",  "Close the box",    find_close();)                    \
-    X(KEY_MOUSE_DOWN, "Click", "Start a selection",                           \
-                    sel_begin(g_mouse.row, g_mouse.col); keep_sel = true;)    \
-    X(KEY_MOUSE_DRAG, "Drag",  "Extend the selection",                        \
-                    sel_extend(g_mouse.row, g_mouse.col); keep_sel = true;)   \
-    X(KEY_MOUSE_UP,   "",      "",          sel_finish(); keep_sel = true;)   \
-    X(KEY_MOUSE_MOVE, "",      "",          keep_sel = true;)
+#define FIND_ESCAPE_KEYS(X)                                 \
+    X(KEY_UP, "Up", "Previous match", find_step(-1);)       \
+    X(KEY_DOWN, "Down", "Next match", find_step(1);)        \
+    X(KEY_NONE, "Esc", "Close the box", find_close();)      \
+    X(KEY_MOUSE_DOWN, "Click", "Start a selection",         \
+      sel_begin(g_mouse.row, g_mouse.col);                  \
+      keep_sel = true;)                                     \
+    X(KEY_MOUSE_DRAG, "Drag", "Extend the selection",       \
+      sel_extend(g_mouse.row, g_mouse.col);                 \
+      keep_sel = true;)                                     \
+    X(KEY_MOUSE_UP, "", "", sel_finish(); keep_sel = true;) \
+    X(KEY_MOUSE_MOVE, "", "", keep_sel = true;)
 
-static const KeyRow k_find_rows[]        = { FIND_KEYS(KEY_DOC) };
-static const KeyRow k_find_escape_rows[] = { FIND_ESCAPE_KEYS(KEY_DOC) };
+static const KeyRow k_find_rows[] = {FIND_KEYS(KEY_DOC)};
+static const KeyRow k_find_escape_rows[] = {FIND_ESCAPE_KEYS(KEY_DOC)};
 
 
 static void find_key(i32 c) {
@@ -5565,7 +5874,7 @@ static void find_key(i32 c) {
         b8 keep_sel = false;
         switch (key) {
             FIND_ESCAPE_KEYS(KEY_CASE)
-            
+
             default: scroll_key(key); break;
         }
         if (!keep_sel) sel_clear();
@@ -5587,19 +5896,23 @@ static void find_key(i32 c) {
  * reads them back once. `done` is an early return: the trailer is skipped,
  * which is what a key that submits or exits wants. */
 typedef struct {
-    char    *buf;
-    size_t   n, cur, cap;
+    char *buf;
+    size_t n, cur, cap;
     EdAction action;
-    b8       done;
-    
-    b8       keep_sel;
-    b8       recalled;
-    
-    b8       vertical, keep_nav;
-    b8       was_armed;
+    b8 done;
+
+    b8 keep_sel;
+    b8 recalled;
+
+    b8 vertical, keep_nav;
+    b8 was_armed;
 } Ed;
 
-#define ED_RETURN(e, a) do { (e)->action = (a); (e)->done = true; } while (0)
+#define ED_RETURN(e, a)    \
+    do {                   \
+        (e)->action = (a); \
+        (e)->done = true;  \
+    } while (0)
 
 /* Take the highlighted entry. True when the popup closed with it, which a
  * command does and a path does not: a path is text in a message rather than
@@ -5617,9 +5930,15 @@ static b8 completion_take(void) {
 
 static void ed_enter(Ed *e) {
     sel_clear();
-    if (!g_tui.comp_n) { ED_RETURN(e, ED_SUBMIT); return; }
+    if (!g_tui.comp_n) {
+        ED_RETURN(e, ED_SUBMIT);
+        return;
+    }
     b8 ran = completion_take();
-    if (g_tui.attach_n) { ED_RETURN(e, ED_ATTACH); return; }
+    if (g_tui.attach_n) {
+        ED_RETURN(e, ED_ATTACH);
+        return;
+    }
     ED_RETURN(e, ran ? ED_SUBMIT : ED_EDIT);
 }
 
@@ -5648,15 +5967,20 @@ static void ed_vertical(Ed *e, i32 dir) {
 
 
 static void ed_delete_or_eof(Ed *e) {
-    if (!e->n) { ED_RETURN(e, ED_EOF); return; }
+    if (!e->n) {
+        ED_RETURN(e, ED_EOF);
+        return;
+    }
     edit_delete(e->buf, &e->n, &e->cur);
 }
 
 static void ed_mouse_up(Ed *e) {
-    
     b8 hit = !g_tui.sel_active && g_tui.click_down
-          && g_tui.click_down == zone_at_cell(g_mouse.row, g_mouse.col);
-    if (hit) { g_tui.click_id = g_tui.click_down; e->action = ED_EXPAND; }
+             && g_tui.click_down == zone_at_cell(g_mouse.row, g_mouse.col);
+    if (hit) {
+        g_tui.click_id = g_tui.click_down;
+        e->action = ED_EXPAND;
+    }
     g_tui.click_down = 0;
     sel_finish();
     e->keep_sel = true;
@@ -5664,17 +5988,29 @@ static void ed_mouse_up(Ed *e) {
 
 
 static void ed_escape(Ed *e) {
-    if (g_tui.comp_n) { g_tui.comp_dismissed = true; return; }
-    if (e->was_armed) { e->action = ED_REWIND; return; }
-    
+    if (g_tui.comp_n) {
+        g_tui.comp_dismissed = true;
+        return;
+    }
+    if (e->was_armed) {
+        e->action = ED_REWIND;
+        return;
+    }
+
     if (g_tui.busy && g_tui.queued_n) {
         g_tui.queued_n = 0;
         tui_notice(STR("queued message cancelled"));
         return;
     }
-    if (g_tui.notice_n) { g_tui.notice_n = 0; return; }
-    
-    if (g_tui.busy && g_tui.interrupt) { *g_tui.interrupt = 1; return; }
+    if (g_tui.notice_n) {
+        g_tui.notice_n = 0;
+        return;
+    }
+
+    if (g_tui.busy && g_tui.interrupt) {
+        *g_tui.interrupt = 1;
+        return;
+    }
     g_tui.esc_armed = true;
     tui_notice(STR("Press Escape again to edit previous message"));
 }
@@ -5695,12 +6031,20 @@ static void ed_viewport(Ed *e) {
 
 
 static void ed_home(Ed *e) {
-    if (!e->n) { scroll_to_top(); ed_viewport(e); return; }
+    if (!e->n) {
+        scroll_to_top();
+        ed_viewport(e);
+        return;
+    }
     e->cur = line_start(e->buf, e->cur);
 }
 
 static void ed_end(Ed *e) {
-    if (!e->n) { tui_scroll_to_bottom(); ed_viewport(e); return; }
+    if (!e->n) {
+        tui_scroll_to_bottom();
+        ed_viewport(e);
+        return;
+    }
     e->cur = line_end(e->buf, e->n, e->cur);
 }
 
@@ -5708,64 +6052,60 @@ static void ed_end(Ed *e) {
  * here overrides the editor's plain forward delete rather than duplicating
  * it. Anything this table does not name reaches edit_byte. */
 
-#define COMPOSER_KEYS(X)                                                      \
-    X(0x0d, "Enter",  "Send the message, or take the popup entry",            \
-                                                        ed_enter(e);)         \
-    X(0x0a, "",       "",                               ed_enter(e);)         \
-    X('\t', "Tab",    "Complete the popup entry",       ed_tab(e);)           \
-    X(0x0e, "Ctrl-N", "Next entry, or the next draft",  ed_vertical(e, 1);)   \
-    X(0x10, "Ctrl-P", "Previous entry, or the previous draft",                \
-                                                        ed_vertical(e, -1);)  \
-    X(0x04, "Ctrl-D", "Delete forward, or exit on an empty composer",         \
-                                                        ed_delete_or_eof(e);) \
-    X(0x12, "Ctrl-R", "Search the transcript",                                \
-                    tui_find_open(); ED_RETURN(e, ED_EDIT);)                  \
-    /* A command rather than an edit, so a draft written around it stays. */   \
-    X(0x16, "Ctrl-V", "Attach the clipboard's image to the message",           \
-                    g_tui.attach_n = 0; e->action = ED_ATTACH;)                \
-    X(0x0c, "Ctrl-L", "Repaint the screen",                                   \
-                    g_tui.frame_valid = false;)
+#define COMPOSER_KEYS(X)                                                     \
+    X(0x0d, "Enter", "Send the message, or take the popup entry",            \
+      ed_enter(e);)                                                          \
+    X(0x0a, "", "", ed_enter(e);)                                            \
+    X('\t', "Tab", "Complete the popup entry", ed_tab(e);)                   \
+    X(0x0e, "Ctrl-N", "Next entry, or the next draft", ed_vertical(e, 1);)   \
+    X(0x10, "Ctrl-P", "Previous entry, or the previous draft",               \
+      ed_vertical(e, -1);)                                                   \
+    X(0x04, "Ctrl-D", "Delete forward, or exit on an empty composer",        \
+      ed_delete_or_eof(e);)                                                  \
+    X(0x12, "Ctrl-R", "Search the transcript", tui_find_open();              \
+      ED_RETURN(e, ED_EDIT);)                                                \
+    /* A command rather than an edit, so a draft written around it stays. */ \
+    X(0x16, "Ctrl-V", "Attach the clipboard's image to the message",         \
+      g_tui.attach_n = 0;                                                    \
+      e->action = ED_ATTACH;)                                                \
+    X(0x0c, "Ctrl-L", "Repaint the screen", g_tui.frame_valid = false;)
 
 // Shift-Tab is a command rather than an edit, so the draft remains.
-#define COMPOSER_ESCAPE_KEYS(X)                                               \
-    X(KEY_NONE,      "Esc",       "Dismiss, or go back a message",            \
-                                                        ed_escape(e);)        \
-    X(KEY_UP,        "Up",        "Previous entry, or the previous draft",    \
-                                                        ed_vertical(e, -1);)  \
-    X(KEY_DOWN,      "Down",      "Next entry, or the next draft",            \
-                                                        ed_vertical(e, 1);)   \
-    X(KEY_HOME,      "Home",      "Start of line, or the top of the "         \
-                                  "transcript on an empty composer",          \
-                                                        ed_home(e);)          \
-    X(KEY_END,       "End",       "End of line, or the bottom of the "        \
-                                  "transcript on an empty composer",          \
-                                                        ed_end(e);)           \
-    X(KEY_TOP,       "Ctrl-Home", "Top of the transcript",                    \
-                                        scroll_to_top(); ed_viewport(e);)     \
-    X(KEY_BOTTOM,    "Ctrl-End",  "Bottom of the transcript",                 \
-                                        tui_scroll_to_bottom();               \
-                                        ed_viewport(e);)                      \
-    X(KEY_NEWLINE,   "Alt/Shift-Enter", "Insert a line break",                \
-                                                        ed_newline(e);)       \
-    X(KEY_SHIFT_TAB, "Shift-Tab", "Switch between Build and Plan mode",       \
-                    e->action = ED_MODE;)                                     \
-    X(KEY_MOUSE_DOWN, "Click",    "Start a selection",                        \
-                    sel_begin(g_mouse.row, g_mouse.col);                      \
-                    e->keep_sel = true;                                       \
-                    g_tui.click_down = zone_at_cell(g_mouse.row, g_mouse.col);)\
-    X(KEY_MOUSE_DRAG, "Drag",     "Extend the selection",                     \
-                    sel_extend(g_mouse.row, g_mouse.col);                     \
-                    e->keep_sel = true;)                                      \
-    X(KEY_MOUSE_MOVE, "",         "",                                         \
-                    g_tui.hover_id = zone_at_cell(g_mouse.row, g_mouse.col);  \
-                    e->keep_sel = true; e->vertical = true;                   \
-                    e->keep_nav = true;)                                      \
-    X(KEY_MOUSE_UP,   "",         "",                   ed_mouse_up(e);)
+#define COMPOSER_ESCAPE_KEYS(X)                                              \
+    X(KEY_NONE, "Esc", "Dismiss, or go back a message", ed_escape(e);)       \
+    X(KEY_UP, "Up", "Previous entry, or the previous draft",                 \
+      ed_vertical(e, -1);)                                                   \
+    X(KEY_DOWN, "Down", "Next entry, or the next draft", ed_vertical(e, 1);) \
+    X(KEY_HOME, "Home",                                                      \
+      "Start of line, or the top of the "                                    \
+      "transcript on an empty composer",                                     \
+      ed_home(e);)                                                           \
+    X(KEY_END, "End",                                                        \
+      "End of line, or the bottom of the "                                   \
+      "transcript on an empty composer",                                     \
+      ed_end(e);)                                                            \
+    X(KEY_TOP, "Ctrl-Home", "Top of the transcript", scroll_to_top();        \
+      ed_viewport(e);)                                                       \
+    X(KEY_BOTTOM, "Ctrl-End", "Bottom of the transcript",                    \
+      tui_scroll_to_bottom();                                                \
+      ed_viewport(e);)                                                       \
+    X(KEY_NEWLINE, "Alt/Shift-Enter", "Insert a line break", ed_newline(e);) \
+    X(KEY_SHIFT_TAB, "Shift-Tab", "Switch between Build and Plan mode",      \
+      e->action = ED_MODE;)                                                  \
+    X(KEY_MOUSE_DOWN, "Click", "Start a selection",                          \
+      sel_begin(g_mouse.row, g_mouse.col);                                   \
+      e->keep_sel = true;                                                    \
+      g_tui.click_down = zone_at_cell(g_mouse.row, g_mouse.col);)            \
+    X(KEY_MOUSE_DRAG, "Drag", "Extend the selection",                        \
+      sel_extend(g_mouse.row, g_mouse.col);                                  \
+      e->keep_sel = true;)                                                   \
+    X(KEY_MOUSE_MOVE, "", "",                                                \
+      g_tui.hover_id = zone_at_cell(g_mouse.row, g_mouse.col);               \
+      e->keep_sel = true; e->vertical = true; e->keep_nav = true;)           \
+    X(KEY_MOUSE_UP, "", "", ed_mouse_up(e);)
 
-static const KeyRow k_composer_rows[] = { COMPOSER_KEYS(KEY_DOC) };
-static const KeyRow k_composer_escape_rows[] = {
-    COMPOSER_ESCAPE_KEYS(KEY_DOC)
-};
+static const KeyRow k_composer_rows[] = {COMPOSER_KEYS(KEY_DOC)};
+static const KeyRow k_composer_escape_rows[] = {COMPOSER_ESCAPE_KEYS(KEY_DOC)};
 
 /* The escape half of the composer. Its own rows first, then the two layers
  * below it: the shared editor's motion and kills, and the viewport keys a
@@ -5776,8 +6116,11 @@ static void composer_escape(Ed *e) {
         COMPOSER_ESCAPE_KEYS(KEY_CASE)
         default:
             if (edit_escape(key, e->buf, &e->n, &e->cur)) break;
-            
-            if (scroll_key(key)) { e->vertical = true; e->keep_nav = true; }
+
+            if (scroll_key(key)) {
+                e->vertical = true;
+                e->keep_nav = true;
+            }
             break;
     }
 }
@@ -5786,8 +6129,14 @@ static void composer_escape(Ed *e) {
  * submit is honoured, so the same editor drives the prompt and the
  * keep-typing-while-busy path. */
 static EdAction editor_key(i32 c) {
-    if (g_tui.find_open) { find_key(c); return ED_EDIT; }
-    if (g_tui.pasting && c != 0x1b) { paste_byte(c); return ED_EDIT; }
+    if (g_tui.find_open) {
+        find_key(c);
+        return ED_EDIT;
+    }
+    if (g_tui.pasting && c != 0x1b) {
+        paste_byte(c);
+        return ED_EDIT;
+    }
 
     Ed ed = {
         .buf = g_bulk.input,
@@ -5803,38 +6152,42 @@ static EdAction editor_key(i32 c) {
 
     size_t before_n = e->n;
 
-    if (c == 0x1b) composer_escape(e);
-    else switch (c) {
-        COMPOSER_KEYS(KEY_CASE)
-        default: edit_byte(c, e->buf, &e->n, &e->cur, e->cap); break;
-    }
+    if (c == 0x1b)
+        composer_escape(e);
+    else
+        switch (c) {
+            COMPOSER_KEYS(KEY_CASE)
+            default: edit_byte(c, e->buf, &e->n, &e->cur, e->cap); break;
+        }
     if (e->done) return e->action;
 
     if (!e->keep_sel) sel_clear();
-    
+
     if (!e->keep_nav) g_tui.hist_nav = false;
     if (!e->vertical) g_tui.goal_col_valid = false;
     g_tui.input_n = e->n;
     g_tui.input_cur = e->cur;
-    if (e->recalled) g_tui.comp_dismissed = true;
-    else if (e->n != before_n) g_tui.comp_dismissed = false;
+    if (e->recalled)
+        g_tui.comp_dismissed = true;
+    else if (e->n != before_n)
+        g_tui.comp_dismissed = false;
     completion_refresh();
     return e->action;
 }
 
 
-#define KEY_CONTEXTS(X)                                                       \
-    X("[composer]",          k_composer_rows)                                 \
-    X("[composer]",          k_composer_escape_rows)                          \
-    X("[line editing]",      k_edit_rows)                                     \
-    X("[line editing]",      k_edit_escape_rows)                              \
-    X("[transcript search]", k_find_rows)                                     \
-    X("[transcript search]", k_find_escape_rows)                              \
-    X("[lists and screens]", k_pick_rows)                                     \
+#define KEY_CONTEXTS(X)                          \
+    X("[composer]", k_composer_rows)             \
+    X("[composer]", k_composer_escape_rows)      \
+    X("[line editing]", k_edit_rows)             \
+    X("[line editing]", k_edit_escape_rows)      \
+    X("[transcript search]", k_find_rows)        \
+    X("[transcript search]", k_find_escape_rows) \
+    X("[lists and screens]", k_pick_rows)        \
     X("[lists and screens]", k_pick_escape_rows)
 
 static const KeyContext k_key_contexts[] = {
-#define X(name, rows) { name, rows, sizeof rows / sizeof rows[0] },
+#define X(name, rows) {name, rows, sizeof rows / sizeof rows[0]},
     KEY_CONTEXTS(X)
 #undef X
 };
@@ -5843,7 +6196,7 @@ static const KeyContext k_key_contexts[] = {
 /* Every row plus a heading for each table, which overcounts the tables that
  * share one. The page has to fit the caller's array, so growing a table past
  * it is a build failure and not a page that silently stops early. */
-#define X(name, rows) + (sizeof rows / sizeof rows[0]) + 1
+#define X(name, rows) +(sizeof rows / sizeof rows[0]) + 1
 enum { KEY_ROW_MAX = 0 KEY_CONTEXTS(X) };
 #undef X
 _Static_assert(KEY_ROW_MAX <= AGENT_MAX_KEY_ROWS,
@@ -5867,8 +6220,8 @@ static void keys_selfcheck(void) {
                 size_t upto = b == a ? i : kb->n;
                 for (size_t j = 0; j < upto; j++)
                     if (kb->rows[j].key && !strcmp(kb->rows[j].key, key))
-                        agent_log(AGENT_LOG_WARN,
-                                  "keys: %s lists %s twice", ka->name, key);
+                        agent_log(AGENT_LOG_WARN, "keys: %s lists %s twice",
+                                  ka->name, key);
             }
         }
     }
@@ -5880,7 +6233,7 @@ size_t tui_key_rows(TuiCmd *rows, size_t max) {
     const char *heading = NULL;
     for (size_t ctx = 0; ctx < KEY_CONTEXT_N; ctx++) {
         const KeyContext *k = &k_key_contexts[ctx];
-        
+
         if (!heading || strcmp(heading, k->name) != 0) {
             if (n == max) return n;
             heading = k->name;
@@ -5889,8 +6242,7 @@ size_t tui_key_rows(TuiCmd *rows, size_t max) {
         for (size_t i = 0; i < k->n; i++) {
             if (!k->rows[i].key || !k->rows[i].key[0]) continue;
             if (n == max) return n;
-            rows[n++] = (TuiCmd){ str_c(k->rows[i].key),
-                                  str_c(k->rows[i].help) };
+            rows[n++] = (TuiCmd){str_c(k->rows[i].key), str_c(k->rows[i].help)};
         }
     }
     return n;
@@ -5914,7 +6266,7 @@ static void composer_clear(void) {
 }
 
 static struct {
-    b8  (*fn)(Str line, void *ud);
+    b8 (*fn)(Str line, void *ud);
     void *ud;
 } g_busy;
 
@@ -5976,10 +6328,9 @@ static void busy_expand(void) {
  * nothing; the draft it was pressed over is untouched either way. */
 
 static size_t attach_command(char *out, size_t cap) {
-    i32 len = g_tui.attach_n
-            ? snprintf(out, cap, "/attach %.*s", (i32)g_tui.attach_n,
-                       g_bulk.attach)
-            : snprintf(out, cap, "/attach");
+    i32 len = g_tui.attach_n ? snprintf(out, cap, "/attach %.*s",
+                                        (i32)g_tui.attach_n, g_bulk.attach)
+                             : snprintf(out, cap, "/attach");
     g_tui.attach_n = 0;
     if (len <= 0) return 0;
     return (size_t)len < cap ? (size_t)len : cap - 1;
@@ -5988,7 +6339,7 @@ static size_t attach_command(char *out, size_t cap) {
 static void busy_attach(void) {
     char cmd[AGENT_MAX_PATH + 16];
     size_t n = attach_command(cmd, sizeof cmd);
-    if (g_busy.fn && n) g_busy.fn((Str){ cmd, n }, g_busy.ud);
+    if (g_busy.fn && n) g_busy.fn((Str){cmd, n}, g_busy.ud);
 }
 
 
@@ -6027,25 +6378,35 @@ static void poll_input(void) {
         while (g_pick.active && !g_tui.input_eof && input_ready(0)) {
             i32 c = rbyte();
             if (c == -2) continue;
-            if (c < 0 && c != -3) { g_tui.input_eof = true; pick_close(); return; }
+            if (c < 0 && c != -3) {
+                g_tui.input_eof = true;
+                pick_close();
+                return;
+            }
             if (!pick_feed(c)) pick_close();
         }
-        
+
         if (g_pick.active || !input_buffered()) {
             if (g_winch != 0) repaint();
             return;
         }
     }
     b8 dirty = g_winch != 0;
-    
+
     if (g_tui.activity_n
         && agent_now_seconds() - g_tui.last_paint >= 1.0 / 10.0)
         dirty = true;
     while (!g_tui.input_eof && input_ready(0)) {
         i32 c = rbyte();
-        if (c == -3) { dirty = true; continue; }
+        if (c == -3) {
+            dirty = true;
+            continue;
+        }
         if (c == -2) continue;
-        if (c < 0) { g_tui.input_eof = true; break; }
+        if (c < 0) {
+            g_tui.input_eof = true;
+            break;
+        }
         /* Ctrl-C and Ctrl-D belong to the prompt rather than to a live turn.
          * Enter reaches the editor so an open popup can complete an entry and
          * so a command the turn can afford is submitted where it stands. */
@@ -6053,22 +6414,38 @@ static void poll_input(void) {
         EdAction action = editor_key(c);
         if (action == ED_SUBMIT) {
             busy_submit();
-            if (g_pick.active && !g_pick.modal) { repaint(); return; }
-        } else if (action == ED_EXPAND) busy_expand();
-        else if (action == ED_ATTACH) busy_attach();
+            if (g_pick.active && !g_pick.modal) {
+                repaint();
+                return;
+            }
+        } else if (action == ED_EXPAND)
+            busy_expand();
+        else if (action == ED_ATTACH)
+            busy_attach();
         dirty = true;
     }
     if (dirty) repaint();
 }
 
 b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
-    if (!buf || cap == 0) { if (out_n) *out_n = 0; return false; }
+    if (!buf || cap == 0) {
+        if (out_n) *out_n = 0;
+        return false;
+    }
     if (!g_tui.tty) {
-        if (prompt) { put_str(prompt); flush_out(); }
-        if (!fgets(buf, (i32)cap, stdin)) { *out_n = 0; return false; }
+        if (prompt) {
+            put_str(prompt);
+            flush_out();
+        }
+        if (!fgets(buf, (i32)cap, stdin)) {
+            *out_n = 0;
+            return false;
+        }
         size_t n = strlen(buf);
         while (n && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) n--;
-        buf[n] = '\0'; *out_n = n; return true;
+        buf[n] = '\0';
+        *out_n = n;
+        return true;
     }
 
     /* A screen the user opened mid-turn stays up when the turn ends; the
@@ -6077,27 +6454,36 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
     if (g_pick.active && !g_pick.modal) pick_run();
 
     g_tui.editing = true;
-    tui_set_status(g_tui.setup_hint.n ? "setup" : "ready"); 
+    tui_set_status(g_tui.setup_hint.n ? "setup" : "ready");
 
     for (;;) {
         paste_retire_if_drained();
         i32 c = rbyte();
-        if (c == -3) { repaint(); continue; }
+        if (c == -3) {
+            repaint();
+            continue;
+        }
         if (c == -2 || (c == 0x03 && !g_tui.pasting)) {
             composer_clear();
             repaint();
             continue;
         }
-        if (c < 0) { *out_n = 0; return false; }
+        if (c < 0) {
+            *out_n = 0;
+            return false;
+        }
 
         EdAction action = editor_key(c);
-        if (action == ED_EOF) { *out_n = 0; return false; }
+        if (action == ED_EOF) {
+            *out_n = 0;
+            return false;
+        }
         if (action == ED_REWIND || action == ED_EXPAND || action == ED_MODE
             || action == ED_ATTACH) {
-            
             char cmd[AGENT_MAX_PATH + 16];
             size_t n;
-            if (action == ED_ATTACH) n = attach_command(cmd, sizeof cmd);
+            if (action == ED_ATTACH)
+                n = attach_command(cmd, sizeof cmd);
             else {
                 i32 len;
                 if (action == ED_REWIND)
@@ -6105,7 +6491,8 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
                 else if (action == ED_MODE)
                     len = snprintf(cmd, sizeof cmd, "/mode");
                 else
-                    len = snprintf(cmd, sizeof cmd, "/expand %u", g_tui.click_id);
+                    len =
+                        snprintf(cmd, sizeof cmd, "/expand %u", g_tui.click_id);
                 n = len > 0 ? (size_t)len : 0;
             }
             if (n >= cap) n = cap - 1;
@@ -6130,11 +6517,13 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
              * one frame at which a starting turn looks like a finished one.
              * A command is answered where it stands and a blank line is no
              * submission, so neither claims work the caller is not doing. */
-            if (n && buf[0] != '/') tui_set_status("working"); 
-            else repaint();
+            if (n && buf[0] != '/')
+                tui_set_status("working");
+            else
+                repaint();
             return true;
         }
-        
+
         if (!input_ready(0)) repaint();
     }
 }

@@ -9,20 +9,20 @@
 #define TEL_STR_MAX 120
 
 static struct {
-    b8   on;
-    b8   ready;              
-    char root_buf[AGENT_MAX_PATH];  
-    char dir_buf[AGENT_MAX_PATH];   
-    char path_buf[AGENT_MAX_PATH];  
-    char slug_buf[256];      
-    char stem_buf[64];       
-    char run_stem[40];       
-    Str  dir;
-    u64  run;
-    f64  t0;
-    u64  seq;
-    b8   header_due;         
-    b8   attached;           
+    b8 on;
+    b8 ready;
+    char root_buf[AGENT_MAX_PATH];
+    char dir_buf[AGENT_MAX_PATH];
+    char path_buf[AGENT_MAX_PATH];
+    char slug_buf[256];
+    char stem_buf[64];
+    char run_stem[40];
+    Str dir;
+    u64 run;
+    f64 t0;
+    u64 seq;
+    b8 header_due;
+    b8 attached;
     /* What was recorded before a session named a file. Sized for a startup
      * and the commands that reach one: past that the run is a record of its
      * own rather than a reason to drop lines. */
@@ -56,11 +56,12 @@ static void tel_append(const char *data, size_t n, b8 newline) {
  * session event, so a file that receives them is owed no other; one that
  * starts empty is, since a reader of it has no earlier line to learn the run
  * from. */
-static void tel_attach(const char *dir, size_t dn, const char *path, size_t pn) {
+static void tel_attach(const char *dir, size_t dn, const char *path,
+                       size_t pn) {
     if (dn >= sizeof g_tel.dir_buf || pn >= sizeof g_tel.path_buf) return;
     memcpy(g_tel.dir_buf, dir, dn + 1);
     memcpy(g_tel.path_buf, path, pn + 1);
-    g_tel.dir = (Str){ g_tel.dir_buf, dn };
+    g_tel.dir = (Str){g_tel.dir_buf, dn};
     g_tel.attached = true;
     g_tel.header_due = g_tel.pend_n == 0;
     if (g_tel.pend_n) {
@@ -93,16 +94,17 @@ void telemetry_bind(Str session_path) {
     while (cut && dir.p[cut - 1] != '/') cut--;
     Str slug = str_drop(dir, cut);
     if (!name.n || name.n >= sizeof g_tel.stem_buf
-        || slug.n >= sizeof g_tel.slug_buf) return;
+        || slug.n >= sizeof g_tel.slug_buf)
+        return;
     memcpy(g_tel.stem_buf, name.p, name.n);
     g_tel.stem_buf[name.n] = '\0';
     memcpy(g_tel.slug_buf, slug.p, slug.n);
     g_tel.slug_buf[slug.n] = '\0';
 
     char d[AGENT_MAX_PATH], path[AGENT_MAX_PATH];
-    i32 dn = slug.n ? snprintf(d, sizeof d, "%s/%s", g_tel.root_buf,
-                               g_tel.slug_buf)
-                    : snprintf(d, sizeof d, "%s", g_tel.root_buf);
+    i32 dn =
+        slug.n ? snprintf(d, sizeof d, "%s/%s", g_tel.root_buf, g_tel.slug_buf)
+               : snprintf(d, sizeof d, "%s", g_tel.root_buf);
     if (dn <= 0 || (size_t)dn >= sizeof d) return;
     i32 pn = snprintf(path, sizeof path, "%s/%s.jsonl", d, g_tel.stem_buf);
     if (pn <= 0 || (size_t)pn >= sizeof path) return;
@@ -142,7 +144,9 @@ static void tel_flush(const char *line, size_t n) {
     tel_append(line, n, true);
 }
 
-b8 telemetry_on(void) { return g_tel.on && g_tel.ready; }
+b8 telemetry_on(void) {
+    return g_tel.on && g_tel.ready;
+}
 
 Str telemetry_file(void) {
     return g_tel.ready && g_tel.path_buf[0] ? str_c(g_tel.path_buf) : (Str){0};
@@ -151,24 +155,25 @@ Str telemetry_file(void) {
 void telemetry_init(Arena *scratch, b8 on) {
     g_tel.t0 = agent_now_seconds();
     size_t mark = scratch->off;
-    g_tel.ready = tel_keep(g_tel.root_buf, sizeof g_tel.root_buf,
-                           paths_file(AGENT_DIR_STATE, STR("telemetry"), scratch));
+    g_tel.ready =
+        tel_keep(g_tel.root_buf, sizeof g_tel.root_buf,
+                 paths_file(AGENT_DIR_STATE, STR("telemetry"), scratch));
     scratch->off = mark;
     if (!g_tel.ready) return;
 
-    
+
     time_t now = time(NULL);
     char seed[64];
-    i32 n = snprintf(seed, sizeof seed, "%ld:%ld:%f", (long)getpid(),
-                     (long)now, g_tel.t0);
-    g_tel.run = str_hash64((Str){ seed, n > 0 ? (size_t)n : 0 });
+    i32 n = snprintf(seed, sizeof seed, "%ld:%ld:%f", (long)getpid(), (long)now,
+                     g_tel.t0);
+    g_tel.run = str_hash64((Str){seed, n > 0 ? (size_t)n : 0});
 
     struct tm tm;
     char stamp[24] = "00000000-000000";
     if (localtime_r(&now, &tm))
         snprintf(stamp, sizeof stamp, "%04d%02d%02d-%02d%02d%02d",
-                 tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                 tm.tm_hour, tm.tm_min, tm.tm_sec);
+                 tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
+                 tm.tm_min, tm.tm_sec);
     n = snprintf(g_tel.run_stem, sizeof g_tel.run_stem, "%s-%016llx", stamp,
                  (unsigned long long)g_tel.run);
     if (n <= 0 || (size_t)n >= sizeof g_tel.run_stem) {
@@ -189,14 +194,19 @@ b8 telemetry_set(b8 on, Arena *scratch) {
 
 static void tel_add(TelEvent *e, const char *p, size_t n) {
     if (!e->live) return;
-    
+
     size_t cap = sizeof e->buf - 16;
-    if (n > cap - e->n) { e->full = true; return; }
+    if (n > cap - e->n) {
+        e->full = true;
+        return;
+    }
     memcpy(e->buf + e->n, p, n);
     e->n += n;
 }
 
-static void tel_addz(TelEvent *e, const char *z) { tel_add(e, z, strlen(z)); }
+static void tel_addz(TelEvent *e, const char *z) {
+    tel_add(e, z, strlen(z));
+}
 
 static void tel_key(TelEvent *e, const char *key) {
     tel_addz(e, ",\"");
@@ -210,15 +220,15 @@ void tel_open(TelEvent *e, const char *ev) {
     e->live = telemetry_on();
     if (!e->live) return;
     if (g_tel.header_due && g_tel.header) {
-        g_tel.header_due = false;   
+        g_tel.header_due = false;
         g_tel.header(g_tel.header_ud);
     }
     char head[96];
     u64 ms = (u64)((agent_now_seconds() - g_tel.t0) * 1000.0);
-    
-    i32 n = snprintf(head, sizeof head, "{\"t\":%llu,\"seq\":%llu,\"ev\":\"%s\"",
-                     (unsigned long long)ms,
-                     (unsigned long long)g_tel.seq++, ev);
+
+    i32 n =
+        snprintf(head, sizeof head, "{\"t\":%llu,\"seq\":%llu,\"ev\":\"%s\"",
+                 (unsigned long long)ms, (unsigned long long)g_tel.seq++, ev);
     if (n > 0) tel_add(e, head, (size_t)n);
 }
 
@@ -240,7 +250,10 @@ void tel_bool(TelEvent *e, const char *key, b8 v) {
 void tel_bucket(TelEvent *e, const char *key, u64 v) {
     if (!e->live) return;
     u64 b = 0;
-    while (v) { b = b ? b << 1 : 1; v >>= 1; }
+    while (v) {
+        b = b ? b << 1 : 1;
+        v >>= 1;
+    }
     tel_int(e, key, (i64)b);
 }
 
@@ -253,7 +266,7 @@ void tel_str(TelEvent *e, const char *key, Str v) {
         u8 c = (u8)v.p[i];
         char esc[8];
         switch (c) {
-            case '"':  tel_add(e, "\\\"", 2); break;
+            case '"': tel_add(e, "\\\"", 2); break;
             case '\\': tel_add(e, "\\\\", 2); break;
             case '\n': tel_add(e, "\\n", 2); break;
             case '\r': tel_add(e, "\\r", 2); break;
@@ -291,12 +304,12 @@ void tel_arg_keys(TelEvent *e, const char *key, Str args, Arena *scratch) {
         for (const JVal *m = j->u.obj.head; m; m = m->next) {
             if (!first) tel_addz(e, ",");
             first = false;
-            
+
             Str k = str_clip_utf8(m->key, 40);
             for (size_t i = 0; i < k.n; i++) {
                 char c = k.p[i];
                 b8 plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-                        || (c >= '0' && c <= '9') || c == '_' || c == '-';
+                           || (c >= '0' && c <= '9') || c == '_' || c == '-';
                 tel_add(e, plain ? &c : "?", 1);
             }
         }
@@ -307,7 +320,7 @@ void tel_arg_keys(TelEvent *e, const char *key, Str args, Arena *scratch) {
 
 void tel_send(TelEvent *e) {
     if (!e->live) return;
-    
+
     if (e->full) {
         static const char trunc[] = ",\"trunc\":true";
         memcpy(e->buf + e->n, trunc, sizeof trunc - 1);
@@ -319,9 +332,10 @@ void tel_send(TelEvent *e) {
 }
 
 void telemetry_log(i32 level, Str msg) {
-    static const char *tags[] = { "debug", "info", "warn", "error" };
+    static const char *tags[] = {"debug", "info", "warn", "error"};
     if (!telemetry_on()) return;
-    if (level < AGENT_LOG_DEBUG || level > AGENT_LOG_ERROR) level = AGENT_LOG_ERROR;
+    if (level < AGENT_LOG_DEBUG || level > AGENT_LOG_ERROR)
+        level = AGENT_LOG_ERROR;
     TelEvent e;
     tel_open(&e, "log");
     tel_str(&e, "level", str_c(tags[level]));
@@ -332,7 +346,7 @@ void telemetry_log(i32 level, Str msg) {
 void tel_hash_field(TelEvent *e, const char *key, Str v) {
     if (!e->live || !v.n) return;
     char hex[20];
-    i32 n = snprintf(hex, sizeof hex, "%016llx",
-                     (unsigned long long)str_hash64(v));
-    if (n > 0) tel_str(e, key, (Str){ hex, (size_t)n });
+    i32 n =
+        snprintf(hex, sizeof hex, "%016llx", (unsigned long long)str_hash64(v));
+    if (n > 0) tel_str(e, key, (Str){hex, (size_t)n});
 }
