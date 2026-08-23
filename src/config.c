@@ -126,6 +126,12 @@ static const ConfSpec k_conf[CONF_N] = {
      * land. */
     [CONF_COMPACT_AT] = {"compact_at", CONF_TEXT(AGENT_COMPACT_AT), NULL,
                          CV_NUM, 50, 95, 0, true},
+    /* Where the elision boundary is allowed to advance. It has to stay below
+     * compact_at: eliding is what buys room before a compaction is due, and
+     * a threshold at or past that one would only pay for both rewrites in
+     * the same turn. */
+    [CONF_ELIDE_AT] = {"elide_at", CONF_TEXT(AGENT_ELIDE_AT), NULL, CV_NUM, 20,
+                       94, 0, true},
     [CONF_COMPACT_MODEL] = {"compact_model", "main", "main,small", CV_ENUM, 0,
                             0, 0, true},
 };
@@ -510,6 +516,17 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
                  : str_eq(compact, STR("manual")) ? COMPACT_MANUAL
                                                   : COMPACT_AUTO;
     c->compact_at = (u32)conf_num(conf, CONF_COMPACT_AT);
+    c->elide_at = (u32)conf_num(conf, CONF_ELIDE_AT);
+    /* Refused rather than moved: a value the two thresholds cannot both hold
+     * is a statement about a policy that does not exist, and quietly sliding
+     * it under compact_at would elide at a percentage nobody chose. Eliding
+     * stays off until one of the two is changed. */
+    if (c->elide_at >= c->compact_at) {
+        agent_log(AGENT_LOG_WARN,
+                  "ignoring elide_at %u: it must be below compact_at %u",
+                  c->elide_at, c->compact_at);
+        c->elide_at = 0;
+    }
     c->compact_small = str_eq(conf_str(conf, CONF_COMPACT_MODEL), STR("small"));
 
 

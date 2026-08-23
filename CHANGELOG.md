@@ -9,6 +9,14 @@
   instead of a downloaded file. The landing page carries the install steps
   and the signing key.
 
+- Add `elide_at`, the share of the context window at which old tool output
+  starts going out as a note instead of in full. It defaults to 75 and must
+  stay below `compact_at`.
+
+- Report a rebuilt prompt cache in the transcript, saying what caused it and
+  how much room it bought. A rebuild nothing in the session caused stops the
+  turn and names where to report it.
+
 ### Fixed
 
 - Refuse a malformed number in JSON instead of reading part of it. A model
@@ -21,6 +29,13 @@
   the table early and printed the remaining rows as raw pipes.
 
 ### Changed
+
+- Elide old tool output far less often. The boundary used to be recomputed
+  from the conversation's length, so every fourth round rewrote text earlier
+  requests had already sent and threw the provider's cached prefix away to
+  buy back four rounds. It is now conversation state that only moves under
+  context pressure, and each move removes tool arguments and failed calls as
+  well as results, so one rewrite buys much more than four did.
 
 - Keep prompt history per directory, so one project no longer recalls
   another's prompts. The old shared file is kept as `history.global`.

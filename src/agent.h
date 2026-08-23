@@ -86,16 +86,27 @@ typedef bool b8;
 #define AGENT_SPILL_BYTES      (16u << 20)
 #define AGENT_SPILL_PATH_MAX   128
 #define AGENT_SPILL_NOTE_BYTES 256
-/* A tool result older than this many user turns, or than this many tool
- * rounds, is replaced on the wire by a line naming what it was; see
- * conv_write_json. Both, because neither alone measures age: an autonomous
- * turn is one user message and many rounds, and a conversation of short
- * exchanges has too few rounds to reach back at all. The round boundary
- * advances a block of ROUNDS at a time, so a boundary moving every round
- * does not leave a provider's prefix cache nothing to hit. */
+/* Where an advance of the elision boundary puts it: past everything older
+ * than this many user turns and this many tool rounds. Both, because neither
+ * alone measures age: an autonomous turn is one user message and many
+ * rounds, and a conversation of short exchanges has too few rounds to reach
+ * back at all. A result or an argument list past the boundary and over BYTES
+ * is replaced on the wire by a line naming what it was; see
+ * conv_write_json. */
 #define AGENT_ELIDE_TURNS  2
 #define AGENT_ELIDE_ROUNDS 4
 #define AGENT_ELIDE_BYTES  512
+/* Percentage of the window the conversation may reach before the boundary is
+ * allowed to advance, and the least an advance must free to be worth the
+ * cached prefix it rewrites. A conversation carrying little tool traffic
+ * fails the second test, and compaction handles it with one rebuild instead
+ * of two. */
+#define AGENT_ELIDE_AT           75
+#define AGENT_ELIDE_MIN_GAIN_PCT 10
+/* How long a cached prefix lives. The proxy strips cache_control.ttl, so the
+ * five minute lifetime is the only one available: a longer gap between two
+ * requests is a miss nothing in the conversation caused. */
+#define AGENT_CACHE_TTL_S 300.0
 /* Nominal cost of that replacement line. The context gauge charges this for
  * an elided result instead of the bytes the request will not carry. */
 #define AGENT_ELIDE_NOTE_BYTES 76
@@ -143,6 +154,7 @@ typedef bool b8;
 #define AGENT_CREDENTIALS_NAME STR("credentials.toml")
 
 #define AGENT_PROJECT_DIR STR("." AGENT_NAME)
+#define AGENT_ISSUES_URL  "github.com/bissakov/" AGENT_NAME "/issues"
 // Past this arqan refuses to start rather than send a truncated prompt.
 #define AGENT_MAX_PROMPT_FILE   (1u << 16)
 #define AGENT_MAX_AGENTS_FILES  8
@@ -719,6 +731,7 @@ typedef enum {
     CONF_RESUME_LAST,
     CONF_COMPACT,
     CONF_COMPACT_AT,
+    CONF_ELIDE_AT,
     CONF_COMPACT_MODEL,
     CONF_N
 } ConfKey;
@@ -871,6 +884,10 @@ typedef struct {
     /* Percentage of the window the conversation may reach before compaction
      * is due, capped by AGENT_COMPACT_RESERVE. */
     u32 compact_at;
+    /* The same for the elision boundary, which advances first and buys the
+     * cheaper room. Zero when the configured value was refused for sitting
+     * at or above compact_at, which leaves eliding off. */
+    u32 elide_at;
     /* Whether the summarizing request goes to the small model rather than
      * the one the conversation is on. Ignored when none is configured. */
     b8 compact_small;
@@ -1315,6 +1332,19 @@ typedef struct {
     /* The table those indices address, owned by the caller and shared with
      * every clone of this conversation; NULL when nothing can be attached. */
     MediaSet *media;
+    /* Where eliding stops, as conversation state rather than a function of
+     * the current length: a boundary recomputed per request would move on
+     * its own and rewrite text earlier requests already sent, which costs
+     * the provider's prefix cache every time. Only conv_elide_advance
+     * raises it, and only under context pressure. */
+    size_t elide_start;
+    /* The slot holding a compaction checkpoint, 0 when the conversation has
+     * never been compacted. The head below it is one message that will never
+     * be written again, which is where a cache breakpoint pays. It is not
+     * saved: a resumed session reads a checkpoint as the user message it
+     * became, and loses only a breakpoint it can place again after the next
+     * compaction. */
+    size_t checkpoint;
     size_t n, cap;
 } Conv;
 
@@ -1360,15 +1390,25 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg);
  * a single message. The system prompt is written by the caller and skipped. */
 void conv_write_json_anthropic(Buf *b, const Conv *c);
 
-/* Where a request stops eliding old tool results: the later of the slot the
- * last AGENT_ELIDE_TURNS user turns begin at and the slot the last
- * AGENT_ELIDE_ROUNDS tool rounds begin at. Zero when the conversation
- * reaches back no further than that, which elides nothing. */
+/* Where a request stops eliding old tool results and arguments. Zero for a
+ * new conversation, which elides nothing. */
 size_t conv_elide_start(const Conv *c);
+/* Where an advance would put the boundary, without moving it. Equal to
+ * conv_elide_start when there is nothing older to elide. */
+size_t conv_elide_next(const Conv *c);
+/* Raise the boundary to the last whole block of AGENT_ELIDE_ROUNDS rounds,
+ * keeping those rounds verbatim. The only writer of `elide_start`, and it
+ * never moves it backwards. True when the boundary actually moved, which is
+ * what makes the rewrite worth the cached prefix it costs. */
+b8 conv_elide_advance(Conv *c);
 /* True when slot `i` goes out as the elision note rather than its own text,
  * for a request whose recent window begins at `recent`. Anything measuring
  * what a request carries has to ask this rather than read `text[i].n`. */
 b8 conv_result_elided(const Conv *c, size_t i, size_t recent);
+/* The same question for a tool call's arguments: true when the call sits
+ * below `recent` and its arguments are large enough to be worth a stub, or
+ * when the call failed and neither side of it is worth replaying. */
+b8 conv_args_elided(const Conv *c, size_t i, size_t recent);
 
 /* True when a request may begin at slot `i`: a user turn, a plain assistant
  * reply, or the assistant message that opens a group of tool calls. A tool
@@ -1384,6 +1424,9 @@ b8 conv_round_start(const Conv *c, size_t i);
  * does not fit or `keep` is not a boundary, leaving the conversation
  * untouched. */
 b8 conv_compact_head(Conv *c, size_t keep, Str checkpoint);
+/* Record that slot `i` holds a checkpoint standing for the conversation
+ * below it, for the paths that build one without conv_compact_head. */
+void conv_set_checkpoint(Conv *c, size_t i);
 
 /* ---- sessions ------------------------------------------------------------
  * The conversation as it happened, one JSON object per line under
@@ -1412,6 +1455,10 @@ typedef struct {
     b8 save_blocked;
     b8 sync_dir;
     size_t written;
+    /* The elision boundary the file already records. A save writes a marker
+     * only when the live boundary has moved past it, so a session that never
+     * elides carries no marker at all. */
+    size_t elide_written;
 } Session;
 
 typedef struct {
@@ -1642,6 +1689,58 @@ size_t ctx_compact_split(const CtxGauge *g, const Conv *c);
  * worth asking again a round later. This gates automatic compaction only: a
  * user who asks for one gets it. */
 b8 ctx_compact_worth(const CtxGauge *g, const Conv *c, size_t keep);
+
+/* What advancing the elision boundary would take off the next request, in
+ * this model's tokens. Zero when the boundary would not move. The valve
+ * spends a cached prefix on this, so it has to be worth a share of the
+ * window before it fires. */
+size_t ctx_elide_gain(const CtxGauge *g, const Conv *c);
+
+
+/* ---- prompt cache guard --------------------------------------------------
+ * The provider replays the whole conversation on every request and keeps the
+ * prefix of the previous one, matched from the first byte. Anything that
+ * rewrites text already sent throws that prefix away and rebuilds it at
+ * 12.5x what reading it back would have cost, so every rewrite is deliberate
+ * and every miss has a name.
+ *
+ * A miss whose cause was stamped is the price of a rewrite that paid for
+ * itself. A miss with no cause is a defect: something is rewriting the
+ * conversation that nobody declared, and the tool loop stops rather than
+ * spend a session's budget rebuilding the same prefix round after round.
+ */
+/* MODEL, MEDIA and RESUME name events the guard is begun for rather than
+ * blamed for, and exist so the telemetry field has one vocabulary. */
+typedef enum {
+    CACHE_CAUSE_NONE = 0,
+    CACHE_CAUSE_FIRST,
+    CACHE_CAUSE_ELIDE,
+    CACHE_CAUSE_COMPACT,
+    CACHE_CAUSE_MODE,
+    CACHE_CAUSE_TOOLS,
+    CACHE_CAUSE_MODEL,
+    CACHE_CAUSE_MEDIA,
+    CACHE_CAUSE_RESUME,
+    CACHE_CAUSE_TTL,
+} CacheCause;
+
+typedef struct {
+    /* The last request's prompt tokens, which is the prefix the next request
+     * should read back. Zero until one has been measured. */
+    size_t expect_tokens;
+    f64 last_send_s;
+    CacheCause cause;
+    /* What the stamped cause freed, for the row that explains the rebuild. */
+    size_t freed_tokens;
+    size_t misses;
+    size_t wasted_tokens;
+    /* Whether this endpoint has ever reported a cache read. One that never
+     * does is not one whose misses can be counted, and an OpenAI-compatible
+     * server that omits the field must not read as a permanent miss. */
+    b8 armed;
+} CacheGuard;
+
+Str cache_cause_name(CacheCause cause);
 
 void ctx_sync(const CtxGauge *g, const Conv *c);
 
