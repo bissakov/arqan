@@ -13,7 +13,7 @@
 #include <unistd.h>
 
 #define YHL_LANG_COUNT 12u
-#define YHL_WORK_MAX (8u << 20)
+#define YHL_WORK_MAX   (8u << 20)
 
 typedef const TSLanguage *(*LanguageFn)(void);
 
@@ -40,18 +40,21 @@ typedef struct {
 } Language;
 
 static Language languages[YHL_LANG_COUNT] = {
-    { "c", "c", ".c .h", tree_sitter_c, NULL, 0 },
-    { "cpp", "cpp c++ cxx", ".cc .cpp .cxx .hh .hpp .hxx", tree_sitter_cpp, NULL, 0 },
-    { "rust", "rust rs", ".rs", tree_sitter_rust, NULL, 0 },
-    { "go", "go golang", ".go", tree_sitter_go, NULL, 0 },
-    { "python", "python py", ".py .pyw", tree_sitter_python, NULL, 0 },
-    { "javascript", "javascript js jsx node", ".js .jsx .mjs .cjs", tree_sitter_javascript, NULL, 0 },
-    { "typescript", "typescript ts", ".ts .mts .cts", tree_sitter_typescript, NULL, 0 },
-    { "tsx", "tsx", ".tsx", tree_sitter_tsx, NULL, 0 },
-    { "bash", "bash sh shell", ".sh .bash .bashrc", tree_sitter_bash, NULL, 0 },
-    { "json", "json", ".json", tree_sitter_json, NULL, 0 },
-    { "toml", "toml", ".toml Cargo.lock", tree_sitter_toml, NULL, 0 },
-    { "yaml", "yaml yml", ".yaml .yml", tree_sitter_yaml, NULL, 0 },
+    {"c", "c", ".c .h", tree_sitter_c, NULL, 0},
+    {"cpp", "cpp c++ cxx", ".cc .cpp .cxx .hh .hpp .hxx", tree_sitter_cpp, NULL,
+     0},
+    {"rust", "rust rs", ".rs", tree_sitter_rust, NULL, 0},
+    {"go", "go golang", ".go", tree_sitter_go, NULL, 0},
+    {"python", "python py", ".py .pyw", tree_sitter_python, NULL, 0},
+    {"javascript", "javascript js jsx node", ".js .jsx .mjs .cjs",
+     tree_sitter_javascript, NULL, 0},
+    {"typescript", "typescript ts", ".ts .mts .cts", tree_sitter_typescript,
+     NULL, 0},
+    {"tsx", "tsx", ".tsx", tree_sitter_tsx, NULL, 0},
+    {"bash", "bash sh shell", ".sh .bash .bashrc", tree_sitter_bash, NULL, 0},
+    {"json", "json", ".json", tree_sitter_json, NULL, 0},
+    {"toml", "toml", ".toml Cargo.lock", tree_sitter_toml, NULL, 0},
+    {"yaml", "yaml yml", ".yaml .yml", tree_sitter_yaml, NULL, 0},
 };
 
 static unsigned char source[YHL_SOURCE_MAX];
@@ -61,8 +64,8 @@ static uint32_t byte_width[YHL_SOURCE_MAX];
 static uint32_t byte_pattern[YHL_SOURCE_MAX];
 
 static uint32_t get_u32(const unsigned char *p) {
-    return (uint32_t)p[0] | (uint32_t)p[1] << 8
-         | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16
+           | (uint32_t)p[3] << 24;
 }
 
 static void put_u32(unsigned char *p, uint32_t v) {
@@ -77,7 +80,10 @@ static int read_all(void *out, size_t n) {
     size_t off = 0;
     while (off < n) {
         ssize_t got = read(STDIN_FILENO, p + off, n - off);
-        if (got > 0) { off += (size_t)got; continue; }
+        if (got > 0) {
+            off += (size_t)got;
+            continue;
+        }
         if (got < 0 && errno == EINTR) continue;
         return 0;
     }
@@ -89,7 +95,10 @@ static int write_all(const void *in, size_t n) {
     size_t off = 0;
     while (off < n) {
         ssize_t put = write(STDOUT_FILENO, p + off, n - off);
-        if (put > 0) { off += (size_t)put; continue; }
+        if (put > 0) {
+            off += (size_t)put;
+            continue;
+        }
         if (put < 0 && errno == EINTR) continue;
         return 0;
     }
@@ -119,7 +128,8 @@ static int token_has(const char *list, const char *value) {
 }
 
 static void lower_ascii(char *s) {
-    for (; *s; s++) if (*s >= 'A' && *s <= 'Z') *s = (char)(*s + 32);
+    for (; *s; s++)
+        if (*s >= 'A' && *s <= 'Z') *s = (char)(*s + 32);
 }
 
 static Language *language_for(uint8_t kind) {
@@ -191,9 +201,9 @@ static TSQuery *language_query(Language *lang) {
     const YhlQuerySource *src = &yhl_query_sources[lang - languages];
     uint32_t error_offset = 0;
     TSQueryError error_type = TSQueryErrorNone;
-    TSQuery *query = ts_query_new(lang->language(), (const char *)src->text,
-                                  (uint32_t)src->size, &error_offset,
-                                  &error_type);
+    TSQuery *query =
+        ts_query_new(lang->language(), (const char *)src->text,
+                     (uint32_t)src->size, &error_offset, &error_type);
     uint32_t useful = 0;
     if (query) {
         uint32_t patterns = ts_query_pattern_count(query);
@@ -239,13 +249,14 @@ static uint8_t make_runs(Language *lang, TSQuery *query, uint32_t source_n,
 
     TSParser *parser = ts_parser_new();
     TSQueryCursor *cursor = ts_query_cursor_new();
-    if (!parser || !cursor || !ts_parser_set_language(parser, lang->language())) {
+    if (!parser || !cursor
+        || !ts_parser_set_language(parser, lang->language())) {
         if (cursor) ts_query_cursor_delete(cursor);
         if (parser) ts_parser_delete(parser);
         return YHL_STATUS_INTERNAL;
     }
-    TSTree *tree = ts_parser_parse_string(parser, NULL, (const char *)source,
-                                          source_n);
+    TSTree *tree =
+        ts_parser_parse_string(parser, NULL, (const char *)source, source_n);
     if (!tree) {
         ts_query_cursor_delete(cursor);
         ts_parser_delete(parser);
@@ -259,22 +270,29 @@ static uint8_t make_runs(Language *lang, TSQuery *query, uint32_t source_n,
     uint32_t work = 0;
     uint8_t status = YHL_STATUS_OK;
     while (ts_query_cursor_next_capture(cursor, &match, &capture_index)) {
-        if (++captures > YHL_RUN_MAX) { status = YHL_STATUS_TOO_COMPLEX; break; }
+        if (++captures > YHL_RUN_MAX) {
+            status = YHL_STATUS_TOO_COMPLEX;
+            break;
+        }
         TSQueryCapture capture = match.captures[capture_index];
         uint32_t name_n = 0;
-        const char *name = ts_query_capture_name_for_id(query, capture.index,
-                                                        &name_n);
+        const char *name =
+            ts_query_capture_name_for_id(query, capture.index, &name_n);
         uint8_t kind = semantic(name, name_n);
         if (!kind) continue;
         uint32_t a = ts_node_start_byte(capture.node);
         uint32_t b = ts_node_end_byte(capture.node);
         if (a >= b || b > source_n) continue;
         uint32_t width = b - a;
-        if (work > YHL_WORK_MAX - width) { status = YHL_STATUS_TOO_COMPLEX; break; }
+        if (work > YHL_WORK_MAX - width) {
+            status = YHL_STATUS_TOO_COMPLEX;
+            break;
+        }
         work += width;
         for (uint32_t i = a; i < b; i++) {
             if (width < byte_width[i]
-                || (width == byte_width[i] && match.pattern_index >= byte_pattern[i])) {
+                || (width == byte_width[i]
+                    && match.pattern_index >= byte_pattern[i])) {
                 byte_kind[i] = kind;
                 byte_width[i] = width;
                 byte_pattern[i] = match.pattern_index;
@@ -333,19 +351,21 @@ static int serve(void) {
         ssize_t first = read(STDIN_FILENO, header, sizeof header);
         if (first == 0) return 1;
         if (first < 0 && errno == EINTR) continue;
-        if (first <= 0 || !read_all(header + (size_t)first,
-                                    sizeof header - (size_t)first))
+        if (first <= 0
+            || !read_all(header + (size_t)first, sizeof header - (size_t)first))
             return 0;
         if (memcmp(header, YHL_MAGIC, 4) != 0) return 0;
         uint32_t id = get_u32(header + 4);
         uint8_t hint_kind = header[8];
         uint32_t hint_n = get_u32(header + 12);
         uint32_t source_n = get_u32(header + 16);
-        uint32_t hint_max = hint_kind == YHL_HINT_ALIAS ? YHL_ALIAS_MAX
-                           : hint_kind == YHL_HINT_FILENAME ? YHL_FILENAME_MAX : 0;
+        uint32_t hint_max = hint_kind == YHL_HINT_ALIAS      ? YHL_ALIAS_MAX
+                            : hint_kind == YHL_HINT_FILENAME ? YHL_FILENAME_MAX
+                                                             : 0;
         if (!hint_max || hint_n > hint_max || source_n > YHL_SOURCE_MAX) {
             if (!discard(hint_n) || !discard(source_n)
-                || !send_response(id, YHL_STATUS_TOO_LARGE, 0, 0)) return 0;
+                || !send_response(id, YHL_STATUS_TOO_LARGE, 0, 0))
+                return 0;
             continue;
         }
         if (!read_all(hint, hint_n) || !read_all(source, source_n)) return 0;
@@ -374,15 +394,20 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (argc > 1 && !(argc == 2 && strcmp(argv[1], "--self-test") == 0)) {
-        fprintf(stderr, "usage: arqan-highlight [--version|--list-languages]\n");
+        fprintf(stderr,
+                "usage: arqan-highlight [--version|--list-languages]\n");
         return 2;
     }
     if (!queries_named() || (argc == 2 && !queries_all_compile())) {
-        fputs("arqan-highlight: bundled grammar/query validation failed\n", stderr);
+        fputs("arqan-highlight: bundled grammar/query validation failed\n",
+              stderr);
         queries_delete();
         return 1;
     }
-    if (argc == 2) { queries_delete(); return 0; }
+    if (argc == 2) {
+        queries_delete();
+        return 0;
+    }
     int ok = serve();
     queries_delete();
     return ok ? 0 : 1;

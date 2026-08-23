@@ -3,16 +3,16 @@
 #include <stddef.h>
 
 
-#define CTX_SLOT_BYTES     48
+#define CTX_SLOT_BYTES 48
 
-#define CTX_FIT_MIN_BYTES  2048.0
+#define CTX_FIT_MIN_BYTES 2048.0
 
-#define CTX_SLOPE_MIN      0.05
-#define CTX_SLOPE_MAX      2.0
-#define CTX_SLOPE_DEFAULT  0.25
+#define CTX_SLOPE_MIN     0.05
+#define CTX_SLOPE_MAX     2.0
+#define CTX_SLOPE_DEFAULT 0.25
 
-#define CTX_IMAGE_PIXELS   750.0
-#define CTX_IMAGE_TOKENS   1600.0
+#define CTX_IMAGE_PIXELS 750.0
+#define CTX_IMAGE_TOKENS 1600.0
 
 void ctx_init(CtxGauge *g) {
     if (!g) return;
@@ -29,7 +29,7 @@ static f64 ctx_slot_bytes(const Conv *c, size_t i, size_t recent) {
     size_t text = conv_result_elided(c, i, recent) ? AGENT_ELIDE_NOTE_BYTES
                                                    : c->text[i].n;
     size_t b = text + c->tool_name[i].n + c->tool_call_id[i].n
-             + c->shell_out[i].n + c->anthropic_thinking[i].n;
+               + c->shell_out[i].n + c->anthropic_thinking[i].n;
     return (f64)b + (f64)CTX_SLOT_BYTES;
 }
 
@@ -70,30 +70,30 @@ void ctx_note_usage(CtxGauge *g, const Conv *c, size_t prompt_tokens) {
     if (!g || !c || !prompt_tokens) return;
     f64 bytes = ctx_bytes(c);
     f64 media = ctx_media_tokens(c);
-    f64 text  = (f64)prompt_tokens - media;
+    f64 text = (f64)prompt_tokens - media;
     if (text < 0) text = 0;
-    
+
     if (g->basis && bytes - g->fit_bytes >= CTX_FIT_MIN_BYTES
         && text > g->fit_text) {
         f64 slope = (text - g->fit_text) / (bytes - g->fit_bytes);
         if (slope >= CTX_SLOPE_MIN && slope <= CTX_SLOPE_MAX) g->slope = slope;
     }
-    g->offset      = text - g->slope * bytes;
-    g->fit_tokens  = prompt_tokens;
-    g->fit_text    = text;
-    g->fit_media   = media;
-    g->fit_bytes   = bytes;
+    g->offset = text - g->slope * bytes;
+    g->fit_tokens = prompt_tokens;
+    g->fit_text = text;
+    g->fit_media = media;
+    g->fit_bytes = bytes;
     g->exact_slots = c->n;
-    g->measured    = true;
-    g->basis       = true;
+    g->measured = true;
+    g->basis = true;
 }
 
 void ctx_model_changed(CtxGauge *g) {
     if (!g) return;
-    
+
     g->exact_slots = SIZE_MAX;
-    g->window      = 0;
-    g->basis       = false;
+    g->window = 0;
+    g->basis = false;
 }
 
 void ctx_set_window(CtxGauge *g, size_t window) {
@@ -111,30 +111,31 @@ static b8 ctx_view(const CtxGauge *g, const Conv *c, size_t *tokens,
     if (!g || !c) return false;
     f64 bytes = ctx_bytes(c);
     f64 media = ctx_media_tokens(c);
-    
+
     if (!g->measured) {
-        f64 v = CTX_SLOPE_DEFAULT
-              * (bytes + (f64)tools_schema_bytes(g->tools)) + media;
-        if (v > (f64)AGENT_MAX_CONTEXT_WINDOW) v = (f64)AGENT_MAX_CONTEXT_WINDOW;
+        f64 v = CTX_SLOPE_DEFAULT * (bytes + (f64)tools_schema_bytes(g->tools))
+                + media;
+        if (v > (f64)AGENT_MAX_CONTEXT_WINDOW)
+            v = (f64)AGENT_MAX_CONTEXT_WINDOW;
         *tokens = (size_t)v;
-        *exact  = false;
+        *exact = false;
         return true;
     }
-    
+
     if (c->n == g->exact_slots && bytes == g->fit_bytes
         && media == g->fit_media) {
         *tokens = g->fit_tokens;
-        *exact  = true;
+        *exact = true;
         return true;
     }
     f64 v = g->offset + g->slope * bytes + media;
-    
-    if (bytes > g->fit_bytes && media >= g->fit_media
-        && v < (f64)g->fit_tokens) v = (f64)g->fit_tokens;
+
+    if (bytes > g->fit_bytes && media >= g->fit_media && v < (f64)g->fit_tokens)
+        v = (f64)g->fit_tokens;
     if (!(v > 0)) v = 0;
     if (v > (f64)AGENT_MAX_CONTEXT_WINDOW) v = (f64)AGENT_MAX_CONTEXT_WINDOW;
     *tokens = (size_t)v;
-    *exact  = false;
+    *exact = false;
     return true;
 }
 
@@ -154,7 +155,8 @@ b8 ctx_over(const CtxGauge *g, const Conv *c, u32 percent) {
     /* A window smaller than the reserve has no room to hold back, so the
      * percentage is all there is to go on. */
     f64 limit = g->window > AGENT_COMPACT_RESERVE
-              ? (f64)(g->window - AGENT_COMPACT_RESERVE) : share;
+                    ? (f64)(g->window - AGENT_COMPACT_RESERVE)
+                    : share;
     if (share < limit) limit = share;
     return (f64)tokens >= limit;
 }
@@ -183,7 +185,7 @@ size_t ctx_compact_split(const CtxGauge *g, const Conv *c) {
      * lose the tail it was meant to protect. Cap the tail at a share of the
      * conversation so a cut always has both sides. */
     f64 budget = ctx_conv_tokens(g, c, 1, c->n, recent)
-               * (f64)(100 - AGENT_COMPACT_HEAD_PCT) / 100.0;
+                 * (f64)(100 - AGENT_COMPACT_HEAD_PCT) / 100.0;
     /* No window, no share of one to spend: the conversation's own size is the
      * only budget left, and it still cuts a tail worth keeping. A window only
      * ever tightens that. */

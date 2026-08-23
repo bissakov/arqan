@@ -8,20 +8,28 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-typedef enum { NOTIFY_OFF = 0, NOTIFY_BEL, NOTIFY_OSC9, NOTIFY_BOTH } NotifyMode;
+typedef enum {
+    NOTIFY_OFF = 0,
+    NOTIFY_BEL,
+    NOTIFY_OSC9,
+    NOTIFY_BOTH
+} NotifyMode;
 
 static struct {
     NotifyMode mode;
-    Str        command;   // in the persist arena, or empty
-    f64        min_ms;
+    Str command; // in the persist arena, or empty
+    f64 min_ms;
 } g_notify;
 
 void notify_init(const Conf *c, Arena *persist) {
     memset(&g_notify, 0, sizeof g_notify);
     Str m = conf_str(c, CONF_NOTIFY);
-    if (str_eq(m, STR("bel")))       g_notify.mode = NOTIFY_BEL;
-    else if (str_eq(m, STR("osc9"))) g_notify.mode = NOTIFY_OSC9;
-    else if (str_eq(m, STR("both"))) g_notify.mode = NOTIFY_BOTH;
+    if (str_eq(m, STR("bel")))
+        g_notify.mode = NOTIFY_BEL;
+    else if (str_eq(m, STR("osc9")))
+        g_notify.mode = NOTIFY_OSC9;
+    else if (str_eq(m, STR("both")))
+        g_notify.mode = NOTIFY_BOTH;
     g_notify.min_ms = (f64)conf_num(c, CONF_NOTIFY_MIN_MS);
 
     Str cmd = str_trim(conf_str(c, CONF_NOTIFY_COMMAND));
@@ -31,20 +39,20 @@ void notify_init(const Conf *c, Arena *persist) {
 
 static const char *kind_name(NotifyKind k) {
     switch (k) {
-        case NOTIFY_TURN_DONE:    return "turn-done";
-        case NOTIFY_TURN_FAILED:  return "turn-failed";
+        case NOTIFY_TURN_DONE: return "turn-done";
+        case NOTIFY_TURN_FAILED: return "turn-failed";
         case NOTIFY_INPUT_NEEDED: return "input-needed";
-        case NOTIFY_INTERRUPTED:  return "interrupted";
+        case NOTIFY_INTERRUPTED: return "interrupted";
     }
     return "unknown";
 }
 
 static const char *kind_label(NotifyKind k) {
     switch (k) {
-        case NOTIFY_TURN_DONE:    return "done";
-        case NOTIFY_TURN_FAILED:  return "error";
+        case NOTIFY_TURN_DONE: return "done";
+        case NOTIFY_TURN_FAILED: return "error";
         case NOTIFY_INPUT_NEEDED: return "waiting for you";
-        case NOTIFY_INTERRUPTED:  return "interrupted";
+        case NOTIFY_INTERRUPTED: return "interrupted";
     }
     return "";
 }
@@ -55,7 +63,7 @@ static const char *kind_label(NotifyKind k) {
  * a UTF-8 boundary rather than mid-sequence. */
 static Str sanitize(Str in, char *out, size_t cap) {
     size_t n = 0;
-    b8 blank = true;   
+    b8 blank = true;
     for (size_t i = 0; i < in.n && n < cap; i++) {
         u8 ch = (u8)in.p[i];
         if (ch < 0x20 || ch == 0x7f) ch = ' ';
@@ -68,7 +76,7 @@ static Str sanitize(Str in, char *out, size_t cap) {
         out[n++] = (char)ch;
     }
     while (n && out[n - 1] == ' ') n--;
-    return str_clip_utf8((Str){ out, n }, cap);
+    return str_clip_utf8((Str){out, n}, cap);
 }
 
 
@@ -113,12 +121,12 @@ static void run_command(NotifyKind kind, Str text) {
     if (!argc) return;
     argv[argc] = NULL;
 
-    
+
     char payload[1024];
     char cwd[512];
     if (!getcwd(cwd, sizeof cwd)) cwd[0] = '\0';
-    Str dir = { cwd, strlen(cwd) };
-    size_t cap = sizeof payload - 8;   
+    Str dir = {cwd, strlen(cwd)};
+    size_t cap = sizeof payload - 8;
     size_t n = lit_put(payload, cap, 0, "{\"kind\":\"");
     n = lit_put(payload, cap, n, kind_name(kind));
     n = lit_put(payload, cap, n, "\",\"text\":\"");
@@ -130,18 +138,23 @@ static void run_command(NotifyKind kind, Str text) {
     i32 fds[2];
     if (pipe(fds) != 0) return;
     pid_t pid = fork();
-    if (pid < 0) { close(fds[0]); close(fds[1]); return; }
+    if (pid < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return;
+    }
     if (pid == 0) {
         if (fork() == 0) {
             i32 null_wr = open("/dev/null", O_WRONLY);
             dup2(fds[0], STDIN_FILENO);
-            
+
             if (null_wr >= 0) {
                 dup2(null_wr, STDOUT_FILENO);
                 dup2(null_wr, STDERR_FILENO);
                 if (null_wr > STDERR_FILENO) close(null_wr);
             }
-            close(fds[0]); close(fds[1]);
+            close(fds[0]);
+            close(fds[1]);
             execvp(argv[0], (char *const *)(uintptr_t)argv);
             _exit(127);
         }
@@ -155,7 +168,10 @@ static void run_command(NotifyKind kind, Str text) {
     size_t off = 0;
     while (off < n) {
         ssize_t w = write(fds[1], payload + off, n - off);
-        if (w > 0) { off += (size_t)w; continue; }
+        if (w > 0) {
+            off += (size_t)w;
+            continue;
+        }
         if (w < 0 && errno == EINTR) continue;
         break;
     }
@@ -165,26 +181,24 @@ static void run_command(NotifyKind kind, Str text) {
 }
 
 void notify_event(NotifyKind kind, Str detail, f64 elapsed_ms) {
-    
     if (kind == NOTIFY_TURN_DONE && elapsed_ms < g_notify.min_ms) return;
 
     char body[AGENT_MAX_NOTIFY_TEXT];
     Str said = sanitize(detail, body, sizeof body);
 
     char line[AGENT_MAX_NOTIFY_TEXT];
-    
-    i32 len = said.n
-        ? snprintf(line, sizeof line, AGENT_NAME ": %.*s",
-                   (i32)said.n, said.p)
-        : snprintf(line, sizeof line, AGENT_NAME ": %s", kind_label(kind));
+
+    i32 len = said.n ? snprintf(line, sizeof line, AGENT_NAME ": %.*s",
+                                (i32)said.n, said.p)
+                     : snprintf(line, sizeof line, AGENT_NAME ": %s",
+                                kind_label(kind));
     if (len < 0) return;
-    Str msg = str_clip_utf8((Str){ line, (size_t)len < sizeof line
-                                         ? (size_t)len : sizeof line - 1 },
-                            sizeof line - 1);
+    Str msg = str_clip_utf8(
+        (Str){line, (size_t)len < sizeof line ? (size_t)len : sizeof line - 1},
+        sizeof line - 1);
 
     if (g_notify.mode == NOTIFY_OSC9 || g_notify.mode == NOTIFY_BOTH)
         tui_desktop_notify(msg);
-    if (g_notify.mode == NOTIFY_BEL || g_notify.mode == NOTIFY_BOTH)
-        tui_bell();
+    if (g_notify.mode == NOTIFY_BEL || g_notify.mode == NOTIFY_BOTH) tui_bell();
     run_command(kind, msg);
 }

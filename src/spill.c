@@ -36,18 +36,27 @@ void spill_open(Spill *s, const char *tool, const char *ext, Str key) {
     i32 n = snprintf(s->path, sizeof s->path,
                      "%.*s/" AGENT_NAME "-%s-%016llx.%s", (i32)dir.n, dir.p,
                      tool, (unsigned long long)str_hash64(key), ext);
-    
-    if (n < 0 || (size_t)n >= AGENT_SPILL_PATH_MAX) { s->path[0] = '\0'; return; }
+
+    if (n < 0 || (size_t)n >= AGENT_SPILL_PATH_MAX) {
+        s->path[0] = '\0';
+        return;
+    }
 
     /* The name is predictable and the directory is shared, so the previous
      * file is removed and the new one created exclusively: an existing entry
      * this cannot unlink belongs to another user (the sticky bit keeps it
      * theirs) and is left alone rather than written through. O_NOFOLLOW
      * refuses a symlink planted between the two calls. */
-    if (unlink(s->path) != 0 && errno != ENOENT) { s->path[0] = '\0'; return; }
+    if (unlink(s->path) != 0 && errno != ENOENT) {
+        s->path[0] = '\0';
+        return;
+    }
     i32 fd = open(s->path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
                   0600);
-    if (fd < 0) { s->path[0] = '\0'; return; }
+    if (fd < 0) {
+        s->path[0] = '\0';
+        return;
+    }
     s->fd = fd;
 }
 
@@ -74,7 +83,10 @@ static b8 spill_flush(Spill *s) {
 
 void spill_put(Spill *s, const char *p, size_t n) {
     if (s->fd < 0 || !n) return;
-    if (s->written >= AGENT_SPILL_BYTES) { s->full = true; return; }
+    if (s->written >= AGENT_SPILL_BYTES) {
+        s->full = true;
+        return;
+    }
     if (n > AGENT_SPILL_BYTES - s->written) {
         n = AGENT_SPILL_BYTES - s->written;
         s->full = true;
@@ -102,17 +114,26 @@ void spill_putf(Spill *s, const char *fmt, ...) {
 
 
 void spill_size_text(char *z, size_t cap, size_t n) {
-    if (n < 1024) snprintf(z, cap, "%zu B", n);
-    else if (n < 1024 * 1024) snprintf(z, cap, "%.0f KB", (f64)n / 1024.0);
-    else snprintf(z, cap, "%.1f MB", (f64)n / (1024.0 * 1024.0));
+    if (n < 1024)
+        snprintf(z, cap, "%zu B", n);
+    else if (n < 1024 * 1024)
+        snprintf(z, cap, "%.0f KB", (f64)n / 1024.0);
+    else
+        snprintf(z, cap, "%.1f MB", (f64)n / (1024.0 * 1024.0));
 }
 
 i32 spill_release(Spill *s, char *path, size_t path_cap, size_t *written) {
     *written = 0;
     if (s->fd < 0) return -1;
-    if (!spill_flush(s) || !s->path[0]) { spill_drop(s); return -1; }
+    if (!spill_flush(s) || !s->path[0]) {
+        spill_drop(s);
+        return -1;
+    }
     size_t n = strlen(s->path);
-    if (n >= path_cap) { spill_drop(s); return -1; }
+    if (n >= path_cap) {
+        spill_drop(s);
+        return -1;
+    }
     memcpy(path, s->path, n + 1);
     *written = s->written;
     i32 fd = s->fd;
@@ -135,8 +156,8 @@ void spill_finish(Spill *s, Buf *out, b8 keep) {
     }
     char size[32];
     spill_size_text(size, sizeof size, s->written);
-    
+
     if (out->n && out->p[out->n - 1] != '\n') buf_puts(out, STR("\n\n"));
-    buf_putf(out, "[full output: %s, %s%s; grep or read part of it]\n",
-             s->path, size, s->full ? ", truncated there" : "");
+    buf_putf(out, "[full output: %s, %s%s; grep or read part of it]\n", s->path,
+             size, s->full ? ", truncated there" : "");
 }

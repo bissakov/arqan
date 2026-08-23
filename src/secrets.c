@@ -9,7 +9,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define SECRET_POLL_MS   50
+#define SECRET_POLL_MS    50
 #define SECRET_SERVICE_ID AGENT_NAME
 
 typedef enum { SECRET_OP_LOOKUP, SECRET_OP_STORE, SECRET_OP_ERASE } SecretOp;
@@ -20,9 +20,9 @@ typedef struct {
     const char *argv[AGENT_MAX_SECRET_ARGV + 1];
     size_t n;
     char account[AGENT_MAX_ENDPOINT_NAME + 1];
-    char path[AGENT_MAX_ENDPOINT_NAME + 8];    
-    char label[AGENT_MAX_ENDPOINT_NAME + 16];  
-    char words[AGENT_MAX_SECRET_CMD + 1];      
+    char path[AGENT_MAX_ENDPOINT_NAME + 8];
+    char label[AGENT_MAX_ENDPOINT_NAME + 16];
+    char words[AGENT_MAX_SECRET_CMD + 1];
 } SecretCmd;
 
 
@@ -46,7 +46,9 @@ Str secret_source_name(SecretSource src) {
     return str_c(i < SECRET_SOURCE_N ? g_secret_names[i] : g_secret_names[0]);
 }
 
-b8 secret_source_external(SecretSource src) { return src != SECRET_STORED; }
+b8 secret_source_external(SecretSource src) {
+    return src != SECRET_STORED;
+}
 
 /* keychain and command are lookup-only: security(1) takes the secret on argv
  * rather than stdin, and a user's own command is not arqan's to write to. */
@@ -70,40 +72,58 @@ static void secret_arg(SecretCmd *c, const char *z) {
 }
 
 
-static b8 secret_build(SecretCmd *c, SecretSource src, SecretOp op,
-                       Str account, char *err, size_t err_cap) {
+static b8 secret_build(SecretCmd *c, SecretSource src, SecretOp op, Str account,
+                       char *err, size_t err_cap) {
     memset(c, 0, sizeof *c);
     if (!secret_account_ok(account)) {
-        snprintf(err, err_cap, "provider name must be letters, digits, '.', "
+        snprintf(err, err_cap,
+                 "provider name must be letters, digits, '.', "
                  "'_' or '-' to use an external key store");
         return false;
     }
     memcpy(c->account, account.p, account.n);
     snprintf(c->path, sizeof c->path, "%s/%s", SECRET_SERVICE_ID, c->account);
-    snprintf(c->label, sizeof c->label, "%s: %s", SECRET_SERVICE_ID, c->account);
+    snprintf(c->label, sizeof c->label, "%s: %s", SECRET_SERVICE_ID,
+             c->account);
 
     switch (src) {
         case SECRET_SERVICE:
             secret_arg(c, "secret-tool");
-            if (op == SECRET_OP_LOOKUP) secret_arg(c, "lookup");
-            else if (op == SECRET_OP_ERASE) secret_arg(c, "clear");
-            else { secret_arg(c, "store"); secret_arg(c, "--label"); secret_arg(c, c->label); }
-            secret_arg(c, "service"); secret_arg(c, SECRET_SERVICE_ID);
-            secret_arg(c, "account"); secret_arg(c, c->account);
+            if (op == SECRET_OP_LOOKUP)
+                secret_arg(c, "lookup");
+            else if (op == SECRET_OP_ERASE)
+                secret_arg(c, "clear");
+            else {
+                secret_arg(c, "store");
+                secret_arg(c, "--label");
+                secret_arg(c, c->label);
+            }
+            secret_arg(c, "service");
+            secret_arg(c, SECRET_SERVICE_ID);
+            secret_arg(c, "account");
+            secret_arg(c, c->account);
             break;
         case SECRET_PASS:
             secret_arg(c, "pass");
-            if (op == SECRET_OP_LOOKUP) secret_arg(c, "show");
-            else if (op == SECRET_OP_ERASE) { secret_arg(c, "rm"); secret_arg(c, "--force"); }
-            else { secret_arg(c, "insert"); secret_arg(c, "--multiline"); }
+            if (op == SECRET_OP_LOOKUP)
+                secret_arg(c, "show");
+            else if (op == SECRET_OP_ERASE) {
+                secret_arg(c, "rm");
+                secret_arg(c, "--force");
+            } else {
+                secret_arg(c, "insert");
+                secret_arg(c, "--multiline");
+            }
             secret_arg(c, c->path);
             break;
         case SECRET_KEYCHAIN:
             secret_arg(c, "security");
             secret_arg(c, op == SECRET_OP_ERASE ? "delete-generic-password"
                                                 : "find-generic-password");
-            secret_arg(c, "-s"); secret_arg(c, SECRET_SERVICE_ID);
-            secret_arg(c, "-a"); secret_arg(c, c->account);
+            secret_arg(c, "-s");
+            secret_arg(c, SECRET_SERVICE_ID);
+            secret_arg(c, "-a");
+            secret_arg(c, c->account);
             if (op == SECRET_OP_LOOKUP) secret_arg(c, "-w");
             break;
         case SECRET_STORED:
@@ -119,7 +139,10 @@ static b8 secret_build(SecretCmd *c, SecretSource src, SecretOp op,
 static b8 secret_split(SecretCmd *c, Str command, char *err, size_t err_cap) {
     memset(c, 0, sizeof *c);
     Str s = str_trim(command);
-    if (!s.n) { snprintf(err, err_cap, "key_command is empty"); return false; }
+    if (!s.n) {
+        snprintf(err, err_cap, "key_command is empty");
+        return false;
+    }
     if (s.n > AGENT_MAX_SECRET_CMD) {
         snprintf(err, err_cap, "key_command is longer than %d bytes",
                  AGENT_MAX_SECRET_CMD);
@@ -155,10 +178,13 @@ static i32 secret_wait(i32 fd, i16 events, f64 deadline) {
         i32 ms = (i32)(left * 1000.0);
         if (ms > SECRET_POLL_MS) ms = SECRET_POLL_MS;
         if (ms < 1) ms = 1;
-        struct pollfd pfd = { fd, events, 0 };
+        struct pollfd pfd = {fd, events, 0};
         i32 rc = poll(&pfd, 1, ms);
         tui_poll_input();
-        if (rc < 0) { if (errno == EINTR) continue; return -1; }
+        if (rc < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
         if (rc > 0) return 1;
     }
 }
@@ -171,35 +197,46 @@ static void secret_reap(pid_t pid, i32 *status) {
 static b8 secret_exec(const SecretCmd *c, Str input, char *out, size_t out_cap,
                       size_t *out_n, char *err, size_t err_cap) {
     *out_n = 0;
-    i32 in_fds[2] = { -1, -1 }, out_fds[2] = { -1, -1 };
+    i32 in_fds[2] = {-1, -1}, out_fds[2] = {-1, -1};
     if (pipe(out_fds) != 0) {
         snprintf(err, err_cap, "pipe failed");
         return false;
     }
     if (input.p && pipe(in_fds) != 0) {
-        close(out_fds[0]); close(out_fds[1]);
+        close(out_fds[0]);
+        close(out_fds[1]);
         snprintf(err, err_cap, "pipe failed");
         return false;
     }
     pid_t pid = fork();
     if (pid < 0) {
-        close(out_fds[0]); close(out_fds[1]);
-        if (in_fds[0] >= 0) { close(in_fds[0]); close(in_fds[1]); }
+        close(out_fds[0]);
+        close(out_fds[1]);
+        if (in_fds[0] >= 0) {
+            close(in_fds[0]);
+            close(in_fds[1]);
+        }
         snprintf(err, err_cap, "fork failed");
         return false;
     }
     if (pid == 0) {
         i32 null_rd = input.p ? -1 : open("/dev/null", O_RDONLY);
         i32 null_wr = open("/dev/null", O_WRONLY);
-        if (input.p) dup2(in_fds[0], STDIN_FILENO);
-        else if (null_rd >= 0) dup2(null_rd, STDIN_FILENO);
+        if (input.p)
+            dup2(in_fds[0], STDIN_FILENO);
+        else if (null_rd >= 0)
+            dup2(null_rd, STDIN_FILENO);
         dup2(out_fds[1], STDOUT_FILENO);
-        
+
         if (null_wr >= 0) dup2(null_wr, STDERR_FILENO);
         if (null_rd > STDERR_FILENO) close(null_rd);
         if (null_wr > STDERR_FILENO) close(null_wr);
-        if (in_fds[0] >= 0) { close(in_fds[0]); close(in_fds[1]); }
-        close(out_fds[0]); close(out_fds[1]);
+        if (in_fds[0] >= 0) {
+            close(in_fds[0]);
+            close(in_fds[1]);
+        }
+        close(out_fds[0]);
+        close(out_fds[1]);
         execvp(c->argv[0], (char *const *)(uintptr_t)c->argv);
         _exit(127);
     }
@@ -209,7 +246,7 @@ static b8 secret_exec(const SecretCmd *c, Str input, char *out, size_t out_cap,
     f64 deadline = agent_now_seconds() + (f64)AGENT_SECRET_TIMEOUT_MS / 1000.0;
     b8 ok = true, timed_out = false;
 
-    
+
     if (in_fds[1] >= 0) {
         struct sigaction oldpipe, ignore = {0};
         ignore.sa_handler = SIG_IGN;
@@ -218,10 +255,21 @@ static b8 secret_exec(const SecretCmd *c, Str input, char *out, size_t out_cap,
         size_t off = 0;
         while (ok && off < input.n) {
             i32 rc = secret_wait(in_fds[1], POLLOUT, deadline);
-            if (rc == 0) { timed_out = true; ok = false; break; }
-            if (rc < 0) { ok = false; break; }
+            if (rc == 0) {
+                timed_out = true;
+                ok = false;
+                break;
+            }
+            if (rc < 0) {
+                ok = false;
+                break;
+            }
             ssize_t w = write(in_fds[1], input.p + off, input.n - off);
-            if (w < 0) { if (errno == EINTR) continue; ok = false; break; }
+            if (w < 0) {
+                if (errno == EINTR) continue;
+                ok = false;
+                break;
+            }
             off += (size_t)w;
         }
         if (ok && input.n && input.p[input.n - 1] != '\n') {
@@ -235,17 +283,31 @@ static b8 secret_exec(const SecretCmd *c, Str input, char *out, size_t out_cap,
     b8 overflow = false;
     while (ok) {
         i32 rc = secret_wait(out_fds[0], POLLIN, deadline);
-        if (rc == 0) { timed_out = true; ok = false; break; }
-        if (rc < 0) { ok = false; break; }
-        if (*out_n >= out_cap) {   
+        if (rc == 0) {
+            timed_out = true;
+            ok = false;
+            break;
+        }
+        if (rc < 0) {
+            ok = false;
+            break;
+        }
+        if (*out_n >= out_cap) {
             char sink[256];
             ssize_t n = read(out_fds[0], sink, sizeof sink);
-            if (n <= 0) { if (n < 0 && errno == EINTR) continue; break; }
+            if (n <= 0) {
+                if (n < 0 && errno == EINTR) continue;
+                break;
+            }
             overflow = true;
             continue;
         }
         ssize_t n = read(out_fds[0], out + *out_n, out_cap - *out_n);
-        if (n < 0) { if (errno == EINTR) continue; ok = false; break; }
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            ok = false;
+            break;
+        }
         if (n == 0) break;
         *out_n += (size_t)n;
     }
@@ -260,15 +322,18 @@ static b8 secret_exec(const SecretCmd *c, Str input, char *out, size_t out_cap,
                  c->argv[0], AGENT_SECRET_TIMEOUT_MS / 1000);
         return false;
     }
-    if (!ok) { snprintf(err, err_cap, "%s could not be read", c->argv[0]); return false; }
+    if (!ok) {
+        snprintf(err, err_cap, "%s could not be read", c->argv[0]);
+        return false;
+    }
     if (overflow) {
-        snprintf(err, err_cap, "%s returned more than %d bytes",
-                 c->argv[0], AGENT_MAX_API_KEY);
+        snprintf(err, err_cap, "%s returned more than %d bytes", c->argv[0],
+                 AGENT_MAX_API_KEY);
         return false;
     }
     if (WIFSIGNALED(status)) {
-        snprintf(err, err_cap, "%s was killed by signal %d",
-                 c->argv[0], WTERMSIG(status));
+        snprintf(err, err_cap, "%s was killed by signal %d", c->argv[0],
+                 WTERMSIG(status));
         return false;
     }
     i32 code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
@@ -289,8 +354,11 @@ static b8 secret_first_line(char *buf, size_t n, Str *out, char *err,
                             size_t err_cap) {
     size_t end = 0;
     while (end < n && buf[end] != '\n') end++;
-    Str line = str_trim((Str){ buf, end });
-    if (!line.n) { snprintf(err, err_cap, "the key store returned nothing"); return false; }
+    Str line = str_trim((Str){buf, end});
+    if (!line.n) {
+        snprintf(err, err_cap, "the key store returned nothing");
+        return false;
+    }
     if (line.n > AGENT_MAX_API_KEY) {
         snprintf(err, err_cap, "the stored key is longer than %d bytes",
                  AGENT_MAX_API_KEY);
@@ -313,7 +381,8 @@ Str secret_lookup(SecretSource src, Str account, Str command, Arena *out,
     SecretCmd c;
     if (src == SECRET_COMMAND) {
         if (!secret_split(&c, command, err, err_cap)) return (Str){0};
-    } else if (!secret_build(&c, src, SECRET_OP_LOOKUP, account, err, err_cap)) {
+    } else if (!secret_build(&c, src, SECRET_OP_LOOKUP, account, err,
+                             err_cap)) {
         return (Str){0};
     }
     char buf[AGENT_MAX_API_KEY + 1];
@@ -333,9 +402,10 @@ b8 secret_store(SecretSource src, Str account, Str key, char *err,
                 size_t err_cap) {
     if (err_cap) err[0] = '\0';
     if (!secret_source_can_store(src)) {
-        snprintf(err, err_cap, "%.*s keys are stored with its own tool, "
-                 "not by arqan", (i32)secret_source_name(src).n,
-                 secret_source_name(src).p);
+        snprintf(err, err_cap,
+                 "%.*s keys are stored with its own tool, "
+                 "not by arqan",
+                 (i32)secret_source_name(src).n, secret_source_name(src).p);
         return false;
     }
     if (key.n > AGENT_MAX_API_KEY) return false;

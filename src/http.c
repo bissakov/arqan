@@ -29,36 +29,39 @@ b8 curl_load(char *err, size_t err_cap) {
             snprintf(why, sizeof why, "cannot load " AGENT_CURL_SONAME ": %s",
                      e ? e : "unknown error");
         } else {
-            
-            struct { void **slot; const char *name; } wanted[] = {
-                {(void **)&g_curl.easy_init,      "curl_easy_init"},
-                {(void **)&g_curl.easy_setopt,    "curl_easy_setopt"},
-                {(void **)&g_curl.easy_getinfo,   "curl_easy_getinfo"},
-                {(void **)&g_curl.easy_perform,   "curl_easy_perform"},
-                {(void **)&g_curl.easy_cleanup,   "curl_easy_cleanup"},
-                {(void **)&g_curl.easy_strerror,  "curl_easy_strerror"},
-                {(void **)&g_curl.slist_append,   "curl_slist_append"},
+            struct {
+                void **slot;
+                const char *name;
+            } wanted[] = {
+                {(void **)&g_curl.easy_init, "curl_easy_init"},
+                {(void **)&g_curl.easy_setopt, "curl_easy_setopt"},
+                {(void **)&g_curl.easy_getinfo, "curl_easy_getinfo"},
+                {(void **)&g_curl.easy_perform, "curl_easy_perform"},
+                {(void **)&g_curl.easy_cleanup, "curl_easy_cleanup"},
+                {(void **)&g_curl.easy_strerror, "curl_easy_strerror"},
+                {(void **)&g_curl.slist_append, "curl_slist_append"},
                 {(void **)&g_curl.slist_free_all, "curl_slist_free_all"},
-                {(void **)&g_curl.url,            "curl_url"},
-                {(void **)&g_curl.url_set,        "curl_url_set"},
-                {(void **)&g_curl.url_get,        "curl_url_get"},
-                {(void **)&g_curl.url_cleanup,    "curl_url_cleanup"},
-                {(void **)&g_curl.free,           "curl_free"},
-                {(void **)&g_curl.multi_init,     "curl_multi_init"},
-                {(void **)&g_curl.multi_add_handle,    "curl_multi_add_handle"},
-                {(void **)&g_curl.multi_remove_handle, "curl_multi_remove_handle"},
-                {(void **)&g_curl.multi_perform,  "curl_multi_perform"},
-                {(void **)&g_curl.multi_poll,     "curl_multi_poll"},
+                {(void **)&g_curl.url, "curl_url"},
+                {(void **)&g_curl.url_set, "curl_url_set"},
+                {(void **)&g_curl.url_get, "curl_url_get"},
+                {(void **)&g_curl.url_cleanup, "curl_url_cleanup"},
+                {(void **)&g_curl.free, "curl_free"},
+                {(void **)&g_curl.multi_init, "curl_multi_init"},
+                {(void **)&g_curl.multi_add_handle, "curl_multi_add_handle"},
+                {(void **)&g_curl.multi_remove_handle,
+                 "curl_multi_remove_handle"},
+                {(void **)&g_curl.multi_perform, "curl_multi_perform"},
+                {(void **)&g_curl.multi_poll, "curl_multi_poll"},
                 {(void **)&g_curl.multi_info_read, "curl_multi_info_read"},
-                {(void **)&g_curl.multi_cleanup,  "curl_multi_cleanup"},
+                {(void **)&g_curl.multi_cleanup, "curl_multi_cleanup"},
                 {(void **)&g_curl.multi_strerror, "curl_multi_strerror"},
             };
             loaded = true;
             for (size_t i = 0; i < sizeof wanted / sizeof *wanted; i++) {
                 *wanted[i].slot = dlsym(lib, wanted[i].name);
                 if (*wanted[i].slot) continue;
-                snprintf(why, sizeof why, AGENT_CURL_SONAME
-                         " has no %s", wanted[i].name);
+                snprintf(why, sizeof why, AGENT_CURL_SONAME " has no %s",
+                         wanted[i].name);
                 loaded = false;
                 break;
             }
@@ -76,14 +79,14 @@ b8 curl_load(char *err, size_t err_cap) {
 
 typedef struct {
     const HttpReq *r;
-    Buf    line;      // the event being accumulated, grown rather than clipped
-    b8     aborted;   
-    b8     oom;       // a line outgrew the arena it accumulates in
-    
+    Buf line; // the event being accumulated, grown rather than clipped
+    b8 aborted;
+    b8 oom; // a line outgrew the arena it accumulates in
+
     size_t lines;
     size_t polls;
-    f64    last_write;
-    f64    stall;
+    f64 last_write;
+    f64 stall;
 } Ctx;
 
 
@@ -93,10 +96,13 @@ static b8 dispatch_line(Ctx *c, const char *p, size_t n) {
         if (p[i] != '\n') continue;
         buf_put(&c->line, p + start, i - start);
         start = i + 1;
-        if (!buf_ok(&c->line)) { c->oom = true; return false; }
+        if (!buf_ok(&c->line)) {
+            c->oom = true;
+            return false;
+        }
         size_t len = c->line.n;
         if (len && c->line.p[len - 1] == '\r') len--;
-        Str ln = { c->line.p, len };
+        Str ln = {c->line.p, len};
         c->line.n = 0;
         c->lines++;
         if (c->r->on_line && !c->r->on_line(ln, c->r->ud)) {
@@ -105,7 +111,10 @@ static b8 dispatch_line(Ctx *c, const char *p, size_t n) {
         }
     }
     buf_put(&c->line, p + start, n - start);
-    if (!buf_ok(&c->line)) { c->oom = true; return false; }
+    if (!buf_ok(&c->line)) {
+        c->oom = true;
+        return false;
+    }
     return true;
 }
 
@@ -117,7 +126,7 @@ static size_t write_cb(char *p, size_t sz, size_t n, void *ud) {
         c->stall = now - c->last_write;
     c->last_write = now;
     b8 consumed = dispatch_line(c, p, total);
-    
+
     if (c->aborted) return total;
     return consumed ? total : 0;
 }
@@ -176,15 +185,15 @@ static b8 ipv6_public(const struct in6_addr *in) {
         memcpy(&v4.s_addr, p + 12, 4);
         return ipv4_public(&v4);
     }
-    
+
     if ((p[0] & 0xe0u) != 0x20u) return false;
     if (p[0] == 0x20 && p[1] == 0x01) {
-        if (p[2] < 0x02) return false;               
+        if (p[2] < 0x02) return false;
         if (p[2] == 0x02 && p[3] == 0x00) return false;
         if (p[2] == 0x0d && p[3] == 0xb8) return false;
     }
-    if (p[0] == 0x20 && p[1] == 0x02) return false; 
-    if (p[0] == 0x3f && p[1] == 0xff) return false; 
+    if (p[0] == 0x20 && p[1] == 0x02) return false;
+    if (p[0] == 0x3f && p[1] == 0xff) return false;
     return true;
 }
 
@@ -193,12 +202,15 @@ static curl_socket_t public_open_cb(void *ud, curlsocktype purpose,
     UrlCtx *ctx = (UrlCtx *)ud;
     (void)purpose;
     b8 allowed = false;
-    if (address->family == AF_INET && address->addrlen >= sizeof(struct sockaddr_in)) {
-        const struct sockaddr_in *sa = (const struct sockaddr_in *)&address->addr;
+    if (address->family == AF_INET
+        && address->addrlen >= sizeof(struct sockaddr_in)) {
+        const struct sockaddr_in *sa =
+            (const struct sockaddr_in *)&address->addr;
         allowed = ipv4_public(&sa->sin_addr);
     } else if (address->family == AF_INET6
                && address->addrlen >= sizeof(struct sockaddr_in6)) {
-        const struct sockaddr_in6 *sa = (const struct sockaddr_in6 *)&address->addr;
+        const struct sockaddr_in6 *sa =
+            (const struct sockaddr_in6 *)&address->addr;
         allowed = ipv6_public(&sa->sin6_addr);
     }
     if (!allowed) {
@@ -209,7 +221,8 @@ static curl_socket_t public_open_cb(void *ud, curlsocktype purpose,
 }
 
 static size_t drop_header_cb(char *p, size_t sz, size_t n, void *ud) {
-    (void)p; (void)ud;
+    (void)p;
+    (void)ud;
     return sz * n;
 }
 
@@ -235,10 +248,11 @@ static struct curl_slist *auth_header(struct curl_slist *hdrs,
     if (api == API_ANTHROPIC) hdrs = curl_slist_append(hdrs, ANTHROPIC_VERSION);
     if (!api_key || !*api_key) return hdrs;
     char auth[1024];
-    const char *fmt = api == API_ANTHROPIC ? "x-api-key: %s"
-                                           : "Authorization: Bearer %s";
+    const char *fmt =
+        api == API_ANTHROPIC ? "x-api-key: %s" : "Authorization: Bearer %s";
     i32 an = snprintf(auth, sizeof auth, fmt, api_key);
-    if (an > 0 && (size_t)an < sizeof auth) return curl_slist_append(hdrs, auth);
+    if (an > 0 && (size_t)an < sizeof auth)
+        return curl_slist_append(hdrs, auth);
     agent_log(AGENT_LOG_WARN, "api key too long; sending no key header");
     return hdrs;
 }
@@ -258,8 +272,8 @@ static const char *api_post_path(ApiKind api) {
 /* Both members are process-lifetime storage, and NULL means "leave libcurl's
  * option alone". */
 typedef struct {
-    const char *file;   
-    const char *dir;    
+    const char *file;
+    const char *dir;
 } CaTrust;
 
 static b8 ca_present(const char *path, b8 want_dir) {
@@ -279,13 +293,13 @@ static const char *ca_root(void) {
 
 
 static const char *const k_ca_files[] = {
-    "/etc/ssl/certs/ca-certificates.crt",      
-    "/etc/pki/tls/certs/ca-bundle.crt",        
-    "/etc/ssl/ca-bundle.pem",                  
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/ca-bundle.pem",
     "/etc/pki/tls/cacert.pem",
-    "/etc/ssl/cert.pem",                       
-    "/usr/local/share/certs/ca-root-nss.crt",  
-    "/etc/certs/ca-certificates.crt",          
+    "/etc/ssl/cert.pem",
+    "/usr/local/share/certs/ca-root-nss.crt",
+    "/etc/certs/ca-certificates.crt",
 };
 static const char *const k_ca_dirs[] = {
     "/etc/ssl/certs",
@@ -298,7 +312,10 @@ static const char *const k_ca_dirs[] = {
 static b8 ca_candidate(const char *path, char *buf, size_t cap,
                        const char **out) {
     const char *root = ca_root();
-    if (!*root) { *out = path; return true; }
+    if (!*root) {
+        *out = path;
+        return true;
+    }
     i32 n = snprintf(buf, cap, "%s%s", root, path);
     if (n < 0 || (size_t)n >= cap) return false;
     *out = buf;
@@ -309,14 +326,14 @@ static b8 ca_candidate(const char *path, char *buf, size_t cap,
 static b8 ca_default_works(void) {
 #if LIBCURL_VERSION_NUM >= 0x075400
     CURL *probe = curl_easy_init();
-    if (!probe) return true;   
+    if (!probe) return true;
     char *file = NULL, *dir = NULL;
-    if (curl_easy_getinfo(probe, CURLINFO_CAINFO, &file) != CURLE_OK) file = NULL;
+    if (curl_easy_getinfo(probe, CURLINFO_CAINFO, &file) != CURLE_OK)
+        file = NULL;
     if (curl_easy_getinfo(probe, CURLINFO_CAPATH, &dir) != CURLE_OK) dir = NULL;
     b8 has_file = file && *file, has_dir = dir && *dir;
-    b8 ok = (has_file || has_dir) &&
-            (!has_file || ca_present(file, false)) &&
-            (!has_dir || ca_present(dir, true));
+    b8 ok = (has_file || has_dir) && (!has_file || ca_present(file, false))
+            && (!has_dir || ca_present(dir, true));
     curl_easy_cleanup(probe);
     return ok;
 #else
@@ -376,7 +393,7 @@ static const CaTrust *ca_trust(void) {
 
 static void http_apply_ca(CURL *curl) {
     const CaTrust *t = ca_trust();
-    if (!t->file && !t->dir) return;   
+    if (!t->file && !t->dir) return;
     /* One resolution answers for both options: the one it does not name is
      * cleared rather than left at its build-time default, which would name a
      * store that need not exist here and fail the handshake on its own. */
@@ -387,7 +404,10 @@ static void http_apply_ca(CURL *curl) {
 #ifdef AGENT_TESTING
 void http_print_ca_trust(void) {
     char err[256];
-    if (!curl_load(err, sizeof err)) { printf("ca-load: %s\n", err); return; }
+    if (!curl_load(err, sizeof err)) {
+        printf("ca-load: %s\n", err);
+        return;
+    }
     const CaTrust *t = ca_trust();
     printf("ca-file: %s\n", t->file ? t->file : "-");
     printf("ca-dir: %s\n", t->dir ? t->dir : "-");
@@ -404,14 +424,15 @@ static Str url_host(const char *url) {
         if (end) return (Str){s.p + 1, (size_t)(end - s.p) - 1};
     }
     size_t n = 0;
-    while (n < s.n && s.p[n] != '/' && s.p[n] != ':'
-           && s.p[n] != '?' && s.p[n] != '#') n++;
-    return (Str){ s.p, n };
+    while (n < s.n && s.p[n] != '/' && s.p[n] != ':' && s.p[n] != '?'
+           && s.p[n] != '#')
+        n++;
+    return (Str){s.p, n};
 }
 
 static b8 host_is_loopback(Str host) {
     return str_eq(host, STR("localhost")) || str_eq(host, STR("::1"))
-        || str_eq(host, STR("[::1]")) || str_starts(host, STR("127."));
+           || str_eq(host, STR("[::1]")) || str_starts(host, STR("127."));
 }
 
 
@@ -437,8 +458,9 @@ static void http_record(const char *method, const char *path, const char *url,
     tel_bool(&e, "tls", str_starts(str_c(url ? url : ""), STR("https://")));
     tel_int(&e, "status", status);
     tel_int(&e, "curl", (i64)rc);
-    
-    if (rc != CURLE_OK) tel_str(&e, "curl_error", str_c(curl_easy_strerror(rc)));
+
+    if (rc != CURLE_OK)
+        tel_str(&e, "curl_error", str_c(curl_easy_strerror(rc)));
     tel_bool(&e, "interrupted", interrupted);
 
     tel_int(&e, "dns_ms", curl_ms(curl, CURLINFO_NAMELOOKUP_TIME_T));
@@ -458,7 +480,7 @@ static void http_record(const char *method, const char *path, const char *url,
     curl_easy_getinfo(curl, CURLINFO_REDIRECT_COUNT, &redirects);
     tel_int(&e, "http_version", (i64)version);
     tel_int(&e, "redirects", (i64)redirects);
-    
+
     char *ip = NULL;
     if (curl_easy_getinfo(curl, CURLINFO_PRIMARY_IP, &ip) == CURLE_OK && ip)
         tel_str(&e, "ip", strchr(ip, ':') ? STR("v6") : STR("v4"));
@@ -485,11 +507,13 @@ i32 http_get(const char *base_url, const char *path, const char *api_key,
     }
     CURL *curl = curl_easy_init();
     if (!curl) {
-        if (fail_out && fail_cap) snprintf(fail_out, fail_cap, "curl init failed");
+        if (fail_out && fail_cap)
+            snprintf(fail_out, fail_cap, "curl init failed");
         return 1;
     }
 
-    struct curl_slist *hdrs = curl_slist_append(NULL, "Accept: application/json");
+    struct curl_slist *hdrs =
+        curl_slist_append(NULL, "Accept: application/json");
     hdrs = auth_header(hdrs, api_key, api);
 
     curl_easy_setopt(curl, CURLOPT_URL, url);
@@ -543,15 +567,18 @@ static b8 http_url_input_ok(const char *url, char *err, size_t err_cap) {
     CURLUcode user_rc = curl_url_get(parts, CURLUPART_USER, &user, 0);
     CURLUcode pass_rc = curl_url_get(parts, CURLUPART_PASSWORD, &password, 0);
     b8 credentials = (user_rc == CURLUE_OK && user && *user)
-                  || (pass_rc == CURLUE_OK && password && *password);
-    b8 scheme_ok = uc == CURLUE_OK && scheme
-                && (!strcasecmp(scheme, "http") || !strcasecmp(scheme, "https"));
+                     || (pass_rc == CURLUE_OK && password && *password);
+    b8 scheme_ok =
+        uc == CURLUE_OK && scheme
+        && (!strcasecmp(scheme, "http") || !strcasecmp(scheme, "https"));
     b8 ok = uc == CURLUE_OK && scheme_ok && host && *host && !credentials;
     if (!ok) {
-        if (credentials) snprintf(err, err_cap, "URL credentials are not allowed");
+        if (credentials)
+            snprintf(err, err_cap, "URL credentials are not allowed");
         else if (uc == CURLUE_OK && !scheme_ok)
             snprintf(err, err_cap, "URL scheme must be http or https");
-        else snprintf(err, err_cap, "malformed URL");
+        else
+            snprintf(err, err_cap, "malformed URL");
     }
     curl_free(scheme);
     curl_free(host);
@@ -585,9 +612,10 @@ i32 http_url_get(HttpUrlReq *r) {
     UrlCtx ctx = {r->out, r->max_bytes, false, false};
     char curl_err[CURL_ERROR_SIZE] = {0};
     struct curl_slist *hdrs = NULL;
-    hdrs = curl_slist_append(hdrs, "Accept: text/html, application/xhtml+xml, "
-                                  "text/plain, application/json, application/xml;q=0.9, "
-                                  "text/*;q=0.8, */*;q=0.1");
+    hdrs = curl_slist_append(
+        hdrs, "Accept: text/html, application/xhtml+xml, "
+              "text/plain, application/json, application/xml;q=0.9, "
+              "text/*;q=0.8, */*;q=0.1");
     hdrs = curl_slist_append(hdrs, "Accept-Language: en-US,en;q=0.9");
     for (size_t i = 0; i < sizeof r->header / sizeof r->header[0]; i++)
         if (r->header[i]) hdrs = curl_slist_append(hdrs, r->header[i]);
@@ -604,7 +632,8 @@ i32 http_url_get(HttpUrlReq *r) {
     curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
 #else
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
-    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS,
+                     CURLPROTO_HTTP | CURLPROTO_HTTPS);
 #endif
 #if LIBCURL_VERSION_NUM >= 0x073d00
     curl_easy_setopt(curl, CURLOPT_DISALLOW_USERNAME_IN_URL, 1L);
@@ -615,7 +644,8 @@ i32 http_url_get(HttpUrlReq *r) {
     curl_easy_setopt(curl, CURLOPT_AUTOREFERER, 0L);
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, (long)r->connect_timeout_ms);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS,
+                     (long)r->connect_timeout_ms);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, (long)r->timeout_ms);
     curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, curl_err);
     http_apply_ca(curl);
@@ -659,8 +689,10 @@ i32 http_url_get(HttpUrlReq *r) {
     curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &type);
     if (effective) {
         size_t n = strlen(effective);
-        if (n < sizeof r->effective_url) memcpy(r->effective_url, effective, n + 1);
-        else if (rc == CURLE_OK) rc = CURLE_URL_MALFORMAT;
+        if (n < sizeof r->effective_url)
+            memcpy(r->effective_url, effective, n + 1);
+        else if (rc == CURLE_OK)
+            rc = CURLE_URL_MALFORMAT;
     }
     if (type) {
         size_t n = strlen(type);
@@ -670,8 +702,8 @@ i32 http_url_get(HttpUrlReq *r) {
     } else {
         snprintf(r->content_type, sizeof r->content_type, "(none)");
     }
-    http_record("GET", r->operation ? r->operation : "web", r->url, curl,
-                rc, r->status, NULL, interrupted);
+    http_record("GET", r->operation ? r->operation : "web", r->url, curl, rc,
+                r->status, NULL, interrupted);
 
     curl_multi_remove_handle(multi, curl);
     curl_multi_cleanup(multi);
@@ -691,7 +723,8 @@ i32 http_url_get(HttpUrlReq *r) {
         return 2;
     }
     if (!buf_ok(r->out)) {
-        snprintf(r->failure, sizeof r->failure, "response does not fit in memory");
+        snprintf(r->failure, sizeof r->failure,
+                 "response does not fit in memory");
         r->out->n = 0;
         return 2;
     }
@@ -700,8 +733,9 @@ i32 http_url_get(HttpUrlReq *r) {
             snprintf(r->failure, sizeof r->failure,
                      "destination resolved to a non-public address");
         else if (rc == CURLE_URL_MALFORMAT && !r->effective_url[0])
-            snprintf(r->failure, sizeof r->failure,
-                     "redirect URL is malformed, unsupported, or contains credentials");
+            snprintf(
+                r->failure, sizeof r->failure,
+                "redirect URL is malformed, unsupported, or contains credentials");
         else
             snprintf(r->failure, sizeof r->failure, "%s",
                      curl_err[0] ? curl_err : curl_easy_strerror(rc));
@@ -725,7 +759,10 @@ i32 http_post(const HttpReq *r) {
         return 1;
     }
     CURL *curl = curl_easy_init();
-    if (!curl) { agent_log(AGENT_LOG_ERROR, "curl init failed"); return 1; }
+    if (!curl) {
+        agent_log(AGENT_LOG_ERROR, "curl init failed");
+        return 1;
+    }
 
     const char *path = api_post_path(r->api);
     char url[2048];
@@ -744,17 +781,17 @@ i32 http_post(const HttpReq *r) {
 
     Ctx ctx = {0};
     ctx.r = r;
-    
+
     if (stream) buf_init(&ctx.line, r->line_arena, 8192);
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, r->body);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, stream ? write_cb : body_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, stream ? (void *)&ctx
-                                                     : (void *)r->body_out);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA,
+                     stream ? (void *)&ctx : (void *)r->body_out);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, drop_header_cb);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    
+
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
     http_apply_ca(curl);
@@ -785,12 +822,16 @@ i32 http_post(const HttpReq *r) {
             ctx.polls++;
         }
         if (mc != CURLM_OK) {
-            agent_log(AGENT_LOG_ERROR, "curl multi: %s", curl_multi_strerror(mc));
+            agent_log(AGENT_LOG_ERROR, "curl multi: %s",
+                      curl_multi_strerror(mc));
             rc = CURLE_RECV_ERROR;
             break;
         }
         if (r->on_idle) r->on_idle(r->idle_ud);
-        if (r->interrupt_flag && *r->interrupt_flag) { interrupted = true; break; }
+        if (r->interrupt_flag && *r->interrupt_flag) {
+            interrupted = true;
+            break;
+        }
     }
 
     if (!interrupted && !ctx.aborted && rc == CURLE_OK) {
@@ -800,16 +841,16 @@ i32 http_post(const HttpReq *r) {
             if (msg->msg == CURLMSG_DONE) rc = msg->data.result;
     }
 
-    
+
     if (stream && !interrupted && !ctx.aborted && rc == CURLE_OK && ctx.line.n)
         dispatch_line(&ctx, "\n", 1);
 
-    
+
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     i64 http = (i64)http_code;
-    http_record("POST", path, url, curl, rc, http,
-                stream ? &ctx : NULL, interrupted);
+    http_record("POST", path, url, curl, rc, http, stream ? &ctx : NULL,
+                interrupted);
 
     curl_multi_remove_handle(multi, curl);
     curl_multi_cleanup(multi);
@@ -820,7 +861,8 @@ i32 http_post(const HttpReq *r) {
     if (ctx.oom) {
         agent_log(AGENT_LOG_ERROR, "an event did not fit in memory");
         if (r->fail_out && r->fail_cap)
-            snprintf(r->fail_out, r->fail_cap, "an event did not fit in memory");
+            snprintf(r->fail_out, r->fail_cap,
+                     "an event did not fit in memory");
         return 2;
     }
     if (rc != CURLE_OK) {
@@ -829,8 +871,6 @@ i32 http_post(const HttpReq *r) {
             snprintf(r->fail_out, r->fail_cap, "%s", curl_easy_strerror(rc));
         return 2;
     }
-    if (http < 200 || http >= 300) {
-        return -(i32)http;   
-    }
+    if (http < 200 || http >= 300) { return -(i32)http; }
     return 0;
 }

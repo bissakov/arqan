@@ -7,16 +7,25 @@ read, write, bash, patch, grep, and find tools.
 ## Build and test
 
 ```sh
-make             # build bin/arqan
-make run         # build and run
-make test        # end-to-end TUI suite
-make test-unit   # unit suite for arena, string and JSON invariants
-make bench       # benchmark and stress suite
-make bench-guard # measure this tree against the commit under it
-make test-asan   # ASan + UBSan suite
-make test-fil    # Fil-C memory-safety suite (needs /opt/fil)
-make clean       # remove build/ and bin/
+make              # build bin/arqan
+make run          # build and run
+make fmt          # format src/, highlight/ and tests/unit/
+make check-format # verify formatting without writing
+make test         # end-to-end TUI suite
+make test-unit    # unit suite for arena, string and JSON invariants
+make bench        # benchmark and stress suite
+make bench-guard  # measure this tree against the commit under it
+make test-asan    # ASan + UBSan suite
+make test-fil     # Fil-C memory-safety suite (needs /opt/fil)
+make clean        # remove build/ and bin/
 ```
+
+`.clang-format` is the style, and CI runs `make check-format` before the
+build. Run `make fmt` before proposing a change; do not hand-format around
+it, and do not add `clang-format off` markers. Output differs between
+clang-format major versions, so the Makefile pins one and refuses another:
+install it with `pipx install clang-format==22.1.8`. `vendor/` and the
+generated `highlight/queries.c` are exempt through `.clang-format-ignore`.
 
 `CFLAGS` already enables `-Wall -Wextra -Wpedantic -Wconversion`; new warnings
 are failures, and CI builds with `EXTRA_CFLAGS=-Werror`. After every change

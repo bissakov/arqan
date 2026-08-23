@@ -28,6 +28,10 @@ jobs:
       # Static, needs no toolchain, so it fails fast and before the build.
       - name: Check for loose globals
         run: make check-globals
+      - name: Install clang-format
+        run: pipx install clang-format==22.1.8
+      - name: Check formatting
+        run: make check-format
       - name: Install build dependencies
         run: |
           sudo apt-get update

@@ -12,13 +12,13 @@
 #include <unistd.h>
 
 #define YHL_TIMEOUT_MS 500
-#define YHL_POLL_MS 25
+#define YHL_POLL_MS    25
 /* A helper that stalls or dies takes its request down with it, but not the
  * session: it is replaced once inside the request, and only after this many
  * exchanges have failed in a row does the session stop asking. Both bounds
  * are small because every failed exchange stalls a repaint for the timeout. */
 #define YHL_ATTEMPTS 2
-#define YHL_STRIKES 3
+#define YHL_STRIKES  3
 
 typedef struct {
     char path[AGENT_MAX_PATH];
@@ -35,13 +35,13 @@ typedef struct {
  * answers, so the helper is kept; `HL_RETRY` leaves the pipes out of step
  * with the protocol, so the process is replaced rather than reused. */
 typedef enum {
-    HL_OK,      /* runs are in the caller's result */
-    HL_NONE,    
-    HL_RETRY,   
-    HL_BROKEN,  
+    HL_OK, /* runs are in the caller's result */
+    HL_NONE,
+    HL_RETRY,
+    HL_BROKEN,
 } HlOutcome;
 
-static HighlightClient g_hl = { .pid = -1, .in_fd = -1, .out_fd = -1 };
+static HighlightClient g_hl = {.pid = -1, .in_fd = -1, .out_fd = -1};
 
 static void put_u32(u8 *p, u32 v) {
     p[0] = (u8)v;
@@ -62,12 +62,14 @@ static b8 copy_path(char *dst, size_t cap, const char *src) {
 }
 
 void highlight_init(const char *argv0) {
-    g_hl = (HighlightClient){ .pid = -1, .in_fd = -1, .out_fd = -1,
-                              .next_id = 1 };
+    g_hl =
+        (HighlightClient){.pid = -1, .in_fd = -1, .out_fd = -1, .next_id = 1};
     const char *override = getenv(AGENT_ENV_PREFIX "HIGHLIGHTER");
     if (override && *override) {
-        if (!copy_path(g_hl.path, sizeof g_hl.path, override)) g_hl.disabled = true;
-        else g_hl.path_only = true;
+        if (!copy_path(g_hl.path, sizeof g_hl.path, override))
+            g_hl.disabled = true;
+        else
+            g_hl.path_only = true;
         return;
     }
 
@@ -81,11 +83,10 @@ void highlight_init(const char *argv0) {
         for (size_t off = 0; !exe;) {
             size_t end = off;
             while (path[end] && path[end] != ':') end++;
-            Str dir = { path + off, end - off };
-            i32 n = dir.n
-                  ? snprintf(resolved, sizeof resolved, "%.*s/%s",
-                             (i32)dir.n, dir.p, argv0)
-                  : snprintf(resolved, sizeof resolved, "./%s", argv0);
+            Str dir = {path + off, end - off};
+            i32 n = dir.n ? snprintf(resolved, sizeof resolved, "%.*s/%s",
+                                     (i32)dir.n, dir.p, argv0)
+                          : snprintf(resolved, sizeof resolved, "./%s", argv0);
             if (n > 0 && (size_t)n < sizeof resolved
                 && access(resolved, X_OK) == 0) {
                 char found[AGENT_MAX_PATH];
@@ -143,16 +144,22 @@ static b8 highlight_start(void) {
     if (g_hl.disabled) return false;
     if (g_hl.pid > 0) return true;
     i32 to_child[2], from_child[2];
-    if (pipe(to_child) != 0) { g_hl.disabled = true; return false; }
+    if (pipe(to_child) != 0) {
+        g_hl.disabled = true;
+        return false;
+    }
     if (pipe(from_child) != 0) {
-        close(to_child[0]); close(to_child[1]);
+        close(to_child[0]);
+        close(to_child[1]);
         g_hl.disabled = true;
         return false;
     }
     pid_t pid = fork();
     if (pid < 0) {
-        close(to_child[0]); close(to_child[1]);
-        close(from_child[0]); close(from_child[1]);
+        close(to_child[0]);
+        close(to_child[1]);
+        close(from_child[0]);
+        close(from_child[1]);
         g_hl.disabled = true;
         return false;
     }
@@ -162,11 +169,15 @@ static b8 highlight_start(void) {
             || dup2(from_child[1], STDOUT_FILENO) < 0)
             _exit(126);
         if (devnull >= 0) dup2(devnull, STDERR_FILENO);
-        close(to_child[0]); close(to_child[1]);
-        close(from_child[0]); close(from_child[1]);
+        close(to_child[0]);
+        close(to_child[1]);
+        close(from_child[0]);
+        close(from_child[1]);
         if (devnull > STDERR_FILENO) close(devnull);
-        if (g_hl.path_only) execl(g_hl.path, g_hl.path, (char *)NULL);
-        else execlp(g_hl.path, g_hl.path, (char *)NULL);
+        if (g_hl.path_only)
+            execl(g_hl.path, g_hl.path, (char *)NULL);
+        else
+            execlp(g_hl.path, g_hl.path, (char *)NULL);
         _exit(127);
     }
     close(to_child[0]);
@@ -189,17 +200,22 @@ static b8 io_all(i32 fd, i16 events, u8 *p, size_t n, f64 deadline) {
         i32 ms = (i32)(left * 1000.0);
         if (ms > YHL_POLL_MS) ms = YHL_POLL_MS;
         if (ms < 1) ms = 1;
-        struct pollfd pfd = { fd, events, 0 };
+        struct pollfd pfd = {fd, events, 0};
         i32 rc = poll(&pfd, 1, ms);
         tui_poll_input();
-        if (rc < 0) { if (errno == EINTR) continue; return false; }
+        if (rc < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
         if (rc == 0) continue;
         if (pfd.revents & (POLLERR | POLLNVAL)) return false;
         if (!(pfd.revents & (events | POLLHUP))) continue;
-        ssize_t got = events == POLLOUT
-                    ? write(fd, p + off, n - off)
-                    : read(fd, p + off, n - off);
-        if (got > 0) { off += (size_t)got; continue; }
+        ssize_t got = events == POLLOUT ? write(fd, p + off, n - off)
+                                        : read(fd, p + off, n - off);
+        if (got > 0) {
+            off += (size_t)got;
+            continue;
+        }
         if (got < 0 && (errno == EINTR || errno == EAGAIN)) continue;
         return false;
     }
@@ -223,9 +239,10 @@ static HlOutcome highlight_exchange(YhlHintKind kind, Str hint, Str source,
     sigemptyset(&ignore.sa_mask);
     b8 have_old = sigaction(SIGPIPE, &ignore, &oldpipe) == 0;
     b8 ok = io_all(g_hl.in_fd, POLLOUT, header, sizeof header, deadline)
-         && io_all(g_hl.in_fd, POLLOUT, (u8 *)(uintptr_t)hint.p, hint.n, deadline)
-         && io_all(g_hl.in_fd, POLLOUT, (u8 *)(uintptr_t)source.p, source.n,
-                   deadline);
+            && io_all(g_hl.in_fd, POLLOUT, (u8 *)(uintptr_t)hint.p, hint.n,
+                      deadline)
+            && io_all(g_hl.in_fd, POLLOUT, (u8 *)(uintptr_t)source.p, source.n,
+                      deadline);
     if (have_old) sigaction(SIGPIPE, &oldpipe, NULL);
     if (!ok) return HL_RETRY;
 
@@ -251,10 +268,10 @@ static HlOutcome highlight_exchange(YhlHintKind kind, Str hint, Str source,
         u32 a = get_u32(wire);
         u32 b = get_u32(wire + 4);
         u8 semantic = wire[8];
-        if (a < previous || a >= b || b > source.n
-            || semantic < YHL_SEM_COMMENT || semantic > YHL_SEM_BUILTIN)
+        if (a < previous || a >= b || b > source.n || semantic < YHL_SEM_COMMENT
+            || semantic > YHL_SEM_BUILTIN)
             return HL_BROKEN;
-        result->run[i] = (YhlRun){ a, b, semantic };
+        result->run[i] = (YhlRun){a, b, semantic};
         previous = b;
     }
     result->n = count;
@@ -265,17 +282,26 @@ b8 highlight_request(YhlHintKind kind, Str hint, Str source,
                      YhlResult *result) {
     result->n = 0;
     if (md_raw() || !tui_highlight_enabled() || g_hl.disabled) return false;
-    size_t hint_max = kind == YHL_HINT_MARKDOWN_ALIAS
-                    ? YHL_ALIAS_MAX : YHL_FILENAME_MAX;
+    size_t hint_max =
+        kind == YHL_HINT_MARKDOWN_ALIAS ? YHL_ALIAS_MAX : YHL_FILENAME_MAX;
     if (!hint.n || hint.n > hint_max || source.n > YHL_SOURCE_MAX) return false;
 
     for (i32 attempt = 0; attempt < YHL_ATTEMPTS; attempt++) {
         if (!highlight_start()) return false;
         HlOutcome outcome = highlight_exchange(kind, hint, source, result);
-        if (outcome == HL_OK) { g_hl.strikes = 0; return true; }
+        if (outcome == HL_OK) {
+            g_hl.strikes = 0;
+            return true;
+        }
         result->n = 0;
-        if (outcome == HL_NONE) { g_hl.strikes = 0; return false; }
-        if (outcome == HL_BROKEN) { highlight_disable(); return false; }
+        if (outcome == HL_NONE) {
+            g_hl.strikes = 0;
+            return false;
+        }
+        if (outcome == HL_BROKEN) {
+            highlight_disable();
+            return false;
+        }
         /* A machine busy enough to miss the deadline is the usual reason,
          * and it passes: replace the helper, since a request half written
          * or half read leaves the pipes mid-message, and give up on the
@@ -295,7 +321,10 @@ void highlight_close(void) {
     if (g_hl.pid > 0) {
         for (i32 i = 0; i < 5; i++) {
             pid_t rc = waitpid(g_hl.pid, NULL, WNOHANG);
-            if (rc == g_hl.pid) { g_hl.pid = -1; return; }
+            if (rc == g_hl.pid) {
+                g_hl.pid = -1;
+                return;
+            }
             if (rc < 0 && errno != EINTR) break;
             poll(NULL, 0, 10);
         }

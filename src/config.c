@@ -10,133 +10,124 @@ typedef enum { CV_STR, CV_NUM, CV_BOOL, CV_ENUM } ConfType;
 typedef struct {
     const char *name;
     const char *dflt;
-    const char *options;   
-    ConfType    type;
-    i64         lo, hi;    
-    size_t      max_len;   
-    b8          project;   
+    const char *options;
+    ConfType type;
+    i64 lo, hi;
+    size_t max_len;
+    b8 project;
 } ConfSpec;
 
 #define CONF_TEXT2(x) #x
 #define CONF_TEXT(x)  CONF_TEXT2(x)
 /* The status field mask has one bit per field, so its default is all of
  * them; a literal is needed because the table's defaults are text. */
-_Static_assert(AGENT_STATUS_FIELDS == 10,
-               "the status_fields default is 1023");
+_Static_assert(AGENT_STATUS_FIELDS == 10, "the status_fields default is 1023");
 
 static const ConfSpec k_conf[CONF_N] = {
-    
-    [CONF_PROVIDER] = { "provider", "", NULL, CV_STR, 0, 0,
-                        AGENT_MAX_ENDPOINT_NAME, true },
-    [CONF_BASE_URL] = { "base_url", "", NULL, CV_STR, 0, 0,
-                        AGENT_MAX_URL, true },
-    [CONF_MODEL]    = { "model", "", NULL, CV_STR, 0, 0,
-                        AGENT_MAX_MODEL_NAME, true },
-    [CONF_API]      = { "api", "openai", "openai,anthropic", CV_ENUM,
-                        0, 0, 0, true },
+
+    [CONF_PROVIDER] = {"provider", "", NULL, CV_STR, 0, 0,
+                       AGENT_MAX_ENDPOINT_NAME, true},
+    [CONF_BASE_URL] = {"base_url", "", NULL, CV_STR, 0, 0, AGENT_MAX_URL, true},
+    [CONF_MODEL] = {"model", "", NULL, CV_STR, 0, 0, AGENT_MAX_MODEL_NAME,
+                    true},
+    [CONF_API] = {"api", "openai", "openai,anthropic", CV_ENUM, 0, 0, 0, true},
     /* Never from a project file: a repository must not be able to hand a
      * key to the endpoint it also names. */
-    [CONF_API_KEY]  = { "api_key", "", NULL, CV_STR, 0, 0,
-                        AGENT_MAX_API_KEY, false },
-    [CONF_MAX_TOKENS]     = { "max_tokens", CONF_TEXT(AGENT_MAX_TOKENS), NULL,
-                              CV_NUM, 1, 1 << 20, 0, true },
-    [CONF_MAX_MESSAGES]   = { "max_messages", CONF_TEXT(AGENT_MAX_MESSAGES),
-                              NULL, CV_NUM, 8, 1 << 20, 0, true },
-    [CONF_STREAM]         = { "stream", "true", NULL, CV_BOOL, 0, 0, 0, true },
-    [CONF_MODE]           = { "mode", "build", "build,plan", CV_ENUM,
-                              0, 0, 0, true },
+    [CONF_API_KEY] = {"api_key", "", NULL, CV_STR, 0, 0, AGENT_MAX_API_KEY,
+                      false},
+    [CONF_MAX_TOKENS] = {"max_tokens", CONF_TEXT(AGENT_MAX_TOKENS), NULL,
+                         CV_NUM, 1, 1 << 20, 0, true},
+    [CONF_MAX_MESSAGES] = {"max_messages", CONF_TEXT(AGENT_MAX_MESSAGES), NULL,
+                           CV_NUM, 8, 1 << 20, 0, true},
+    [CONF_STREAM] = {"stream", "true", NULL, CV_BOOL, 0, 0, 0, true},
+    [CONF_MODE] = {"mode", "build", "build,plan", CV_ENUM, 0, 0, 0, true},
     /* Never from a project file: a repository must not be able to turn off
      * approval for commands or changes it may induce the model to request. */
-    [CONF_PERMISSIONS]    = { "permissions", "ask", "ask,free", CV_ENUM,
-                              0, 0, 0, false },
-    [CONF_RETRIES]        = { "retries", CONF_TEXT(AGENT_RETRIES), NULL,
-                              CV_NUM, 0, 16, 0, true },
-    [CONF_RETRY_DELAY_MS] = { "retry_delay_ms", CONF_TEXT(AGENT_RETRY_DELAY_MS),
-                              NULL, CV_NUM, 0, AGENT_MAX_RETRY_DELAY_MS, 0,
-                              true },
+    [CONF_PERMISSIONS] = {"permissions", "ask", "ask,free", CV_ENUM, 0, 0, 0,
+                          false},
+    [CONF_RETRIES] = {"retries", CONF_TEXT(AGENT_RETRIES), NULL, CV_NUM, 0, 16,
+                      0, true},
+    [CONF_RETRY_DELAY_MS] = {"retry_delay_ms", CONF_TEXT(AGENT_RETRY_DELAY_MS),
+                             NULL, CV_NUM, 0, AGENT_MAX_RETRY_DELAY_MS, 0,
+                             true},
     /* "none" rather than an empty value: an empty value removes the key,
      * which would read as "nothing was ever chosen" on the next run. */
-    [CONF_DISABLE_TOOLS]  = { "disable_tools", "", NULL, CV_STR, 0, 0,
-                              AGENT_MAX_TOOL_LIST, true },
-    [CONF_VERBOSE_TOOLS]  = { "verbose_tools", "false", NULL, CV_BOOL,
-                              0, 0, 0, true },
-    [CONF_RAW_MARKDOWN]   = { "raw_markdown", "false", NULL, CV_BOOL,
-                              0, 0, 0, true },
-    [CONF_SHOW_IGNORED]   = { "show_ignored", "false", NULL, CV_BOOL,
-                              0, 0, 0, true },
-    [CONF_SHOW_INSTRUCTIONS] = { "show_instructions", "false", NULL, CV_BOOL,
-                                 0, 0, 0, true },
-    [CONF_WRAP]           = { "wrap", "word", "word,justified", CV_ENUM,
-                              0, 0, 0, true },
-    [CONF_STATUS_FIELDS]  = { "status_fields", "1023", NULL, CV_NUM,
-                              0, 1023, 0, true },
-    
-    [CONF_TELEMETRY]      = { "telemetry", "false", NULL, CV_BOOL,
-                              0, 0, 0, false },
-    [CONF_NOTIFY]         = { "notify", "osc9", "off,bel,osc9,both", CV_ENUM,
-                              0, 0, 0, true },
+    [CONF_DISABLE_TOOLS] = {"disable_tools", "", NULL, CV_STR, 0, 0,
+                            AGENT_MAX_TOOL_LIST, true},
+    [CONF_VERBOSE_TOOLS] = {"verbose_tools", "false", NULL, CV_BOOL, 0, 0, 0,
+                            true},
+    [CONF_RAW_MARKDOWN] = {"raw_markdown", "false", NULL, CV_BOOL, 0, 0, 0,
+                           true},
+    [CONF_SHOW_IGNORED] = {"show_ignored", "false", NULL, CV_BOOL, 0, 0, 0,
+                           true},
+    [CONF_SHOW_INSTRUCTIONS] = {"show_instructions", "false", NULL, CV_BOOL, 0,
+                                0, 0, true},
+    [CONF_WRAP] = {"wrap", "word", "word,justified", CV_ENUM, 0, 0, 0, true},
+    [CONF_STATUS_FIELDS] = {"status_fields", "1023", NULL, CV_NUM, 0, 1023, 0,
+                            true},
+
+    [CONF_TELEMETRY] = {"telemetry", "false", NULL, CV_BOOL, 0, 0, 0, false},
+    [CONF_NOTIFY] = {"notify", "osc9", "off,bel,osc9,both", CV_ENUM, 0, 0, 0,
+                     true},
     /* Never from a project file: it names a program arqan will run, so a
      * `git clone` must not be able to choose it. */
-    [CONF_NOTIFY_COMMAND] = { "notify_command", "", NULL, CV_STR, 0, 0,
-                              AGENT_MAX_NOTIFY_CMD, false },
-    
-    [CONF_NOTIFY_MIN_MS]  = { "notify_min_ms", "10000", NULL, CV_NUM,
-                              0, 24 * 60 * 60 * 1000, 0, true },
-    
-    [CONF_SEARCH_BACKEND] = { "search_backend", "auto",
-                              "auto,ddg,brave,brave_api,google,searxng",
-                              CV_ENUM, 0, 0, 0, true },
+    [CONF_NOTIFY_COMMAND] = {"notify_command", "", NULL, CV_STR, 0, 0,
+                             AGENT_MAX_NOTIFY_CMD, false},
+
+    [CONF_NOTIFY_MIN_MS] = {"notify_min_ms", "10000", NULL, CV_NUM, 0,
+                            24 * 60 * 60 * 1000, 0, true},
+
+    [CONF_SEARCH_BACKEND] = {"search_backend", "auto",
+                             "auto,ddg,brave,brave_api,google,searxng", CV_ENUM,
+                             0, 0, 0, true},
     /* Never from a project file: these three name where a search goes and
      * what it pays with, so a `git clone` must not be able to choose them. */
-    [CONF_SEARCH_ENDPOINT] = { "search_endpoint", "", NULL, CV_STR, 0, 0,
-                               AGENT_MAX_URL, false },
-    [CONF_SEARCH_API_KEY]  = { "search_api_key", "", NULL, CV_STR, 0, 0,
-                               AGENT_MAX_API_KEY, false },
-    [CONF_SEARCH_ENGINE_ID] = { "search_engine_id", "", NULL, CV_STR, 0, 0,
-                                AGENT_MAX_ENDPOINT_NAME, false },
-    
-    [CONF_SMALL_MODEL] = { "small_model", "", NULL, CV_STR, 0, 0,
-                           AGENT_MAX_MODEL_NAME, true },
-    
-    [CONF_SMALL_PROVIDER] = { "small_provider", "", NULL, CV_STR, 0, 0,
-                              AGENT_MAX_ENDPOINT_NAME, false },
-    
-    [CONF_AUTO_TITLE]  = { "auto_title", "true", NULL, CV_BOOL, 0, 0, 0,
-                           true },
+    [CONF_SEARCH_ENDPOINT] = {"search_endpoint", "", NULL, CV_STR, 0, 0,
+                              AGENT_MAX_URL, false},
+    [CONF_SEARCH_API_KEY] = {"search_api_key", "", NULL, CV_STR, 0, 0,
+                             AGENT_MAX_API_KEY, false},
+    [CONF_SEARCH_ENGINE_ID] = {"search_engine_id", "", NULL, CV_STR, 0, 0,
+                               AGENT_MAX_ENDPOINT_NAME, false},
+
+    [CONF_SMALL_MODEL] = {"small_model", "", NULL, CV_STR, 0, 0,
+                          AGENT_MAX_MODEL_NAME, true},
+
+    [CONF_SMALL_PROVIDER] = {"small_provider", "", NULL, CV_STR, 0, 0,
+                             AGENT_MAX_ENDPOINT_NAME, false},
+
+    [CONF_AUTO_TITLE] = {"auto_title", "true", NULL, CV_BOOL, 0, 0, 0, true},
     /* Never from a project file: a repository must not be able to shorten
      * the wait until the agent answers its own questions. 0 waits for the
      * user however long they take. */
-    [CONF_ASK_TIMEOUT_MS] = { "ask_timeout_ms",
-                              CONF_TEXT(AGENT_ASK_TIMEOUT_MS), NULL, CV_NUM,
-                              0, 24 * 60 * 60 * 1000, 0, false },
+    [CONF_ASK_TIMEOUT_MS] = {"ask_timeout_ms", CONF_TEXT(AGENT_ASK_TIMEOUT_MS),
+                             NULL, CV_NUM, 0, 24 * 60 * 60 * 1000, 0, false},
     /* Never from a project file: a repository must not be able to hold a turn
      * open past a prompt cache by making its build undetachable. The ceiling
      * is a job's longest wait, since both are time the model spends idle; a
      * deadline outside the cache window would defeat the point of having one.
      * 0 is the way to say the wait matters more than the cache. */
-    [CONF_SHELL_TIMEOUT_MS] = { "shell_timeout_ms",
-                                CONF_TEXT(AGENT_SHELL_TIMEOUT_MS), NULL,
-                                CV_NUM, 0, AGENT_JOB_WAIT_MAX_MS, 0, false },
+    [CONF_SHELL_TIMEOUT_MS] = {"shell_timeout_ms",
+                               CONF_TEXT(AGENT_SHELL_TIMEOUT_MS), NULL, CV_NUM,
+                               0, AGENT_JOB_WAIT_MAX_MS, 0, false},
     /* Whether a message may carry an image. "auto" offers /attach and is
      * named that way because what a model accepts is the model's to say: a
      * later release may decide it from the model rather than from here.
      * Never from a project file: a repository must not be able to put image
      * bytes into a request for a connection the user gave none. */
-    [CONF_IMAGES] = { "images", "auto", "auto,off", CV_ENUM, 0, 0, 0, false },
+    [CONF_IMAGES] = {"images", "auto", "auto,off", CV_ENUM, 0, 0, 0, false},
     /* Off by default: a start that reopens the last conversation is a choice
      * the user makes, not what a first run does. */
-    [CONF_RESUME_LAST] = { "resume_last", "false", NULL, CV_BOOL, 0, 0, 0,
-                           true },
+    [CONF_RESUME_LAST] = {"resume_last", "false", NULL, CV_BOOL, 0, 0, 0, true},
     /* Automatic by default, which costs nothing until a model profile
      * declares a window: without one there is no percentage to be past. */
-    [CONF_COMPACT] = { "compact", "auto", "off,manual,auto", CV_ENUM,
-                       0, 0, 0, true },
+    [CONF_COMPACT] = {"compact", "auto", "off,manual,auto", CV_ENUM, 0, 0, 0,
+                      true},
     /* The ceiling leaves the reply that discovers the threshold somewhere to
      * land. */
-    [CONF_COMPACT_AT] = { "compact_at", CONF_TEXT(AGENT_COMPACT_AT), NULL,
-                          CV_NUM, 50, 95, 0, true },
-    [CONF_COMPACT_MODEL] = { "compact_model", "main", "main,small", CV_ENUM,
-                             0, 0, 0, true },
+    [CONF_COMPACT_AT] = {"compact_at", CONF_TEXT(AGENT_COMPACT_AT), NULL,
+                         CV_NUM, 50, 95, 0, true},
+    [CONF_COMPACT_MODEL] = {"compact_model", "main", "main,small", CV_ENUM, 0,
+                            0, 0, true},
 };
 
 Str conf_key_name(ConfKey k) {
@@ -145,8 +136,14 @@ Str conf_key_name(ConfKey k) {
 
 
 static b8 conf_bool_value(Str v, b8 *out) {
-    if (str_eq(v, STR("true")) || str_eq(v, STR("on"))) { *out = true; return true; }
-    if (str_eq(v, STR("false")) || str_eq(v, STR("off"))) { *out = false; return true; }
+    if (str_eq(v, STR("true")) || str_eq(v, STR("on"))) {
+        *out = true;
+        return true;
+    }
+    if (str_eq(v, STR("false")) || str_eq(v, STR("off"))) {
+        *out = false;
+        return true;
+    }
     return false;
 }
 
@@ -155,7 +152,7 @@ static b8 conf_option_has(const char *options, Str v) {
     size_t start = 0;
     for (size_t i = 0; i <= all.n; i++) {
         if (i != all.n && all.p[i] != ',') continue;
-        if (str_eq(str_trim((Str){ all.p + start, i - start }), v)) return true;
+        if (str_eq(str_trim((Str){all.p + start, i - start}), v)) return true;
         start = i + 1;
     }
     return false;
@@ -165,9 +162,12 @@ b8 conf_value_ok(ConfKey k, Str val) {
     if (k >= CONF_N) return false;
     const ConfSpec *sp = &k_conf[k];
     switch (sp->type) {
-        case CV_STR:  return val.n <= sp->max_len;
+        case CV_STR: return val.n <= sp->max_len;
         case CV_ENUM: return conf_option_has(sp->options, val);
-        case CV_BOOL: { b8 b; return conf_bool_value(val, &b); }
+        case CV_BOOL: {
+            b8 b;
+            return conf_bool_value(val, &b);
+        }
         case CV_NUM: {
             b8 ok = false;
             i64 n = str_int(val, &ok);
@@ -198,13 +198,17 @@ static void conf_take(Conf *c, ConfKey k, Str v, ConfOrigin o, Str where,
                       Arena *persist) {
     const ConfSpec *sp = &k_conf[k];
     if (o == CONF_FROM_PROJECT && !sp->project) {
-        agent_log(AGENT_LOG_WARN, "ignoring %s in %.*s: a project file may not "
-                 "set it", sp->name, (i32)where.n, where.p);
+        agent_log(AGENT_LOG_WARN,
+                  "ignoring %s in %.*s: a project file may not "
+                  "set it",
+                  sp->name, (i32)where.n, where.p);
         return;
     }
     if (!conf_value_ok(k, v)) {
-        agent_log(AGENT_LOG_WARN, "ignoring %s in %.*s: %.*s is not a value it "
-                 "takes", sp->name, (i32)where.n, where.p, (i32)v.n, v.p);
+        agent_log(AGENT_LOG_WARN,
+                  "ignoring %s in %.*s: %.*s is not a value it "
+                  "takes",
+                  sp->name, (i32)where.n, where.p, (i32)v.n, v.p);
         return;
     }
     if (c->origin[k] > o) return;
@@ -223,13 +227,14 @@ static void conf_apply_settings(Conf *c, const Settings *s, ConfOrigin o,
         if (s->section[i].n) continue;
         ConfKey k = CONF_N;
         for (ConfKey j = 0; j < CONF_N; j++)
-            if (str_eq(s->key[i], str_c(k_conf[j].name))) { k = j; break; }
+            if (str_eq(s->key[i], str_c(k_conf[j].name))) {
+                k = j;
+                break;
+            }
         if (k == CONF_N) {
-            
             if (o != CONF_FROM_STATE)
                 agent_log(AGENT_LOG_WARN, "unknown setting %.*s in %.*s",
-                         (i32)s->key[i].n, s->key[i].p,
-                         (i32)where.n, where.p);
+                          (i32)s->key[i].n, s->key[i].p, (i32)where.n, where.p);
             continue;
         }
         conf_take(c, k, s->val[i], o, where, persist);
@@ -277,7 +282,7 @@ static void conf_apply_endpoint(Conf *c, Arena *persist, Arena *scratch) {
     size_t i = endpoints_find(&e, name);
     if (i == ENDPOINT_NONE) {
         agent_log(AGENT_LOG_WARN, "no provider named %.*s is configured",
-                 (i32)name.n, name.p);
+                  (i32)name.n, name.p);
         c->val[CONF_PROVIDER] = (Str){0};
         scratch->off = mark;
         return;
@@ -287,11 +292,11 @@ static void conf_apply_endpoint(Conf *c, Arena *persist, Arena *scratch) {
               persist);
     conf_take(c, CONF_API, api_name(e.api[i]), CONF_FROM_ENDPOINT, where,
               persist);
-    
+
     if (e.model[i].n && c->origin[CONF_MODEL] == CONF_FROM_DEFAULT)
         conf_take(c, CONF_MODEL, e.model[i], CONF_FROM_ENDPOINT, where,
                   persist);
-    
+
     if (e.small_model[i].n && c->origin[CONF_SMALL_MODEL] < CONF_FROM_STATE)
         conf_take(c, CONF_SMALL_MODEL, e.small_model[i], CONF_FROM_ENDPOINT,
                   where, persist);
@@ -319,8 +324,9 @@ void conf_resolve(Conf *c, Arena *persist, Arena *scratch) {
     size_t n = paths_config_files(AGENT_CONFIG_NAME, scratch, files,
                                   AGENT_MAX_CONFIG_FILES);
     for (size_t i = 0; i < n; i++)
-        conf_apply_file(c, files[i], str_eq(files[i], user) ? CONF_FROM_USER
-                                                            : CONF_FROM_SYSTEM,
+        conf_apply_file(c, files[i],
+                        str_eq(files[i], user) ? CONF_FROM_USER
+                                               : CONF_FROM_SYSTEM,
                         persist, scratch);
 
     Str project[AGENT_MAX_PROJECT_FILES];
@@ -345,8 +351,8 @@ b8 conf_remember(ConfKey k, Str val, Arena *scratch) {
 b8 conf_remember_pair(ConfKey a, Str va, ConfKey b, Str vb, Arena *scratch) {
     if (a >= CONF_N || b >= CONF_N) return false;
     if (!conf_value_ok(a, va) || !conf_value_ok(b, vb)) return false;
-    Str keys[2] = { conf_key_name(a), conf_key_name(b) };
-    Str vals[2] = { va, vb };
+    Str keys[2] = {conf_key_name(a), conf_key_name(b)};
+    Str vals[2] = {va, vb};
     return state_set_many(keys, vals, 2, scratch);
 }
 
@@ -356,14 +362,13 @@ b8 conf_remember_bool(ConfKey k, b8 on, Arena *scratch) {
 
 void ui_prefs_load(UiPrefs *p, const Conf *conf) {
     memset(p, 0, sizeof *p);
-    p->verbose_tools     = conf_bool(conf, CONF_VERBOSE_TOOLS);
-    p->raw_markdown      = conf_bool(conf, CONF_RAW_MARKDOWN);
-    p->show_ignored      = conf_bool(conf, CONF_SHOW_IGNORED);
+    p->verbose_tools = conf_bool(conf, CONF_VERBOSE_TOOLS);
+    p->raw_markdown = conf_bool(conf, CONF_RAW_MARKDOWN);
+    p->show_ignored = conf_bool(conf, CONF_SHOW_IGNORED);
     p->show_instructions = conf_bool(conf, CONF_SHOW_INSTRUCTIONS);
-    p->telemetry         = conf_bool(conf, CONF_TELEMETRY);
-    p->justify           = str_eq(conf_str(conf, CONF_WRAP),
-                                  STR("justified"));
-    p->status_fields     = (u64)conf_num(conf, CONF_STATUS_FIELDS);
+    p->telemetry = conf_bool(conf, CONF_TELEMETRY);
+    p->justify = str_eq(conf_str(conf, CONF_WRAP), STR("justified"));
+    p->status_fields = (u64)conf_num(conf, CONF_STATUS_FIELDS);
 }
 
 
@@ -376,7 +381,7 @@ static Str config_owned(char *dst, size_t cap, Str src) {
     if (src.n >= cap) return (Str){0};
     if (src.n) memmove(dst, src.p, src.n);
     dst[src.n] = '\0';
-    return (Str){ dst, src.n };
+    return (Str){dst, src.n};
 }
 
 b8 config_set_model(Config *c, Str model) {
@@ -388,10 +393,10 @@ b8 config_set_model(Config *c, Str model) {
 }
 
 b8 config_set_small_model(Config *c, Str model, Str provider) {
-    if (model.n > AGENT_MAX_MODEL_NAME
-        || provider.n > AGENT_MAX_ENDPOINT_NAME) return false;
-    Str saved = config_owned(c->owned_small_model,
-                             sizeof c->owned_small_model, model);
+    if (model.n > AGENT_MAX_MODEL_NAME || provider.n > AGENT_MAX_ENDPOINT_NAME)
+        return false;
+    Str saved =
+        config_owned(c->owned_small_model, sizeof c->owned_small_model, model);
     Str owner = config_owned(c->owned_small_provider,
                              sizeof c->owned_small_provider, provider);
     if (!saved.p || !owner.p) return false;
@@ -402,19 +407,18 @@ b8 config_set_small_model(Config *c, Str model, Str provider) {
 
 b8 config_set_endpoint(Config *c, Str name, Str base_url, Str model,
                        ApiKind api, Str key) {
-    if (!name.n || name.n > AGENT_MAX_ENDPOINT_NAME
-        || !base_url.n || base_url.n > AGENT_MAX_URL
-        || model.n > AGENT_MAX_MODEL_NAME || key.n > AGENT_MAX_API_KEY)
+    if (!name.n || name.n > AGENT_MAX_ENDPOINT_NAME || !base_url.n
+        || base_url.n > AGENT_MAX_URL || model.n > AGENT_MAX_MODEL_NAME
+        || key.n > AGENT_MAX_API_KEY)
         return false;
 
-    Str saved_name = config_owned(c->owned_provider,
-                                  sizeof c->owned_provider, name);
-    Str saved_url = config_owned(c->owned_base_url,
-                                 sizeof c->owned_base_url, base_url);
-    Str saved_key = config_owned(c->owned_api_key,
-                                 sizeof c->owned_api_key, key);
-    if (!saved_name.p || !saved_url.p || !saved_key.p)
-        return false;
+    Str saved_name =
+        config_owned(c->owned_provider, sizeof c->owned_provider, name);
+    Str saved_url =
+        config_owned(c->owned_base_url, sizeof c->owned_base_url, base_url);
+    Str saved_key =
+        config_owned(c->owned_api_key, sizeof c->owned_api_key, key);
+    if (!saved_name.p || !saved_url.p || !saved_key.p) return false;
     if (model.n && !config_set_model(c, model)) return false;
 
     c->provider = saved_name;
@@ -431,17 +435,23 @@ b8 config_set_model_profile(Config *c, const ModelProfile *p) {
         || p->reasoning_effort.n > AGENT_MAX_REASONING_LIST
         || p->thinking_budget.n > AGENT_MAX_REASONING_LIST
         || p->reasoning_template.n > AGENT_MAX_REASONING_TEMPLATE
-        || p->context_window > AGENT_MAX_CONTEXT_WINDOW) return false;
-    Str efforts = config_owned(c->owned_reasoning_efforts,
-        sizeof c->owned_reasoning_efforts, p->reasoning_efforts);
-    Str budgets = config_owned(c->owned_thinking_budgets,
-        sizeof c->owned_thinking_budgets, p->thinking_budgets);
-    Str effort = config_owned(c->owned_reasoning_effort,
-        sizeof c->owned_reasoning_effort, p->reasoning_effort);
-    Str budget = config_owned(c->owned_thinking_budget,
-        sizeof c->owned_thinking_budget, p->thinking_budget);
-    Str templ = config_owned(c->owned_reasoning_template,
-        sizeof c->owned_reasoning_template, p->reasoning_template);
+        || p->context_window > AGENT_MAX_CONTEXT_WINDOW)
+        return false;
+    Str efforts =
+        config_owned(c->owned_reasoning_efforts,
+                     sizeof c->owned_reasoning_efforts, p->reasoning_efforts);
+    Str budgets =
+        config_owned(c->owned_thinking_budgets,
+                     sizeof c->owned_thinking_budgets, p->thinking_budgets);
+    Str effort =
+        config_owned(c->owned_reasoning_effort,
+                     sizeof c->owned_reasoning_effort, p->reasoning_effort);
+    Str budget =
+        config_owned(c->owned_thinking_budget, sizeof c->owned_thinking_budget,
+                     p->thinking_budget);
+    Str templ =
+        config_owned(c->owned_reasoning_template,
+                     sizeof c->owned_reasoning_template, p->reasoning_template);
     if (!efforts.p || !budgets.p || !effort.p || !budget.p || !templ.p)
         return false;
     c->reasoning_efforts = p->reasoning_efforts.n ? efforts : (Str){0};
@@ -454,14 +464,15 @@ b8 config_set_model_profile(Config *c, const ModelProfile *p) {
 }
 
 b8 config_set_reasoning(Config *c, b8 effort, Str value) {
-    char *dst = effort ? c->owned_reasoning_effort
-                       : c->owned_thinking_budget;
+    char *dst = effort ? c->owned_reasoning_effort : c->owned_thinking_budget;
     size_t cap = effort ? sizeof c->owned_reasoning_effort
                         : sizeof c->owned_thinking_budget;
     Str saved = config_owned(dst, cap, value);
     if (!saved.p) return false;
-    if (effort) c->reasoning_effort = value.n ? saved : (Str){0};
-    else c->thinking_budget = value.n ? saved : (Str){0};
+    if (effort)
+        c->reasoning_effort = value.n ? saved : (Str){0};
+    else
+        c->thinking_budget = value.n ? saved : (Str){0};
     return true;
 }
 
@@ -471,46 +482,46 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
     c->provider = conf_str(conf, CONF_PROVIDER);
     c->base_url = conf_str(conf, CONF_BASE_URL);
     c->base_url_set = c->base_url.n != 0;
-    c->model    = conf_str(conf, CONF_MODEL);
+    c->model = conf_str(conf, CONF_MODEL);
     c->small_model = conf_str(conf, CONF_SMALL_MODEL);
-    
-    c->small_provider = c->small_model.n ? conf_str(conf, CONF_SMALL_PROVIDER)
-                                         : (Str){0};
-    c->api_key  = conf_str(conf, CONF_API_KEY);
-    c->api = str_eq(conf_str(conf, CONF_API), STR("anthropic"))
-           ? API_ANTHROPIC : API_OPENAI;
-    c->mode = str_eq(conf_str(conf, CONF_MODE), STR("plan"))
-            ? MODE_PLAN : MODE_BUILD;
+
+    c->small_provider =
+        c->small_model.n ? conf_str(conf, CONF_SMALL_PROVIDER) : (Str){0};
+    c->api_key = conf_str(conf, CONF_API_KEY);
+    c->api = str_eq(conf_str(conf, CONF_API), STR("anthropic")) ? API_ANTHROPIC
+                                                                : API_OPENAI;
+    c->mode =
+        str_eq(conf_str(conf, CONF_MODE), STR("plan")) ? MODE_PLAN : MODE_BUILD;
     c->permissions = str_eq(conf_str(conf, CONF_PERMISSIONS), STR("free"))
-                   ? PERMISSION_FREE : PERMISSION_ASK;
-    c->stream         = conf_bool(conf, CONF_STREAM);
-    c->max_tokens     = (i32)conf_num(conf, CONF_MAX_TOKENS);
-    c->max_messages   = (size_t)conf_num(conf, CONF_MAX_MESSAGES);
-    c->retries        = (i32)conf_num(conf, CONF_RETRIES);
+                         ? PERMISSION_FREE
+                         : PERMISSION_ASK;
+    c->stream = conf_bool(conf, CONF_STREAM);
+    c->max_tokens = (i32)conf_num(conf, CONF_MAX_TOKENS);
+    c->max_messages = (size_t)conf_num(conf, CONF_MAX_MESSAGES);
+    c->retries = (i32)conf_num(conf, CONF_RETRIES);
     c->retry_delay_ms = (i32)conf_num(conf, CONF_RETRY_DELAY_MS);
-    c->auto_title     = conf_bool(conf, CONF_AUTO_TITLE);
+    c->auto_title = conf_bool(conf, CONF_AUTO_TITLE);
     c->ask_timeout_ms = (i32)conf_num(conf, CONF_ASK_TIMEOUT_MS);
     c->shell_timeout_ms = (i32)conf_num(conf, CONF_SHELL_TIMEOUT_MS);
     c->images = !str_eq(conf_str(conf, CONF_IMAGES), STR("off"));
-    c->resume_last    = conf_bool(conf, CONF_RESUME_LAST);
+    c->resume_last = conf_bool(conf, CONF_RESUME_LAST);
     Str compact = conf_str(conf, CONF_COMPACT);
-    c->compact = str_eq(compact, STR("off"))    ? COMPACT_OFF
-               : str_eq(compact, STR("manual")) ? COMPACT_MANUAL
-                                                : COMPACT_AUTO;
-    c->compact_at    = (u32)conf_num(conf, CONF_COMPACT_AT);
-    c->compact_small = str_eq(conf_str(conf, CONF_COMPACT_MODEL),
-                              STR("small"));
+    c->compact = str_eq(compact, STR("off"))      ? COMPACT_OFF
+                 : str_eq(compact, STR("manual")) ? COMPACT_MANUAL
+                                                  : COMPACT_AUTO;
+    c->compact_at = (u32)conf_num(conf, CONF_COMPACT_AT);
+    c->compact_small = str_eq(conf_str(conf, CONF_COMPACT_MODEL), STR("small"));
 
-    
+
     Str tools = conf_str(conf, CONF_DISABLE_TOOLS);
     c->disable_tools = str_eq(tools, STR("none")) ? (Str){0} : tools;
 
-    c->reasoning_efforts   = conf->model_profile.reasoning_efforts;
-    c->thinking_budgets    = conf->model_profile.thinking_budgets;
-    c->reasoning_effort    = conf->model_profile.reasoning_effort;
-    c->thinking_budget     = conf->model_profile.thinking_budget;
-    c->reasoning_template  = conf->model_profile.reasoning_template;
-    c->context_window      = conf->model_profile.context_window;
+    c->reasoning_efforts = conf->model_profile.reasoning_efforts;
+    c->thinking_budgets = conf->model_profile.thinking_budgets;
+    c->reasoning_effort = conf->model_profile.reasoning_effort;
+    c->thinking_budget = conf->model_profile.thinking_budget;
+    c->reasoning_template = conf->model_profile.reasoning_template;
+    c->context_window = conf->model_profile.context_window;
 
     /* A prompt is a document rather than a setting, so it has no row in the
      * table; the variable and --system are the only ways to pass one. */
@@ -521,8 +532,8 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
      * asks for one. It follows the API so the pair is at least coherent. */
     if (!c->base_url.n)
         c->base_url = c->api == API_ANTHROPIC
-                    ? str_c("https://api.anthropic.com/v1")
-                    : str_c("https://api.openai.com/v1");
+                          ? str_c("https://api.anthropic.com/v1")
+                          : str_c("https://api.openai.com/v1");
     if (!c->model.n)
         c->model = c->api == API_ANTHROPIC ? str_c("claude-sonnet-4-5")
                                            : str_c("gpt-4o-mini");
