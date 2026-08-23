@@ -203,6 +203,7 @@ class Session:
         last = time.monotonic()
         seen = not require_output
         painted = self.term.screen_seq
+        visible = self.term.visible_seq
         beacon = self.term.idle_seq
         # A park that had not yet taken the bytes just sent owes a repaint.
         owed = False
@@ -236,6 +237,8 @@ class Session:
                 owed = False
             if got:
                 seen = True
+            if self.term.visible_seq != visible:
+                visible = self.term.visible_seq
                 last = now
                 continue
             # A frame still being written is not a quiet screen, however long

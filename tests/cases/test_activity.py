@@ -7,13 +7,29 @@ def test_spinner_names_the_wait_and_counts_it(ctx):
     """A turn in flight shows a spinner, its label, its seconds and the key
     that ends it."""
     ctx.scenario("hold,text=finally")
-    s = ctx.spawn()
+    s = ctx.spawn(ARQAN_TEST_FREEZE_ACTIVITY_CLOCK=None)
     s.submit("take your time")
     s.wait_activity("thinking")
     _, elapsed = s.activity()
     assert re.fullmatch(r"\d+s", elapsed), elapsed
     assert "esc to interrupt" in s.text()
     s.wait_for(lambda t: s.activity()[1] != elapsed, "the clock to advance")
+    ctx.mock.release()
+    s.wait_turn_done()
+
+
+def test_frozen_activity_clock_stops_the_spinner_repainting(ctx):
+    """A held turn leaves the screen quiet, so settle() never races the
+    spinner. A quiet window wider than the 100ms repaint tick can only be
+    found when nothing repaints."""
+    ctx.scenario("hold,text=finally")
+    s = ctx.spawn()
+    s.submit("take your time")
+    s.wait_activity("thinking")
+    assert s.activity() == ("thinking", "0s"), s.activity()
+    assert "\u280b thinking" in s.text(), s.text()
+    s.settle(quiet=0.25, timeout=3.0)
+    assert s.activity() == ("thinking", "0s"), s.activity()
     ctx.mock.release()
     s.wait_turn_done()
 
@@ -155,7 +171,7 @@ def test_the_spinner_carries_the_turn_total_too(ctx):
         'first_delay=1.5,tool=bash:{"command":"sleep 3; echo slept"},'
         "final_text=finally"
     )
-    s = ctx.spawn()
+    s = ctx.spawn(ARQAN_TEST_FREEZE_ACTIVITY_CLOCK=None)
     s.submit("run something slow")
     s.wait_activity("running bash")
     s.wait_text("total")
