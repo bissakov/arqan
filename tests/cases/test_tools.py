@@ -323,6 +323,28 @@ def test_bash_schema_limit_matches_runtime(ctx):
     assert limit["maximum"] == 7680, limit
 
 
+def test_bash_describes_the_directory_it_runs_in(ctx):
+    """The description promises the working directory, and a run keeps it.
+
+    Without the promise a model prefixes commands with a cd into the
+    directory they already start in.
+    """
+    ctx.scenario('tool=bash:{"command":"pwd"},final_text=done')
+    s = ctx.spawn()
+    s.submit("where am i?")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    bash = next(tool for tool in ctx.mock.requests[0]["tools"]
+                if tool["function"]["name"] == "bash")
+    desc = bash["function"]["description"]
+    assert "new shell in the working directory" in desc, desc
+    assert "redundant" in desc, desc
+
+    result = ctx.mock.tool_results()[-1]
+    assert result.startswith(f"{ctx.work}\n"), result
+
+
 def test_bad_tool_json_reports_the_byte_and_input(ctx):
     ctx.scenario('tool=read:{"path":"a",,"limit":1},final_text=bad+json')
     s = ctx.spawn()
