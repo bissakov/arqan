@@ -201,16 +201,38 @@ def test_a_call_can_hand_the_turn_back_sooner(ctx):
 
 
 def test_a_call_cannot_hold_the_turn_longer(ctx):
-    """The deadline is a ceiling: a longer wait is refused, not granted."""
-    ctx.scenario("tool=" + bash_for("echo hi", 60000) + ",final_text=refused")
-    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="5000")
+    """The deadline is a ceiling: a longer wait is granted as the ceiling.
+    Refusing it would cost a round and the command runs either way."""
+    ctx.scenario(
+        "tool=" + bash_for("sleep 1; echo late", 60000)
+        + ",tool=" + job(id=1) + ",final_text=followed"
+    )
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="300")
     s.submit("wait as long as you like")
-    s.wait_text("refused")
+    s.wait_text("followed")
     s.wait_turn_done()
 
-    out = results(ctx)[0]
-    assert out.startswith("ERROR:"), out
-    assert "timeout_ms must be a whole number in 1..5000" in out, out
+    detached, followed = results(ctx)[0], results(ctx)[1]
+    assert not detached.startswith("ERROR:"), detached
+    assert "still running as job 1" in detached, detached
+    assert "late" in followed, followed
+
+
+def test_a_job_wait_past_the_maximum_is_granted_as_the_maximum(ctx):
+    """The job tool clamps the same way, so a wildly long wait still answers
+    the moment the job ends."""
+    ctx.scenario(
+        "tool=" + bash("sleep 0.5; echo late") + ",tool="
+        + job(id=1, timeout_ms=999999999) + ",final_text=followed"
+    )
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="200")
+    s.submit("run something slow")
+    s.wait_text("followed")
+    s.wait_turn_done()
+
+    followed = results(ctx)[1]
+    assert not followed.startswith("ERROR:"), followed
+    assert "[job 1 exit 0" in followed, followed
 
 
 def test_no_deadline_means_no_per_call_deadline(ctx):
