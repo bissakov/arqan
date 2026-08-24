@@ -1449,6 +1449,7 @@ void conv_set_checkpoint(Conv *c, size_t i);
 #define AGENT_MAX_TODO_TEXT    100
 #define AGENT_TODO_NONE        ((size_t)-1)
 #define AGENT_TODO_STALE_CALLS 8
+#define AGENT_TODO_COLD_CALLS  12
 
 typedef enum { TODO_PENDING = 0, TODO_ACTIVE, TODO_DONE } TodoStatus;
 
@@ -1495,6 +1496,12 @@ void todo_clear(void);
  * done, or when the count is short. INVARIANT: the count lives here, so every
  * tool result must pass through this, and a `todo` result resets it. */
 void todo_note_stale(Str tool, Buf *out);
+/* Asks for a first list instead, once a turn with no list has run
+ * AGENT_TODO_COLD_CALLS results and changed something. Silent for a session
+ * that has ever called the tool, and asks at most once, since a model that
+ * declined has answered. INVARIANT: the turn count resets in todo_turn_begin,
+ * which every turn must call. */
+void todo_turn_begin(void);
 /* The size, completion and rewrite count of the list, for a turn event.
  * Silent until the tool has run, and never carries item text. */
 void todo_telemetry(TelEvent *e);
