@@ -4837,9 +4837,11 @@ i32 main(i32 argc, char **argv) {
     arena_reset(&scratch);
     /* Reopening is for a session someone is about to sit in front of: a
      * one-shot run and a piped one each answer one request, so both start
-     * clean whatever the setting says. */
+     * clean whatever the setting says. A directory left at the welcome
+     * screen by /clear is greeted again: reopening what someone put away is
+     * not continuing where they left off. */
     b8 truncated = false;
-    b8 resumed = interactive && cfg.resume_last
+    b8 resumed = interactive && cfg.resume_last && !sess.cleared
                  && resume_latest(&sess, &conv, &persist, &scratch, &truncated);
     if (!resumed) session_begin(&sess);
 
@@ -4984,6 +4986,7 @@ i32 main(i32 argc, char **argv) {
             persist.off = session_mark;
             arena_reset(&scratch);
             session_begin(&sess);
+            session_set_cleared(&sess, true);
 
             tui_batch_begin();
             tui_clear();

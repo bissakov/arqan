@@ -2,6 +2,8 @@
 
 `resume_last` decides what a start does with the sessions this directory
 already holds: nothing, which is the welcome screen, or reopen the newest.
+A directory the user cleared is greeted again whatever the setting says,
+until a message gives the next start something to come back to.
 /restart hands the terminal to a fresh process, which reads that setting
 again.
 """
@@ -37,6 +39,63 @@ def test_resume_last_with_nothing_saved_still_greets(ctx):
     """A first run in a directory has no session to reopen."""
     s = ctx.spawn(ARQAN_RESUME_LAST="true")
     assert WELCOME_ART in s.text(), s.text()
+
+
+def test_a_cleared_directory_greets_the_next_start(ctx):
+    """/clear is putting the conversation away, so it stays away."""
+    ctx.scenario("text=an+answer")
+    s = ctx.spawn(ARQAN_RESUME_LAST="true")
+    s.submit("a question")
+    s.wait_text("an answer")
+    s.wait_turn_done()
+    s.submit("/clear")
+    s.wait_gone("an answer")
+    s.submit("/exit")
+    s.wait_exit()
+
+    again = ctx.spawn(ARQAN_RESUME_LAST="true")
+    assert WELCOME_ART in again.text(), again.text()
+    assert "a question" not in again.text(), again.text()
+
+
+def test_a_message_after_clearing_is_resumed_again(ctx):
+    """The new conversation is what the next start comes back to."""
+    ctx.scenario("text=first+answer")
+    s = ctx.spawn(ARQAN_RESUME_LAST="true")
+    s.submit("first question")
+    s.wait_text("first answer")
+    s.wait_turn_done()
+    s.submit("/clear")
+    s.wait_gone("first answer")
+    ctx.scenario("text=second+answer")
+    s.submit("second question")
+    s.wait_text("second answer")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+
+    again = ctx.spawn(ARQAN_RESUME_LAST="true")
+    again.wait_text("second answer")
+    assert "first answer" not in again.text(), again.text()
+
+
+def test_reopening_a_session_by_hand_undoes_a_clear(ctx):
+    """Picking a session is choosing it, so the next start reopens it."""
+    record(ctx, "older question", "older answer")
+
+    s = ctx.spawn(ARQAN_RESUME_LAST="true")
+    s.wait_text("older answer")
+    s.submit("/clear")
+    s.wait_gone("older answer")
+    s.submit("/resume")
+    s.wait_text("pick a session")
+    s.key("enter")
+    s.wait_text("older answer")
+    s.submit("/exit")
+    s.wait_exit()
+
+    again = ctx.spawn(ARQAN_RESUME_LAST="true")
+    again.wait_text("older answer")
 
 
 def test_a_reopened_session_continues_its_file_and_its_history(ctx):
@@ -120,7 +179,26 @@ def test_restart_greets_again_while_resuming_is_off(ctx):
 
 
 def test_restart_reopens_the_session_while_resuming_is_on(ctx):
-    """/clear forgets the conversation; the restarted process reads it back."""
+    """A restart mid-conversation lands back in it."""
+    ctx.scenario("text=first+answer")
+    s = ctx.spawn(ARQAN_RESUME_LAST="true")
+    s.submit("first question")
+    s.wait_text("first answer")
+    s.wait_turn_done()
+
+    # A notice the transcript does not hold marks the process it was printed
+    # in, so the restart is observable while the conversation is unchanged.
+    s.submit("/nosuchcommand")
+    s.wait_text("unknown command")
+    s.submit("/restart")
+    s.wait_gone("unknown command")
+    s.wait_text("first answer")
+    assert "first question" in s.text(), s.text()
+    assert s.status_kind() == "ready", s.status_line()
+
+
+def test_restart_after_clearing_greets(ctx):
+    """The fresh process reads the same mark a fresh launch does."""
     ctx.scenario("text=first+answer")
     s = ctx.spawn(ARQAN_RESUME_LAST="true")
     s.submit("first question")
@@ -129,11 +207,9 @@ def test_restart_reopens_the_session_while_resuming_is_on(ctx):
 
     s.submit("/clear")
     s.wait_gone("first answer")
-
     s.submit("/restart")
-    s.wait_text("first answer")
-    assert "first question" in s.text(), s.text()
-    assert s.status_kind() == "ready", s.status_line()
+    s.wait_for(lambda t: t.contains(WELCOME_ART), "the welcome screen")
+    assert "first answer" not in s.text(), s.text()
 
 
 def test_restart_is_offered_as_a_command(ctx):

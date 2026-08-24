@@ -1532,6 +1532,10 @@ typedef struct {
      * appending behind a partial JSON record. */
     b8 save_blocked;
     b8 sync_dir;
+    /* Whether the last thing this directory saw was /clear. It is read from
+     * a marker file beside the sessions, so `resume_last` greets the way the
+     * conversation was left rather than reopening what the user cleared. */
+    b8 cleared;
     size_t written;
     /* The elision boundary the file already records. A save writes a marker
      * only when the live boundary has moved past it, so a session that never
@@ -1549,6 +1553,10 @@ typedef struct {
 
 b8 session_init(Session *s, Arena *scratch);
 b8 session_begin(Session *s);
+/* Record whether this directory was left at the welcome screen, both in `s`
+ * and in the marker file the next start reads. Best effort: a marker that
+ * cannot be written leaves the next start resuming as before. */
+void session_set_cleared(Session *s, b8 cleared);
 /* Append the messages produced since the last call; the file is created on
  * the first one, so an untouched session never reaches the picker. False
  * fills `err`; uncommitted messages remain pending, while bytes confirmed by
