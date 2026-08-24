@@ -12,6 +12,14 @@
 
 #define SESSION_PREVIEW_BYTES 60
 #define SESSION_PREVIEW_READ  8192
+#define SESSION_CLEARED_NAME  ".cleared"
+
+static size_t sess_cleared_path(const Session *s, char *out, size_t cap) {
+    if (!s->dir.n) return 0;
+    i32 n = snprintf(out, cap, "%.*s/%s", (i32)s->dir.n, s->dir.p,
+                     SESSION_CLEARED_NAME);
+    return n > 0 && (size_t)n < cap ? (size_t)n : 0;
+}
 
 /* Resolve the per-cwd session directory. `scratch` only holds the XDG base
  * for the length of the call; the result is copied into the struct. */
@@ -30,7 +38,25 @@ b8 session_init(Session *s, Arena *scratch) {
         return false;
     }
     s->dir = (Str){s->dir_buf, (size_t)n};
+    char mark[AGENT_MAX_PATH];
+    s->cleared =
+        sess_cleared_path(s, mark, sizeof mark) && access(mark, F_OK) == 0;
     return true;
+}
+
+void session_set_cleared(Session *s, b8 cleared) {
+    char path[AGENT_MAX_PATH];
+    if (!sess_cleared_path(s, path, sizeof path)) return;
+    if (!cleared) {
+        unlink(path);
+        s->cleared = false;
+        return;
+    }
+    if (!paths_ensure_dir(s->dir)) return;
+    i32 fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return;
+    close(fd);
+    s->cleared = true;
 }
 
 static void sess_set_current(Session *s, Str path, Str name) {
@@ -627,6 +653,9 @@ b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
         }
         return false;
     }
+    /* Durable bytes are a conversation to come back to, so whatever /clear
+     * left behind no longer describes this directory. */
+    if (s->cleared) session_set_cleared(s, false);
     if (close(fd) != 0) {
         saved = errno;
         s->written = c->n;
@@ -1069,6 +1098,7 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
     sess_set_current(s, path, name);
     telemetry_bind(s->path);
     s->written = c->n;
+    if (s->cleared) session_set_cleared(s, false);
 
     {
         size_t mark = scratch->off;

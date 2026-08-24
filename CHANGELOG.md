@@ -47,6 +47,11 @@
 
 ### Changed
 
+- With `resume_last` on, a directory left at the welcome screen by `/clear`
+  is greeted again on the next start instead of reopening the conversation
+  that was cleared. Sending a message, or reopening a session with
+  `/resume`, makes that session the one the next start comes back to.
+
 - Elide old tool output far less often. The boundary used to be recomputed
   from the conversation's length, so every fourth round rewrote text earlier
   requests had already sent and threw the provider's cached prefix away to
