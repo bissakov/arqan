@@ -5,6 +5,7 @@ static struct {
     const char *src;
     size_t slot;
     size_t calls;
+    size_t stale;
 } g_todo;
 
 Str todo_text(const TodoList *l, size_t i) {
@@ -187,6 +188,7 @@ void todo_clear(void) {
     g_todo.list.n = 0;
     g_todo.src = NULL;
     g_todo.slot = AGENT_TODO_NONE;
+    g_todo.stale = 0;
     todo_publish();
 }
 
@@ -196,6 +198,7 @@ b8 todo_run(Str args_json, Arena *scratch, Buf *out, char *err,
     if (!todo_parse(args_json, scratch, &l, err, err_cap)) return false;
     g_todo.list = l;
     g_todo.calls++;
+    g_todo.stale = 0;
     /* INVARIANT: Conv does not hold this call yet, so the source is left
      * unset and the next todo_sync rederives from the recorded one. */
     g_todo.src = NULL;
@@ -203,6 +206,33 @@ b8 todo_run(Str args_json, Arena *scratch, Buf *out, char *err,
     todo_publish();
     todo_summary(out, &l);
     return buf_ok(out);
+}
+
+static b8 todo_stale_due(Str tool) {
+    if (str_eq(tool, STR("todo"))) {
+        g_todo.stale = 0;
+        return false;
+    }
+    if (!g_todo.list.n || todo_done(&g_todo.list) == g_todo.list.n)
+        return false;
+    if (++g_todo.stale < AGENT_TODO_STALE_CALLS) return false;
+    g_todo.stale = 0;
+    return true;
+}
+
+void todo_note_stale(Str tool, Buf *out) {
+    if (!todo_stale_due(tool)) return;
+    const TodoList *l = &g_todo.list;
+    size_t active = todo_active(l);
+    buf_putf(out, "\n\n[step list: %zu of %zu done", todo_done(l), l->n);
+    if (active != AGENT_TODO_NONE) {
+        Str t = todo_text(l, active);
+        buf_putf(out, ", \"%.*s\" in progress since %d tool calls ago",
+                 (i32)t.n, t.p, AGENT_TODO_STALE_CALLS);
+    } else {
+        buf_puts(out, STR(", none in progress"));
+    }
+    buf_puts(out, STR(". Send todo with the current state.]"));
 }
 
 void todo_telemetry(TelEvent *e) {

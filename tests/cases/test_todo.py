@@ -18,6 +18,15 @@ def tool_names(request):
     return [t["function"]["name"] for t in request.get("tools", [])]
 
 
+def results_on_the_wire(ctx):
+    """Every tool result in the last request, oldest first."""
+    return [
+        m["content"]
+        for m in ctx.mock.requests[-1]["messages"]
+        if m.get("role") == "tool"
+    ]
+
+
 def test_a_list_is_rendered_as_a_checklist(ctx):
     """The call shows the steps, not the JSON that carried them."""
     ctx.scenario(
@@ -504,3 +513,123 @@ def test_the_call_opens_a_block_of_its_own(ctx):
     assert len(head) == 2, s.text()      # after reasoning, then after a block
     for i in head:
         assert lines[i - 1].strip() == "", s.text()
+
+
+def test_a_list_left_behind_asks_for_an_update(ctx):
+    """The failure the list has: written once, then never touched again.
+
+    Nothing in the transcript makes a model revisit a list it already wrote,
+    so a stale one reads as current for the rest of the work. After eight
+    results answering other tools with a step still in progress, the next
+    result carries the ask back.
+    """
+    bash = json.dumps({"command": "true"})
+    ctx.scenario(
+        todo(
+            ("read the decoder", "done"),
+            ("wire the parser", "in_progress"),
+            ("add a regression case", "pending"),
+            final="planned",
+        )
+    )
+    s = ctx.spawn()
+    s.submit("do the long thing")
+    s.wait_text("planned")
+    s.wait_turn_done()
+
+    ctx.scenario(f"tool=bash:{bash},tool_rounds=8,text=ok,final_text=done")
+    s.submit("carry on")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    results = results_on_the_wire(ctx)
+    nudged = [r for r in results if "[step list:" in r]
+    assert len(nudged) == 1, results
+    assert nudged[0] is results[-1], results
+    assert "1 of 3 done" in nudged[0], nudged[0]
+    assert '"wire the parser" in progress' in nudged[0], nudged[0]
+    assert "Send todo with the current state" in nudged[0], nudged[0]
+
+
+def test_the_ask_names_the_list_with_no_step_in_progress(ctx):
+    """A list nobody advanced states its counts and asks for the next step."""
+    bash = json.dumps({"command": "true"})
+    ctx.scenario(
+        todo(
+            ("read the decoder", "pending"),
+            ("wire the parser", "pending"),
+            final="planned",
+        )
+    )
+    s = ctx.spawn()
+    s.submit("do the long thing")
+    s.wait_text("planned")
+    s.wait_turn_done()
+
+    ctx.scenario(f"tool=bash:{bash},tool_rounds=8,text=ok,final_text=done")
+    s.submit("carry on")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    nudged = [r for r in results_on_the_wire(ctx) if "[step list:" in r]
+    assert len(nudged) == 1, results_on_the_wire(ctx)
+    assert "0 of 2 done, none in progress" in nudged[0], nudged[0]
+
+
+def test_a_finished_list_is_left_alone(ctx):
+    """Nothing is left to update, so the results stay the tool's own."""
+    bash = json.dumps({"command": "true"})
+    ctx.scenario(todo(("read the decoder", "done"), final="planned"))
+    s = ctx.spawn()
+    s.submit("do the long thing")
+    s.wait_text("planned")
+    s.wait_turn_done()
+
+    ctx.scenario(f"tool=bash:{bash},tool_rounds=10,text=ok,final_text=done")
+    s.submit("carry on")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    results = results_on_the_wire(ctx)
+    assert not [r for r in results if "[step list:" in r], results
+
+
+def test_an_update_restarts_the_count(ctx):
+    """A model that keeps the list current is never interrupted about it."""
+    bash = json.dumps({"command": "true"})
+    ctx.scenario(
+        todo(
+            ("read the decoder", "in_progress"),
+            ("wire the parser", "pending"),
+            final="planned",
+        )
+    )
+    s = ctx.spawn()
+    s.submit("do the long thing")
+    s.wait_text("planned")
+    s.wait_turn_done()
+
+    ctx.scenario(f"tool=bash:{bash},tool_rounds=7,text=ok,final_text=seven")
+    s.submit("carry on")
+    s.wait_text("seven")
+    s.wait_turn_done()
+    assert not [r for r in results_on_the_wire(ctx) if "[step list:" in r]
+
+    ctx.scenario(
+        todo(
+            ("read the decoder", "done"),
+            ("wire the parser", "in_progress"),
+            final="moved+on",
+        )
+    )
+    s.submit("update the list")
+    s.wait_text("moved on")
+    s.wait_turn_done()
+
+    ctx.scenario(f"tool=bash:{bash},tool_rounds=7,text=ok,final_text=done")
+    s.submit("carry on again")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    results = results_on_the_wire(ctx)
+    assert not [r for r in results if "[step list:" in r], results

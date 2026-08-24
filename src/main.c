@@ -948,6 +948,7 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         b8 ok = tools_run(ag->tools, tool, args, authorization, ag->scratch,
                           &out, err, sizeof err);
         if (!ok) buf_error(&out, err, "tool failed");
+        todo_note_stale(name, &out);
         Str result = buf_finish(&out);
 
         TelEvent e;

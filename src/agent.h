@@ -1445,9 +1445,10 @@ void conv_set_checkpoint(Conv *c, size_t i);
  * todo_rebuild rather than persisting anything of their own. A TodoList owns
  * its text and holds no arena pointers, so it can be assigned whole.
  */
-#define AGENT_MAX_TODOS     20
-#define AGENT_MAX_TODO_TEXT 100
-#define AGENT_TODO_NONE     ((size_t)-1)
+#define AGENT_MAX_TODOS        20
+#define AGENT_MAX_TODO_TEXT    100
+#define AGENT_TODO_NONE        ((size_t)-1)
+#define AGENT_TODO_STALE_CALLS 8
 
 typedef enum { TODO_PENDING = 0, TODO_ACTIVE, TODO_DONE } TodoStatus;
 
@@ -1488,6 +1489,12 @@ b8 todo_parse_md(Str doc, TodoList *out);
 b8 todo_run(Str args_json, Arena *scratch, Buf *out, char *err, size_t err_cap);
 const TodoList *todo_current(void);
 void todo_clear(void);
+/* Appends a line asking for the current list to the result of the tool named
+ * `tool`, once AGENT_TODO_STALE_CALLS results have answered other tools with
+ * work unfinished. Writes nothing when there is no list, when every item is
+ * done, or when the count is short. INVARIANT: the count lives here, so every
+ * tool result must pass through this, and a `todo` result resets it. */
+void todo_note_stale(Str tool, Buf *out);
 /* The size, completion and rewrite count of the list, for a turn event.
  * Silent until the tool has run, and never carries item text. */
 void todo_telemetry(TelEvent *e);
