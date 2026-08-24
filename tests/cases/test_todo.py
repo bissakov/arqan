@@ -476,3 +476,31 @@ def test_a_restructured_list_is_drawn_whole(ctx):
     screen = s.text()
     assert screen.count("wire the parser") == 2, screen
     assert "rewrite the lexer" in screen, screen
+
+
+def test_the_call_opens_a_block_of_its_own(ctx):
+    """The header starts a block: reasoning or a call above it keeps its air."""
+    items = json.dumps(
+        {"items": [{"text": "wire the parser", "status": "in_progress"}]}
+    )
+    ctx.write_file("notes.txt", "result bytes\n")
+    ctx.scenario(
+        "reasoning=planning+the+work,"
+        f"tool=todo:{items},"
+        'tool=read:{"path":"notes.txt"},'
+        "tool_rounds=2,final_text=all+set"
+    )
+    s = ctx.spawn(rows=34)
+    s.submit("do the long thing")
+    s.wait_text("all set")
+    s.wait_turn_done()
+
+    lines = s.text().splitlines()
+    head = [
+        i
+        for i, line in enumerate(lines)
+        if line.strip().startswith("\u25c6  todo")
+    ]
+    assert len(head) == 2, s.text()      # after reasoning, then after a block
+    for i in head:
+        assert lines[i - 1].strip() == "", s.text()
