@@ -297,3 +297,27 @@ def test_a_rebuild_the_boundary_explains_does_not_stop_the_turn(ctx):
     s.wait_text("cache rebuilt after eliding")
     s.wait_turn_done()
     assert "unexpected cache miss" not in s.text(), s.text()
+
+
+def test_a_server_answering_from_an_older_prefix_is_not_a_defect(ctx):
+    """A cache write that trails the request reads back a prefix an earlier
+    request sent whole. The conversation only grows, so that prefix was never
+    rewritten: say the server is behind and keep going.
+    """
+    ctx.scenario("text=hi,final_text=hi,usage=1000/10,cache_read=0")
+    s = ctx.spawn()
+    s.submit("one")
+    s.wait_turn_done()
+
+    ctx.scenario("text=hi,final_text=hi,usage=2000/10,cache_read=0")
+    s.submit("two")
+    s.wait_turn_done()
+
+    args = json.dumps({"command": "echo x"})
+    ctx.scenario(f"tool=bash:{args},tool_rounds=2,text=ok,final_text=done,"
+                 "usage=3000/10,cache_read=1000")
+    s.submit("three")
+    s.wait_text("cache behind")
+    s.wait_text("done")
+    s.wait_turn_done()
+    assert "unexpected cache miss" not in s.text(), s.text()

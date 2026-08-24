@@ -107,6 +107,12 @@ typedef bool b8;
  * five minute lifetime is the only one available: a longer gap between two
  * requests is a miss nothing in the conversation caused. */
 #define AGENT_CACHE_TTL_S 300.0
+/* How many older prefixes the cache guard remembers besides the last one. A
+ * server that writes its cache behind the request, or answers from a node
+ * that saw an earlier one, reads back a prefix several requests old; that
+ * prefix is intact rather than rewritten, and blaming it on the conversation
+ * stops a turn nothing is wrong with. */
+#define AGENT_CACHE_HISTORY 3
 /* Nominal cost of that replacement line. The context gauge charges this for
  * an elided result instead of the bytes the request will not carry. */
 #define AGENT_ELIDE_NOTE_BYTES 76
@@ -1722,12 +1728,16 @@ typedef enum {
     CACHE_CAUSE_MEDIA,
     CACHE_CAUSE_RESUME,
     CACHE_CAUSE_TTL,
+    CACHE_CAUSE_TRAIL,
 } CacheCause;
 
 typedef struct {
     /* The last request's prompt tokens, which is the prefix the next request
      * should read back. Zero until one has been measured. */
     size_t expect_tokens;
+    /* The prompts before it, newest first, as the prefixes a lagging server
+     * can still be answering from. Zero where no request has been made. */
+    size_t older_tokens[AGENT_CACHE_HISTORY];
     f64 last_send_s;
     CacheCause cause;
     /* What the stamped cause freed, for the row that explains the rebuild. */
