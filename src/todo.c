@@ -6,6 +6,9 @@ static struct {
     size_t slot;
     size_t calls;
     size_t stale;
+    size_t turn_calls;
+    b8 turn_changed;
+    b8 asked_cold;
 } g_todo;
 
 Str todo_text(const TodoList *l, size_t i) {
@@ -192,6 +195,11 @@ void todo_clear(void) {
     todo_publish();
 }
 
+void todo_turn_begin(void) {
+    g_todo.turn_calls = 0;
+    g_todo.turn_changed = false;
+}
+
 b8 todo_run(Str args_json, Arena *scratch, Buf *out, char *err,
             size_t err_cap) {
     TodoList l;
@@ -220,7 +228,29 @@ static b8 todo_stale_due(Str tool) {
     return true;
 }
 
+/* A turn is worth a list once it has run long and left the tree different,
+ * which is the shape a turn that opened as a question grows into. Reads alone
+ * stay silent however many they are: that is one answer, not several steps. */
+static b8 todo_cold_due(Str tool) {
+    if (g_todo.asked_cold || g_todo.calls || g_todo.list.n) return false;
+    g_todo.turn_calls++;
+    if (str_eq(tool, STR("write")) || str_eq(tool, STR("patch")))
+        g_todo.turn_changed = true;
+    if (g_todo.turn_calls < AGENT_TODO_COLD_CALLS || !g_todo.turn_changed)
+        return false;
+    g_todo.asked_cold = true;
+    return true;
+}
+
 void todo_note_stale(Str tool, Buf *out) {
+    if (todo_cold_due(tool)) {
+        buf_putf(out,
+                 "\n\n[no step list: %zu tool calls into this turn, and it "
+                 "has changed files. Send todo with the steps that remain, "
+                 "or ignore this if the work is one step from done.]",
+                 g_todo.turn_calls);
+        return;
+    }
     if (!todo_stale_due(tool)) return;
     const TodoList *l = &g_todo.list;
     size_t active = todo_active(l);

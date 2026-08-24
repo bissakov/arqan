@@ -4484,6 +4484,7 @@ static b8 agent_turn(Agent *ag, Str text) {
      * grown one. */
     ag->compact_seen = false;
     ag->compact_short = false;
+    todo_turn_begin();
     if (ag->echo) {
         tui_scroll_to_bottom();
         render_user_message(conv, conv->n - 1);

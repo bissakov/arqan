@@ -633,3 +633,115 @@ def test_an_update_restarts_the_count(ctx):
 
     results = results_on_the_wire(ctx)
     assert not [r for r in results if "[step list:" in r], results
+
+
+def edits(rounds, reads=True):
+    """A turn that keeps editing, with a read alongside each edit."""
+    bash = json.dumps({"command": "true"})
+    write = json.dumps({"path": "worked.txt", "content": "changed"})
+    calls = f"tool=bash:{bash}," if reads else ""
+    return f"{calls}tool=write:{write},tool_rounds={rounds}"
+
+
+def cold(ctx, since=0):
+    """Every ask for a first list, over the results after `since`."""
+    results = results_on_the_wire(ctx)[since:]
+    return [r for r in results if "[no step list:" in r]
+
+
+def test_a_turn_that_never_opened_a_list_is_asked_for_one(ctx):
+    """The failure a stale ask cannot reach: no list was ever written.
+
+    todo_note_stale only maintains a list that exists, so a turn that opened
+    none generated no pressure at all, however long it ran. A question that
+    turns into an edit halfway through is the shape that loses: the model
+    classified the turn as one answer before the work arrived.
+    """
+    ctx.scenario(edits(6) + ",final_text=done")
+    s = ctx.spawn()
+    s.submit("what can we do about this?")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    asked = cold(ctx)
+    assert len(asked) == 1, results_on_the_wire(ctx)
+    assert "12 tool calls" in asked[0], asked[0]
+    assert "Send todo" in asked[0], asked[0]
+
+
+def test_a_long_turn_that_changes_nothing_is_left_alone(ctx):
+    """Reading around a codebase is one answer, however many calls it takes."""
+    bash = json.dumps({"command": "true"})
+    ctx.scenario(f"tool=bash:{bash},tool_rounds=20,final_text=done")
+    s = ctx.spawn()
+    s.submit("explain how the parser works")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    assert not cold(ctx), results_on_the_wire(ctx)
+
+
+def test_a_short_edit_is_left_alone(ctx):
+    """One edit and a check is a single step; a list would only be noise."""
+    ctx.scenario(edits(2) + ",final_text=done")
+    s = ctx.spawn()
+    s.submit("fix the typo")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    assert not cold(ctx), results_on_the_wire(ctx)
+
+
+def test_short_turns_do_not_add_up_to_an_ask(ctx):
+    """The count is the turn's, so a run of small jobs never trips it."""
+    ctx.scenario(edits(2) + ",final_text=job0")
+    s = ctx.spawn()
+    s.submit("small job 0")
+    s.wait_text("job0")
+    s.wait_turn_done()
+    for i in range(1, 6):
+        ctx.scenario(edits(2) + f",final_text=job{i}")
+        s.submit(f"small job {i}")
+        s.wait_text(f"job{i}")
+        s.wait_turn_done()
+        assert not cold(ctx), results_on_the_wire(ctx)
+
+
+def test_the_ask_for_a_first_list_comes_once(ctx):
+    """A model that declines is not asked again for the rest of the session."""
+    ctx.scenario(edits(6) + ",final_text=first")
+    s = ctx.spawn()
+    s.submit("do the long thing")
+    s.wait_text("first")
+    s.wait_turn_done()
+    assert len(cold(ctx)) == 1, results_on_the_wire(ctx)
+
+    seen = len(results_on_the_wire(ctx))
+    ctx.scenario(edits(6) + ",final_text=second")
+    s.submit("do another long thing")
+    s.wait_text("second")
+    s.wait_turn_done()
+    assert not cold(ctx, seen), results_on_the_wire(ctx)[seen:]
+
+
+def test_a_list_already_open_answers_the_ask(ctx):
+    """The maintenance ask takes over once a list exists."""
+    ctx.scenario(
+        todo(
+            ("read the decoder", "in_progress"),
+            ("wire the parser", "pending"),
+            final="planned",
+        )
+    )
+    s = ctx.spawn()
+    s.submit("do the long thing")
+    s.wait_text("planned")
+    s.wait_turn_done()
+
+    ctx.scenario(edits(6) + ",final_text=done")
+    s.submit("carry on")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    assert not cold(ctx), results_on_the_wire(ctx)
+    assert [r for r in results_on_the_wire(ctx) if "[step list:" in r]
