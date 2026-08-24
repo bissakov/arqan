@@ -22,5 +22,5 @@
 |  › Message arqan...
 |
 |
-|  ● pick a model · alpha · build · mock · ~/work · ~1k · free
+|  ● pick a model · alpha · build · mock · ~/work · ~2k · free
 --- cursor row=21 col=5 visible=yes ---

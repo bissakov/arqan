@@ -21,7 +21,7 @@ typedef struct {
 #define CONF_TEXT(x)  CONF_TEXT2(x)
 /* The status field mask has one bit per field, so its default is all of
  * them; a literal is needed because the table's defaults are text. */
-_Static_assert(AGENT_STATUS_FIELDS == 10, "the status_fields default is 1023");
+_Static_assert(AGENT_STATUS_FIELDS == 11, "the status_fields default is 2047");
 
 static const ConfSpec k_conf[CONF_N] = {
 
@@ -63,7 +63,7 @@ static const ConfSpec k_conf[CONF_N] = {
     [CONF_SHOW_INSTRUCTIONS] = {"show_instructions", "false", NULL, CV_BOOL, 0,
                                 0, 0, true},
     [CONF_WRAP] = {"wrap", "word", "word,justified", CV_ENUM, 0, 0, 0, true},
-    [CONF_STATUS_FIELDS] = {"status_fields", "1023", NULL, CV_NUM, 0, 1023, 0,
+    [CONF_STATUS_FIELDS] = {"status_fields", "2047", NULL, CV_NUM, 0, 2047, 0,
                             true},
 
     [CONF_TELEMETRY] = {"telemetry", "false", NULL, CV_BOOL, 0, 0, 0, false},

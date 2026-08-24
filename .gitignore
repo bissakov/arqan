@@ -1,6 +1,7 @@
 build/
 bin/
 dist/
+docs/
 .pi/
 __pycache__/
 bench-baseline.json

@@ -208,7 +208,7 @@ typedef bool b8;
 
 #define AGENT_WEB_USER_AGENT \
     "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
-#define AGENT_STATUS_FIELDS 10
+#define AGENT_STATUS_FIELDS 11
 
 // ---- arenas -------------------------------------------------------------
 typedef struct {
@@ -1414,6 +1414,10 @@ b8 conv_result_elided(const Conv *c, size_t i, size_t recent);
 /* The same question for a tool call's arguments: true when the call sits
  * below `recent` and its arguments are large enough to be worth a stub, or
  * when the call failed and neither side of it is worth replaying. */
+/* True when slot `i`'s call arguments are sent as a stub. The newest todo
+ * call is exempt: it is the live step list rather than a record of a past
+ * one. The context estimator asks through here too, so what it counts and
+ * what the writers send cannot drift apart. */
 b8 conv_args_elided(const Conv *c, size_t i, size_t recent);
 
 /* True when a request may begin at slot `i`: a user turn, a plain assistant
@@ -1433,6 +1437,67 @@ b8 conv_compact_head(Conv *c, size_t keep, Str checkpoint);
 /* Record that slot `i` holds a checkpoint standing for the conversation
  * below it, for the paths that build one without conv_compact_head. */
 void conv_set_checkpoint(Conv *c, size_t i);
+
+/* ---- todo list -----------------------------------------------------------
+ * The step list the model keeps for work that spans several rounds. The tool
+ * takes the whole list on every call, so the arguments of the last todo call
+ * in `Conv` are the state, and replay, resume and rewind rebuild it through
+ * todo_rebuild rather than persisting anything of their own. A TodoList owns
+ * its text and holds no arena pointers, so it can be assigned whole.
+ */
+#define AGENT_MAX_TODOS     20
+#define AGENT_MAX_TODO_TEXT 100
+#define AGENT_TODO_NONE     ((size_t)-1)
+
+typedef enum { TODO_PENDING = 0, TODO_ACTIVE, TODO_DONE } TodoStatus;
+
+typedef struct {
+    char text[AGENT_MAX_TODOS][AGENT_MAX_TODO_TEXT];
+    u8 len[AGENT_MAX_TODOS];
+    u8 status[AGENT_MAX_TODOS];
+    size_t n;
+} TodoList;
+
+/* Parses todo arguments into `out`. False with a message in `err` when the
+ * JSON is incomplete, an item is malformed, or a bound is exceeded: an
+ * oversized list is refused with its limit named, never truncated to fit. */
+b8 todo_parse(Str args_json, Arena *scratch, TodoList *out, char *err,
+              size_t err_cap);
+Str todo_text(const TodoList *l, size_t i);
+/* The one in-progress item, or AGENT_TODO_NONE. */
+size_t todo_active(const TodoList *l);
+size_t todo_done(const TodoList *l);
+/* True when both lists name the same items in the same order, so one can be
+ * drawn as a change against the other rather than reprinted whole. */
+b8 todo_same_items(const TodoList *a, const TodoList *b);
+/* The list as the newest todo call before `slot` left it. False when `slot`
+ * is the first, leaving `out` untouched. Borrows `scratch` and restores it,
+ * which is safe because a TodoList owns its text. */
+b8 todo_prev(const Conv *c, size_t slot, Arena *scratch, TodoList *out);
+/* "3 todos: 1 done, 1 in progress", terse because the list itself is already
+ * on the wire in the call arguments. */
+void todo_summary(Buf *b, const TodoList *l);
+/* The list as Markdown checkboxes, for a document that outlives the call
+ * that carried it. */
+void todo_write_md(Buf *b, const TodoList *l);
+/* Reads back what todo_write_md wrote into a compaction checkpoint. False
+ * when the document states no list, leaving `out` untouched. */
+b8 todo_parse_md(Str doc, TodoList *out);
+
+/* ToolRun for `todo`: validates the arguments and replaces the current list. */
+b8 todo_run(Str args_json, Arena *scratch, Buf *out, char *err, size_t err_cap);
+const TodoList *todo_current(void);
+void todo_clear(void);
+/* The size, completion and rewrite count of the list, for a turn event.
+ * Silent until the tool has run, and never carries item text. */
+void todo_telemetry(TelEvent *e);
+/* Derives the current list from the last todo call in `c`, clearing it when
+ * there is none. Cheap when the call it last read is still the last one, so
+ * every path that changes history can call it: resume, /clear, rewind,
+ * compaction. INVARIANT: nothing else writes the list except todo_run, which
+ * marks it for rederivation, so a missed call goes stale for at most one
+ * conversation change. Borrows `scratch` and restores it. */
+void todo_sync(const Conv *c, Arena *scratch);
 
 /* ---- sessions ------------------------------------------------------------
  * The conversation as it happened, one JSON object per line under
@@ -1821,6 +1886,7 @@ typedef enum {
     TUI_STATUS_CONTEXT,
     TUI_STATUS_COPY,
     TUI_STATUS_PERMISSIONS,
+    TUI_STATUS_TODO,
     TUI_STATUS_N
 } TuiStatusItem;
 
@@ -1982,6 +2048,7 @@ void tui_set_status(const char *status);
  * field then shows the count alone rather than a share of a number arqan
  * invented. */
 void tui_set_context(size_t tokens, b8 known, b8 exact, size_t window);
+void tui_set_todo(size_t done, size_t total);
 void tui_clear(void);
 
 void tui_clear_transcript(void);
@@ -2106,7 +2173,10 @@ b8 md_muted(void);
  * output, an "ERROR: " prefix included. `id` marks the block as a click
  * target and `expanded` is the state that click left behind, which lifts
  * this block's caps the way /verbose lifts every block's. */
-void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded);
+/* `c` and `slot` locate the call in the conversation so a todo update can be
+ * drawn against the list before it; `c` may be NULL, which draws it whole. */
+void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
+                      const Conv *c, size_t slot);
 
 void render_shell_call(Str cmd, u32 id, b8 expanded);
 

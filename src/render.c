@@ -191,9 +191,67 @@ static Str patch_target(Str patch, char *buf, size_t cap, Str *hint) {
                    : first;
 }
 
-void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded) {
+static void render_todo_row(const TodoList *l, size_t i) {
+    tui_write_muted(STR("\u2502 "));
+    switch (l->status[i]) {
+        case TODO_DONE:
+            tui_write_result(STR("\u2713 "));
+            tui_write_muted(clip(todo_text(l, i), R_LINE_BYTES));
+            break;
+        case TODO_ACTIVE:
+            tui_write_tool(STR("\u25b8 "));
+            tui_write(clip(todo_text(l, i), R_LINE_BYTES));
+            break;
+        default:
+            tui_write_muted(STR("\u25cb "));
+            tui_write_muted(clip(todo_text(l, i), R_LINE_BYTES));
+            break;
+    }
+    tui_write(STR("\n"));
+}
+
+static void render_todo_call(Str args, Arena *scratch, const Conv *c,
+                             size_t slot) {
+    char err[AGENT_TOOL_ERR];
+    TodoList l;
+    if (!todo_parse(args, scratch, &l, err, sizeof err)) {
+        tui_write_tool(STR("\u25c6  todo\n"));
+        tui_write_muted(STR("\u2502 "));
+        tui_write_error(clip(str_c(err), R_LINE_BYTES));
+        tui_write(STR("\n"));
+        return;
+    }
+
+    TodoList prev;
+    b8 delta = todo_prev(c, slot, scratch, &prev) && todo_same_items(&l, &prev);
+
+    char head[64];
+    i32 n = snprintf(head, sizeof head, "\u25c6  todo %zu/%zu\n", todo_done(&l),
+                     l.n);
+    if (n > 0) tui_write_tool((Str){head, (size_t)n});
+
+    size_t drawn = 0;
+    for (size_t i = 0; i < l.n; i++) {
+        if (delta && l.status[i] == prev.status[i]) continue;
+        render_todo_row(&l, i);
+        drawn++;
+    }
+    if (!drawn) {
+        size_t at = todo_active(&l);
+        if (at != AGENT_TODO_NONE) render_todo_row(&l, at);
+    }
+}
+
+void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
+                      const Conv *c, size_t slot) {
     block_begin(id, expanded);
     size_t mark = scratch->off;
+    if (str_eq(name, STR("todo"))) {
+        render_todo_call(args, scratch, c, slot);
+        scratch->off = mark;
+        block_end();
+        return;
+    }
     JVal *j = json_parse(scratch, args);
 
     Str path = json_str(j, STR("path"));

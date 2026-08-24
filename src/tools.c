@@ -2153,6 +2153,10 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms) {
     } while (0)
 #define BOTH (TOOL_IN_BUILD | TOOL_IN_PLAN)
 
+    /* NOTE: the todo schema spells its bounds out, since ADD needs a literal. */
+    _Static_assert(AGENT_MAX_TODOS == 20 && AGENT_MAX_TODO_TEXT == 100,
+                   "the todo schema names maxItems 20 and 100 bytes");
+
     char *bash_schema = arena_alloc(persist, 768, 1);
     if (!bash_schema) {
         r->name = NULL;
@@ -2291,6 +2295,19 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms) {
         "Write a file whole", TOOL_IN_BUILD, TOOL_APPROVAL_WRITE,
         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}",
         tool_write);
+    ADD("todo",
+        "Record the step list for work of several rounds and keep it current. "
+        "The call carries the whole list and replaces the previous one. Use it "
+        "for three or more steps, keep one item in_progress, and mark an item "
+        "done as soon as it is done.",
+        "Track the step list", TOOL_IN_BUILD, TOOL_APPROVAL_NONE,
+        "{\"type\":\"object\",\"properties\":{\"items\":{\"type\":\"array\","
+        "\"maxItems\":20,\"items\":{\"type\":\"object\",\"properties\":{"
+        "\"text\":{\"type\":\"string\",\"maxLength\":100},"
+        "\"status\":{\"type\":\"string\","
+        "\"enum\":[\"pending\",\"in_progress\",\"done\"]}},"
+        "\"required\":[\"text\",\"status\"]}}},\"required\":[\"items\"]}",
+        todo_run);
     ADD("ask_user",
         "Ask the user to choose between options. Mark the one you "
         "recommend; they may also answer in their own words.",

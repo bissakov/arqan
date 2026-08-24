@@ -26,6 +26,7 @@ static const char PROMPT_BUILTIN[] =
     "- Change code with patch, giving each hunk enough context to match one "
     "place in the file; put every file of one change in a single call\n"
     "- Use write only for a whole file, and read a file before patching it\n"
+    "{todo_guidance}"
     "{ask_user_guidance}"
     "- Be concise in responses\n"
     "- Show file paths clearly when working with files\n"
@@ -238,6 +239,18 @@ static void prompt_ask_user(Buf *b, const ToolRegistry *tools, AgentMode mode) {
                     "by inspecting the project\n"));
 }
 
+static void prompt_todo(Buf *b, const ToolRegistry *tools, AgentMode mode) {
+    size_t id = tools ? tools_find(tools, STR("todo")) : TOOL_NONE;
+    if (id == TOOL_NONE || !tools_available(tools, id, mode)) return;
+    buf_puts(b, STR("- Call todo before starting work of three or more "
+                    "distinct steps, or edits across several files, so the "
+                    "user can see the plan and what is left; skip it for a "
+                    "single-step answer\n"
+                    "- Keep the list current: one item in_progress at a "
+                    "time, marked done as soon as it is done, and the whole "
+                    "list sent on every update\n"));
+}
+
 static void prompt_expand(Buf *b, Str tmpl, const ToolRegistry *tools,
                           AgentMode mode, Str cwd) {
     for (size_t i = 0; i < tmpl.n; i++) {
@@ -258,6 +271,8 @@ static void prompt_expand(Buf *b, Str tmpl, const ToolRegistry *tools,
             buf_puts(b, cwd);
         else if (str_eq(name, STR("ask_user_guidance")))
             prompt_ask_user(b, tools, mode);
+        else if (str_eq(name, STR("todo_guidance")))
+            prompt_todo(b, tools, mode);
         else {
             buf_putc(b, '{');
             continue;
