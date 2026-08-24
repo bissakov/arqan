@@ -19,6 +19,11 @@
 
 ### Fixed
 
+- Stop blaming the session for a server whose prompt cache is behind. Some
+  OpenAI-compatible endpoints answer a request from an older request's
+  prefix; that prefix is still intact, so the turn now says the cache is
+  behind and carries on instead of stopping as if there were a bug.
+
 - Refuse a malformed number in JSON instead of reading part of it. A model
   that wrote `1.2.3` for a tool argument had it silently read as `1.2`, so
   the tool ran with a value nobody asked for and the agent retried the call
