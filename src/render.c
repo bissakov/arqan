@@ -214,6 +214,7 @@ static void render_todo_call(Str args, Arena *scratch, const Conv *c,
                              size_t slot) {
     char err[AGENT_TOOL_ERR];
     TodoList l;
+    tui_block();
     if (!todo_parse(args, scratch, &l, err, sizeof err)) {
         tui_write_tool(STR("\u25c6  todo\n"));
         tui_write_muted(STR("\u2502 "));
