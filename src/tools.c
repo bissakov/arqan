@@ -2265,7 +2265,10 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms) {
         r->name[r->n] = STR("bash");
         r->desc[r->n] = STR(
             "Run a shell command; returns one page of up to 8KB "
-            "of its stdout and stderr. Use offset and limit to page output, "
+            "of its stdout and stderr. Every call starts a new shell in the "
+            "working directory, so a cd reaches only the rest of that one "
+            "command and a cd into the working directory is redundant. "
+            "Use offset and limit to page output, "
             "and prefer head, tail, sed -n or grep to target the lines you "
             "need. The harness may pause for approval; do not ask in prose "
             "or retry a denial blindly. Commands run without a terminal, so "
