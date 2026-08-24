@@ -231,10 +231,6 @@ b8 conv_result_elided(const Conv *c, size_t i, size_t recent) {
     return c->text[i].n > AGENT_ELIDE_BYTES || conv_result_failed(c, i);
 }
 
-/* The newest todo call states the step list as it stands; every older one
- * has been superseded and is noise worth eliding. Age is what the boundary
- * measures, and this one call is not history: eliding it takes the model's
- * own plan away in exactly the long sessions the boundary moves in. */
 static b8 conv_todo_live(const Conv *c, size_t i) {
     if (!str_eq(c->tool_name[i], STR("todo"))) return false;
     for (size_t j = i + 1; j < c->n; j++)

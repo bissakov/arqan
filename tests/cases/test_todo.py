@@ -312,7 +312,10 @@ def test_rewinding_past_the_call_drops_the_list(ctx):
     s.wait_status("rewind to a message")
     s.key("enter")
     s.wait_gone("wire the parser")
-    assert "todo" not in s.status_line(), s.status_line()
+    s.wait_for(
+        lambda _t: "todo" not in s.status_line(),
+        "the todo field to leave the status line",
+    )
     s.key("end", "ctrl-u")            # rewind reloaded the message it dropped
     s.submit("/todo")
     s.wait_text("no step list yet")
@@ -408,3 +411,68 @@ def test_eliding_never_takes_the_live_list_off_the_wire(ctx):
     results = [m["content"] for m in ctx.mock.requests[-1]["messages"]
                if m.get("role") == "tool"]
     assert any(r.startswith("[older bash result elided:") for r in results), results
+
+
+def test_an_update_draws_only_the_steps_that_moved(ctx):
+    """A second list prints its changes, not the steps already seen."""
+    s = ctx.spawn()
+    ctx.scenario(
+        todo(
+            ("read the decoder", "in_progress"),
+            ("wire the parser", "pending"),
+            ("add a regression case", "pending"),
+            final="planned",
+        )
+    )
+    s.submit("start")
+    s.wait_text("planned")
+    s.wait_turn_done()
+
+    ctx.scenario(
+        todo(
+            ("read the decoder", "done"),
+            ("wire the parser", "in_progress"),
+            ("add a regression case", "pending"),
+            final="moved+on",
+        )
+    )
+    s.submit("next")
+    s.wait_text("moved on")
+    s.wait_turn_done()
+
+    screen = s.text()
+    assert "todo 1/3" in screen, screen
+    assert screen.count("read the decoder") == 2, screen
+    assert screen.count("wire the parser") == 2, screen
+    assert screen.count("add a regression case") == 1, screen
+
+
+def test_a_restructured_list_is_drawn_whole(ctx):
+    """A delta against different items would name a step never shown."""
+    s = ctx.spawn()
+    ctx.scenario(
+        todo(
+            ("read the decoder", "in_progress"),
+            ("wire the parser", "pending"),
+            final="planned",
+        )
+    )
+    s.submit("start")
+    s.wait_text("planned")
+    s.wait_turn_done()
+
+    ctx.scenario(
+        todo(
+            ("read the decoder", "done"),
+            ("rewrite the lexer", "in_progress"),
+            ("wire the parser", "pending"),
+            final="regrouped",
+        )
+    )
+    s.submit("next")
+    s.wait_text("regrouped")
+    s.wait_turn_done()
+
+    screen = s.text()
+    assert screen.count("wire the parser") == 2, screen
+    assert "rewrite the lexer" in screen, screen

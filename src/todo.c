@@ -24,6 +24,13 @@ size_t todo_done(const TodoList *l) {
     return n;
 }
 
+b8 todo_same_items(const TodoList *a, const TodoList *b) {
+    if (a->n != b->n) return false;
+    for (size_t i = 0; i < a->n; i++)
+        if (!str_eq(todo_text(a, i), todo_text(b, i))) return false;
+    return true;
+}
+
 static b8 todo_status_parse(Str s, u8 *out) {
     if (str_eq(s, STR("pending"))) {
         *out = TODO_PENDING;
@@ -198,8 +205,6 @@ b8 todo_run(Str args_json, Arena *scratch, Buf *out, char *err,
     return buf_ok(out);
 }
 
-/* Shape only: how big the lists are, how much of one is finished, and how
- * often the model rewrites it. Item text is model content and never leaves. */
 void todo_telemetry(TelEvent *e) {
     if (!g_todo.calls) return;
     tel_int(e, "todo_calls", (i64)g_todo.calls);
@@ -229,6 +234,22 @@ static size_t todo_source(const Conv *c, b8 *from_md) {
         }
     }
     return AGENT_TODO_NONE;
+}
+
+/* NOTE: unlike todo_source, no checkpoint stop condition: compaction removes
+ * those slots from `c`, so a scan back cannot reach past one. */
+b8 todo_prev(const Conv *c, size_t slot, Arena *scratch, TodoList *out) {
+    if (!c || slot > c->n) return false;
+    for (size_t i = slot; i-- > 0;) {
+        if (!conv_is_call(c, i) || !str_eq(c->tool_name[i], STR("todo")))
+            continue;
+        char err[AGENT_TOOL_ERR];
+        size_t mark = scratch->off;
+        b8 ok = todo_parse(c->text[i], scratch, out, err, sizeof err);
+        scratch->off = mark;
+        return ok;
+    }
+    return false;
 }
 
 void todo_sync(const Conv *c, Arena *scratch) {

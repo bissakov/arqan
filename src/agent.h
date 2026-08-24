@@ -1461,6 +1461,13 @@ Str todo_text(const TodoList *l, size_t i);
 /* The one in-progress item, or AGENT_TODO_NONE. */
 size_t todo_active(const TodoList *l);
 size_t todo_done(const TodoList *l);
+/* True when both lists name the same items in the same order, so one can be
+ * drawn as a change against the other rather than reprinted whole. */
+b8 todo_same_items(const TodoList *a, const TodoList *b);
+/* The list as the newest todo call before `slot` left it. False when `slot`
+ * is the first, leaving `out` untouched. Borrows `scratch` and restores it,
+ * which is safe because a TodoList owns its text. */
+b8 todo_prev(const Conv *c, size_t slot, Arena *scratch, TodoList *out);
 /* "3 todos: 1 done, 1 in progress", terse because the list itself is already
  * on the wire in the call arguments. */
 void todo_summary(Buf *b, const TodoList *l);
@@ -2156,7 +2163,10 @@ b8 md_muted(void);
  * output, an "ERROR: " prefix included. `id` marks the block as a click
  * target and `expanded` is the state that click left behind, which lifts
  * this block's caps the way /verbose lifts every block's. */
-void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded);
+/* `c` and `slot` locate the call in the conversation so a todo update can be
+ * drawn against the list before it; `c` may be NULL, which draws it whole. */
+void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
+                      const Conv *c, size_t slot);
 
 void render_shell_call(Str cmd, u32 id, b8 expanded);
 

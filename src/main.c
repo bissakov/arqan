@@ -888,7 +888,7 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         size_t call_at = tui_transcript_pos();
         if (!g_turn.one_shot)
             render_tool_call(name, args, ag->scratch, (u32)(i + 1),
-                             conv->expanded[i]);
+                             conv->expanded[i], conv, i);
         ToolApprovalClass approval = TOOL_APPROVAL_NONE;
         if (tool != TOOL_NONE && !tools_disabled(ag->tools, tool)
             && tools_available(ag->tools, tool, ag->cfg->mode))
@@ -1054,7 +1054,7 @@ static void render_conv(const Conv *c, const Config *cfg, b8 show_instructions,
             case M_ASSISTANT:
                 if (conv_is_call(c, i)) {
                     render_tool_call(c->tool_name[i], c->text[i], scratch,
-                                     (u32)(i + 1), c->expanded[i]);
+                                     (u32)(i + 1), c->expanded[i], c, i);
                 } else {
                     render_saved_thinking(c->anthropic_thinking[i], scratch);
                     if (c->text[i].n) {
