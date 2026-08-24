@@ -739,6 +739,7 @@ typedef enum {
     CONF_COMPACT_AT,
     CONF_ELIDE_AT,
     CONF_COMPACT_MODEL,
+    CONF_CACHE_GUARD,
     CONF_N
 } ConfKey;
 
@@ -845,6 +846,17 @@ void notify_event(NotifyKind kind, Str detail, f64 elapsed_ms);
  * window that is nearly full. */
 typedef enum { COMPACT_OFF = 0, COMPACT_MANUAL, COMPACT_AUTO } CompactMode;
 
+/* What an unexplained cache rebuild costs the turn. STOP ends the tool loop
+ * after the round that saw it, WARN says the same thing and keeps going, and
+ * OFF leaves the guard measuring for telemetry without a word in the
+ * transcript. A session with no time to investigate a defect is still a
+ * session whose work should finish. */
+typedef enum {
+    CACHE_GUARD_STOP = 0,
+    CACHE_GUARD_WARN,
+    CACHE_GUARD_OFF,
+} CacheGuardMode;
+
 typedef struct {
     Str base_url;
     Str model;
@@ -897,6 +909,8 @@ typedef struct {
     /* Whether the summarizing request goes to the small model rather than
      * the one the conversation is on. Ignored when none is configured. */
     b8 compact_small;
+    /* What a cache rebuild nobody declared does to the turn that found it. */
+    CacheGuardMode cache_guard;
 
     i32 ask_timeout_ms;
 

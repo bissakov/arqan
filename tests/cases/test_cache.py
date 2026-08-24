@@ -321,3 +321,62 @@ def test_a_server_answering_from_an_older_prefix_is_not_a_defect(ctx):
     s.wait_text("done")
     s.wait_turn_done()
     assert "unexpected cache miss" not in s.text(), s.text()
+
+
+def missed(ctx, s):
+    """One turn of tool rounds whose requests all read nothing back."""
+    ctx.scenario("text=hi,final_text=hi,usage=1000/10,cache_read=1000")
+    s.submit("one")
+    s.wait_turn_done()
+
+    args = json.dumps({"command": "echo x"})
+    ctx.scenario(f"tool=bash:{args},tool_rounds=2,text=ok,final_text=done,"
+                 "usage=1000/10,cache_read=0")
+    sent = len(ctx.mock.requests)
+    s.submit("two")
+    return sent
+
+
+def test_warn_reports_the_miss_without_stopping(ctx):
+    """A session with no time to investigate still wants to be told: the row
+    is the same one, minus the word that stopped the turn."""
+    s = ctx.spawn(ARQAN_CACHE_GUARD="warn")
+    sent = missed(ctx, s)
+    s.wait_text("unexpected cache miss")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    assert "stopped." not in s.text(), s.text()
+    assert len(ctx.mock.requests) - sent > 1, (
+        "the loop stopped at the miss")
+
+
+def test_off_neither_reports_the_miss_nor_stops(ctx):
+    """Off is for a session that has no answer to a bug report: the guard
+    keeps measuring, and the turn runs as if nothing was rebuilt."""
+    s = ctx.spawn(ARQAN_CACHE_GUARD="off")
+    sent = missed(ctx, s)
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    assert "unexpected cache miss" not in s.text(), s.text()
+    assert len(ctx.mock.requests) - sent > 1, (
+        "the loop stopped at the miss")
+
+
+def test_the_settings_screen_cycles_the_guard(ctx):
+    """It is a row like every other setting, and the choice is remembered."""
+    ctx.scenario("text=ok")
+    s = ctx.spawn()
+    s.open_settings()
+    s.settings_select("Cache guard")
+    assert s.settings_option("Cache guard") == "Stop", s.text()
+    s.key("right").sync()
+    s.wait_for(lambda t: s.settings_option("Cache guard") == "Warn",
+               "the guard reporting without stopping")
+    s.key("right").sync()
+    s.wait_for(lambda t: s.settings_option("Cache guard") == "Off",
+               "the guard off")
+
+    s.key("escape").sync()
+    assert ctx.state()["cache_guard"] == "off", ctx.state()

@@ -134,6 +134,11 @@ static const ConfSpec k_conf[CONF_N] = {
                        94, 0, true},
     [CONF_COMPACT_MODEL] = {"compact_model", "main", "main,small", CV_ENUM, 0,
                             0, 0, true},
+    /* What an unexplained cache rebuild does. Never from a project file: a
+     * repository must not be able to silence a defect that spends the user's
+     * tokens rebuilding the same prefix round after round. */
+    [CONF_CACHE_GUARD] = {"cache_guard", "stop", "stop,warn,off", CV_ENUM, 0, 0,
+                          0, false},
 };
 
 Str conf_key_name(ConfKey k) {
@@ -528,6 +533,10 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
         c->elide_at = 0;
     }
     c->compact_small = str_eq(conf_str(conf, CONF_COMPACT_MODEL), STR("small"));
+    Str guard = conf_str(conf, CONF_CACHE_GUARD);
+    c->cache_guard = str_eq(guard, STR("off"))    ? CACHE_GUARD_OFF
+                     : str_eq(guard, STR("warn")) ? CACHE_GUARD_WARN
+                                                  : CACHE_GUARD_STOP;
 
 
     Str tools = conf_str(conf, CONF_DISABLE_TOOLS);

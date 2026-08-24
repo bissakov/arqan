@@ -297,13 +297,14 @@ static void cache_guard_advance(CacheGuard *g, size_t prompt_tokens) {
 }
 
 /* One request's answer to what the guard expected. True when the tool loop
- * has to stop: the prefix was rebuilt and nothing declared a rewrite, which
- * is a defect rather than a price.
+ * has to stop: the prefix was rebuilt, nothing declared a rewrite, and the
+ * mode still treats that defect as worth stopping for.
  *
  * A response carrying no usage measures nothing and leaves the guard where
  * it stood; the next one is still read against the same prefix. */
 static b8 cache_guard_observe(CacheGuard *g, size_t prompt_tokens,
-                              size_t cache_read, size_t cache_creation) {
+                              size_t cache_read, size_t cache_creation,
+                              CacheGuardMode mode) {
     if (!prompt_tokens) return false;
     f64 now = agent_now_seconds();
     if (cache_read) g->armed = true;
@@ -339,6 +340,7 @@ static b8 cache_guard_observe(CacheGuard *g, size_t prompt_tokens,
             cache_cause_name(trailing ? CACHE_CAUSE_TRAIL : cause));
     tel_send(&te);
 
+    b8 quiet = mode == CACHE_GUARD_OFF;
     char a[24], b[24], c[24];
     char row[256];
     i32 n;
@@ -352,7 +354,7 @@ static b8 cache_guard_observe(CacheGuard *g, size_t prompt_tokens,
         else
             n = snprintf(row, sizeof row, "[cache rebuilt after %.*s]\n",
                          (i32)name.n, name.p);
-        if (n > 0) say_cache("cache", (Str){row, (size_t)n}, false);
+        if (n > 0 && !quiet) say_cache("cache", (Str){row, (size_t)n}, false);
         return false;
     }
     Str e = fmt_grouped(a, sizeof a, expect);
@@ -363,15 +365,17 @@ static b8 cache_guard_observe(CacheGuard *g, size_t prompt_tokens,
                      "[cache behind: %.*s sent, %.*s read from an earlier "
                      "request's prefix]\n",
                      (i32)e.n, e.p, (i32)r.n, r.p);
-        if (n > 0) say_cache("cache", (Str){row, (size_t)n}, false);
+        if (n > 0 && !quiet) say_cache("cache", (Str){row, (size_t)n}, false);
         return false;
     }
+    b8 stop = mode == CACHE_GUARD_STOP && !g_turn.one_shot;
     n = snprintf(row, sizeof row,
                  "[unexpected cache miss: %.*s expected, %.*s read, %.*s "
-                 "rewritten\nstopped. this is a bug: %s]\n",
-                 (i32)e.n, e.p, (i32)r.n, r.p, (i32)w.n, w.p, AGENT_ISSUES_URL);
-    if (n > 0) say_cache("cache", (Str){row, (size_t)n}, true);
-    return !g_turn.one_shot;
+                 "rewritten\n%sthis is a bug: %s]\n",
+                 (i32)e.n, e.p, (i32)r.n, r.p, (i32)w.n, w.p,
+                 stop ? "stopped. " : "", AGENT_ISSUES_URL);
+    if (n > 0 && !quiet) say_cache("cache", (Str){row, (size_t)n}, true);
+    return stop;
 }
 
 /* Every image this session holds. The table outlives a turn and is indexed
@@ -3094,9 +3098,10 @@ enum {
     SET_RESUME_LAST,
     SET_COMPACT,
     SET_COMPACT_AT,
-    SET_COMPACT_MODEL
+    SET_COMPACT_MODEL,
+    SET_CACHE_GUARD
 };
-#define SET_MAX_ROWS (21 + AGENT_MAX_TOOLS)
+#define SET_MAX_ROWS (22 + AGENT_MAX_TOOLS)
 
 /* "[x] label" for a toggle and the same column for a value row, so the two
  * kinds read as one list. A row that lost its checkbox to a full arena is
@@ -3402,9 +3407,9 @@ static size_t settings_build(void *ud) {
      * absent: the agent loop answers them, so "disabled" would mean a mode
      * that cannot end.
      *
-     * Nine rows are held back for the option rows below: a registry that
+     * Ten rows are held back for the option rows below: a registry that
      * outgrew the array is a screen missing its settings, not its tools. */
-    for (size_t i = 0; i < reg->n && n + 9 < SET_MAX_ROWS; i++) {
+    for (size_t i = 0; i < reg->n && n + 10 < SET_MAX_ROWS; i++) {
         if (!tools_can_disable(reg, i)) continue;
         kind[n] = SET_TOOL;
         v->tool[n] = i;
@@ -3465,6 +3470,12 @@ static size_t settings_build(void *ud) {
     rows[n] = (TuiCmd){setting_value(rows_arena, STR("Compact with")),
                        setting_options(rows_arena, compact_model_opts, 2,
                                        cfg->compact_small ? 1 : 0, &marks[n])};
+    n++;
+    const Str guard_opts[3] = {STR("Stop"), STR("Warn"), STR("Off")};
+    kind[n] = SET_CACHE_GUARD;
+    rows[n] = (TuiCmd){setting_value(rows_arena, STR("Cache guard")),
+                       setting_options(rows_arena, guard_opts, 3,
+                                       (size_t)cfg->cache_guard, &marks[n])};
     n++;
 
     Str opt[SET_MAX_OPTIONS];
@@ -3630,6 +3641,15 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
             remember_ui(scratch, CONF_COMPACT_MODEL,
                         cfg->compact_small ? STR("small") : STR("main"));
             break;
+        case SET_CACHE_GUARD: {
+            const Str names[3] = {STR("stop"), STR("warn"), STR("off")};
+            i32 next = (i32)cfg->cache_guard + (delta > 0 ? 1 : -1);
+            if (next > 2) next = 0;
+            if (next < 0) next = 2;
+            cfg->cache_guard = (CacheGuardMode)next;
+            remember_ui(scratch, CONF_CACHE_GUARD, names[next]);
+            break;
+        }
         default: break;
     }
 }
@@ -4582,7 +4602,7 @@ static b8 agent_turn(Agent *ag, Str text) {
          * next to the request that paid for it. */
         b8 cache_bad =
             cache_guard_observe(&g_cache, p.prompt_tokens, p.cache_read_tokens,
-                                p.cache_creation_tokens);
+                                p.cache_creation_tokens, ag->cfg->cache_guard);
         if (name_session_now(ag)) {
             announce_interrupt();
             ending = NOTIFY_INTERRUPTED;
