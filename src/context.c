@@ -249,6 +249,7 @@ Str cache_cause_name(CacheCause cause) {
         case CACHE_CAUSE_MEDIA: return STR("an image change");
         case CACHE_CAUSE_RESUME: return STR("resuming");
         case CACHE_CAUSE_TTL: return STR("the cache expiring");
+        case CACHE_CAUSE_TRAIL: return STR("a trailing cache write");
     }
     return STR("none");
 }

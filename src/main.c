@@ -277,6 +277,25 @@ static void say_cache(const char *kind, Str row, b8 bad) {
     g_turn.reasoning = false;
 }
 
+/* Whether a short read still reaches a prefix an earlier request sent whole.
+ * The conversation only grows, so that prefix is one this request sent too:
+ * the server is answering from behind rather than from a conversation that
+ * changed under it, and nothing here can make it catch up. */
+static b8 cache_guard_trailing(const CacheGuard *g, size_t cache_read) {
+    if (!cache_read) return false;
+    for (size_t i = 0; i < AGENT_CACHE_HISTORY; i++)
+        if (g->older_tokens[i] && cache_read >= g->older_tokens[i] * 9 / 10)
+            return true;
+    return false;
+}
+
+static void cache_guard_advance(CacheGuard *g, size_t prompt_tokens) {
+    for (size_t i = AGENT_CACHE_HISTORY; i-- > 1;)
+        g->older_tokens[i] = g->older_tokens[i - 1];
+    g->older_tokens[0] = g->expect_tokens;
+    g->expect_tokens = prompt_tokens;
+}
+
 /* One request's answer to what the guard expected. True when the tool loop
  * has to stop: the prefix was rebuilt and nothing declared a rewrite, which
  * is a defect rather than a price.
@@ -297,11 +316,13 @@ static b8 cache_guard_observe(CacheGuard *g, size_t prompt_tokens,
     b8 miss =
         g->armed && g->expect_tokens && cache_read < g->expect_tokens * 9 / 10;
     CacheCause cause = g->cause;
+    b8 trailing = miss && cause == CACHE_CAUSE_NONE
+                  && cache_guard_trailing(g, cache_read);
     size_t freed = g->freed_tokens, expect = g->expect_tokens;
     size_t wasted =
         cache_creation ? cache_creation : prompt_tokens - cache_read;
 
-    g->expect_tokens = prompt_tokens;
+    cache_guard_advance(g, prompt_tokens);
     g->last_send_s = now;
     g->cause = CACHE_CAUSE_NONE;
     g->freed_tokens = 0;
@@ -314,7 +335,8 @@ static b8 cache_guard_observe(CacheGuard *g, size_t prompt_tokens,
     tel_int(&te, "expected", (i64)expect);
     tel_int(&te, "read", (i64)cache_read);
     tel_int(&te, "rewritten", (i64)wasted);
-    tel_str(&te, "cause", cache_cause_name(cause));
+    tel_str(&te, "cause",
+            cache_cause_name(trailing ? CACHE_CAUSE_TRAIL : cause));
     tel_send(&te);
 
     char a[24], b[24], c[24];
@@ -336,6 +358,14 @@ static b8 cache_guard_observe(CacheGuard *g, size_t prompt_tokens,
     Str e = fmt_grouped(a, sizeof a, expect);
     Str r = fmt_grouped(b, sizeof b, cache_read);
     Str w = fmt_grouped(c, sizeof c, wasted);
+    if (trailing) {
+        n = snprintf(row, sizeof row,
+                     "[cache behind: %.*s sent, %.*s read from an earlier "
+                     "request's prefix]\n",
+                     (i32)e.n, e.p, (i32)r.n, r.p);
+        if (n > 0) say_cache("cache", (Str){row, (size_t)n}, false);
+        return false;
+    }
     n = snprintf(row, sizeof row,
                  "[unexpected cache miss: %.*s expected, %.*s read, %.*s "
                  "rewritten\nstopped. this is a bug: %s]\n",
