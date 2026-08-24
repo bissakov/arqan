@@ -1281,6 +1281,7 @@ static Str help_build(Agent *ag) {
         "context tokens",
         "copy confirmation",
         "permissions",
+        "step list",
     };
     buf_puts(&b, STR("\n### Status fields\n"));
     for (size_t i = 0; i < TUI_STATUS_N; i++)
@@ -3181,6 +3182,7 @@ static size_t statusline_build(void *ud) {
         STR("Context tokens"),
         STR("Copy confirmation"),
         STR("Permissions"),
+        STR("Step list"),
     };
     const Str descriptions[TUI_STATUS_N] = {
         STR("Current ready, thinking, or error state"),
@@ -3193,6 +3195,7 @@ static size_t statusline_build(void *ud) {
         STR("Context the next request carries; ~ marks an estimate"),
         STR("Brief acknowledgement after /copy"),
         STR("Ask or Free approval policy"),
+        STR("Progress through the step list while one is active"),
     };
     StatusView *v = ud;
     arena_reset(&v->rows_arena);
