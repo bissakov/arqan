@@ -7,8 +7,10 @@
 - Track long work as a step list. The model writes one for a task of several
   steps and keeps it current as it goes: the transcript shows the checklist,
   the status line counts what is left, and `/todo` prints the list at any
-  time. The list is part of the conversation, so it survives a resumed
-  session and a `/compact`. Turn it off with `-d todo`.
+  time. A list left unchanged while the work goes on is asked for again, so
+  it does not sit there reading as current. The list is part of the
+  conversation, so it survives a resumed session and a `/compact`. Turn it
+  off with `-d todo`.
 
 - Publish signed apt, dnf and pacman repositories on GitHub Pages, so a
   release can be installed and upgraded with the system package manager
