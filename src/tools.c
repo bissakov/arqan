@@ -91,6 +91,29 @@ static b8 arg_count(const JVal *j, Str key, size_t dflt, size_t max,
     return true;
 }
 
+/* A wait is a request, not an operand: the work runs either way, so a number
+ * past `max` is granted as `max` and one below a millisecond falls back to
+ * `dflt` rather than costing a refusal round. Only a non-number is refused,
+ * since nothing about it says how long to wait. */
+static b8 arg_wait_ms(const JVal *j, size_t dflt, size_t max, size_t *out,
+                      char *err, size_t err_cap) {
+    const JVal *v = json_get(j, STR("timeout_ms"));
+    if (!v || v->type == J_NULL) {
+        *out = dflt;
+        return true;
+    }
+    if (v->type != J_NUM) {
+        snprintf(err, err_cap, "timeout_ms must be a number of milliseconds");
+        return false;
+    }
+    if (!(v->u.n >= 1)) {
+        *out = dflt;
+        return true;
+    }
+    *out = v->u.n > (f64)max ? max : (size_t)v->u.n;
+    return true;
+}
+
 
 static b8 arg_page_limit(const JVal *j, size_t dflt, size_t max, size_t *out,
                          char *err, size_t err_cap) {
@@ -909,7 +932,7 @@ static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err,
         return false;
     /* The deadline the settings set is the ceiling, not the only choice: a
      * caller that knows what it started can hand the turn back sooner. It
-     * cannot hold it longer, which is what the ceiling is for. */
+     * cannot hold it longer, so a longer ask is granted as the ceiling. */
     const JVal *want = json_get(j, STR("timeout_ms"));
     if (g_tools.shell.timeout_ms <= 0 && want && want->type != J_NULL) {
         snprintf(err, err_cap,
@@ -917,8 +940,8 @@ static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err,
                  "is 0, so every command is waited out");
         return false;
     }
-    if (!arg_count(j, STR("timeout_ms"), (size_t)g_tools.shell.timeout_ms,
-                   (size_t)g_tools.shell.timeout_ms, &timeout, err, err_cap))
+    if (!arg_wait_ms(j, (size_t)g_tools.shell.timeout_ms,
+                     (size_t)g_tools.shell.timeout_ms, &timeout, err, err_cap))
         return false;
     return shell_capture_page(json_str(j, STR("command")), offset, limit,
                               (i32)timeout, out, err, err_cap);
@@ -931,8 +954,8 @@ static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
     if (!j) return false;
     size_t id = 0, wait_ms = 0;
     if (!arg_count(j, STR("id"), 0, 1u << 30, &id, err, err_cap)
-        || !arg_count(j, STR("timeout_ms"), AGENT_JOB_WAIT_MS,
-                      AGENT_JOB_WAIT_MAX_MS, &wait_ms, err, err_cap))
+        || !arg_wait_ms(j, AGENT_JOB_WAIT_MS, AGENT_JOB_WAIT_MAX_MS, &wait_ms,
+                        err, err_cap))
         return false;
     Str action = json_str(j, STR("action"));
     if (!action.n) action = id ? STR("wait") : STR("list");

@@ -25,6 +25,10 @@
 
 ### Fixed
 
+- Stop refusing a `bash` or `job` call that asks to wait longer than the
+  deadline allows. The wait is now granted as the longest one allowed, so the
+  command runs instead of coming back as an error the model has to retry.
+
 - Stop blaming the session for a server whose prompt cache is behind. Some
   OpenAI-compatible endpoints answer a request from an older request's
   prefix; that prefix is still intact, so the turn now says the cache is
