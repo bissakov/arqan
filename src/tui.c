@@ -5307,6 +5307,10 @@ static void pick_run(void) {
             }
 
             i32 ms = left > 3600.0 ? 3600 * 1000 : (i32)(left * 1000.0) + 1;
+            /* About to block with a painted frame behind it, which is a park
+             * like any other: without this the count of the key just handled
+             * goes unreported until the deadline lapses. */
+            idle_beacon();
             if (!input_ready(ms)) {
                 if (g_winch) repaint();
                 continue;

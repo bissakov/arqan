@@ -94,6 +94,8 @@ class Session:
         # Bytes written to the child. A wait is over once it parks having
         # consumed all of them; see `wait_idle`.
         self._sent = 0
+        # Restarts observed in the child's own count of them.
+        self._restarts = 0
 
     # ---- lifecycle --------------------------------------------------------
     def start(self) -> "Session":
@@ -145,6 +147,13 @@ class Session:
         chunk = bytes(self._held[:cut])
         del self._held[:cut]
         self.term.feed(chunk)
+        # `/restart` execs a new image, which counts its input from zero. The
+        # debt is the new process's to answer, so it is rebased onto what that
+        # process says it has read: bytes written to the one it replaced can
+        # never be reported again, and a wait for them would never end.
+        if self.term.restarts != self._restarts:
+            self._restarts = self.term.restarts
+            self._sent = self.term.idle_consumed
 
     def _read_once(self, timeout: float) -> bytes:
         if self.master < 0 or self._eof:
@@ -177,6 +186,14 @@ class Session:
     def pump(self, timeout: float = 0.02) -> bytes:
         return self._read_once(timeout)
 
+    def _accounts(self) -> bool:
+        """Whether the child reports what it has read.
+
+        Only a build with the test hooks does. A release build, which the
+        benchmarks measure, offers nothing but its screens.
+        """
+        return bool(self.term.idle_seq or self.term.input_consumed)
+
     def wait_idle(
         self,
         quiet: float | None = None,
@@ -194,7 +211,9 @@ class Session:
 
         With `require_output`, at least one byte must arrive first, which is
         what makes "send a key, then assert" safe: the screen we inspect is
-        never the one from before the key.
+        never the one from before the key. Output already in flight when the
+        key went out is such a screen, so that wait also holds until the
+        child accounts for the bytes themselves.
 
         A resize sends the child a signal rather than bytes, so no count
         moves and the park it was already sitting in would pass for the
@@ -209,8 +228,15 @@ class Session:
         painted = self.term.screen_seq
         visible = self.term.visible_seq
         beacon = self.term.idle_seq
-        # A park that had not yet taken the bytes just sent owes a repaint.
-        owed = False
+        # A child that has not accounted for the bytes just sent owes a
+        # repaint. Only a wait for one starts in that debt: the frames a
+        # busy child was already writing satisfy `seen` on their own, and a
+        # starved child then has a whole quiet window in which to hand back
+        # the screen from before the key. A build with no counts to give is
+        # never in debt, since a key whose frame moves no cell would leave it
+        # owing an account that is never coming.
+        owed = (require_output and self._accounts()
+                and self.term.input_consumed < self._sent)
         while time.monotonic() < deadline:
             got = self._read_once(min(0.02, quiet / 3))
             now = time.monotonic()
@@ -229,11 +255,15 @@ class Session:
             if self.term.idle_seq != beacon:
                 beacon = self.term.idle_seq
                 owed = self.term.idle_consumed < self._sent
-            # Any painting since clears the debt: a child that went on to
-            # stream, or never parks at all, settles on silence as before.
+            # Painting clears the debt only for a child with nothing better
+            # to offer: a build without the hooks reports no count at all, so
+            # silence after a frame is all it has. One that beacons is taken
+            # at its word instead, since the frame it is painting now may
+            # still be the answer to the key before this one.
             if self.term.screen_seq != painted:
                 painted = self.term.screen_seq
-                owed = False
+                if not self._accounts():
+                    owed = False
             # So does word that the bytes have been taken: a turn holding the
             # loop reads through the poll path, which parks in no read and so
             # never beacons a frame at all.
@@ -253,6 +283,10 @@ class Session:
                 return self
         raise TimeoutError_(
             f"{self.name}: no quiet {quiet}s window within {timeout}s\n"
+            f"sent {self._sent}, taken {self.term.input_consumed}, "
+            f"park {self.term.idle_seq} at {self.term.idle_consumed} "
+            f"for {self.term.idle_size}, held {len(self._held)}B, "
+            f"owed {owed}, seen {seen}\n"
             + self.debug_dump()
         )
 
@@ -464,9 +498,11 @@ class Session:
 
         The leading settle lets the busy/thinking repaints that immediately
         follow a submit land, so 'ready' cannot be observed from before the
-        turn began.
+        turn began. A running turn animates the spinner, so there is no quiet
+        screen until it ends: that settle is the wait for the turn itself and
+        takes the caller's budget rather than a shorter one of its own.
         """
-        self.settle()
+        self.settle(timeout=timeout)
         self.wait_for(lambda t: self.status_kind() == "ready", "turn to finish", timeout)
         return self.settle()
 
