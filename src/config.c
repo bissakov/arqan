@@ -139,6 +139,17 @@ static const ConfSpec k_conf[CONF_N] = {
      * tokens rebuilding the same prefix round after round. */
     [CONF_CACHE_GUARD] = {"cache_guard", "stop", "stop,warn,off", CV_ENUM, 0, 0,
                           0, false},
+    [CONF_SUBAGENTS] = {"subagents", "true", NULL, CV_BOOL, 0, 0, 0, true},
+    [CONF_SUBAGENT_MODEL] = {"subagent_model", "main", "main,small", CV_ENUM, 0,
+                             0, 0, true},
+    /* Never from a project file, for the reason shell_timeout_ms carries: a
+     * repository must not be able to hold a turn open past a prompt cache,
+     * here by asking for a slice longer than the window. The ceiling is a
+     * job's longest wait, since both are time the model spends idle. 0 runs
+     * the subagent to completion and accepts the rebuild. */
+    [CONF_SUBAGENT_SLICE_MS] = {"subagent_slice_ms",
+                                CONF_TEXT(AGENT_TASK_SLICE_MS), NULL, CV_NUM, 0,
+                                AGENT_JOB_WAIT_MAX_MS, 0, false},
 };
 
 Str conf_key_name(ConfKey k) {
@@ -533,6 +544,10 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
         c->elide_at = 0;
     }
     c->compact_small = str_eq(conf_str(conf, CONF_COMPACT_MODEL), STR("small"));
+    c->subagents = conf_bool(conf, CONF_SUBAGENTS);
+    c->subagent_small =
+        str_eq(conf_str(conf, CONF_SUBAGENT_MODEL), STR("small"));
+    c->subagent_slice_ms = (i32)conf_num(conf, CONF_SUBAGENT_SLICE_MS);
     Str guard = conf_str(conf, CONF_CACHE_GUARD);
     c->cache_guard = str_eq(guard, STR("off"))    ? CACHE_GUARD_OFF
                      : str_eq(guard, STR("warn")) ? CACHE_GUARD_WARN

@@ -109,6 +109,34 @@ static const char PROMPT_COMPACT_ASK[] =
     "Summarize the conversation above as a context checkpoint, in the exact "
     "format you were given.";
 
+/* A delegate, not a second agent: it reads and reports, and the parent acts.
+ * The bounds are stated rather than implied because the whole report is
+ * replayed to the parent as one tool result. */
+static const char PROMPT_SUB_BUILTIN[] =
+    "You are a research subagent. You investigate a question someone else "
+    "will act on, and you report what you found.\n"
+    "\n"
+    "You read, search and fetch. You cannot change anything: no file is "
+    "written, no command is run, and no question reaches the user, because "
+    "no tool for any of that is available to you here. You cannot delegate "
+    "either; the investigation is yours.\n"
+    "\n"
+    "Available tools:\n"
+    "{tools}\n"
+    "Guidelines:\n"
+    "- Answer once, when you are done: your final message is the whole "
+    "report, and nothing before it is read\n"
+    "- Ground every claim in what you read, and name the file paths, "
+    "symbols and line ranges that carry it\n"
+    "- Keep the report under roughly a thousand words; it is replayed in "
+    "full to the agent that asked, so length is a cost it pays\n"
+    "- Say plainly when the answer is not in this repository, or when you "
+    "found only part of it, instead of guessing at the rest\n"
+    "- Do not propose edits, write patches or plan the work; report what is "
+    "there and let the caller decide\n"
+    "\n"
+    "Current working directory: {cwd}\n";
+
 /* A session name is a row of a list, so what is asked for is a label rather
  * than a sentence: the length and the punctuation are stated because a model
  * asked for "a short title" answers with a quoted one. */
@@ -211,10 +239,11 @@ static size_t prompt_agents(Str dir, Arena *scratch, Str *body, Str *path_out,
     }
 }
 
-static void prompt_tools(Buf *b, const ToolRegistry *tools, AgentMode mode) {
+static void prompt_tools(Buf *b, const ToolRegistry *tools, AgentMode mode,
+                         ToolAudience audience) {
     if (!tools) return;
     for (size_t i = 0; i < tools->n; i++) {
-        if (!tools_available(tools, i, mode)) continue;
+        if (!tools_available_to(tools, i, mode, audience)) continue;
         buf_putf(b, "- %.*s: %.*s\n", (int)tools->name[i].n, tools->name[i].p,
                  (int)tools->desc[i].n, tools->desc[i].p);
     }
@@ -252,7 +281,7 @@ static void prompt_todo(Buf *b, const ToolRegistry *tools, AgentMode mode) {
 }
 
 static void prompt_expand(Buf *b, Str tmpl, const ToolRegistry *tools,
-                          AgentMode mode, Str cwd) {
+                          AgentMode mode, ToolAudience audience, Str cwd) {
     for (size_t i = 0; i < tmpl.n; i++) {
         if (tmpl.p[i] != '{') {
             buf_putc(b, tmpl.p[i]);
@@ -266,7 +295,7 @@ static void prompt_expand(Buf *b, Str tmpl, const ToolRegistry *tools,
             continue;
         }
         if (str_eq(name, STR("tools")))
-            prompt_tools(b, tools, mode);
+            prompt_tools(b, tools, mode, audience);
         else if (str_eq(name, STR("cwd")))
             buf_puts(b, cwd);
         else if (str_eq(name, STR("ask_user_guidance")))
@@ -319,7 +348,7 @@ static Str prompt_for(const ToolRegistry *tools, AgentMode mode, Str configured,
     if (sources) memset(sources, 0, sizeof *sources);
     Buf primary;
     buf_init(&primary, persist, tmpl.n + extra);
-    prompt_expand(&primary, tmpl, tools, mode, cwd);
+    prompt_expand(&primary, tmpl, tools, mode, TOOL_FOR_MAIN, cwd);
     if (!buf_ok(&primary)) return (Str){0};
     Str expanded = buf_finish(&primary);
 
@@ -372,6 +401,16 @@ Str prompt_build_plan(const ToolRegistry *tools, Arena *persist, Arena *scratch,
 
 Str prompt_compact(void) {
     return (Str){PROMPT_COMPACT_BUILTIN, sizeof PROMPT_COMPACT_BUILTIN - 1};
+}
+
+Str prompt_sub(const ToolRegistry *tools, AgentMode mode, Arena *a) {
+    char cwd_buf[AGENT_MAX_PATH];
+    Str cwd = getcwd(cwd_buf, sizeof cwd_buf) ? str_c(cwd_buf) : (Str){0};
+    Str tmpl = {PROMPT_SUB_BUILTIN, sizeof PROMPT_SUB_BUILTIN - 1};
+    Buf b;
+    buf_init(&b, a, tmpl.n + 4096);
+    prompt_expand(&b, tmpl, tools, mode, TOOL_FOR_SUB, cwd);
+    return buf_ok(&b) ? buf_finish(&b) : (Str){0};
 }
 
 Str prompt_compact_ask(void) {

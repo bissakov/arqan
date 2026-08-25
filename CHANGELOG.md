@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- Delegate an investigation with the `task` tool. It starts a subagent with
+  its own conversation that can only read, search and fetch, and hands one
+  written report back. A long investigation is parked at a round boundary
+  instead of holding the turn open, and the model continues it with
+  `task(id=N)`; nothing is ever re-run.
+
+- Add `subagents` to turn the `task` tool on and off, `subagent_model` to run
+  the delegate on the small model, and `subagent_slice_ms` to set how long a
+  slice runs before it parks. All three are rows of the settings screen.
+
 ### Fixed
 
 - Refuse a tool call built from the note left where an older call's arguments

@@ -127,7 +127,7 @@ def test_search_tools_are_offered_in_plan_mode(ctx):
     names = sorted(t["function"]["name"] for t in ctx.mock.requests[-1]["tools"])
     assert names == [
         "ask_user", "find", "grep", "internet_search", "page_fetch",
-        "read", "submit_plan",
+        "read", "submit_plan", "task",
     ], names
 
 

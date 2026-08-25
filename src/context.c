@@ -115,7 +115,8 @@ static b8 ctx_view(const CtxGauge *g, const Conv *c, size_t *tokens,
     f64 media = ctx_media_tokens(c);
 
     if (!g->measured) {
-        f64 v = CTX_SLOPE_DEFAULT * (bytes + (f64)tools_schema_bytes(g->tools))
+        f64 v = CTX_SLOPE_DEFAULT
+                    * (bytes + (f64)tools_schema_bytes(g->tools, TOOL_FOR_MAIN))
                 + media;
         if (v > (f64)AGENT_MAX_CONTEXT_WINDOW)
             v = (f64)AGENT_MAX_CONTEXT_WINDOW;

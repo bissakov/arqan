@@ -291,6 +291,32 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
     }
     size_t cmd_off = 0;
     b8 target_cmd = !path.n && cmd.n;
+
+    char task_buf[48];
+    Str task_prompt = {0};
+    if (str_eq(name, STR("task"))) {
+        task_prompt = json_str(j, STR("prompt"));
+        Str label = json_str(j, STR("label"));
+        const JVal *v = json_get(j, STR("id"));
+        Str action = json_str(j, STR("action"));
+        u64 task_id = v && v->type == J_NUM && v->u.n >= 1 ? (u64)v->u.n : 0;
+        if (label.n) {
+            target = label;
+        } else if (task_id) {
+            i32 n = snprintf(task_buf, sizeof task_buf, "%.*s %llu",
+                             action.n ? (i32)action.n : 8,
+                             action.n ? action.p : "continue",
+                             (unsigned long long)task_id);
+            if (n > 0)
+                target = (Str){task_buf, (size_t)n < sizeof task_buf
+                                             ? (size_t)n
+                                             : sizeof task_buf - 1};
+        } else {
+            target = task_prompt;
+            task_prompt = (Str){0};
+        }
+    }
+
     if (target_cmd) str_line(cmd, &cmd_off, &target);
     static YhlResult syntax;
     static char patch_source[YHL_SOURCE_MAX];
@@ -352,6 +378,9 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
         else
             write_lines(str_drop(cmd, cmd_off), STR("\u2502 "), R_ARG_LINES,
                         R_CMD_BYTES, tui_write_muted);
+    } else if (task_prompt.n) {
+        write_lines(task_prompt, STR("\u2502 "), R_ARG_LINES, R_LINE_BYTES,
+                    tui_write_muted);
     } else if (!path.n && !query.n) {
         write_lines(args, STR("\u2502 "), R_ARG_LINES, R_LINE_BYTES,
                     tui_write_muted);

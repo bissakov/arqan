@@ -27,6 +27,7 @@
 #include "todo.c"
 #include "prompt.c"
 #include "provider.c"
+#include "subagent.c"
 #include "catalog.c"
 #include "session.c"
 #include "tui.c"
@@ -60,6 +61,10 @@ static alignas(64) u8 g_scratch[AGENT_ARENA_BYTES];
  * rows have to survive an action that resets the scratch arena to rerender
  * the transcript under them. */
 static alignas(64) u8 g_screen[AGENT_SCREEN_BYTES];
+/* One live subagent's conversation and everything its rounds allocate. It is
+ * not in `persist` because a parked subagent outlives parent allocations made
+ * after it, and a bump arena cannot give a mark back out of order. */
+static alignas(64) u8 g_sub[AGENT_SUB_BYTES];
 
 
 static struct {
@@ -822,6 +827,188 @@ static b8 tool_result_has(Str result, Str needle) {
     return false;
 }
 
+/* ---- the task tool ------------------------------------------------------
+ * One slot, because nothing here runs in parallel: `http_post` carries one
+ * transfer at a time and the process is single-threaded, so serializing is
+ * the honest contract rather than a limitation to work around. A parked
+ * subagent belongs to the conversation that started it, and every path that
+ * replaces or rewinds that conversation releases it.
+ */
+static struct {
+    Subagent sub;
+    u32 next_id;
+} g_task;
+
+static void task_release(void) {
+    subagent_release(&g_task.sub);
+}
+
+static b8 small_config(Config *small, const Config *cfg, Arena *scratch,
+                       b8 manual);
+
+typedef struct {
+    const char *label;
+} TaskStep;
+
+static void task_on_step(Str tool, u32 round, void *ud) {
+    const TaskStep *t = ud;
+    (void)round;
+    char row[128];
+    snprintf(row, sizeof row, "task: %s - %.*s", t->label, (i32)tool.n, tool.p);
+    say_busy(row);
+}
+
+static const char *task_outcome_name(SubOutcome o) {
+    switch (o) {
+        case SUB_REPORTED: return "reported";
+        case SUB_PARKED: return "parked";
+        case SUB_INTERRUPTED: return "interrupted";
+        case SUB_EXHAUSTED: return "exhausted";
+        case SUB_FAILED: break;
+    }
+    return "failed";
+}
+
+/* The whole `task` call: start or continue a subagent, run one slice, and
+ * answer with what it reported or with the note that keeps the parent
+ * polling. `result` is left in `ag->scratch` for the caller to keep. */
+static void task_answer(Agent *ag, Str args, Str *result) {
+    Buf out;
+    buf_init(&out, ag->scratch, 4096);
+    char err[AGENT_TOOL_ERR] = {0};
+    JVal *j = json_parse_error(ag->scratch, args, err, sizeof err);
+    if (!j) {
+        buf_putf(&out, "ERROR: %s", err);
+        *result = buf_finish(&out);
+        return;
+    }
+    Str prompt = json_str(j, STR("prompt"));
+    Str label = json_str(j, STR("label"));
+    const JVal *id_v = json_get(j, STR("id"));
+    b8 drop = str_eq(json_str(j, STR("action")), STR("drop"));
+    u32 id = 0;
+    if (id_v && id_v->type == J_NUM) {
+        if (id_v->u.n < 1 || id_v->u.n > (f64)UINT32_MAX
+            || id_v->u.n != (f64)(u64)id_v->u.n) {
+            *result = STR("ERROR: id must be the whole number of a task this "
+                          "conversation started");
+            return;
+        }
+        id = (u32)id_v->u.n;
+    }
+
+    if (id) {
+        if (!g_task.sub.live || g_task.sub.id != id) {
+            buf_putf(&out,
+                     "ERROR: there is no task %u in this conversation. A task "
+                     "does not survive /clear, a rewind or a new session.",
+                     id);
+            *result = buf_finish(&out);
+            return;
+        }
+        if (drop) {
+            buf_putf(&out, "Task %u was dropped without finishing.", id);
+            task_release();
+            *result = buf_finish(&out);
+            return;
+        }
+    } else if (drop) {
+        *result = STR("ERROR: action=\"drop\" needs the id of the task to "
+                      "abandon");
+        return;
+    } else if (g_task.sub.live) {
+        buf_putf(&out,
+                 "ERROR: task %u is still parked, and one task runs at a "
+                 "time. Continue it with task(id=%u), or abandon it with "
+                 "task(id=%u, action=\"drop\"), before starting another.",
+                 g_task.sub.id, g_task.sub.id, g_task.sub.id);
+        *result = buf_finish(&out);
+        return;
+    } else {
+        if (!prompt.n) {
+            *result = STR("ERROR: task needs a prompt saying what to "
+                          "investigate, stated so the subagent needs nothing "
+                          "else");
+            return;
+        }
+        if (prompt.n > AGENT_TASK_PROMPT_MAX) {
+            buf_putf(&out,
+                     "ERROR: the prompt is %zu bytes, over the %u byte limit. "
+                     "Ask a narrower question rather than a longer one.",
+                     prompt.n, (unsigned)AGENT_TASK_PROMPT_MAX);
+            *result = buf_finish(&out);
+            return;
+        }
+        Str sys = prompt_sub(ag->tools, ag->cfg->mode, ag->scratch);
+        if (!sys.n) {
+            *result = STR("ERROR: out of memory building the subagent prompt");
+            return;
+        }
+        if (!subagent_begin(&g_task.sub, g_sub, sizeof g_sub,
+                            g_task.next_id + 1, sys, prompt, label, err,
+                            sizeof err)) {
+            task_release();
+            buf_putf(&out, "ERROR: %s", err);
+            *result = buf_finish(&out);
+            return;
+        }
+        g_task.next_id++;
+    }
+
+    /* Static: a Config carries kilobytes of owned buffers, and this runs
+     * from a turn's frame rather than from one with room for them. */
+    static Config small;
+    b8 use_small = ag->cfg->subagent_small
+                   && small_config(&small, ag->cfg, ag->scratch, false);
+    if (ag->cfg->subagent_small && !use_small)
+        tui_notice(STR("no small model is usable, so the subagent runs on the "
+                       "main one"));
+
+    TaskStep step = {g_task.sub.label[0] ? g_task.sub.label : "investigating"};
+    i32 slice_ms = ag->cfg->subagent_slice_ms;
+    SubRun run = {
+        .cfg = use_small ? &small : ag->cfg,
+        .tools = ag->tools,
+        .scratch = ag->scratch,
+        .deadline_s =
+            slice_ms > 0 ? agent_now_seconds() + (f64)slice_ms / 1000.0 : 0.0,
+        .interrupt_flag = &g_got_sigint,
+        .idle_fd = tui_input_fd(),
+        .on_idle = on_idle,
+        .on_retry = on_retry,
+        .on_step = task_on_step,
+        .ud = &step,
+    };
+    task_on_step(STR("thinking"), 0, &step);
+
+    f64 started = agent_now_seconds();
+    u32 rounds_before = g_task.sub.rounds;
+    err[0] = '\0';
+    SubOutcome outcome =
+        subagent_slice(&g_task.sub, &run, &out, err, sizeof err);
+    if (outcome == SUB_FAILED) {
+        out.n = 0;
+        buf_putf(&out, "ERROR: the subagent could not run: %s",
+                 err[0] ? err : "provider failure");
+    }
+    Str text = buf_finish(&out);
+
+    TelEvent e;
+    tel_open(&e, "subagent");
+    tel_int(&e, "rounds", (i64)g_task.sub.rounds);
+    tel_int(&e, "slice_rounds", (i64)(g_task.sub.rounds - rounds_before));
+    tel_int(&e, "tool_calls", (i64)g_task.sub.tool_calls);
+    tel_int(&e, "slices", (i64)g_task.sub.slices);
+    tel_int(&e, "ms", (i64)elapsed_ms(started));
+    tel_str(&e, "outcome", str_c(task_outcome_name(outcome)));
+    tel_bool(&e, "small", use_small);
+    tel_shape(&e, "report", text);
+    tel_send(&e);
+
+    if (outcome != SUB_PARKED) task_release();
+    *result = text;
+}
+
 static const char *tool_outcome(Str name, Str result, b8 ran) {
     if (str_eq(name, STR("bash"))) {
         Str marker = STR("\n[exit ");
@@ -886,23 +1073,30 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
                 return TURN_FULL;
             continue;
         }
-        b8 agent_ui =
-            str_eq(name, STR("submit_plan")) || str_eq(name, STR("ask_user"));
+        b8 agent_ui = str_eq(name, STR("submit_plan"))
+                      || str_eq(name, STR("ask_user"))
+                      || str_eq(name, STR("task"));
         if (agent_ui
             && (tool == TOOL_NONE
                 || !tools_available(ag->tools, tool, ag->cfg->mode))) {
             char msg[128];
             u8 mode = ag->cfg->mode == MODE_PLAN ? TOOL_IN_PLAN : TOOL_IN_BUILD;
-            i32 n =
-                tool != TOOL_NONE && !(ag->tools->modes[tool] & mode)
-                    ? snprintf(msg, sizeof msg,
-                               "ERROR: %.*s is not available in %s mode",
-                               (i32)name.n, name.p,
-                               ag->cfg->mode == MODE_PLAN ? "plan" : "build")
-                    : snprintf(msg, sizeof msg,
-                               "ERROR: %.*s is not available in this "
-                               "non-interactive session",
-                               (i32)name.n, name.p);
+            i32 n;
+            if (tool == TOOL_NONE || tools_disabled(ag->tools, tool))
+                n = snprintf(msg, sizeof msg,
+                             "ERROR: %.*s is not available in this session, "
+                             "so carry on without it",
+                             (i32)name.n, name.p);
+            else if (!(ag->tools->modes[tool] & mode))
+                n = snprintf(msg, sizeof msg,
+                             "ERROR: %.*s is not available in %s mode",
+                             (i32)name.n, name.p,
+                             ag->cfg->mode == MODE_PLAN ? "plan" : "build");
+            else
+                n = snprintf(msg, sizeof msg,
+                             "ERROR: %.*s is not available in this "
+                             "non-interactive session",
+                             (i32)name.n, name.p);
             size_t len =
                 n > 0 && (size_t)n < sizeof msg ? (size_t)n : sizeof msg - 1;
             Str result = keep_result(ag->persist, (Str){msg, len});
@@ -934,6 +1128,20 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
             if (dismissed) pending = TURN_DONE;
             continue;
         }
+        if (str_eq(name, STR("task"))) {
+            if (g_turn.one_shot)
+                one_shot_diag("tool call", name, args);
+            else
+                render_tool_call(name, args, ag->scratch, (u32)(i + 1),
+                                 conv->expanded[i], conv, i);
+            f64 started = agent_now_seconds();
+            Str result = {0};
+            task_answer(ag, args, &result);
+            u32 ms = elapsed_ms(started);
+            if (!add_result(ag, i, name, keep_result(ag->persist, result), ms))
+                return TURN_FULL;
+            continue;
+        }
         Buf out;
         buf_init(&out, ag->scratch, 4096);
         char err[AGENT_TOOL_ERR] = {0};
@@ -952,7 +1160,7 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
             && approval != TOOL_APPROVAL_NONE) {
             Str cls = tools_approval_name(approval);
             (void)tools_run(ag->tools, tool, args, authorization, ag->scratch,
-                            &out, err, sizeof err);
+                            &out, err, sizeof err, TOOL_FOR_MAIN);
             out.n = 0;
             buf_putf(&out,
                      "DENIED: the user did not approve this %.*s call. "
@@ -969,7 +1177,7 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         say_busy(status);
         f64 started = agent_now_seconds();
         b8 ok = tools_run(ag->tools, tool, args, authorization, ag->scratch,
-                          &out, err, sizeof err);
+                          &out, err, sizeof err, TOOL_FOR_MAIN);
         if (!ok) buf_error(&out, err, "tool failed");
         todo_note_stale(name, &out);
         Str result = buf_finish(&out);
@@ -1414,6 +1622,7 @@ static Str help_build(Agent *ag) {
 static void start_help_session(Agent *ag) {
     Conv *conv = ag->conv;
     conv_truncate(conv, 1);
+    task_release();
     cache_guard_begin(&g_cache);
     ag->pending_n = 0;
     ag->persist->off = ag->mark;
@@ -1565,6 +1774,7 @@ static void resume_session(Agent *ag) {
         return;
     }
     conv_truncate(conv, 1);
+    task_release();
     cache_guard_begin(&g_cache);
     ag->pending_n = 0;
     persist->off = session_mark;
@@ -1671,6 +1881,7 @@ static void rewind_conversation(Agent *ag) {
     size_t img_off = conv->media_off[slot], img_n = conv->media_n[slot];
     tui_set_input(conv->text[slot]);
     conv_truncate(conv, slot);
+    task_release();
     cache_guard_begin(&g_cache);
     ag->pending_n = 0;
     if (img_n && conv->media && img_n <= AGENT_MAX_MEDIA_PER_TURN) {
@@ -3118,9 +3329,12 @@ enum {
     SET_COMPACT,
     SET_COMPACT_AT,
     SET_COMPACT_MODEL,
-    SET_CACHE_GUARD
+    SET_CACHE_GUARD,
+    SET_SUBAGENTS,
+    SET_SUBAGENT_MODEL,
+    SET_SUBAGENT_SLICE
 };
-#define SET_MAX_ROWS (22 + AGENT_MAX_TOOLS)
+#define SET_MAX_ROWS (25 + AGENT_MAX_TOOLS)
 
 /* "[x] label" for a toggle and the same column for a value row, so the two
  * kinds read as one list. A row that lost its checkbox to a full arena is
@@ -3308,6 +3522,18 @@ static u32 compact_at_step(u32 cur, i32 dir) {
                                                   : cur - COMPACT_AT_STEP;
 }
 
+/* A delegation slice walks in half minutes up to a job's longest wait, and
+ * one step below the shortest reaches 0, which is the row's way of saying
+ * the answer matters more than the prompt cache. */
+#define SLICE_STEP_MS 30000
+static i32 slice_ms_step(i32 cur, i32 dir) {
+    if (dir > 0) {
+        i32 next = cur + SLICE_STEP_MS;
+        return next > AGENT_JOB_WAIT_MAX_MS ? AGENT_JOB_WAIT_MAX_MS : next;
+    }
+    return cur < SLICE_STEP_MS ? 0 : cur - SLICE_STEP_MS;
+}
+
 /* A configured comma list as the options a row offers: "Off" first, since a
  * provider control the user has not set is a control that is not sent. */
 #define SET_MAX_OPTIONS 64
@@ -3419,6 +3645,10 @@ static size_t settings_build(void *ud) {
     rows[n++] = (TuiCmd){
         setting_check(rows_arena, cfg->resume_last, STR("Resume last session")),
         STR("Start in this directory's newest session instead of the welcome screen")};
+    kind[n] = SET_SUBAGENTS;
+    rows[n++] = (TuiCmd){
+        setting_check(rows_arena, cfg->subagents, STR("Subagents")),
+        STR("Offer the task tool, which delegates a read-only investigation")};
 
     /* One checkbox per tool a turn may call. A tool the mode does not offer
      * is still listed, since turning bash off is a statement about the
@@ -3496,6 +3726,22 @@ static size_t settings_build(void *ud) {
                        setting_options(rows_arena, guard_opts, 3,
                                        (size_t)cfg->cache_guard, &marks[n])};
     n++;
+    const Str subagent_model_opts[2] = {STR("Main"), STR("Small")};
+    kind[n] = SET_SUBAGENT_MODEL;
+    rows[n] = (TuiCmd){setting_value(rows_arena, STR("Delegate with")),
+                       setting_options(rows_arena, subagent_model_opts, 2,
+                                       cfg->subagent_small ? 1 : 0, &marks[n])};
+    n++;
+    /* Seconds, because the number is a wait rather than a measurement, and
+     * zero is a policy rather than a duration. */
+    char slice[32];
+    if (cfg->subagent_slice_ms > 0)
+        snprintf(slice, sizeof slice, "%ds", cfg->subagent_slice_ms / 1000);
+    else
+        snprintf(slice, sizeof slice, "no limit");
+    kind[n] = SET_SUBAGENT_SLICE;
+    rows[n++] = (TuiCmd){setting_value(rows_arena, STR("Delegate slice")),
+                         str_dup(rows_arena, str_c(slice))};
 
     Str opt[SET_MAX_OPTIONS];
     if (cfg->reasoning_efforts.n && n < SET_MAX_ROWS) {
@@ -3552,6 +3798,7 @@ static b8 setting_shapes_request(u8 kind) {
         case SET_MODE:
         case SET_STREAM:
         case SET_MAX_TOKENS:
+        case SET_SUBAGENTS:
         case SET_EFFORT:
         case SET_BUDGET: return true;
         default: return false;
@@ -3672,6 +3919,26 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
             if (next < 0) next = 2;
             cfg->cache_guard = (CacheGuardMode)next;
             remember_ui(scratch, CONF_CACHE_GUARD, names[next]);
+            break;
+        }
+        case SET_SUBAGENTS:
+            cfg->subagents = !cfg->subagents;
+            tools_set_subagents(ag->tools, cfg->subagents);
+            if (!cfg->subagents) task_release();
+            remember_ui_bool(scratch, CONF_SUBAGENTS, cfg->subagents);
+            cache_guard_cause(&g_cache, CACHE_CAUSE_TOOLS, 0);
+            break;
+        case SET_SUBAGENT_MODEL:
+            cfg->subagent_small = !cfg->subagent_small;
+            remember_ui(scratch, CONF_SUBAGENT_MODEL,
+                        cfg->subagent_small ? STR("small") : STR("main"));
+            break;
+        case SET_SUBAGENT_SLICE: {
+            cfg->subagent_slice_ms =
+                slice_ms_step(cfg->subagent_slice_ms, delta);
+            char value[16];
+            snprintf(value, sizeof value, "%d", cfg->subagent_slice_ms);
+            remember_ui(scratch, CONF_SUBAGENT_SLICE_MS, str_c(value));
             break;
         }
         default: break;
@@ -4141,6 +4408,7 @@ static void compact_session(Agent *ag) {
     }
 
     conv_truncate(conv, 1);
+    task_release();
     cache_guard_cause(&g_cache, CACHE_CAUSE_COMPACT, 0);
     ag->pending_n = 0;
     persist->off = ag->mark;
@@ -4441,6 +4709,7 @@ static b8 agent_handoff(Agent *ag) {
     Str plan = ag->handoff;
     ag->handoff = (Str){0};
     conv_truncate(ag->conv, 1);
+    task_release();
     cache_guard_begin(&g_cache);
     ag->pending_n = 0;
     ag->persist->off = ag->mark;
@@ -4819,7 +5088,7 @@ i32 main(i32 argc, char **argv) {
     arena_reset(&scratch);
 
     ToolRegistry tools;
-    tools_init(&tools, &persist, cfg.shell_timeout_ms);
+    tools_init(&tools, &persist, cfg.shell_timeout_ms, cfg.subagents);
     b8 interactive =
         !opts.have_prompt && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
     tools_set_interactive(interactive);
@@ -5027,6 +5296,7 @@ i32 main(i32 argc, char **argv) {
         if (!strcmp(line, "/exit")) break;
         if (!strcmp(line, "/clear")) {
             conv_truncate(&conv, 1);
+            task_release();
             cache_guard_begin(&g_cache);
             agent.pending_n = 0;
             persist.off = session_mark;
