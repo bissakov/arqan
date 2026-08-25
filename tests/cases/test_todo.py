@@ -253,6 +253,7 @@ def test_the_list_survives_a_resumed_session(ctx):
     s.wait_status("pick a session")
     s.key("enter")
     s.wait_text("all set")
+    s.wait_turn_done()
     assert "todo 1/2" in s.status_line(), s.status_line()
     s.submit("/todo")
     s.wait_text("step list")
@@ -288,6 +289,7 @@ def test_compaction_carries_the_list_into_the_checkpoint(ctx):
     ctx.scenario("text=##+Goal\\nFinish+the+decoder")
     s.submit("/compact")
     s.wait_text("compacted: a new session continues")
+    s.wait_turn_done()
     assert "todo 1/2" in s.status_line(), s.status_line()
 
     ctx.scenario("text=carrying+on")

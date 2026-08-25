@@ -213,10 +213,15 @@ class Terminal:
         self.title: str | None = None
         self.unknown: list[str] = []
         # Sequence number of the last idle beacon the test build emitted. It
-        # only ever grows, and each bump is one settled frame.
+        # only ever grows within one process, and each bump is one settled
+        # frame.
         self.idle_seq = 0
         # Highest input count reported by either signal.
         self.input_consumed = 0
+        # Bumped when a beacon shows the counters starting over, which only
+        # an exec can do: `/restart` replaces the image, and the new process
+        # counts its own input from zero.
+        self.restarts = 0
         # Bumped by every write that can move a cell. A beacon moves none, so
         # this is what separates a repaint from the child merely parking.
         self.screen_seq = 0
@@ -646,8 +651,13 @@ class Terminal:
                 seq = fields[0]
                 consumed = fields[1] if len(fields) > 1 else ""
                 size = fields[2] if len(fields) > 2 else ""
-                self.idle_seq = int(seq)
-                self.idle_consumed = int(consumed) if consumed else 0
+                seq_n = int(seq)
+                consumed_n = int(consumed) if consumed else 0
+                if seq_n <= self.idle_seq or consumed_n < self.idle_consumed:
+                    self.restarts += 1
+                    self.input_consumed = consumed_n
+                self.idle_seq = seq_n
+                self.idle_consumed = consumed_n
                 if self.idle_consumed > self.input_consumed:
                     self.input_consumed = self.idle_consumed
                 if size:

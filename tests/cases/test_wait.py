@@ -72,3 +72,39 @@ def test_a_park_naming_the_bytes_sent_ends_the_wait_at_once(ctx):
     s.sync(timeout=5.0)
     assert "done" in s.text(), s.text()
     assert time.monotonic() - began < 0.05
+
+
+def test_a_frame_in_flight_is_not_the_repaint_for_the_next_key(ctx):
+    """Output the key did not cause must not end the wait for the one it did.
+
+    A wait that returns on the screen it was already painting hands the case
+    the frame from before the key, which is what a loaded machine produces:
+    the child is starved for a quiet window with the key still unread.
+    """
+    late = 0.4
+    s = Scripted(
+        [(0.0, b"\x1b[H[x] Model"), (late, b"\x1b[H[ ] Model" + beacon(8, 2))],
+        sent=2,
+    )
+    s.feed(beacon(7, 1))
+    began = time.monotonic()
+    s.sync(timeout=5.0)
+    assert "[ ] Model" in s.text(), s.text()
+    assert time.monotonic() - began >= late
+
+
+def test_a_restarted_child_counts_its_own_input(ctx):
+    """`/restart` execs, and the new process counts from zero.
+
+    Its parks can never reach the bytes the process it replaced was sent, so
+    a wait that keeps asking for them waits out every later turn in full.
+    """
+    s = Scripted(
+        [(0.0, b"\x1b[Hsecond answer"), (0.05, beacon(2, 16))], sent=40
+    )
+    # The park of the process the exec replaced, having read all 24 bytes it
+    # was sent. The 16 after it went to the one that took its place.
+    s.feed(beacon(7, 24))
+    began = time.monotonic()
+    s.settle(timeout=2.0)
+    assert time.monotonic() - began < 1.0
