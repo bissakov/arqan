@@ -140,6 +140,27 @@ typedef bool b8;
 #define AGENT_JOB_WAIT_MAX_MS 240000
 #define AGENT_MAX_JOBS        8
 
+/* One parked subagent's own storage: its conversation outlives allocations
+ * the parent makes after it, so it cannot be a mark in a bump arena, and
+ * AGENT_SUB_MESSAGES bounds the rounds it may take before it has to report.
+ *
+ * A slice ends at a round boundary rather than when the subagent is done,
+ * so the gap between two parent requests stays inside AGENT_CACHE_TTL_S and
+ * the parent's prefix survives a long delegation. This is the same reason
+ * shell_timeout_ms exists. A prompt over AGENT_TASK_PROMPT_MAX is refused
+ * rather than truncated: a cut task is a different task. */
+#define AGENT_SUB_BYTES       (4u << 20)
+#define AGENT_SUB_MESSAGES    512
+#define AGENT_TASK_SLICE_MS   120000
+#define AGENT_TASK_PROMPT_MAX 8192
+#define AGENT_TASK_LABEL_MAX  64
+/* What a report may cost the parent, and what a parked note quotes back of
+ * the work so far. The report is clipped behind a line saying so; the sub
+ * prompt asks for a bounded answer up front, so clipping is the backstop
+ * rather than the plan. */
+#define AGENT_SUB_REPORT_BYTES   (AGENT_TOOL_RESULT_BYTES - 1024u)
+#define AGENT_SUB_PROGRESS_BYTES 500
+
 #define AGENT_JOB_CMD_CHARS      96
 #define AGENT_MAX_COMMANDS       32
 #define AGENT_LINE_BUF           (1u << 20)
@@ -740,6 +761,9 @@ typedef enum {
     CONF_ELIDE_AT,
     CONF_COMPACT_MODEL,
     CONF_CACHE_GUARD,
+    CONF_SUBAGENTS,
+    CONF_SUBAGENT_MODEL,
+    CONF_SUBAGENT_SLICE_MS,
     CONF_N
 } ConfKey;
 
@@ -911,6 +935,15 @@ typedef struct {
     b8 compact_small;
     /* What a cache rebuild nobody declared does to the turn that found it. */
     CacheGuardMode cache_guard;
+    /* Whether the task tool is registered at all. Read before tools_init,
+     * which leaves the row out when it is off. */
+    b8 subagents;
+    /* Whether a delegation goes to the small model rather than the one the
+     * conversation is on. Ignored when none is configured. */
+    b8 subagent_small;
+    /* How long one task call may run sub-rounds before parking. 0 runs the
+     * subagent to completion and accepts the prefix rebuild. */
+    i32 subagent_slice_ms;
 
     i32 ask_timeout_ms;
 
@@ -1154,6 +1187,13 @@ typedef b8 (*ToolRun)(Str args_json, Arena *scratch, Buf *out, char *err,
 #define TOOL_FIXED 4u
 
 #define TOOL_INTERACTIVE 8u
+/* Offered to a subagent. Only the read-only rows carry it, so a subagent
+ * cannot spawn another one and depth is one by construction. */
+#define TOOL_IN_SUB 16u
+
+/* Who a registry question is being asked on behalf of. TOOL_FOR_MAIN is 0,
+ * so a zero-initialized structure keeps the conversation's own audience. */
+typedef enum { TOOL_FOR_MAIN, TOOL_FOR_SUB } ToolAudience;
 
 typedef struct {
     Str *name;
@@ -1172,13 +1212,22 @@ typedef struct {
 
 #define TOOL_NONE ((size_t)-1)
 
-void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms);
+/* `subagents` off registers the task row turned off, so a session that
+ * disabled it pays none of its schema bytes and can turn it back on. */
+void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
+                b8 subagents);
+
+void tools_set_subagents(ToolRegistry *r, b8 on);
 
 void tools_set_mode(AgentMode mode);
 
 void tools_set_interactive(b8 interactive);
 
 b8 tools_available(const ToolRegistry *r, size_t id, AgentMode mode);
+/* The same question asked for one audience: a subagent is offered only the
+ * rows carrying TOOL_IN_SUB, on top of every test the main audience makes. */
+b8 tools_available_to(const ToolRegistry *r, size_t id, AgentMode mode,
+                      ToolAudience audience);
 size_t tools_find(const ToolRegistry *r, Str name);
 ToolApprovalClass tools_approval_class(const ToolRegistry *r, size_t id);
 
@@ -1191,12 +1240,13 @@ void tools_set_disabled(ToolRegistry *r, size_t id, b8 off);
 b8 tools_disable_list(ToolRegistry *r, Str names, char *err, size_t err_cap);
 b8 tools_run(const ToolRegistry *r, size_t id, Str args,
              ToolAuthorization authorization, Arena *scratch, Buf *out,
-             char *err, size_t err_cap);
+             char *err, size_t err_cap, ToolAudience audience);
 
-void tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api);
+void tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api,
+                         ToolAudience audience);
 /* What those schemas cost a request, near enough for an estimate: the bytes
  * the currently available tools would write. Counts no arena. */
-size_t tools_schema_bytes(const ToolRegistry *r);
+size_t tools_schema_bytes(const ToolRegistry *r, ToolAudience audience);
 
 void web_set_idle(void (*fn)(void *ud), void *ud, i32 idle_fd,
                   const volatile sig_atomic_t *interrupt_flag);
@@ -1246,6 +1296,12 @@ Str prompt_build_plan(const ToolRegistry *tools, Arena *persist, Arena *scratch,
  * stands in for the system prompt of the one request /compact makes, which
  * asks for a context checkpoint rather than for work. */
 Str prompt_compact(void);
+/* A subagent's system prompt, built into `a` per delegation so it names the
+ * tools actually offered after a /tools change or a mode switch. Project
+ * AGENTS.md files are deliberately absent: they describe how to change the
+ * repository, the parent already carries them, and a delegation would pay
+ * for them again. Empty when `a` could not take it. */
+Str prompt_sub(const ToolRegistry *tools, AgentMode mode, Arena *a);
 /* The user turn that request ends on, so the summary is asked for by a
  * message rather than only by the system prompt. */
 Str prompt_compact_ask(void);
@@ -1627,6 +1683,9 @@ typedef struct {
     Conv *conv;
     Arena *persist;
     Arena *scratch;
+    /* Which tools the request advertises. A subagent's run is the only one
+     * that is not TOOL_FOR_MAIN. */
+    ToolAudience audience;
     void (*on_text)(Str delta, void *ud);
 
     void (*on_reason)(Str delta, void *ud);
@@ -1664,6 +1723,79 @@ typedef struct {
  * calls to conv. Returns the number of tool calls, PROVIDER_EMPTY for no
  * semantic output, or -1 with `err` set for every other failure. */
 i32 provider_run(Provider *p, char *err, size_t err_cap);
+
+/* ---- subagents -----------------------------------------------------------
+ * A nested agent the `task` tool answers with: its own conversation, its own
+ * system prompt and the read-only slice of the registry. It streams nothing,
+ * so the transcript keeps one call and one result, and the parent's context
+ * gauge measures the parent's conversation alone.
+ *
+ * A run is cut into slices at round boundaries. An unfinished subagent is
+ * parked rather than discarded, its conversation kept whole in its own arena,
+ * and the parent polls it with another `task` call. Nothing is re-run, and
+ * each poll is a cheap parent request that re-warms the prefix.
+ */
+typedef struct {
+    Arena a;
+    Conv conv;
+    u32 id, rounds, tool_calls, slices;
+    size_t prompt_tokens, completion_tokens;
+    f64 started;
+    /* The longest round yet, which is what decides whether another one fits
+     * in the slice that is left. Plain elapsed time cannot: it is a round
+     * started inside the budget and finished outside it that strands the
+     * parent past the cache window. */
+    f64 slowest_round_s;
+    /* The registry name of the last tool it ran, for the activity row and
+     * the parked note. Borrowed from the registry or from `a`. */
+    Str last_tool;
+    b8 live;
+    char label[AGENT_TASK_LABEL_MAX];
+} Subagent;
+
+typedef struct {
+    const Config *cfg;
+    const ToolRegistry *tools;
+    /* Rolled back between rounds, not reset: everything the caller staged
+     * for the slice, `out` among them, has to be allocated before the call
+     * and survives it. */
+    Arena *scratch;
+    /* When the slice must be over, from agent_now_seconds(); 0 runs the
+     * subagent to completion. One round always runs whatever it says, so a
+     * poll can never answer without making progress. */
+    f64 deadline_s;
+    const volatile sig_atomic_t *interrupt_flag;
+    i32 idle_fd;
+    void (*on_idle)(void *ud);
+    void (*on_retry)(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
+                     void *ud);
+    // Named for the activity row, once per tool the slice runs.
+    void (*on_step)(Str tool, u32 round, void *ud);
+    void *ud;
+} SubRun;
+
+typedef enum {
+    SUB_REPORTED,
+    SUB_PARKED,
+    SUB_INTERRUPTED,
+    SUB_EXHAUSTED,
+    SUB_FAILED
+} SubOutcome;
+
+// Frees the slot. The arena is dropped whole; nothing in it is referenced.
+void subagent_release(Subagent *s);
+/* Lay a subagent over `mem`, seeded with its system prompt and the task.
+ * `system` and `task` are copied in, so neither has to outlive the call.
+ * False with `err` filled in when the memory cannot hold them. */
+b8 subagent_begin(Subagent *s, void *mem, size_t cap, u32 id, Str system,
+                  Str task, Str label, char *err, size_t err_cap);
+/* Run rounds until the subagent reports, the slice runs out, the user
+ * interrupts or it runs out of room. `out` takes the whole tool result: the
+ * report, or a note saying what happened and how to continue. It is backed
+ * by the caller's scratch, which the next slice resets, so the caller copies
+ * it out before then. SUB_FAILED fills `err` and writes nothing. */
+SubOutcome subagent_slice(Subagent *s, const SubRun *r, Buf *out, char *err,
+                          size_t err_cap);
 
 /* Model ids from GET <base_url>/models, in the order the endpoint serves
  * them, allocated in `scratch`. Zero with `err` set when it could not be

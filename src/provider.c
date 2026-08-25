@@ -1336,7 +1336,7 @@ static b8 build_request(Buf *b, const Provider *p, char *err, size_t err_cap) {
         conv_write_json(b, p->conv, p->tools);
     if (p->tools && p->tools->n) {
         buf_puts(b, STR(",\"tools\":"));
-        tools_write_schemas(b, p->tools, p->cfg->api);
+        tools_write_schemas(b, p->tools, p->cfg->api, p->audience);
     }
     buf_putf(b, ",\"max_tokens\":%d", p->cfg->max_tokens);
     if (!anth && p->cfg->reasoning_effort.n) {

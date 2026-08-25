@@ -7,8 +7,8 @@
 |
 |
 |    search:  · Space or Left/Right changes the selected row · Esc closes
-|    [ ] Resume last session  Start in this directory's newest session
-|                             instead of the welcome screen
+|    [x] Subagents            Offer the task tool, which delegates a
+|                             read-only investigation
 |    [x] read                 Read a page of a file
 |    [x] grep                 Search file contents
 |    [x] find                 List files by name
