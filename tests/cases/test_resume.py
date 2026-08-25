@@ -644,6 +644,44 @@ def test_a_call_cut_off_before_it_ran_is_answered_on_resume(ctx):
     assert roles == ["system", "user", "assistant", "tool", "user"], roles
 
 
+def test_one_call_answered_twice_replays_as_one_result(ctx):
+    """Two runs appending to one file can answer a call twice.
+
+    A second run that resumes a session whose last call is still in flight
+    writes the placeholder for it, and the first run appends the real result
+    when its tool finally returns. Both APIs refuse a second result for one
+    call id, so the replay keeps one slot and the answer that arrived last.
+    """
+    path = plant_session(ctx, "".join(
+        json.dumps(m) + "\n" for m in [
+            {"role": "user", "content": "read the notes"},
+            {"role": "assistant", "calls": True, "content": ""},
+            {"role": "assistant", "id": "call_1", "name": "read",
+             "content": '{"path":"notes.txt"}'},
+            {"role": "tool", "id": "call_1",
+             "content": "ERROR: interrupted before this call ran."},
+            {"role": "tool", "id": "call_1", "content": "the notes, at last"},
+        ]
+    ))
+    assert path.exists()
+
+    s = ctx.spawn()
+    s.submit("/resume")
+    s.wait_status("pick a session")
+    s.key("enter")
+    s.wait_text("the notes, at last")
+
+    ctx.scenario("final_text=picking+up")
+    s.submit("carry on")
+    s.wait_text("picking up")
+    s.wait_turn_done()
+    messages = ctx.mock.requests[-1]["messages"]
+    answers = [m for m in messages if m["role"] == "tool"]
+    assert len(answers) == 1, messages
+    assert answers[0]["content"] == "the notes, at last", answers[0]
+    assert "interrupted" not in json.dumps(messages), messages
+
+
 def test_a_torn_last_line_does_not_swallow_the_next_message(ctx):
     """A save cut mid-line is closed before the next append, not run onto."""
     path = plant_session(

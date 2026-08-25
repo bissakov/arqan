@@ -1385,6 +1385,9 @@ size_t conv_add_assistant_calls(Conv *c, Str content);
 /* `scratch` holds the parse that decides whether `args` are a JSON object;
  * it is rewound before returning. */
 size_t conv_add_call(Conv *c, Arena *scratch, Str id, Str name, Str args);
+/* The result for `tool_call_id`. A call that already has an answer keeps its
+ * slot and takes the newer text, since a second result for one call is a
+ * request both APIs refuse. */
 size_t conv_add_tool(Conv *c, Str tool_call_id, Str text);
 /* A '!' shell run: one user slot holding the command and what it printed,
  * since it is one turn the user took. */
@@ -1433,6 +1436,12 @@ b8 conv_result_elided(const Conv *c, size_t i, size_t recent);
  * one. The context estimator asks through here too, so what it counts and
  * what the writers send cannot drift apart. */
 b8 conv_args_elided(const Conv *c, size_t i, size_t recent);
+/* True when `args` are the stub a request sends in place of arguments the
+ * boundary has passed. The stub reads like any other call, so a model can
+ * repeat it back as a call of its own; answering it as what it is beats
+ * letting the tool report a missing argument. `scratch` holds the parse and
+ * is rewound before returning. */
+b8 conv_args_are_stub(Str args, Arena *scratch);
 
 /* True when a request may begin at slot `i`: a user turn, a plain assistant
  * reply, or the assistant message that opens a group of tool calls. A tool

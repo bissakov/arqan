@@ -174,6 +174,28 @@ def test_arguments_are_stubbed_below_the_boundary(ctx):
     assert any("elided" in a for a in stubbed), stubbed
 
 
+def test_a_call_that_repeats_the_stub_is_refused(ctx):
+    """The stub records a call; it is not one the model may make again.
+
+    It goes out in the arguments field, so a model can read it as the shape
+    the tool takes and send it straight back. Running it would report a
+    missing argument the model never meant to omit, so the answer names what
+    those arguments actually are.
+    """
+    stub = json.dumps({"elided": "older bash arguments removed: 1467 bytes"})
+    ctx.scenario(f"tool=bash:{stub},final_text=understood")
+    s = ctx.spawn()
+    s.submit("go")
+    s.wait_text("understood")
+    s.wait_turn_done()
+
+    results = tool_results(ctx)
+    assert len(results) == 1, results
+    assert results[0].startswith("ERROR: "), results[0]
+    assert "not an input" in results[0], results[0]
+    assert "missing command" not in results[0], results[0]
+
+
 def test_a_failed_call_is_stubbed_on_both_sides(ctx):
     """A refusal and the arguments that earned it both stop being replayed.
 
