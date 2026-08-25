@@ -446,6 +446,7 @@ static void md_indent(size_t n) {
 static void md_rule(void) {
     char buf[MD_RULE_MAX * 3];
     size_t cells = tui_body_cols();
+    tui_width_fitted();
     if (!cells || cells > MD_RULE_MAX) cells = MD_RULE_MAX;
     for (size_t i = 0; i < cells; i++) memcpy(buf + i * 3, "\u2500", 3);
     md_emit((Str){buf, cells * 3}, TUI_MARKER);
@@ -871,6 +872,7 @@ static void md_table_flush(void) {
     b8 rule = false;
     for (size_t i = 0; i < g_md.table_cols && !rule; i++)
         rule = body[i] > width[i];
+    tui_width_fitted();
     md_table_border("\u250c", "\u252c", "\u2510", width);
     md_table_line((Str){g_md.table + g_md.table_off[0], g_md.table_len[0]},
                   width, true);

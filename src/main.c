@@ -3522,6 +3522,11 @@ static void find_expand(void *ud) {
 }
 
 
+static void reflow_transcript(void *ud) {
+    rerender_or_defer(ud);
+}
+
+
 static b8 setting_shapes_request(u8 kind) {
     switch (kind) {
         case SET_TOOL:
@@ -4928,6 +4933,7 @@ i32 main(i32 argc, char **argv) {
         .show_instructions = prefs.show_instructions,
     };
     tui_set_busy_command(on_busy_command, &agent);
+    tui_set_reflow(reflow_transcript, &agent);
     if (!render_verbose()) tui_set_find_expand(find_expand, &agent);
     b8 resumed_saved = !resumed || save_session(&agent);
 

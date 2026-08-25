@@ -195,7 +195,7 @@ ASCII; no padded preambles, smart punctuation, emoji, or AI/tool attributions.
 Do not comment code. Name things so the code reads without help, and delete a
 comment that only restates what the next line does. Three kinds stay:
 
-- Header doc comments, describing ownership, arena, and failure behaviour.
+- File header doc comments.
 - Separator comments that divide a long file into sections.
 - Signal comments, tagged and greppable: `TODO` for deferred work with the
   reason it was deferred, `NOTE` for a constraint the code cannot show, and
