@@ -186,6 +186,14 @@ class Session:
     def pump(self, timeout: float = 0.02) -> bytes:
         return self._read_once(timeout)
 
+    def _accounts(self) -> bool:
+        """Whether the child reports what it has read.
+
+        Only a build with the test hooks does. A release build, which the
+        benchmarks measure, offers nothing but its screens.
+        """
+        return bool(self.term.idle_seq or self.term.input_consumed)
+
     def wait_idle(
         self,
         quiet: float | None = None,
@@ -224,8 +232,11 @@ class Session:
         # repaint. Only a wait for one starts in that debt: the frames a
         # busy child was already writing satisfy `seen` on their own, and a
         # starved child then has a whole quiet window in which to hand back
-        # the screen from before the key.
-        owed = require_output and self.term.input_consumed < self._sent
+        # the screen from before the key. A build with no counts to give is
+        # never in debt, since a key whose frame moves no cell would leave it
+        # owing an account that is never coming.
+        owed = (require_output and self._accounts()
+                and self.term.input_consumed < self._sent)
         while time.monotonic() < deadline:
             got = self._read_once(min(0.02, quiet / 3))
             now = time.monotonic()
@@ -251,7 +262,7 @@ class Session:
             # still be the answer to the key before this one.
             if self.term.screen_seq != painted:
                 painted = self.term.screen_seq
-                if not (self.term.idle_seq or self.term.input_consumed):
+                if not self._accounts():
                     owed = False
             # So does word that the bytes have been taken: a turn holding the
             # loop reads through the poll path, which parks in no read and so

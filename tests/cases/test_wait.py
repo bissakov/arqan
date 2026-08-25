@@ -108,3 +108,15 @@ def test_a_restarted_child_counts_its_own_input(ctx):
     began = time.monotonic()
     s.settle(timeout=2.0)
     assert time.monotonic() - began < 1.0
+
+
+def test_a_build_without_the_hooks_settles_on_its_screens(ctx):
+    """A release build, which the benchmarks measure, reports no count.
+
+    A key that changes no cell leaves it writing a cursor move and nothing
+    else, so a wait holding out for the bytes to be accounted for never ends.
+    """
+    s = Scripted([(0.0, b"\x1b[21;5H")], sent=8)
+    began = time.monotonic()
+    s.sync(timeout=2.0)
+    assert time.monotonic() - began < 1.0
