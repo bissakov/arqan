@@ -24,7 +24,9 @@
 
 - Report a rebuilt prompt cache in the transcript, saying what caused it and
   how much room it bought. A rebuild nothing in the session caused stops the
-  turn and names where to report it.
+  turn and names where to report it. Set `cache_guard` to `warn` to keep the
+  report without the stop, or to `off` for neither; it is a `/settings` row
+  too.
 
 ### Fixed
 
