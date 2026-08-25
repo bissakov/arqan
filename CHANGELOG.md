@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- Refuse a tool call built from the note left where an older call's arguments
+  were dropped. A model that read the note as an example used to have the call
+  run and fail with a missing argument.
+- Keep one result per tool call when a session was answered twice, which
+  happens when a second run resumes a session the first is still writing.
+  The provider used to refuse the whole conversation.
 - Redraw tables and rules when the terminal is resized. A table drawn for a
   wide window used to break apart once the window narrowed; it is now laid
   out again for the new width.

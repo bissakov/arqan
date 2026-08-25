@@ -147,6 +147,26 @@ size_t conv_add_call(Conv *c, Arena *scratch, Str id, Str name, Str args) {
     return i;
 }
 size_t conv_add_tool(Conv *c, Str tool_call_id, Str text) {
+    /* One answer per call, and the last one wins. A session file two runs
+     * appended to holds two: the placeholder a resume writes for a call it
+     * found unanswered, then the result the first run appended when its tool
+     * finally returned. Both APIs refuse a second result for one call id, so
+     * the later answer replaces the earlier rather than joining it.
+     *
+     * Only back to the call being answered: an endpoint that numbers its
+     * calls per message rather than per session reuses an id every round,
+     * and a round's own call still needs a result of its own. */
+    if (tool_call_id.n)
+        for (size_t i = c->n; i-- > 0;) {
+            if (conv_is_call(c, i) && str_eq(c->tool_call_id[i], tool_call_id))
+                break;
+            if (c->role[i] == M_TOOL
+                && str_eq(c->tool_call_id[i], tool_call_id)) {
+                c->text[i] = text;
+                c->ms[i] = 0;
+                return i;
+            }
+        }
     return conv_push(c, M_TOOL, text, tool_call_id, (Str){0}, false);
 }
 size_t conv_add_shell(Conv *c, Str cmd, Str out) {
@@ -319,6 +339,7 @@ static size_t conv_media_live(const Conv *c, size_t i) {
  * name as reads as a name. */
 #define ARGS_STUB_NAME  48
 #define ARGS_STUB_BYTES 128
+#define ARGS_STUB_KEY   "elided"
 
 /* The name as a bare identifier. The stub below is built into a fixed buffer
  * rather than escaped through the writer, and a model may call a tool
@@ -336,17 +357,42 @@ static size_t stub_name(char *out, size_t cap, Str name) {
 
 /* What goes out in place of a call's arguments once the boundary has passed
  * them. A valid JSON object, so args_object handling reads it the way it
- * reads any other call. */
+ * reads any other call. The note says what it is: a model reads the block as
+ * a call it once made, and one that reads it as a template repeats it. */
 static Str args_stub(char *buf, size_t cap, const Conv *c, size_t i) {
     char name[ARGS_STUB_NAME];
     size_t n = stub_name(name, sizeof name, c->tool_name[i]);
     i32 len = snprintf(buf, cap,
-                       "{\"elided\":\"older %.*s arguments removed: %zu "
-                       "bytes\"}",
+                       "{\"" ARGS_STUB_KEY
+                       "\":\"older %.*s arguments removed: %zu bytes; not an "
+                       "input\"}",
                        (i32)n, name, c->text[i].n);
     return len > 0 && (size_t)len < cap
                ? (Str){buf, (size_t)len}
-               : STR("{\"elided\":\"older arguments removed\"}");
+               : STR("{\"" ARGS_STUB_KEY
+                     "\":\"older arguments removed; not an input\"}");
+}
+
+/* An object whose first key is the stub's. Every call is asked, so the parse
+ * below waits behind a scan of the first few bytes. */
+static b8 stub_opens(Str args) {
+    size_t i = 0;
+    while (i < args.n && (u8)args.p[i] <= ' ') i++;
+    if (i >= args.n || args.p[i++] != '{') return false;
+    while (i < args.n && (u8)args.p[i] <= ' ') i++;
+    return str_starts((Str){args.p + i, args.n - i},
+                      STR("\"" ARGS_STUB_KEY "\""));
+}
+
+b8 conv_args_are_stub(Str args, Arena *scratch) {
+    if (!stub_opens(args)) return false;
+    size_t mark = scratch->off;
+    const JVal *v = json_parse(scratch, args);
+    const JVal *only = v && v->type == J_OBJ ? v->u.obj.head : NULL;
+    b8 stub = only && !only->next && only->type == J_STR
+              && str_eq(only->key, STR(ARGS_STUB_KEY));
+    scratch->off = mark;
+    return stub;
 }
 
 static void write_tool_result(Buf *b, const Conv *c, size_t i, size_t recent) {

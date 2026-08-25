@@ -867,6 +867,25 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         Str name = conv->tool_name[i];
         Str args = conv->text[i];
         size_t tool = tools_find(ag->tools, name);
+        /* A call built out of the elision stub: the model read the note an
+         * older call left behind as an example and repeated it. Nothing runs,
+         * and the answer names the mistake rather than leaving the tool to
+         * report an argument the model never meant to omit. */
+        if (conv_args_are_stub(args, ag->scratch)) {
+            if (g_turn.one_shot)
+                one_shot_diag("tool call", name, args);
+            else
+                render_tool_call(name, args, ag->scratch, (u32)(i + 1),
+                                 conv->expanded[i], conv, i);
+            if (!add_result(ag, i, name,
+                            STR("ERROR: those arguments are the note left "
+                                "where an older call's arguments were "
+                                "dropped, not an input. Send the arguments "
+                                "this call needs."),
+                            0))
+                return TURN_FULL;
+            continue;
+        }
         b8 agent_ui =
             str_eq(name, STR("submit_plan")) || str_eq(name, STR("ask_user"));
         if (agent_ui
