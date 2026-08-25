@@ -2,72 +2,62 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-25
+
 ### Added
 
-- Track long work as a step list. The model writes one for a task of several
-  steps and keeps it current as it goes: the transcript shows the checklist,
-  the status line counts what is left, and `/todo` prints the list at any
-  time. A list left unchanged while the work goes on is asked for again, so
-  it does not sit there reading as current, and a turn that runs long and
-  starts changing files without a list is asked once to open one. The list
-  is part of the conversation, so it survives a resumed session and a
-  `/compact`. Turn it off with `-d todo`.
+- Track long work as a step list. The model keeps a checklist for a task of
+  several steps: the transcript shows it, the status line counts what is
+  left, and `/todo` prints it. The list is part of the conversation, so it
+  survives a resumed session and a `/compact`. Turn it off with `-d todo`.
+  ([`f46c4ca`])
 
 - Publish signed apt, dnf and pacman repositories on GitHub Pages, so a
-  release can be installed and upgraded with the system package manager
-  instead of a downloaded file. The landing page carries the install steps
-  and the signing key.
+  release installs and upgrades with the system package manager. The landing
+  page carries the install steps and the signing key. ([`a48577c`])
 
 - Add `elide_at`, the share of the context window at which old tool output
-  starts going out as a note instead of in full. It defaults to 75 and must
-  stay below `compact_at`.
+  goes out as a note instead of in full. It defaults to 75 and must stay
+  below `compact_at`. ([`403fec6`])
 
-- Report a rebuilt prompt cache in the transcript, saying what caused it and
-  how much room it bought. A rebuild nothing in the session caused stops the
-  turn and names where to report it. Set `cache_guard` to `warn` to keep the
-  report without the stop, or to `off` for neither; it is a `/settings` row
-  too.
+- Report a rebuilt prompt cache in the transcript, with what caused it and
+  how much room it bought. A rebuild the session did not cause stops the
+  turn; set `cache_guard` to `warn` to keep the report without the stop, or
+  to `off` for neither. ([`403fec6`])
 
 ### Fixed
 
-- Stop refusing a `bash` or `job` call that asks to wait longer than the
-  deadline allows. The wait is now granted as the longest one allowed, so the
-  command runs instead of coming back as an error the model has to retry.
+- Grant a `bash` or `job` wait that asks for longer than the deadline allows
+  as the longest wait allowed, instead of refusing the call. ([`16e12b8`])
 
-- Stop blaming the session for a server whose prompt cache is behind. Some
-  OpenAI-compatible endpoints answer a request from an older request's
-  prefix; that prefix is still intact, so the turn now says the cache is
-  behind and carries on instead of stopping as if there were a bug.
+- Keep going when an OpenAI-compatible endpoint answers from an older
+  request's cached prefix. The turn now says the cache is behind instead of
+  stopping as if the session were at fault. ([`2da0497`])
 
-- Refuse a malformed number in JSON instead of reading part of it. A model
-  that wrote `1.2.3` for a tool argument had it silently read as `1.2`, so
-  the tool ran with a value nobody asked for and the agent retried the call
-  until the conversation filled.
+- Refuse a malformed number in JSON instead of reading part of it. A tool
+  argument written as `1.2.3` used to arrive as `1.2`. ([`6234220`])
 
 - Keep wide table rows inside the table. A row longer than the line buffer,
-  which text in Cyrillic and other non-Latin scripts reaches quickly, closed
-  the table early and printed the remaining rows as raw pipes.
+  which non-Latin scripts reach quickly, closed the table early and printed
+  the rest as raw pipes. ([`98e1ab8`])
 
 ### Changed
 
 - With `resume_last` on, a directory left at the welcome screen by `/clear`
-  is greeted again on the next start instead of reopening the conversation
-  that was cleared. Sending a message, or reopening a session with
-  `/resume`, makes that session the one the next start comes back to.
+  is greeted again on the next start instead of reopening the cleared
+  conversation. ([`c203546`])
 
-- Elide old tool output far less often. The boundary used to be recomputed
-  from the conversation's length, so every fourth round rewrote text earlier
-  requests had already sent and threw the provider's cached prefix away to
-  buy back four rounds. It is now conversation state that only moves under
-  context pressure, and each move removes tool arguments and failed calls as
-  well as results, so one rewrite buys much more than four did.
+- Elide old tool output far less often. The boundary now moves only under
+  context pressure instead of every few rounds, so it stops throwing away the
+  provider's cached prefix. ([`403fec6`])
 
 - Keep prompt history per directory, so one project no longer recalls
   another's prompts. The old shared file is kept as `history.global`.
+  ([`a8a3a8e`])
 
 - Draw a rule between table rows when a cell wraps, so a row that spans
   several lines has a visible end. Tables whose rows fit on one line are
-  unchanged.
+  unchanged. ([`98e1ab8`])
 
 ## [0.6.0] - 2026-08-21
 
@@ -394,7 +384,8 @@
 - Portable Linux x86_64 archive, installer, checksum, and draft release
   automation.
 
-[Unreleased]: https://github.com/bissakov/arqan/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/bissakov/arqan/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/bissakov/arqan/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/bissakov/arqan/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/bissakov/arqan/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/bissakov/arqan/compare/v0.3.0...v0.4.0
@@ -402,17 +393,26 @@
 [0.2.0]: https://github.com/bissakov/arqan/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bissakov/arqan/releases/tag/v0.1.0
 
-[`7c55970`]: https://github.com/bissakov/arqan/commit/7c55970a96fd013d1ce74b11fcf4fcadef88b814
+[`f46c4ca`]: https://github.com/bissakov/arqan/commit/f46c4ca47365d0c4dbb1e01af0b170ca9bfb2c39
+[`a48577c`]: https://github.com/bissakov/arqan/commit/a48577c779726db76ccdf9989df95473eea0f3dd
+[`403fec6`]: https://github.com/bissakov/arqan/commit/403fec613497120afa8423faacc22a97856e180e
+[`16e12b8`]: https://github.com/bissakov/arqan/commit/16e12b86324b52d0cdee5589b8fad52761fb3f80
+[`2da0497`]: https://github.com/bissakov/arqan/commit/2da0497296a25187fdbf5a32de30cc1dd7649930
+[`6234220`]: https://github.com/bissakov/arqan/commit/623422017dbc0cab9cf280d15d1e8daad0666700
+[`98e1ab8`]: https://github.com/bissakov/arqan/commit/98e1ab867fbd13198093f56d5864c5b5a3c627b5
+[`c203546`]: https://github.com/bissakov/arqan/commit/c2035468fd878b5a0015b767f1561c0d9235ff7e
+[`a8a3a8e`]: https://github.com/bissakov/arqan/commit/a8a3a8ee4555b2fc8914139be510558dd9967e29
 [`da28f93`]: https://github.com/bissakov/arqan/commit/da28f9386de009c4327772815dc7058499d52304
 [`7c753bd`]: https://github.com/bissakov/arqan/commit/7c753bdc35cf19af3d93ffddb21cc330901909d6
 [`a770655`]: https://github.com/bissakov/arqan/commit/a770655380d68cb56fe994b4c9af757dca1ce511
-[`a6777b3`]: https://github.com/bissakov/arqan/commit/a6777b3ff277427de140a913ab00010b74aac1f5
-[`c83b9c2`]: https://github.com/bissakov/arqan/commit/c83b9c271832c1e2b67113a6bd3b9a157ba05f02
-[`a186c42`]: https://github.com/bissakov/arqan/commit/a186c426f05a2b9acb16cf1ed38de047c2f5cd44
 [`38e87f7`]: https://github.com/bissakov/arqan/commit/38e87f742998210bf778e12ccca75b959084a305
+[`a6777b3`]: https://github.com/bissakov/arqan/commit/a6777b3ff277427de140a913ab00010b74aac1f5
 [`4a425a2`]: https://github.com/bissakov/arqan/commit/4a425a23804e668662a8d1c983f9f40ce647b0a6
 [`47f24a6`]: https://github.com/bissakov/arqan/commit/47f24a68f77149c28b1d1344fa5be5726a5c4a4c
+[`7c55970`]: https://github.com/bissakov/arqan/commit/7c55970a96fd013d1ce74b11fcf4fcadef88b814
 [`49b007e`]: https://github.com/bissakov/arqan/commit/49b007eaf2a0f2e9f32eeac6e5b59ce7afde9acc
+[`c83b9c2`]: https://github.com/bissakov/arqan/commit/c83b9c271832c1e2b67113a6bd3b9a157ba05f02
+[`a186c42`]: https://github.com/bissakov/arqan/commit/a186c426f05a2b9acb16cf1ed38de047c2f5cd44
 [`6efb5bf`]: https://github.com/bissakov/arqan/commit/6efb5bf697325810417ca7e0a0f8c7200e53cbef
 [`3af8d2c`]: https://github.com/bissakov/arqan/commit/3af8d2c7e512f266f87ca341f514e88373ccb32e
 [`0c7a904`]: https://github.com/bissakov/arqan/commit/0c7a9042fb2af783b05a20ba2ed5c5a049b36f80
