@@ -9,7 +9,7 @@
 |                          \__,_|_|  \__, |\__,_|_| |_|
 |                                       |_|
 |
-|                   arqan 0.6.0 · a tiny terminal coding agent
+|                   arqan 0.7.0 · a tiny terminal coding agent
 |
 |            no provider yet: type /provider, then "+ add a provider"
 |
