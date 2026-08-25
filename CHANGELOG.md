@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Redraw tables and rules when the terminal is resized. A table drawn for a
+  wide window used to break apart once the window narrowed; it is now laid
+  out again for the new width.
+- Keep the scrolled transcript in place when the terminal is resized. The
+  view used to slide towards the end of the conversation as the window
+  changed width.
+
 ## [0.7.0] - 2026-08-25
 
 ### Added

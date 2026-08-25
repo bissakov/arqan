@@ -125,6 +125,7 @@ typedef struct {
     size_t trail_nl;
     b8 wrote_any;
     size_t scroll_rows;
+    size_t scroll_cols;
 
     size_t wrap_cols;
     size_t wrap_scanned;
@@ -2717,13 +2718,60 @@ void tui_batch_end(void) {
     repaint();
 }
 
+/* INVARIANT: `cols` moves only when the callback runs, so a frame that holds
+ * the redraw back leaves it to the next one. */
+static struct {
+    void (*fn)(void *ud);
+    void *ud;
+    size_t cols;
+    b8 fitted;
+    b8 running;
+} g_reflow;
+
+void tui_set_reflow(void (*fn)(void *ud), void *ud) {
+    g_reflow.fn = fn;
+    g_reflow.ud = ud;
+    g_reflow.cols = tui_body_cols();
+}
+
+void tui_width_fitted(void) {
+    g_reflow.fitted = true;
+}
+
+static void reflow_check(void) {
+    if (!g_reflow.fn || !g_reflow.fitted || g_reflow.running) return;
+    if (g_tui.busy || g_tui.picking || g_tui.find_open || g_view.active) return;
+    size_t cols = tui_body_cols();
+    if (!cols || cols == g_reflow.cols) return;
+    g_reflow.cols = cols;
+    g_reflow.running = true;
+    g_reflow.fn(g_reflow.ud);
+    g_reflow.running = false;
+}
+
 static void find_refresh(void);
 static void find_goto(size_t off);
 static void find_close(void);
 static size_t rows_below(size_t off);
 
+/* A scroll is a row count from the bottom, which means something else at
+ * every width, so a resize is a re-wrap that keeps the top row where the
+ * reader left it rather than the count that addressed it. */
+static void scroll_rewrap(void) {
+    size_t cols = tui_body_cols();
+    if (!cols || cols == g_tui.scroll_cols) return;
+    g_tui.scroll_cols = cols;
+    if (!g_tui.scroll_rows) return;
+    size_t below = rows_below(g_tui.view_first_off);
+    if (!below) return;
+    size_t view = g_tui.bar_visible ? g_tui.bar_visible : 1;
+    g_tui.scroll_rows = below > view ? below - view : 0;
+}
+
 static void repaint(void) {
     if (!g_tui.fullscreen || g_paint.batch) return;
+    scroll_rewrap();
+    reflow_check();
     g_tui.last_paint = agent_now_seconds();
 
     size_t physical_rows, physical_cols;
@@ -3445,6 +3493,8 @@ void tui_notice(Str msg) {
 void tui_clear_transcript(void) {
     g_tui.notice_n = 0;
     g_tui.transcript_n = 0;
+    g_reflow.fitted = false;
+    g_reflow.cols = tui_body_cols();
     g_tui.keep_off = SIZE_MAX;
     g_tui.pend_nl = 0;
     g_tui.trail_nl = 0;

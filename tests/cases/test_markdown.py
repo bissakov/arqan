@@ -1,5 +1,7 @@
 """Transcript messages are Markdown, and the composer remains literal."""
 
+import re
+
 from tests.mockprovider import Scenario
 
 TEXT = 253      # S_TEXT
@@ -292,6 +294,91 @@ def test_a_narrow_terminal_wraps_table_cells_further(ctx):
     for row in rows:
         assert len(row) <= 48, f"{row!r} overflows 48 columns"
         assert row.endswith(("\u2510", "\u2502", "\u2524", "\u2518")), row
+
+
+def test_a_table_is_refitted_when_the_terminal_is_resized(ctx):
+    """A table is laid out for one width, so a resize has to draw it again."""
+    ctx.scenario(wide_table_scenario())
+    s = ctx.spawn(cols=110, rows=40)
+    s.submit("show a wide table")
+    s.wait_text("Yes")
+    s.wait_turn_done()
+    wide = table_rows(s)
+    assert wide and max(len(r) for r in wide) > 60, s.text()
+
+    s.resize(60, 40)
+    s.wait_for(lambda t: t.cols == 60, "resize")
+    s.settle()
+    rows = table_rows(s)
+    assert rows, s.text()
+    for row in rows:
+        assert len(row) <= 60, f"{row!r} overflows 60 columns"
+        assert row.endswith(("\u2510", "\u2502", "\u2524", "\u2518")), row
+    assert "commodo" in "\n".join(rows), s.text()
+
+    s.resize(110, 40)
+    s.wait_for(lambda t: t.cols == 110, "resize")
+    s.settle()
+    assert table_rows(s) == wide, s.text()
+
+
+def test_a_table_is_refitted_after_a_resize_mid_stream(ctx):
+    """A running turn owns the transcript, so the redraw waits for its end."""
+    trailer = "+".join(["still", "talking"] + ["about", "it"] * 20)
+    ctx.scenario(
+        wide_table_scenario() + "\\nMARK+" + trailer + ",chunk=4,delay=0.02"
+    )
+    s = ctx.spawn(cols=110, rows=40)
+    s.submit("show a wide table")
+    s.wait_text("MARK")
+    s.resize(60, 40)
+    s.wait_turn_done()
+    s.settle()
+    rows = table_rows(s)
+    assert rows, s.text()
+    for row in rows:
+        assert len(row) <= 60, f"{row!r} overflows 60 columns"
+        assert row.endswith(("\u2510", "\u2502", "\u2524", "\u2518")), row
+
+
+MARKED_WORDS = "+".join(["alpha", "beta", "gamma", "delta", "epsilon"] * 4)
+
+
+def marked_paragraphs(first, last):
+    return "".join(f"PARA{n:02d}+{MARKED_WORDS}\\n\\n" for n in range(first, last))
+
+
+def top_mark(s):
+    """The first paragraph marker on screen, which names where the view sits."""
+    for row in range(s.transcript_height()):
+        found = re.search(r"PARA(\d\d)", s.screen.row_text(row))
+        if found:
+            return found.group(1)
+    return ""
+
+
+def test_a_refitted_table_holds_the_scrolled_view_in_place(ctx):
+    """Redrawing a table must not move the rows the reader is looking at."""
+    ctx.scenario(
+        "text="
+        + marked_paragraphs(1, 21)
+        + wide_table_scenario().replace("text=", "")
+        + "\\n"
+        + marked_paragraphs(21, 31)
+    )
+    s = ctx.spawn(cols=140, rows=30)
+    s.submit("show a wide table")
+    s.wait_turn_done()
+    s.key("pageup")
+    s.settle()
+    mark = top_mark(s)
+    assert mark, s.text()
+
+    for cols in (130, 120, 110, 100, 90, 80):
+        s.resize(cols, 30)
+        s.wait_for(lambda t, c=cols: t.cols == c, "resize")
+        s.settle()
+        assert top_mark(s) == mark, f"view moved at {cols} columns\n{s.text()}"
 
 
 def test_a_long_word_is_split_when_no_column_can_hold_it(ctx):

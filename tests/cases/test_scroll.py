@@ -1,5 +1,7 @@
 """Viewport scrolling: wheel, PageUp/PageDown and the scrollbar."""
 
+import re
+
 
 def fill_transcript(ctx, s, words=400):
     ctx.scenario(f"words={words},paragraphs=4,chunk=16")
@@ -231,6 +233,34 @@ def test_scrolled_view_survives_a_resize(ctx):
         s.key("pagedown")
     s.sync()
     assert tail in s.text(), f"expected {tail!r} at the bottom\n{s.text()}"
+
+
+def test_a_resize_holds_the_scrolled_view_in_place(ctx):
+    """A scroll is a row count, so a re-wrap has to re-derive it or the view slides."""
+    words = "+".join(["alpha", "beta", "gamma", "delta", "epsilon"] * 4)
+    ctx.scenario(
+        "text=" + "".join(f"PARA{n:02d}+{words}\\n\\n" for n in range(1, 41))
+    )
+    s = ctx.spawn(cols=140, rows=30)
+    s.submit("write a lot")
+    s.wait_turn_done()
+    s.key("pageup")
+    s.settle()
+
+    def top_mark():
+        for row in range(s.transcript_height()):
+            found = re.search(r"PARA(\d\d)", s.screen.row_text(row))
+            if found:
+                return found.group(1)
+        return ""
+
+    mark = top_mark()
+    assert mark, s.text()
+    for cols in (130, 120, 110, 100, 90, 80):
+        s.resize(cols, 30)
+        s.wait_for(lambda t, c=cols: t.cols == c, "resize")
+        s.settle()
+        assert top_mark() == mark, f"view moved at {cols} columns\n{s.text()}"
 
 
 def test_user_boxes_survive_deep_scrollback(ctx):

@@ -2112,6 +2112,8 @@ void tui_notice(Str msg);
 void tui_find_open(void);
 
 void tui_set_find_expand(void (*fn)(void *ud), void *ud);
+void tui_width_fitted(void);
+void tui_set_reflow(void (*fn)(void *ud), void *ud);
 /* Open a transcript block; the only place the air above one comes from. A
  * block writes no air of its own, so the gap between any two is one blank
  * row, and a trailing newline a writer did emit is absorbed rather than
