@@ -14,6 +14,15 @@
   the delegate on the small model, and `subagent_slice_ms` to set how long a
   slice runs before it parks. All three are rows of the settings screen.
 
+- Watch a delegated task. It now has its own transcript, shown the same way
+  the conversation is. Ctrl-O switches to it and back, it updates as the task
+  works, and it names the model and provider the task runs on. The transcript
+  stays there after the task reports, until the next task starts or the
+  conversation is cleared.
+
+- Name the delegate's model and provider in the report the parent reads, so
+  a resumed session still says what the task ran on.
+
 ### Fixed
 
 - Refuse a tool call built from the note left where an older call's arguments

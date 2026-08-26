@@ -447,6 +447,32 @@ void render_question(Str question) {
     }
 }
 
+void render_task_header(u32 id, Str label, Str model, Str provider, b8 small,
+                        b8 live) {
+    char row[256];
+    tui_block();
+    i32 n = label.n ? snprintf(row, sizeof row, "\u25c6  task %u - %.*s\n", id,
+                               (i32)str_clip_utf8(label, 64).n, label.p)
+                    : snprintf(row, sizeof row, "\u25c6  task %u\n", id);
+    if (n > 0) tui_write_tool((Str){row, (size_t)n});
+
+    tui_write_muted(STR("\u2502 "));
+    if (!model.n) {
+        tui_write_muted(STR("the model this session uses"));
+    } else {
+        n = provider.n
+                ? snprintf(row, sizeof row, "%.*s on %.*s", (i32)model.n,
+                           model.p, (i32)provider.n, provider.p)
+                : snprintf(row, sizeof row, "%.*s on this session's endpoint",
+                           (i32)model.n, model.p);
+        if (n > 0) tui_write_muted((Str){row, (size_t)n});
+    }
+    if (small) tui_write_muted(STR(" \u00b7 small model"));
+    tui_write_muted(STR("\n\u2502 "));
+    tui_write_muted(live ? STR("in progress") : STR("finished"));
+    tui_write_muted(STR(" \u00b7 Ctrl-O returns to the conversation\n"));
+}
+
 /* A shell run ends on a bracketed status line, which summarises the result
  * rather than being part of what the command printed. */
 static b8 split_status(Str result, Str *body, Str *status) {

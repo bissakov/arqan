@@ -92,6 +92,10 @@ typedef struct {
      * a newline in it is a line break in the draft rather than a submit. */
     b8 pasting;
     b8 paste_cr;
+    /* While set, every write to the transcript is dropped: the screen is
+     * showing a different conversation, and the caller rebuilds this one
+     * from Conv on the way back. */
+    b8 detached;
     Str model;
     Str provider;
     Str reasoning_effort;
@@ -3490,6 +3494,10 @@ void tui_notice(Str msg) {
     repaint();
 }
 
+/* INVARIANT: not guarded by `detached`, unlike every other entry point that
+ * touches transcript bytes. Coming back from a detached view attaches first
+ * and then clears and rebuilds, and a re-render of whichever conversation is
+ * showing has to be able to clear it. */
 void tui_clear_transcript(void) {
     g_tui.notice_n = 0;
     g_tui.transcript_n = 0;
@@ -3516,15 +3524,27 @@ void tui_clear_transcript(void) {
     repaint();
 }
 
+void tui_transcript_detach(void) {
+    g_tui.detached = true;
+}
+
+void tui_transcript_attach(void) {
+    g_tui.detached = false;
+}
+
+b8 tui_transcript_detached(void) {
+    return g_tui.detached;
+}
+
 void tui_zone_begin(u32 id) {
-    if (!g_tui.fullscreen || !id) return;
+    if (!g_tui.fullscreen || g_tui.detached || !id) return;
     nl_commit();
     g_tui.zone_open = id;
     g_tui.zone_open_a = g_tui.transcript_n;
 }
 
 void tui_zone_end(void) {
-    if (!g_tui.zone_open) return;
+    if (g_tui.detached || !g_tui.zone_open) return;
     zone_add(g_tui.zone_open_a, g_tui.transcript_n, g_tui.zone_open);
     g_tui.zone_open = 0;
 }
@@ -3694,7 +3714,7 @@ static size_t anchor_start(u32 id) {
 }
 
 void tui_pin(u32 id) {
-    if (!g_tui.fullscreen || !id) return;
+    if (!g_tui.fullscreen || g_tui.detached || !id) return;
     pin_add(g_tui.transcript_n, id);
 }
 
@@ -3855,6 +3875,7 @@ static void nl_commit(void) {
 }
 
 void tui_block(void) {
+    if (g_tui.detached) return;
     b8 empty = g_tui.fullscreen ? g_tui.transcript_n == 0 : !g_tui.wrote_any;
 
     size_t need = empty                ? (g_tui.fullscreen ? 1 : 0)
@@ -3875,6 +3896,10 @@ void tui_write(Str s) {
     } else if (g_tui.fullscreen) {
         poll_skip--;
     }
+    /* INVARIANT: after the pump above, never before it. A detached stream is
+     * still a stream: dropping its bytes must not stop the composer and a
+     * pending resize from being serviced while it runs. */
+    if (g_tui.detached) return;
     if (!s.p || s.n == 0) return;
     for (size_t i = 0; i < s.n;) {
         if (s.p[i] == '\n') {
@@ -3966,12 +3991,13 @@ u64 tui_transcript_epoch(void) {
 }
 
 void tui_keep_visible(size_t off) {
-    if (off <= g_tui.transcript_n) g_tui.keep_off = off;
+    if (!g_tui.detached && off <= g_tui.transcript_n) g_tui.keep_off = off;
 }
 
 void tui_syntax_add(size_t a, size_t b, u8 kind) {
-    if (!tui_highlight_enabled() || a >= b || b > g_tui.transcript_n
-        || kind < YHL_SEM_COMMENT || kind > YHL_SEM_BUILTIN)
+    if (g_tui.detached || !tui_highlight_enabled() || a >= b
+        || b > g_tui.transcript_n || kind < YHL_SEM_COMMENT
+        || kind > YHL_SEM_BUILTIN)
         return;
     size_t last = g_tui.syntax_n ? syntax_slot(g_tui.syntax_n - 1) : 0;
     if (g_tui.syntax_n && g_tui.syntax_k[last] == kind
@@ -3998,6 +4024,7 @@ void tui_syntax_commit(void) {
  * above and below, and the whole range recorded so every row it wraps onto
  * carries the panel background. */
 void tui_user_begin(void) {
+    if (g_tui.detached) return;
     tui_block();
     if (!g_tui.fullscreen) {
         tui_write(STR("> "));
@@ -4010,7 +4037,7 @@ void tui_user_begin(void) {
 }
 
 void tui_user_end(void) {
-    if (!g_tui.fullscreen || !g_tui.user_open) return;
+    if (g_tui.detached || !g_tui.fullscreen || !g_tui.user_open) return;
     /* The padding row below belongs to the box, so it is committed here to
      * fall inside the recorded range rather than left to the next block. */
     tui_write(STR("\n\n"));
@@ -5815,7 +5842,8 @@ typedef enum {
     ED_REWIND,
     ED_EXPAND,
     ED_MODE,
-    ED_ATTACH
+    ED_ATTACH,
+    ED_TASK
 } EdAction;
 
 
@@ -6166,6 +6194,8 @@ static void ed_end(Ed *e) {
     X(0x16, "Ctrl-V", "Attach the clipboard's image to the message",         \
       g_tui.attach_n = 0;                                                    \
       e->action = ED_ATTACH;)                                                \
+    X(0x0f, "Ctrl-O", "Switch between this conversation and the task's",     \
+      e->action = ED_TASK;)                                                  \
     X(0x0c, "Ctrl-L", "Repaint the screen", g_tui.frame_valid = false;)
 
 // Shift-Tab is a command rather than an edit, so the draft remains.
@@ -6440,6 +6470,12 @@ static void busy_attach(void) {
     if (g_busy.fn && n) g_busy.fn((Str){cmd, n}, g_busy.ud);
 }
 
+/* Ctrl-O mid-turn. Watching the delegation the running turn started is the
+ * one moment the view is worth most, so it reaches the hook where it stands. */
+static void busy_task(void) {
+    if (g_busy.fn) g_busy.fn(STR("/task"), g_busy.ud);
+}
+
 
 static void poll_input(void);
 
@@ -6520,6 +6556,8 @@ static void poll_input(void) {
             busy_expand();
         else if (action == ED_ATTACH)
             busy_attach();
+        else if (action == ED_TASK)
+            busy_task();
         dirty = true;
     }
     if (dirty) repaint();
@@ -6577,7 +6615,7 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
             return false;
         }
         if (action == ED_REWIND || action == ED_EXPAND || action == ED_MODE
-            || action == ED_ATTACH) {
+            || action == ED_ATTACH || action == ED_TASK) {
             char cmd[AGENT_MAX_PATH + 16];
             size_t n;
             if (action == ED_ATTACH)
@@ -6588,6 +6626,8 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
                     len = snprintf(cmd, sizeof cmd, "/rewind");
                 else if (action == ED_MODE)
                     len = snprintf(cmd, sizeof cmd, "/mode");
+                else if (action == ED_TASK)
+                    len = snprintf(cmd, sizeof cmd, "/task");
                 else
                     len =
                         snprintf(cmd, sizeof cmd, "/expand %u", g_tui.click_id);

@@ -72,7 +72,7 @@ static struct {
     size_t n;
 } g_commands;
 
-static size_t commands_init(b8 images) {
+static size_t commands_init(b8 images, b8 subagents) {
     size_t n = 0;
     g_commands.v[n++] =
         (TuiCmd){STR("/clear"), STR("Start a fresh conversation")};
@@ -99,6 +99,10 @@ static size_t commands_init(b8 images) {
         (TuiCmd){STR("/copy"), STR("Copy the last response to the clipboard")};
     g_commands.v[n++] =
         (TuiCmd){STR("/todo"), STR("Show the step list for the work in hand")};
+    if (subagents)
+        g_commands.v[n++] =
+            (TuiCmd){STR("/task"),
+                     STR("Show what the delegated task is doing (Ctrl-O)")};
     if (images)
         g_commands.v[n++] = (TuiCmd){
             STR("/attach"),
@@ -552,8 +556,7 @@ typedef enum {
     TURN_DENIED
 } TurnAction;
 
-static void rerender_conv(const Conv *c, const Config *cfg,
-                          b8 show_instructions, Arena *scratch, u32 zone);
+static void tview_paint(Agent *ag, u32 zone, b8 anchor);
 
 
 static void agent_set_mode(Agent *ag, AgentMode mode) {
@@ -577,8 +580,7 @@ static void agent_set_mode(Agent *ag, AgentMode mode) {
         ag->conv->text[0] =
             mode == MODE_PLAN ? ag->cfg->plan_prompt : ag->cfg->system_prompt;
     tui_set_mode(mode);
-    if (ag->show_instructions)
-        rerender_conv(ag->conv, ag->cfg, true, ag->scratch, 0);
+    if (ag->show_instructions) tview_paint(ag, 0, true);
 }
 
 static void agent_set_permissions(Agent *ag, PermissionPolicy policy) {
@@ -839,23 +841,126 @@ static struct {
     u32 next_id;
 } g_task;
 
-static void task_release(void) {
+/* Which conversation the transcript area is showing. The delegate's stream
+ * state is here rather than in g_turn because the two run at once: g_turn
+ * belongs to the parent turn that made the task call, and this belongs to
+ * the nested rounds under it. */
+typedef enum { TVIEW_MAIN, TVIEW_TASK } TranscriptView;
+static struct {
+    TranscriptView showing;
+    b8 replying, reasoning;
+} g_tview;
+
+static void tview_show(Agent *ag, TranscriptView which);
+static size_t call_slot(const Conv *c, size_t result);
+
+/* Forget the task outright: its arena is dropped and the view can no longer
+ * be shown, so a screen still on it is put back on the conversation. */
+static void task_release(Agent *ag) {
     subagent_release(&g_task.sub);
+    if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_MAIN);
+    tui_transcript_attach();
+}
+
+static void task_retire(void) {
+    subagent_retire(&g_task.sub);
 }
 
 static b8 small_config(Config *small, const Config *cfg, Arena *scratch,
                        b8 manual);
 
 typedef struct {
+    Agent *ag;
     const char *label;
+    const char *model;
 } TaskStep;
 
-static void task_on_step(Str tool, u32 round, void *ud) {
+/* The delegate's rounds reach the screen only while its transcript is the
+ * one showing. Each hook attaches for the writes it makes and detaches
+ * again, so the parent's own writes stay dropped around it. */
+static b8 sub_view_up(void) {
+    return g_tview.showing == TVIEW_TASK;
+}
+
+static void task_say_step(const TaskStep *t, Str tool) {
+    char row[128];
+    if (t->model[0])
+        snprintf(row, sizeof row, "task: %s on %s - %.*s", t->label, t->model,
+                 (i32)tool.n, tool.p);
+    else
+        snprintf(row, sizeof row, "task: %s - %.*s", t->label, (i32)tool.n,
+                 tool.p);
+    say_busy(row);
+}
+
+static void sub_on_reason(Str delta, void *ud) {
+    (void)ud;
+    if (!sub_view_up()) return;
+    tui_transcript_attach();
+    if (!g_tview.reasoning) {
+        g_tview.reasoning = true;
+        md_set_muted(true);
+        tui_block();
+    }
+    md_write(delta);
+    tui_transcript_detach();
+}
+
+static void sub_on_text(Str delta, void *ud) {
+    (void)ud;
+    if (!sub_view_up()) return;
+    tui_transcript_attach();
+    if (!g_tview.replying) {
+        g_tview.replying = true;
+        g_tview.reasoning = false;
+        md_set_muted(false);
+        tui_block();
+    }
+    md_write(delta);
+    tui_transcript_detach();
+}
+
+static void sub_on_round_end(const Conv *c, size_t first, void *ud) {
+    (void)c;
+    (void)first;
+    (void)ud;
+    if (sub_view_up()) {
+        tui_transcript_attach();
+        md_end();
+        md_set_muted(false);
+        tui_transcript_detach();
+    }
+    g_tview.replying = false;
+    g_tview.reasoning = false;
+}
+
+static void sub_on_step(const Conv *c, size_t slot, u32 round, void *ud) {
     const TaskStep *t = ud;
     (void)round;
-    char row[128];
-    snprintf(row, sizeof row, "task: %s - %.*s", t->label, (i32)tool.n, tool.p);
-    say_busy(row);
+    task_say_step(t, c->tool_name[slot]);
+    if (!sub_view_up()) return;
+    Arena *scratch = t->ag->scratch;
+    size_t mark = scratch->off;
+    tui_transcript_attach();
+    render_tool_call(c->tool_name[slot], c->text[slot], scratch,
+                     (u32)(slot + 1), c->expanded[slot], c, slot);
+    tui_transcript_detach();
+    scratch->off = mark;
+}
+
+static void sub_on_result(const Conv *c, size_t slot, u32 ms, void *ud) {
+    const TaskStep *t = ud;
+    if (!sub_view_up()) return;
+    size_t call = call_slot(c, slot);
+    Str name = call == CONV_NONE ? (Str){0} : c->tool_name[call];
+    Str args = call == CONV_NONE ? (Str){0} : c->text[call];
+    Arena *scratch = t->ag->scratch;
+    size_t mark = scratch->off;
+    tui_transcript_attach();
+    render_tool_result(name, args, c->text[slot], scratch, (u32)(slot + 1),
+                       c->expanded[slot], ms);
+    tui_transcript_detach();
+    scratch->off = mark;
 }
 
 static const char *task_outcome_name(SubOutcome o) {
@@ -886,6 +991,7 @@ static void task_answer(Agent *ag, Str args, Str *result) {
     Str label = json_str(j, STR("label"));
     const JVal *id_v = json_get(j, STR("id"));
     b8 drop = str_eq(json_str(j, STR("action")), STR("drop"));
+    b8 fresh = false;
     u32 id = 0;
     if (id_v && id_v->type == J_NUM) {
         if (id_v->u.n < 1 || id_v->u.n > (f64)UINT32_MAX
@@ -908,7 +1014,7 @@ static void task_answer(Agent *ag, Str args, Str *result) {
         }
         if (drop) {
             buf_putf(&out, "Task %u was dropped without finishing.", id);
-            task_release();
+            task_release(ag);
             *result = buf_finish(&out);
             return;
         }
@@ -947,12 +1053,13 @@ static void task_answer(Agent *ag, Str args, Str *result) {
         if (!subagent_begin(&g_task.sub, g_sub, sizeof g_sub,
                             g_task.next_id + 1, sys, prompt, label, err,
                             sizeof err)) {
-            task_release();
+            task_release(ag);
             buf_putf(&out, "ERROR: %s", err);
             *result = buf_finish(&out);
             return;
         }
         g_task.next_id++;
+        fresh = true;
     }
 
     /* Static: a Config carries kilobytes of owned buffers, and this runs
@@ -964,10 +1071,17 @@ static void task_answer(Agent *ag, Str args, Str *result) {
         tui_notice(STR("no small model is usable, so the subagent runs on the "
                        "main one"));
 
-    TaskStep step = {g_task.sub.label[0] ? g_task.sub.label : "investigating"};
+    const Config *run_cfg = use_small ? &small : ag->cfg;
+    subagent_set_model(&g_task.sub, run_cfg->model, run_cfg->provider,
+                       use_small);
+    if (fresh && g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_TASK);
+
+    TaskStep step = {ag,
+                     g_task.sub.label[0] ? g_task.sub.label : "investigating",
+                     g_task.sub.model};
     i32 slice_ms = ag->cfg->subagent_slice_ms;
     SubRun run = {
-        .cfg = use_small ? &small : ag->cfg,
+        .cfg = run_cfg,
         .tools = ag->tools,
         .scratch = ag->scratch,
         .deadline_s =
@@ -976,10 +1090,14 @@ static void task_answer(Agent *ag, Str args, Str *result) {
         .idle_fd = tui_input_fd(),
         .on_idle = on_idle,
         .on_retry = on_retry,
-        .on_step = task_on_step,
+        .on_step = sub_on_step,
+        .on_result = sub_on_result,
+        .on_round_end = sub_on_round_end,
+        .on_text = sub_on_text,
+        .on_reason = sub_on_reason,
         .ud = &step,
     };
-    task_on_step(STR("thinking"), 0, &step);
+    task_say_step(&step, STR("thinking"));
 
     f64 started = agent_now_seconds();
     u32 rounds_before = g_task.sub.rounds;
@@ -1005,7 +1123,8 @@ static void task_answer(Agent *ag, Str args, Str *result) {
     tel_shape(&e, "report", text);
     tel_send(&e);
 
-    if (outcome != SUB_PARKED) task_release();
+    if (outcome != SUB_PARKED) task_retire();
+    if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_TASK);
     *result = text;
 }
 
@@ -1331,19 +1450,86 @@ static void render_conv(const Conv *c, const Config *cfg, b8 show_instructions,
 }
 
 
-static void rerender_conv(const Conv *conv, const Config *cfg,
-                          b8 show_instructions, Arena *scratch, u32 zone) {
-    arena_reset(scratch);
-    if (zone)
-        tui_anchor_zone(zone);
-    else
-        tui_anchor_view();
+/* ---- the task view ------------------------------------------------------
+ * The transcript is a pure function of a conversation, so showing the
+ * delegate's is a matter of rebuilding it from that one instead. While the
+ * task is up the transcript is detached and the parent's writes are dropped;
+ * coming back rebuilds the parent from Conv, which is where they survived.
+ */
+static Conv *shown_conv(Agent *ag) {
+    if (g_tview.showing == TVIEW_TASK && g_task.sub.kept)
+        return &g_task.sub.conv;
+    return ag->conv;
+}
+
+/* A mark rather than a reset, because this also runs from the busy-command
+ * hook, with the request in flight holding the scratch under it. */
+static void tview_paint(Agent *ag, u32 zone, b8 anchor) {
+    b8 detached = tui_transcript_detached();
+    tui_transcript_attach();
+    size_t mark = ag->scratch->off;
+    if (anchor) {
+        if (zone)
+            tui_anchor_zone(zone);
+        else
+            tui_anchor_view();
+    }
     tui_batch_begin();
     tui_clear_transcript();
-    render_conv(conv, cfg, show_instructions, scratch);
-    tui_restore_anchor();
+    const Subagent *s = &g_task.sub;
+    if (g_tview.showing == TVIEW_TASK && s->kept) {
+        render_task_header(s->id, str_c(s->label), str_c(s->model),
+                           str_c(s->provider), s->small, s->live);
+        render_conv(&s->conv, ag->cfg, false, ag->scratch);
+    } else {
+        render_conv(ag->conv, ag->cfg, ag->show_instructions, ag->scratch);
+    }
+    if (anchor) tui_restore_anchor();
     tui_batch_end();
-    arena_reset(scratch);
+    ag->scratch->off = mark;
+    if (detached) tui_transcript_detach();
+}
+
+static void tview_show(Agent *ag, TranscriptView which) {
+    md_end();
+    md_set_muted(false);
+    g_tview.replying = false;
+    g_tview.reasoning = false;
+    g_turn.replying = false;
+    g_turn.reasoning = false;
+    g_tview.showing =
+        which == TVIEW_TASK && g_task.sub.kept ? TVIEW_TASK : TVIEW_MAIN;
+    tui_transcript_attach();
+    tview_paint(ag, 0, false);
+    tui_scroll_to_bottom();
+    if (g_tview.showing == TVIEW_TASK) {
+        tui_transcript_detach();
+        return;
+    }
+    /* A turn writing under the switch has text the conversation does not
+     * carry yet, so the rebuild that puts it back waits for the round that
+     * appends it. */
+    if (tui_busy()) g_turn.rerender_pending = true;
+}
+
+static void task_view_toggle(Agent *ag) {
+    if (g_turn.one_shot || !tui_is_fullscreen()) return;
+    if (!g_task.sub.kept) {
+        tui_notice(STR("no task has run in this conversation"));
+        return;
+    }
+    tview_show(ag, g_tview.showing == TVIEW_TASK ? TVIEW_MAIN : TVIEW_TASK);
+}
+
+static void expand_block(Agent *ag, unsigned long id) {
+    Conv *c = shown_conv(ag);
+    if (!id || id > c->n) return;
+    c->expanded[id - 1] = !c->expanded[id - 1];
+    if (tui_busy()) {
+        g_turn.rerender_pending = true;
+        return;
+    }
+    tview_paint(ag, (u32)id, true);
 }
 
 static const char *help_toggle(b8 on) {
@@ -1622,7 +1808,7 @@ static Str help_build(Agent *ag) {
 static void start_help_session(Agent *ag) {
     Conv *conv = ag->conv;
     conv_truncate(conv, 1);
-    task_release();
+    task_release(ag);
     cache_guard_begin(&g_cache);
     ag->pending_n = 0;
     ag->persist->off = ag->mark;
@@ -1774,7 +1960,7 @@ static void resume_session(Agent *ag) {
         return;
     }
     conv_truncate(conv, 1);
-    task_release();
+    task_release(ag);
     cache_guard_begin(&g_cache);
     ag->pending_n = 0;
     persist->off = session_mark;
@@ -1881,7 +2067,7 @@ static void rewind_conversation(Agent *ag) {
     size_t img_off = conv->media_off[slot], img_n = conv->media_n[slot];
     tui_set_input(conv->text[slot]);
     conv_truncate(conv, slot);
-    task_release();
+    task_release(ag);
     cache_guard_begin(&g_cache);
     ag->pending_n = 0;
     if (img_n && conv->media && img_n <= AGENT_MAX_MEDIA_PER_TURN) {
@@ -3774,7 +3960,7 @@ static void rerender_or_defer(Agent *ag) {
         g_turn.rerender_pending = true;
         return;
     }
-    rerender_conv(ag->conv, ag->cfg, ag->show_instructions, ag->scratch, 0);
+    tview_paint(ag, 0, true);
 }
 
 
@@ -3924,7 +4110,7 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
         case SET_SUBAGENTS:
             cfg->subagents = !cfg->subagents;
             tools_set_subagents(ag->tools, cfg->subagents);
-            if (!cfg->subagents) task_release();
+            if (!cfg->subagents) task_release(ag);
             remember_ui_bool(scratch, CONF_SUBAGENTS, cfg->subagents);
             cache_guard_cause(&g_cache, CACHE_CAUSE_TOOLS, 0);
             break;
@@ -3995,7 +4181,7 @@ static void choose_settings(Agent *ag) {
  * window's lifetime. Only the part that carries source is offered runs: a
  * shell run's output is what a command printed, not code. */
 static b8 open_block_view(Agent *ag, size_t i) {
-    const Conv *c = ag->conv;
+    const Conv *c = shown_conv(ag);
     TuiViewPart parts[2] = {0};
     size_t shown[2] = {0};
     size_t part_n = 0;
@@ -4078,14 +4264,13 @@ static b8 on_busy_command(Str line, void *ud) {
      * block itself once the turn has stopped writing to it. */
     if (!strncmp(cmd, "/expand ", 8)) {
         unsigned long id = strtoul(cmd + 8, NULL, 10);
-        if (!id || id > ag->conv->n) return false;
+        if (!id || id > shown_conv(ag)->n) return false;
         if (tui_busy()) {
             if (!open_block_view(ag, id - 1))
                 tui_notice(STR("could not open that block in a window"));
             return true;
         }
-        ag->conv->expanded[id - 1] = !ag->conv->expanded[id - 1];
-        rerender_or_defer(ag);
+        expand_block(ag, id);
         return true;
     }
     Str name = {cmd, resolve_alias(cmd, line.n, sizeof cmd)};
@@ -4100,7 +4285,12 @@ static b8 on_busy_command(Str line, void *ud) {
         ran = tui_info_open(STR("about " AGENT_NAME), k_about, ABOUT_N);
     else if (str_eq(name, STR("/keys")))
         ran = tui_info_open(STR("keyboard shortcuts"), g_keys, keys_rows());
-    else if (str_eq(name, STR("/copy"))) {
+    /* Before the refusal below: watching a delegation is exactly a mid-turn
+     * act, since the turn it watches is the one running. */
+    else if (str_eq(name, STR("/task"))) {
+        task_view_toggle(ag);
+        ran = true;
+    } else if (str_eq(name, STR("/copy"))) {
         copy_last_reply(ag->conv);
         ran = true;
     } else if (command_offered(name)) {
@@ -4395,7 +4585,7 @@ static void compact_session(Agent *ag) {
         }
         session_begin(ag->sess);
         tui_clear();
-        rerender_conv(conv, ag->cfg, ag->show_instructions, ag->scratch, 0);
+        tview_paint(ag, 0, true);
         if (!save_session(ag)) {
             ctx_sync(&g_ctx, conv);
             return;
@@ -4408,7 +4598,7 @@ static void compact_session(Agent *ag) {
     }
 
     conv_truncate(conv, 1);
-    task_release();
+    task_release(ag);
     cache_guard_cause(&g_cache, CACHE_CAUSE_COMPACT, 0);
     ag->pending_n = 0;
     persist->off = ag->mark;
@@ -4495,8 +4685,7 @@ static b8 compact_auto(Agent *ag, size_t keep, b8 *interrupted) {
     b8 saved = save_session(ag);
     if (saved && title_n) session_set_title(ag->sess, (Str){title, title_n});
 
-    if (!g_turn.one_shot)
-        rerender_conv(conv, ag->cfg, ag->show_instructions, ag->scratch, 0);
+    if (!g_turn.one_shot) tview_paint(ag, 0, true);
     say_compaction(
         saved
             ? STR("context compacted: the older work is now a summary")
@@ -4709,7 +4898,7 @@ static b8 agent_handoff(Agent *ag) {
     Str plan = ag->handoff;
     ag->handoff = (Str){0};
     conv_truncate(ag->conv, 1);
-    task_release();
+    task_release(ag);
     cache_guard_begin(&g_cache);
     ag->pending_n = 0;
     ag->persist->off = ag->mark;
@@ -4981,7 +5170,7 @@ static b8 agent_turn(Agent *ag, Str text) {
      * it runs only on the path that keeps the conversation. */
     if (g_turn.rerender_pending) {
         g_turn.rerender_pending = false;
-        rerender_conv(conv, ag->cfg, ag->show_instructions, ag->scratch, 0);
+        tview_paint(ag, 0, true);
     }
     return ok;
 }
@@ -4992,8 +5181,18 @@ static b8 agent_turn(Agent *ag, Str text) {
  * runs after an error or Ctrl-C: Esc is the operation that cancels the queue,
  * while Ctrl-C only stops the operation currently on screen. */
 static b8 agent_turn_interactive(Agent *ag, Str text) {
+    /* Sending is an act on the conversation, so it is the one shown while it
+     * runs, however the last turn left the screen. */
+    if (g_tview.showing != TVIEW_MAIN) tview_show(ag, TVIEW_MAIN);
     b8 ok = agent_turn(ag, text);
-    while (tui_queued_pending()) ok = agent_turn(ag, tui_queued_take());
+    while (tui_queued_pending()) {
+        Str next = tui_queued_take();
+        if (g_tview.showing != TVIEW_MAIN) tview_show(ag, TVIEW_MAIN);
+        ok = agent_turn(ag, next);
+    }
+    if (g_tview.showing == TVIEW_TASK)
+        tui_notice(
+            STR("the reply is in the conversation; Ctrl-O returns to it"));
     return ok;
 }
 
@@ -5187,7 +5386,7 @@ i32 main(i32 argc, char **argv) {
     } else if (prefs.show_instructions && !opts.have_prompt) {
         render_instructions(&cfg);
     }
-    tui_set_commands(g_commands.v, commands_init(cfg.images));
+    tui_set_commands(g_commands.v, commands_init(cfg.images, cfg.subagents));
     tui_set_aliases(k_aliases, ALIAS_N);
     tui_set_history(&hist);
     tui_set_interrupt_flag(&g_got_sigint);
@@ -5296,7 +5495,7 @@ i32 main(i32 argc, char **argv) {
         if (!strcmp(line, "/exit")) break;
         if (!strcmp(line, "/clear")) {
             conv_truncate(&conv, 1);
-            task_release();
+            task_release(&agent);
             cache_guard_begin(&g_cache);
             agent.pending_n = 0;
             persist.off = session_mark;
@@ -5378,12 +5577,11 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
         if (!strncmp(line, "/expand ", 8)) {
-            unsigned long id = strtoul(line + 8, NULL, 10);
-            if (id && id <= conv.n) {
-                conv.expanded[id - 1] = !conv.expanded[id - 1];
-                rerender_conv(&conv, &cfg, agent.show_instructions, &scratch,
-                              (u32)id);
-            }
+            expand_block(&agent, strtoul(line + 8, NULL, 10));
+            continue;
+        }
+        if (!strcmp(line, "/task")) {
+            task_view_toggle(&agent);
             continue;
         }
         if (!strcmp(line, "/model")) {

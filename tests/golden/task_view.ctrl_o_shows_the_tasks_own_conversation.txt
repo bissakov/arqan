@@ -1,0 +1,26 @@
+--- screen 80x24 ---
+|  ◆  task 1 - cats                                                             │
+|  │ mock:tool=grep:{"pattern":"alpha"},tool_rounds=3,final_text=found+it on    ┃
+|  this session's endpoint · small model                                        ┃
+|  │ in progress · Ctrl-O returns to the conversation                           ┃
+|                                                                               ┃
+|▌                                                                              ┃
+|▌ find the cat                                                                 ┃
+|▌                                                                              ┃
+|                                                                               ┃
+|  ◆  grep alpha                                                                ┃
+|  └─ 2 matchs                                                                  ┃
+|     notes.txt:1: alpha is a letter                                            ┃
+|     src/one.c:1: int alpha(void);                                             ┃
+|                                                                               ┃
+|  ◆  grep alpha                                                                ┃
+|  └─ 2 matchs                                                                  ┃
+|     notes.txt:1: alpha is a letter                                            ┃
+|     src/one.c:1: int alpha(void);                                             ┃
+|
+|
+|  › Message arqan...
+|
+|
+|  ● ready · mock-model · build · local · ~/work · ~351 · free
+--- cursor row=21 col=5 visible=yes ---

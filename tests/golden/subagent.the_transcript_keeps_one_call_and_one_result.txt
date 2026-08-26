@@ -8,10 +8,10 @@
 |  │ find the cat
 |  └─ one hit · <t>
 |
-|     [task 1: 2 rounds, 1 tool call, 1067 prompt and 5 completion tokens]
+|     [task 1 on mock:tool=grep:{"pattern":"alpha"},final_text=one+hit: 2
+|  rounds, 1 tool call, 1067 prompt and 5 completion tokens]
 |
 |  done
-|
 |
 |
 |
@@ -22,5 +22,5 @@
 |  › Message arqan...
 |
 |
-|  ● ready · mock-model · build · local · ~/work · ~120 · free
+|  ● ready · mock-model · build · local · ~/work · ~135 · free
 --- cursor row=21 col=5 visible=yes ---
