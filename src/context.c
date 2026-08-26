@@ -24,9 +24,10 @@ void ctx_init(CtxGauge *g) {
 
 /* What slot `i` costs a request whose recent window begins at `recent`: a
  * tool result or an argument list the writer elides for age costs its note
- * instead of its bytes, or a fit would be made from bytes no request ever
- * sent. */
+ * instead of its bytes and a slot the writer drops costs nothing at all, or
+ * a fit would be made from bytes no request ever sent. */
 static f64 ctx_slot_bytes(const Conv *c, size_t i, size_t recent) {
+    if (conv_slot_dropped(c, i, recent)) return 0;
     b8 elided =
         conv_result_elided(c, i, recent) || conv_args_elided(c, i, recent);
     size_t text = elided ? AGENT_ELIDE_NOTE_BYTES : c->text[i].n;

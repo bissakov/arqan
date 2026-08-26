@@ -25,6 +25,12 @@
 
 ### Fixed
 
+- Stop leaving a note in place of an older call's arguments where the model
+  reads it as an example. A call to `read`, `grep` or `find` old enough to be
+  dropped now leaves the conversation whole, with its result, instead of
+  being described; so does a call the tool refused. `patch` and `write` keep
+  their arguments however old the call is, so a retry has something to work
+  from. Notes that remain name the call they stand for.
 - Refuse a tool call built from the note left where an older call's arguments
   were dropped. A model that read the note as an example used to have the call
   run and fail with a missing argument.

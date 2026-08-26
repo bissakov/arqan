@@ -246,11 +246,6 @@ static b8 conv_result_failed(const Conv *c, size_t result) {
     return str_starts(c->text[result], STR("ERROR: "));
 }
 
-b8 conv_result_elided(const Conv *c, size_t i, size_t recent) {
-    if (c->role[i] != M_TOOL || i >= recent) return false;
-    return c->text[i].n > AGENT_ELIDE_BYTES || conv_result_failed(c, i);
-}
-
 static b8 conv_todo_live(const Conv *c, size_t i) {
     if (!str_eq(c->tool_name[i], STR("todo"))) return false;
     for (size_t j = i + 1; j < c->n; j++)
@@ -259,8 +254,82 @@ static b8 conv_todo_live(const Conv *c, size_t i) {
     return true;
 }
 
+/* A lookup the model can make again for the price of one call: the answer is
+ * still on disk, and nothing about the conversation changed by asking. */
+static b8 tool_replayable(Str name) {
+    return str_eq(name, STR("read")) || str_eq(name, STR("grep"))
+           || str_eq(name, STR("find"));
+}
+
+/* A call whose arguments are the work rather than a request for it. Replaying
+ * a patch costs what the patch costs, but a stub in its place is a call the
+ * model cannot reconstruct and, sitting in its own past output, one it
+ * copies: the arguments field is the last place to put a placeholder. */
+static b8 tool_args_are_work(Str name) {
+    return str_eq(name, STR("patch")) || str_eq(name, STR("write"));
+}
+
+/* The slot past the results answering the round `head` opened. Results are
+ * appended as their calls return, so a round is contiguous: the head, its
+ * calls, then their results. */
+static size_t conv_round_end(const Conv *c, size_t head) {
+    size_t j = head + 1;
+    while (j < c->n && conv_is_call(c, j)) j++;
+    while (j < c->n && c->role[j] == M_TOOL) j++;
+    return j;
+}
+
+/* The round slot `i` belongs to, or CONV_NONE when it stands outside one. */
+static size_t conv_round_of(const Conv *c, size_t i) {
+    while (i > 0 && (c->role[i] == M_TOOL || conv_is_call(c, i))) i--;
+    return conv_round_head(c, i) ? i : CONV_NONE;
+}
+
+static b8 conv_call_droppable(const Conv *c, size_t i) {
+    return tool_replayable(c->tool_name[i]) || conv_call_failed(c, i);
+}
+
+/* A round the boundary has passed whole. A round it cuts through keeps every
+ * slot: dropping a call whose result is still sent, or the other way about,
+ * is a request both APIs refuse. */
+static b8 conv_round_passed(const Conv *c, size_t head, size_t recent) {
+    return head != CONV_NONE && conv_round_end(c, head) <= recent;
+}
+
+static b8 conv_round_all_droppable(const Conv *c, size_t head) {
+    size_t j = head + 1;
+    if (!conv_is_call(c, j)) return false;
+    for (; j < c->n && conv_is_call(c, j); j++)
+        if (!conv_call_droppable(c, j)) return false;
+    return true;
+}
+
+b8 conv_slot_dropped(const Conv *c, size_t i, size_t recent) {
+    if (i >= recent || i >= c->n) return false;
+    if (c->role[i] != M_TOOL && !c->has_tool_call[i]) return false;
+    size_t head = conv_round_of(c, i);
+    if (!conv_round_passed(c, head, recent)) return false;
+    /* The head goes only when nothing it opened stays. An assistant message
+     * left holding an empty call list, or none but its thinking, is a
+     * request the API refuses. */
+    if (i == head) return conv_round_all_droppable(c, head);
+    if (conv_is_call(c, i)) return conv_call_droppable(c, i);
+    for (size_t j = head + 1; j < c->n && conv_is_call(c, j); j++)
+        if (str_eq(c->tool_call_id[j], c->tool_call_id[i]))
+            return conv_call_droppable(c, j);
+    return false;
+}
+
+b8 conv_result_elided(const Conv *c, size_t i, size_t recent) {
+    if (c->role[i] != M_TOOL || i >= recent) return false;
+    if (conv_slot_dropped(c, i, recent)) return false;
+    return c->text[i].n > AGENT_ELIDE_BYTES || conv_result_failed(c, i);
+}
+
 b8 conv_args_elided(const Conv *c, size_t i, size_t recent) {
     if (!conv_is_call(c, i) || i >= recent) return false;
+    if (conv_slot_dropped(c, i, recent)) return false;
+    if (tool_args_are_work(c->tool_name[i])) return false;
     if (conv_call_failed(c, i)) return true;
     if (conv_todo_live(c, i)) return false;
     return c->text[i].n > AGENT_ELIDE_BYTES;
@@ -336,9 +405,10 @@ static size_t conv_media_live(const Conv *c, size_t i) {
 
 
 /* Room for the stub below: the fixed part, a length, and as much of the tool
- * name as reads as a name. */
+ * name as reads as a name, then the opening of the arguments themselves. */
 #define ARGS_STUB_NAME  48
-#define ARGS_STUB_BYTES 128
+#define ARGS_STUB_HEAD  56
+#define ARGS_STUB_BYTES 256
 #define ARGS_STUB_KEY   "elided"
 
 /* The name as a bare identifier. The stub below is built into a fixed buffer
@@ -355,18 +425,41 @@ static size_t stub_name(char *out, size_t cap, Str name) {
     return n;
 }
 
+/* The opening of the arguments as one printable line. Same constraint as the
+ * name: nothing here is escaped, so a quote or a backslash cannot travel, and
+ * runs of whitespace collapse rather than break the note across lines. */
+static size_t stub_head(char *out, size_t cap, Str args) {
+    size_t n = 0;
+    b8 gap = false;
+    for (size_t i = 0; i < args.n && n + 1 < cap; i++) {
+        u8 ch = (u8)args.p[i];
+        if (ch <= ' ' || ch == 0x7f) {
+            gap = n > 0;
+            continue;
+        }
+        if (ch == '"' || ch == '\\' || ch > 0x7f) continue;
+        if (gap && n + 2 < cap) out[n++] = ' ';
+        gap = false;
+        out[n++] = (char)ch;
+    }
+    return n;
+}
+
 /* What goes out in place of a call's arguments once the boundary has passed
  * them. A valid JSON object, so args_object handling reads it the way it
- * reads any other call. The note says what it is: a model reads the block as
- * a call it once made, and one that reads it as a template repeats it. */
+ * reads any other call. The note names the call it stands for rather than
+ * describing an absence: a model reads the block as one it once made, and a
+ * stub identical for every call reads as the shape a call takes. */
 static Str args_stub(char *buf, size_t cap, const Conv *c, size_t i) {
     char name[ARGS_STUB_NAME];
+    char head[ARGS_STUB_HEAD];
     size_t n = stub_name(name, sizeof name, c->tool_name[i]);
+    size_t h = stub_head(head, sizeof head, c->text[i]);
     i32 len = snprintf(buf, cap,
                        "{\"" ARGS_STUB_KEY
                        "\":\"older %.*s arguments removed: %zu bytes; not an "
-                       "input\"}",
-                       (i32)n, name, c->text[i].n);
+                       "input. The call began %.*s\"}",
+                       (i32)n, name, c->text[i].n, (i32)h, head);
     return len > 0 && (size_t)len < cap
                ? (Str){buf, (size_t)len}
                : STR("{\"" ARGS_STUB_KEY
@@ -440,8 +533,11 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
     (void)reg;
     size_t recent = conv_elide_start(c);
     buf_putc(b, '[');
+    b8 first_msg = true;
     for (size_t i = 0; i < c->n; i++) {
-        if (i) buf_putc(b, ',');
+        if (conv_slot_dropped(c, i, recent)) continue;
+        if (!first_msg) buf_putc(b, ',');
+        first_msg = false;
         const char *role = "user";
         switch (c->role[i]) {
             case M_SYSTEM: role = "system"; break;
@@ -472,10 +568,14 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
         if (c->role[i] == M_ASSISTANT && c->has_tool_call[i]) {
             buf_putf(b, ",\"content\":");
             buf_json_str(b, c->text[i]);
-            buf_puts(b, STR(",\"tool_calls\":["));
             size_t j = i + 1;
             i32 first = 1;
             while (conv_is_call(c, j)) {
+                if (conv_slot_dropped(c, j, recent)) {
+                    j++;
+                    continue;
+                }
+                if (first) buf_puts(b, STR(",\"tool_calls\":["));
                 if (!first) buf_putc(b, ',');
                 first = 0;
                 buf_putc(b, '{');
@@ -493,7 +593,7 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
                 buf_puts(b, STR("}}"));
                 j++;
             }
-            buf_putc(b, ']');
+            if (!first) buf_putc(b, ']');
             buf_putc(b, '}');
             i = j - 1;
             continue;
@@ -512,15 +612,19 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
  */
 
 /* A slot with nothing to say contributes no block, and a message with no
- * blocks is refused rather than read as an empty turn. */
+ * blocks is refused rather than read as an empty turn. A slot the boundary
+ * dropped says nothing, thinking included: the reasoning that opened an
+ * exchange no longer on the wire has nothing left to point at. */
 static b8 anth_has_plain_block(const Conv *c, size_t i) {
     if (c->role[i] == M_SYSTEM) return false;
+    if (conv_slot_dropped(c, i, conv_elide_start(c))) return false;
     if (c->role[i] == M_TOOL || conv_is_call(c, i) || conv_is_shell(c, i))
         return true;
     return c->text[i].n > 0;
 }
 
 static b8 anth_has_block(const Conv *c, size_t i) {
+    if (conv_slot_dropped(c, i, conv_elide_start(c))) return false;
     return c->anthropic_thinking[i].n || anth_has_plain_block(c, i)
            || conv_media_live(c, i) > 0;
 }
