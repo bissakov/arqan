@@ -105,8 +105,8 @@ def test_the_valve_fires_once_and_then_holds(ctx):
     """
     s = windowed(ctx)
     ctx.write_file("big.txt", numbered(400))
-    ctx.scenario('tool=read:{"path":"big.txt"},final_text=read')
-    s.submit("read big.txt")
+    ctx.scenario('tool=bash:{"command":"cat big.txt"},final_text=read')
+    s.submit("cat big.txt")
     s.wait_text("read")
     s.wait_turn_done()
 
@@ -117,7 +117,7 @@ def test_the_valve_fires_once_and_then_holds(ctx):
 
     s.submit("and again")
     s.wait_turn_done()
-    assert "older read result elided" in wire(ctx), wire(ctx)[:400]
+    assert "older bash result elided" in wire(ctx), wire(ctx)[:400]
     fired = ctx.mock.requests[-1]["messages"]
 
     for prompt in ("once more", "still here"):
@@ -147,7 +147,43 @@ def test_prose_past_the_threshold_does_not_move_the_boundary(ctx):
 
 
 def test_arguments_are_stubbed_below_the_boundary(ctx):
-    """A write's content is on disk; replaying it buys the model nothing."""
+    """A long command records what ran; replaying it in full buys nothing."""
+    s = windowed(ctx)
+    padding = "x" * 4000
+    command = f"echo head-of-the-command # {padding}"
+    ctx.scenario(f'tool=bash:{{"command":"{command}"}},final_text=ran')
+    s.submit("run it")
+    s.wait_text("ran")
+    s.wait_turn_done()
+
+    ctx.scenario("text=sure,final_text=sure")
+    s.submit("thanks")
+    s.wait_turn_done()
+    assert padding in wire(ctx), "the newest rounds go out whole"
+
+    s.submit("and again")
+    s.wait_turn_done()
+    body = wire(ctx)
+    assert padding not in body, body[:400]
+    assert "older bash arguments removed: " in body, body[:400]
+    # The note names the call it stands for. A stub identical for every call
+    # reads as the shape a call takes, which is the one thing it must not be.
+    assert "head-of-the-command" in body, body[:400]
+    # A stub is still an object: args_object handling reads it either way.
+    messages = ctx.mock.requests[-1]["messages"]
+    stubbed = [json.loads(c["function"]["arguments"])
+               for m in messages if m.get("tool_calls")
+               for c in m["tool_calls"]]
+    assert any("elided" in a for a in stubbed), stubbed
+
+
+def test_a_change_keeps_its_arguments_below_the_boundary(ctx):
+    """A patch or a write is the work, not a request for it.
+
+    The model cannot reconstruct arguments it can no longer see, so a note in
+    their place is a call it copies back rather than a record it reads. Those
+    two tools keep what they were given however old the round is.
+    """
     s = windowed(ctx)
     content = "x" * 4000
     args = json.dumps({"path": "out.txt", "content": content})
@@ -157,21 +193,41 @@ def test_arguments_are_stubbed_below_the_boundary(ctx):
     s.wait_turn_done()
 
     ctx.scenario("text=sure,final_text=sure")
-    s.submit("thanks")
-    s.wait_turn_done()
-    assert content in wire(ctx), "the newest rounds go out whole"
+    for prompt in ("thanks", "and again", "once more"):
+        s.submit(prompt)
+        s.wait_turn_done()
 
-    s.submit("and again")
-    s.wait_turn_done()
     body = wire(ctx)
-    assert content not in body, body[:400]
-    assert "older write arguments removed: " in body, body[:400]
-    # A stub is still an object: args_object handling reads it either way.
-    messages = ctx.mock.requests[-1]["messages"]
-    stubbed = [json.loads(c["function"]["arguments"])
-               for m in messages if m.get("tool_calls")
-               for c in m["tool_calls"]]
-    assert any("elided" in a for a in stubbed), stubbed
+    assert content in body, body[:400]
+    assert "older write arguments removed" not in body, body[:400]
+
+
+def test_a_replayable_round_leaves_the_wire_whole(ctx):
+    """A read the model can simply make again is removed, not described.
+
+    Nothing changed by asking and the answer is still on disk, so the whole
+    exchange goes: the call, the result, and the message that opened it.
+    """
+    s = windowed(ctx)
+    ctx.write_file("big.txt", numbered(400))
+    ctx.scenario('tool=read:{"path":"big.txt"},final_text=read+it')
+    s.submit("have a look")
+    s.wait_text("read it")
+    s.wait_turn_done()
+
+    ctx.scenario("text=sure,final_text=sure")
+    for prompt in ("thanks", "and again"):
+        s.submit(prompt)
+        s.wait_turn_done()
+
+    body = wire(ctx)
+    assert "big.txt" not in body, body[:400]
+    assert "elided" not in body, body[:400]
+    assert not tool_results(ctx), tool_results(ctx)
+    calls, answered = paired(ctx)
+    assert not calls and not answered, (calls, answered)
+    # The transcript renders Conv, so the reader keeps what the wire drops.
+    assert "line 0011" in s.text(), s.text()
 
 
 def test_a_call_that_repeats_the_stub_is_refused(ctx):
@@ -196,18 +252,20 @@ def test_a_call_that_repeats_the_stub_is_refused(ctx):
     assert "missing command" not in results[0], results[0]
 
 
-def test_a_failed_call_is_stubbed_on_both_sides(ctx):
+def test_a_failed_call_leaves_the_wire_on_both_sides(ctx):
     """A refusal and the arguments that earned it both stop being replayed.
 
     Neither survives being read again: the change never happened, and the
-    retry that followed is already in the conversation. The blocks stay,
-    since a call without its result is a request the API rejects.
+    retry that followed is already in the conversation. Both go together: a
+    call without its result is a request the API rejects.
     """
     s = windowed(ctx)
-    ctx.write_file("big.txt", numbered(400))
-    ctx.scenario('tool=read:{"path":"missing.txt"},'
-                 'tool=read:{"path":"big.txt"},final_text=tried')
-    s.submit("read both")
+    # Enough bulk to put the window under pressure: the boundary only
+    # advances when there is something to gain by moving it.
+    bogus = "not a diff at all " * 250
+    ctx.scenario(f'tool=patch:{{"patch":"{bogus}"}},'
+                 'tool=bash:{"command":"echo still here"},final_text=tried')
+    s.submit("try both")
     s.wait_text("tried")
     s.wait_turn_done()
 
@@ -217,14 +275,12 @@ def test_a_failed_call_is_stubbed_on_both_sides(ctx):
         s.wait_turn_done()
 
     results = tool_results(ctx)
-    assert len(results) == 2, results
-    assert results[0].startswith("[older read result elided:"), results[0]
     body = wire(ctx)
-    assert "missing.txt" not in body, body[:600]
-    # Only the failed call: the other one's arguments are a path, and a note
-    # in place of a path is the larger half.
-    assert body.count("older read arguments removed: ") == 1, body[:600]
-    assert '"path\\":\\"big.txt' in body, body[:600]
+    # The call beside it stands: only the refused one is worthless.
+    assert len(results) == 1, results
+    assert "not a diff at all" not in body, body[:600]
+    assert "ERROR" not in body, body[:600]
+    assert "echo still here" in body, body[:600]
     calls, answered = paired(ctx)
     assert calls and answered == calls, (calls, answered)
 
@@ -257,10 +313,9 @@ def test_a_breakpoint_parks_below_the_elision_boundary(ctx):
     byte-identical, so a breakpoint left there keeps it readable and the
     rewrite covers only the tail."""
     ctx.write_file("big.txt", numbered(400))
-    args = json.dumps({"path": "big.txt"})
-    ctx.scenario(f"tool=read:{args},final_text=read")
+    ctx.scenario('tool=bash:{"command":"cat big.txt"},final_text=read')
     s = windowed(ctx, ARQAN_API="anthropic")
-    s.submit("read big.txt")
+    s.submit("cat big.txt")
     s.wait_text("read")
     s.wait_turn_done()
     ctx.scenario("text=sure,final_text=sure")
@@ -269,7 +324,7 @@ def test_a_breakpoint_parks_below_the_elision_boundary(ctx):
         s.wait_turn_done()
 
     body = ctx.mock.requests[-1]
-    assert "older read result elided" in json.dumps(body["messages"]), body
+    assert "older bash result elided" in json.dumps(body["messages"]), body
     marks = breakpoints(body)
     assert len(marks) == 3, marks
     system, parked, newest = marks

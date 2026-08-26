@@ -109,12 +109,18 @@ def windowed(ctx, window=1000, **env):
                      ARQAN_API_KEY=None, **env)
 
 
-def big_read(ctx, s, reply, lines=400):
+def big_run(ctx, s, reply, lines=400):
+    """A big result from a tool the boundary keeps.
+
+    A read is dropped whole below the boundary rather than elided, so a case
+    about the note has to use a call the model cannot simply make again.
+    """
     ctx.write_file("big.txt", numbered(lines))
     ctx.scenario(
-        f'tool=read:{{"path":"big.txt"}},final_text={reply.replace(" ", "+")}'
+        'tool=bash:{"command":"cat big.txt"},'
+        f'final_text={reply.replace(" ", "+")}'
     )
-    s.submit("read big.txt")
+    s.submit("cat big.txt")
     s.wait_text(reply)
     s.wait_turn_done()
 
@@ -126,7 +132,7 @@ def tool_messages(ctx):
 def test_an_old_tool_result_is_elided_on_the_wire(ctx):
     """A result older than the last two user turns costs a line, not a file."""
     s = windowed(ctx)
-    big_read(ctx, s, "that is a lot")
+    big_run(ctx, s, "that is a lot")
 
     ctx.scenario("text=sure,final_text=sure")
     s.submit("thanks")
@@ -136,7 +142,7 @@ def test_an_old_tool_result_is_elided_on_the_wire(ctx):
     s.submit("and again")
     s.wait_turn_done()
     content = tool_messages(ctx)[0]["content"]
-    assert content.startswith("[older read result elided:"), content
+    assert content.startswith("[older bash result elided:"), content
     assert "line 0079" not in content, content
 
     # what the reader sees is unchanged: the transcript renders Conv, not the wire
@@ -145,12 +151,11 @@ def test_an_old_tool_result_is_elided_on_the_wire(ctx):
 
 def test_a_small_result_is_never_elided(ctx):
     """Under the threshold, saying it was elided costs more than sending it."""
-    ctx.write_file("tiny.txt", "hello from disk\n")
     ctx.write_file("big.txt", numbered(400))
-    ctx.scenario('tool=read:{"path":"tiny.txt"},'
-                 'tool=read:{"path":"big.txt"},final_text=read+it')
+    ctx.scenario('tool=bash:{"command":"echo hello from disk"},'
+                 'tool=bash:{"command":"cat big.txt"},final_text=read+it')
     s = windowed(ctx)
-    s.submit("read tiny.txt")
+    s.submit("run both")
     s.wait_text("read it")
     s.wait_turn_done()
 
@@ -160,14 +165,14 @@ def test_a_small_result_is_never_elided(ctx):
         s.wait_turn_done()
     results = [m["content"] for m in tool_messages(ctx)]
     # The big result beside it is what moved the boundary over both.
-    assert results[1].startswith("[older read result elided:"), results
-    assert results[0] == "hello from disk\n", results
+    assert results[1].startswith("[older bash result elided:"), results
+    assert "hello from disk" in results[0], results
 
 
 def test_an_elided_result_keeps_answering_its_call(ctx):
     """The message stays a tool result: a call left unanswered breaks the turn."""
     s = windowed(ctx)
-    big_read(ctx, s, "plenty")
+    big_run(ctx, s, "plenty")
     ctx.scenario("text=sure,final_text=sure")
     for prompt in ("thanks", "and again"):
         s.submit(prompt)
@@ -177,7 +182,7 @@ def test_an_elided_result_keeps_answering_its_call(ctx):
     calls = [c["id"] for m in messages if m.get("tool_calls") for c in m["tool_calls"]]
     answered = [m["tool_call_id"] for m in messages if m["role"] == "tool"]
     assert calls and answered == calls, (calls, answered)
-    assert any(m["content"].startswith("[older read result elided:")
+    assert any(m["content"].startswith("[older bash result elided:")
                for m in tool_messages(ctx)), tool_messages(ctx)
 
 

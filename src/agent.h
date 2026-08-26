@@ -1486,13 +1486,19 @@ b8 conv_elide_advance(Conv *c);
  * for a request whose recent window begins at `recent`. Anything measuring
  * what a request carries has to ask this rather than read `text[i].n`. */
 b8 conv_result_elided(const Conv *c, size_t i, size_t recent);
-/* The same question for a tool call's arguments: true when the call sits
- * below `recent` and its arguments are large enough to be worth a stub, or
- * when the call failed and neither side of it is worth replaying. */
+/* True when slot `i` leaves the wire altogether below `recent`: a call to a
+ * tool the model can simply run again, a call the tool refused, the result
+ * answering either, and the assistant message that opened a round of nothing
+ * else. A note in place of arguments the model cannot reconstruct is a call
+ * it copies rather than a record it reads, and an exchange worth neither is
+ * better gone than described. Whole rounds only: half a round is a request
+ * both APIs refuse. */
+b8 conv_slot_dropped(const Conv *c, size_t i, size_t recent);
 /* True when slot `i`'s call arguments are sent as a stub. The newest todo
  * call is exempt: it is the live step list rather than a record of a past
- * one. The context estimator asks through here too, so what it counts and
- * what the writers send cannot drift apart. */
+ * one, and so are patch and write, whose arguments are the change itself.
+ * The context estimator asks through here too, so what it counts and what
+ * the writers send cannot drift apart. */
 b8 conv_args_elided(const Conv *c, size_t i, size_t recent);
 /* True when `args` are the stub a request sends in place of arguments the
  * boundary has passed. The stub reads like any other call, so a model can
