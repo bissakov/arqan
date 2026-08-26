@@ -2,9 +2,11 @@
  *
  * The parent asks a question, this runs rounds against the provider with the
  * read-only slice of the tool registry, and one written report comes back as
- * the tool result. Nothing here reaches the screen: the transcript keeps the
- * parent's call and its result, and the context gauge keeps measuring the
- * parent's conversation.
+ * the tool result. The parent's transcript keeps that call and its result and
+ * nothing more, and the context gauge keeps measuring the parent's
+ * conversation. What the delegate does is offered to the caller through the
+ * SubRun hooks, which is how the task view shows it without this module
+ * knowing there is a screen.
  *
  * The subagent has its own arena because it may outlive the slice that ran
  * it. A run that does not finish inside its budget is parked at a round
@@ -19,6 +21,25 @@
 
 void subagent_release(Subagent *s) {
     memset(s, 0, sizeof *s);
+}
+
+/* NOTE: nothing here reclaims the arena. It is reclaimed only by the next
+ * subagent_begin, which memsets the struct and lays a fresh arena over the
+ * same memory, so a retired conversation stays readable until then. */
+void subagent_retire(Subagent *s) {
+    s->live = false;
+}
+
+static void copy_bounded(char *dst, size_t cap, Str src) {
+    size_t n = src.n < cap - 1 ? src.n : cap - 1;
+    if (n) memcpy(dst, src.p, n);
+    dst[n] = '\0';
+}
+
+void subagent_set_model(Subagent *s, Str model, Str provider, b8 small) {
+    copy_bounded(s->model, sizeof s->model, model);
+    copy_bounded(s->provider, sizeof s->provider, provider);
+    s->small = small;
 }
 
 b8 subagent_begin(Subagent *s, void *mem, size_t cap, u32 id, Str system,
@@ -40,12 +61,13 @@ b8 subagent_begin(Subagent *s, void *mem, size_t cap, u32 id, Str system,
         snprintf(err, err_cap, "no room for the task");
         return false;
     }
-    size_t n = label.n < sizeof s->label - 1 ? label.n : sizeof s->label - 1;
-    if (n) memcpy(s->label, label.p, n);
-    s->label[n] = '\0';
+    copy_bounded(s->label, sizeof s->label, label);
+    s->model[0] = '\0';
+    s->provider[0] = '\0';
     s->id = id;
     s->started = agent_now_seconds();
     s->live = true;
+    s->kept = true;
     return true;
 }
 
@@ -71,11 +93,19 @@ static void sub_put_report(Buf *out, Str report) {
              report.n, (unsigned)AGENT_SUB_REPORT_BYTES);
 }
 
+static void sub_put_on(Buf *out, const Subagent *s) {
+    if (!s->model[0]) return;
+    buf_putf(out, " on %s", s->model);
+    if (s->provider[0]) buf_putf(out, " via %s", s->provider);
+}
+
 static void sub_put_cost(Buf *out, const Subagent *s) {
+    buf_putf(out, "\n\n[task %u", s->id);
+    sub_put_on(out, s);
     buf_putf(out,
-             "\n\n[task %u: %u round%s, %u tool call%s, %zu prompt and %zu "
-             "completion tokens]",
-             s->id, s->rounds, s->rounds == 1 ? "" : "s", s->tool_calls,
+             ": %u round%s, %u tool call%s, %zu prompt and %zu completion "
+             "tokens]",
+             s->rounds, s->rounds == 1 ? "" : "s", s->tool_calls,
              s->tool_calls == 1 ? "" : "s", s->prompt_tokens,
              s->completion_tokens);
 }
@@ -105,13 +135,15 @@ static b8 sub_run_calls(Subagent *s, const SubRun *r, size_t first) {
         size_t id = tools_find(r->tools, name);
         s->last_tool = id == TOOL_NONE ? name : r->tools->name[id];
         s->tool_calls++;
-        if (r->on_step) r->on_step(s->last_tool, s->rounds, r->ud);
+        if (r->on_step) r->on_step(c, i, s->rounds, r->ud);
 
         Buf out;
         buf_init(&out, r->scratch, 4096);
         char err[AGENT_TOOL_ERR] = {0};
+        f64 call_started = agent_now_seconds();
         b8 ok = tools_run(r->tools, id, c->text[i], TOOL_AUTH_GRANTED,
                           r->scratch, &out, err, sizeof err, TOOL_FOR_SUB);
+        f64 call_s = agent_now_seconds() - call_started;
         if (!ok) {
             out.n = 0;
             buf_putf(&out, "ERROR: %s", err[0] ? err : "tool failed");
@@ -121,8 +153,10 @@ static b8 sub_run_calls(Subagent *s, const SubRun *r, size_t first) {
          * resets and the parent reuses the moment this slice returns. */
         Str kept = str_dup(&s->a, buf_finish(&out));
         if (!kept.p) return false;
-        if (conv_add_tool(c, c->tool_call_id[i], kept) == CONV_NONE)
-            return false;
+        size_t slot = conv_add_tool(c, c->tool_call_id[i], kept);
+        if (slot == CONV_NONE) return false;
+        c->ms[slot] = (u32)(call_s * 1000.0);
+        if (r->on_result) r->on_result(c, slot, c->ms[slot], r->ud);
     }
     return true;
 }
@@ -155,6 +189,7 @@ SubOutcome subagent_slice(Subagent *s, const SubRun *r, Buf *out, char *err,
             && agent_now_seconds() + s->slowest_round_s > r->deadline_s) {
             buf_putf(out, "Task %u", s->id);
             sub_put_label(out, s);
+            sub_put_on(out, s);
             buf_putf(out,
                      " is not finished. It was parked at a round boundary "
                      "after %u round%s and %u tool call%s, costing %zu prompt "
@@ -182,12 +217,15 @@ SubOutcome subagent_slice(Subagent *s, const SubRun *r, Buf *out, char *err,
             .scratch = r->scratch,
             .audience = TOOL_FOR_SUB,
             .on_retry = r->on_retry,
+            .on_text = r->on_text,
+            .on_reason = r->on_reason,
             .ud = r->ud,
             .on_idle = r->on_idle,
             .idle_fd = r->idle_fd,
             .interrupt_flag = r->interrupt_flag,
         };
         i32 rc = provider_run(&p, err, err_cap);
+        if (r->on_round_end) r->on_round_end(c, before, r->ud);
         s->rounds++;
         ran++;
         s->prompt_tokens += p.prompt_tokens;

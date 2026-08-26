@@ -149,11 +149,13 @@ typedef bool b8;
  * the parent's prefix survives a long delegation. This is the same reason
  * shell_timeout_ms exists. A prompt over AGENT_TASK_PROMPT_MAX is refused
  * rather than truncated: a cut task is a different task. */
-#define AGENT_SUB_BYTES       (4u << 20)
-#define AGENT_SUB_MESSAGES    512
-#define AGENT_TASK_SLICE_MS   120000
-#define AGENT_TASK_PROMPT_MAX 8192
-#define AGENT_TASK_LABEL_MAX  64
+#define AGENT_SUB_BYTES         (4u << 20)
+#define AGENT_SUB_MESSAGES      512
+#define AGENT_TASK_SLICE_MS     120000
+#define AGENT_TASK_PROMPT_MAX   8192
+#define AGENT_TASK_LABEL_MAX    64
+#define AGENT_TASK_MODEL_MAX    96
+#define AGENT_TASK_PROVIDER_MAX 48
 /* What a report may cost the parent, and what a parked note quotes back of
  * the work so far. The report is clipped behind a line saying so; the sub
  * prompt asks for a bounded answer up front, so clipping is the backstop
@@ -1726,9 +1728,10 @@ i32 provider_run(Provider *p, char *err, size_t err_cap);
 
 /* ---- subagents -----------------------------------------------------------
  * A nested agent the `task` tool answers with: its own conversation, its own
- * system prompt and the read-only slice of the registry. It streams nothing,
- * so the transcript keeps one call and one result, and the parent's context
- * gauge measures the parent's conversation alone.
+ * system prompt and the read-only slice of the registry. The parent's
+ * transcript keeps one call and one result, and the parent's context gauge
+ * measures the parent's conversation alone; what the delegate does reaches
+ * the caller through the SubRun hooks.
  *
  * A run is cut into slices at round boundaries. An unfinished subagent is
  * parked rather than discarded, its conversation kept whole in its own arena,
@@ -1750,7 +1753,14 @@ typedef struct {
      * the parked note. Borrowed from the registry or from `a`. */
     Str last_tool;
     b8 live;
+    /* Whether this arena still holds a readable conversation. `live` says
+     * the run can be continued with task(id=N); `kept` says the transcript
+     * view still has something to show, which outlasts the run. */
+    b8 kept;
+    b8 small;
     char label[AGENT_TASK_LABEL_MAX];
+    char model[AGENT_TASK_MODEL_MAX];
+    char provider[AGENT_TASK_PROVIDER_MAX];
 } Subagent;
 
 typedef struct {
@@ -1769,8 +1779,17 @@ typedef struct {
     void (*on_idle)(void *ud);
     void (*on_retry)(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
                      void *ud);
-    // Named for the activity row, once per tool the slice runs.
-    void (*on_step)(Str tool, u32 round, void *ud);
+    /* Once per tool the slice runs, before it runs: `slot` is the call in
+     * `c`, for a caller showing the delegate's conversation. */
+    void (*on_step)(const Conv *c, size_t slot, u32 round, void *ud);
+    // Once the result of that call has been appended to `c` at `slot`.
+    void (*on_result)(const Conv *c, size_t slot, u32 ms, void *ud);
+    // Once a round's request has finished streaming; `first` is where it began.
+    void (*on_round_end)(const Conv *c, size_t first, void *ud);
+    /* The delegate's stream, for a caller that is showing it. Both are
+     * passed straight to the Provider the slice builds. */
+    void (*on_text)(Str delta, void *ud);
+    void (*on_reason)(Str delta, void *ud);
     void *ud;
 } SubRun;
 
@@ -1784,6 +1803,13 @@ typedef enum {
 
 // Frees the slot. The arena is dropped whole; nothing in it is referenced.
 void subagent_release(Subagent *s);
+/* End the run without forgetting it: the conversation and its arena stay
+ * intact and readable, and only `live` is cleared, so a viewer keeps what
+ * the delegate did while `task(id=N)` no longer continues it. */
+void subagent_retire(Subagent *s);
+/* Record what this run is talking to, for the view's header and the cost
+ * line. Both strings are copied bounded. */
+void subagent_set_model(Subagent *s, Str model, Str provider, b8 small);
 /* Lay a subagent over `mem`, seeded with its system prompt and the task.
  * `system` and `task` are copied in, so neither has to outlive the call.
  * False with `err` filled in when the memory cannot hold them. */
@@ -2230,6 +2256,13 @@ void tui_clear(void);
 
 void tui_clear_transcript(void);
 
+/* While detached, everything written to the transcript is dropped, because
+ * the screen is showing a different conversation; the caller rebuilds this
+ * one from Conv on the way back. */
+void tui_transcript_detach(void);
+void tui_transcript_attach(void);
+b8 tui_transcript_detached(void);
+
 void tui_zone_begin(u32 id);
 void tui_zone_end(void);
 
@@ -2364,6 +2397,11 @@ void render_tool_result(Str name, Str args, Str result, Arena *scratch, u32 id,
 
 void render_plan(Str plan);
 void render_question(Str question);
+/* The task view's heading: what was delegated, the model and provider the
+ * run is actually on, where it stands, and the way back. An empty `provider`
+ * means the delegate runs on the endpoint this session already uses. */
+void render_task_header(u32 id, Str label, Str model, Str provider, b8 small,
+                        b8 live);
 /* Complete readable input or output for a block's text window. A call may
  * parse `args` in `scratch` and return a string that lives there; result and
  * shell strings are borrowed slices. `shown` is the number of logical lines
