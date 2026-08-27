@@ -1,0 +1,52 @@
+name: Detect changes
+description: Reports whether the change touches anything outside the docs.
+
+# The caller must check out with fetch-depth 0, since this diffs against the
+# base commit.
+outputs:
+  code:
+    description: true when a file outside the docs changed
+    value: ${{ steps.filter.outputs.code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Look for changes outside the docs
+      id: filter
+      shell: bash
+      run: |
+        set -euo pipefail
+        base="${{ github.event.pull_request.base.sha }}"
+        if [ -z "$base" ]; then
+          base="${{ github.event.before }}"
+        fi
+        # An unknown base means the diff cannot be trusted, so run everything.
+        if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+          echo "base unknown, treating this as a source change"
+          echo "code=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        files=$(git diff --name-only "$base" HEAD)
+        if [ -z "$files" ]; then
+          echo "no files in the diff, treating this as a source change"
+          echo "code=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "$files"
+        # Everything absent from this list reaches the binary or the suites.
+        # .github/ and scripts/ are left out on purpose: a workflow or a
+        # release script is not a document.
+        #
+        # NOTE: no grep -q here. It exits on the first match, and the SIGPIPE
+        # that gives printf would fail the pipeline under pipefail and read as
+        # a docs-only change.
+        outside=$(printf '%s\n' "$files" |
+          grep -vE '(^|/)[^/]+\.md$|^docs/|^LICENSE$' || true)
+        if [ -n "$outside" ]; then
+          echo "outside the docs:"
+          echo "$outside"
+          echo "code=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "docs only"
+          echo "code=false" >> "$GITHUB_OUTPUT"
+        fi

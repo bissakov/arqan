@@ -14,7 +14,25 @@ permissions:
   contents: read
 
 jobs:
+  # A required check that never reports blocks the pull request forever, so
+  # this job always runs and the expensive one skips instead. GitHub reports a
+  # job skipped by `if:` as a success, which satisfies the required check.
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.detect.outputs.code }}
+    steps:
+      - name: Check out source and history
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+      - name: Detect changes outside the docs
+        id: detect
+        uses: ./.github/actions/detect-changes
+
   guard:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     env:
       # This job builds two whole trees, the reference and this change, so it
