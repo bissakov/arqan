@@ -285,8 +285,12 @@ class Ctx:
     # about, so the number is normalised and its shape is left to assert on.
     ELAPSED = re.compile(r"\u00b7 (\d+ms|\d+\.\d+s|\d+m\d\ds|\d+s)")
 
+    @staticmethod
+    def _mask_elapsed(m: re.Match) -> str:
+        return ("\u00b7 <t>" + " " * (len(m.group(0)) - 5))[: len(m.group(0))]
+
     def check_text(self, actual: str, name: str | None = None):
-        actual = self.ELAPSED.sub("\u00b7 <t>", actual)
+        actual = self.ELAPSED.sub(self._mask_elapsed, actual)
         path = self.golden_path(name)
         self._checked.append(path.name)
         if self.update or not path.exists():

@@ -5,14 +5,14 @@
 ### Added
 
 - Delegate an investigation with the `task` tool. It starts a subagent with
-  its own conversation that can only read, search and fetch, and hands one
-  written report back. A long investigation is parked at a round boundary
-  instead of holding the turn open, and the model continues it with
-  `task(id=N)`; nothing is ever re-run.
+  its own conversation that can only read, search and fetch. The task runs in
+  the background while the parent keeps working. Poll it with `task(id=N)`,
+  or add `wait_ms` to wait for the written report.
 
 - Add `subagents` to turn the `task` tool on and off, `subagent_model` to run
   the delegate on the small model, and `subagent_slice_ms` to set how long a
-  slice runs before it parks. All three are rows of the settings screen.
+  fallback slice runs when a worker cannot start. All three are rows of the
+  settings screen.
 
 - Watch a delegated task. It now has its own transcript, shown the same way
   the conversation is. Ctrl-O switches to it and back, it updates as the task

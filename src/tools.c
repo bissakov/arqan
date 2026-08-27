@@ -2361,11 +2361,13 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
         "searches and fetches: it has read, grep, find, internet_search "
         "and page_fetch, and cannot run commands, change files or ask "
         "the user anything. Give it a self-contained prompt; it answers "
-        "once, with findings and file paths. A long investigation is "
-        "run in slices: when the result says the task was parked, poll "
-        "it with task(id=N) and nothing is re-run. Keep polling rather "
-        "than leaving a task unattended. One task runs at a time, and "
-        "task ids last for this conversation only.",
+        "once, with findings and file paths. It runs in the background: "
+        "the call answers at once with an id, you carry on with other "
+        "work, and task(id=N) collects the report or says what it has "
+        "done so far. Add wait_ms to wait for it when you have nothing "
+        "else to do. Keep polling rather than leaving a task unattended. "
+        "One task runs at a time, and task ids last for this "
+        "conversation only.",
         "Delegate a read-only investigation", BOTH | TOOL_FIXED,
         TOOL_APPROVAL_NONE,
         "{\"type\":\"object\",\"properties\":{"
@@ -2373,11 +2375,13 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
         "investigate, stated so the subagent needs nothing else\"},"
         "\"label\":{\"type\":\"string\",\"description\":\"a few words "
         "naming the task, shown while it runs\"},"
-        "\"id\":{\"type\":\"integer\",\"description\":\"the parked task "
-        "to continue; omit to start one\"},"
+        "\"id\":{\"type\":\"integer\",\"description\":\"the running task "
+        "to collect; omit to start one\"},"
+        "\"wait_ms\":{\"type\":\"integer\",\"description\":\"how long to "
+        "wait for the report before answering, up to 240000; default 0, "
+        "which answers with whatever it has\"},"
         "\"action\":{\"type\":\"string\",\"enum\":[\"continue\",\"drop\"],"
-        "\"description\":\"default continue; drop abandons the parked "
-        "task\"}},"
+        "\"description\":\"default continue; drop abandons the task\"}},"
         "\"required\":[]}",
         tool_agent_only);
     tools_set_subagents(r, subagents);

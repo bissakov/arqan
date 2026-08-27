@@ -28,6 +28,7 @@
 #include "prompt.c"
 #include "provider.c"
 #include "subagent.c"
+#include "tasklog.c"
 #include "catalog.c"
 #include "session.c"
 #include "tui.c"
@@ -44,6 +45,9 @@
 #include <string.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <poll.h>
 #ifdef __linux__
 #include <sys/prctl.h>
 #endif
@@ -438,9 +442,12 @@ static void on_retry(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
     g_turn.replying = false;
     g_turn.reasoning = false;
 }
+static void task_pump(void);
+
 static void on_idle(void *ud) {
     (void)ud;
     tui_poll_input();
+    task_pump();
 }
 
 typedef struct {
@@ -830,15 +837,16 @@ static b8 tool_result_has(Str result, Str needle) {
 }
 
 /* ---- the task tool ------------------------------------------------------
- * One slot, because nothing here runs in parallel: `http_post` carries one
- * transfer at a time and the process is single-threaded, so serializing is
- * the honest contract rather than a limitation to work around. A parked
- * subagent belongs to the conversation that started it, and every path that
- * replaces or rewinds that conversation releases it.
+ * INVARIANT: only the terminal event decides what the model is told.
+ * Everything else in the log is view material a truncated log may lose.
  */
 static struct {
-    Subagent sub;
+    TaskWorker w;
     u32 next_id;
+    Agent *ag;
+    f64 drained;
+    b8 pumping;
+    char exe[AGENT_MAX_PATH];
 } g_task;
 
 /* Which conversation the transcript area is showing. The delegate's stream
@@ -852,22 +860,336 @@ static struct {
 } g_tview;
 
 static void tview_show(Agent *ag, TranscriptView which);
+static void tview_paint(Agent *ag, u32 zone, b8 anchor);
 static size_t call_slot(const Conv *c, size_t result);
+static b8 restart_exe(char *out, size_t cap, const char *argv0);
+static b8 small_config(Config *small, const Config *cfg, Arena *scratch,
+                       b8 manual);
 
-/* Forget the task outright: its arena is dropped and the view can no longer
- * be shown, so a screen still on it is put back on the conversation. */
+static const char *task_outcome_name(SubOutcome o) {
+    switch (o) {
+        case SUB_REPORTED: return "reported";
+        case SUB_PARKED: return "parked";
+        case SUB_INTERRUPTED: return "interrupted";
+        case SUB_EXHAUSTED: return "exhausted";
+        case SUB_FAILED: break;
+    }
+    return "failed";
+}
+
+static SubOutcome task_outcome_of(Str name) {
+    for (i32 o = SUB_REPORTED; o <= SUB_FAILED; o++)
+        if (str_eq(name, str_c(task_outcome_name((SubOutcome)o))))
+            return (SubOutcome)o;
+    return SUB_FAILED;
+}
+
+/* ---- the child ----------------------------------------------------------- */
+
+static void task_reap(TaskWorker *w) {
+    if (!w->running) return;
+    pid_t got;
+    do {
+        got = waitpid(w->pid, NULL, WNOHANG);
+    } while (got < 0 && errno == EINTR);
+    if (got == w->pid || (got < 0 && errno == ECHILD)) w->running = false;
+}
+
+static void task_signal(const TaskWorker *w, i32 sig) {
+    if (kill(-w->pid, sig) != 0) kill(w->pid, sig);
+}
+
+static void task_worker_stop(TaskWorker *w) {
+    if (w->lifeline >= 0) {
+        close(w->lifeline);
+        w->lifeline = -1;
+    }
+    if (!w->running) return;
+    task_signal(w, SIGTERM);
+    for (i32 i = 0; i < 10 && w->running; i++) {
+        poll(NULL, 0, AGENT_TASK_GRACE_MS / 10);
+        task_reap(w);
+    }
+    if (!w->running) return;
+    task_signal(w, SIGKILL);
+    while (waitpid(w->pid, NULL, 0) < 0 && errno == EINTR) {}
+    w->running = false;
+}
+
+static void task_drop_log(TaskWorker *w) {
+    if (w->reader.fd >= 0) close(w->reader.fd);
+    tasklog_reader_init(&w->reader, -1);
+    if (w->path[0]) unlink(w->path);
+    w->path[0] = '\0';
+}
+
+static void task_workers_stop(void) {
+    task_worker_stop(&g_task.w);
+    task_drop_log(&g_task.w);
+}
+
 static void task_release(Agent *ag) {
-    subagent_release(&g_task.sub);
+    TaskWorker *w = &g_task.w;
+    task_worker_stop(w);
+    task_drop_log(w);
+    memset(&w->report, 0, sizeof w->report);
+    w->pid = 0;
+    w->round = 0;
+    w->report_n = 0;
+    w->ended = false;
+    w->fallback = false;
+    subagent_release(&w->sub);
     if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_MAIN);
     tui_transcript_attach();
 }
 
 static void task_retire(void) {
-    subagent_retire(&g_task.sub);
+    TaskWorker *w = &g_task.w;
+    task_worker_stop(w);
+    task_drop_log(w);
+    subagent_retire(&w->sub);
 }
 
-static b8 small_config(Config *small, const Config *cfg, Arena *scratch,
-                       b8 manual);
+/* ---- rebuilding the view from the log ------------------------------------ */
+
+static Str task_keep(Subagent *s, Str v) {
+    return v.n ? str_dup(&s->a, v) : (Str){0};
+}
+
+static Str task_call_id(Subagent *s, u32 slot) {
+    char z[24];
+    i32 n = snprintf(z, sizeof z, "t%u", slot);
+    return n > 0 ? str_dup(&s->a, (Str){z, (size_t)n}) : (Str){0};
+}
+
+static void task_take_report(TaskWorker *w, Str text) {
+    Str fit = str_clip_utf8(text, sizeof w->report - 1);
+    memcpy(w->report, fit.p, fit.n);
+    w->report[fit.n] = '\0';
+    w->report_n = fit.n;
+}
+
+static void task_on_event(const TaskEvent *e, void *ud) {
+    Agent *ag = ud;
+    TaskWorker *w = &g_task.w;
+    Subagent *s = &w->sub;
+    Conv *c = &s->conv;
+    switch (e->kind) {
+        case TASK_EV_START:
+            subagent_set_model(s, e->model, e->provider, e->small);
+            return;
+        case TASK_EV_ROUND: w->round = e->n; return;
+        case TASK_EV_MSG: {
+            Str text = task_keep(s, e->text);
+            if (text.n) conv_add(c, M_ASSISTANT, text);
+            return;
+        }
+        case TASK_EV_CALL: {
+            Str id = task_call_id(s, e->slot);
+            Str name = task_keep(s, e->name);
+            Str args = task_keep(s, e->args);
+            if (!id.n || !name.n) return;
+            conv_add_call(c, ag->scratch, id, name, args);
+            s->last_tool = name;
+            return;
+        }
+        case TASK_EV_RESULT: {
+            Str id = task_call_id(s, e->slot);
+            if (!id.n) return;
+            size_t at = conv_add_tool(c, id, task_keep(s, e->text));
+            if (at != CONV_NONE) c->ms[at] = e->ms;
+            return;
+        }
+        case TASK_EV_USAGE:
+            s->rounds = e->rounds;
+            s->tool_calls = e->tool_calls;
+            s->prompt_tokens = e->prompt_tokens;
+            s->completion_tokens = e->completion_tokens;
+            return;
+        case TASK_EV_END:
+            if (e->rounds) s->rounds = e->rounds;
+            if (e->tool_calls) s->tool_calls = e->tool_calls;
+            if (e->prompt_tokens) s->prompt_tokens = e->prompt_tokens;
+            if (e->completion_tokens)
+                s->completion_tokens = e->completion_tokens;
+            w->outcome = task_outcome_of(e->outcome);
+            task_take_report(w, e->text);
+            w->ended = true;
+            return;
+        case TASK_EV_NONE: return;
+    }
+}
+
+static b8 task_drain(Agent *ag) {
+    TaskWorker *w = &g_task.w;
+    if (w->reader.fd < 0) return false;
+    size_t n = tasklog_read(&w->reader, ag->scratch, task_on_event, ag);
+    task_reap(w);
+    return n > 0;
+}
+
+static void task_pump(void) {
+    Agent *ag = g_task.ag;
+    TaskWorker *w = &g_task.w;
+    if (!ag || g_task.pumping || w->reader.fd < 0) return;
+    f64 now = agent_now_seconds();
+    if ((now - g_task.drained) * 1000.0 < AGENT_TASK_DELTA_MS) return;
+    g_task.drained = now;
+    g_task.pumping = true;
+    if (task_drain(ag) && g_tview.showing == TVIEW_TASK)
+        tview_paint(ag, 0, true);
+    g_task.pumping = false;
+}
+
+static b8 task_tick(void *ud) {
+    (void)ud;
+    task_pump();
+    return g_task.w.reader.fd >= 0 && (g_task.w.running || !g_task.w.ended);
+}
+
+/* ---- starting a worker --------------------------------------------------- */
+
+static void rec_str(Buf *b, const char *key, Str v) {
+    buf_putf(b, ",\"%s\":", key);
+    buf_json_str(b, v);
+}
+
+static b8 task_write_all(i32 fd, Str s) {
+    while (s.n) {
+        ssize_t w = write(fd, s.p, s.n);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        s = str_drop(s, (size_t)w);
+    }
+    return true;
+}
+
+static b8 task_send_record(Agent *ag, i32 fd, const Config *cfg, Str sys,
+                           Str task, b8 small) {
+    const Subagent *s = &g_task.w.sub;
+    size_t mark = ag->scratch->off;
+    Buf b;
+    buf_init(&b, ag->scratch, 8192);
+    buf_putf(&b, "{\"id\":%u", s->id);
+    rec_str(&b, "label", str_c(s->label));
+    rec_str(&b, "task", task);
+    rec_str(&b, "system", sys);
+    rec_str(&b, "model", cfg->model);
+    rec_str(&b, "provider", cfg->provider);
+    rec_str(&b, "base_url", cfg->base_url);
+    rec_str(&b, "api_key", cfg->api_key);
+    rec_str(&b, "effort", cfg->reasoning_effort);
+    rec_str(&b, "budget", cfg->thinking_budget);
+    rec_str(&b, "template", cfg->reasoning_template);
+    rec_str(&b, "disable_tools", cfg->disable_tools);
+    buf_putf(&b, ",\"api\":%d,\"mode\":%d", (i32)cfg->api, (i32)cfg->mode);
+    buf_putf(&b, ",\"max_tokens\":%d,\"retries\":%d,\"retry_delay_ms\":%d",
+             cfg->max_tokens, cfg->retries, cfg->retry_delay_ms);
+    buf_putf(&b, ",\"stream\":%s,\"small\":%s}\n",
+             cfg->stream ? "true" : "false", small ? "true" : "false");
+    Str line = buf_finish(&b);
+
+    b8 ok = buf_ok(&b);
+    if (ok) {
+        void (*prev)(i32) = signal(SIGPIPE, SIG_IGN);
+        ok = task_write_all(fd, line);
+        signal(SIGPIPE, prev);
+    }
+    ag->scratch->off = mark;
+    return ok;
+}
+
+static void task_child(i32 log, i32 ctl, i32 lifeline) {
+    if (setsid() < 0) setpgid(0, 0);
+    signal(SIGINT, SIG_IGN);
+    signal(SIGPIPE, SIG_DFL);
+    i32 null_fd = open("/dev/null", O_RDWR);
+    if (null_fd >= 0) {
+        dup2(null_fd, 0);
+        dup2(null_fd, 1);
+        dup2(null_fd, 2);
+        if (null_fd > 2) close(null_fd);
+    }
+    i32 a = fcntl(log, F_DUPFD_CLOEXEC, 10);
+    i32 b = fcntl(ctl, F_DUPFD_CLOEXEC, 10);
+    if (a < 0 || b < 0 || dup2(a, 3) < 0 || dup2(b, 4) < 0) _exit(127);
+    if (log != 3 && log != 4) close(log);
+    if (ctl != 3 && ctl != 4) close(ctl);
+    if (lifeline >= 0 && lifeline != 3 && lifeline != 4) close(lifeline);
+    close(a);
+    close(b);
+    char *argv[] = {g_task.exe, (char *)"--task-worker=3,4", NULL};
+    execv(g_task.exe, argv);
+    _exit(127);
+}
+
+static b8 task_spawn(Agent *ag, const Config *cfg, Str sys, Str task,
+                     b8 small) {
+    TaskWorker *w = &g_task.w;
+    if (!g_task.exe[0]) return false;
+#ifdef AGENT_TESTING
+    if (getenv(AGENT_ENV_PREFIX "TEST_NO_TASK_WORKER")) return false;
+#endif
+
+    char key[64];
+    snprintf(key, sizeof key, "%u-%ld", w->sub.id, (long)getpid());
+    Spill spill;
+    spill_open(&spill, "task", "log", str_c(key));
+    size_t written = 0;
+    i32 log = spill_release(&spill, w->path, sizeof w->path, &written);
+    if (log < 0) {
+        w->path[0] = '\0';
+        return false;
+    }
+
+    i32 ctl[2] = {-1, -1};
+    i32 tail = open(w->path, O_RDONLY | O_CLOEXEC);
+    b8 have_pipe = pipe(ctl) == 0;
+    if (have_pipe) {
+        i32 read_flags = fcntl(ctl[0], F_GETFD);
+        i32 write_flags = fcntl(ctl[1], F_GETFD);
+        if (read_flags < 0 || write_flags < 0
+            || fcntl(ctl[0], F_SETFD, read_flags | FD_CLOEXEC) < 0
+            || fcntl(ctl[1], F_SETFD, write_flags | FD_CLOEXEC) < 0) {
+            close(ctl[0]);
+            close(ctl[1]);
+            ctl[0] = ctl[1] = -1;
+            have_pipe = false;
+        }
+    }
+    if (tail < 0 || !have_pipe) {
+        if (tail >= 0) close(tail);
+        close(log);
+        task_drop_log(w);
+        return false;
+    }
+    pid_t pid = fork();
+    if (pid == 0) task_child(log, ctl[0], ctl[1]);
+    close(log);
+    close(ctl[0]);
+    if (pid < 0 || !task_send_record(ag, ctl[1], cfg, sys, task, small)) {
+        if (pid > 0) {
+            kill(pid, SIGKILL);
+            while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
+        }
+        close(ctl[1]);
+        close(tail);
+        task_drop_log(w);
+        return false;
+    }
+
+    tasklog_reader_init(&w->reader, tail);
+    w->pid = pid;
+    w->lifeline = ctl[1];
+    w->running = true;
+    w->started = agent_now_seconds();
+    g_task.drained = 0.0;
+    return true;
+}
+
+/* ---- the in-process fallback --------------------------------------------- */
 
 typedef struct {
     Agent *ag;
@@ -875,9 +1197,6 @@ typedef struct {
     const char *model;
 } TaskStep;
 
-/* The delegate's rounds reach the screen only while its transcript is the
- * one showing. Each hook attaches for the writes it makes and detaches
- * again, so the parent's own writes stay dropped around it. */
 static b8 sub_view_up(void) {
     return g_tview.showing == TVIEW_TASK;
 }
@@ -963,125 +1282,14 @@ static void sub_on_result(const Conv *c, size_t slot, u32 ms, void *ud) {
     scratch->off = mark;
 }
 
-static const char *task_outcome_name(SubOutcome o) {
-    switch (o) {
-        case SUB_REPORTED: return "reported";
-        case SUB_PARKED: return "parked";
-        case SUB_INTERRUPTED: return "interrupted";
-        case SUB_EXHAUSTED: return "exhausted";
-        case SUB_FAILED: break;
-    }
-    return "failed";
-}
-
-/* The whole `task` call: start or continue a subagent, run one slice, and
- * answer with what it reported or with the note that keeps the parent
- * polling. `result` is left in `ag->scratch` for the caller to keep. */
-static void task_answer(Agent *ag, Str args, Str *result) {
-    Buf out;
-    buf_init(&out, ag->scratch, 4096);
-    char err[AGENT_TOOL_ERR] = {0};
-    JVal *j = json_parse_error(ag->scratch, args, err, sizeof err);
-    if (!j) {
-        buf_putf(&out, "ERROR: %s", err);
-        *result = buf_finish(&out);
-        return;
-    }
-    Str prompt = json_str(j, STR("prompt"));
-    Str label = json_str(j, STR("label"));
-    const JVal *id_v = json_get(j, STR("id"));
-    b8 drop = str_eq(json_str(j, STR("action")), STR("drop"));
-    b8 fresh = false;
-    u32 id = 0;
-    if (id_v && id_v->type == J_NUM) {
-        if (id_v->u.n < 1 || id_v->u.n > (f64)UINT32_MAX
-            || id_v->u.n != (f64)(u64)id_v->u.n) {
-            *result = STR("ERROR: id must be the whole number of a task this "
-                          "conversation started");
-            return;
-        }
-        id = (u32)id_v->u.n;
-    }
-
-    if (id) {
-        if (!g_task.sub.live || g_task.sub.id != id) {
-            buf_putf(&out,
-                     "ERROR: there is no task %u in this conversation. A task "
-                     "does not survive /clear, a rewind or a new session.",
-                     id);
-            *result = buf_finish(&out);
-            return;
-        }
-        if (drop) {
-            buf_putf(&out, "Task %u was dropped without finishing.", id);
-            task_release(ag);
-            *result = buf_finish(&out);
-            return;
-        }
-    } else if (drop) {
-        *result = STR("ERROR: action=\"drop\" needs the id of the task to "
-                      "abandon");
-        return;
-    } else if (g_task.sub.live) {
-        buf_putf(&out,
-                 "ERROR: task %u is still parked, and one task runs at a "
-                 "time. Continue it with task(id=%u), or abandon it with "
-                 "task(id=%u, action=\"drop\"), before starting another.",
-                 g_task.sub.id, g_task.sub.id, g_task.sub.id);
-        *result = buf_finish(&out);
-        return;
-    } else {
-        if (!prompt.n) {
-            *result = STR("ERROR: task needs a prompt saying what to "
-                          "investigate, stated so the subagent needs nothing "
-                          "else");
-            return;
-        }
-        if (prompt.n > AGENT_TASK_PROMPT_MAX) {
-            buf_putf(&out,
-                     "ERROR: the prompt is %zu bytes, over the %u byte limit. "
-                     "Ask a narrower question rather than a longer one.",
-                     prompt.n, (unsigned)AGENT_TASK_PROMPT_MAX);
-            *result = buf_finish(&out);
-            return;
-        }
-        Str sys = prompt_sub(ag->tools, ag->cfg->mode, ag->scratch);
-        if (!sys.n) {
-            *result = STR("ERROR: out of memory building the subagent prompt");
-            return;
-        }
-        if (!subagent_begin(&g_task.sub, g_sub, sizeof g_sub,
-                            g_task.next_id + 1, sys, prompt, label, err,
-                            sizeof err)) {
-            task_release(ag);
-            buf_putf(&out, "ERROR: %s", err);
-            *result = buf_finish(&out);
-            return;
-        }
-        g_task.next_id++;
-        fresh = true;
-    }
-
-    /* Static: a Config carries kilobytes of owned buffers, and this runs
-     * from a turn's frame rather than from one with room for them. */
-    static Config small;
-    b8 use_small = ag->cfg->subagent_small
-                   && small_config(&small, ag->cfg, ag->scratch, false);
-    if (ag->cfg->subagent_small && !use_small)
-        tui_notice(STR("no small model is usable, so the subagent runs on the "
-                       "main one"));
-
-    const Config *run_cfg = use_small ? &small : ag->cfg;
-    subagent_set_model(&g_task.sub, run_cfg->model, run_cfg->provider,
-                       use_small);
-    if (fresh && g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_TASK);
-
-    TaskStep step = {ag,
-                     g_task.sub.label[0] ? g_task.sub.label : "investigating",
-                     g_task.sub.model};
+static void task_run_here(Agent *ag, const Config *cfg, Buf *out) {
+    TaskWorker *w = &g_task.w;
+    w->fallback = true;
+    TaskStep step = {ag, w->sub.label[0] ? w->sub.label : "investigating",
+                     w->sub.model};
     i32 slice_ms = ag->cfg->subagent_slice_ms;
     SubRun run = {
-        .cfg = run_cfg,
+        .cfg = cfg,
         .tools = ag->tools,
         .scratch = ag->scratch,
         .deadline_s =
@@ -1098,35 +1306,258 @@ static void task_answer(Agent *ag, Str args, Str *result) {
         .ud = &step,
     };
     task_say_step(&step, STR("thinking"));
-
-    f64 started = agent_now_seconds();
-    u32 rounds_before = g_task.sub.rounds;
-    err[0] = '\0';
-    SubOutcome outcome =
-        subagent_slice(&g_task.sub, &run, &out, err, sizeof err);
-    if (outcome == SUB_FAILED) {
-        out.n = 0;
-        buf_putf(&out, "ERROR: the subagent could not run: %s",
+    char err[AGENT_TOOL_ERR] = {0};
+    w->outcome = subagent_slice(&w->sub, &run, out, err, sizeof err);
+    if (w->outcome == SUB_FAILED) {
+        out->n = 0;
+        buf_putf(out, "ERROR: the subagent could not run: %s",
                  err[0] ? err : "provider failure");
     }
-    Str text = buf_finish(&out);
+    w->ended = w->outcome != SUB_PARKED;
+}
 
+/* ---- answering the call -------------------------------------------------- */
+
+static void task_telemetry(const TaskWorker *w, b8 small, Str text) {
     TelEvent e;
     tel_open(&e, "subagent");
-    tel_int(&e, "rounds", (i64)g_task.sub.rounds);
-    tel_int(&e, "slice_rounds", (i64)(g_task.sub.rounds - rounds_before));
-    tel_int(&e, "tool_calls", (i64)g_task.sub.tool_calls);
-    tel_int(&e, "slices", (i64)g_task.sub.slices);
-    tel_int(&e, "ms", (i64)elapsed_ms(started));
-    tel_str(&e, "outcome", str_c(task_outcome_name(outcome)));
-    tel_bool(&e, "small", use_small);
+    tel_int(&e, "rounds", (i64)w->sub.rounds);
+    tel_int(&e, "tool_calls", (i64)w->sub.tool_calls);
+    tel_int(&e, "ms", (i64)elapsed_ms(w->started));
+    tel_str(&e, "outcome", str_c(task_outcome_name(w->outcome)));
+    tel_bool(&e, "small", small);
+    tel_bool(&e, "worker", !w->fallback);
     tel_shape(&e, "report", text);
     tel_send(&e);
-
-    if (outcome != SUB_PARKED) task_retire();
-    if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_TASK);
-    *result = text;
 }
+
+static void task_wait(Agent *ag, size_t wait_ms) {
+    TaskWorker *w = &g_task.w;
+    f64 until = agent_now_seconds() + (f64)wait_ms / 1000.0;
+    while (!w->ended && (w->running || w->reader.fd >= 0)) {
+        task_drain(ag);
+        if (w->ended || g_got_sigint) return;
+        if (!w->running) {
+            task_drain(ag);
+            return;
+        }
+        if (agent_now_seconds() >= until) return;
+        tui_poll_input();
+        poll(NULL, 0, 25);
+    }
+}
+
+static void task_put_running(Buf *out, const TaskWorker *w) {
+    const Subagent *s = &w->sub;
+    buf_putf(out, "Task %u", s->id);
+    subagent_label(out, s);
+    buf_putf(out,
+             " is still running: %u round%s and %u tool call%s over %llus.",
+             s->rounds, s->rounds == 1 ? "" : "s", s->tool_calls,
+             s->tool_calls == 1 ? "" : "s",
+             (unsigned long long)(elapsed_ms(w->started) / 1000));
+    subagent_progress(out, s);
+    buf_putf(out,
+             "\n\nCall task(id=%u) again for the report. Do other work in "
+             "between; the task keeps running either way.",
+             s->id);
+}
+
+static void task_put_report(Buf *out, TaskWorker *w) {
+    if (w->report_n) {
+        buf_puts(out, (Str){w->report, w->report_n});
+        return;
+    }
+    buf_putf(out,
+             "ERROR: task %u stopped without reporting. It ran %u round%s and "
+             "%u tool call%s.",
+             w->sub.id, w->sub.rounds, w->sub.rounds == 1 ? "" : "s",
+             w->sub.tool_calls, w->sub.tool_calls == 1 ? "" : "s");
+    subagent_progress(out, &w->sub);
+}
+
+static b8 task_wait_arg(const JVal *j, size_t *out, Str *err) {
+    const JVal *v = json_get(j, STR("wait_ms"));
+    *out = 0;
+    if (!v || v->type == J_NULL) return true;
+    if (v->type != J_NUM) {
+        *err = STR("ERROR: wait_ms must be a number of milliseconds");
+        return false;
+    }
+    if (!(v->u.n >= 1)) return true;
+    *out = v->u.n > (f64)AGENT_TASK_WAIT_MAX_MS ? AGENT_TASK_WAIT_MAX_MS
+                                                : (size_t)v->u.n;
+    return true;
+}
+
+static const Config *task_config(Agent *ag, b8 *small, b8 notice) {
+    static Config cfg;
+    *small = ag->cfg->subagent_small
+             && small_config(&cfg, ag->cfg, ag->scratch, false);
+    if (ag->cfg->subagent_small && !*small && notice)
+        tui_notice(STR("no small model is usable, so the subagent runs on the "
+                       "main one"));
+    return *small ? &cfg : ag->cfg;
+}
+
+static void task_answer(Agent *ag, Str args, Str *result) {
+    TaskWorker *w = &g_task.w;
+    Buf out;
+    buf_init(&out, ag->scratch, 4096);
+    char err[AGENT_TOOL_ERR] = {0};
+    JVal *j = json_parse_error(ag->scratch, args, err, sizeof err);
+    if (!j) {
+        buf_putf(&out, "ERROR: %s", err);
+        *result = buf_finish(&out);
+        return;
+    }
+    Str prompt = json_str(j, STR("prompt"));
+    Str label = json_str(j, STR("label"));
+    const JVal *id_v = json_get(j, STR("id"));
+    b8 drop = str_eq(json_str(j, STR("action")), STR("drop"));
+    size_t wait_ms = 0;
+    Str wait_err = {0};
+    if (!task_wait_arg(j, &wait_ms, &wait_err)) {
+        *result = wait_err;
+        return;
+    }
+    u32 id = 0;
+    if (id_v && id_v->type == J_NUM) {
+        if (id_v->u.n < 1 || id_v->u.n > (f64)UINT32_MAX
+            || id_v->u.n != (f64)(u64)id_v->u.n) {
+            *result = STR("ERROR: id must be the whole number of a task this "
+                          "conversation started");
+            return;
+        }
+        id = (u32)id_v->u.n;
+    }
+
+    if (id) {
+        if (!w->sub.live || w->sub.id != id) {
+            buf_putf(&out,
+                     "ERROR: there is no task %u in this conversation. A task "
+                     "does not survive /clear, a rewind or a new session.",
+                     id);
+            *result = buf_finish(&out);
+            return;
+        }
+        if (drop) {
+            task_drain(ag);
+            buf_putf(&out, "Task %u was dropped after %u round%s.", id,
+                     w->sub.rounds, w->sub.rounds == 1 ? "" : "s");
+            task_retire();
+            if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_TASK);
+            *result = buf_finish(&out);
+            return;
+        }
+        if (w->fallback && !w->ended) {
+            b8 small = false;
+            task_run_here(ag, task_config(ag, &small, false), &out);
+            Str text = buf_finish(&out);
+            task_telemetry(w, small, text);
+            if (w->ended) task_retire();
+            if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_TASK);
+            *result = text;
+            return;
+        }
+        task_wait(ag, wait_ms);
+        if (!w->ended && !w->running) {
+            w->ended = true;
+            w->outcome = SUB_FAILED;
+        }
+        if (w->ended) {
+            task_put_report(&out, w);
+            Str text = buf_finish(&out);
+            task_telemetry(w, w->sub.small, text);
+            task_retire();
+            if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_TASK);
+            *result = text;
+            return;
+        }
+        task_put_running(&out, w);
+        if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_TASK);
+        *result = buf_finish(&out);
+        return;
+    }
+
+    if (drop) {
+        *result = STR("ERROR: action=\"drop\" needs the id of the task to "
+                      "abandon");
+        return;
+    }
+    if (w->sub.live) {
+        buf_putf(&out,
+                 "ERROR: task %u is still running, and one task runs at a "
+                 "time. Collect it with task(id=%u), or abandon it with "
+                 "task(id=%u, action=\"drop\"), before starting another.",
+                 w->sub.id, w->sub.id, w->sub.id);
+        *result = buf_finish(&out);
+        return;
+    }
+    if (!prompt.n) {
+        *result = STR("ERROR: task needs a prompt saying what to investigate, "
+                      "stated so the subagent needs nothing else");
+        return;
+    }
+    if (prompt.n > AGENT_TASK_PROMPT_MAX) {
+        buf_putf(&out,
+                 "ERROR: the prompt is %zu bytes, over the %u byte limit. "
+                 "Ask a narrower question rather than a longer one.",
+                 prompt.n, (unsigned)AGENT_TASK_PROMPT_MAX);
+        *result = buf_finish(&out);
+        return;
+    }
+    Str sys = prompt_sub(ag->tools, ag->cfg->mode, ag->scratch);
+    if (!sys.n) {
+        *result = STR("ERROR: out of memory building the subagent prompt");
+        return;
+    }
+    task_release(ag);
+    if (!subagent_begin(&w->sub, g_sub, sizeof g_sub, g_task.next_id + 1, sys,
+                        prompt, label, err, sizeof err)) {
+        task_release(ag);
+        buf_putf(&out, "ERROR: %s", err);
+        *result = buf_finish(&out);
+        return;
+    }
+    g_task.next_id++;
+    w->started = agent_now_seconds();
+
+    b8 use_small = false;
+    const Config *run_cfg = task_config(ag, &use_small, true);
+    subagent_set_model(&w->sub, run_cfg->model, run_cfg->provider, use_small);
+    if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_TASK);
+
+    if (!task_spawn(ag, run_cfg, sys, prompt, use_small)) {
+        task_run_here(ag, run_cfg, &out);
+        Str text = buf_finish(&out);
+        task_telemetry(w, use_small, text);
+        if (w->ended) task_retire();
+        if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_TASK);
+        *result = text;
+        return;
+    }
+
+    if (wait_ms) task_wait(ag, wait_ms);
+    if (w->ended) {
+        task_put_report(&out, w);
+        Str text = buf_finish(&out);
+        task_telemetry(w, use_small, text);
+        task_retire();
+        if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_TASK);
+        *result = text;
+        return;
+    }
+    buf_putf(&out, "Task %u", w->sub.id);
+    subagent_label(&out, &w->sub);
+    buf_putf(&out,
+             " started in the background.\nCarry on with other work, then "
+             "call task(id=%u) for the report. Add wait_ms to that call to "
+             "wait for it instead.",
+             w->sub.id);
+    *result = buf_finish(&out);
+}
+
 
 static const char *tool_outcome(Str name, Str result, b8 ran) {
     if (str_eq(name, STR("bash"))) {
@@ -1457,8 +1888,8 @@ static void render_conv(const Conv *c, const Config *cfg, b8 show_instructions,
  * coming back rebuilds the parent from Conv, which is where they survived.
  */
 static Conv *shown_conv(Agent *ag) {
-    if (g_tview.showing == TVIEW_TASK && g_task.sub.kept)
-        return &g_task.sub.conv;
+    if (g_tview.showing == TVIEW_TASK && g_task.w.sub.kept)
+        return &g_task.w.sub.conv;
     return ag->conv;
 }
 
@@ -1476,7 +1907,7 @@ static void tview_paint(Agent *ag, u32 zone, b8 anchor) {
     }
     tui_batch_begin();
     tui_clear_transcript();
-    const Subagent *s = &g_task.sub;
+    const Subagent *s = &g_task.w.sub;
     if (g_tview.showing == TVIEW_TASK && s->kept) {
         render_task_header(s->id, str_c(s->label), str_c(s->model),
                            str_c(s->provider), s->small, s->live);
@@ -1498,7 +1929,7 @@ static void tview_show(Agent *ag, TranscriptView which) {
     g_turn.replying = false;
     g_turn.reasoning = false;
     g_tview.showing =
-        which == TVIEW_TASK && g_task.sub.kept ? TVIEW_TASK : TVIEW_MAIN;
+        which == TVIEW_TASK && g_task.w.sub.kept ? TVIEW_TASK : TVIEW_MAIN;
     tui_transcript_attach();
     tview_paint(ag, 0, false);
     tui_scroll_to_bottom();
@@ -1514,7 +1945,7 @@ static void tview_show(Agent *ag, TranscriptView which) {
 
 static void task_view_toggle(Agent *ag) {
     if (g_turn.one_shot || !tui_is_fullscreen()) return;
-    if (!g_task.sub.kept) {
+    if (!g_task.w.sub.kept) {
         tui_notice(STR("no task has run in this conversation"));
         return;
     }
@@ -5206,6 +5637,228 @@ static void write_final_reply(const Conv *conv) {
     }
 }
 
+/* ---- worker mode ---------------------------------------------------------
+ * INVARIANT: every path out writes a terminal event, because that event is
+ * the only thing the parent can answer its model with.
+ */
+static struct {
+    TaskLog log;
+    Arena *scratch;
+    Subagent *sub;
+    i32 ctl;
+} g_worker;
+
+static volatile sig_atomic_t g_worker_stop;
+
+static void worker_end(SubOutcome outcome, Str text) {
+    const Subagent *s = g_worker.sub;
+    TaskEvent e = {.kind = TASK_EV_END,
+                   .outcome = str_c(task_outcome_name(outcome)),
+                   .text = text};
+    if (s) {
+        e.rounds = s->rounds;
+        e.tool_calls = s->tool_calls;
+        e.prompt_tokens = s->prompt_tokens;
+        e.completion_tokens = s->completion_tokens;
+    }
+    tasklog_write(&g_worker.log, &e, g_worker.scratch);
+}
+
+static i32 worker_fail(const char *why) {
+    char z[256];
+    i32 n = snprintf(z, sizeof z, "ERROR: the subagent could not run: %s", why);
+    worker_end(SUB_FAILED, (Str){z, n > 0 ? (size_t)n : 0});
+    return 1;
+}
+
+static void worker_idle(void *ud) {
+    (void)ud;
+    if (g_worker_stop) return;
+    struct pollfd pfd = {g_worker.ctl, 0, 0};
+    if (poll(&pfd, 1, 0) > 0 && (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)))
+        g_worker_stop = 1;
+}
+
+static void worker_on_round_begin(u32 round, void *ud) {
+    (void)ud;
+    TaskEvent e = {.kind = TASK_EV_ROUND, .n = round};
+    tasklog_write(&g_worker.log, &e, g_worker.scratch);
+}
+
+static void worker_on_round_end(const Conv *c, size_t first, void *ud) {
+    (void)ud;
+    const Subagent *s = g_worker.sub;
+    for (size_t i = first; i < c->n; i++) {
+        if (c->role[i] != M_ASSISTANT || conv_is_call(c, i) || !c->text[i].n)
+            continue;
+        TaskEvent e = {
+            .kind = TASK_EV_MSG, .assistant = true, .text = c->text[i]};
+        tasklog_write(&g_worker.log, &e, g_worker.scratch);
+    }
+    TaskEvent u = {.kind = TASK_EV_USAGE,
+                   .rounds = s->rounds,
+                   .tool_calls = s->tool_calls,
+                   .prompt_tokens = s->prompt_tokens,
+                   .completion_tokens = s->completion_tokens};
+    tasklog_write(&g_worker.log, &u, g_worker.scratch);
+}
+
+static void worker_on_step(const Conv *c, size_t slot, u32 round, void *ud) {
+    (void)round;
+    (void)ud;
+    TaskEvent e = {.kind = TASK_EV_CALL,
+                   .slot = (u32)slot,
+                   .name = c->tool_name[slot],
+                   .args = c->text[slot]};
+    tasklog_write(&g_worker.log, &e, g_worker.scratch);
+}
+
+static void worker_on_result(const Conv *c, size_t slot, u32 ms, void *ud) {
+    (void)ud;
+    size_t call = call_slot(c, slot);
+    if (call == CONV_NONE) return;
+    TaskEvent e = {.kind = TASK_EV_RESULT,
+                   .slot = (u32)call,
+                   .ms = ms,
+                   .text = c->text[slot]};
+    tasklog_write(&g_worker.log, &e, g_worker.scratch);
+}
+
+static b8 worker_read_record(i32 fd, char *buf, size_t cap, size_t *out) {
+    size_t n = 0;
+    while (n < cap) {
+        ssize_t got = read(fd, buf + n, cap - n); // flawfinder: ignore
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        if (got == 0) return false;
+        n += (size_t)got;
+        const char *nl = memchr(buf, '\n', n);
+        if (!nl) continue;
+        *out = (size_t)(nl - buf);
+        return true;
+    }
+    return false;
+}
+
+static i32 rec_int(const JVal *j, const char *key, i32 dflt) {
+    const JVal *v = json_get(j, str_c(key));
+    if (!v || v->type != J_NUM || v->u.n < (f64)INT32_MIN
+        || v->u.n > (f64)INT32_MAX)
+        return dflt;
+    return (i32)v->u.n;
+}
+
+static i32 task_worker_main(const CliOpts *opts) {
+    static char record[AGENT_TASK_LINE_MAX];
+    Arena persist, scratch;
+    arena_init(&persist, g_persist, sizeof g_persist);
+    arena_init(&scratch, g_scratch, sizeof g_scratch);
+    tasklog_init(&g_worker.log, opts->task_log_fd);
+    g_worker.scratch = &scratch;
+    g_worker.ctl = opts->task_ctl_fd;
+    signal(SIGPIPE, SIG_IGN);
+    struct pollfd lifeline = {opts->task_ctl_fd, 0, 0};
+    if (poll(&lifeline, 1, 0) > 0
+        && (lifeline.revents & (POLLHUP | POLLERR | POLLNVAL)))
+        return worker_fail("its parent stopped before it could start");
+
+    size_t n = 0;
+    if (!worker_read_record(opts->task_ctl_fd, record, sizeof record, &n))
+        return worker_fail("its parent sent no task");
+    JVal *j = json_parse(&scratch, (Str){record, n});
+    if (!j || j->type != J_OBJ)
+        return worker_fail("its parent sent a task it cannot read");
+
+    Str sys = str_dup(&persist, json_str(j, STR("system")));
+    Str task = str_dup(&persist, json_str(j, STR("task")));
+    Str label = str_dup(&persist, json_str(j, STR("label")));
+    Str disable = str_dup(&persist, json_str(j, STR("disable_tools")));
+    u32 id = (u32)rec_int(j, "id", 1);
+    b8 small = json_bool(j, STR("small"));
+    if (!sys.n || !task.n) return worker_fail("the task record is incomplete");
+
+    static Config cfg;
+    Conf conf;
+    conf_resolve(&conf, &persist, &scratch);
+    config_load(&cfg, &conf, &persist);
+    web_search_init(&conf, &persist);
+
+    Str model = json_str(j, STR("model"));
+    if (!config_set_connection(&cfg, json_str(j, STR("provider")),
+                               json_str(j, STR("base_url")),
+                               (ApiKind)rec_int(j, "api", (i32)cfg.api),
+                               json_str(j, STR("api_key")))
+        || (model.n && !config_set_model(&cfg, model)))
+        return worker_fail("its parent named an endpoint it cannot use");
+    config_set_reasoning(&cfg, true, json_str(j, STR("effort")));
+    config_set_reasoning(&cfg, false, json_str(j, STR("budget")));
+    Str templ = json_str(j, STR("template"));
+    if (templ.n > AGENT_MAX_REASONING_TEMPLATE)
+        return worker_fail("the task record has invalid model settings");
+    memcpy(cfg.owned_reasoning_template, templ.p, templ.n);
+    cfg.owned_reasoning_template[templ.n] = '\0';
+    cfg.reasoning_template =
+        templ.n ? (Str){cfg.owned_reasoning_template, templ.n} : (Str){0};
+    cfg.max_tokens = rec_int(j, "max_tokens", cfg.max_tokens);
+    cfg.retries = rec_int(j, "retries", cfg.retries);
+    cfg.retry_delay_ms = rec_int(j, "retry_delay_ms", cfg.retry_delay_ms);
+    cfg.mode = (AgentMode)rec_int(j, "mode", (i32)cfg.mode);
+    cfg.stream = json_bool(j, STR("stream"));
+
+    ToolRegistry tools;
+    tools_init(&tools, &persist, cfg.shell_timeout_ms, false);
+    tools_set_interactive(false);
+    char err[AGENT_TOOL_ERR] = {0};
+    if (disable.n) tools_disable_list(&tools, disable, err, sizeof err);
+    tools_set_mode(cfg.mode);
+    arena_reset(&scratch);
+
+    err[0] = '\0';
+    Subagent *s = &g_task.w.sub;
+    if (!subagent_begin(s, g_sub, sizeof g_sub, id, sys, task, label, err,
+                        sizeof err))
+        return worker_fail(err[0] ? err : "there is no room for it");
+    subagent_set_model(s, cfg.model, cfg.provider, small);
+    g_worker.sub = s;
+
+    TaskEvent start = {.kind = TASK_EV_START,
+                       .id = id,
+                       .label = label,
+                       .model = cfg.model,
+                       .provider = cfg.provider,
+                       .small = small,
+                       .task = task};
+    tasklog_write(&g_worker.log, &start, &scratch);
+
+    shell_set_idle(worker_idle, NULL);
+    shell_set_interrupt_flag(&g_worker_stop);
+    web_set_idle(worker_idle, NULL, g_worker.ctl, &g_worker_stop);
+
+    Buf out;
+    buf_init(&out, &scratch, 8192);
+    SubRun run = {
+        .cfg = &cfg,
+        .tools = &tools,
+        .scratch = &scratch,
+        .interrupt_flag = &g_worker_stop,
+        .idle_fd = g_worker.ctl,
+        .on_idle = worker_idle,
+        .on_step = worker_on_step,
+        .on_result = worker_on_result,
+        .on_round_begin = worker_on_round_begin,
+        .on_round_end = worker_on_round_end,
+    };
+    err[0] = '\0';
+    SubOutcome outcome = subagent_slice(s, &run, &out, err, sizeof err);
+    if (outcome == SUB_FAILED)
+        return worker_fail(err[0] ? err : "the provider failed");
+    worker_end(outcome, buf_finish(&out));
+    return 0;
+}
+
+
 /* The image a restart runs. /proc/self/exe names it even where argv[0] was
  * replaced or is a bare command name; without it, only a command line
  * carrying a path can be checked, and a bare name is left to the PATH search
@@ -5238,6 +5891,7 @@ static void restart_agent(char **argv) {
         return;
     }
     jobs_stop();
+    task_workers_stop();
     highlight_close();
     telemetry_close();
     tui_stop();
@@ -5266,6 +5920,7 @@ i32 main(i32 argc, char **argv) {
         fprintf(stderr, AGENT_NAME ": the prompt is empty\n");
         return 2;
     }
+    if (opts.task_worker) return task_worker_main(&opts);
 
     Arena persist, scratch;
     arena_init(&persist, g_persist, sizeof g_persist);
@@ -5396,6 +6051,7 @@ i32 main(i32 argc, char **argv) {
     shell_set_timeout(cfg.shell_timeout_ms);
 
     atexit(jobs_stop);
+    atexit(task_workers_stop);
     web_set_idle(on_idle, NULL, tui_input_fd(), &g_got_sigint);
     atexit(tui_stop);
     highlight_init(argv[0]);
@@ -5421,6 +6077,12 @@ i32 main(i32 argc, char **argv) {
     };
     tui_set_busy_command(on_busy_command, &agent);
     tui_set_reflow(reflow_transcript, &agent);
+    g_task.ag = &agent;
+    tasklog_reader_init(&g_task.w.reader, -1);
+    g_task.w.lifeline = -1;
+    if (!restart_exe(g_task.exe, sizeof g_task.exe, argv[0]))
+        g_task.exe[0] = '\0';
+    tui_set_tick(task_tick, NULL);
     if (!render_verbose()) tui_set_find_expand(find_expand, &agent);
     b8 resumed_saved = !resumed || save_session(&agent);
 

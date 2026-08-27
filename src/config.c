@@ -427,13 +427,11 @@ b8 config_set_small_model(Config *c, Str model, Str provider) {
     return true;
 }
 
-b8 config_set_endpoint(Config *c, Str name, Str base_url, Str model,
-                       ApiKind api, Str key) {
-    if (!name.n || name.n > AGENT_MAX_ENDPOINT_NAME || !base_url.n
-        || base_url.n > AGENT_MAX_URL || model.n > AGENT_MAX_MODEL_NAME
-        || key.n > AGENT_MAX_API_KEY)
+b8 config_set_connection(Config *c, Str name, Str base_url, ApiKind api,
+                         Str key) {
+    if (name.n > AGENT_MAX_ENDPOINT_NAME || !base_url.n
+        || base_url.n > AGENT_MAX_URL || key.n > AGENT_MAX_API_KEY)
         return false;
-
     Str saved_name =
         config_owned(c->owned_provider, sizeof c->owned_provider, name);
     Str saved_url =
@@ -441,14 +439,20 @@ b8 config_set_endpoint(Config *c, Str name, Str base_url, Str model,
     Str saved_key =
         config_owned(c->owned_api_key, sizeof c->owned_api_key, key);
     if (!saved_name.p || !saved_url.p || !saved_key.p) return false;
-    if (model.n && !config_set_model(c, model)) return false;
 
-    c->provider = saved_name;
+    c->provider = name.n ? saved_name : (Str){0};
     c->base_url = saved_url;
     c->base_url_set = true;
     c->api = api;
     c->api_key = key.n ? saved_key : (Str){0};
     return true;
+}
+
+b8 config_set_endpoint(Config *c, Str name, Str base_url, Str model,
+                       ApiKind api, Str key) {
+    if (!name.n || model.n > AGENT_MAX_MODEL_NAME) return false;
+    if (!config_set_connection(c, name, base_url, api, key)) return false;
+    return !model.n || config_set_model(c, model);
 }
 
 b8 config_set_model_profile(Config *c, const ModelProfile *p) {

@@ -6403,6 +6403,23 @@ void tui_set_busy_command(b8 (*fn)(Str line, void *ud), void *ud) {
     g_busy.ud = ud;
 }
 
+static struct {
+    b8 (*fn)(void *ud);
+    void *ud;
+} g_tick;
+
+void tui_set_tick(b8 (*fn)(void *ud), void *ud) {
+    g_tick.fn = fn;
+    g_tick.ud = ud;
+}
+
+#define TUI_TICK_MS 100
+
+static void tick_until_input(void) {
+    if (!g_tick.fn || g_input.pushed || input_buffered()) return;
+    while (g_tick.fn(g_tick.ud) && !input_ready(TUI_TICK_MS)) {}
+}
+
 /* Enter while a turn is in flight. A slash command is offered to the hook,
  * which takes only the ones that leave the running turn alone. One ordinary
  * message moves to the follow-up queue, leaving the composer free for another
@@ -6594,6 +6611,7 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
 
     for (;;) {
         paste_retire_if_drained();
+        tick_until_input();
         i32 c = rbyte();
         if (c == -3) {
             repaint();

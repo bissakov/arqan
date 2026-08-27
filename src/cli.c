@@ -76,6 +76,26 @@ static b8 cli_option(CliArg *a, char c, const char *lng, b8 *done) {
     }
 #endif
 #define OPT(sc, ln) (c == (sc) || (lng && !strcmp(lng, (ln))))
+    if (lng && !strcmp(lng, "task-worker")) {
+        Str v;
+        if (!cli_value(a, &v)) return false;
+        b8 ok = false;
+        i64 log = 0, ctl = 0;
+        size_t comma = 0;
+        while (comma < v.n && v.p[comma] != ',') comma++;
+        if (comma < v.n) {
+            log = str_int(str_take(v, comma), &ok);
+            if (ok) ctl = str_int(str_drop(v, comma + 1), &ok);
+        }
+        if (!ok || log < 3 || ctl < 3 || log > 1024 || ctl > 1024) {
+            cli_bad("option '%s' wants two file descriptors", a->name);
+            return false;
+        }
+        o->task_worker = true;
+        o->task_log_fd = (i32)log;
+        o->task_ctl_fd = (i32)ctl;
+        return true;
+    }
     if (OPT('h', "help")) {
         fputs(g_usage, stdout);
         *done = true;
