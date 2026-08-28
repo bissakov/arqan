@@ -26,6 +26,12 @@ void telemetry_log(i32 level, Str msg) {
 #include "core.c"
 #include "width.c"
 #include "json.c"
+#include "tasklog.c"
+
+#include <fcntl.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static int g_fail;
 static int g_ran;
@@ -333,6 +339,178 @@ static void width_classifies_glyphs(void) {
     CHECK(agent_width(0x0301) == 0);  /* combining acute */
 }
 
+/* ---- the task worker log ----------------------------------------------- */
+
+typedef struct {
+    i32 w, r;
+    char path[64];
+} LogPair;
+
+static b8 log_pair(LogPair *p) {
+    snprintf(p->path, sizeof p->path, "/tmp/arqan-unit-log-%d", (i32)getpid());
+    p->w = open(p->path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    p->r = open(p->path, O_RDONLY);
+    unlink(p->path);
+    return p->w >= 0 && p->r >= 0;
+}
+
+static void log_pair_close(LogPair *p) {
+    if (p->w >= 0) close(p->w);
+    if (p->r >= 0) close(p->r);
+}
+
+static struct {
+    size_t n;
+    TaskEventKind kind[16];
+    char text[16][64];
+    u32 slot[16];
+} g_seen;
+
+static void seen(const TaskEvent *e, void *ud) {
+    (void)ud;
+    if (g_seen.n >= 16) return;
+    g_seen.kind[g_seen.n] = e->kind;
+    g_seen.slot[g_seen.n] = e->slot;
+    Str t = str_clip_utf8(e->text, sizeof g_seen.text[0] - 1);
+    if (t.n) memcpy(g_seen.text[g_seen.n], t.p, t.n);
+    g_seen.text[g_seen.n][t.n] = '\0';
+    g_seen.n++;
+}
+
+static void raw_line(i32 fd, const char *s) {
+    ssize_t rc = write(fd, s, strlen(s));
+    (void)rc;
+}
+
+static void tasklog_round_trips(void) {
+    WITH_ARENA(a, 1 << 20);
+    LogPair p;
+    if (!log_pair(&p)) {
+        CHECK(false);
+        return;
+    }
+    TaskLog l;
+    tasklog_init(&l, p.w);
+    TaskEvent call = {.kind = TASK_EV_CALL,
+                      .slot = 3,
+                      .name = STR("grep"),
+                      .args = STR("{\"pattern\":\"a\\\"b\"}")};
+    tasklog_write(&l, &call, &a);
+    TaskEvent end = {.kind = TASK_EV_END,
+                     .outcome = STR("reported"),
+                     .rounds = 2,
+                     .text = STR("line one\nline two")};
+    tasklog_write(&l, &end, &a);
+
+    TaskReader r;
+    tasklog_reader_init(&r, p.r);
+    memset(&g_seen, 0, sizeof g_seen);
+    CHECK(tasklog_read(&r, &a, seen, NULL) == 2);
+    CHECK(g_seen.n == 2);
+    CHECK(g_seen.kind[0] == TASK_EV_CALL);
+    CHECK(g_seen.slot[0] == 3);
+    CHECK(g_seen.kind[1] == TASK_EV_END);
+    CHECK(strcmp(g_seen.text[1], "line one\nline two") == 0);
+    log_pair_close(&p);
+}
+
+static void tasklog_keeps_a_partial_tail(void) {
+    WITH_ARENA(a, 1 << 20);
+    LogPair p;
+    if (!log_pair(&p)) {
+        CHECK(false);
+        return;
+    }
+    TaskReader r;
+    tasklog_reader_init(&r, p.r);
+    memset(&g_seen, 0, sizeof g_seen);
+
+    raw_line(p.w, "{\"e\":\"msg\",\"text\":\"half");
+    CHECK(tasklog_read(&r, &a, seen, NULL) == 0);
+    CHECK(g_seen.n == 0);
+
+    raw_line(p.w, " and half\"}\n");
+    CHECK(tasklog_read(&r, &a, seen, NULL) == 1);
+    CHECK(g_seen.n == 1);
+    CHECK(strcmp(g_seen.text[0], "half and half") == 0);
+    log_pair_close(&p);
+}
+
+static void tasklog_skips_what_it_cannot_read(void) {
+    WITH_ARENA(a, 1 << 20);
+    LogPair p;
+    if (!log_pair(&p)) {
+        CHECK(false);
+        return;
+    }
+    raw_line(p.w, "not json at all\n");
+    raw_line(p.w, "{\"e\":\"nonsense\"}\n");
+    raw_line(p.w, "{\"e\":\"msg\",\"text\":\"kept\"}\n");
+
+    TaskReader r;
+    tasklog_reader_init(&r, p.r);
+    memset(&g_seen, 0, sizeof g_seen);
+    CHECK(tasklog_read(&r, &a, seen, NULL) == 1);
+    CHECK(g_seen.n == 1);
+    CHECK(strcmp(g_seen.text[0], "kept") == 0);
+    log_pair_close(&p);
+}
+
+static void tasklog_resynchronizes_after_a_huge_line(void) {
+    WITH_ARENA(a, 1 << 20);
+    LogPair p;
+    if (!log_pair(&p)) {
+        CHECK(false);
+        return;
+    }
+    size_t huge = AGENT_TASK_LINE_MAX + 4096;
+    char *fat = malloc(huge + 2);
+    CHECK(fat != NULL);
+    if (!fat) return;
+    memset(fat, 'x', huge);
+    fat[huge] = '\n';
+    fat[huge + 1] = '\0';
+    raw_line(p.w, fat);
+    free(fat);
+    raw_line(p.w, "{\"e\":\"msg\",\"text\":\"after\"}\n");
+
+    TaskReader r;
+    tasklog_reader_init(&r, p.r);
+    memset(&g_seen, 0, sizeof g_seen);
+    CHECK(tasklog_read(&r, &a, seen, NULL) == 1);
+    CHECK(g_seen.n == 1);
+    CHECK(strcmp(g_seen.text[0], "after") == 0);
+    log_pair_close(&p);
+}
+
+static void tasklog_writes_the_end_past_the_cap(void) {
+    WITH_ARENA(a, 1 << 20);
+    LogPair p;
+    if (!log_pair(&p)) {
+        CHECK(false);
+        return;
+    }
+    TaskLog l;
+    tasklog_init(&l, p.w);
+    l.written = AGENT_TASK_LOG_BYTES;
+    l.full = true;
+
+    TaskEvent msg = {.kind = TASK_EV_MSG, .text = STR("dropped")};
+    tasklog_write(&l, &msg, &a);
+    TaskEvent end = {
+        .kind = TASK_EV_END, .outcome = STR("reported"), .text = STR("kept")};
+    tasklog_write(&l, &end, &a);
+
+    TaskReader r;
+    tasklog_reader_init(&r, p.r);
+    memset(&g_seen, 0, sizeof g_seen);
+    CHECK(tasklog_read(&r, &a, seen, NULL) == 1);
+    CHECK(g_seen.n == 1);
+    CHECK(g_seen.kind[0] == TASK_EV_END);
+    CHECK(strcmp(g_seen.text[0], "kept") == 0);
+    log_pair_close(&p);
+}
+
 int main(void) {
     /* These cases exhaust arenas on purpose, and each refusal logs. Raise the
      * level past ERROR so a passing run says nothing but its result. */
@@ -363,6 +541,11 @@ int main(void) {
     RUN(str_handles_empty);
     RUN(width_classifies_glyphs);
 
+    RUN(tasklog_round_trips);
+    RUN(tasklog_keeps_a_partial_tail);
+    RUN(tasklog_skips_what_it_cannot_read);
+    RUN(tasklog_resynchronizes_after_a_huge_line);
+    RUN(tasklog_writes_the_end_past_the_cap);
     if (g_fail) {
         printf("%d failure(s) in %d cases\n", g_fail, g_ran);
         return 1;

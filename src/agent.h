@@ -140,15 +140,6 @@ typedef bool b8;
 #define AGENT_JOB_WAIT_MAX_MS 240000
 #define AGENT_MAX_JOBS        8
 
-/* One parked subagent's own storage: its conversation outlives allocations
- * the parent makes after it, so it cannot be a mark in a bump arena, and
- * AGENT_SUB_MESSAGES bounds the rounds it may take before it has to report.
- *
- * A slice ends at a round boundary rather than when the subagent is done,
- * so the gap between two parent requests stays inside AGENT_CACHE_TTL_S and
- * the parent's prefix survives a long delegation. This is the same reason
- * shell_timeout_ms exists. A prompt over AGENT_TASK_PROMPT_MAX is refused
- * rather than truncated: a cut task is a different task. */
 #define AGENT_SUB_BYTES         (4u << 20)
 #define AGENT_SUB_MESSAGES      512
 #define AGENT_TASK_SLICE_MS     120000
@@ -156,6 +147,12 @@ typedef bool b8;
 #define AGENT_TASK_LABEL_MAX    64
 #define AGENT_TASK_MODEL_MAX    96
 #define AGENT_TASK_PROVIDER_MAX 48
+#define AGENT_TASK_LOG_BYTES    (4u << 20)
+#define AGENT_TASK_LINE_MAX     (64u << 10)
+#define AGENT_TASK_WAIT_MAX_MS  AGENT_JOB_WAIT_MAX_MS
+#define AGENT_TASK_DELTA_MS     50
+#define AGENT_TASK_GRACE_MS     200
+#define AGENT_MAX_TASKS         AGENT_MAX_JOBS
 /* What a report may cost the parent, and what a parked note quotes back of
  * the work so far. The report is clipped behind a line saying so; the sub
  * prompt asks for a bounded answer up front, so clipping is the backstop
@@ -976,6 +973,8 @@ b8 config_remember_model(Str provider, Str model, Arena *scratch);
 b8 config_set_model(Config *c, Str model);
 
 b8 config_set_small_model(Config *c, Str model, Str provider);
+b8 config_set_connection(Config *c, Str name, Str base_url, ApiKind api,
+                         Str key);
 b8 config_set_endpoint(Config *c, Str name, Str base_url, Str model,
                        ApiKind api, Str key);
 b8 config_set_model_profile(Config *c, const ModelProfile *p);
@@ -989,6 +988,8 @@ typedef struct {
     Str prompt;
     b8 have_prompt;
     i32 max_tokens;
+    b8 task_worker;
+    i32 task_log_fd, task_ctl_fd;
 } CliOpts;
 
 typedef enum {
@@ -1790,6 +1791,7 @@ typedef struct {
     void (*on_step)(const Conv *c, size_t slot, u32 round, void *ud);
     // Once the result of that call has been appended to `c` at `slot`.
     void (*on_result)(const Conv *c, size_t slot, u32 ms, void *ud);
+    void (*on_round_begin)(u32 round, void *ud);
     // Once a round's request has finished streaming; `first` is where it began.
     void (*on_round_end)(const Conv *c, size_t first, void *ud);
     /* The delegate's stream, for a caller that is showing it. Both are
@@ -1828,6 +1830,69 @@ b8 subagent_begin(Subagent *s, void *mem, size_t cap, u32 id, Str system,
  * it out before then. SUB_FAILED fills `err` and writes nothing. */
 SubOutcome subagent_slice(Subagent *s, const SubRun *r, Buf *out, char *err,
                           size_t err_cap);
+void subagent_cost(Buf *out, const Subagent *s);
+void subagent_label(Buf *out, const Subagent *s);
+void subagent_progress(Buf *out, const Subagent *s);
+
+/* ---- task workers ------------------------------------------------------ */
+typedef enum {
+    TASK_EV_NONE,
+    TASK_EV_START,
+    TASK_EV_ROUND,
+    TASK_EV_MSG,
+    TASK_EV_CALL,
+    TASK_EV_RESULT,
+    TASK_EV_USAGE,
+    TASK_EV_END,
+} TaskEventKind;
+
+typedef struct {
+    TaskEventKind kind;
+    u32 id, n, slot, ms, rounds, tool_calls;
+    size_t prompt_tokens, completion_tokens;
+    b8 small, assistant;
+    Str label, model, provider, task, name, args, text, outcome;
+} TaskEvent;
+
+typedef struct {
+    i32 fd;
+    size_t written;
+    b8 full;
+} TaskLog;
+
+typedef struct {
+    i32 fd;
+    size_t line_n;
+    b8 overflow;
+    char line[AGENT_TASK_LINE_MAX];
+} TaskReader;
+
+typedef void (*TaskOnEvent)(const TaskEvent *e, void *ud);
+
+void tasklog_init(TaskLog *l, i32 fd);
+void tasklog_write(TaskLog *l, const TaskEvent *e, Arena *scratch);
+
+void tasklog_reader_init(TaskReader *r, i32 fd);
+b8 tasklog_parse(Str line, Arena *scratch, TaskEvent *out);
+size_t tasklog_read(TaskReader *r, Arena *scratch, TaskOnEvent on, void *ud);
+
+/* INVARIANT: `reader` and `report` sit last, and a slot is cleared only once
+ * it has run. A slot is 72KB, so clearing all of them would dirty 580KB of
+ * `.bss` in a session that never delegates. */
+typedef struct {
+    Subagent sub;
+    pid_t pid;
+    i32 lifeline;
+    f64 started;
+    b8 running, ended;
+    b8 fallback;
+    SubOutcome outcome;
+    u32 round;
+    size_t report_n;
+    char path[AGENT_SPILL_PATH_MAX];
+    TaskReader reader;
+    char report[AGENT_TOOL_RESULT_BYTES];
+} TaskWorker;
 
 /* Model ids from GET <base_url>/models, in the order the endpoint serves
  * them, allocated in `scratch`. Zero with `err` set when it could not be
@@ -2365,6 +2430,7 @@ void tui_set_busy_command(b8 (*fn)(Str line, void *ud), void *ud);
 void tui_activity(Str label);
 void tui_activity_end(void);
 void tui_poll_input(void);
+void tui_set_tick(b8 (*fn)(void *ud), void *ud);
 i32 tui_input_fd(void);
 
 /* ---- markdown ------------------------------------------------------------

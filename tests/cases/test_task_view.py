@@ -34,10 +34,16 @@ def delegate(prompt="find the cat", label="cats", **args):
     return f"tool=task:{json.dumps(call)},final_text=done"
 
 
-def parked(prompt="find the cat", label="cats"):
-    """A parent that starts a task and polls it once, leaving it parked."""
-    return (f'tool=task:{json.dumps({"prompt": prompt, "label": label})}'
-            ',tool=task:{"id":1},final_text=done')
+def parent_requests(ctx):
+    return [r for r in ctx.mock.requests
+            if not str(r.get("model", "")).startswith("mock:")]
+
+
+def collect(prompt="find the cat", label="cats", task_id=1):
+    """A parent that starts a task and waits for its report."""
+    start = json.dumps({"prompt": prompt, "label": label})
+    poll = json.dumps({"id": task_id, "wait_ms": 30000})
+    return f"tool=task:{start},tool=task:{poll}"
 
 
 # ---- the regression the detach mechanism exists for ------------------------
@@ -47,14 +53,17 @@ def test_the_parents_reply_written_behind_the_view_is_not_lost(ctx):
     """The screen shows one conversation at a time, and the other is rebuilt
     rather than remembered.
 
-    The view goes up while the delegate is held, so everything the parent
-    writes afterwards - its tool result block and its reply - lands while the
-    task's transcript is the one on screen. Coming back has to show all of it.
+    The view goes up while the parent's own next request is held, so
+    everything it writes afterwards lands while the task's transcript is the
+    one on screen. Coming back has to show all of it.
     """
-    ctx.scenario(delegate())
-    s = spawn(ctx, sub="hold,text=found+it")
+    ctx.scenario("hold_final=1,"
+                 'tool=task:{"prompt":"find the cat","label":"cats"}'
+                 ",final_text=done")
+    s = spawn(ctx, sub="text=found+it")
     s.submit("delegate it")
-    s.wait_text("task:")
+    s.wait_for(lambda _: len(parent_requests(ctx)) >= 2,
+               "the parent's next request")
     s.key("ctrl-o").sync()
     assert "task 1" in s.text(), s.text()
 
@@ -90,10 +99,9 @@ def test_ctrl_o_shows_the_tasks_own_conversation(ctx):
     """Its task prompt, its rounds and its tool blocks, none of which the
     parent's transcript ever carried."""
     a_small_tree(ctx)
-    ctx.scenario(parked())
-    s = spawn(ctx, sub='tool=grep:{"pattern":"alpha"},tool_rounds=3,'
-                       'final_text=found+it',
-              ARQAN_SUBAGENT_SLICE_MS="1")
+    ctx.scenario(collect() + ",final_text=done")
+    s = spawn(ctx, sub='tool=grep:{"pattern":"alpha"},tool_rounds=1,'
+                       'final_text=found+it')
     s.submit("delegate it")
     s.wait_text("done")
     s.wait_turn_done()
@@ -168,7 +176,7 @@ def test_the_header_names_the_main_model_when_the_delegate_runs_on_it(ctx):
 
 
 def test_a_reported_task_is_still_reachable(ctx):
-    ctx.scenario(delegate())
+    ctx.scenario(collect() + ",final_text=done")
     s = spawn(ctx)
     s.submit("delegate it")
     s.wait_text("done")
@@ -197,24 +205,65 @@ def test_clear_drops_the_task_and_the_view_returns_with_it(ctx):
     assert "no task has run in this conversation" in s.text(), s.text()
 
 
-def test_a_second_task_replaces_the_first_ones_transcript(ctx):
-    """One slot, one view: the delegation being watched is the current one."""
+def test_ctrl_o_shows_the_newest_tasks_transcript(ctx):
     ctx.scenario('tool=task:{"prompt":"find the cat","label":"cats"},'
                  'tool=task:{"prompt":"find the dog","label":"dogs"},'
                  'final_text=done')
-    s = spawn(ctx, sub="text=found+it")
+    s = spawn(ctx, sub="hold=1,text=found+it")
     s.submit("delegate it")
     s.wait_text("done")
     s.wait_turn_done()
 
-    s.key("ctrl-o").sync()
+    s.key("ctrl-o")
+    s.wait_text("task 2")
     text = s.text()
     assert "find the dog" in text, text
     assert "find the cat" not in text, text
     assert "task 2" in text, text
+    ctx.mock.release()
+
+
+def test_polling_an_older_task_focuses_its_transcript(ctx):
+    ctx.scenario('tool=task:{"prompt":"find the cat","label":"cats"},'
+                 'tool=task:{"prompt":"find the dog","label":"dogs"},'
+                 'tool=task:{"id":1},final_text=done')
+    s = spawn(ctx, sub="hold=1,text=found+it")
+    s.submit("delegate it")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    s.key("ctrl-o")
+    s.wait_text("task 1")
+    text = s.text()
+    assert "find the cat" in text, text
+    assert "find the dog" not in text, text
+    ctx.mock.release()
 
 
 # ---- re-rendering while the task view is the one showing -------------------
+
+
+def test_the_view_fills_in_while_the_delegate_is_still_working(ctx):
+    """The delegate runs in another process, so its rounds reach the view
+    through the log the parent drains between keystrokes. Held on its second
+    round, the first round's tool block is already on screen."""
+    a_small_tree(ctx)
+    ctx.scenario(collect() + ",final_text=done")
+    s = spawn(ctx, sub='tool=grep:{"pattern":"alpha"},hold_round=2,'
+                       'final_text=found+it')
+    s.submit("delegate it")
+    s.wait_for(lambda _: len(ctx.mock.requests) >= 3, "the delegate's round")
+    s.key("ctrl-o").sync()
+
+    s.wait_text("grep alpha")
+    text = s.text()
+    assert "in progress" in text, text
+    assert "found it" not in text, text
+
+    ctx.mock.release()
+    s.wait_text("found it")
+    s.key("ctrl-o").sync()
+    s.wait_text("delegate it")
 
 
 def test_a_reflow_rebuilds_the_task_view_rather_than_blanking_it(ctx):
