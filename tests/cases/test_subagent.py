@@ -294,9 +294,7 @@ def test_the_delegate_keeps_one_conversation_across_polls(ctx):
     assert any(m.get("role") == "tool" for m in second), second
 
 
-def test_a_new_task_is_refused_while_one_is_running(ctx):
-    """One slot, so serializing is the honest contract; the refusal names
-    the running id and both ways out."""
+def test_two_tasks_run_at_the_same_time(ctx):
     a_small_tree(ctx)
     ctx.scenario(
         'tool=task:{"prompt":"one","label":"a"}'
@@ -306,11 +304,90 @@ def test_a_new_task_is_refused_while_one_is_running(ctx):
     s.submit("delegate it")
     s.wait_turn_done()
 
-    refusal = parent_results(ctx)[1]
-    assert "ERROR" in refusal, refusal
-    assert "task(id=1)" in refusal, refusal
-    assert 'action="drop"' in refusal, refusal
+    first, second = parent_results(ctx)[:2]
+    assert "Task 1" in first, first
+    assert "Task 2" in second, second
+    assert "background" in first and "background" in second, (first, second)
+    s.wait_for(lambda _: len(sub_requests(ctx)) >= 2, "both delegates")
     ctx.mock.release()
+
+
+def test_each_concurrent_task_can_be_collected_by_its_id(ctx):
+    a_small_tree(ctx)
+    ctx.scenario(
+        'tool=task:{"prompt":"one","label":"a"}'
+        ',tool=task:{"prompt":"two","label":"b"}'
+        ',tool=task:{"id":1,"wait_ms":30000}'
+        ',tool=task:{"id":2,"wait_ms":30000},final_text=done'
+    )
+    s = spawn(ctx, sub="text=reported+work")
+    s.submit("delegate both")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    first, second = parent_results(ctx)[2:4]
+    assert "[task 1" in first, first
+    assert "[task 2" in second, second
+    assert "reported work" in first and "reported work" in second, \
+        (first, second)
+
+
+def test_dropping_one_task_does_not_stop_another(ctx):
+    a_small_tree(ctx)
+    ctx.scenario(
+        'tool=task:{"prompt":"one","label":"a"}'
+        ',tool=task:{"prompt":"two","label":"b"}'
+        ',tool=task:{"id":1,"action":"drop"}'
+        ',tool=task:{"id":2},final_text=done'
+    )
+    s = spawn(ctx, sub="hold=1,text=reported+work")
+    s.submit("delegate both")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    dropped, running = parent_results(ctx)[2:4]
+    assert "Task 1 was dropped" in dropped, dropped
+    assert "Task 2" in running and "running" in running, running
+    ctx.mock.release()
+
+
+def test_the_ninth_active_task_is_refused(ctx):
+    starts = [
+        f'tool=task:{{"prompt":"task {i}","label":"t{i}"}}'
+        for i in range(1, 10)
+    ]
+    ctx.scenario(",".join(starts) + ",final_text=done")
+    s = spawn(ctx, sub="hold=1,text=too+slow")
+    s.submit("delegate all")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    results = parent_results(ctx)
+    for i, started in enumerate(results[:8], 1):
+        assert f"Task {i}" in started, started
+    assert "ERROR" in results[8], results[8]
+    assert "8 tasks" in results[8], results[8]
+    ctx.mock.release()
+
+
+def test_a_slot_can_be_reused_after_its_task_is_collected(ctx):
+    starts = [
+        f'tool=task:{{"prompt":"task {i}","label":"t{i}"}}'
+        for i in range(1, 9)
+    ]
+    calls = starts + [
+        'tool=task:{"id":1,"wait_ms":30000}',
+        'tool=task:{"prompt":"task 9","label":"t9"}',
+        "final_text=done",
+    ]
+    ctx.scenario(",".join(calls))
+    s = spawn(ctx, sub="text=reported+work")
+    s.submit("delegate all")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    assert "[task 1" in parent_results(ctx)[8], parent_results(ctx)[8]
+    assert "Task 9" in parent_results(ctx)[9], parent_results(ctx)[9]
 
 
 def test_drop_stops_the_worker(ctx):

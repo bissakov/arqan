@@ -2365,9 +2365,9 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
         "the call answers at once with an id, you carry on with other "
         "work, and task(id=N) collects the report or says what it has "
         "done so far. Add wait_ms to wait for it when you have nothing "
-        "else to do. Keep polling rather than leaving a task unattended. "
-        "One task runs at a time, and task ids last for this "
-        "conversation only.",
+        "else to do. Keep polling rather than leaving tasks unattended. "
+        "Eight tasks run together, and task ids last for this conversation "
+        "only.",
         "Delegate a read-only investigation", BOTH | TOOL_FIXED,
         TOOL_APPROVAL_NONE,
         "{\"type\":\"object\",\"properties\":{"

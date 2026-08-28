@@ -68,7 +68,7 @@ static alignas(64) u8 g_screen[AGENT_SCREEN_BYTES];
 /* One live subagent's conversation and everything its rounds allocate. It is
  * not in `persist` because a parked subagent outlives parent allocations made
  * after it, and a bump arena cannot give a mark back out of order. */
-static alignas(64) u8 g_sub[AGENT_SUB_BYTES];
+static alignas(64) u8 g_sub[AGENT_MAX_TASKS][AGENT_SUB_BYTES];
 
 
 static struct {
@@ -841,8 +841,9 @@ static b8 tool_result_has(Str result, Str needle) {
  * Everything else in the log is view material a truncated log may lose.
  */
 static struct {
-    TaskWorker w;
+    TaskWorker w[AGENT_MAX_TASKS];
     u32 next_id;
+    size_t focus;
     Agent *ag;
     f64 drained;
     b8 pumping;
@@ -882,6 +883,34 @@ static SubOutcome task_outcome_of(Str name) {
         if (str_eq(name, str_c(task_outcome_name((SubOutcome)o))))
             return (SubOutcome)o;
     return SUB_FAILED;
+}
+
+static TaskWorker *task_focused(void) {
+    return g_task.focus < AGENT_MAX_TASKS ? &g_task.w[g_task.focus] : NULL;
+}
+
+static TaskWorker *task_find(u32 id) {
+    for (size_t i = 0; i < AGENT_MAX_TASKS; i++)
+        if (g_task.w[i].sub.kept && g_task.w[i].sub.id == id)
+            return &g_task.w[i];
+    return NULL;
+}
+
+static TaskWorker *task_slot(size_t *slot) {
+    for (size_t i = 0; i < AGENT_MAX_TASKS; i++) {
+        if (g_task.w[i].sub.live || g_task.w[i].running) continue;
+        *slot = i;
+        return &g_task.w[i];
+    }
+    return NULL;
+}
+
+static b8 tasks_readable(void) {
+    for (size_t i = 0; i < AGENT_MAX_TASKS; i++)
+        if (g_task.w[i].reader.fd >= 0
+            && (g_task.w[i].running || !g_task.w[i].ended))
+            return true;
+    return false;
 }
 
 /* ---- the child ----------------------------------------------------------- */
@@ -924,27 +953,27 @@ static void task_drop_log(TaskWorker *w) {
 }
 
 static void task_workers_stop(void) {
-    task_worker_stop(&g_task.w);
-    task_drop_log(&g_task.w);
+    for (size_t i = 0; i < AGENT_MAX_TASKS; i++) {
+        task_worker_stop(&g_task.w[i]);
+        task_drop_log(&g_task.w[i]);
+    }
 }
 
 static void task_release(Agent *ag) {
-    TaskWorker *w = &g_task.w;
-    task_worker_stop(w);
-    task_drop_log(w);
-    memset(&w->report, 0, sizeof w->report);
-    w->pid = 0;
-    w->round = 0;
-    w->report_n = 0;
-    w->ended = false;
-    w->fallback = false;
-    subagent_release(&w->sub);
+    for (size_t i = 0; i < AGENT_MAX_TASKS; i++) {
+        TaskWorker *w = &g_task.w[i];
+        task_worker_stop(w);
+        task_drop_log(w);
+        memset(w, 0, sizeof *w);
+        tasklog_reader_init(&w->reader, -1);
+        w->lifeline = -1;
+    }
+    g_task.focus = AGENT_MAX_TASKS;
     if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_MAIN);
     tui_transcript_attach();
 }
 
-static void task_retire(void) {
-    TaskWorker *w = &g_task.w;
+static void task_retire(TaskWorker *w) {
     task_worker_stop(w);
     task_drop_log(w);
     subagent_retire(&w->sub);
@@ -969,9 +998,15 @@ static void task_take_report(TaskWorker *w, Str text) {
     w->report_n = fit.n;
 }
 
+typedef struct {
+    Agent *ag;
+    TaskWorker *w;
+} TaskDrain;
+
 static void task_on_event(const TaskEvent *e, void *ud) {
-    Agent *ag = ud;
-    TaskWorker *w = &g_task.w;
+    TaskDrain *d = ud;
+    Agent *ag = d->ag;
+    TaskWorker *w = d->w;
     Subagent *s = &w->sub;
     Conv *c = &s->conv;
     switch (e->kind) {
@@ -1020,31 +1055,32 @@ static void task_on_event(const TaskEvent *e, void *ud) {
     }
 }
 
-static b8 task_drain(Agent *ag) {
-    TaskWorker *w = &g_task.w;
+static b8 task_drain(Agent *ag, TaskWorker *w) {
     if (w->reader.fd < 0) return false;
-    size_t n = tasklog_read(&w->reader, ag->scratch, task_on_event, ag);
+    TaskDrain d = {ag, w};
+    size_t n = tasklog_read(&w->reader, ag->scratch, task_on_event, &d);
     task_reap(w);
     return n > 0;
 }
 
 static void task_pump(void) {
     Agent *ag = g_task.ag;
-    TaskWorker *w = &g_task.w;
-    if (!ag || g_task.pumping || w->reader.fd < 0) return;
+    if (!ag || g_task.pumping) return;
     f64 now = agent_now_seconds();
     if ((now - g_task.drained) * 1000.0 < AGENT_TASK_DELTA_MS) return;
     g_task.drained = now;
     g_task.pumping = true;
-    if (task_drain(ag) && g_tview.showing == TVIEW_TASK)
-        tview_paint(ag, 0, true);
+    b8 focused = false;
+    for (size_t i = 0; i < AGENT_MAX_TASKS; i++)
+        if (task_drain(ag, &g_task.w[i]) && i == g_task.focus) focused = true;
+    if (focused && g_tview.showing == TVIEW_TASK) tview_paint(ag, 0, true);
     g_task.pumping = false;
 }
 
 static b8 task_tick(void *ud) {
     (void)ud;
     task_pump();
-    return g_task.w.reader.fd >= 0 && (g_task.w.running || !g_task.w.ended);
+    return tasks_readable();
 }
 
 /* ---- starting a worker --------------------------------------------------- */
@@ -1067,8 +1103,8 @@ static b8 task_write_all(i32 fd, Str s) {
 }
 
 static b8 task_send_record(Agent *ag, i32 fd, const Config *cfg, Str sys,
-                           Str task, b8 small) {
-    const Subagent *s = &g_task.w.sub;
+                           Str task, b8 small, const TaskWorker *w) {
+    const Subagent *s = &w->sub;
     size_t mark = ag->scratch->off;
     Buf b;
     buf_init(&b, ag->scratch, 8192);
@@ -1125,9 +1161,8 @@ static void task_child(i32 log, i32 ctl, i32 lifeline) {
     _exit(127);
 }
 
-static b8 task_spawn(Agent *ag, const Config *cfg, Str sys, Str task,
-                     b8 small) {
-    TaskWorker *w = &g_task.w;
+static b8 task_spawn(Agent *ag, const Config *cfg, Str sys, Str task, b8 small,
+                     TaskWorker *w) {
     if (!g_task.exe[0]) return false;
 #ifdef AGENT_TESTING
     if (getenv(AGENT_ENV_PREFIX "TEST_NO_TASK_WORKER")) return false;
@@ -1169,7 +1204,7 @@ static b8 task_spawn(Agent *ag, const Config *cfg, Str sys, Str task,
     if (pid == 0) task_child(log, ctl[0], ctl[1]);
     close(log);
     close(ctl[0]);
-    if (pid < 0 || !task_send_record(ag, ctl[1], cfg, sys, task, small)) {
+    if (pid < 0 || !task_send_record(ag, ctl[1], cfg, sys, task, small, w)) {
         if (pid > 0) {
             kill(pid, SIGKILL);
             while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
@@ -1282,8 +1317,8 @@ static void sub_on_result(const Conv *c, size_t slot, u32 ms, void *ud) {
     scratch->off = mark;
 }
 
-static void task_run_here(Agent *ag, const Config *cfg, Buf *out) {
-    TaskWorker *w = &g_task.w;
+static void task_run_here(Agent *ag, const Config *cfg, Buf *out,
+                          TaskWorker *w) {
     w->fallback = true;
     TaskStep step = {ag, w->sub.label[0] ? w->sub.label : "investigating",
                      w->sub.model};
@@ -1331,14 +1366,13 @@ static void task_telemetry(const TaskWorker *w, b8 small, Str text) {
     tel_send(&e);
 }
 
-static void task_wait(Agent *ag, size_t wait_ms) {
-    TaskWorker *w = &g_task.w;
+static void task_wait(Agent *ag, TaskWorker *w, size_t wait_ms) {
     f64 until = agent_now_seconds() + (f64)wait_ms / 1000.0;
     while (!w->ended && (w->running || w->reader.fd >= 0)) {
-        task_drain(ag);
+        task_drain(ag, w);
         if (w->ended || g_got_sigint) return;
         if (!w->running) {
-            task_drain(ag);
+            task_drain(ag, w);
             return;
         }
         if (agent_now_seconds() >= until) return;
@@ -1401,7 +1435,7 @@ static const Config *task_config(Agent *ag, b8 *small, b8 notice) {
 }
 
 static void task_answer(Agent *ag, Str args, Str *result) {
-    TaskWorker *w = &g_task.w;
+    TaskWorker *w = NULL;
     Buf out;
     buf_init(&out, ag->scratch, 4096);
     char err[AGENT_TOOL_ERR] = {0};
@@ -1433,7 +1467,8 @@ static void task_answer(Agent *ag, Str args, Str *result) {
     }
 
     if (id) {
-        if (!w->sub.live || w->sub.id != id) {
+        w = task_find(id);
+        if (!w || !w->sub.live) {
             buf_putf(&out,
                      "ERROR: there is no task %u in this conversation. A task "
                      "does not survive /clear, a rewind or a new session.",
@@ -1441,26 +1476,29 @@ static void task_answer(Agent *ag, Str args, Str *result) {
             *result = buf_finish(&out);
             return;
         }
+        g_task.focus = (size_t)(w - g_task.w);
         if (drop) {
-            task_drain(ag);
+            task_drain(ag, w);
             buf_putf(&out, "Task %u was dropped after %u round%s.", id,
                      w->sub.rounds, w->sub.rounds == 1 ? "" : "s");
-            task_retire();
-            if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_TASK);
+            task_retire(w);
+            if (w == task_focused() && g_tview.showing == TVIEW_TASK)
+                tview_show(ag, TVIEW_TASK);
             *result = buf_finish(&out);
             return;
         }
         if (w->fallback && !w->ended) {
             b8 small = false;
-            task_run_here(ag, task_config(ag, &small, false), &out);
+            task_run_here(ag, task_config(ag, &small, false), &out, w);
             Str text = buf_finish(&out);
             task_telemetry(w, small, text);
-            if (w->ended) task_retire();
-            if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_TASK);
+            if (w->ended) task_retire(w);
+            if (w == task_focused() && g_tview.showing == TVIEW_TASK)
+                tview_show(ag, TVIEW_TASK);
             *result = text;
             return;
         }
-        task_wait(ag, wait_ms);
+        task_wait(ag, w, wait_ms);
         if (!w->ended && !w->running) {
             w->ended = true;
             w->outcome = SUB_FAILED;
@@ -1469,13 +1507,15 @@ static void task_answer(Agent *ag, Str args, Str *result) {
             task_put_report(&out, w);
             Str text = buf_finish(&out);
             task_telemetry(w, w->sub.small, text);
-            task_retire();
-            if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_TASK);
+            task_retire(w);
+            if (w == task_focused() && g_tview.showing == TVIEW_TASK)
+                tview_show(ag, TVIEW_TASK);
             *result = text;
             return;
         }
         task_put_running(&out, w);
-        if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_TASK);
+        if (w == task_focused() && g_tview.showing == TVIEW_TASK)
+            tview_show(ag, TVIEW_TASK);
         *result = buf_finish(&out);
         return;
     }
@@ -1485,12 +1525,13 @@ static void task_answer(Agent *ag, Str args, Str *result) {
                       "abandon");
         return;
     }
-    if (w->sub.live) {
+    size_t slot = 0;
+    w = task_slot(&slot);
+    if (!w) {
         buf_putf(&out,
-                 "ERROR: task %u is still running, and one task runs at a "
-                 "time. Collect it with task(id=%u), or abandon it with "
-                 "task(id=%u, action=\"drop\"), before starting another.",
-                 w->sub.id, w->sub.id, w->sub.id);
+                 "ERROR: %u tasks are already active. Collect or drop one "
+                 "before starting another.",
+                 (unsigned)AGENT_MAX_TASKS);
         *result = buf_finish(&out);
         return;
     }
@@ -1512,15 +1553,21 @@ static void task_answer(Agent *ag, Str args, Str *result) {
         *result = STR("ERROR: out of memory building the subagent prompt");
         return;
     }
-    task_release(ag);
-    if (!subagent_begin(&w->sub, g_sub, sizeof g_sub, g_task.next_id + 1, sys,
-                        prompt, label, err, sizeof err)) {
-        task_release(ag);
+    task_worker_stop(w);
+    task_drop_log(w);
+    memset(w, 0, sizeof *w);
+    tasklog_reader_init(&w->reader, -1);
+    w->lifeline = -1;
+    if (!subagent_begin(&w->sub, g_sub[slot], sizeof g_sub[slot],
+                        g_task.next_id + 1, sys, prompt, label, err,
+                        sizeof err)) {
+        subagent_release(&w->sub);
         buf_putf(&out, "ERROR: %s", err);
         *result = buf_finish(&out);
         return;
     }
     g_task.next_id++;
+    g_task.focus = slot;
     w->started = agent_now_seconds();
 
     b8 use_small = false;
@@ -1528,22 +1575,22 @@ static void task_answer(Agent *ag, Str args, Str *result) {
     subagent_set_model(&w->sub, run_cfg->model, run_cfg->provider, use_small);
     if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_TASK);
 
-    if (!task_spawn(ag, run_cfg, sys, prompt, use_small)) {
-        task_run_here(ag, run_cfg, &out);
+    if (!task_spawn(ag, run_cfg, sys, prompt, use_small, w)) {
+        task_run_here(ag, run_cfg, &out, w);
         Str text = buf_finish(&out);
         task_telemetry(w, use_small, text);
-        if (w->ended) task_retire();
+        if (w->ended) task_retire(w);
         if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_TASK);
         *result = text;
         return;
     }
 
-    if (wait_ms) task_wait(ag, wait_ms);
+    if (wait_ms) task_wait(ag, w, wait_ms);
     if (w->ended) {
         task_put_report(&out, w);
         Str text = buf_finish(&out);
         task_telemetry(w, use_small, text);
-        task_retire();
+        task_retire(w);
         if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_TASK);
         *result = text;
         return;
@@ -1888,8 +1935,8 @@ static void render_conv(const Conv *c, const Config *cfg, b8 show_instructions,
  * coming back rebuilds the parent from Conv, which is where they survived.
  */
 static Conv *shown_conv(Agent *ag) {
-    if (g_tview.showing == TVIEW_TASK && g_task.w.sub.kept)
-        return &g_task.w.sub.conv;
+    TaskWorker *w = task_focused();
+    if (g_tview.showing == TVIEW_TASK && w && w->sub.kept) return &w->sub.conv;
     return ag->conv;
 }
 
@@ -1907,8 +1954,9 @@ static void tview_paint(Agent *ag, u32 zone, b8 anchor) {
     }
     tui_batch_begin();
     tui_clear_transcript();
-    const Subagent *s = &g_task.w.sub;
-    if (g_tview.showing == TVIEW_TASK && s->kept) {
+    TaskWorker *w = task_focused();
+    const Subagent *s = w ? &w->sub : NULL;
+    if (g_tview.showing == TVIEW_TASK && s && s->kept) {
         render_task_header(s->id, str_c(s->label), str_c(s->model),
                            str_c(s->provider), s->small, s->live);
         render_conv(&s->conv, ag->cfg, false, ag->scratch);
@@ -1928,8 +1976,9 @@ static void tview_show(Agent *ag, TranscriptView which) {
     g_tview.reasoning = false;
     g_turn.replying = false;
     g_turn.reasoning = false;
+    TaskWorker *w = task_focused();
     g_tview.showing =
-        which == TVIEW_TASK && g_task.w.sub.kept ? TVIEW_TASK : TVIEW_MAIN;
+        which == TVIEW_TASK && w && w->sub.kept ? TVIEW_TASK : TVIEW_MAIN;
     tui_transcript_attach();
     tview_paint(ag, 0, false);
     tui_scroll_to_bottom();
@@ -1945,7 +1994,8 @@ static void tview_show(Agent *ag, TranscriptView which) {
 
 static void task_view_toggle(Agent *ag) {
     if (g_turn.one_shot || !tui_is_fullscreen()) return;
-    if (!g_task.w.sub.kept) {
+    TaskWorker *w = task_focused();
+    if (!w || !w->sub.kept) {
         tui_notice(STR("no task has run in this conversation"));
         return;
     }
@@ -5816,8 +5866,8 @@ static i32 task_worker_main(const CliOpts *opts) {
     arena_reset(&scratch);
 
     err[0] = '\0';
-    Subagent *s = &g_task.w.sub;
-    if (!subagent_begin(s, g_sub, sizeof g_sub, id, sys, task, label, err,
+    Subagent *s = &g_task.w[0].sub;
+    if (!subagent_begin(s, g_sub[0], sizeof g_sub[0], id, sys, task, label, err,
                         sizeof err))
         return worker_fail(err[0] ? err : "there is no room for it");
     subagent_set_model(s, cfg.model, cfg.provider, small);
@@ -6078,8 +6128,11 @@ i32 main(i32 argc, char **argv) {
     tui_set_busy_command(on_busy_command, &agent);
     tui_set_reflow(reflow_transcript, &agent);
     g_task.ag = &agent;
-    tasklog_reader_init(&g_task.w.reader, -1);
-    g_task.w.lifeline = -1;
+    g_task.focus = AGENT_MAX_TASKS;
+    for (size_t i = 0; i < AGENT_MAX_TASKS; i++) {
+        tasklog_reader_init(&g_task.w[i].reader, -1);
+        g_task.w[i].lifeline = -1;
+    }
     if (!restart_exe(g_task.exe, sizeof g_task.exe, argv[0]))
         g_task.exe[0] = '\0';
     tui_set_tick(task_tick, NULL);

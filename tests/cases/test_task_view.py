@@ -205,20 +205,39 @@ def test_clear_drops_the_task_and_the_view_returns_with_it(ctx):
     assert "no task has run in this conversation" in s.text(), s.text()
 
 
-def test_a_second_task_replaces_the_first_ones_transcript(ctx):
-    """One slot, one view: the delegation being watched is the current one."""
-    ctx.scenario(collect("find the cat", "cats", 1) + ","
-                 + collect("find the dog", "dogs", 2) + ",final_text=done")
-    s = spawn(ctx, sub="text=found+it")
+def test_ctrl_o_shows_the_newest_tasks_transcript(ctx):
+    ctx.scenario('tool=task:{"prompt":"find the cat","label":"cats"},'
+                 'tool=task:{"prompt":"find the dog","label":"dogs"},'
+                 'final_text=done')
+    s = spawn(ctx, sub="hold=1,text=found+it")
     s.submit("delegate it")
     s.wait_text("done")
     s.wait_turn_done()
 
-    s.key("ctrl-o").sync()
+    s.key("ctrl-o")
+    s.wait_text("task 2")
     text = s.text()
     assert "find the dog" in text, text
     assert "find the cat" not in text, text
     assert "task 2" in text, text
+    ctx.mock.release()
+
+
+def test_polling_an_older_task_focuses_its_transcript(ctx):
+    ctx.scenario('tool=task:{"prompt":"find the cat","label":"cats"},'
+                 'tool=task:{"prompt":"find the dog","label":"dogs"},'
+                 'tool=task:{"id":1},final_text=done')
+    s = spawn(ctx, sub="hold=1,text=found+it")
+    s.submit("delegate it")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    s.key("ctrl-o")
+    s.wait_text("task 1")
+    text = s.text()
+    assert "find the cat" in text, text
+    assert "find the dog" not in text, text
+    ctx.mock.release()
 
 
 # ---- re-rendering while the task view is the one showing -------------------

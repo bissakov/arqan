@@ -152,6 +152,7 @@ typedef bool b8;
 #define AGENT_TASK_WAIT_MAX_MS  AGENT_JOB_WAIT_MAX_MS
 #define AGENT_TASK_DELTA_MS     50
 #define AGENT_TASK_GRACE_MS     200
+#define AGENT_MAX_TASKS         AGENT_MAX_JOBS
 /* What a report may cost the parent, and what a parked note quotes back of
  * the work so far. The report is clipped behind a line saying so; the sub
  * prompt asks for a bounded answer up front, so clipping is the backstop

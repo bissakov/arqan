@@ -9,6 +9,10 @@
   the background while the parent keeps working. Poll it with `task(id=N)`,
   or add `wait_ms` to wait for the written report.
 
+- Run up to eight tasks at the same time. Each keeps its own id, transcript
+  and report, and starting a ninth is refused until one is collected or
+  dropped. Ctrl-O shows the task last started or last polled.
+
 - Add `subagents` to turn the `task` tool on and off, `subagent_model` to run
   the delegate on the small model, and `subagent_slice_ms` to set how long a
   fallback slice runs when a worker cannot start. All three are rows of the
