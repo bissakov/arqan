@@ -81,8 +81,6 @@ static size_t num_arg(const JVal *args, Str key) {
     return (size_t)v->u.n;
 }
 
-/* Which page a read asked for, since without it two reads of one file are the
- * same header twice. */
 static void write_read_range(const JVal *args) {
     size_t offset = num_arg(args, STR("offset"));
     size_t limit = num_arg(args, STR("limit"));
@@ -101,9 +99,6 @@ static void write_count(size_t n, const char *what, Sink sink) {
     if (len > 0) sink((Str){buf, (size_t)len});
 }
 
-/* How long the run took, closing a result's summary line: a call that took a
- * minute and one that took none read alike otherwise. A sub-second time keeps
- * its milliseconds, since that is the whole of what it has to say. */
 static void write_elapsed(u32 ms) {
     if (!ms) return;
     char buf[32];
@@ -121,10 +116,6 @@ static void write_elapsed(u32 ms) {
 
 typedef Sink (*LineStyle)(Str line);
 
-/* The row that closes a block: what it left out, or the way back from an
- * expansion. It is the block's click target, so a block that left nothing
- * out and can fold nothing back gets no row. A cut header counts as left
- * out even when every line fit, since otherwise nothing would offer it. */
 static void write_tail(Str gutter, size_t rest, size_t shown, size_t max,
                        Sink sink) {
     char buf[64];
@@ -169,8 +160,6 @@ static void write_lines(Str body, Str gutter, size_t max, size_t bytes,
     write_styled(body, gutter, max, bytes, sink, NULL);
 }
 
-/* The file a patch is about, taken from its first header, plus how many more
- * it names: a diff carries its target in its body rather than in an argument. */
 static Str patch_target(Str patch, char *buf, size_t cap, Str *hint) {
     size_t off = 0, files = 0;
     Str line, first = {0};
@@ -473,8 +462,6 @@ void render_task_header(u32 id, Str label, Str model, Str provider, b8 small,
     tui_write_muted(STR(" \u00b7 Ctrl-O returns to the conversation\n"));
 }
 
-/* A shell run ends on a bracketed status line, which summarises the result
- * rather than being part of what the command printed. */
 static b8 split_status(Str result, Str *body, Str *status) {
     size_t off = 0, last = 0, start = 0;
     Str line;
@@ -816,10 +803,6 @@ void render_tool_result(Str name, Str args, Str result, Arena *scratch, u32 id,
     block_end();
 }
 
-/* Runs measured over batched fragments, mapped back onto the text they were
- * cut from: the batch keeps the fragments in line order, so one walk pairs
- * them. A run crossing the newline the batch separates fragments with is
- * split, since the bytes between them are not source. */
 static void unbatch_syntax(const YhlResult *hl, Str body, b8 grep,
                            YhlResult *out) {
     out->n = 0;
@@ -846,9 +829,6 @@ static void unbatch_syntax(const YhlResult *hl, Str body, b8 grep,
     }
 }
 
-/* Highlight the fragments of a patch or a grep result, which are source
- * inside lines that are not. Both temporaries live in `scratch`, which the
- * caller rewinds; the runs land in `out` in `body` coordinates. */
 static void batched_syntax(Str body, b8 grep, Str hint, Arena *scratch,
                            YhlResult *out) {
     if (!hint.n || !scratch) return;

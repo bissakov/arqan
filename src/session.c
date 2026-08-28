@@ -21,8 +21,6 @@ static size_t sess_cleared_path(const Session *s, char *out, size_t cap) {
     return n > 0 && (size_t)n < cap ? (size_t)n : 0;
 }
 
-/* Resolve the per-cwd session directory. `scratch` only holds the XDG base
- * for the length of the call; the result is copied into the struct. */
 b8 session_init(Session *s, Arena *scratch) {
     memset(s, 0, sizeof *s);
     Str base = paths_dir(AGENT_DIR_DATA, scratch);
@@ -93,11 +91,6 @@ static Str sess_label(Arena *a, Str file) {
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
 }
 
-/* A session name from arbitrary text: the first line, unwrapped, flattened
- * to one plain line and cut on a UTF-8 boundary the way sess_preview cuts a
- * preview. Zero means "not a title", which every caller reads as absent, so
- * neither a model's stray formatting nor a hand-edited sidecar can put a
- * control byte or a second line into a popup row. */
 static size_t sess_title_clean(char *out, size_t cap, Str src) {
     if (!cap) return 0;
     for (size_t i = 0; i < src.n; i++)
@@ -248,9 +241,6 @@ b8 session_begin(Session *s) {
     s->sync_dir = false;
 
     s->title_tried = false;
-    /* The name is reserved here, but the conversation starts with its first
-     * message: the record follows the file rather than the reservation, so
-     * whatever happens in between waits for the session that claims it. */
     telemetry_detach();
     sess_set_current(s, (Str){0}, (Str){0});
     if (!s->dir.n) return false;
@@ -275,7 +265,6 @@ b8 session_begin(Session *s) {
 }
 
 
-/* Persist a directory entry before anything durable refers to it. */
 static b8 sess_sync_dir(Str dir, char *err, size_t err_cap) {
     char path[AGENT_MAX_PATH];
     if (dir.n >= sizeof path) {
@@ -533,9 +522,6 @@ static b8 sess_put_media(SessOut *o, Str dir, const Conv *c, size_t i,
     return true;
 }
 
-/* Append the messages produced since the last save. The system prompt is
- * left out: it comes from the configuration, which may well have changed by
- * the time the session is resumed. */
 b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
     if (err_cap) err[0] = '\0';
     if (s->save_blocked) {
@@ -653,8 +639,6 @@ b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
         }
         return false;
     }
-    /* Durable bytes are a conversation to come back to, so whatever /clear
-     * left behind no longer describes this directory. */
     if (s->cleared) session_set_cleared(s, false);
     if (close(fd) != 0) {
         saved = errno;
@@ -848,8 +832,6 @@ b8 session_export_markdown(const Conv *c, Str requested, char *path,
     return false;
 }
 
-/* Single-line preview of a session: its first user prompt, flattened. Only
- * the head of the file is read, since the prompt it wants is its first. */
 static Str sess_preview(Arena *a, const char *path) {
     size_t mark = a->off;
     Str src = {0};
@@ -895,11 +877,6 @@ typedef struct {
     long nsec;
 } SessEntry;
 
-/* Whether `e` sorts before a candidate, which is what an insertion walks
- * back over. Last written first, because the session a reader wants back is
- * the one they were last in, not the one that happens to have been started
- * most recently. A file system too coarse to tell two writes apart leaves
- * the names to break the tie, and those are creation timestamps. */
 static b8 sess_before(const SessEntry *e, const SessEntry *cand) {
     if (e->sec != cand->sec) return e->sec > cand->sec;
     if (e->nsec != cand->nsec) return e->nsec > cand->nsec;
@@ -920,8 +897,6 @@ size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max) {
         size_t len = strlen(e->d_name);
         if (len < 7 || len >= sizeof ents[0].name) continue;
         if (memcmp(e->d_name + len - 6, ".jsonl", 6) != 0) continue;
-        /* A file that cannot be stat'ed still belongs in the list; it sorts
-         * as the oldest rather than disappearing from it. */
         SessEntry cand = {{0}, 0, 0};
         memcpy(cand.name, e->d_name, len + 1);
         struct stat st;
@@ -965,12 +940,6 @@ size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max) {
     return kept;
 }
 
-/* Remove one saved session. The path is checked against this session's own
- * directory rather than trusted: a delete reaches the file system, so it may
- * only ever name a file the picker listed, one component below the directory
- * this cwd owns. The live file is refused because it is still being appended
- * to, and a conversation that outlives its own record is worse than one the
- * reader has to end before removing. */
 b8 session_delete(const Session *s, Str path) {
     if (!s->dir.n || path.n <= s->dir.n + 1 || path.n >= AGENT_MAX_PATH)
         return false;
@@ -982,10 +951,6 @@ b8 session_delete(const Session *s, Str path) {
     return unlink(path.p) == 0;
 }
 
-/* Raw contents of a saved session, held in `scratch`. Reading is separate
- * from replaying because replaying rewinds the live conversation and
- * overwrites its storage: whether the file can be read at all has to be known
- * before anything is thrown away. */
 Str session_read(Str path, Arena *scratch) {
     Str src = {0};
     if (path.n)
@@ -993,8 +958,6 @@ Str session_read(Str path, Arena *scratch) {
     return src;
 }
 
-/* One string field of a saved line, copied into the conversation's arena.
- * Absent and empty are the same answer, so neither costs an allocation. */
 static Str sess_field(Arena *persist, const JVal *v, Str key) {
     return str_dup_opt(persist, json_str(v, key));
 }
@@ -1089,10 +1052,6 @@ static b8 sess_answer_pending(Conv *c) {
     return true;
 }
 
-/* Replay contents into `c`, which the caller has already rewound to the
- * system prompt. Messages are copied into `persist`; `scratch` holds each
- * parsed line and is rewound to where it started. False means the
- * conversation filled up and holds only part of the session. */
 b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
                  Arena *persist, Arena *scratch) {
     sess_set_current(s, path, name);
@@ -1161,15 +1120,9 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
         }
     }
     scratch->off = mark;
-    /* A session that stopped short of what the marker names would elide text
-     * it no longer holds, so the boundary follows what was replayed. */
     c->elide_start = elide < c->n ? elide : 0;
     s->written = c->n;
     s->elide_written = c->elide_start;
-    /* The repair belongs to the file as much as to this conversation: saving
-     * it now means the next resume of the same file finds it already whole,
-     * rather than appending a new turn behind calls nothing answers. The
-     * caller performs that save so it can report a persistence failure. */
     if (!sess_answer_pending(c)) ok = false;
     return ok;
 }

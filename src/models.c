@@ -5,9 +5,6 @@
 
 #define MODEL_SECTION_PREFIX STR("providers.")
 
-/* A model id is quoted in the section because ids routinely contain '/',
- * ':', and '.'. The settings reader compares section text literally, so the
- * same escaping used in the file is used for lookup. */
 static Str model_section(Str provider, Str model, Arena *a) {
     if (!endpoint_name_ok(provider) || !model.n
         || model.n > AGENT_MAX_MODEL_NAME)

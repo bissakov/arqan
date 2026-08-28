@@ -22,10 +22,6 @@ void ctx_init(CtxGauge *g) {
 }
 
 
-/* What slot `i` costs a request whose recent window begins at `recent`: a
- * tool result or an argument list the writer elides for age costs its note
- * instead of its bytes and a slot the writer drops costs nothing at all, or
- * a fit would be made from bytes no request ever sent. */
 static f64 ctx_slot_bytes(const Conv *c, size_t i, size_t recent) {
     if (conv_slot_dropped(c, i, recent)) return 0;
     b8 elided =
@@ -51,7 +47,6 @@ static f64 ctx_slot_media(const Conv *c, size_t i) {
     size_t off = c->media_off[i], n = c->media_n[i];
     for (size_t k = 0; k < n; k++) {
         size_t id = off + k;
-        // An entry a resumed session lost never reaches the wire.
         if (!media_live(m, id)) continue;
         f64 t = CTX_IMAGE_TOKENS;
         if (m->w[id] && m->h[id]) {
@@ -156,8 +151,6 @@ b8 ctx_over(const CtxGauge *g, const Conv *c, u32 percent) {
     b8 exact = false;
     if (!ctx_view(g, c, &tokens, &exact)) return false;
     f64 share = (f64)g->window * (f64)percent / 100.0;
-    /* A window smaller than the reserve has no room to hold back, so the
-     * percentage is all there is to go on. */
     f64 limit = g->window > AGENT_COMPACT_RESERVE
                     ? (f64)(g->window - AGENT_COMPACT_RESERVE)
                     : share;
@@ -165,9 +158,6 @@ b8 ctx_over(const CtxGauge *g, const Conv *c, u32 percent) {
     return (f64)tokens >= limit;
 }
 
-/* What slots [from, to) cost in this model's tokens, through the same fit
- * the gauge reports. Callers start at slot 1: slot 0 is the system prompt,
- * which the offset already pays for. */
 static f64 ctx_conv_tokens(const CtxGauge *g, const Conv *c, size_t from,
                            size_t to, size_t recent) {
     f64 slope = g->slope > 0 ? g->slope : CTX_SLOPE_DEFAULT;
@@ -180,28 +170,13 @@ static f64 ctx_conv_tokens(const CtxGauge *g, const Conv *c, size_t from,
 size_t ctx_compact_split(const CtxGauge *g, const Conv *c) {
     if (!g || !c || c->n < 3) return 0;
     size_t recent = conv_elide_start(c);
-    /* The tail is measured in tokens, but only the conversation's own: the
-     * offset pays for the system prompt and the schemas, which a compaction
-     * cannot shorten and so must not be charged against what it keeps.
-     *
-     * A conversation that fits the window's share whole would leave nothing
-     * to summarize, and a checkpoint standing for nothing costs a request to
-     * lose the tail it was meant to protect. Cap the tail at a share of the
-     * conversation so a cut always has both sides. */
     f64 budget = ctx_conv_tokens(g, c, 1, c->n, recent)
                  * (f64)(100 - AGENT_COMPACT_HEAD_PCT) / 100.0;
-    /* No window, no share of one to spend: the conversation's own size is the
-     * only budget left, and it still cuts a tail worth keeping. A window only
-     * ever tightens that. */
     if (g->window) {
         f64 share = (f64)g->window * (f64)AGENT_COMPACT_KEEP_PCT / 100.0;
         if (share < budget) budget = share;
     }
 
-    /* A head is worth a checkpoint only once it holds work that was done.
-     * Below the oldest assistant message there is a question and nothing
-     * else, and summarizing a question whose answer is kept verbatim buys
-     * no room. */
     size_t done = 0;
     for (size_t i = 1; i < c->n && !done; i++)
         if (c->role[i] == M_ASSISTANT) done = i;
@@ -212,19 +187,13 @@ size_t ctx_compact_split(const CtxGauge *g, const Conv *c) {
     for (size_t i = c->n; i-- > 1;) {
         total += ctx_conv_tokens(g, c, i, i + 1, recent);
         if (i <= done || !conv_round_start(c, i)) continue;
-        /* The round in flight, whatever it costs: it is the work the turn is
-         * doing, and the tail is never emptier than that. */
         if (!newest) newest = i;
-        /* Monotone: an older boundary carries everything a newer one does. */
         if (total <= budget) keep = i;
     }
     if (!keep) keep = newest;
     return keep >= 2 ? keep : 0;
 }
 
-/* Only the slots the advance would newly cover: below the standing boundary
- * both requests already send the note, and above the candidate both send the
- * text. */
 size_t ctx_elide_gain(const CtxGauge *g, const Conv *c) {
     if (!g || !c) return 0;
     size_t from = conv_elide_start(c), to = conv_elide_next(c);

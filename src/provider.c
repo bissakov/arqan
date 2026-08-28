@@ -59,9 +59,6 @@ static size_t conv_media_end(const Conv *c, size_t i) {
 void conv_truncate(Conv *c, size_t keep) {
     if (keep > c->n) return;
     c->n = keep;
-    /* Below `keep` nothing moved, so a boundary that still names a live slot
-     * describes the same text it did; above it there is no conversation left
-     * to elide. A rewind to the system prompt alone elides nothing. */
     if (keep < 2)
         c->elide_start = 0;
     else if (c->elide_start > keep)
@@ -75,8 +72,6 @@ void conv_truncate(Conv *c, size_t keep) {
     if (live < c->media->n) c->media->n = live;
 }
 
-/* The copy shares `src`'s strings rather than duplicating them: it exists to
- * be sent once, beside the conversation it was taken from. */
 b8 conv_clone_head(Conv *dst, const Conv *src, size_t keep, Arena *a,
                    size_t extra) {
     if (keep > src->n || extra > (size_t)-1 - keep) return false;
@@ -147,15 +142,6 @@ size_t conv_add_call(Conv *c, Arena *scratch, Str id, Str name, Str args) {
     return i;
 }
 size_t conv_add_tool(Conv *c, Str tool_call_id, Str text) {
-    /* One answer per call, and the last one wins. A session file two runs
-     * appended to holds two: the placeholder a resume writes for a call it
-     * found unanswered, then the result the first run appended when its tool
-     * finally returned. Both APIs refuse a second result for one call id, so
-     * the later answer replaces the earlier rather than joining it.
-     *
-     * Only back to the call being answered: an endpoint that numbers its
-     * calls per message rather than per session reuses an id every round,
-     * and a round's own call still needs a result of its own. */
     if (tool_call_id.n)
         for (size_t i = c->n; i-- > 0;) {
             if (conv_is_call(c, i) && str_eq(c->tool_call_id[i], tool_call_id))
@@ -191,16 +177,11 @@ static size_t conv_turns_back(const Conv *c, size_t turns) {
     return 0;
 }
 
-/* A round is headed by the assistant message that opened a group of calls;
- * the call slots after it and the results that answer them belong to it. */
 static b8 conv_round_head(const Conv *c, size_t i) {
     return c->role[i] == M_ASSISTANT && c->has_tool_call[i]
            && !conv_is_call(c, i);
 }
 
-/* The slot the oldest round still sent whole begins at, `block` rounds at a
- * time: nothing is elided under two blocks, and past that the boundary sits
- * on the last multiple of `block` that leaves a whole block standing. */
 static size_t conv_rounds_back(const Conv *c, size_t block) {
     if (!block) return 0;
     size_t total = 0;
@@ -231,9 +212,6 @@ b8 conv_elide_advance(Conv *c) {
     return true;
 }
 
-/* A call the tool refused: the change it asked for never happened, the model
- * saw the refusal and its retry is already in the conversation, so neither
- * the arguments nor the message survives being read again. */
 static b8 conv_call_failed(const Conv *c, size_t call) {
     for (size_t i = call + 1; i < c->n; i++)
         if (c->role[i] == M_TOOL
@@ -254,24 +232,15 @@ static b8 conv_todo_live(const Conv *c, size_t i) {
     return true;
 }
 
-/* A lookup the model can make again for the price of one call: the answer is
- * still on disk, and nothing about the conversation changed by asking. */
 static b8 tool_replayable(Str name) {
     return str_eq(name, STR("read")) || str_eq(name, STR("grep"))
            || str_eq(name, STR("find"));
 }
 
-/* A call whose arguments are the work rather than a request for it. Replaying
- * a patch costs what the patch costs, but a stub in its place is a call the
- * model cannot reconstruct and, sitting in its own past output, one it
- * copies: the arguments field is the last place to put a placeholder. */
 static b8 tool_args_are_work(Str name) {
     return str_eq(name, STR("patch")) || str_eq(name, STR("write"));
 }
 
-/* The slot past the results answering the round `head` opened. Results are
- * appended as their calls return, so a round is contiguous: the head, its
- * calls, then their results. */
 static size_t conv_round_end(const Conv *c, size_t head) {
     size_t j = head + 1;
     while (j < c->n && conv_is_call(c, j)) j++;
@@ -279,7 +248,6 @@ static size_t conv_round_end(const Conv *c, size_t head) {
     return j;
 }
 
-/* The round slot `i` belongs to, or CONV_NONE when it stands outside one. */
 static size_t conv_round_of(const Conv *c, size_t i) {
     while (i > 0 && (c->role[i] == M_TOOL || conv_is_call(c, i))) i--;
     return conv_round_head(c, i) ? i : CONV_NONE;
@@ -289,9 +257,6 @@ static b8 conv_call_droppable(const Conv *c, size_t i) {
     return tool_replayable(c->tool_name[i]) || conv_call_failed(c, i);
 }
 
-/* A round the boundary has passed whole. A round it cuts through keeps every
- * slot: dropping a call whose result is still sent, or the other way about,
- * is a request both APIs refuse. */
 static b8 conv_round_passed(const Conv *c, size_t head, size_t recent) {
     return head != CONV_NONE && conv_round_end(c, head) <= recent;
 }
@@ -309,9 +274,6 @@ b8 conv_slot_dropped(const Conv *c, size_t i, size_t recent) {
     if (c->role[i] != M_TOOL && !c->has_tool_call[i]) return false;
     size_t head = conv_round_of(c, i);
     if (!conv_round_passed(c, head, recent)) return false;
-    /* The head goes only when nothing it opened stays. An assistant message
-     * left holding an empty call list, or none but its thinking, is a
-     * request the API refuses. */
     if (i == head) return conv_round_all_droppable(c, head);
     if (conv_is_call(c, i)) return conv_call_droppable(c, i);
     for (size_t j = head + 1; j < c->n && conv_is_call(c, j); j++)
@@ -374,8 +336,6 @@ b8 conv_compact_head(Conv *c, size_t keep, Str checkpoint) {
     c->media_off[1] = 0;
     c->media_n[1] = 0;
     c->n = 2 + tail;
-    /* The head the boundary described is a summary now, so nothing it named
-     * is still there to elide. The valve advances it again under pressure. */
     c->elide_start = 0;
     c->checkpoint = 1;
     return true;
@@ -393,9 +353,6 @@ static Str conv_call_name(const Conv *c, size_t result) {
     return STR("tool");
 }
 
-/* How many of a slot's images can still be sent. A resumed session may name
- * one whose file has since gone: it keeps its number, so the placeholder in
- * the text still counts, and contributes nothing to the request. */
 static size_t conv_media_live(const Conv *c, size_t i) {
     size_t live = 0;
     for (size_t k = 0; k < c->media_n[i]; k++)
@@ -404,16 +361,11 @@ static size_t conv_media_live(const Conv *c, size_t i) {
 }
 
 
-/* Room for the stub below: the fixed part, a length, and as much of the tool
- * name as reads as a name, then the opening of the arguments themselves. */
 #define ARGS_STUB_NAME  48
 #define ARGS_STUB_HEAD  56
 #define ARGS_STUB_BYTES 256
 #define ARGS_STUB_KEY   "elided"
 
-/* The name as a bare identifier. The stub below is built into a fixed buffer
- * rather than escaped through the writer, and a model may call a tool
- * anything it likes: a quote in that name must not reach the wire as JSON. */
 static size_t stub_name(char *out, size_t cap, Str name) {
     size_t n = 0;
     for (size_t i = 0; i < name.n && n + 1 < cap; i++) {
@@ -425,9 +377,6 @@ static size_t stub_name(char *out, size_t cap, Str name) {
     return n;
 }
 
-/* The opening of the arguments as one printable line. Same constraint as the
- * name: nothing here is escaped, so a quote or a backslash cannot travel, and
- * runs of whitespace collapse rather than break the note across lines. */
 static size_t stub_head(char *out, size_t cap, Str args) {
     size_t n = 0;
     b8 gap = false;
@@ -445,11 +394,6 @@ static size_t stub_head(char *out, size_t cap, Str args) {
     return n;
 }
 
-/* What goes out in place of a call's arguments once the boundary has passed
- * them. A valid JSON object, so args_object handling reads it the way it
- * reads any other call. The note names the call it stands for rather than
- * describing an absence: a model reads the block as one it once made, and a
- * stub identical for every call reads as the shape a call takes. */
 static Str args_stub(char *buf, size_t cap, const Conv *c, size_t i) {
     char name[ARGS_STUB_NAME];
     char head[ARGS_STUB_HEAD];
@@ -466,8 +410,6 @@ static Str args_stub(char *buf, size_t cap, const Conv *c, size_t i) {
                      "\":\"older arguments removed; not an input\"}");
 }
 
-/* An object whose first key is the stub's. Every call is asked, so the parse
- * below waits behind a scan of the first few bytes. */
 static b8 stub_opens(Str args) {
     size_t i = 0;
     while (i < args.n && (u8)args.p[i] <= ' ') i++;
@@ -502,9 +444,6 @@ static void write_tool_result(Buf *b, const Conv *c, size_t i, size_t recent) {
     }
 }
 
-/* A message carrying images is content blocks rather than a string, and only
- * then: a turn with nothing attached goes out in the shape every endpoint
- * that ever spoke to arqan already accepts. */
 static void oai_write_content(Buf *b, const Conv *c, size_t i) {
     if (!conv_media_live(c, i)) {
         buf_json_str(b, c->text[i]);
@@ -548,8 +487,6 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
         buf_putc(b, '{');
         buf_putf(b, "\"role\":\"%s\"", role);
         if (conv_is_shell(c, i)) {
-            /* A '!' run reads on the wire the way it was typed: the command,
-             * then what it printed. */
             buf_puts(b, STR(",\"content\":\"!"));
             buf_json_chars(b, c->text[i]);
             buf_json_chars(b, STR("\n"));
@@ -611,10 +548,6 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
  * single message, which is the only shape that API accepts.
  */
 
-/* A slot with nothing to say contributes no block, and a message with no
- * blocks is refused rather than read as an empty turn. A slot the boundary
- * dropped says nothing, thinking included: the reasoning that opened an
- * exchange no longer on the wire has nothing left to point at. */
 static b8 anth_has_plain_block(const Conv *c, size_t i) {
     if (c->role[i] == M_SYSTEM) return false;
     if (conv_slot_dropped(c, i, conv_elide_start(c))) return false;
@@ -654,11 +587,6 @@ static void anth_write_cache(Buf *b, b8 cache) {
     if (cache) buf_puts(b, STR(",\"cache_control\":{\"type\":\"ephemeral\"}"));
 }
 
-/* The arguments as the model wrote them, when they are an object. A model can
- * emit malformed JSON, and the local call then fails with a tool_result that
- * says so; splicing that text into "input" would instead make every later
- * request of the session unparseable, so it goes out as a string the model
- * can see it wrote. */
 static void anth_write_input(Buf *b, const Conv *c, size_t i, size_t recent) {
     if (conv_args_elided(c, i, recent)) {
         char stub[ARGS_STUB_BYTES];
@@ -717,8 +645,6 @@ static void anth_write_block(Buf *b, const Conv *c, size_t i, size_t recent,
     buf_putc(b, '}');
 }
 
-/* A slot whose block carries cache_control: a tool_use block takes none, and
- * a slot with nothing to say writes no block to hang one on. */
 static b8 anth_cache_ok(const Conv *c, size_t i) {
     return i < c->n && !conv_is_call(c, i) && anth_has_plain_block(c, i);
 }
@@ -794,9 +720,6 @@ void conv_write_json_anthropic(Buf *b, const Conv *c) {
 // ---- streaming state (in scratch arena) ---------------------------------
 typedef struct {
     Arena *scratch;
-    /* Each SSE event is parsed into its own region and thrown away, so a
-     * turn's scratch use follows the size of the reply rather than the number
-     * of events. */
     Arena ev;
     Str id[AGENT_MAX_TOOL_CALLS];
     Str name[AGENT_MAX_TOOL_CALLS];
@@ -805,9 +728,6 @@ typedef struct {
     i32 count;
     i32 dropped;
     Buf text;
-    /* Canonical JSON array of signed Anthropic thinking blocks. The readable
-     * summary is also sent to on_reason, but this whole form is what a later
-     * tool-result request must return. */
     Buf anth_blocks;
     b8 anth_first;
     b8 anth_thinking_open;
@@ -878,8 +798,6 @@ static void read_usage(Provider *p, const JVal *root) {
             p->cache_creation_tokens = n;
     }
     p->usage_valid = true;
-    /* Fired wherever it is heard, so the caller's context counter is kept
-     * current even when the turn is interrupted before it ends. */
     if (p->on_usage)
         p->on_usage(p->conv, p->prompt_tokens, p->completion_tokens, p->ud);
 }
@@ -927,8 +845,6 @@ static void take_text(Provider *p, StreamState *s, Str raw) {
     if (p->on_text) p->on_text(text, p->ud);
 }
 
-/* Fields are copied out of the event they came in, since a delta's arena is
- * reset before the next one arrives. */
 static void take_call(Provider *p, StreamState *s, const JVal *tc, i32 idx) {
     i32 sl = slot(s, idx);
     if (sl < 0) return;
@@ -1008,9 +924,6 @@ static void openai_event(Provider *p, StreamState *s, const JVal *ev) {
     }
 }
 
-/* Anthropic reports the prompt on message_start and the completion on
- * message_delta, so each is kept where it was heard rather than replacing the
- * pair. */
 static void read_usage_anth(Provider *p, const JVal *owner) {
     const JVal *usage = json_get(owner, STR("usage"));
     if (!usage || usage->type != J_OBJ) return;
@@ -1162,8 +1075,6 @@ static b8 on_line(Str line, void *ud) {
         s->events++;
         arena_reset(&s->ev);
         JVal *ev = json_parse(&s->ev, payload);
-        /* The per-event arena is a fixed slice, so an event larger than it
-         * parses into the turn's scratch rather than being dropped. */
         if (!ev) ev = json_parse(s->scratch, payload);
         if (!ev) {
             s->bad_events++;
@@ -1181,10 +1092,6 @@ static b8 on_line(Str line, void *ud) {
     return true;
 }
 
-/* One chat.completion document, holding whole what the deltas would have
- * carried a piece at a time. It reaches the same sinks and the same slots, so
- * nothing downstream can tell the two apart. False with `err` filled in when
- * the document is not one. */
 static b8 read_completion(Provider *p, StreamState *s, Str raw, Arena *scratch,
                           char *err, size_t err_cap) {
     JVal *doc = json_parse(scratch, raw);
@@ -1253,9 +1160,6 @@ static b8 read_message_anth(Provider *p, StreamState *s, Str raw,
             anth_open_tool(p, s, blk);
             i32 sl = s->open_slot;
             const JVal *input = json_get(blk, STR("input"));
-            /* The arguments are an object here rather than the text a stream
-             * accumulates, so they are written back out to reach Conv in the
-             * one form a tool is run from. */
             if (sl >= 0 && input) json_write(&s->args[sl], input);
         }
     }
@@ -1294,7 +1198,6 @@ size_t provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
     }
     size_t n = 0;
     for (size_t i = 0; i < data->u.arr.n && n < max; i++) {
-        // The DOM lives in `scratch` beside the array.
         Str id = json_str(&data->u.arr.items[i], STR("id"));
         if (!id.n) continue;
         out[n++] = id;
@@ -1303,9 +1206,6 @@ size_t provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
     return n;
 }
 
-/* A transport failure and the statuses a server uses to say "not now" are
- * weather; every other status is an answer about the request itself, and an
- * interrupt is the user. */
 static b8 retryable(i32 rc) {
     if (rc == 2) return true;
     switch (-rc) {
@@ -1320,8 +1220,6 @@ static b8 retryable(i32 rc) {
     }
 }
 
-/* Metadata and usage do not make an answer. A retry is safe until prose,
- * reasoning or a tool call has reached the caller. */
 static b8 response_empty(const StreamState *s) {
     return s->text.n == 0 && s->reason_bytes == 0 && s->count == 0;
 }
@@ -1337,8 +1235,6 @@ static i32 backoff_ms(i32 base, i32 attempt) {
     return ms > AGENT_MAX_RETRY_DELAY_MS ? AGENT_MAX_RETRY_DELAY_MS : (i32)ms;
 }
 
-/* Sliced so the caller's idle hook keeps the composer painting and an
- * interrupt ends the wait at once. False when the turn was interrupted. */
 static b8 retry_wait(const Provider *p, i32 delay_ms) {
     enum { SLICE_MS = 25 };
     for (i32 waited = 0; waited < delay_ms; waited += SLICE_MS) {
@@ -1546,8 +1442,6 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         return -1;
     }
 
-    /* A whole reply has no length to go by until it has arrived, so it grows
-     * into the scratch arena like every other buffer here. */
     Buf whole;
     if (!p->cfg->stream) buf_init(&whole, scratch, 1u << 16);
     HttpReq r = {
@@ -1662,8 +1556,6 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     }
     p->ud = saved_ud;
 
-    /* The request's size rather than its text, and what the stream cost,
-     * reasoning bytes included. */
     TelEvent tev;
     tel_open(&tev, "request");
     tel_int(&tev, "messages", (i64)p->conv->n);
@@ -1712,9 +1604,6 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         agent_log(AGENT_LOG_WARN,
                   "dropped %d tool call(s) past the per-turn cap of %d",
                   s->dropped, (i32)AGENT_MAX_TOOL_CALLS);
-    /* A turn that said nothing because every event was unreadable is an error
-     * rather than an empty reply, which would otherwise reach the transcript
-     * as silence. */
     if (s->bad_events && !s->text.n && !s->count && !s->reason_bytes) {
         snprintf(err, err_cap,
                  "the provider sent %zu event(s) arqan could not "

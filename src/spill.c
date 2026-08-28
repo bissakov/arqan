@@ -42,11 +42,6 @@ void spill_open(Spill *s, const char *tool, const char *ext, Str key) {
         return;
     }
 
-    /* The name is predictable and the directory is shared, so the previous
-     * file is removed and the new one created exclusively: an existing entry
-     * this cannot unlink belongs to another user (the sticky bit keeps it
-     * theirs) and is left alone rather than written through. O_NOFOLLOW
-     * refuses a symlink planted between the two calls. */
     if (unlink(s->path) != 0 && errno != ENOENT) {
         s->path[0] = '\0';
         return;

@@ -13,12 +13,8 @@
 
 #define YHL_TIMEOUT_MS 500
 #define YHL_POLL_MS    25
-/* A helper that stalls or dies takes its request down with it, but not the
- * session: it is replaced once inside the request, and only after this many
- * exchanges have failed in a row does the session stop asking. Both bounds
- * are small because every failed exchange stalls a repaint for the timeout. */
-#define YHL_ATTEMPTS 2
-#define YHL_STRIKES  3
+#define YHL_ATTEMPTS   2
+#define YHL_STRIKES    3
 
 typedef struct {
     char path[AGENT_MAX_PATH];
@@ -31,11 +27,8 @@ typedef struct {
     i32 strikes;
 } HighlightClient;
 
-/* What one exchange with the helper came to. `HL_NONE` and `HL_OK` are
- * answers, so the helper is kept; `HL_RETRY` leaves the pipes out of step
- * with the protocol, so the process is replaced rather than reused. */
 typedef enum {
-    HL_OK, /* runs are in the caller's result */
+    HL_OK,
     HL_NONE,
     HL_RETRY,
     HL_BROKEN,
@@ -302,10 +295,6 @@ b8 highlight_request(YhlHintKind kind, Str hint, Str source,
             highlight_disable();
             return false;
         }
-        /* A machine busy enough to miss the deadline is the usual reason,
-         * and it passes: replace the helper, since a request half written
-         * or half read leaves the pipes mid-message, and give up on the
-         * session only once several exchanges in a row have failed. */
         highlight_retire();
         if (++g_hl.strikes >= YHL_STRIKES) {
             g_hl.disabled = true;

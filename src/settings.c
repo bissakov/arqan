@@ -7,10 +7,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* A quoted value with its escapes resolved. The bytes are this file's own
- * arena copy and unescaping only shrinks, so it is done in place rather than
- * allocated: the Settings table is a view of that copy either way. A literal
- * ('...') string takes no escapes, as TOML has it. */
 static Str setting_unquote(Str v) {
     char q = v.p[0];
     char *p = (char *)v.p + 1;
@@ -26,9 +22,6 @@ static Str setting_unquote(Str v) {
     return (Str){p, out};
 }
 
-/* The value part of a line: quoted to its closing quote, else bare to a
- * comment or the end of the line. A '#' with no space before it stays in the
- * value, since a URL fragment is not a comment. */
 static Str setting_val(Str rest) {
     rest = str_trim(rest);
     if (rest.n >= 2 && (rest.p[0] == '"' || rest.p[0] == '\'')) {
@@ -189,8 +182,6 @@ b8 settings_set(Str path, Str section, const Str *keys, const Str *vals,
 
     Str cur = {0}, line;
     size_t off = 0;
-    /* The unnamed section is the head of the file, which always exists: a
-     * key added to it belongs above the first header rather than under it. */
     b8 seen_section = section.n == 0, section_open = false;
     size_t tail = 0;
     while (str_line(src, &off, &line)) {

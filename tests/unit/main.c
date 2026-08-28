@@ -15,9 +15,6 @@
 
 #include "agent.h"
 
-/* core.c reports through telemetry, which the unity build supplies from
- * telemetry.c. Stub it rather than pull that module and its dependencies in:
- * these cases assert on return values, not on what was reported. */
 void telemetry_log(i32 level, Str msg) {
     (void)level;
     (void)msg;
@@ -52,10 +49,6 @@ static const char *g_case;
         fn();         \
     } while (0)
 
-/* Arenas are the allocator, so a case gets its own rather than sharing one.
- * alignas mirrors what main.c does for the real arenas: arena_alloc aligns an
- * offset within the arena, so an absolute alignment holds only when the base
- * is at least as aligned. */
 #define WITH_ARENA(name, bytes)              \
     static alignas(64) u8 name##_mem[bytes]; \
     Arena name;                              \
@@ -68,7 +61,6 @@ static void arena_reports_exhaustion(void) {
     CHECK(arena_alloc(&a, 64, 1) != NULL);
     size_t used = arena_used(&a);
     CHECK(arena_alloc(&a, 1024, 1) == NULL);
-    /* A refused request must not consume the arena it could not satisfy. */
     CHECK(arena_used(&a) == used);
     CHECK(arena_alloc(&a, 8, 1) != NULL);
 }
@@ -79,14 +71,12 @@ static void arena_honours_alignment(void) {
     void *p = arena_alloc(&a, 8, 64);
     CHECK(p != NULL);
     CHECK(((uintptr_t)p % 64) == 0);
-    /* Rejected rather than rounded, so a caller cannot get less than it asked. */
     CHECK(arena_alloc(&a, 8, 0) == NULL);
     CHECK(arena_alloc(&a, 8, 3) == NULL);
 }
 
 static void arena_array_refuses_overflow(void) {
     WITH_ARENA(a, 4096);
-    /* count * size wraps to a small satisfiable request if unchecked. */
     size_t huge = SIZE_MAX / 2 + 2;
     CHECK(arena_alloc_array(&a, huge, 4, 1) == NULL);
     CHECK(arena_alloc_array(&a, 4, huge, 1) == NULL);
@@ -122,9 +112,6 @@ static void buf_latches_on_exhaustion(void) {
     CHECK(buf_ok(&b));
     for (int i = 0; i < 1000; i++) buf_puts(&b, STR("padding padding padding"));
     CHECK(!buf_ok(&b));
-    /* The latch is the contract: once a write fails, buf_ok stays false and
-     * the content is not to be read. A later short write can still land in
-     * spare capacity, so b.n is not stable and is not asserted here. */
     buf_puts(&b, STR("more"));
     CHECK(!buf_ok(&b));
     buf_putc(&b, 'x');
@@ -172,8 +159,6 @@ static void json_rejects_malformed(void) {
         "{a:1}",
         "\"unterminated",
         "tru",
-        /* A number the scanner accepts but strtod would not consume whole.
-         * Each of these silently parsed as a wrong value before. */
         "--1",
         "1e",
         "1-2-3",
@@ -224,9 +209,6 @@ static void json_accepts_wellformed(void) {
     }
 }
 
-/* Trailing commas are not valid JSON, but the parser accepts them and no
- * provider depends on their rejection. Pinned so a later change to the parser
- * is a decision rather than an accident. */
 static void json_tolerates_trailing_commas(void) {
     WITH_ARENA(a, 8192);
     CHECK(json_parse(&a, STR("[1,]")) != NULL);
@@ -234,9 +216,6 @@ static void json_tolerates_trailing_commas(void) {
 }
 
 static void json_survives_a_short_arena(void) {
-    /* Walk the arena from far too small to comfortably large. Every size must
-     * either parse completely or return NULL; none may crash or hand back a
-     * partial tree. */
     static u8 mem[4096];
     Str doc = STR("{\"a\":[1,2,3],\"b\":{\"c\":\"dddddddddddddddddddd\"}}");
     for (size_t cap = 8; cap <= sizeof mem; cap += 8) {
@@ -255,7 +234,6 @@ static void json_reads_missing_members_as_absent(void) {
     JVal *v = json_parse(&a, STR("{\"s\":\"x\",\"n\":1,\"b\":true}"));
     CHECK(v != NULL);
     CHECK(json_str(v, STR("nope")).n == 0);
-    /* A member of the wrong type is the same answer as an absent one. */
     CHECK(json_str(v, STR("n")).n == 0);
     CHECK(json_get(v, STR("nope")) == NULL);
     CHECK(json_bool(v, STR("b")));
@@ -279,7 +257,6 @@ static void json_decodes_surrogate_pairs(void) {
 }
 
 static void json_bounds_nesting(void) {
-    /* Deep nesting must be refused rather than recursed into the C stack. */
     WITH_ARENA(a, 1 << 20);
     Buf b;
     buf_init(&b, &a, 4096);
@@ -334,9 +311,9 @@ static void str_handles_empty(void) {
 
 static void width_classifies_glyphs(void) {
     CHECK(agent_width('a') == 1);
-    CHECK(agent_width(0x4E00) == 2);  /* CJK */
-    CHECK(agent_width(0x1F600) == 2); /* emoji */
-    CHECK(agent_width(0x0301) == 0);  /* combining acute */
+    CHECK(agent_width(0x4E00) == 2);
+    CHECK(agent_width(0x1F600) == 2);
+    CHECK(agent_width(0x0301) == 0);
 }
 
 /* ---- the task worker log ----------------------------------------------- */
@@ -512,8 +489,6 @@ static void tasklog_writes_the_end_past_the_cap(void) {
 }
 
 int main(void) {
-    /* These cases exhaust arenas on purpose, and each refusal logs. Raise the
-     * level past ERROR so a passing run says nothing but its result. */
     agent_log_set_level(AGENT_LOG_ERROR + 1);
 
     RUN(arena_reports_exhaustion);

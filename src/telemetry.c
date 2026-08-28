@@ -23,17 +23,12 @@ static struct {
     u64 seq;
     b8 header_due;
     b8 attached;
-    /* What was recorded before a session named a file. Sized for a startup
-     * and the commands that reach one: past that the run is a record of its
-     * own rather than a reason to drop lines. */
     char pend[8192];
     size_t pend_n;
     TelHeader header;
     void *header_ud;
 } g_tel;
 
-/* Copy a resolved path into the struct: the arena it was built in belongs to
- * the caller and is rewound as soon as startup is over. */
 static b8 tel_keep(char *dst, size_t cap, Str path) {
     if (!path.n || path.n >= cap) return false;
     memcpy(dst, path.p, path.n);
@@ -52,10 +47,6 @@ static void tel_append(const char *data, size_t n, b8 newline) {
     fclose(f);
 }
 
-/* Take the file and the lines that were waiting for one. They open with the
- * session event, so a file that receives them is owed no other; one that
- * starts empty is, since a reader of it has no earlier line to learn the run
- * from. */
 static void tel_attach(const char *dir, size_t dn, const char *path,
                        size_t pn) {
     if (dn >= sizeof g_tel.dir_buf || pn >= sizeof g_tel.path_buf) return;
@@ -79,10 +70,6 @@ static void tel_attach_run(void) {
     tel_attach(g_tel.root_buf, strlen(g_tel.root_buf), path, (size_t)pn);
 }
 
-/* The record of a conversation is named after its session file and sits under
- * the same per-directory component, so one is found from the other. It is
- * taken from the path rather than from Session.name, which is the label the
- * picker shows. */
 void telemetry_bind(Str session_path) {
     if (!g_tel.ready) return;
     size_t base = session_path.n;

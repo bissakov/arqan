@@ -8,8 +8,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-/* $HOME, or the passwd entry when it is unset or relative. Empty when both
- * fail, which leaves callers without a writable base. */
 static Str paths_home(void) {
     const char *h = getenv("HOME");
     if (!h || h[0] != '/') {
@@ -122,10 +120,6 @@ size_t paths_cwd_slug(char *out, size_t cap) {
     return n;
 }
 
-/* mkdir -p with 0700, as the spec requires for created XDG directories.
- * mkdir reports EEXIST for a regular file too, so an existing component is
- * confirmed to be a directory: the caller's next open would otherwise fail
- * with ENOTDIR long after this said the path was ready. */
 b8 paths_ensure_dir(Str dir) {
     if (!dir.n || dir.p[0] != '/' || dir.n >= AGENT_MAX_PATH) return false;
     char path[AGENT_MAX_PATH];
@@ -173,9 +167,6 @@ Str paths_project_dir(Arena *a) {
     return out.n < AGENT_MAX_PATH ? out : (Str){0};
 }
 
-/* The project chain, outermost first: the nearest file is applied last and
- * therefore wins, the way the nearest AGENTS.md does. Only files that exist
- * are returned, so a caller reads what it is given. */
 size_t paths_project_files(Str name, Arena *a, Str *out, size_t max) {
     char cwd[AGENT_MAX_PATH];
     if (!out || max == 0 || !name.n) return 0;

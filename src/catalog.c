@@ -3,12 +3,6 @@
 #include <stdio.h>
 #include <string.h>
 
-/* One reply at a time: a listing is read into a buffer of its own and parsed
- * into a DOM beside it, and the ids worth keeping are copied out before the
- * next provider is asked. The region is carved once and reset per provider,
- * so thirty providers cost what the largest one does rather than thirty times
- * the cap of a reply. The multiple is room for the DOM over the bytes it was
- * parsed from, which no reply of that cap has been seen to exceed. */
 #define CATALOG_REPLY_BYTES (AGENT_MAX_MODEL_BYTES * 8)
 
 b8 catalog_init(Catalog *c, size_t cap, Arena *a) {
@@ -102,9 +96,6 @@ size_t catalog_load(Catalog *c, const Config *cfg, const Endpoints *e,
             catalog_failed(c, names[i], str_c(err), out);
             continue;
         }
-        /* Copied out of `tmp` before the next provider overwrites it. A name
-         * that will not fit is dropped rather than half-stored: a truncated
-         * id names another model. */
         for (size_t j = 0; j < got; j++) {
             Str id = str_dup_opt(out, ids[j]);
             if (!id.p || !catalog_add(c, names[i], id)) break;

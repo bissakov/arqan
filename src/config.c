@@ -19,8 +19,6 @@ typedef struct {
 
 #define CONF_TEXT2(x) #x
 #define CONF_TEXT(x)  CONF_TEXT2(x)
-/* The status field mask has one bit per field, so its default is all of
- * them; a literal is needed because the table's defaults are text. */
 _Static_assert(AGENT_STATUS_FIELDS == 11, "the status_fields default is 2047");
 
 static const ConfSpec k_conf[CONF_N] = {
@@ -31,8 +29,6 @@ static const ConfSpec k_conf[CONF_N] = {
     [CONF_MODEL] = {"model", "", NULL, CV_STR, 0, 0, AGENT_MAX_MODEL_NAME,
                     true},
     [CONF_API] = {"api", "openai", "openai,anthropic", CV_ENUM, 0, 0, 0, true},
-    /* Never from a project file: a repository must not be able to hand a
-     * key to the endpoint it also names. */
     [CONF_API_KEY] = {"api_key", "", NULL, CV_STR, 0, 0, AGENT_MAX_API_KEY,
                       false},
     [CONF_MAX_TOKENS] = {"max_tokens", CONF_TEXT(AGENT_MAX_TOKENS), NULL,
@@ -41,8 +37,6 @@ static const ConfSpec k_conf[CONF_N] = {
                            CV_NUM, 8, 1 << 20, 0, true},
     [CONF_STREAM] = {"stream", "true", NULL, CV_BOOL, 0, 0, 0, true},
     [CONF_MODE] = {"mode", "build", "build,plan", CV_ENUM, 0, 0, 0, true},
-    /* Never from a project file: a repository must not be able to turn off
-     * approval for commands or changes it may induce the model to request. */
     [CONF_PERMISSIONS] = {"permissions", "ask", "ask,free", CV_ENUM, 0, 0, 0,
                           false},
     [CONF_RETRIES] = {"retries", CONF_TEXT(AGENT_RETRIES), NULL, CV_NUM, 0, 16,
@@ -50,8 +44,6 @@ static const ConfSpec k_conf[CONF_N] = {
     [CONF_RETRY_DELAY_MS] = {"retry_delay_ms", CONF_TEXT(AGENT_RETRY_DELAY_MS),
                              NULL, CV_NUM, 0, AGENT_MAX_RETRY_DELAY_MS, 0,
                              true},
-    /* "none" rather than an empty value: an empty value removes the key,
-     * which would read as "nothing was ever chosen" on the next run. */
     [CONF_DISABLE_TOOLS] = {"disable_tools", "", NULL, CV_STR, 0, 0,
                             AGENT_MAX_TOOL_LIST, true},
     [CONF_VERBOSE_TOOLS] = {"verbose_tools", "false", NULL, CV_BOOL, 0, 0, 0,
@@ -69,8 +61,6 @@ static const ConfSpec k_conf[CONF_N] = {
     [CONF_TELEMETRY] = {"telemetry", "false", NULL, CV_BOOL, 0, 0, 0, false},
     [CONF_NOTIFY] = {"notify", "osc9", "off,bel,osc9,both", CV_ENUM, 0, 0, 0,
                      true},
-    /* Never from a project file: it names a program arqan will run, so a
-     * `git clone` must not be able to choose it. */
     [CONF_NOTIFY_COMMAND] = {"notify_command", "", NULL, CV_STR, 0, 0,
                              AGENT_MAX_NOTIFY_CMD, false},
 
@@ -80,8 +70,6 @@ static const ConfSpec k_conf[CONF_N] = {
     [CONF_SEARCH_BACKEND] = {"search_backend", "auto",
                              "auto,ddg,brave,brave_api,google,searxng", CV_ENUM,
                              0, 0, 0, true},
-    /* Never from a project file: these three name where a search goes and
-     * what it pays with, so a `git clone` must not be able to choose them. */
     [CONF_SEARCH_ENDPOINT] = {"search_endpoint", "", NULL, CV_STR, 0, 0,
                               AGENT_MAX_URL, false},
     [CONF_SEARCH_API_KEY] = {"search_api_key", "", NULL, CV_STR, 0, 0,
@@ -96,57 +84,26 @@ static const ConfSpec k_conf[CONF_N] = {
                              AGENT_MAX_ENDPOINT_NAME, false},
 
     [CONF_AUTO_TITLE] = {"auto_title", "true", NULL, CV_BOOL, 0, 0, 0, true},
-    /* Never from a project file: a repository must not be able to shorten
-     * the wait until the agent answers its own questions. 0 waits for the
-     * user however long they take. */
     [CONF_ASK_TIMEOUT_MS] = {"ask_timeout_ms", CONF_TEXT(AGENT_ASK_TIMEOUT_MS),
                              NULL, CV_NUM, 0, 24 * 60 * 60 * 1000, 0, false},
-    /* Never from a project file: a repository must not be able to hold a turn
-     * open past a prompt cache by making its build undetachable. The ceiling
-     * is a job's longest wait, since both are time the model spends idle; a
-     * deadline outside the cache window would defeat the point of having one.
-     * 0 is the way to say the wait matters more than the cache. */
     [CONF_SHELL_TIMEOUT_MS] = {"shell_timeout_ms",
                                CONF_TEXT(AGENT_SHELL_TIMEOUT_MS), NULL, CV_NUM,
                                0, AGENT_JOB_WAIT_MAX_MS, 0, false},
-    /* Whether a message may carry an image. "auto" offers /attach and is
-     * named that way because what a model accepts is the model's to say: a
-     * later release may decide it from the model rather than from here.
-     * Never from a project file: a repository must not be able to put image
-     * bytes into a request for a connection the user gave none. */
     [CONF_IMAGES] = {"images", "auto", "auto,off", CV_ENUM, 0, 0, 0, false},
-    /* Off by default: a start that reopens the last conversation is a choice
-     * the user makes, not what a first run does. */
     [CONF_RESUME_LAST] = {"resume_last", "false", NULL, CV_BOOL, 0, 0, 0, true},
-    /* Automatic by default, which costs nothing until a model profile
-     * declares a window: without one there is no percentage to be past. */
     [CONF_COMPACT] = {"compact", "auto", "off,manual,auto", CV_ENUM, 0, 0, 0,
                       true},
-    /* The ceiling leaves the reply that discovers the threshold somewhere to
-     * land. */
     [CONF_COMPACT_AT] = {"compact_at", CONF_TEXT(AGENT_COMPACT_AT), NULL,
                          CV_NUM, 50, 95, 0, true},
-    /* Where the elision boundary is allowed to advance. It has to stay below
-     * compact_at: eliding is what buys room before a compaction is due, and
-     * a threshold at or past that one would only pay for both rewrites in
-     * the same turn. */
     [CONF_ELIDE_AT] = {"elide_at", CONF_TEXT(AGENT_ELIDE_AT), NULL, CV_NUM, 20,
                        94, 0, true},
     [CONF_COMPACT_MODEL] = {"compact_model", "main", "main,small", CV_ENUM, 0,
                             0, 0, true},
-    /* What an unexplained cache rebuild does. Never from a project file: a
-     * repository must not be able to silence a defect that spends the user's
-     * tokens rebuilding the same prefix round after round. */
     [CONF_CACHE_GUARD] = {"cache_guard", "stop", "stop,warn,off", CV_ENUM, 0, 0,
                           0, false},
     [CONF_SUBAGENTS] = {"subagents", "true", NULL, CV_BOOL, 0, 0, 0, true},
     [CONF_SUBAGENT_MODEL] = {"subagent_model", "main", "main,small", CV_ENUM, 0,
                              0, 0, true},
-    /* Never from a project file, for the reason shell_timeout_ms carries: a
-     * repository must not be able to hold a turn open past a prompt cache,
-     * here by asking for a slice longer than the window. The ceiling is a
-     * job's longest wait, since both are time the model spends idle. 0 runs
-     * the subagent to completion and accepts the rebuild. */
     [CONF_SUBAGENT_SLICE_MS] = {"subagent_slice_ms",
                                 CONF_TEXT(AGENT_TASK_SLICE_MS), NULL, CV_NUM, 0,
                                 AGENT_JOB_WAIT_MAX_MS, 0, false},
@@ -234,8 +191,6 @@ static void conf_take(Conf *c, ConfKey k, Str v, ConfOrigin o, Str where,
         return;
     }
     if (c->origin[k] > o) return;
-    /* An empty value is "unset", and callers that pass the string to curl or
-     * test for a pointer must not see an allocated empty one. */
     Str dup = str_dup_opt(persist, v);
     if (v.n && !dup.p) return;
     c->val[k] = dup;
@@ -290,11 +245,6 @@ static void conf_apply_env(Conf *c, Arena *persist) {
     }
 }
 
-/* The connection of the provider serving the chosen model. It sits above the
- * state file and below the environment: the endpoint is what /provider
- * configured, while a variable is a statement about this one run. A `provider`
- * naming nothing is cleared, since a name with no endpoint behind it is not a
- * selection. */
 static void conf_apply_endpoint(Conf *c, Arena *persist, Arena *scratch) {
     Str name = conf_str(c, CONF_PROVIDER);
     if (!name.n) return;
@@ -537,10 +487,6 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
                                                   : COMPACT_AUTO;
     c->compact_at = (u32)conf_num(conf, CONF_COMPACT_AT);
     c->elide_at = (u32)conf_num(conf, CONF_ELIDE_AT);
-    /* Refused rather than moved: a value the two thresholds cannot both hold
-     * is a statement about a policy that does not exist, and quietly sliding
-     * it under compact_at would elide at a percentage nobody chose. Eliding
-     * stays off until one of the two is changed. */
     if (c->elide_at >= c->compact_at) {
         agent_log(AGENT_LOG_WARN,
                   "ignoring elide_at %u: it must be below compact_at %u",
@@ -568,13 +514,9 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
     c->reasoning_template = conf->model_profile.reasoning_template;
     c->context_window = conf->model_profile.context_window;
 
-    /* A prompt is a document rather than a setting, so it has no row in the
-     * table; the variable and --system are the only ways to pass one. */
     const char *sys = getenv(AGENT_ENV_PREFIX "SYSTEM_PROMPT");
     if (sys && *sys) c->system_prompt = str_dup(persist, str_c(sys));
 
-    /* A placeholder rather than a destination: a run that named no endpoint
-     * asks for one. It follows the API so the pair is at least coherent. */
     if (!c->base_url.n)
         c->base_url = c->api == API_ANTHROPIC
                           ? str_c("https://api.anthropic.com/v1")

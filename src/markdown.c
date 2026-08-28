@@ -4,22 +4,16 @@
 
 #define MD_PREFIX_MAX 24
 
-#define MD_PEND_MAX 512
-#define MD_RULE_MAX 60
-#define MD_LINE_MAX 256
-/* A line is held only until its block is known, then it streams out as it
- * arrives. A table row is the exception: it is drawn whole, cell by cell, so
- * a row is held to this wider cap instead. */
+#define MD_PEND_MAX    512
+#define MD_RULE_MAX    60
+#define MD_LINE_MAX    256
 #define MD_ROW_MAX     (4u << 10)
 #define MD_TABLE_ROWS  64
 #define MD_TABLE_COLS  32
 #define MD_TABLE_BYTES (64u << 10)
-/* A table cell is laid out before it is drawn, so its inline markup is
- * resolved into styled runs first. A cell past either cap is drawn as
- * written rather than truncated. */
-#define MD_CELL_MAX  512
-#define MD_CELL_RUNS 32
-#define MD_HL_LINES  (YHL_SOURCE_MAX / 2u + 2u)
+#define MD_CELL_MAX    512
+#define MD_CELL_RUNS   32
+#define MD_HL_LINES    (YHL_SOURCE_MAX / 2u + 2u)
 
 enum {
     MD_BLOCK_PLAIN,
@@ -806,11 +800,6 @@ static void md_table_line(Str line, const size_t *width, b8 head) {
     } while (more);
 }
 
-/* Columns are laid out the way a browser lays a table out: natural widths
- * while the row fits the transcript, then the widest columns give way one
- * cell at a time until it does and their text wraps. A terminal too narrow
- * to hold a cell per column keeps the natural widths, since a table drawn
- * one glyph wide says less than the wrapped rows do. */
 static void md_table_fit(size_t *width, size_t cols) {
     size_t body = tui_body_cols();
     size_t frame = cols * 3 + 1;
@@ -866,9 +855,6 @@ static void md_table_flush(void) {
     for (size_t i = 0; i < g_md.table_cols; i++)
         if (!width[i]) width[i] = 1;
     md_table_fit(width, g_md.table_cols);
-    /* A body cell wider than its column wraps, so its row spans several
-     * screen lines and where one row ends stops being obvious. Rule between
-     * body rows only then: a table of single-line rows reads better tight. */
     b8 rule = false;
     for (size_t i = 0; i < g_md.table_cols && !rule; i++)
         rule = body[i] > width[i];
@@ -977,9 +963,6 @@ static void md_complete_line(Str line, b8 eol) {
     md_regular(line, eol);
 }
 
-/* Whether the buffered prefix can still open a table row, decided once the
- * line reaches MD_LINE_MAX. A leading pipe is unmistakable; a row without one
- * is only trusted while a table or a candidate header is already open. */
 static b8 md_row_prefix(void) {
     size_t i = 0;
     if (g_md.fence) return false;

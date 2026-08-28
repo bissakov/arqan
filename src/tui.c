@@ -37,14 +37,12 @@ _Static_assert(TUI_STATUS_N == AGENT_STATUS_FIELDS,
 #define TUI_FIND_QUERY    128
 #define TUI_FIND_ROW_HITS 64
 #define TUI_ASK_MAX       AGENT_MAX_REASONING_TEMPLATE
-/* Markdown claims one span per emphasis run, so this counts words of a reply
- * rather than messages. */
-#define TUI_MAX_SPANS  4096
-#define TUI_MAX_SYNTAX 16384
-#define TUI_CKPTS      4096
-#define TUI_MAX_ZONES  512
-#define TUI_MAX_PINS   512
-#define TUI_MAX_USERS  512
+#define TUI_MAX_SPANS     4096
+#define TUI_MAX_SYNTAX    16384
+#define TUI_CKPTS         4096
+#define TUI_MAX_ZONES     512
+#define TUI_MAX_PINS      512
+#define TUI_MAX_USERS     512
 
 
 #define S_RESET    "\033[0m"
@@ -59,14 +57,12 @@ _Static_assert(TUI_STATUS_N == AGENT_STATUS_FIELDS,
 #define S_PURPLE   "\033[1;38;5;177m"
 #define S_BOLD     "\033[1m"
 
-#define S_NOBOLD  "\033[22m"
-#define S_ITALIC  "\033[3m"
-#define S_MONO    "\033[38;5;180m"
-#define S_STRIKE  "\033[9;38;5;245m"
-#define S_USER_BG "\033[48;5;238m"
-#define S_CODE_BG "\033[48;5;235m"
-/* A fence inside a user turn stays inside the panel: it takes a shade of its
- * own rather than the assistant's code slab, so the block never breaks. */
+#define S_NOBOLD       "\033[22m"
+#define S_ITALIC       "\033[3m"
+#define S_MONO         "\033[38;5;180m"
+#define S_STRIKE       "\033[9;38;5;245m"
+#define S_USER_BG      "\033[48;5;238m"
+#define S_CODE_BG      "\033[48;5;235m"
 #define S_USER_CODE_BG "\033[48;5;236m"
 
 #define S_USER_RULE  "\033[38;5;81m"
@@ -88,13 +84,8 @@ typedef struct {
     b8 busy;
     b8 input_eof;
     b8 color;
-    /* Between a bracketed paste's start and end markers every byte is text:
-     * a newline in it is a line break in the draft rather than a submit. */
     b8 pasting;
     b8 paste_cr;
-    /* While set, every write to the transcript is dropped: the screen is
-     * showing a different conversation, and the caller rebuilds this one
-     * from Conv on the way back. */
     b8 detached;
     Str model;
     Str provider;
@@ -103,8 +94,6 @@ typedef struct {
     AgentMode mode;
     PermissionPolicy permissions;
     Str base_url;
-    /* A modal question owns the composer. Its answer is not a message, so it
-     * reaches neither the transcript nor the prompt history. */
     b8 ask;
     b8 ask_secret;
     char cwd_buf[4096];
@@ -122,9 +111,6 @@ typedef struct {
     f64 activity_started;
     f64 activity_turn;
     size_t transcript_n;
-    /* Newlines written but not committed. The transcript never ends with one,
-     * so the air between two blocks is decided in tui_block alone instead of
-     * being split between the block that ended and the one that starts. */
     size_t pend_nl;
     size_t trail_nl;
     b8 wrote_any;
@@ -156,8 +142,6 @@ typedef struct {
     size_t user_n;
     size_t user_open_a;
     b8 user_open;
-    /* Byte ranges a click acts on, each carrying the caller's id, kept beside
-     * the transcript like spans. */
     size_t zone_a[TUI_MAX_ZONES];
     size_t zone_b[TUI_MAX_ZONES];
     u32 zone_id[TUI_MAX_ZONES];
@@ -186,17 +170,10 @@ typedef struct {
     b8 size_warning;
     size_t bar_first, bar_total, bar_visible;
     b8 bar_valid;
-    /* The composer outlives a single tui_readline: text typed while a turn is
-     * running is still here when the next prompt opens. */
     size_t input_n;
     size_t input_cur;
 
     size_t queued_n;
-    /* Vertical motion inside the composer. `input_top` is the visual row the
-     * composer window starts at, kept across frames so a tall draft scrolls
-     * by the row the cursor left rather than snapping to the caret; the goal
-     * column holds the cell a run of Up/Down aims for, so crossing a short
-     * row does not shorten the ones after it. */
     size_t input_top;
     size_t goal_col;
     b8 goal_col_valid;
@@ -207,9 +184,6 @@ typedef struct {
     const TuiAlias *aliases;
     size_t alias_n;
     u16 comp_idx[AGENT_MAX_POPUP];
-    /* The popup also completes a filesystem path: while `path_mode` is set it
-     * is offering these entries instead of the command table, listed from the
-     * directory the word at the cursor names. */
     b8 path_mode;
     TuiCmd path_ents[TUI_PATH_ENTS];
     char path_slot[TUI_PATH_ENTS][TUI_PATH_SLOT];
@@ -235,15 +209,8 @@ typedef struct {
 
     char pick_notice[512];
     size_t pick_notice_n;
-    /* A modal picker owns the frame until it is answered, so the popup is
-     * given the room the composer's own completions do not need. */
     b8 picking;
-    /* The transcript block the open modal screen is asking about, SIZE_MAX
-     * for none. Set only while that screen is up, and the frame lifts the
-     * transcript out from under it rather than covering the block. */
     size_t keep_off;
-    /* What a run with nothing to talk to is missing, empty when it wants for
-     * nothing. Not owned: the caller passes a literal. */
     Str setup_hint;
 
     History *hist;
@@ -256,7 +223,7 @@ typedef struct {
 
     size_t row_src[TUI_SEL_ROWS];
 
-    b8 find_open; // the box owns the keyboard
+    b8 find_open;
     void (*find_expand)(void *ud);
     void *find_expand_ud;
     b8 find_wrapped;
@@ -281,11 +248,6 @@ typedef struct {
     size_t out_n;
 } TuiState;
 
-/* The bulk payload buffers, held apart from TuiState because every one of
- * them is read only up to a counter that lives there. Their bytes therefore
- * carry no state of their own, so tui_start resets the control block alone
- * and these pages stay untouched until something is actually written into
- * them: a session that never fills the scrollback never pays for it. */
 typedef struct {
     char transcript[TUI_TRANSCRIPT_CAP];
     char input[AGENT_LINE_BUF];
@@ -357,7 +319,7 @@ static void flush_out(void) {
             continue;
         }
         if (w < 0 && errno == EINTR) continue;
-        break; // closed or full pipe: drop the frame rather than spin
+        break;
     }
     g_tui.out_n = 0;
 }
@@ -477,8 +439,6 @@ static size_t glyph(const char *s, size_t n, i32 *width) {
     }
     u32 cp = 0;
     size_t used = utf8_decode(s, n, &cp);
-    /* Bytes the terminal will print as something take a cell each: a
-     * malformed sequence advances one byte rather than stalling the walk. */
     if (used == 0) {
         *width = 1;
         return 1;
@@ -510,8 +470,6 @@ static struct {
     size_t col;
 } g_cap;
 
-/* Byte offset of the first glyph at or after `cell`; *reached is the column
- * landed on, since a wide glyph can straddle the requested one. */
 static size_t row_byte_at(size_t r, size_t cell, size_t *reached) {
     const char *p = g_bulk.row_text[r];
     size_t n = g_tui.row_text_n[r], bytes = 0, col = 0;
@@ -582,8 +540,6 @@ static void sel_row_range(size_t screen_row, size_t *c0, size_t *c1) {
 static void put_text(const char *s, size_t n) {
     size_t sel_c0 = 0, sel_c1 = 0;
     sel_row_range(g_cap.row, &sel_c0, &sel_c1);
-    /* Styles are re-emitted between calls and can drop reverse video, so the
-     * flag is per call rather than per row. */
     b8 reverse = false;
     for (size_t i = 0; i < n;) {
         i32 width = 0;
@@ -601,8 +557,6 @@ static void put_text(const char *s, size_t n) {
 }
 
 
-/* Paint the blanks past a row's text, so a multi-row highlight reads as one
- * block instead of a ragged right edge. */
 static void paint_sel_tail(size_t screen_row, size_t screen_cols) {
     size_t c0, c1;
     sel_row_range(screen_row, &c0, &c1);
@@ -659,9 +613,6 @@ b8 tui_clipboard_via_tmux(void) {
     return getenv("TMUX") != NULL;
 }
 
-/* The clipboard is written blind: OSC 52 carries no reply, so nothing here
- * learns whether it landed. Under tmux the odds are worth saying out loud,
- * once per run, since a drag-select is a gesture the user repeats. */
 static void copy_acknowledge(void) {
     g_tui.copy_notice = agent_now_seconds() + 2.0;
     if (!tui_clipboard_via_tmux() || g_tui.tmux_copy_hinted) return;
@@ -833,8 +784,6 @@ static size_t row_col_off(Str s, size_t cols, size_t prompt_cells,
     }
 }
 
-/* Bytes painted, which is fewer than `s` holds when a glyph no longer fits:
- * a caller painting one row in several styles stops where this one did. */
 static size_t put_safe_clipped(Str s, size_t max_cells, size_t *used_cells) {
     size_t cells = 0;
     size_t i = 0;
@@ -916,8 +865,6 @@ static const char *kind_style(u8 kind) {
         case ROW_WELCOME_TEXT: return S_MUTED;
         case ROW_HEADING: return S_CYAN;
         case ROW_CODE: return S_CODE_BG S_TEXT;
-        /* Wrapped composer rows are painted from a reset, so they name the
-         * panel's text colour rather than inherit the terminal's. */
         case ROW_COMPOSER: return S_PANEL_BG S_TEXT;
         case ROW_ZONE: return S_LINK;
         case ROW_ZONE_HOVER: return S_POPUP_BG S_LINK_HOVER;
@@ -982,9 +929,6 @@ static b8 str_contains_ci(Str s, Str needle) {
     return false;
 }
 
-/* Every byte of `needle` in order, gaps allowed: "shins" finds "Show
- * instructions". A row is found by what it is called rather than by how it
- * is spelled, which is what a settings screen is searched for. */
 static b8 str_fuzzy_ci(Str s, Str needle) {
     size_t at = 0;
     for (size_t i = 0; i < s.n && at < needle.n; i++)
@@ -1001,8 +945,6 @@ static size_t syntax_slot(size_t i) {
     return (g_tui.syntax_head + i) % TUI_MAX_SYNTAX;
 }
 
-/* Reasoning arrives as many tiny deltas, so an append that continues the
- * previous span extends it rather than claiming a slot. */
 static void span_add(size_t a, size_t b, u8 kind) {
     size_t last = g_tui.span_n ? span_slot(g_tui.span_n - 1) : 0;
     if (g_tui.span_n && g_tui.span_k[last] == kind && g_tui.span_b[last] == a) {
@@ -1251,8 +1193,6 @@ typedef struct {
     b8 pending;
 } Just;
 
-/* Space runs with a word on each side; the indent a row opens with is not
- * one, since widening it would move the block's left edge. */
 static size_t row_gaps(Str text) {
     size_t gaps = 0;
     b8 word = false, in_sp = false;
@@ -1268,9 +1208,6 @@ static size_t row_gaps(Str text) {
     return gaps;
 }
 
-/* The cells are spread across the row rather than handed to the first gaps
- * that ask, so a row two cells short widens two gaps a word apart instead of
- * opening a hole after its first word. */
 static void just_gap(Just *j) {
     size_t take =
         (j->seen + 1) * j->extra / j->gaps - j->seen * j->extra / j->gaps;
@@ -1278,8 +1215,6 @@ static void just_gap(Just *j) {
     while (take--) put_text(" ", 1);
 }
 
-/* `j` carries the row's state across fragments, since a style run may end
- * inside the space run a gap is opened at. */
 static void put_just(const char *p, size_t n, Just *j) {
     if (!j || !j->gaps) {
         put_text(p, n);
@@ -1334,16 +1269,6 @@ static b8 find_match_at(size_t off) {
     return true;
 }
 
-/* First match starting at or after `from` and before `until`, SIZE_MAX for
- * none. The first byte drives a memchr in both its cases, so a scan of the
- * whole scrollback costs a pair of word-at-a-time passes rather than a
- * comparison per byte, and a caller that cares about one row pays for that
- * row rather than for everything after it.
- *
- * The upper-case pass stops at the lower-case hit rather than running to the
- * end of the range: a letter that never appears in that case would otherwise
- * re-scan the whole scrollback once per match, which is the difference
- * between a keystroke and a hang on a transcript of any size. */
 static size_t find_next_in(size_t from, size_t until) {
     size_t n = g_tui.find_q_n;
     if (!n || g_tui.transcript_n < n) return SIZE_MAX;
@@ -1475,9 +1400,6 @@ static u64 hash_find_row(u64 h) {
     return h;
 }
 
-/* `p` starts at row byte `rel`. The base style is re-emitted after every
- * highlighted stretch, since the background is layered over it rather than
- * replacing it. */
 static void put_hits(const char *p, size_t rel, size_t n, Just *j,
                      void (*restore)(void *ud), void *ud) {
     for (size_t k = 0; k < n;) {
@@ -1549,8 +1471,6 @@ static Str prompt_indent(size_t cells) {
     return (Str){blanks, cells};
 }
 
-/* Whether a composer prefix is the marker itself rather than the indent that
- * stands in for it on the rows below. */
 static b8 is_marker(Str prefix) {
     return prefix.n != 0 && prefix.p[0] != ' ';
 }
@@ -1583,8 +1503,6 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
     put_str(S_RESET "\033[2K");
 
     if (kind == ROW_COMPOSER || user || kind == ROW_CODE) {
-        /* The whole row carries the panel colour, so a user turn or a fenced
-         * code block reads as a block of screen rather than a prefixed line. */
         style(user ? user_bg(kind) : kind == ROW_CODE ? S_CODE_BG : S_PANEL_BG);
         pad_row(0, screen_cols);
         if (user) paint_user_rule(screen_row, screen_col);
@@ -1621,8 +1539,6 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
                                             : STR("Message " AGENT_NAME "..."),
                          room, NULL);
     } else if (kind == ROW_ZONE || kind == ROW_ZONE_HOVER) {
-        /* The indent belongs to the block, not to the click target: styling
-         * it would draw a bar across the transcript instead of a label. */
         size_t lead = 0;
         while (lead < text.n && text.p[lead] == ' ') lead++;
         put_text(text.p, lead);
@@ -1679,9 +1595,6 @@ static size_t wrap_scan(size_t cols) {
     size_t i = g_tui.wrap_scanned, row = g_tui.wrap_rows;
     for (;;) {
         Row r = row_break(s, i, cols, 0);
-        /* The last row is where the next append lands, and a word arriving
-         * into it can move the break behind bytes already scanned, so the
-         * scan resumes at its start rather than at its end. */
         if (r.hard && r.end >= s.n) break;
         i = r.next;
         row++;
@@ -1703,14 +1616,6 @@ static size_t wrap_seek(size_t row, size_t *at_row) {
     return g_tui.ckpt_off[k];
 }
 
-/* The cells a row is short of the right edge, or 0 when it keeps them.
- *
- * Only a row the wrapper broke is justified: a row that ended where its
- * author ended it is as long as it was meant to be. Prose is the only shape
- * it applies to, since widening the gaps of a tool's output, a code block or
- * a diff would move columns their reader is lining up. A row left far short
- * by a word too wide to join it keeps its gaps rather than opening a river
- * through them. */
 static size_t justify_pad(Str text, u8 kind, Row r, size_t cols, size_t col0) {
     if (!g_tui.justify || r.hard) return 0;
     if (kind != ROW_PLAIN && kind != ROW_USER && kind != ROW_QUOTE) return 0;
@@ -1721,15 +1626,10 @@ static size_t justify_pad(Str text, u8 kind, Row r, size_t cols, size_t col0) {
     return row_gaps(text) ? pad : 0;
 }
 
-/* Bytes at the head of the composer painted as the prompt rather than as
- * text: a shell line's '!' is the marker, so a motion measured over the
- * buffer must skip it to land where the caret is drawn. */
 static size_t composer_marker(const char *buf, size_t n) {
     return !g_tui.ask && n > 0 && buf[0] == '!' ? 1 : 0;
 }
 
-/* A composed line starting with '!' runs in the shell instead of reaching
- * the model, which the composer's marker announces. */
 static b8 composer_shell(void) {
     return composer_marker(g_bulk.input, g_tui.input_n) != 0;
 }
@@ -1898,12 +1798,6 @@ size_t tui_text_fit(Str s, size_t cells, size_t *used) {
     return b;
 }
 
-/* Cells taken by the widest name in the whole list rather than in the rows
- * on screen, so scrolling a list moves the selection and nothing else: a
- * description column that shifted under the reader would be the list
- * redrawing itself around a key that was meant to move one row. Half the
- * width is the cap, since a list of long names is still a list of
- * descriptions. */
 static size_t popup_name_cells(size_t body_cols) {
     size_t widest = 0;
     for (size_t i = 0; i < g_tui.comp_n; i++) {
@@ -1917,10 +1811,6 @@ static size_t popup_name_cells(size_t body_cols) {
     return widest < cap ? widest : cap;
 }
 
-/* Visual rows one popup entry needs, capped because no popup can display
- * more than its visual-row budget. Values and descriptions use the same word
- * breaker as the transcript and composer, with each column as a hanging
- * indent. */
 static size_t popup_entry_rows(const TuiCmd *cmd, size_t body_cols,
                                size_t name_cells, size_t cap) {
     if (popup_separator(cmd)) return cap ? 1 : 0;
@@ -1976,9 +1866,6 @@ static void update_notice_row(size_t screen_row, Str text, size_t screen_col,
     style(S_RESET);
 }
 
-/* A picker's question is what its rows are chosen from, so it wraps over a
- * few rows instead of being cut at the width of one. The text is laid out
- * inside the same two-cell indent update_notice_row paints. */
 static size_t notice_text_cols(size_t body_cols) {
     return body_cols > 2 ? body_cols - 2 : body_cols;
 }
@@ -2207,8 +2094,6 @@ static void paint_view_body_row(size_t screen_row, size_t col, size_t width,
         size_t take = end - (off + i);
         style(S_POPUP_BG);
         style(kind ? syntax_style(kind) : S_TEXT);
-        /* A glyph too wide for what is left ends the row here rather than
-         * letting a narrower one from the next run past it. */
         if (put_safe_clipped((Str){text.p + i, take}, inner - used, &used)
             < take)
             break;
@@ -2226,9 +2111,6 @@ static void paint_view_body_row(size_t screen_row, size_t col, size_t width,
     style(S_RESET);
 }
 
-/* The rectangle is measured before anything else paints, so the rows the
- * window owns are known while the transcript beneath it is still deciding
- * what to write. */
 static void view_layout(size_t rows, size_t cols) {
     if (!g_view.active || rows < 7 || cols < 20) {
         view_unlock();
@@ -2288,10 +2170,6 @@ static void paint_view(size_t cols, b8 force) {
     g_view.paint = false;
 }
 
-/* The search box, and the cells its caret sits at. It is an overlay of its
- * own rather than a notice: a notice answers the last command and is retired
- * by the next keystroke, while a search survives every keystroke it is being
- * typed into and every line the transcript grows by. */
 static size_t find_row_caret(size_t body_cols) {
     size_t caret = 2 + tui_text_cells(STR("find: "))
                    + tui_text_cells((Str){g_tui.find_q, g_tui.find_q_n});
@@ -2639,8 +2517,6 @@ static b8 terminal_too_small(void) {
     return rows < TUI_MIN_ROWS || cols < TUI_MIN_COLS;
 }
 
-/* The bar has a column of its own, so it sits outside the row-hash diff and
- * keeps a one-line cache instead. */
 static void paint_scrollbar(size_t first_row, size_t total_rows,
                             size_t visible_rows, size_t screen_col, b8 force) {
     if (!force && g_tui.bar_valid && g_tui.bar_first == first_row
@@ -2758,9 +2634,6 @@ static void find_goto(size_t off);
 static void find_close(void);
 static size_t rows_below(size_t off);
 
-/* A scroll is a row count from the bottom, which means something else at
- * every width, so a resize is a re-wrap that keeps the top row where the
- * reader left it rather than the count that addressed it. */
 static void scroll_rewrap(void) {
     size_t cols = tui_body_cols();
     if (!cols || cols == g_tui.scroll_cols) return;
@@ -2809,20 +2682,13 @@ static void repaint(void) {
         frame_end();
         return;
     }
-    /* The count the box shows is carried over the bytes appended since the
-     * last frame, so a streaming turn costs the delta rather than a scan. */
     if (g_tui.find_open) find_refresh();
 
     size_t rows, cols;
     screen_size(&rows, &cols);
     b8 force = !g_tui.frame_valid || g_tui.size_warning || g_winch
                || rows != g_tui.painted_rows || cols != g_tui.painted_cols;
-    /* Measured here rather than where it paints: the rows it covers neither
-     * paint nor invalidate from the transcript, and that has to be known
-     * before the transcript writes them. */
     view_layout(rows, cols);
-    /* Rows not painted from the transcript carry no offset, so the mapping is
-     * rebuilt rather than aged. */
     memset(g_tui.row_src, 0xff, sizeof g_tui.row_src);
     g_winch = 0;
     frame_begin();
@@ -2870,16 +2736,7 @@ static void repaint(void) {
     size_t body_rows = rows > composer_rows + chrome_rows
                            ? rows - composer_rows - chrome_rows
                            : 1;
-    /* Overlays stack upward from the composer and cover the bottom of the
-     * transcript rather than pushing it up, so opening one hides the last
-     * rows and leaves every other where the reader last saw it. One row
-     * always stays uncovered. */
     size_t overlay_cap = body_rows > 1 ? body_rows - 1 : 0;
-    /* A modal picker holds the frame until it is answered, so its list is
-     * given most of the screen: a page of options read at once is a page
-     * nobody has to walk through with the arrow keys. The composer's own
-     * completions keep the fixed height, since the draft under them is what
-     * the reader is working on. */
     size_t popup_cap = TUI_POPUP_ROWS;
     if (g_tui.picking && overlay_cap * 2 / 3 > popup_cap)
         popup_cap = overlay_cap * 2 / 3;
@@ -2896,9 +2753,6 @@ static void repaint(void) {
                                  body_cols, pick_notice_cap)
             : 0;
     size_t find_rows = g_tui.find_open ? 1 : 0;
-    /* The spinner row reads as the next line of the conversation, so it sits
-     * against the transcript with a block's row of air above it rather than
-     * among the overlays below. */
     size_t activity_rows = g_tui.activity_n ? 2 : 0;
 
     if (popup_rows && pick_notice_rows && overlay_cap < 2) pick_notice_rows = 0;
@@ -2918,19 +2772,7 @@ static void repaint(void) {
         find_rows + pick_notice_rows + notice_rows + popup_rows;
     size_t transcript_rows = body_rows - overlay_rows - activity_rows;
 
-    /* Pinned to the bottom unless PageUp moved the viewport. Overlays stay in
-     * the window because they cover the transcript; the spinner is stacked
-     * below it and would otherwise hide the newest line. */
     size_t all_rows = wrap_scan(body_cols);
-    /* An overlay covers the bottom of the transcript rather than pushing it
-     * up, which leaves the newest rows under it. A search box may not: a match
-     * it cannot show is a search that did not answer, so while it is open the
-     * rows it covers are scrolled out from under it. */
-    /* Nor may a notice: it answers the last command and is read beside the
-     * transcript rather than instead of it, so the rows it would cover are
-     * lifted for as long as it is up. A screen borrows the same slot for its
-     * own hint, and a screen is read instead of the transcript, so while one
-     * is open the notice covers like the rest. */
     size_t notice_lift = g_tui.picking || g_view.active ? 0 : notice_rows;
     size_t view_rows = body_rows - activity_rows - notice_lift;
     if (g_tui.find_open)
@@ -2991,11 +2833,6 @@ static void repaint(void) {
     paint_completions(overlay_top + find_rows + pick_notice_rows + notice_rows,
                       popup_rows, body_col, cols, body_cols, force);
 
-    /* The window over a draft taller than the box scrolls by the row the
-     * caret leaves rather than snapping to it, so walking a long draft pages
-     * through it and the rows around the caret stay where the reader put
-     * them. It is only ever moved far enough to keep the caret in view, and
-     * never past the last row of the text. */
     size_t input_first = g_tui.input_top;
     size_t input_max_top =
         input_rows > composer_rows ? input_rows - composer_rows : 0;
@@ -3080,11 +2917,6 @@ static void repaint(void) {
         else if (!strcmp(status, "thinking"))
             status_style = S_PURPLE;
         b8 have_field = false;
-        /* Spelled out rather than only coloured, since the bullet says
-         * nothing on a NO_COLOR terminal, and first so a narrow screen clips
-         * it last. While the spinner row is up it says the same word beside
-         * the seconds it has been true for, so here the bullet carries the
-         * state alone rather than repeating it a row below. */
         if (g_tui.status_visible[TUI_STATUS_STATE]) {
             style(status_style);
             put_safe_clipped(STR("● "), body_cols, &used);
@@ -3152,14 +2984,9 @@ static void repaint(void) {
         style(S_RESET);
     }
 
-    /* Unlike completion and settings, this is a real centered window. It is
-     * painted last, over transcript and chrome alike, and owns no picker or
-     * completion state. */
     paint_view(cols, force);
 
     if (g_tui.editing && !g_view.active) {
-        /* The caret belongs to whatever is being typed into: while the search
-         * box holds the keyboard, that is the query rather than the draft. */
         size_t screen_cursor_row =
             find_rows ? overlay_top
                       : composer_screen_row + cursor_row - input_first;
@@ -3177,9 +3004,6 @@ static void repaint(void) {
     frame_end();
 }
 
-/* Log lines become transcript notices while the alternate screen is up, so a
- * curl failure reads like the rest of the conversation instead of tearing a
- * hole in the frame. */
 static void tui_log_sink(i32 level, Str msg, void *ud) {
     (void)ud;
     static const char *tags[] = {"debug", "info", "warn", "error"};
@@ -3455,9 +3279,6 @@ static void put_passthrough(Str seq) {
 void tui_desktop_notify(Str text) {
     if (!g_tui.tty || !text.n || text.n > AGENT_MAX_NOTIFY_TEXT) return;
     char seq[AGENT_MAX_NOTIFY_TEXT + 8];
-    /* "9;" followed by a digit is a sub-command in ConEmu, Windows Terminal
-     * and ghostty (progress, cwd, marks); the caller's leading name keeps the
-     * text out of that space, and a payload that lost it is not sent. */
     if (text.p[0] >= '0' && text.p[0] <= '9') return;
     size_t n = 0;
     memcpy(seq + n, "\033]9;", 4);
@@ -3556,13 +3377,6 @@ void tui_scroll_to_bottom(void) {
     repaint();
 }
 
-/* Rows from `off` to the end, which is what a zone's place on screen is
- * measured against: a re-render is free to change everything above it.
- *
- * The wrapped-row index answers this from the checkpoint before `off`, so an
- * offset megabytes back costs the rows since that checkpoint rather than a
- * wrap of everything under it. The index belongs to the width it was built
- * at; at any other the tail is wrapped directly. */
 static size_t rows_below(size_t off) {
     size_t cols = tui_body_cols();
     if (!cols || off >= g_tui.transcript_n) return 0;
@@ -3779,8 +3593,6 @@ void tui_clear(void) {
     tui_clear_transcript();
 }
 
-/* Append committed bytes. `s` carries no newline the layout has not decided
- * on, since those are held in `pend_nl` until content follows them. */
 static void transcript_put(Str s) {
     g_tui.notice_n = 0;
 
@@ -3859,8 +3671,6 @@ static void content_put(Str s) {
     g_tui.wrote_any = true;
 }
 
-/* Write back the newlines held since the last content byte, at most one blank
- * row's worth: how much air a block leaves is tui_block's to say. */
 static void nl_commit(void) {
     size_t n = g_tui.pend_nl;
     if (!n) return;
@@ -3885,10 +3695,6 @@ void tui_block(void) {
 }
 
 void tui_write(Str s) {
-    /* The busiest path in a turn, so it doubles as the pump keeping the
-     * composer responsive and servicing a pending resize. Markdown may split
-     * one provider delta into many styled writes, so poll once per bounded
-     * batch rather than issuing a poll syscall for every style run. */
     static u8 poll_skip;
     if (g_tui.fullscreen && (g_winch || poll_skip == 0)) {
         tui_poll_input();
@@ -4020,9 +3826,6 @@ void tui_syntax_commit(void) {
     repaint();
 }
 
-/* A user turn is a block of screen rather than a labelled line: a padding row
- * above and below, and the whole range recorded so every row it wraps onto
- * carries the panel background. */
 void tui_user_begin(void) {
     if (g_tui.detached) return;
     tui_block();
@@ -4038,8 +3841,6 @@ void tui_user_begin(void) {
 
 void tui_user_end(void) {
     if (g_tui.detached || !g_tui.fullscreen || !g_tui.user_open) return;
-    /* The padding row below belongs to the box, so it is committed here to
-     * fall inside the recorded range rather than left to the next block. */
     tui_write(STR("\n\n"));
     nl_commit();
     size_t b = g_tui.transcript_n;
@@ -4072,24 +3873,6 @@ static b8 input_buffered(void) {
 }
 
 #ifdef AGENT_TESTING
-/* A settled screen, announced. The suite drives the UI over a pty, where the
- * only other way to know a repaint has finished is to wait out a silence long
- * enough to be sure it will not be broken; this says so instead, so a case
- * spends no time guessing. Emitted where the reader is about to block with a
- * painted frame behind it, which is the definition of settled.
- *
- * It carries the number of input bytes consumed so far, which is what makes
- * it answerable: a park is only the answer to what a case wrote once the
- * count reaches everything the case has sent. A bare sequence number cannot
- * distinguish that from the park before it.
- *
- * It carries the size the frame behind it was painted for for the same
- * reason: a resize is a signal rather than input, so no byte count moves and
- * the park before it would otherwise pass for the answer to it.
- *
- * APC: terminals consume and ignore it, and it carries no cursor or cell
- * effect, so a golden screen is the same with it as without. Compiled into
- * the test build alone; the shipped binary has no beacon and no counter. */
 static unsigned long g_idle_seq;
 static unsigned long g_input_bytes;
 
@@ -4105,10 +3888,6 @@ static void idle_beacon(void) {
     }
 }
 
-/* Input taken by the poll path, which does not park and so paints no settled
- * frame: this reports the count alone, and never claims the screen is done.
- * Silent unless that path has taken input since the last one, so a streaming
- * turn pays no write and no flush per pump. */
 static void input_notice(void) {
     static unsigned long last = ~0UL;
     if (!g_tui.fullscreen) return;
@@ -4153,24 +3932,10 @@ static i32 rbyte(void) {
     return (i32)g_input.b[g_input.at++];
 }
 
-/* Continuation byte of an escape sequence. A bare Esc must not park the
- * reader on a blocking read, especially while polling during a turn. */
 static i32 rbyte_soon(void) {
     return input_ready(50) ? rbyte() : -1;
 }
 
-/* A bracketed paste is one burst: the terminal writes the start marker, the
- * text and the end marker in one go. An end marker that never arrives - a
- * terminal that died mid-paste, or text that carried a start marker of its
- * own - would otherwise leave the composer treating every later key as text,
- * with no key left that could recover it. So the paste is retired once the
- * input has stayed drained, which only the caller about to block may decide:
- * a paste larger than one read still arrives back to back.
- *
- * The grace covers the gap a writer leaves when a paste too big for the
- * terminal's pipe is refilled a block at a time, and stays far below the
- * time it takes to reach for the next key, which must not be eaten as text.
- */
 enum { PASTE_GRACE_MS = 20 };
 
 static void paste_retire_if_drained(void) {
@@ -4300,8 +4065,6 @@ typedef struct {
 static i32 read_escape(void) {
     i32 first = rbyte_soon();
     if (first < 0) return KEY_NONE;
-    /* Two Escapes in one burst are two keys: the second opens a sequence of
-     * its own rather than closing this one. */
     if (first == 0x1b) {
         g_input.pushback = 0x1b;
         g_input.pushed = true;
@@ -4393,8 +4156,6 @@ static size_t prev_word(const char *buf, size_t cur) {
     return cur;
 }
 
-/* The composer is multi-line, so Home and Ctrl-A act on a line rather than on
- * the whole buffer. */
 static size_t line_start(const char *buf, size_t cur) {
     while (cur > 0 && buf[cur - 1] != '\n') cur--;
     return cur;
@@ -4430,8 +4191,6 @@ static b8 entry_before(u8 rank_a, u16 depth_a, const char *name_a, u8 rank_b,
 }
 
 static void path_insert(const char *rel, size_t rel_n, u8 rank, u16 depth) {
-    /* A truncated path is a different path, so an oversized one is left out
-     * rather than clipped into the list. */
     if (rel_n + 1 > TUI_PATH_SLOT) return;
     size_t pos = 0;
     while (pos < g_tui.path_n) {
@@ -4490,10 +4249,6 @@ static b8 path_is_dir(const char *path) {
     return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-/* One directory, and every directory under it while a word is being matched.
- * A directory keeps its trailing slash, so accepting one is a step into it
- * rather than an answer, and recursing costs the slash already there. Its own
- * ignore files are pushed for the subtree and popped on the way out. */
 static void path_walk(char *path, size_t n, size_t root_n, Str q, u16 depth,
                       u16 max_depth, size_t *budget) {
     DIR *d = opendir(n ? path : ".");
@@ -4558,8 +4313,6 @@ static void path_refresh(Str prefix, Str keep) {
 
     g_tui.path_n = 0;
     agent_ignore_build(&g_tui.ignore, dir);
-    /* The walk is bounded rather than complete: a tree nobody ignored is
-     * still answered in the time a keystroke has. */
     size_t budget = TUI_PATH_SCAN;
     path_walk(path, dir.n, dir.n, base, 0, base.n ? TUI_PATH_DEPTH : 0,
               &budget);
@@ -4577,8 +4330,6 @@ static void path_refresh(Str prefix, Str keep) {
     g_tui.path_mode = n > 0;
 }
 
-/* The word ending at the cursor, when it is a '@' starting one: that is a
- * path being picked rather than text being typed. */
 static b8 path_prefix(Str *out) {
     size_t cur = g_tui.input_cur;
     size_t start = cur;
@@ -4595,8 +4346,6 @@ static b8 path_prefix(Str *out) {
 
 
 static void completion_refresh(void) {
-    /* The selected path is copied out rather than aliased: the rebuild it
-     * survives is what overwrites the buffer it lives in. */
     char keep[AGENT_MAX_PATH];
     size_t keep_n = 0;
     size_t previous = SIZE_MAX;
@@ -4653,8 +4402,6 @@ static void completion_refresh(void) {
         if (g_tui.aliases[a].alias.n == in.n) exact = g_tui.comp_n;
         g_tui.comp_idx[g_tui.comp_n++] = (u16)cmd;
     }
-    /* A name typed out in full is the command asked for even when a longer
-     * one starts with it, so "/mode" must not submit "/model". */
     if (exact != SIZE_MAX) g_tui.comp_sel = exact;
 }
 
@@ -4671,8 +4418,6 @@ static void completion_move(i32 delta) {
     }
 }
 
-/* A name typed out in full has nothing left to complete, so the completion
- * keys must not swallow the keystroke that finishes the command. */
 static b8 completion_would_change(void) {
     if (!g_tui.comp_n) return false;
     if (g_tui.path_mode) return true;
@@ -4680,10 +4425,6 @@ static b8 completion_would_change(void) {
     return name.n != g_tui.input_n || memcmp(name.p, g_bulk.input, name.n) != 0;
 }
 
-/* An image is attached rather than typed: the bytes are what a model that
- * can see needs, and the path alone says nothing to one that cannot open it.
- * The type is decided by the name here and by the header in media_add, which
- * is what refuses a file that only looks like an image. */
 static b8 path_is_image(Str name) {
     static const char *const k_ext[] = {".png", ".jpg", ".jpeg", ".gif",
                                         ".webp"};
@@ -4709,9 +4450,6 @@ static void path_accept(Str name) {
     size_t start = g_tui.path_at + 1;
     size_t cur = g_tui.input_cur;
     size_t tail = g_tui.input_n - cur;
-    /* An image is taken as an attachment instead, and the '@' word goes with
-     * it: the attachment writes an [Image #n] marker of its own, so leaving
-     * the path would name the same file twice. */
     if (name.n && name.p[name.n - 1] != '/' && name.n <= sizeof g_bulk.attach
         && path_is_image(name) && attach_offered()) {
         memcpy(g_bulk.attach, name.p, name.n);
@@ -4732,8 +4470,6 @@ static void path_accept(Str name) {
     g_tui.input_n = start + name.n + tail;
     g_tui.input_cur = start + name.n;
     g_bulk.input[g_tui.input_n] = '\0';
-    /* A directory is a step rather than a choice, so its contents are the
-     * next list; a file is the answer and closes the popup. */
     if (name.n && name.p[name.n - 1] == '/') {
         g_tui.comp_dismissed = false;
         completion_refresh();
@@ -4800,9 +4536,6 @@ static void composer_load(char *buf, size_t *n, size_t *cur, Str s) {
     g_tui.goal_col_valid = false;
 }
 
-/* Up or Down over the draft's own visual rows, wrapped ones included, aiming
- * at the column the run of moves started from. False when there is no row
- * that way, which is the caller's cue to hand the key to history recall. */
 static b8 composer_move_row(i32 dir, const char *buf, size_t n, size_t *cur) {
     size_t mark = composer_marker(buf, n);
     Str s = {(char *)buf + mark, n - mark};
@@ -4868,10 +4601,6 @@ void tui_set_aliases(const TuiAlias *aliases, size_t n) {
     g_tui.alias_n = n;
 }
 
-/* A picker searches literally and case-insensitively: a name either holds
- * what was typed or it does not, with no fuzzy ordering to explain. The
- * settings screen matches loosely instead, since its rows are sentences the
- * reader is recalling rather than names they know. */
 static void pick_filter(Str query, b8 fuzzy) {
     g_tui.comp_n = 0;
     for (size_t i = 0; i < g_tui.cmd_n && g_tui.comp_n < AGENT_MAX_POPUP; i++) {
@@ -4922,8 +4651,6 @@ static void view_close(void) {
     g_view.active = false;
     g_view.modal = false;
     g_view.close_down = false;
-    /* Rows under the rectangle have stale hashes from before it opened; the
-     * next frame must restore all of them, not only rows whose source moved. */
     g_tui.frame_valid = false;
     sel_clear();
     repaint();
@@ -5020,9 +4747,6 @@ static void view_run(void) {
     view_close();
 }
 
-/* The search box is the notice row, which already sits above the popup. A
- * settings screen is acted on rather than chosen from, so an empty box also
- * carries the keys that act. */
 static void pick_search_row(Str query, b8 settings) {
     char row[sizeof g_tui.notice];
     i32 n = snprintf(row, sizeof row, "search: %.*s%s%s", (i32)query.n, query.p,
@@ -5063,10 +4787,6 @@ static void pick_settings_act(const TuiSettings *set, Str query, i32 delta) {
     pick_reselect(query, true, row < n ? row : n - 1);
 }
 
-/* A picker's whole state, so the same screen can be driven modally at the
- * prompt and byte by byte from the poll while a turn streams. `set` is a copy
- * because a screen left open through a turn outlives its caller's frame; the
- * rows and `ud` it points at belong to the caller and must outlive it too. */
 typedef struct {
     b8 active;
     b8 modal;
@@ -5102,8 +4822,6 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
                     size_t n, size_t search_n, TuiPickAnchor anchor,
                     size_t start, PickKind kind, const TuiSettings *set,
                     const TuiPickAction *act, Str notice, b8 modal) {
-    /* The request belongs to this screen: one that never opens must not leave
-     * it behind, and a frame painted with no screen up never lifts. */
     size_t keep_off = g_tui.keep_off;
     g_tui.keep_off = SIZE_MAX;
     if (!g_tui.fullscreen || !items || !n) return false;
@@ -5113,9 +4831,6 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
     }
 
     if (g_tui.find_open) find_close();
-    /* A screen left open during a turn yields to a modal caller, whose answer
-     * the agent loop is waiting for. Two screens have no keyboard to share,
-     * so anything else is refused. */
     if (g_view.active && modal && !g_view.modal) view_close();
     if (g_view.active) return false;
     if (g_pick.active && modal && !g_pick.modal) pick_close();
@@ -5223,11 +4938,6 @@ static b8 pick_act(const TuiSettings *set, i32 delta) {
     return true;
 }
 
-/* The chooser's row action, on the key the list bound it to. The action may
- * reorder the list, so it says where the row went and the selection follows
- * it there rather than staying at an index that now names a different row.
- * An action that leaves no rows closes the screen: an empty list is nothing
- * to choose from, and the rows it drew are gone. */
 static b8 pick_row_action(i32 key) {
     const TuiPickAction *a = &g_pick.action;
     if (!g_pick.has_action) return true;
@@ -5251,9 +4961,6 @@ static b8 pick_row_action(i32 key) {
     return true;
 }
 
-/* Enter is the key a reader reaches for, so on a settings row it does what
- * Space does rather than closing the screen, and on a read-only page there
- * is nothing to choose and it closes. */
 static b8 pick_enter(const TuiSettings *set) {
     if (g_pick.kind == PICK_INFO) return false;
     if (!g_tui.comp_n) return true;
@@ -5265,9 +4972,6 @@ static b8 pick_enter(const TuiSettings *set) {
     return false;
 }
 
-/* An open screen: the completion popup over a picker, the settings rows and
- * a read-only page. It owns the keyboard while it is up, so the composer
- * under it never sees a byte and binds none of these. */
 #define PICK_KEYS(X)                                                          \
     X(0x0d, "Enter", "Choose the row, or act on it", return pick_enter(set);) \
     X(0x0a, "", "", return pick_enter(set);)                                  \
@@ -5305,9 +5009,6 @@ static b8 pick_enter(const TuiSettings *set) {
 static const KeyRow k_pick_rows[] = {PICK_KEYS(KEY_DOC)};
 static const KeyRow k_pick_escape_rows[] = {PICK_ESCAPE_KEYS(KEY_DOC)};
 
-/* One input byte applied to the open screen. False once it has closed, and
- * the caller answers with pick_close. Painting happens here, so a caller
- * that is only forwarding bytes never has to know which key changed what. */
 static b8 pick_feed(i32 c) {
     if (!g_pick.active) return false;
     b8 settings = g_pick.kind == PICK_SETTINGS;
@@ -5319,9 +5020,6 @@ static b8 pick_feed(i32 c) {
     }
 
     if (c < 0) return false;
-    /* Pasted text is a query rather than keys, so nothing in it picks, acts
-     * on a row or cancels. The escape sequence still runs: the paste-end
-     * marker is one, and read_escape is what retires the paste state. */
     if (g_tui.pasting && c != 0x1b) {
         if (c == '\r' || c == '\n') return true;
         return pick_typed(c);
@@ -5343,8 +5041,6 @@ static b8 pick_feed(i32 c) {
     return true;
 }
 
-/* Hands the popup back to the composer. `chosen` and `out` survive it, so a
- * caller reads its answer after the screen is gone. */
 static void pick_close(void) {
     if (!g_pick.active) return;
     g_tui.cmds = g_pick.saved_cmds;
@@ -5367,10 +5063,6 @@ static void pick_close(void) {
     repaint();
 }
 
-/* A question nobody is at the keyboard for must not hold a turn open past
- * the provider's prompt cache, so a picker given a deadline answers itself
- * with the row it opened on. Any key restarts the wait: a reader who is
- * there reading is not hurried by it. */
 static void pick_run(void) {
     g_pick.modal = true;
     while (g_pick.active) {
@@ -5384,9 +5076,6 @@ static void pick_run(void) {
             }
 
             i32 ms = left > 3600.0 ? 3600 * 1000 : (i32)(left * 1000.0) + 1;
-            /* About to block with a painted frame behind it, which is a park
-             * like any other: without this the count of the key just handled
-             * goes unreported until the deadline lapses. */
             idle_beacon();
             if (!input_ready(ms)) {
                 if (g_winch) repaint();
@@ -5438,8 +5127,6 @@ b8 tui_pick_timed(Str title, Str notice, const TuiCmd *items, size_t n,
     if (expired) *expired = false;
     b8 ok = pick_impl(title, items, NULL, n, n, anchor, start, PICK_CHOOSE, out,
                       NULL, NULL, notice, timeout_ms);
-    /* g_pick outlives its screen up to the next one, which is what lets the
-     * answer be read after pick_close, and this beside it. */
     if (ok && expired) *expired = g_pick.expired;
     return ok;
 }
@@ -5499,9 +5186,6 @@ b8 tui_info_open(Str title, const TuiCmd *rows, size_t n) {
                      NULL, NULL, (Str){0}, false);
 }
 
-/* Where a part's runs stand while its bytes are copied. Tabs widen and
- * control bytes vanish, so a run is remeasured as the copy passes its ends
- * rather than shifted by a constant. */
 typedef struct {
     const YhlRun *run;
     size_t n;
@@ -5599,9 +5283,6 @@ b8 tui_screen_open(void) {
     return g_pick.active || g_view.active;
 }
 
-/* Remember what a kill key removed, so Ctrl-Y can put it back. Text longer
- * than the buffer is dropped rather than truncated: half a kill is not what
- * the yank promised. */
 static void kill_store(const char *s, size_t n) {
     if (!n || n > sizeof g_bulk.kill) return;
     memcpy(g_bulk.kill, s, n);
@@ -5697,9 +5378,6 @@ static void edit_yank(char *buf, size_t *n, size_t *cur, size_t cap) {
 static const KeyRow k_edit_rows[] = {EDIT_KEYS(KEY_DOC)};
 static const KeyRow k_edit_escape_rows[] = {EDIT_ESCAPE_KEYS(KEY_DOC)};
 
-/* One plain editing byte applied to `buf`. The composer and a question share
- * this, so both answer the same readline keys. Returns whether the byte was
- * an editing key; anything else is the caller's to interpret. */
 static b8 edit_byte(i32 c, char *buf, size_t *n, size_t *cur, size_t cap) {
     switch (c) {
         EDIT_KEYS(KEY_CASE)
@@ -5713,8 +5391,6 @@ static b8 edit_byte(i32 c, char *buf, size_t *n, size_t *cur, size_t cap) {
     return true;
 }
 
-/* The escape-sequence half of `edit_byte`: motion and the kills a terminal
- * sends as a sequence rather than a control byte. */
 static b8 edit_escape(i32 key, char *buf, size_t *n, size_t *cur) {
     switch (key) {
         EDIT_ESCAPE_KEYS(KEY_CASE)
@@ -5723,18 +5399,11 @@ static b8 edit_escape(i32 key, char *buf, size_t *n, size_t *cur) {
     return true;
 }
 
-/* A question the composer is borrowed for. The editor is deliberately not the
- * composer's own, since a question wants none of its history recall,
- * completion or shell mode, and a secret answer must not survive in a buffer
- * the next frame paints. The question itself sits in the notice row, where
- * every other answer to a command appears. */
 static b8 ask_impl(Str question, b8 secret, char *out, size_t cap, b8 edit,
                    b8 allow_empty) {
     if (!g_tui.fullscreen || !out || cap < 2) return false;
     if (g_tui.find_open) find_close();
     if (g_view.active && !g_view.modal) view_close();
-    /* The question owns the composer, which a screen opened during the turn
-     * is drawn over. */
     if (g_pick.active && !g_pick.modal) pick_close();
     size_t limit = cap - 1 < TUI_ASK_MAX ? cap - 1 : TUI_ASK_MAX;
     size_t initial_n = 0;
@@ -5757,8 +5426,6 @@ static b8 ask_impl(Str question, b8 secret, char *out, size_t cap, b8 edit,
     g_tui.ask = true;
     g_tui.ask_secret = secret;
     g_tui.editing = true;
-    /* Waiting on the user is not work, whatever the caller was doing when it
-     * stopped to ask. */
     memcpy(g_tui.status, "ready", sizeof "ready");
     if (initial_n) memcpy(g_bulk.input, out, initial_n);
     g_tui.input_n = initial_n;
@@ -5813,9 +5480,6 @@ static b8 ask_impl(Str question, b8 secret, char *out, size_t cap, b8 edit,
     g_tui.ask = false;
     g_tui.ask_secret = false;
     g_tui.editing = saved_editing;
-    /* Answering a prompt is not work: the status the ask interrupted is the
-     * one the caller is still in, and submitting a field must not leave the
-     * form looking busy while it waits for the next. */
     memcpy(g_tui.status, saved_status, sizeof g_tui.status);
     memcpy(g_bulk.input, saved_input, saved_n);
     g_tui.input_n = saved_n;
@@ -5861,11 +5525,6 @@ static u32 zone_at_cell(i32 mouse_row, i32 mouse_col) {
     return zone_at_off(row < TUI_SEL_ROWS ? g_tui.row_src[row] : SIZE_MAX);
 }
 
-/* One byte of pasted text. It edits and nothing else: a paste carries no
- * commands, so it neither submits nor completes nor recalls, and the
- * completion list is rebuilt once when the end marker arrives. A tab becomes
- * four spaces because the composer paints its own cells and a terminal tab
- * stop would move the cursor out from under the snapshot. */
 static void paste_byte(i32 c) {
     b8 was_cr = g_tui.paste_cr;
     g_tui.paste_cr = c == '\r';
@@ -5951,9 +5610,6 @@ static void find_kill_word(void) {
     find_requery();
 }
 
-/* The re-render changes every offset, which the next refresh sees as a new
- * epoch and answers by counting again. Unset while no caller offers it, and
- * then the key does nothing rather than reaching another binding. */
 static void find_expand_now(void) {
     if (g_tui.find_expand) g_tui.find_expand(g_tui.find_expand_ud);
 }
@@ -6017,10 +5673,6 @@ static void find_key(i32 c) {
     repaint();
 }
 
-/* What one composer key acts on. The bindings say what they did through the
- * flags rather than repeating the bookkeeping, and the trailer in editor_key
- * reads them back once. `done` is an early return: the trailer is skipped,
- * which is what a key that submits or exits wants. */
 typedef struct {
     char *buf;
     size_t n, cur, cap;
@@ -6040,9 +5692,6 @@ typedef struct {
         (e)->done = true;  \
     } while (0)
 
-/* Take the highlighted entry. True when the popup closed with it, which a
- * command does and a path does not: a path is text in a message rather than
- * a command, so accepting one leaves the composer where it is. */
 static b8 completion_take(void) {
     b8 path = g_tui.path_mode;
     if (completion_would_change()) completion_accept();
@@ -6084,8 +5733,6 @@ static void ed_vertical(Ed *e, i32 dir) {
         ED_RETURN(e, ED_EDIT);
         return;
     }
-    /* History keeps the keys until the draft is edited, so a recalled entry
-     * is browsed rather than walked. */
     e->vertical = true;
     e->keep_nav = true;
     e->recalled = composer_vertical(dir, e->buf, &e->n, &e->cur);
@@ -6174,31 +5821,26 @@ static void ed_end(Ed *e) {
     e->cur = line_end(e->buf, e->n, e->cur);
 }
 
-/* The composer. Its rows are tried before the shared editor's, so Ctrl-D
- * here overrides the editor's plain forward delete rather than duplicating
- * it. Anything this table does not name reaches edit_byte. */
 
-#define COMPOSER_KEYS(X)                                                     \
-    X(0x0d, "Enter", "Send the message, or take the popup entry",            \
-      ed_enter(e);)                                                          \
-    X(0x0a, "", "", ed_enter(e);)                                            \
-    X('\t', "Tab", "Complete the popup entry", ed_tab(e);)                   \
-    X(0x0e, "Ctrl-N", "Next entry, or the next draft", ed_vertical(e, 1);)   \
-    X(0x10, "Ctrl-P", "Previous entry, or the previous draft",               \
-      ed_vertical(e, -1);)                                                   \
-    X(0x04, "Ctrl-D", "Delete forward, or exit on an empty composer",        \
-      ed_delete_or_eof(e);)                                                  \
-    X(0x12, "Ctrl-R", "Search the transcript", tui_find_open();              \
-      ED_RETURN(e, ED_EDIT);)                                                \
-    /* A command rather than an edit, so a draft written around it stays. */ \
-    X(0x16, "Ctrl-V", "Attach the clipboard's image to the message",         \
-      g_tui.attach_n = 0;                                                    \
-      e->action = ED_ATTACH;)                                                \
-    X(0x0f, "Ctrl-O", "Switch between this conversation and the task's",     \
-      e->action = ED_TASK;)                                                  \
+#define COMPOSER_KEYS(X)                                                   \
+    X(0x0d, "Enter", "Send the message, or take the popup entry",          \
+      ed_enter(e);)                                                        \
+    X(0x0a, "", "", ed_enter(e);)                                          \
+    X('\t', "Tab", "Complete the popup entry", ed_tab(e);)                 \
+    X(0x0e, "Ctrl-N", "Next entry, or the next draft", ed_vertical(e, 1);) \
+    X(0x10, "Ctrl-P", "Previous entry, or the previous draft",             \
+      ed_vertical(e, -1);)                                                 \
+    X(0x04, "Ctrl-D", "Delete forward, or exit on an empty composer",      \
+      ed_delete_or_eof(e);)                                                \
+    X(0x12, "Ctrl-R", "Search the transcript", tui_find_open();            \
+      ED_RETURN(e, ED_EDIT);)                                              \
+    X(0x16, "Ctrl-V", "Attach the clipboard's image to the message",       \
+      g_tui.attach_n = 0;                                                  \
+      e->action = ED_ATTACH;)                                              \
+    X(0x0f, "Ctrl-O", "Switch between this conversation and the task's",   \
+      e->action = ED_TASK;)                                                \
     X(0x0c, "Ctrl-L", "Repaint the screen", g_tui.frame_valid = false;)
 
-// Shift-Tab is a command rather than an edit, so the draft remains.
 #define COMPOSER_ESCAPE_KEYS(X)                                              \
     X(KEY_NONE, "Esc", "Dismiss, or go back a message", ed_escape(e);)       \
     X(KEY_UP, "Up", "Previous entry, or the previous draft",                 \
@@ -6235,9 +5877,6 @@ static void ed_end(Ed *e) {
 static const KeyRow k_composer_rows[] = {COMPOSER_KEYS(KEY_DOC)};
 static const KeyRow k_composer_escape_rows[] = {COMPOSER_ESCAPE_KEYS(KEY_DOC)};
 
-/* The escape half of the composer. Its own rows first, then the two layers
- * below it: the shared editor's motion and kills, and the viewport keys a
- * list drawn over the transcript must not cost the reader. */
 static void composer_escape(Ed *e) {
     i32 key = read_escape();
     switch (key) {
@@ -6253,9 +5892,6 @@ static void composer_escape(Ed *e) {
     }
 }
 
-/* One input byte applied to the shared composer. The caller decides whether a
- * submit is honoured, so the same editor drives the prompt and the
- * keep-typing-while-busy path. */
 static EdAction editor_key(i32 c) {
     if (g_tui.find_open) {
         find_key(c);
@@ -6321,21 +5957,12 @@ static const KeyContext k_key_contexts[] = {
 };
 #define KEY_CONTEXT_N (sizeof k_key_contexts / sizeof k_key_contexts[0])
 
-/* Every row plus a heading for each table, which overcounts the tables that
- * share one. The page has to fit the caller's array, so growing a table past
- * it is a build failure and not a page that silently stops early. */
 #define X(name, rows) +(sizeof rows / sizeof rows[0]) + 1
 enum { KEY_ROW_MAX = 0 KEY_CONTEXTS(X) };
 #undef X
 _Static_assert(KEY_ROW_MAX <= AGENT_MAX_KEY_ROWS,
                "the keys page outgrew AGENT_MAX_KEY_ROWS");
 
-/* A duplicate inside one table is a duplicate case value and never gets this
- * far. What the compiler cannot see is the seam between a context's two
- * tables: they are separate switches, so the same label in both reaches the
- * page twice and describes a key that behaves like neither row. Reported
- * rather than asserted, since a wrong page is a wrong page and not a reason
- * to refuse to start. */
 static void keys_selfcheck(void) {
     for (size_t a = 0; a < KEY_CONTEXT_N; a++) {
         const KeyContext *ka = &k_key_contexts[a];
@@ -6420,12 +6047,6 @@ static void tick_until_input(void) {
     while (g_tick.fn(g_tick.ud) && !input_ready(TUI_TICK_MS)) {}
 }
 
-/* Enter while a turn is in flight. A slash command is offered to the hook,
- * which takes only the ones that leave the running turn alone. One ordinary
- * message moves to the follow-up queue, leaving the composer free for another
- * draft. The composer is cleared before a command hook runs, since a screen
- * it opens owns the popup afterwards, and refused command text is handed
- * back. */
 static void busy_submit(void) {
     if (!g_tui.input_n) return;
     if (g_bulk.input[0] != '/') {
@@ -6442,9 +6063,6 @@ static void busy_submit(void) {
         return;
     }
     if (!g_busy.fn) return;
-    /* A line longer than any command is prose that happens to start with a
-     * slash. It remains a draft because the fixed command handoff cannot hold
-     * it, rather than being truncated into a different command. */
     char cmd[256];
     size_t n = g_tui.input_n;
     if (n >= sizeof cmd) return;
@@ -6458,9 +6076,6 @@ static void busy_submit(void) {
     tui_set_input((Str){cmd, n});
 }
 
-/* A click on a block's truncation tail is a command rather than an edit, so
- * mid-turn it reaches the same hook the prompt would send it to. Nothing is
- * recalled from it: the gesture is the request, and it left no draft. */
 static void busy_expand(void) {
     if (!g_busy.fn) return;
     char cmd[32];
@@ -6468,9 +6083,6 @@ static void busy_expand(void) {
     if (len > 0) g_busy.fn((Str){cmd, (size_t)len}, g_busy.ud);
 }
 
-/* Ctrl-V mid-turn. The hook refuses it like any other command that belongs
- * to the next message, which is an answer rather than a key that did
- * nothing; the draft it was pressed over is untouched either way. */
 
 static size_t attach_command(char *out, size_t cap) {
     i32 len = g_tui.attach_n ? snprintf(out, cap, "/attach %.*s",
@@ -6487,8 +6099,6 @@ static void busy_attach(void) {
     if (g_busy.fn && n) g_busy.fn((Str){cmd, n}, g_busy.ud);
 }
 
-/* Ctrl-O mid-turn. Watching the delegation the running turn started is the
- * one moment the view is worth most, so it reaches the hook where it stands. */
 static void busy_task(void) {
     if (g_busy.fn) g_busy.fn(STR("/task"), g_busy.ud);
 }
@@ -6496,10 +6106,6 @@ static void busy_task(void) {
 
 static void poll_input(void);
 
-/* The poll path drains input without ever parking in read, so the beacon
- * rbyte writes on its way into a read reports a count from before that drain
- * and nothing corrects it while a turn holds the loop. Report the count on
- * the way out so a test can tell input taken from a screen at rest. */
 void tui_poll_input(void) {
     poll_input();
     input_notice();
@@ -6523,8 +6129,6 @@ static void poll_input(void) {
             return;
         }
     }
-    /* A screen opened mid-turn owns the keyboard, and reading it here is what
-     * keeps it live: nothing below it may take a byte from under it. */
     if (g_pick.active && !g_pick.modal) {
         while (g_pick.active && !g_tui.input_eof && input_ready(0)) {
             i32 c = rbyte();
@@ -6558,9 +6162,6 @@ static void poll_input(void) {
             g_tui.input_eof = true;
             break;
         }
-        /* Ctrl-C and Ctrl-D belong to the prompt rather than to a live turn.
-         * Enter reaches the editor so an open popup can complete an entry and
-         * so a command the turn can afford is submitted where it stands. */
         if ((c == 0x03 || c == 0x04) && !g_tui.pasting) continue;
         EdAction action = editor_key(c);
         if (action == ED_SUBMIT) {
@@ -6601,8 +6202,6 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
         return true;
     }
 
-    /* A screen the user opened mid-turn stays up when the turn ends; the
-     * prompt waits behind it rather than reading keys meant for it. */
     if (g_view.active && !g_view.modal) view_run();
     if (g_pick.active && !g_pick.modal) pick_run();
 
@@ -6662,17 +6261,9 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
             size_t n = g_tui.input_n < cap ? g_tui.input_n : cap - 1;
             memcpy(buf, g_bulk.input, n);
             buf[n] = '\0';
-            /* Here, so the slash commands the caller consumes are recallable
-             * too. */
             if (g_tui.hist) history_add(g_tui.hist, (Str){buf, n});
             composer_clear();
             *out_n = n;
-            /* A message is handed to the caller and comes back as a turn, so
-             * this frame must not still read ready: an emptied composer under
-             * an idle status is a message that went nowhere, and it is the
-             * one frame at which a starting turn looks like a finished one.
-             * A command is answered where it stands and a blank line is no
-             * submission, so neither claims work the caller is not doing. */
             if (n && buf[0] != '/')
                 tui_set_status("working");
             else

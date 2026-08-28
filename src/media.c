@@ -39,9 +39,6 @@ static u32 le16(const u8 *p) {
     return (u32)p[1] << 8 | p[0];
 }
 
-/* The frame header of the first SOFn segment. Every other segment carries its
- * length, so the scan steps over them rather than searching for a signature
- * that could occur in entropy-coded data. */
 static void jpeg_size(Str s, u32 *w, u32 *h) {
     const u8 *p = (const u8 *)s.p;
     size_t i = 2;
@@ -176,8 +173,6 @@ size_t media_add(MediaSet *m, Arena *persist, Str bytes, Str label, char *err,
         return MEDIA_NONE;
     }
     Str kept = str_dup(persist, bytes);
-    /* The label is shown in a transcript row, so it is cut where a glyph
-     * ends rather than mid-sequence. */
     Str name = str_dup_opt(persist, str_clip_utf8(label, 64));
     if (!kept.p) {
         snprintf(err, err_cap, "not enough memory to hold that image");
@@ -283,9 +278,6 @@ void media_describe(char *out, size_t cap, const MediaSet *m, size_t id) {
         snprintf(out, cap, "%.*s - %s", (i32)kind.n, kind.p, size);
 }
 
-/* The entry's bytes in base64, encoded once and kept. Empty when there is
- * nowhere to keep it, which leaves the caller encoding into the request as
- * it did before: the cache is a saving, never a condition of sending. */
 static Str media_base64(const MediaSet *m, size_t id) {
     if (m->b64[id].n) return m->b64[id];
     if (!m->arena || !m->bytes[id].n) return (Str){0};

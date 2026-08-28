@@ -168,10 +168,6 @@ static JVal *parse_number(JParser *p) {
     if (!digits) return NULL;
     Str raw = {p->src + start, p->pos - start};
     char tmp[64];
-    /* The scan above accepts any run of [-+.eE0-9], so "--1" and "1.2.3" reach
-     * here. strtod would stop early and hand back a wrong value, so require it
-     * to consume the whole token. A number too long to hold is refused for the
-     * same reason: truncating it silently changes what it says. */
     if (raw.n >= sizeof tmp) return NULL;
     memcpy(tmp, raw.p, raw.n);
     tmp[raw.n] = '\0';

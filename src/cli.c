@@ -63,8 +63,6 @@ static b8 cli_value(CliArg *a, Str *out) {
     return true;
 }
 
-/* Returns false on a bad option, having reported it. `*done` is set when the
- * option printed something the caller should exit on. */
 static b8 cli_option(CliArg *a, char c, const char *lng, b8 *done) {
     CliOpts *o = a->o;
 #ifdef AGENT_TESTING

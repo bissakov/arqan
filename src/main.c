@@ -61,13 +61,7 @@ static void on_sigint(i32 sig) {
 
 static alignas(64) u8 g_persist[AGENT_PERSIST_BYTES];
 static alignas(64) u8 g_scratch[AGENT_ARENA_BYTES];
-/* The rows of whichever modal screen is open. Only one is ever open, and its
- * rows have to survive an action that resets the scratch arena to rerender
- * the transcript under them. */
 static alignas(64) u8 g_screen[AGENT_SCREEN_BYTES];
-/* One live subagent's conversation and everything its rounds allocate. It is
- * not in `persist` because a parked subagent outlives parent allocations made
- * after it, and a bump arena cannot give a mark back out of order. */
 static alignas(64) u8 g_sub[AGENT_MAX_TASKS][AGENT_SUB_BYTES];
 
 
@@ -175,7 +169,6 @@ static size_t resolve_alias(char *line, size_t ln, size_t cap) {
 }
 
 
-/* Per-turn stream state; `one_shot` is the run mode and outlives every turn. */
 static struct {
     b8 reasoning;
     b8 replying;
@@ -232,31 +225,20 @@ static void on_tool_call(i32 idx, Str id, Str name, Str args_delta, void *ud) {
     (void)args_delta;
     say_busy("preparing tool call");
 }
-/* The gauge behind the status line's context field. It outlives a turn: the
- * fit it holds is what lets the field answer between requests. */
 static CtxGauge g_ctx;
 
-/* What the provider's prompt cache is expected to do, and why it would not.
- * Every rewrite of text already sent stamps its cause here as it happens;
- * cache_guard_observe reads the response back against it. One concern, begun
- * with the session and reset wherever the conversation stops being the one
- * the cache holds. */
 static CacheGuard g_cache;
 
 static void cache_guard_begin(CacheGuard *g) {
     *g = (CacheGuard){0};
 }
 
-/* The first cause of a round stands. A second rewrite in the same round does
- * not make the miss any more expected, and the row names what began it. */
 static void cache_guard_cause(CacheGuard *g, CacheCause cause, size_t freed) {
     if (g->cause != CACHE_CAUSE_NONE) return;
     g->cause = cause;
     g->freed_tokens = freed;
 }
 
-/* 88412 as "88,412": a rebuild is read as a price, and a price is read in
- * groups. */
 static Str fmt_grouped(char *out, size_t cap, size_t v) {
     char digits[24];
     size_t n = 0;
@@ -273,8 +255,6 @@ static Str fmt_grouped(char *out, size_t cap, size_t v) {
     return (Str){out, w};
 }
 
-/* Said in the transcript rather than in a notice, the way a retry is: it
- * belongs to the turn being read, and it never reaches Conv. */
 static void say_cache(const char *kind, Str row, b8 bad) {
     if (g_turn.one_shot) {
         one_shot_diag(kind, (Str){0}, row);
@@ -290,10 +270,6 @@ static void say_cache(const char *kind, Str row, b8 bad) {
     g_turn.reasoning = false;
 }
 
-/* Whether a short read still reaches a prefix an earlier request sent whole.
- * The conversation only grows, so that prefix is one this request sent too:
- * the server is answering from behind rather than from a conversation that
- * changed under it, and nothing here can make it catch up. */
 static b8 cache_guard_trailing(const CacheGuard *g, size_t cache_read) {
     if (!cache_read) return false;
     for (size_t i = 0; i < AGENT_CACHE_HISTORY; i++)
@@ -309,20 +285,12 @@ static void cache_guard_advance(CacheGuard *g, size_t prompt_tokens) {
     g->expect_tokens = prompt_tokens;
 }
 
-/* One request's answer to what the guard expected. True when the tool loop
- * has to stop: the prefix was rebuilt, nothing declared a rewrite, and the
- * mode still treats that defect as worth stopping for.
- *
- * A response carrying no usage measures nothing and leaves the guard where
- * it stood; the next one is still read against the same prefix. */
 static b8 cache_guard_observe(CacheGuard *g, size_t prompt_tokens,
                               size_t cache_read, size_t cache_creation,
                               CacheGuardMode mode) {
     if (!prompt_tokens) return false;
     f64 now = agent_now_seconds();
     if (cache_read) g->armed = true;
-    /* The proxy strips cache_control.ttl, so only the five minute lifetime is
-     * available: a longer gap than that is a miss nobody caused. */
     if (g->last_send_s && now - g->last_send_s > AGENT_CACHE_TTL_S)
         cache_guard_cause(g, CACHE_CAUSE_TTL, 0);
     if (!g->expect_tokens) cache_guard_cause(g, CACHE_CAUSE_FIRST, 0);
@@ -391,16 +359,8 @@ static b8 cache_guard_observe(CacheGuard *g, size_t prompt_tokens,
     return stop;
 }
 
-/* Every image this session holds. The table outlives a turn and is indexed
- * by the conversation, which is what lets a slot keep its attachments
- * through a replay; the bytes behind it live in the conversation's own
- * region, so a /clear or a resume releases them with it. */
 static MediaSet g_media;
 
-/* The context the request carried, heard from the response while it streams:
- * an interrupt cannot take it back, since nothing behind it is lost to the
- * turn having ended early. The conversation is still the one the request was
- * built from, the reply being appended only once the stream ends. */
 static void on_usage(const Conv *conv, size_t prompt_tokens,
                      size_t completion_tokens, void *ud) {
     (void)completion_tokens;
@@ -409,8 +369,6 @@ static void on_usage(const Conv *conv, size_t prompt_tokens,
     ctx_note_usage(&g_ctx, conv, prompt_tokens);
     ctx_sync(&g_ctx, conv);
 }
-/* Said in the transcript rather than in a notice: it belongs to the turn
- * being read. It never reaches Conv, so a replay does not repeat it. */
 static void on_retry(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
                      void *ud) {
     (void)ud;
@@ -457,27 +415,14 @@ typedef struct {
     Arena *persist;
     Arena *scratch;
     Session *sess;
-    size_t mark; // persist offset a conversation starts at
-    /* An approved plan on its way to a session of its own. It lives in the
-     * scratch arena until the turn carrying it re-anchors it in persist,
-     * which is what lets the conversation it came from be dropped whole. */
+    size_t mark;
     Str handoff;
-    /* Process-lifetime grants are neither conversation nor configuration:
-     * rewinds and handoffs leave them alone, and no persistence path sees it. */
     u8 permission_grants;
     b8 permission_blocked_one_shot;
     b8 echo;
     b8 show_instructions;
-    /* One attempt, or one word about it, per crossing: cleared when the next
-     * turn starts, when a compaction succeeds, and as soon as the
-     * conversation is back under the threshold. */
     b8 compact_seen;
-    /* The same, for the crossing that had nothing old enough to compact.
-     * Kept apart because that one is not an attempt: a turn still running
-     * grows a tail as it goes, and the next round may well have one. */
     b8 compact_short;
-    /* Session writes retry silently after the first warning, then announce
-     * the transition back to durable checkpoints once. */
     b8 session_save_failed;
 
     size_t pending[AGENT_MAX_MEDIA_PER_TURN];
@@ -608,23 +553,16 @@ static void agent_set_permissions(Agent *ag, PermissionPolicy policy) {
     tui_set_permissions(policy);
 }
 
-/* A failed run answers where its output would have been, since the result
- * reaches the model either way. `dflt` covers a failure that said nothing. */
 static void buf_error(Buf *out, const char *err, const char *dflt) {
     out->n = 0;
     buf_putf(out, "ERROR: %s", err[0] ? err : dflt);
 }
 
-/* The result as the conversation keeps it. An arena that could not take it
- * still answers the call, since a call left unanswered is a conversation the
- * provider refuses. */
 static Str keep_result(Arena *persist, Str result) {
     Str kept = str_dup(persist, result);
     return kept.p ? kept : STR("ERROR: out of memory");
 }
 
-/* The one thing a conversation with no room left has to say, in the
- * transcript because it answers the message that did not fit. */
 static void say_conv_full(void) {
     if (g_turn.one_shot) {
         one_shot_diag("error", (Str){0}, STR("conversation is full"));
@@ -647,28 +585,16 @@ static b8 add_result(Agent *ag, size_t call, Str name, Str result, u32 ms) {
     else
         render_tool_result(name, conv->text[call], result, ag->scratch,
                            (u32)(slot + 1), conv->expanded[slot], ms);
-    /* Saved per result, not per turn: a build that dies in its tenth round
-     * must still be resumable up to its ninth. */
     save_session(ag);
     return true;
 }
 
-/* Milliseconds since `started`, saturating: a run long enough to overflow one
- * is a number nobody reads anyway. Never 0, which is reserved for a slot
- * whose work was never timed, so a run too fast to measure still reads as one
- * that was. */
 static u32 elapsed_ms(f64 started) {
     f64 ms = (agent_now_seconds() - started) * 1000.0;
     if (ms < 1.0) return 1;
     return ms > (f64)UINT32_MAX ? UINT32_MAX : (u32)ms;
 }
 
-/* The rows are the options the model offered, the list opens on the one it
- * recommends, and a last row hands the composer over for an answer it did
- * not think of. A recommended option is also what the question answers
- * itself with once ask_timeout_ms passes unanswered, so a user who stepped
- * away costs a wait rather than the provider's whole prompt cache. Empty
- * when the question was dismissed. */
 static Str ask_user_answer(Agent *ag, Str args) {
     JVal *j = json_parse(ag->scratch, args);
     Str question = json_str(j, STR("question"));
@@ -850,10 +776,6 @@ static struct {
     char exe[AGENT_MAX_PATH];
 } g_task;
 
-/* Which conversation the transcript area is showing. The delegate's stream
- * state is here rather than in g_turn because the two run at once: g_turn
- * belongs to the parent turn that made the task call, and this belongs to
- * the nested rounds under it. */
 typedef enum { TVIEW_MAIN, TVIEW_TASK } TranscriptView;
 static struct {
     TranscriptView showing;
@@ -1651,9 +1573,6 @@ static const char *tool_outcome(Str name, Str result, b8 ran) {
     return ran ? "operation_failure" : "invocation_failure";
 }
 
-/* Run the carrier slots in [first, last) and append each result. The agent UI
- * tools wait for the user rather than doing work, so they are answered here
- * instead of through tools_run, which cannot reach the screen. */
 static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
     Conv *conv = ag->conv;
     ag->permission_blocked_one_shot = false;
@@ -1664,10 +1583,6 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         Str name = conv->tool_name[i];
         Str args = conv->text[i];
         size_t tool = tools_find(ag->tools, name);
-        /* A call built out of the elision stub: the model read the note an
-         * older call left behind as an example and repeated it. Nothing runs,
-         * and the answer names the mistake rather than leaving the tool to
-         * report an argument the model never meant to omit. */
         if (conv_args_are_stub(args, ag->scratch)) {
             if (g_turn.one_shot)
                 one_shot_diag("tool call", name, args);
@@ -1847,9 +1762,6 @@ static void render_instructions(const Config *cfg) {
                                   sources->agents[i]);
 }
 
-/* One row per image the turn carries, inside the user panel and under the
- * text that refers to them: the transcript is cells, so an image is named
- * rather than drawn. */
 static void render_user_media(const Conv *c, size_t i) {
     if (!c->media || !c->media_n[i]) return;
     for (size_t k = 0; k < c->media_n[i]; k++) {
@@ -1953,8 +1865,6 @@ static Conv *shown_conv(Agent *ag) {
     return ag->conv;
 }
 
-/* A mark rather than a reset, because this also runs from the busy-command
- * hook, with the request in flight holding the scratch under it. */
 static void tview_paint(Agent *ag, u32 zone, b8 anchor) {
     b8 detached = tui_transcript_detached();
     tui_transcript_attach();
@@ -1999,9 +1909,6 @@ static void tview_show(Agent *ag, TranscriptView which) {
         tui_transcript_detach();
         return;
     }
-    /* A turn writing under the switch has text the conversation does not
-     * carry yet, so the rebuild that puts it back waits for the round that
-     * appends it. */
     if (tui_busy()) g_turn.rerender_pending = true;
 }
 
@@ -2066,9 +1973,6 @@ static void help_path_candidates(Buf *b, Arena *a, Str name,
     for (size_t i = 0; i < n; i++) help_path(b, label, paths[i]);
 }
 
-/* Existing project files prompt discovery and the path picker can read while
- * walking from the working directory to the root. Missing candidates are
- * summarized by the effective prompt source instead of flooding the report. */
 static void help_project_paths(Buf *b, Str cwd) {
     static const char *const suffixes[] = {
         "/." AGENT_NAME "/config.toml",
@@ -2336,11 +2240,6 @@ typedef struct {
     size_t deleted;
 } SessionPick;
 
-/* Ctrl-X on a session row. The first press arms the row and says so; the
- * second deletes the file and drops the row, which is what the picker
- * redraws. Anything that refuses answers in the notice slot and leaves the
- * list as it was, since a screen that closed on an error is an error the
- * reader has to go looking for. */
 static size_t session_delete_row(void *ud, size_t row, size_t *moved) {
     SessionPick *sp = ud;
     if (row >= sp->n) return sp->n;
@@ -2382,12 +2281,6 @@ static size_t session_delete_row(void *ud, size_t row, size_t *moved) {
     return sp->n;
 }
 
-/* Nothing to open leaves the view exactly as it was and answers in the
- * popup's own slot: a session that did not open is not part of the
- * conversation, so it has no business in the transcript.
- *
- * The scratch arena is rewound on the way in rather than at each way out,
- * since every one of its consumers starts by rewinding it. */
 static void resume_session(Agent *ag) {
     Session *sess = ag->sess;
     Conv *conv = ag->conv;
@@ -2426,18 +2319,12 @@ static void resume_session(Agent *ag) {
     sp.rows = items;
     sp.n = n;
 
-    /* Deleting is a key on the list rather than an entry at the end of it:
-     * the row that removes a session is the one the reader is looking at,
-     * and a directory with a hundred sessions never scrolls it out of
-     * reach. */
     size_t pick = 0;
     TuiPickBinding binding = {session_delete_row, &sp, 0x18};
     TuiPickAction act = {items, n, &binding, 1,
                          STR("Ctrl-X deletes the selected session")};
     b8 chosen = tui_pick_action(STR("pick a session"), n, n, TUI_PICK_FIRST,
                                 TUI_PICK_NONE, &act, &pick);
-    /* The screen restores the notice slot it borrowed, so what the deletes
-     * did is said again once it has closed. */
     if (sp.deleted && !chosen) {
         char msg[64];
         snprintf(msg, sizeof msg, "deleted %zu saved session%s", sp.deleted,
@@ -2446,8 +2333,6 @@ static void resume_session(Agent *ag) {
     }
     if (!chosen || pick >= sp.n) return;
 
-    /* Read first: replaying overwrites the live conversation's storage, so a
-     * session that cannot be read must not cost the one that is running. */
     Str src = session_read(sp.list.path[pick], scratch);
     if (!src.n) {
         tui_notice(STR("could not read that session"));
@@ -2469,12 +2354,6 @@ static void resume_session(Agent *ag) {
         tui_notice(STR("session truncated: the conversation is full"));
 }
 
-/* Reopen this directory's newest session, for a start that was configured to
- * continue rather than to greet. It runs before the screen exists, so
- * nothing is painted here and the caller renders the conversation once the
- * TUI is up; `truncated` says the conversation filled up on the way in.
- * False means there was nothing to reopen, and leaves the session unnamed so
- * the caller reserves a fresh one as usual. */
 static b8 resume_latest(Session *sess, Conv *conv, Arena *persist,
                         Arena *scratch, b8 *truncated) {
     *truncated = false;
@@ -2510,9 +2389,6 @@ static Str preview_line(Arena *a, Str s) {
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
 }
 
-/* The chosen message returns to the composer and everything from it onward
- * leaves the conversation. The persistent arena is not rewound: the composer
- * is loaded from the text that is about to be dropped. */
 static void rewind_conversation(Agent *ag) {
     Conv *conv = ag->conv;
     Session *sess = ag->sess;
@@ -2525,9 +2401,6 @@ static void rewind_conversation(Agent *ag) {
         tui_notice(STR("no message to go back to"));
         return;
     }
-    /* A conversation can hold more turns than the popup does, and going back
-     * a hundred of them is a session to resume rather than a message to
-     * edit, so the oldest go. */
     size_t skip = count > AGENT_MAX_POPUP ? count - AGENT_MAX_POPUP : 0;
     size_t cap = count - skip;
     size_t *at = arena_new(scratch, size_t, cap);
@@ -2554,10 +2427,6 @@ static void rewind_conversation(Agent *ag) {
                   TUI_PICK_NONE, &pick))
         return;
     size_t slot = at[pick];
-    /* The message returns to the composer with its images still attached:
-     * the placeholders in the text it restores would otherwise name nothing.
-     * They are the table's last live entries once the slot is dropped, and
-     * this path rewinds no arena, so the bytes behind them are still there. */
     size_t img_off = conv->media_off[slot], img_n = conv->media_n[slot];
     tui_set_input(conv->text[slot]);
     conv_truncate(conv, slot);
@@ -2576,8 +2445,6 @@ static void rewind_conversation(Agent *ag) {
 
     char err[256] = {0};
     if (!session_fork(sess, conv, err, sizeof err)) {
-        /* The old append-only file cannot represent a rewind. Reserve a new
-         * destination so the in-memory branch can recover on a later save. */
         session_begin(sess);
         save_session(ag);
     }
@@ -2607,9 +2474,6 @@ static void fork_session(Agent *ag) {
     tui_notice(STR("forked: this copy continues, the original is unchanged"));
 }
 
-/* The last reply as the Markdown it was written in, which the conversation
- * still holds while the transcript has only a wrapped rendering of it. A slot
- * carrying a tool call holds JSON arguments rather than prose. */
 static void copy_last_reply(const Conv *conv) {
     for (size_t i = conv->n; i-- > 0;) {
         if (conv->role[i] != M_ASSISTANT || conv_is_call(conv, i)) continue;
@@ -2625,11 +2489,7 @@ static void copy_last_reply(const Conv *conv) {
     tui_notice(STR("no response to copy"));
 }
 
-/* The step list as its own screen, since the transcript only holds the
- * checklist as it stood when each call was made. */
 static void show_todo(void) {
-    /* Static: a screen opened during a turn outlives the frame that opened
-     * it, and the rows point into the list, which is static too. */
     static struct {
         TuiCmd rows[AGENT_MAX_TODOS];
     } view;
@@ -2698,12 +2558,6 @@ static b8 image_tag_at(Str text, size_t i, size_t pending_n, size_t *num,
     return true;
 }
 
-/* An attachment lives as long as its placeholder, so an image whose marker
- * the user deleted is dropped before the next one is added rather than coming
- * back numbered behind it. `carried` is the marker text a submitted line took
- * out of the composer, which still counts as written: a typed /attach empties
- * the box, a gesture leaves the draft where it was. The survivors and the
- * markers left in the draft are renumbered together, so both count alike. */
 static void pending_drop_unnamed(Agent *ag, Str carried) {
     if (!ag->pending_n) return;
     size_t mark = ag->scratch->off;
@@ -2772,9 +2626,6 @@ static void composer_restore_pending(const Agent *ag) {
     ag->scratch->off = mark;
 }
 
-/* The clipboard's image, added like a file's. The helper's bytes land in
- * `scratch` and media_add refuses a format or a size there exactly as it
- * would from a path, so the two ways to attach answer alike. */
 static size_t attach_from_clipboard(Agent *ag, char *err, size_t err_cap) {
     Str bytes;
     if (!clipboard_image(ag->scratch, &bytes, err, err_cap)) return MEDIA_NONE;
@@ -2840,12 +2691,6 @@ static size_t pending_prefix(const Agent *ag, const char *line, size_t n) {
     return at < n && (line[at] == '/' || line[at] == '!') ? at : 0;
 }
 
-/* The message as it will be stored, and the images it carries. A placeholder
- * the user deleted detaches its image, which is the only way to take one
- * back; the survivors are renumbered so the text and the blocks beside it
- * count the same way. An image nothing names is appended at the end rather
- * than dropped silently, since a message can also be submitted from a
- * queue that never saw the composer. Empty `.p` means the arena is full. */
 static Str turn_bind_images(Agent *ag, Str text, size_t *off, size_t *count) {
     *off = *count = 0;
     if (!ag->pending_n) return str_dup(ag->persist, text);
@@ -2979,21 +2824,8 @@ static void telemetry_command(Str line) {
  * endpoint. /provider creates connections; this is where they are used.
  */
 
-/* What a key pressed in the picker asked for, answered once it has closed: a
- * question or a form must not open under a popup. */
 enum { MODEL_ACTION_NONE, MODEL_ACTION_MANUAL, MODEL_ACTION_CONFIGURE };
 
-/* The picker's rows. `label` is a row's name, built once: the id alone while
- * one endpoint serves the list, and "<id> @ <provider>" once more than one
- * does, since the picker searches names and two providers may serve one id.
- * `starred` is the same name with the pin marker, and `order` maps a visible
- * row back to a catalog entry.
- *
- * Entries at or past `live` came from pins rather than from a listing, which
- * is what keeps the models of an unreachable provider reachable: a pin is
- * local state. One of those whose model is emptied has just been unpinned and
- * is no longer a row.
- */
 typedef struct {
     Catalog *cat;
     Str *label;
@@ -3102,11 +2934,6 @@ static b8 edit_model_profile(Config *cfg, Str provider, Str model,
     return true;
 }
 
-/* A row's name. The provider is part of it, rather than of the column beside
- * it, because the picker searches names: two providers serving one id would
- * otherwise be two rows with one name, and neither could be narrowed to by
- * the provider that serves it. Empty when it cannot be built, which the
- * caller answers with the bare id rather than by losing the row. */
 static Str model_label(ModelPick *mp, size_t i) {
     if (!mp->label[i].p) {
         Str name = mp->cat->model[i], owner = mp->cat->provider[i];
@@ -3278,9 +3105,6 @@ static b8 manual_provider(const Config *cfg, const Endpoints *eps,
     return true;
 }
 
-/* An id typed in rather than picked from a listing, for a provider the caller
- * has already settled. The id points into `scratch`, so a caller that keeps it
- * copies it out before resetting. False when nothing was entered. */
 static b8 manual_model_id(Arena *scratch, const char *why, Str *model) {
     char question[256];
     if (why && *why)
@@ -3305,10 +3129,6 @@ static b8 manual_model(const Config *cfg, const Endpoints *eps, Arena *scratch,
            && manual_model_id(scratch, why, model);
 }
 
-/* What the list is missing, in one line: the providers that did not answer,
- * with the reason when there is one of them to give it for, and the cap if it
- * was reached. Their pinned models are still offered, so this is a missing
- * part of the list rather than a failed command. */
 static void catalog_report(const Catalog *cat, Arena *scratch) {
     if (!cat->n_failed && !cat->full) return;
     size_t mark = scratch->off;
@@ -3347,18 +3167,12 @@ static void catalog_report(const Catalog *cat, Arena *scratch) {
     scratch->off = mark;
 }
 
-/* Whether a provider's listing arrived. A pin of one that did not is still
- * offered; a pin of one that answered is not, since the listing is then what
- * that provider serves. */
 static b8 catalog_missed(const Catalog *cat, Str provider) {
     for (size_t i = 0; i < cat->n_failed; i++)
         if (str_eq(cat->failed[i], provider)) return true;
     return false;
 }
 
-/* The picker over `cat`. `*provider` and `*model` name the pick and point
- * into `scratch`; `*verified` is false for an id entered by hand. `cat` is
- * appended to and its entries are edited, so it belongs to this call. */
 static b8 pick_model(Config *cfg, const Endpoints *eps, Catalog *cat,
                      Arena *scratch, Str *provider, Str *model, b8 *verified) {
     *verified = false;
@@ -3415,8 +3229,6 @@ static b8 pick_model(Config *cfg, const Endpoints *eps, Catalog *cat,
         STR("Ctrl-F pins \xc2\xb7 Ctrl-O manual entry \xc2\xb7 "
             "Ctrl-E configures \xc2\xb7 Ctrl-S small model")};
     size_t pick = 0;
-    /* The cursor opens on the model the session is on when it is a row, so
-     * the first keystroke is a move rather than a change. */
     size_t start = 0;
     for (size_t r = 0; r < rows; r++)
         if (model_is_current(&mp, mp.order[r])) {
@@ -3482,8 +3294,6 @@ static b8 use_model(Config *cfg, const Endpoints *eps, Str provider, Str model,
             scratch->off = mark;
             return false;
         }
-        /* The key is copied into the Config's own storage, so it outlives the
-         * arena it was read into. */
         b8 ok = config_set_endpoint(cfg, provider, eps->base_url[i], model,
                                     eps->api[i], key);
         scratch->off = mark;
@@ -3506,9 +3316,6 @@ static b8 use_model(Config *cfg, const Endpoints *eps, Str provider, Str model,
     tui_set_provider(cfg->provider);
     tui_set_model(cfg->model);
     ctx_model_changed(&g_ctx);
-    /* Begun rather than blamed: the new endpoint may not report cache reads
-     * at all, and a guard still armed from the old one would read every
-     * request it answers as a miss. */
     cache_guard_begin(&g_cache);
     ctx_set_window(&g_ctx, cfg->context_window);
     tui_set_reasoning(cfg->reasoning_effort, cfg->thinking_budget);
@@ -3574,11 +3381,6 @@ static void choose_model(Config *cfg, Arena *scratch) {
 }
 
 
-/* Where the key is kept. The file is offered first because it always works:
- * a keyring needs its daemon and its helper installed, and a run with no
- * session bus has neither. Only the stores arqan can write to are listed;
- * `command` is deliberately absent, since a provider that runs a program of
- * the user's choosing is set up by editing the credentials file. */
 static b8 pick_key_source(SecretSource *out) {
     const TuiCmd stores[] = {
         {STR("Credentials file"),
@@ -3594,8 +3396,6 @@ static b8 pick_key_source(SecretSource *out) {
     return true;
 }
 
-/* Which wire format an endpoint speaks. The default is offered first, since
- * it is what most of them are. */
 static b8 pick_api(ApiKind *out) {
     const TuiCmd apis[] = {
         {STR("openai"), STR("OpenAI-compatible chat completions")},
@@ -3609,10 +3409,6 @@ static b8 pick_api(ApiKind *out) {
     return true;
 }
 
-/* The connection, asked of the endpoint itself: listing its models is the
- * check that the URL and the key work, so a typo is answered here rather than
- * on the first turn. `out` receives the ids, which live in `scratch`. Zero
- * with `err` set when the listing did not arrive. */
 static size_t probe_endpoint(const Config *cfg, Str base_url, ApiKind api,
                              Str key, Arena *scratch, Str *out, size_t max,
                              char *err, size_t err_cap) {
@@ -3628,9 +3424,6 @@ static size_t probe_endpoint(const Config *cfg, Str base_url, ApiKind api,
     return n;
 }
 
-/* A listing that did not arrive is said and asked about rather than refused:
- * an endpoint may be down, or may not serve /models at all, and the user is
- * the one who knows which. */
 static b8 keep_unlisted_endpoint(Str name, const char *why, Arena *scratch) {
     const TuiCmd actions[] = {
         {STR("Cancel"), STR("Change nothing; the provider is not stored")},
@@ -3654,12 +3447,6 @@ static void notice_models(Str name, size_t n) {
                n == 1 ? "" : "s");
 }
 
-/* Ask for a provider and store it: a name, the API it speaks, its base URL
- * and a key, checked by listing its models. Nothing is written until the check
- * has been answered one way or the other. A run that has no model yet is
- * offered the ones this provider just listed, which is the whole of first-run
- * setup; a session already talking to a model is left alone, since adding a
- * connection is not choosing one. */
 static b8 add_endpoint(Config *cfg, Arena *scratch) {
     arena_reset(scratch);
     char name[AGENT_MAX_ENDPOINT_NAME + 1];
@@ -3731,9 +3518,6 @@ static b8 add_endpoint(Config *cfg, Arena *scratch) {
         notice_models(stored, n_listed);
         return true;
     }
-    /* First-run setup ends in a model: the listing that verified the provider
-     * is the list it is picked from, so no second request is made, and one
-     * that would not list at all is asked for an id instead. */
     Str provider = stored, model = {0};
     b8 verified = false, saved = false;
     if (n_listed) {
@@ -3806,8 +3590,6 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i, Arena *persist,
     if (key_action == KEY_MOVE && !pick_key_source(&key_source)) return false;
     char err[AGENT_MAX_PATH + 64] = {0};
     Str saved_key = {0};
-    /* Moving reads the key arqan already holds rather than asking for it
-     * again: requiring the value is what keeps keys in the file. */
     if (key_action == KEY_KEEP || key_action == KEY_MOVE) {
         saved_key =
             endpoints_key(eps->name[i], persist, scratch, err, sizeof err);
@@ -3899,8 +3681,6 @@ static b8 delete_endpoint(Config *cfg, const Endpoints *eps, size_t i,
 
     favorites_forget(name, scratch);
     if (serving) {
-        /* The model went with the connection, so the choice is forgotten
-         * rather than left naming an endpoint that is not there. */
         config_remember_model((Str){0}, (Str){0}, scratch);
         cfg->provider = (Str){0};
         cfg->api_key = (Str){0};
@@ -3918,10 +3698,6 @@ static b8 delete_endpoint(Config *cfg, const Endpoints *eps, size_t i,
     return true;
 }
 
-/* The providers already stored, with the one serving the chosen model marked.
- * Enter edits a provider, since editing is the only thing left to do to one.
- * With none stored there is nothing to list, so the form opens straight
- * away. */
 static void manage_providers(Config *cfg, Arena *persist, Arena *scratch) {
     arena_reset(scratch);
     Endpoints eps;
@@ -3986,10 +3762,6 @@ static void manage_providers(Config *cfg, Arena *persist, Arena *scratch) {
  * lists them all rather than describing the live one, since the reader is
  * choosing between them, not reading about one.
  */
-/* What a row changes, since the rows a session offers vary: the tools it
- * runs and the active model's reasoning controls are both conditional.
- * Checkboxes come first, then the tools, then the rows that step between
- * options: a list a reader scans is a list whose answers look alike. */
 enum {
     SET_VERBOSE,
     SET_RAW,
@@ -4016,9 +3788,6 @@ enum {
 };
 #define SET_MAX_ROWS (25 + AGENT_MAX_TOOLS)
 
-/* "[x] label" for a toggle and the same column for a value row, so the two
- * kinds read as one list. A row that lost its checkbox to a full arena is
- * still the row it was. */
 static Str setting_label(Arena *a, Str label, const char *box) {
     Buf b;
     buf_init(&b, a, label.n + 8);
@@ -4033,9 +3802,6 @@ static Str setting_value(Arena *a, Str label) {
     return setting_label(a, label, "    ");
 }
 
-/* Every option the row steps between, on one line, with the current one
- * marked for the renderer. A row that says what it will reach is a row a
- * reader steps through once rather than twice. */
 static Str setting_options(Arena *a, const Str *opts, size_t n, size_t cur,
                            TuiMark *mark) {
     *mark = (TuiMark){0, 0};
@@ -4080,9 +3846,6 @@ static void remember_tools(const ToolRegistry *reg, Arena *scratch) {
     remember_ui(scratch, CONF_DISABLE_TOOLS, value);
 }
 
-/* The rows the screen is showing, rebuilt in place after every change: the
- * strings live in the scratch arena, which each rebuild resets, so nothing
- * outside a build call may hold one. */
 typedef struct {
     Arena *scratch;
     Arena rows_arena;
@@ -4132,8 +3895,6 @@ static void statusline_act(void *ud, size_t row, i32 delta) {
     StatusView *v = ud;
     (void)delta;
     if (row >= TUI_STATUS_N) return;
-    /* Mid-turn the scratch arena belongs to the request in flight, so what
-     * remembering a choice writes through it is given back. */
     size_t mark = v->scratch->off;
     TuiStatusItem item = (TuiStatusItem)row;
     tui_set_status_visible(item, !tui_status_visible(item));
@@ -4146,8 +3907,6 @@ static void statusline_act(void *ud, size_t row, i32 delta) {
     v->scratch->off = mark;
 }
 
-/* The screen's own state, static because a screen opened during a turn
- * outlives the frame that opened it. */
 static const TuiSettings *statusline_screen(Arena *scratch) {
     static StatusView view;
     static TuiSettings set;
@@ -4168,10 +3927,6 @@ static void choose_statusline(Arena *scratch) {
     tui_settings(STR("status line"), statusline_screen(scratch));
 }
 
-/* The values Max tokens steps between, since a number typed into a question
- * is a screen away from the row it belongs to. A setting that arrived from a
- * config file or a flag sits wherever it sits: a step moves to the nearest
- * rung past it in the direction asked for, and the ends hold. */
 static const i32 g_token_steps[] = {1024,  2048,  4096,   8192,  16384,
                                     32768, 65536, 131072, 262144};
 
@@ -4187,9 +3942,6 @@ static i32 max_tokens_step(i32 cur, i32 dir) {
     return g_token_steps[0];
 }
 
-/* The compaction threshold walks in fives between the bounds the settings
- * table states, and the ends hold rather than wrap: a percentage is a dial,
- * not a list of answers. */
 #define COMPACT_AT_MIN  50u
 #define COMPACT_AT_MAX  95u
 #define COMPACT_AT_STEP 5u
@@ -4202,9 +3954,6 @@ static u32 compact_at_step(u32 cur, i32 dir) {
                                                   : cur - COMPACT_AT_STEP;
 }
 
-/* A delegation slice walks in half minutes up to a job's longest wait, and
- * one step below the shortest reaches 0, which is the row's way of saying
- * the answer matters more than the prompt cache. */
 #define SLICE_STEP_MS 30000
 static i32 slice_ms_step(i32 cur, i32 dir) {
     if (dir > 0) {
@@ -4214,8 +3963,6 @@ static i32 slice_ms_step(i32 cur, i32 dir) {
     return cur < SLICE_STEP_MS ? 0 : cur - SLICE_STEP_MS;
 }
 
-/* A configured comma list as the options a row offers: "Off" first, since a
- * provider control the user has not set is a control that is not sent. */
 #define SET_MAX_OPTIONS 64
 static size_t list_options(Str list, Str *out, size_t max) {
     size_t n = 0, off = 0;
@@ -4265,9 +4012,6 @@ static b8 remember_reasoning(Config *cfg, Arena *scratch, b8 effort,
     return ok;
 }
 
-/* The rows the screen is showing, with what each one changes beside it. Like
- * the status line view, every string points into the scratch arena that the
- * next build resets. */
 typedef struct {
     Agent *ag;
     Arena rows_arena;
@@ -4330,14 +4074,6 @@ static size_t settings_build(void *ud) {
         setting_check(rows_arena, cfg->subagents, STR("Subagents")),
         STR("Offer the task tool, which delegates a read-only investigation")};
 
-    /* One checkbox per tool a turn may call. A tool the mode does not offer
-     * is still listed, since turning bash off is a statement about the
-     * session rather than about plan mode. The two plan-mode tools are
-     * absent: the agent loop answers them, so "disabled" would mean a mode
-     * that cannot end.
-     *
-     * Ten rows are held back for the option rows below: a registry that
-     * outgrew the array is a screen missing its settings, not its tools. */
     for (size_t i = 0; i < reg->n && n + 10 < SET_MAX_ROWS; i++) {
         if (!tools_can_disable(reg, i)) continue;
         kind[n] = SET_TOOL;
@@ -4368,10 +4104,6 @@ static size_t settings_build(void *ud) {
                                  cfg->permissions == PERMISSION_FREE ? 1 : 0,
                                  &marks[n])};
     n++;
-    /* The rungs are too many to list beside the row, so this one says where
-     * it stands and the arrows walk it. The rows outlive this call, so the
-     * number is kept in the arena rather than in the frame it was formatted
-     * in. */
     char tokens[16];
     snprintf(tokens, sizeof tokens, "%d", cfg->max_tokens);
     kind[n] = SET_MAX_TOKENS;
@@ -4384,8 +4116,6 @@ static size_t settings_build(void *ud) {
                        setting_options(rows_arena, compact_opts, 3,
                                        (size_t)cfg->compact, &marks[n])};
     n++;
-    /* Only ever a share of a window the user configured: without one there
-     * is no percentage to be past, and the row says so. */
     char at[32];
     if (cfg->context_window)
         snprintf(at, sizeof at, "%u%%", cfg->compact_at);
@@ -4412,8 +4142,6 @@ static size_t settings_build(void *ud) {
                        setting_options(rows_arena, subagent_model_opts, 2,
                                        cfg->subagent_small ? 1 : 0, &marks[n])};
     n++;
-    /* Seconds, because the number is a wait rather than a measurement, and
-     * zero is a policy rather than a duration. */
     char slice[32];
     if (cfg->subagent_slice_ms > 0)
         snprintf(slice, sizeof slice, "%ds", cfg->subagent_slice_ms / 1000);
@@ -4637,18 +4365,12 @@ static void settings_act(void *ud, size_t row, i32 delta) {
                        "turn ends"));
         return;
     }
-    /* Mid-turn the scratch arena belongs to the request in flight: what
-     * remembering a choice writes through it is borrowed from above the
-     * request's own allocations and given back. */
     Arena *scratch = v->ag->scratch;
     size_t mark = scratch->off;
     settings_apply(v, row, delta);
     scratch->off = mark;
 }
 
-/* Static: the rows and their bookkeeping are larger than a frame of the
- * command loop should carry, and a screen opened during a turn outlives the
- * frame that opened it. */
 static const TuiSettings *settings_screen(Agent *ag) {
     static SettingsView view;
     static TuiSettings set;
@@ -4669,11 +4391,6 @@ static void choose_settings(Agent *ag) {
     tui_settings(STR("settings"), settings_screen(ag));
 }
 
-/* Open all text behind block `i`. The view copies it before returning, so a
- * decoded argument and the runs a highlighter answered with may live in the
- * running request's scratch tail without making that tail part of the
- * window's lifetime. Only the part that carries source is offered runs: a
- * shell run's output is what a command printed, not code. */
 static b8 open_block_view(Agent *ag, size_t i) {
     const Conv *c = shown_conv(ag);
     TuiViewPart parts[2] = {0};
@@ -4732,18 +4449,8 @@ static b8 open_block_view(Agent *ag, size_t i) {
     return opened;
 }
 
-/* Enter while the assistant is working. Only the commands that leave the
- * conversation, the request in flight and the streaming transcript alone run
- * where they stand; the screens they open are driven by the same poll that
- * keeps the turn alive. Anything else is refused and handed back to the
- * composer, since the turn it would change is the one still running. */
 static b8 on_busy_command(Str line, void *ud) {
     Agent *ag = ud;
-    /* An attachment belongs to the message after this one, so it runs where
-     * it stands: the image joins the draft in the composer and goes out with
-     * whatever is sent next. Ctrl-V and the path popup submit this. It is
-     * read from the line rather than the bounded copy below, since a path is
-     * longer than any command name. */
     if (str_eq(line, STR("/attach")) || str_starts(line, STR("/attach "))) {
         attach_image(ag, str_drop(line, 7), line);
         telemetry_command(STR("/attach"));
@@ -4753,9 +4460,6 @@ static b8 on_busy_command(Str line, void *ud) {
     if (!line.n || line.n >= sizeof cmd) return false;
     memcpy(cmd, line.p, line.n);
     cmd[line.n] = '\0';
-    /* A click on a block's tail is answered where it lands: with a window
-     * over the block while the turn owns the transcript, and by folding the
-     * block itself once the turn has stopped writing to it. */
     if (!strncmp(cmd, "/expand ", 8)) {
         unsigned long id = strtoul(cmd + 8, NULL, 10);
         if (!id || id > shown_conv(ag)->n) return false;
@@ -4779,8 +4483,6 @@ static b8 on_busy_command(Str line, void *ud) {
         ran = tui_info_open(STR("about " AGENT_NAME), k_about, ABOUT_N);
     else if (str_eq(name, STR("/keys")))
         ran = tui_info_open(STR("keyboard shortcuts"), g_keys, keys_rows());
-    /* Before the refusal below: watching a delegation is exactly a mid-turn
-     * act, since the turn it watches is the one running. */
     else if (str_eq(name, STR("/task"))) {
         task_view_toggle(ag);
         ran = true;
@@ -4799,9 +4501,6 @@ static b8 on_busy_command(Str line, void *ud) {
     return ran;
 }
 
-/* A '!' line runs here rather than reaching the model, and takes a
- * conversation slot of its own, so the model sees what the user ran, a
- * replay renders it and the session keeps it. */
 static void run_shell(Agent *ag, Str cmd) {
     Conv *conv = ag->conv;
     arena_reset(ag->scratch);
@@ -4852,11 +4551,6 @@ static b8 agent_turn(Agent *ag, Str text);
 
 #define TITLE_MAX_TOKENS 1024
 
-/* Point `small` at the endpoint that serves the small model, which may not be
- * the one the conversation is on: the URL, the API and the key all come from
- * the stored provider, and only this request goes there. False when that
- * provider is gone or its key cannot be read, which leaves the errand undone
- * rather than sending what it carries somewhere else. */
 static b8 small_model_endpoint(Config *small, Str name, Str model, b8 manual,
                                Arena *scratch) {
     size_t mark = scratch->off;
@@ -4877,12 +4571,6 @@ static b8 small_model_endpoint(Config *small, Str name, Str model, b8 manual,
     return ok;
 }
 
-/* The small model as a request of its own: the same connection unless a
- * provider was stored for it, and without the main model's reasoning
- * controls, which describe that model rather than this one. False when none
- * is configured or its provider is gone, which leaves the errand undone
- * rather than sending it somewhere else. `manual` says the user asked, which
- * is what decides whether a missing piece is reported. */
 static b8 small_config(Config *small, const Config *cfg, Arena *scratch,
                        b8 manual) {
     if (!cfg->small_model.n) return false;
@@ -4909,14 +4597,6 @@ typedef enum {
     COMPACT_SUM_ERROR
 } CompactOutcome;
 
-/* One request that condenses slots [0, upto) into a checkpoint message.
- *
- * The request is made over a copy of that head, appended to in a part of the
- * persistent arena that is rewound either way, so a compaction that fails,
- * is interrupted or comes back empty leaves the conversation and the session
- * file it is appending to exactly as they were. The checkpoint is built in
- * the scratch arena, which outlives that rewind: the caller copies it out
- * before resetting scratch. */
 static CompactOutcome compact_summarize(Agent *ag, size_t upto, Str *out,
                                         char *err, size_t err_cap) {
     Arena *persist = ag->persist;
@@ -4925,16 +4605,11 @@ static CompactOutcome compact_summarize(Agent *ag, size_t upto, Str *out,
 
     size_t mark = persist->off;
     Conv tmp;
-    /* Room for the question, the reply, and whatever calls a model asks for
-     * instead of answering: a full copy would be reported as an error, and
-     * the point of the copy is that it cannot cost the conversation. */
     if (!conv_clone_head(&tmp, ag->conv, upto, persist,
                          AGENT_MAX_TOOL_CALLS + 2)) {
         persist->off = mark;
         return COMPACT_SUM_NOMEM;
     }
-    /* Slot 0 is the system prompt of the conversation being summarized, which
-     * describes how to do the work rather than how to describe it. */
     tmp.role[0] = M_SYSTEM;
     tmp.text[0] = prompt_compact();
     tmp.anthropic_thinking[0] = (Str){0};
@@ -4943,14 +4618,10 @@ static CompactOutcome compact_summarize(Agent *ag, size_t upto, Str *out,
         return COMPACT_SUM_NOMEM;
     }
 
-    /* Static: a Config carries kilobytes of owned buffers, and this runs from
-     * a turn's frame rather than from one with room for them. */
     static Config small;
     b8 use_small =
         cfg->compact_small && small_config(&small, cfg, ag->scratch, false);
 
-    /* Busy is restored rather than cleared: this also runs inside a turn,
-     * which stays busy until it ends. */
     b8 was_busy = tui_busy();
     g_got_sigint = 0;
     tui_set_busy(true);
@@ -5025,12 +4696,6 @@ static CompactOutcome compact_summarize(Agent *ag, size_t upto, Str *out,
     return outcome;
 }
 
-/* /compact: the conversation condensed into a checkpoint, then a new session
- * that starts from it. The tail automatic compaction would keep is kept here
- * too, so asking for room does not cost the work in hand. Where there is no
- * window to budget a tail against, or too little conversation to be worth
- * splitting, the whole of it is summarized and the new session opens on the
- * checkpoint alone. */
 static void compact_session(Agent *ag) {
     Conv *conv = ag->conv;
     Arena *persist = ag->persist;
@@ -5070,8 +4735,6 @@ static void compact_session(Agent *ag) {
     if (title_n) memcpy(title, ag->sess->title.p, title_n);
 
     if (keep < conv->n) {
-        /* Nothing is given back to the persistent arena: the kept tail still
-         * points into it, and only /clear rewinds that far. */
         Str stored = str_dup(persist, built);
         if (!stored.p || !conv_compact_head(conv, keep, stored)) {
             tui_notice(STR("out of memory keeping the summary"));
@@ -5126,21 +4789,6 @@ static void say_compaction(Str text) {
         tui_notice(text);
 }
 
-/* Compaction that keeps the thread: the older turns become one checkpoint
- * message and the newest rounds that fit the tail budget are replayed
- * exactly as they stand, so the model keeps the detail it is working from.
- * Safe between rounds of a turn, since the kept tail begins at a round
- * boundary and no assistant call is separated from the results that answer
- * it.
- *
- * A session file is only appended to, so the compacted conversation
- * continues in a new one the way /compact does and the old file keeps every
- * turn it recorded. Nothing is given back to the persistent arena: the kept
- * tail still points into it, and only /clear rewinds that far.
- *
- * `keep` is the first slot of that tail, which the caller has already
- * measured. `interrupted` reports a Ctrl-C that landed in the request, which
- * is consumed there and left for the turn this runs inside to act on. */
 static b8 compact_auto(Agent *ag, size_t keep, b8 *interrupted) {
     Conv *conv = ag->conv;
     *interrupted = false;
@@ -5188,14 +4836,6 @@ static b8 compact_auto(Agent *ag, size_t keep, b8 *interrupted) {
     return true;
 }
 
-/* Move the elision boundary up, once the conversation is heavy enough for the
- * rewrite to pay for the cached prefix it discards. Checked between rounds
- * beside the compaction check, and before it: eliding is what buys room while
- * a compaction is still avoidable.
- *
- * The gain guard keeps a conversation of prose from paying a full rebuild for
- * a few hundred tokens; there compaction is the cheaper answer, and it runs
- * one threshold later. */
 static void elide_if_needed(Agent *ag) {
     const Config *cfg = ag->cfg;
     if (!cfg->elide_at || !ctx_over(&g_ctx, ag->conv, cfg->elide_at)) return;
@@ -5206,11 +4846,6 @@ static void elide_if_needed(Agent *ag) {
     ctx_sync(&g_ctx, ag->conv);
 }
 
-/* Checked between rounds, where the conversation is consistent and the usage
- * the provider last reported measures it. Nothing here interrupts a stream:
- * a request already in flight is the provider's to accept or refuse. One
- * attempt, or one word about it, per crossing of the threshold.
- * True when Ctrl-C landed in the request, which the turn has to act on. */
 static b8 compact_if_needed(Agent *ag) {
     const Config *cfg = ag->cfg;
     if (cfg->compact == COMPACT_OFF
@@ -5226,10 +4861,6 @@ static b8 compact_if_needed(Agent *ag) {
                            "continue from a summary"));
         return false;
     }
-    /* Too little older than the tail to pay for the request: either this
-     * turn's work is most of the conversation, or what fills the window is
-     * the system prompt and the tool schemas. Said once, and the crossing is
-     * left open: a turn still running grows a head as it goes. */
     size_t keep = ctx_compact_split(&g_ctx, ag->conv);
     if (!keep || !ctx_compact_worth(&g_ctx, ag->conv, keep)) {
         if (ag->compact_short) return false;
@@ -5240,8 +4871,6 @@ static b8 compact_if_needed(Agent *ag) {
     }
     ag->compact_seen = true;
     b8 interrupted = false;
-    /* A compaction that worked earns the next one: a long turn crosses the
-     * threshold again as it grows. */
     if (compact_auto(ag, keep, &interrupted)) {
         ag->compact_seen = false;
         ag->compact_short = false;
@@ -5249,16 +4878,6 @@ static b8 compact_if_needed(Agent *ag) {
     return interrupted;
 }
 
-/* Name the session from its first exchange, through the small model. Built
- * the way /compact builds its request: a conversation of its own in a part
- * of the persistent arena that is rewound either way, so a name that does
- * not arrive costs the session nothing.
- *
- * `manual` says the user asked, which is what decides whether a missing
- * piece is reported: the automatic attempt happens on its own and says
- * nothing when it cannot. `interrupted`, when given, reports a Ctrl-C that
- * landed in the errand: the flag is consumed here, and a caller running this
- * inside a turn has to act on it. */
 static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out) {
     Session *sess = ag->sess;
     const Conv *conv = ag->conv;
@@ -5310,10 +4929,6 @@ static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out) {
         return false;
     }
 
-    /* Static: a Config carries kilobytes of owned buffers, and this runs
-     * from the command loop rather than from a frame with room for them. The
-     * reasoning controls describe the main model, so the small one is asked
-     * without them. */
     static Config small;
     if (!small_config(&small, cfg, ag->scratch, manual)) {
         persist->off = mark;
@@ -5343,9 +4958,6 @@ static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out) {
         tui_activity_end();
         tui_set_status("ready");
     }
-    /* An interrupt skips the naming, and the flag is consumed here so it
-     * cannot leak into the turn the user types next. A caller that runs this
-     * in the middle of a turn is told instead, through `interrupted_out`. */
     b8 interrupted = g_got_sigint != 0;
     if (interrupted) g_got_sigint = 0;
     if (interrupted_out) *interrupted_out = interrupted;
@@ -5385,9 +4997,6 @@ static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out) {
     return false;
 }
 
-/* The conversation that produced the plan is dropped whole and the plan
- * becomes the first message of the next one. It still lives in the scratch
- * arena, which the persistent rewind below does not touch. */
 static b8 agent_handoff(Agent *ag) {
     Str plan = ag->handoff;
     ag->handoff = (Str){0};
@@ -5441,11 +5050,6 @@ static void announce_interrupt(void) {
     g_got_sigint = 0;
 }
 
-/* The automatic naming, made from inside the turn that earns it: as soon as
- * one response is whole, rather than once every tool the turn asked for has
- * run, because that can be many minutes away and an interrupted turn would
- * never get there. One attempt per session, which `title_tried` records.
- * True when Ctrl-C landed in the errand, which the turn has to act on. */
 static b8 name_session_now(Agent *ag) {
     if (g_turn.one_shot || !ag->cfg->auto_title || !ag->cfg->small_model.n
         || ag->sess->title.n || ag->sess->title_tried)
@@ -5475,9 +5079,6 @@ static b8 agent_turn(Agent *ag, Str text) {
         return false;
     }
     if (media_n) conv_attach_media(conv, conv->n - 1, media_off, media_n);
-    /* A new turn is a new crossing: an attempt that found nothing older than
-     * the turns it keeps is worth making again once the conversation has
-     * grown one. */
     ag->compact_seen = false;
     ag->compact_short = false;
     todo_turn_begin();
@@ -5513,9 +5114,6 @@ static b8 agent_turn(Agent *ag, Str text) {
             ending = NOTIFY_INTERRUPTED;
             break;
         }
-        /* Before the request rather than during it: here the conversation is
-         * consistent, and a summary that arrives is what the next request is
-         * built from. */
         elide_if_needed(ag);
         if (compact_if_needed(ag)) {
             announce_interrupt();
@@ -5574,8 +5172,6 @@ static b8 agent_turn(Agent *ag, Str text) {
             break;
         }
 
-        /* Read before the round ends, so a rebuild nothing asked for is said
-         * next to the request that paid for it. */
         b8 cache_bad =
             cache_guard_observe(&g_cache, p.prompt_tokens, p.cache_read_tokens,
                                 p.cache_creation_tokens, ag->cfg->cache_guard);
@@ -5617,21 +5213,12 @@ static b8 agent_turn(Agent *ag, Str text) {
             ending = NOTIFY_TURN_DONE;
             break;
         }
-        /* The round the model asked for still runs: its results belong to the
-         * calls already in the conversation, and leaving a call unanswered
-         * would cost the next request more than the miss did. The loop stops
-         * once they are in, the way an interrupt does. */
         if (cache_bad) {
             tui_set_status("ready");
             ending = NOTIFY_INTERRUPTED;
             ending_text = STR("an unexplained cache miss stopped the turn");
             break;
         }
-        /* A follow-up cannot precede results for the tool calls it observed:
-         * that would split the assistant call from its required result. Once
-         * every result is appended, ending this turn lets the queued message
-         * become the next user turn instead of asking the model to continue
-         * along the old direction. */
         if (tui_queued_pending()) {
             tui_set_status("ready");
             ok = true;
@@ -5647,8 +5234,6 @@ static b8 agent_turn(Agent *ag, Str text) {
     tel_int(&te, "rounds", rounds);
     tel_int(&te, "ms", (i64)((agent_now_seconds() - turn_started) * 1000.0));
     tel_int(&te, "messages", (i64)conv->n);
-    /* The budget a long session runs down; nothing on screen says where the
-     * arenas stand. */
     tel_int(&te, "persist_used", (i64)arena_used(ag->persist));
     tel_int(&te, "scratch_used", (i64)arena_used(ag->scratch));
     todo_telemetry(&te);
@@ -5660,8 +5245,6 @@ static b8 agent_turn(Agent *ag, Str text) {
                      (agent_now_seconds() - turn_started) * 1000.0);
     }
     if (ag->handoff.n) return agent_handoff(ag);
-    /* The plan a handoff carries lives in the scratch arena this resets, so
-     * it runs only on the path that keeps the conversation. */
     if (g_turn.rerender_pending) {
         g_turn.rerender_pending = false;
         tview_paint(ag, 0, true);
@@ -5669,14 +5252,7 @@ static b8 agent_turn(Agent *ag, Str text) {
     return ok;
 }
 
-/* Run submitted follow-ups without reopening the prompt between them. The
- * TUI owns their bytes until they are taken; agent_turn duplicates each one
- * into persist before polling can accept another. A submitted follow-up also
- * runs after an error or Ctrl-C: Esc is the operation that cancels the queue,
- * while Ctrl-C only stops the operation currently on screen. */
 static b8 agent_turn_interactive(Agent *ag, Str text) {
-    /* Sending is an act on the conversation, so it is the one shown while it
-     * runs, however the last turn left the screen. */
     if (g_tview.showing != TVIEW_MAIN) tview_show(ag, TVIEW_MAIN);
     b8 ok = agent_turn(ag, text);
     while (tui_queued_pending()) {
@@ -5922,10 +5498,6 @@ static i32 task_worker_main(const CliOpts *opts) {
 }
 
 
-/* The image a restart runs. /proc/self/exe names it even where argv[0] was
- * replaced or is a bare command name; without it, only a command line
- * carrying a path can be checked, and a bare name is left to the PATH search
- * execvp does. */
 static b8 restart_exe(char *out, size_t cap, const char *argv0) {
 #ifdef __linux__
     ssize_t n = readlink("/proc/self/exe", out, cap - 1); // flawfinder: ignore
@@ -5940,12 +5512,6 @@ static b8 restart_exe(char *out, size_t cap, const char *argv0) {
     return access(out, X_OK) == 0;
 }
 
-/* Hand the terminal to a fresh process with the same command line, which
- * reads the settings again: it reopens this session or greets with the
- * welcome screen exactly as `resume_last` says. The conversation is already
- * on disk, since a session is saved as it happens. exec keeps the pty and
- * runs no atexit handler, so what those release is released here and the
- * terminal is put back before the image is replaced. */
 static void restart_agent(char **argv) {
     char exe[AGENT_MAX_PATH];
     b8 have = restart_exe(exe, sizeof exe, argv[0]);
@@ -5968,9 +5534,6 @@ static void restart_agent(char **argv) {
 
 i32 main(i32 argc, char **argv) {
 #ifdef PR_SET_THP_DISABLE
-    /* The large static arenas and TUI buffers are sparse. Under an "always"
-     * THP policy a few writes would otherwise make their unused capacity
-     * resident in 2 MiB increments. */
     (void)prctl(PR_SET_THP_DISABLE, 1L, 0L, 0L, 0L);
 #endif
     CliOpts opts;
@@ -6026,8 +5589,6 @@ i32 main(i32 argc, char **argv) {
         return 2;
     }
     arena_reset(&scratch);
-    /* Built up front, so switching mode later is an assignment rather than a
-     * file read mid-turn. */
     cfg.plan_prompt =
         prompt_build_plan(&tools, &persist, &scratch, &cfg.plan_sources,
                           prompt_err, sizeof prompt_err);
@@ -6062,15 +5623,9 @@ i32 main(i32 argc, char **argv) {
              cfg.mode == MODE_PLAN ? cfg.plan_prompt : cfg.system_prompt);
     size_t session_mark = persist.off;
 
-    // Without a resolvable data dir the conversation is not persisted.
     static Session sess;
     session_init(&sess, &scratch);
     arena_reset(&scratch);
-    /* Reopening is for a session someone is about to sit in front of: a
-     * one-shot run and a piped one each answer one request, so both start
-     * clean whatever the setting says. A directory left at the welcome
-     * screen by /clear is greeted again: reopening what someone put away is
-     * not continuing where they left off. */
     b8 truncated = false;
     b8 resumed = interactive && cfg.resume_last && !sess.cleared
                  && resume_latest(&sess, &conv, &persist, &scratch, &truncated);
@@ -6166,8 +5721,6 @@ i32 main(i32 argc, char **argv) {
         return ok ? 0 : 1;
     }
 
-    /* The welcome screen names the command instead of a form opening unasked
-     * over an empty screen. */
     if (tui_is_fullscreen()) tui_set_setup_hint(setup_hint(&cfg, &scratch));
     if (truncated && resumed_saved)
         tui_notice(STR("session truncated: the conversation is full"));
@@ -6176,9 +5729,6 @@ i32 main(i32 argc, char **argv) {
     static char line[AGENT_LINE_BUF];
     for (;;) {
         size_t ln = 0;
-        /* Every command that touches the conversation or the model lands
-         * back here, so the field is restated once rather than at each of
-         * them. */
         ctx_sync(&g_ctx, &conv);
         todo_sync(&conv, &scratch);
         if (!tui_readline("> ", line, sizeof line, &ln)) break;
@@ -6187,9 +5737,6 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
 
-        /* The markers a command was typed behind leave the composer with it,
-         * so an attachment reads them from here rather than from the box the
-         * submission emptied. */
         char shed[AGENT_MAX_MEDIA_PER_TURN * 16];
         size_t shed_n = 0;
         if (agent.pending_n) {
