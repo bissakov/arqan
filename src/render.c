@@ -646,6 +646,49 @@ static size_t grep_matches(Str result) {
     return n;
 }
 
+static const JVal *ask_option(const JVal *j, Str answer) {
+    const JVal *opts = json_get(j, STR("options"));
+    if (!opts || opts->type != J_ARR) return NULL;
+    size_t off = 0;
+    Str label = answer;
+    str_line(answer, &off, &label);
+    for (size_t i = 0; i < opts->u.arr.n; i++) {
+        const JVal *o = json_at(opts, i);
+        if (label.n && str_eq(json_str(o, STR("label")), label)) return o;
+    }
+    return NULL;
+}
+
+static void render_ask_result(Str args, Str result, Arena *scratch, u32 ms) {
+    size_t mark = scratch ? scratch->off : 0;
+    JVal *j = scratch && args.n ? json_parse(scratch, args) : NULL;
+    Str detail = json_str(ask_option(j, result), STR("detail"));
+
+    size_t off = 0;
+    Str answer = result;
+    str_line(result, &off, &answer);
+    tui_write_result(STR("\u2514\u2500 "));
+    tui_write_result(clip(answer, R_LINE_BYTES));
+    write_elapsed(ms);
+    tui_write_result(STR("\n"));
+
+    Str rest = str_drop(result, off);
+    Str body = rest;
+    if (detail.n && scratch) {
+        Buf b;
+        buf_init(&b, scratch, detail.n + rest.n + 2);
+        buf_puts(&b, detail);
+        if (rest.n) {
+            buf_puts(&b, STR("\n"));
+            buf_puts(&b, rest);
+        }
+        if (buf_ok(&b)) body = buf_finish(&b);
+    }
+    write_lines(body, STR("   "), R_RESULT_LINES, R_LINE_BYTES,
+                tui_write_muted);
+    if (scratch) scratch->off = mark;
+}
+
 
 static Str grep_hint(const JVal *j) {
     Str path = json_str(j, STR("path"));
@@ -709,6 +752,12 @@ void render_tool_result(Str name, Str args, Str result, Arena *scratch, u32 id,
         tui_write_error(clip(first, R_LINE_BYTES));
         write_elapsed(ms);
         tui_write_error(STR("\n"));
+        block_end();
+        return;
+    }
+
+    if (str_eq(name, STR("ask")) || str_eq(name, STR("ask_user"))) {
+        render_ask_result(args, result, scratch, ms);
         block_end();
         return;
     }
