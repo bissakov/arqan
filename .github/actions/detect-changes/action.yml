@@ -1,17 +1,18 @@
 name: Detect changes
-description: Reports whether the change touches anything outside the docs.
+description: Reports whether the change touches anything outside the docs and
+  the ignore files.
 
 # The caller must check out with fetch-depth 0, since this diffs against the
 # base commit.
 outputs:
   code:
-    description: true when a file outside the docs changed
+    description: true when a file outside the docs and the ignore files changed
     value: ${{ steps.filter.outputs.code }}
 
 runs:
   using: composite
   steps:
-    - name: Look for changes outside the docs
+    - name: Look for changes outside the docs and the ignore files
       id: filter
       shell: bash
       run: |
@@ -37,16 +38,23 @@ runs:
         # .github/ and scripts/ are left out on purpose: a workflow or a
         # release script is not a document.
         #
+        # The three ignore files are here because no build step or suite reads
+        # them: .gitignore and .ignore steer Git and ripgrep, and
+        # .git-blame-ignore-revs steers git blame. .clang-format and
+        # .clang-format-ignore are not, since `make check-format` reads both.
+        #
         # NOTE: no grep -q here. It exits on the first match, and the SIGPIPE
         # that gives printf would fail the pipeline under pipefail and read as
         # a docs-only change.
+        skip='(^|/)[^/]+\.md$|^docs/|^LICENSE$'
+        skip="$skip"'|^\.gitignore$|^\.ignore$|^\.git-blame-ignore-revs$'
         outside=$(printf '%s\n' "$files" |
-          grep -vE '(^|/)[^/]+\.md$|^docs/|^LICENSE$' || true)
+          grep -vE "$skip" || true)
         if [ -n "$outside" ]; then
-          echo "outside the docs:"
+          echo "outside the docs and the ignore files:"
           echo "$outside"
           echo "code=true" >> "$GITHUB_OUTPUT"
         else
-          echo "docs only"
+          echo "docs and ignore files only"
           echo "code=false" >> "$GITHUB_OUTPUT"
         fi
