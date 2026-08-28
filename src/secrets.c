@@ -14,8 +14,6 @@
 
 typedef enum { SECRET_OP_LOOKUP, SECRET_OP_STORE, SECRET_OP_ERASE } SecretOp;
 
-/* argv plus the storage the built strings point into, so a command lives on
- * one frame and needs no arena. */
 typedef struct {
     const char *argv[AGENT_MAX_SECRET_ARGV + 1];
     size_t n;
@@ -50,8 +48,6 @@ b8 secret_source_external(SecretSource src) {
     return src != SECRET_STORED;
 }
 
-/* keychain and command are lookup-only: security(1) takes the secret on argv
- * rather than stdin, and a user's own command is not arqan's to write to. */
 b8 secret_source_can_store(SecretSource src) {
     return src == SECRET_STORED || src == SECRET_SERVICE || src == SECRET_PASS;
 }
@@ -348,8 +344,6 @@ static b8 secret_exec(const SecretCmd *c, Str input, char *out, size_t out_cap,
     return true;
 }
 
-/* The first line of stdout, with no control byte left in it: a key is one
- * line, and anything else is a helper reporting rather than answering. */
 static b8 secret_first_line(char *buf, size_t n, Str *out, char *err,
                             size_t err_cap) {
     size_t end = 0;
@@ -392,7 +386,6 @@ Str secret_lookup(SecretSource src, Str account, Str command, Arena *out,
     Str line;
     if (!secret_first_line(buf, n, &line, err, err_cap)) return (Str){0};
     Str key = str_dup(out, line);
-    // The plaintext must not outlive this frame in a buffer nobody owns.
     memset(buf, 0, sizeof buf);
     if (!key.p) snprintf(err, err_cap, "out of memory reading the key");
     return key;

@@ -35,7 +35,6 @@ static Str hist_unescape(Arena *a, Str s) {
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
 }
 
-// A full ring drops its oldest entry rather than refusing the new one.
 static void hist_push(History *h, Str line) {
     if (!h->entry || !h->cap) return;
     if (h->n && str_eq(h->entry[h->n - 1], line)) return;
@@ -46,9 +45,6 @@ static void hist_push(History *h, Str line) {
     h->entry[h->n++] = line;
 }
 
-/* Slide the live entries down over the gaps dropped ones left behind. The
- * arena is ours alone, so every entry sits above the one before it and a
- * destination never overtakes a source still to be read. */
 static void hist_compact(History *h) {
     size_t off = h->base_off;
     for (size_t i = 0; i < h->n; i++) {
@@ -80,10 +76,6 @@ b8 history_init(History *h, Arena *own, size_t cap) {
     return true;
 }
 
-/* The recall file for this workspace, `<state>/history/<cwd slug>`, so two
- * projects never offer each other's prompts. `scratch` holds the XDG base for
- * the length of the call; the result lives in `a`. Empty when the base or the
- * cwd is unavailable, which leaves recall in memory for the session. */
 Str history_path(Arena *a, Arena *scratch) {
     Str base = paths_dir(AGENT_DIR_STATE, scratch);
     if (!base.n) return (Str){0};
@@ -100,9 +92,6 @@ Str history_path(Arena *a, Arena *scratch) {
     return out.n < AGENT_MAX_PATH ? out : (Str){0};
 }
 
-/* Versions before per-workspace recall wrote one file where the directory now
- * goes, and no directory can be created under that name. Renamed rather than
- * removed so the entries stay recoverable by hand. */
 static void hist_retire_global(Str path) {
     Str dir = path;
     while (dir.n && dir.p[dir.n - 1] != '/') dir.n--;
@@ -118,8 +107,6 @@ static void hist_retire_global(Str path) {
     if (n > 0 && (size_t)n < sizeof retired) (void)rename(old, retired);
 }
 
-/* Reads the state file into the entry arena, with `scratch` holding the raw
- * bytes for the length of the call. A missing file is an empty history. */
 void history_load(History *h, Str path, Arena *scratch) {
     if (!h->cap || !path.n) return;
     h->path = path;
@@ -206,8 +193,6 @@ b8 history_prev(History *h, Str *out) {
     return true;
 }
 
-/* Stepping past the newest entry lands on nothing, which is the caller's cue
- * to restore the draft the recall interrupted. */
 b8 history_next(History *h, Str *out) {
     if (h->cursor >= h->n) return false;
     h->cursor++;

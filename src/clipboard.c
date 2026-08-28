@@ -9,16 +9,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-/* Reading the clipboard needs a helper program. A terminal application can
- * write one over OSC 52 but cannot read it back, and no escape sequence
- * carries an image in either direction. Each helper is spawned with an argv
- * of its own, never through a shell, so nothing a clipboard holds and nothing
- * a helper prints can become part of a command line.
- *
- * The poll loop is this module's rather than shared with secrets.c: that one
- * feeds a secret on stdin and is careful about where a key can be seen, and
- * folding two different contracts into one runner would serve neither.
- */
 
 #define CLIP_POLL_MS  20
 #define CLIP_LIST_MAX 4096
@@ -74,9 +64,6 @@ static i32 clip_wait(i32 fd, f64 deadline) {
     }
 }
 
-/* Runs `argv` with the type mark replaced by `type`, collecting at most `cap`
- * bytes of its stdout. The child's stderr goes nowhere: a helper explaining
- * itself must not paint over a raw-mode screen. */
 static ClipStatus clip_exec(const char *const *argv, Str type, char *out,
                             size_t cap, size_t *n) {
     const char *args[CLIP_ARGV_MAX];
@@ -185,8 +172,6 @@ static b8 clip_pick_type(Str listing, Str *type) {
 
 b8 clipboard_image(Arena *scratch, Str *out, char *err, size_t err_cap) {
     *out = (Str){0};
-    /* One byte over the limit, so bytes that cannot be sent are recognized
-     * as too many rather than read as a truncated image. */
     size_t cap = (size_t)AGENT_MAX_IMAGE_BYTES + 1;
     char *buf = arena_alloc(scratch, cap, 1);
     char *listing = arena_alloc(scratch, CLIP_LIST_MAX, 1);

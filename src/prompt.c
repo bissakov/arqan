@@ -33,8 +33,6 @@ static const char PROMPT_BUILTIN[] =
     "\n"
     "Current working directory: {cwd}\n";
 
-/* The same project with none of the tools that change it, so what it can
- * promise is a plan rather than an edit. */
 static const char PROMPT_PLAN_BUILTIN[] =
     "You are an expert software planner. You are in Plan mode: you "
     "investigate the project and propose a plan, and you change nothing. No "
@@ -57,10 +55,6 @@ static const char PROMPT_PLAN_BUILTIN[] =
     "\n"
     "Current working directory: {cwd}\n";
 
-/* /compact stands or falls on the summary being readable by the session that
- * continues from it, so the format is stated rather than suggested. A section
- * with nothing to record is dropped whole: an empty heading reads to the next
- * session as a question that was asked and left unanswered. */
 static const char PROMPT_COMPACT_BUILTIN[] =
     "You summarize a conversation. Create a structured context checkpoint "
     "summary that another assistant will use to continue the work.\n"
@@ -109,9 +103,6 @@ static const char PROMPT_COMPACT_ASK[] =
     "Summarize the conversation above as a context checkpoint, in the exact "
     "format you were given.";
 
-/* A delegate, not a second agent: it reads and reports, and the parent acts.
- * The bounds are stated rather than implied because the whole report is
- * replayed to the parent as one tool result. */
 static const char PROMPT_SUB_BUILTIN[] =
     "You are a research subagent. You investigate a question someone else "
     "will act on, and you report what you found.\n"
@@ -137,9 +128,6 @@ static const char PROMPT_SUB_BUILTIN[] =
     "\n"
     "Current working directory: {cwd}\n";
 
-/* A session name is a row of a list, so what is asked for is a label rather
- * than a sentence: the length and the punctuation are stated because a model
- * asked for "a short title" answers with a quoted one. */
 static const char PROMPT_TITLE_BUILTIN[] =
     "You name a conversation so a user can recognize it in a list of saved "
     "sessions.\n"
@@ -151,9 +139,6 @@ static const char PROMPT_TITLE_BUILTIN[] =
 
 static const char PROMPT_TITLE_ASK[] = "Name the conversation below.";
 
-/* Empty when `path` does not exist or holds only space. A file past the limit
- * sets `err` and reads nothing, which stops the search rather than falling
- * through to a prompt the user did not ask for. */
 static Str prompt_read(Str path, Arena *a, char *err, size_t err_cap) {
     if (!path.n || path.n >= AGENT_MAX_PATH) return (Str){0};
     Str body = {0};
@@ -167,9 +152,6 @@ static Str prompt_read(Str path, Arena *a, char *err, size_t err_cap) {
     return str_trim(body);
 }
 
-/* The prompt of the nearest ancestor of `dir` that has one, `suffix` carrying
- * its own leading separator ("/.arqan/SYSTEM.md"). As git does it, the project
- * root is wherever the marker is rather than where arqan started. */
 static Str prompt_project(Str dir, const char *suffix, size_t suffix_size,
                           Arena *scratch, Str *path_out, char *err,
                           size_t err_cap) {
@@ -209,9 +191,6 @@ static Str prompt_global(Str name, Arena *scratch, Str *path_out, char *err,
     return (Str){0};
 }
 
-/* Every AGENTS.md at or above `dir`, nearest first. Past
- * AGENT_MAX_AGENTS_FILES the outermost are dropped, since the nearest
- * describes the code being worked on. */
 static size_t prompt_agents(Str dir, Arena *scratch, Str *body, Str *path_out,
                             size_t cap, char *err, size_t err_cap) {
     static const char suffix[] = "/AGENTS.md";

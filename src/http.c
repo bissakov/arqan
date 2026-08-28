@@ -79,9 +79,9 @@ b8 curl_load(char *err, size_t err_cap) {
 
 typedef struct {
     const HttpReq *r;
-    Buf line; // the event being accumulated, grown rather than clipped
+    Buf line;
     b8 aborted;
-    b8 oom; // a line outgrew the arena it accumulates in
+    b8 oom;
 
     size_t lines;
     size_t polls;
@@ -135,8 +135,6 @@ static size_t body_cb(char *p, size_t sz, size_t n, void *ud) {
     Buf *b = (Buf *)ud;
     size_t total = sz * n;
     buf_put(b, p, total);
-    /* A short buffer fails the transfer rather than truncating the document
-     * the caller is about to parse. */
     return buf_ok(b) ? total : 0;
 }
 
@@ -226,8 +224,6 @@ static size_t drop_header_cb(char *p, size_t sz, size_t n, void *ud) {
     return sz * n;
 }
 
-/* False when it does not fit, which is a config error rather than something
- * to grow a buffer for. */
 static b8 build_url(char *url, size_t cap, const char *base_url,
                     const char *path) {
     size_t base_n = base_url ? strlen(base_url) : 0;
@@ -241,8 +237,6 @@ static b8 build_url(char *url, size_t cap, const char *base_url,
 
 #define ANTHROPIC_VERSION "anthropic-version: 2023-06-01"
 
-/* Only when there is a key: "Bearer (null)" is not a request worth sending.
- * Anthropic carries it in a header of its own rather than in Authorization. */
 static struct curl_slist *auth_header(struct curl_slist *hdrs,
                                       const char *api_key, ApiKind api) {
     if (api == API_ANTHROPIC) hdrs = curl_slist_append(hdrs, ANTHROPIC_VERSION);
@@ -269,8 +263,6 @@ static const char *api_post_path(ApiKind api) {
  * explicitly, but only when libcurl's own answer would not work: an unset
  * option is how a working default keeps its behaviour. */
 
-/* Both members are process-lifetime storage, and NULL means "leave libcurl's
- * option alone". */
 typedef struct {
     const char *file;
     const char *dir;
@@ -306,9 +298,6 @@ static const char *const k_ca_dirs[] = {
     "/etc/pki/tls/certs",
 };
 
-/* Copy a candidate under the test root into `buf`. False when the composed
- * path would not fit, which drops that candidate rather than truncating it
- * into a path naming something else. */
 static b8 ca_candidate(const char *path, char *buf, size_t cap,
                        const char **out) {
     const char *root = ca_root();
@@ -349,11 +338,6 @@ static const CaTrust *ca_trust(void) {
     if (resolved) return &trust;
     resolved = true;
 
-    /* An operator who names a store means it, so it is honoured whether or
-     * not it exists: a bad path is a TLS failure that says so, not a silent
-     * fall back to a store they declined. CURL_CA_BUNDLE is libcurl's own
-     * variable and outranks OpenSSL's, which libcurl reads only for its
-     * fallback. */
     const char *env = getenv("CURL_CA_BUNDLE");
     if (!env || !*env) env = getenv("SSL_CERT_FILE");
     const char *env_dir = getenv("SSL_CERT_DIR");
@@ -383,8 +367,6 @@ static const CaTrust *ca_trust(void) {
         return &trust;
     }
 
-    /* Nothing found. libcurl keeps its own defaults and reports the
-     * verification failure in its own words, which names the real problem. */
     agent_log(AGENT_LOG_WARN,
               "tls: no CA trust store found; HTTPS verification may fail");
     return &trust;
@@ -394,9 +376,6 @@ static const CaTrust *ca_trust(void) {
 static void http_apply_ca(CURL *curl) {
     const CaTrust *t = ca_trust();
     if (!t->file && !t->dir) return;
-    /* One resolution answers for both options: the one it does not name is
-     * cleared rather than left at its build-time default, which would name a
-     * store that need not exist here and fail the handshake on its own. */
     curl_easy_setopt(curl, CURLOPT_CAINFO, t->file);
     curl_easy_setopt(curl, CURLOPT_CAPATH, t->dir);
 }
@@ -442,9 +421,6 @@ static i64 curl_ms(CURL *curl, CURLINFO info) {
     return (i64)(us / 1000);
 }
 
-/* curl's own timings and counters, which nothing else in arqan can reach. The
- * endpoint is a hash and a class rather than a URL, since a private host
- * names its owner the way a path does. */
 static void http_record(const char *method, const char *path, const char *url,
                         CURL *curl, CURLcode rc, i64 status, const Ctx *sse,
                         b8 interrupted) {
@@ -535,8 +511,6 @@ i32 http_get(const char *base_url, const char *path, const char *api_key,
     curl_easy_cleanup(curl);
 
     if (rc != CURLE_OK) {
-        /* Debug, not error: an endpoint that is down is an ordinary answer
-         * here, and the caller reports it in its own words. */
         agent_log(AGENT_LOG_DEBUG, "curl: %s", curl_easy_strerror(rc));
         if (fail_out && fail_cap)
             snprintf(fail_out, fail_cap, "%s", curl_easy_strerror(rc));
@@ -796,8 +770,6 @@ i32 http_post(const HttpReq *r) {
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
     http_apply_ca(curl);
 
-    /* The multi interface so one wait covers the idle fd as well as curl's
-     * sockets, which keeps the caller's UI live without a second thread. */
     CURLM *multi = curl_multi_init();
     if (!multi) {
         curl_slist_free_all(hdrs);

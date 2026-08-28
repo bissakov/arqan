@@ -17,9 +17,6 @@ void arena_init(Arena *a, void *mem, size_t cap) {
     a->off = 0;
 }
 
-/* Every size below can come from a file or from the provider, so each step is
- * checked against the arena's own capacity instead of being computed first and
- * compared afterwards: `off + n` is exactly the addition that wraps. */
 void *arena_alloc(Arena *a, size_t n, size_t align) {
     /* INVARIANT: alignment is applied to the offset, so a caller gets an
      * absolutely aligned pointer only when the memory handed to arena_init is
@@ -69,10 +66,6 @@ b8 str_eq(Str a, Str b) {
 Str str_dup(Arena *a, Str s) {
     char *dst = (char *)arena_alloc(a, s.n + 1, 1);
     if (!dst) return (Str){0};
-    /* An empty Str legitimately carries a NULL pointer, and memcpy from NULL
-     * is undefined at any length, zero included. The result is always
-     * allocated and terminated, so a NULL `.p` back means the arena is full
-     * and nothing else. */
     if (s.n) memcpy(dst, s.p, s.n);
     dst[s.n] = '\0';
     return (Str){dst, s.n};
@@ -121,9 +114,6 @@ size_t str_lines(Str s) {
     return n;
 }
 
-/* Cutting mid-sequence leaves a byte no UTF-8 decoder accepts, which is a
- * replacement glyph on screen and a rejected request on the wire, so the clip
- * backs up to a leading byte. */
 Str str_clip_utf8(Str s, size_t max) {
     if (s.n <= max) return s;
     size_t n = max;
@@ -131,10 +121,6 @@ Str str_clip_utf8(Str s, size_t max) {
     return (Str){s.p, n};
 }
 
-/* One code point, or 0 for anything that is not a well formed sequence:
- * truncated, overlong, a surrogate, or past U+10FFFF. Callers that render
- * bytes they did not produce need the malformed case to be a decision rather
- * than a decoded value, so `*cp` is only written on success. */
 size_t utf8_decode(const char *s, size_t n, u32 *cp) {
     if (n == 0) return 0;
     u8 c = (u8)s[0];
@@ -190,7 +176,6 @@ i64 str_int(Str s, b8 *ok) {
             return 0;
         }
         i64 digit = s.p[i] - '0';
-        // Signed overflow is undefined, so refuse rather than wrap.
         if (d > (INT64_MAX - digit) / 10) {
             if (ok) *ok = false;
             return 0;
@@ -218,8 +203,6 @@ FileStatus file_read(Arena *a, const char *path, size_t max, size_t head,
     if (!path || !*path) return FILE_MISSING;
     FILE *f = fopen(path, "rb");
     if (!f) return FILE_MISSING;
-    /* The size is taken from the open file rather than from the path, so what
-     * is measured is what is read. */
     struct stat st;
     if (fstat(fileno(f), &st) != 0) {
         fclose(f);
@@ -291,8 +274,6 @@ static mode_t file_atomic_mode(const char *path, u32 create_mode, b8 *ok) {
         *ok = false;
         return 0;
     }
-    /* The process is single threaded, so observing the umask cannot race
-     * another file creation. */
     mode_t mask = umask(0);
     (void)umask(mask);
     *ok = true;
@@ -379,9 +360,6 @@ b8 buf_ok(const Buf *b) {
     return !b->oom;
 }
 
-/* Returns whether `need` bytes are now writable. Failure latches: a buffer
- * that could not grow stays short, and every later write is dropped instead
- * of running past the allocation. */
 static b8 buf_grow(Buf *b, size_t need) {
     if (need <= b->cap) return true;
     if (b->oom) return false;
@@ -482,10 +460,6 @@ static size_t utf8_seq(Str s, size_t i) {
     return need;
 }
 
-/* JSON is UTF-8 by definition (RFC 8259), so a provider rejects a request
- * carrying the raw bytes a tool happened to print. Every ill-formed byte
- * becomes U+FFFD here, at the one point every document arqan writes passes
- * through, rather than in each tool that might produce one. */
 void buf_json_chars(Buf *b, Str s) {
     for (size_t i = 0; i < s.n; i++) {
         u8 c = (u8)s.p[i];

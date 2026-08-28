@@ -34,15 +34,11 @@ static Str endpoint_section(Str name, Arena *a) {
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
 }
 
-/* A field is refused rather than clamped when it is longer than its cap: a
- * truncated URL or key names something else. */
 static Str endpoint_field(const Settings *s, Str section, Str key, size_t max) {
     Str v = settings_get(s, section, key);
     return v.n <= max ? v : (Str){0};
 }
 
-/* Said rather than obeyed: a shared config file naming a key store would be a
- * way to choose what arqan runs, so the line is reported and dropped. */
 static void endpoint_warn_credential_keys(const Settings *s, Str section,
                                           Str name) {
     const Str keys[3] = {STR("key"), STR("key_source"), STR("key_command")};
@@ -72,9 +68,6 @@ static void endpoints_collect(Endpoints *e, const Settings *s, Arena *a) {
                                    AGENT_MAX_MODEL_NAME);
         ApiKind api = api_from_str(settings_get(s, sections[i], STR("api")));
         if (!endpoints_put(e, name, url, api, a)) continue;
-        /* Kept beside the entry rather than in endpoints_put's signature:
-         * both are models a config file may name for this provider, and a
-         * caller that stores a connection names neither. */
         size_t at = endpoints_find(e, name);
         if (at == ENDPOINT_NONE) continue;
         e->model[at] = str_dup_opt(a, model);
@@ -125,10 +118,6 @@ b8 endpoints_put(Endpoints *e, Str name, Str base_url, ApiKind api, Arena *a) {
     return true;
 }
 
-/* One endpoint at a time, since the rest of the config file is the user's and
- * a rewrite would cost them their comments and their order. Only the two keys
- * that name the connection are written: a `model` line under the section is
- * the user's own default and is left exactly as they wrote it. */
 b8 endpoints_save_one(Str name, Str base_url, ApiKind api, Arena *scratch) {
     size_t mark = scratch->off;
     Str dir = paths_dir(AGENT_DIR_CONFIG, scratch);
@@ -161,7 +150,7 @@ static b8 creds_open(Settings *s, Arena *a, Str *path_out, char *err,
     if (path_out) *path_out = path;
     if (!path.n) return false;
     struct stat st;
-    if (stat(path.p, &st) != 0) return true; // no file is not a failure
+    if (stat(path.p, &st) != 0) return true;
     if (st.st_mode & (S_IRWXG | S_IRWXO)) {
         if (err)
             snprintf(err, err_cap,
@@ -174,9 +163,6 @@ static b8 creds_open(Settings *s, Arena *a, Str *path_out, char *err,
     return true;
 }
 
-/* The source line, read from the credentials file alone. An unknown value is
- * refused rather than treated as "the key is in the file": that would send a
- * key the user meant to keep in a keyring back to plaintext. */
 static SecretSource creds_source(const Settings *s, Str section, Str name,
                                  char *err, size_t err_cap) {
     Str v = settings_get(s, section, STR("key_source"));
@@ -266,11 +252,6 @@ b8 endpoints_set_key(Str name, Str key, SecretSource src, Arena *scratch,
     return ok;
 }
 
-/* The key goes first and on its own. Removing an endpoint touches two files,
- * and only one of them holds a secret: gating the credential's removal on the
- * config rewrite would leave a deleted provider's key on disk whenever that
- * rewrite failed, which is the one outcome this must never have. Each step is
- * reported separately for the same reason. */
 b8 endpoints_delete(Str name, Arena *scratch, char *err, size_t err_cap) {
     if (!endpoint_name_ok(name)) return false;
     size_t mark = scratch->off;

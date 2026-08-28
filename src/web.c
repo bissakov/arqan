@@ -293,7 +293,6 @@ static Str visible_text(AgentHtmlNode *node, Arena *scratch, size_t max,
     VisibleCtx v = {{&b, max, false, false}};
     html_walk(node, visible_enter, NULL, &v);
     Str out = normal_finish(&v.norm);
-    // Reaching `max` clips display text; only arena failure makes it invalid.
     *too_large = !buf_ok(&b);
     return out;
 }
@@ -528,8 +527,6 @@ static Str plain_extract(Str source, Arena *scratch, b8 *too_large) {
 static b8 page_output(Buf *out, Str title, const char *effective,
                       const char *input, Str body, size_t first, size_t limit,
                       Arena *scratch, char *err, size_t err_cap) {
-    /* The extraction is done either way, so the lines this page does not
-     * carry go to disk rather than back over the network. */
     static Spill spill;
     spill_open(&spill, "page_fetch", "txt", str_c(input));
     spill_put(&spill, body.p, body.n);
@@ -782,8 +779,6 @@ typedef struct {
     Str snippet;
 } SearchResult;
 
-/* One engine's markup, as class tokens rather than selectors: a token match
- * survives the hashed class names single-page engines add to every element. */
 typedef struct {
     const char *result;
     const char *link[2];
@@ -992,9 +987,9 @@ static const SearchEngineSpec k_engine[ENGINE_N] = {
 static struct {
     SearchEngine chain[ENGINE_N];
     size_t chain_n;
-    Str endpoint, api_key, engine_id; // in the persist arena, or empty
-    f64 started[ENGINE_N];            // last request, for the rate gate
-    f64 paused[ENGINE_N];             // backoff deadline
+    Str endpoint, api_key, engine_id;
+    f64 started[ENGINE_N];
+    f64 paused[ENGINE_N];
 } g_search = {{ENGINE_DDG_LITE, ENGINE_DDG_HTML, ENGINE_BRAVE, 0, 0, 0},
               3,
               {0},
@@ -1146,8 +1141,6 @@ static b8 search_url(const SearchEngineSpec *spec, size_t slot,
     return true;
 }
 
-/* The one header an engine may need, with its key substituted. The result
- * lives in `scratch` and is nul terminated for libcurl. */
 static const char *search_header(const SearchEngineSpec *spec, Arena *scratch) {
     if (!spec->header) return NULL;
     Buf h;
@@ -1166,8 +1159,8 @@ static const char *search_header(const SearchEngineSpec *spec, Arena *scratch) {
 typedef enum {
     SEARCH_OK,
     SEARCH_BLOCKED,
-    SEARCH_UNKNOWN, // transport failure or unfamiliar layout
-    SEARCH_ERROR,   // local failure; give up without trying another backend
+    SEARCH_UNKNOWN,
+    SEARCH_ERROR,
 } SearchOutcome;
 
 
@@ -1236,8 +1229,6 @@ static SearchOutcome search_backend_run(SearchEngine engine, size_t slot,
         if (rc < 0)
             snprintf(err, err_cap, "the %s search endpoint returned HTTP %lld",
                      spec->label, (long long)-rc);
-        /* A transport failure can quote the URL it was given, and a keyed
-         * engine's URL carries the key, so only a keyless one may say it. */
         else if ((spec->needs & NEED_KEY) || !req.failure[0])
             snprintf(err, err_cap, "the %s search request failed", spec->label);
         else

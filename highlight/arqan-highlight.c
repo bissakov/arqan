@@ -178,8 +178,6 @@ static uint8_t semantic(const char *name, uint32_t n) {
     return 0;
 }
 
-/* The query table has to line up with the language table by index, which is
- * cheap enough to check before serving anything. */
 static int queries_named(void) {
     if (yhl_query_source_count != YHL_LANG_COUNT) return 0;
     for (size_t i = 0; i < YHL_LANG_COUNT; i++)
@@ -187,15 +185,6 @@ static int queries_named(void) {
     return 1;
 }
 
-/* Compiled on first use and kept for the process's life. Compiling all
- * twelve is the whole of this helper's startup cost, and a session asks
- * about one or two languages, so the rest would be paid inside the client's
- * request deadline for nothing. A query that will not compile, or that has
- * no pattern left once the predicate ones are disabled, marks its language
- * broken: its requests answer "unknown" rather than being retried.
- *
- * Predicates are disabled rather than evaluated: a capture that depends on
- * one must not be applied speculatively. */
 static TSQuery *language_query(Language *lang) {
     if (lang->query || lang->broken) return lang->query;
     const YhlQuerySource *src = &yhl_query_sources[lang - languages];
@@ -226,8 +215,6 @@ static TSQuery *language_query(Language *lang) {
     return query;
 }
 
-/* What `--self-test` asks at build time: every bundled grammar and query
- * pair compiles, which serving no longer proves on its own. */
 static int queries_all_compile(void) {
     for (size_t i = 0; i < YHL_LANG_COUNT; i++)
         if (!language_query(&languages[i])) return 0;

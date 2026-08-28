@@ -6,10 +6,6 @@
 #define FAVORITES_SECTION STR("favorites")
 #define FAVORITES_KEY     STR("models")
 
-/* "favorites.<provider>", or "favorites" for the endpoint a run names with a
- * base URL alone. A name that is not a TOML bare key has no section of its
- * own, and must not fall back to the shared one: that would pin its models
- * for every other run. */
 static Str favorites_section(Str provider, Arena *a) {
     if (!provider.n) return FAVORITES_SECTION;
     if (!endpoint_name_ok(provider)) return (Str){0};
@@ -21,8 +17,6 @@ static Str favorites_section(Str provider, Arena *a) {
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
 }
 
-/* One provider's comma-separated list, appended as pairs. `provider` is kept
- * by reference, which is why it must outlive the Favorites. */
 static void favorites_parse(Favorites *f, Str provider, Str list) {
     size_t off = 0;
     while (off < list.n && f->n < AGENT_MAX_FAVORITES) {
@@ -42,7 +36,6 @@ size_t favorites_load(Favorites *f, const Endpoints *e, Arena *a) {
     memset(f, 0, sizeof *f);
     Str path = paths_file(AGENT_DIR_STATE, AGENT_STATE_NAME, a);
     Settings s;
-    // The state file is read once here rather than once per provider.
     if (!path.n || !settings_load(&s, path, a)) return 0;
     favorites_parse(f, (Str){0},
                     settings_get(&s, FAVORITES_SECTION, FAVORITES_KEY));

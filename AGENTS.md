@@ -155,10 +155,6 @@ that restates the next line. Three kinds stay:
 - `TODO` for deferred work with the reason, `NOTE` for a constraint the code
   cannot show, `INVARIANT` for something a later edit would break.
 
-The last kind must carry what the code cannot: a size that forbids a copy, a
-reset that happens elsewhere, why an obvious change is wrong. Otherwise delete
-it.
-
 ## Writing for users
 
 For replies, commit messages, docs and changelog entries alike:

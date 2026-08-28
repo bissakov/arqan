@@ -17,7 +17,7 @@ typedef enum {
 
 static struct {
     NotifyMode mode;
-    Str command; // in the persist arena, or empty
+    Str command;
     f64 min_ms;
 } g_notify;
 
@@ -57,10 +57,6 @@ static const char *kind_label(NotifyKind k) {
     return "";
 }
 
-/* `in` is model or provider text, so it may hold escapes of its own: one
- * left in an OSC string could close it and let the rest run as commands.
- * Every control byte goes, runs of blanks collapse, and the tail is cut at
- * a UTF-8 boundary rather than mid-sequence. */
 static Str sanitize(Str in, char *out, size_t cap) {
     size_t n = 0;
     b8 blank = true;
@@ -89,8 +85,6 @@ static size_t json_put(char *dst, size_t cap, Str s) {
     return n;
 }
 
-/* Appends what fits and reports the new length; a truncated field loses its
- * tail rather than the object's shape, since the caller closes it after. */
 static size_t lit_put(char *dst, size_t cap, size_t n, const char *z) {
     size_t len = strlen(z);
     if (n + len >= cap) return n;
@@ -107,8 +101,6 @@ static void run_command(NotifyKind kind, Str text) {
     size_t argc = 0;
     memcpy(words, g_notify.command.p, g_notify.command.n);
     words[g_notify.command.n] = '\0';
-    /* No quoting and no escapes, as key_command does it: a line that needs
-     * either wants a shell, and a wrapper script is the answer instead. */
     for (size_t i = 0; i < g_notify.command.n;) {
         while (i < g_notify.command.n && (words[i] == ' ' || words[i] == '\t'))
             words[i++] = '\0';

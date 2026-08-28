@@ -20,8 +20,6 @@ static JVal *tool_args(Str args, Arena *scratch, char *err, size_t err_cap) {
     return json_parse_error(scratch, args, err, err_cap);
 }
 
-/* Clamping instead would run a different command, or touch a different file,
- * than the one the model asked for and the user read. */
 static b8 arg_cstr(Str s, char *z, size_t cap, const char *what, char *err,
                    size_t err_cap) {
     if (!s.p) {
@@ -72,8 +70,6 @@ static b8 slurp(const char *z, Arena *scratch, Str *out, char *err,
     return false;
 }
 
-/* `dflt` when absent. A fractional or negative count is named rather than
- * rounded: the caller asked for something this tool cannot do. */
 static b8 arg_count(const JVal *j, Str key, size_t dflt, size_t max,
                     size_t *out, char *err, size_t err_cap) {
     const JVal *v = json_get(j, key);
@@ -91,10 +87,6 @@ static b8 arg_count(const JVal *j, Str key, size_t dflt, size_t max,
     return true;
 }
 
-/* A wait is a request, not an operand: the work runs either way, so a number
- * past `max` is granted as `max` and one below a millisecond falls back to
- * `dflt` rather than costing a refusal round. Only a non-number is refused,
- * since nothing about it says how long to wait. */
 static b8 arg_wait_ms(const JVal *j, size_t dflt, size_t max, size_t *out,
                       char *err, size_t err_cap) {
     const JVal *v = json_get(j, STR("timeout_ms"));
@@ -136,11 +128,6 @@ static b8 arg_page_limit(const JVal *j, size_t dflt, size_t max, size_t *out,
 
 #define READ_SNIFF 8000
 
-/* A file that is not text has no page worth returning: the serializer turns
- * every ill-formed byte into U+FFFD, so the answer would cost a page of
- * replacement characters and say nothing about the file. True with `err`
- * filled in when that is what `body` is, so read reports what the file is
- * instead of paging it. */
 static b8 read_not_text(const char *path, Str body, char *err, size_t err_cap) {
     char size[32];
     spill_size_text(size, sizeof size, body.n);
@@ -202,9 +189,6 @@ static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err,
            && str_line(body, &off, &line))
         shown++;
 
-    /* The line the byte cap lands in is dropped rather than halved, so the
-     * next call resumes on a line boundary. A single line past the cap has no
-     * boundary to fall back on and is cut at a UTF-8 lead byte. */
     b8 cut_mid_line = false;
     if (off - start > AGENT_READ_BYTES) {
         size_t end = start + AGENT_READ_BYTES;
@@ -349,8 +333,6 @@ void shell_set_timeout(i32 ms) {
     g_tools.shell.timeout_ms = ms > 0 ? ms : 0;
 }
 
-/* Long enough that a chatty command is drained in whole blocks, short enough
- * that the caller's idle hook keeps a frame moving. */
 #define SHELL_POLL_MS 50
 
 
@@ -500,9 +482,6 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
  */
 
 static void job_release(Job *j) {
-    /* The drainer outlives a finished command whenever something it spawned
-     * still holds the pipe, so the slot takes it with it rather than leaving
-     * a child nobody will reap. */
     if (j->drainer > 0 && !j->drained) {
         kill(j->drainer, SIGKILL);
         while (waitpid(j->drainer, NULL, 0) < 0 && errno == EINTR) {}
@@ -565,11 +544,7 @@ void jobs_stop(void) {
     }
 }
 
-/* Runs in the forked child and never returns. `written` is what the log
- * already holds, so the cap covers the whole file rather than this half. */
 static void job_drain(i32 in, i32 out, size_t written) {
-    /* Its own session: a signal aimed at the terminal must not take down the
-     * one process keeping the command's pipe empty. */
     if (setsid() < 0) setpgid(0, 0);
     signal(SIGINT, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
@@ -595,8 +570,6 @@ static void job_drain(i32 in, i32 out, size_t written) {
         if (n == 0) break;
         size_t bytes = (size_t)n;
         if (written >= AGENT_SPILL_BYTES) {
-            /* Past the cap the log stops growing, but the pipe is still
-             * drained: a command must not stall because its log is full. */
             if (!noted) {
                 static const char note[] = "\n[log truncated here]\n";
                 noted = true;
@@ -803,10 +776,6 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit,
                 if (kill(-pid, SIGKILL) != 0) kill(pid, SIGKILL);
             }
         }
-        /* Past the deadline the command carries on as a job, so a slow build
-         * costs a page and a job id rather than the rest of the turn. The
-         * table being full or the log being gone is not worth killing it
-         * over: the call falls back to waiting, once. */
         if (!interrupted && !undetachable && timeout_ms > 0
             && (agent_now_seconds() - started) * 1000.0 >= (f64)timeout_ms) {
             u32 job = job_detach(pid, fds[0], &spill, cmd);
@@ -930,9 +899,6 @@ static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err,
         || !arg_count(j, STR("limit"), AGENT_SHELL_OUT_BYTES,
                       AGENT_SHELL_OUT_BYTES, &limit, err, err_cap))
         return false;
-    /* The deadline the settings set is the ceiling, not the only choice: a
-     * caller that knows what it started can hand the turn back sooner. It
-     * cannot hold it longer, so a longer ask is granted as the ceiling. */
     const JVal *want = json_get(j, STR("timeout_ms"));
     if (g_tools.shell.timeout_ms <= 0 && want && want->type != J_NULL) {
         snprintf(err, err_cap,
@@ -1010,8 +976,6 @@ static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
                 if (exited <= 0.0) exited = agent_now_seconds();
                 if ((agent_now_seconds() - exited) * 1000.0 >= grace) break;
             } else if (g_tools.shell.interrupt && *g_tools.shell.interrupt) {
-                /* An interrupt stops the work, not just the watching: a job
-                 * left running behind a cancelled turn is one nobody owns. */
                 interrupted = true;
                 job_signal(job);
                 break;
@@ -1059,9 +1023,6 @@ static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
  * the first occurrence is rarely the reviewed one.
  */
 
-/* Every occurrence of `needle` in `hay`: the total is returned and the first
- * `max` offsets land in `offs`. The scan runs to the end even once a match is
- * ambiguous, since the error names where the rivals are. */
 static size_t find_matches(Str hay, Str needle, size_t *offs, size_t max) {
     size_t count = 0;
     if (!needle.n || hay.n < needle.n) return 0;
@@ -1073,7 +1034,6 @@ static size_t find_matches(Str hay, Str needle, size_t *offs, size_t max) {
     return count;
 }
 
-/* 1-based line number of `off`, for an error that points at the file. */
 static size_t line_of(Str body, size_t off) {
     size_t n = 1;
     if (off > body.n) off = body.n;
@@ -1086,8 +1046,6 @@ static b8 patch_space(char c) {
     return c == ' ' || c == '\t' || c == '\r';
 }
 
-/* Whether two lines carry the same text once every space is dropped. An edit
- * that fails only on this reads as a puzzle unless the error says so. */
 static b8 same_but_space(Str a, Str b) {
     size_t i = 0, j = 0;
     for (;;) {
@@ -1102,8 +1060,6 @@ static b8 same_but_space(Str a, Str b) {
     return i == a.n && j == b.n;
 }
 
-/* `s` as a short fragment for an error message. A tab is written as an
- * escape, since an indentation mismatch is invisible otherwise. */
 static void quote_line(char *dst, size_t cap, Str s) {
     size_t w = 0;
     if (cap < 8) {
@@ -1138,9 +1094,6 @@ static void quote_line(char *dst, size_t cap, Str s) {
     dst[w] = 0;
 }
 
-/* How many lines agree from `boff` in `body` and `ooff` in `oldt`, and where
- * the first difference is: `bad` gets its offset in `body`, `bl` and `ol` the
- * two lines. `bl` is empty when the file runs out first. */
 static size_t patch_agree(Str body, size_t boff, Str oldt, size_t ooff,
                           size_t *bad, Str *bl, Str *ol) {
     size_t n = 0;
@@ -1161,10 +1114,6 @@ static size_t patch_agree(Str body, size_t boff, Str oldt, size_t ooff,
     }
 }
 
-/* Why a hunk's context is nowhere in the file, as a fragment appended to the
- * error. Anchors on the hunk's first line that carries text, scores every
- * file line equal to it, and reports the closest candidate's first
- * difference, so the caller can fix the hunk without re-reading the file. */
 static void patch_diverge(Str body, Str oldt, char *note, size_t cap) {
     Str anchor = {NULL, 0};
     size_t off = 0, anchor_off = 0;
@@ -1241,9 +1190,9 @@ typedef struct {
     Arena *scratch;
     char *err;
     size_t err_cap;
-    size_t err_n; /* bytes of `err` written, for appending */
-    size_t bad;   /* hunks that could not be placed */
-    size_t noted; /* of those, the ones `err` names */
+    size_t err_n;
+    size_t bad;
+    size_t noted;
 } Patch;
 
 
@@ -1265,9 +1214,6 @@ static b8 patch_fail(Patch *p, const char *fmt, ...) {
     return false;
 }
 
-/* A hunk that could not be placed. The patch is refused whole, but the scan
- * carries on so that one call names every hunk needing a fix: reporting only
- * the first costs a round trip per hunk. Each lands on its own line. */
 static void patch_bad_hunk(Patch *p, const char *fmt, ...) {
     p->bad++;
     if (p->noted >= AGENT_MAX_PATCH_NOTES) return;
@@ -1288,7 +1234,6 @@ static void patch_bad_hunk(Patch *p, const char *fmt, ...) {
     p->noted++;
 }
 
-/* Append a bounded slice around `off` so the next hunk can use current text. */
 static void patch_current(Patch *p, const char *path, Str body, size_t off) {
     if (p->err_n + 2 >= p->err_cap) return;
 
@@ -1328,9 +1273,6 @@ static void patch_current(Patch *p, const char *path, Str body, size_t off) {
     }
 }
 
-/* The header pair a file's hunks follow. A patch that names one file twice is
- * refused rather than resolved: the second read would not see the first's
- * changes, which are still in the arena. */
 static PatchFile *patch_open(Patch *p, Str oldp, Str newp) {
     b8 create = str_eq(oldp, STR("/dev/null"));
     b8 gone = str_eq(newp, STR("/dev/null"));
@@ -1363,8 +1305,6 @@ static PatchFile *patch_open(Patch *p, Str oldp, Str newp) {
     } else {
         Str body;
         if (!slurp(f->path, p->scratch, &body, p->err, p->err_cap)) return NULL;
-        /* Hunks edit this buffer in place, so the file is copied once per
-         * file rather than once per hunk. */
         buf_adopt(&f->body, p->scratch, body);
     }
     p->n++;
@@ -1498,8 +1438,6 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str text, size_t *off) {
         return true;
     }
 
-    /* Splice in place. `newt` lives in its own scratch buffer, never inside
-     * the body, so the tail moves before the replacement is copied over. */
     size_t tail = f->body.n - at - oldt.n;
     if (!buf_reserve(&f->body, at + newt.n + tail))
         return patch_fail(p, "%s: patch does not fit in memory", f->path);
@@ -1509,11 +1447,6 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str text, size_t *off) {
     return true;
 }
 
-/* Whether the text is an apply_patch envelope rather than a unified diff.
- * Models trained on that format reach for it often, and the bare complaint
- * about a missing header sends them round again with the same shape. A
- * marker only counts at column zero, where a diff can never put one: inside a
- * hunk every line carries a ' ', '-' or '+'. */
 static b8 patch_envelope(Str text) {
     static const char *mark[] = {"*** Begin Patch", "*** Update File:",
                                  "*** Add File:", "*** Delete File:"};
@@ -1525,8 +1458,6 @@ static b8 patch_envelope(Str text) {
     return false;
 }
 
-/* Normalize the common apply_patch envelope to the unified diff consumed by
- * patch_parse. The returned text lives in scratch. */
 static b8 patch_normalize(Str text, Arena *scratch, Str *out, char *err,
                           size_t err_cap) {
     if (!patch_envelope(text)) {
@@ -1670,8 +1601,6 @@ static b8 tool_patch(Str args, Arena *scratch, Buf *out, char *err,
     }
     if (!patch_parse(&p, text)) return false;
 
-    /* Every file applies or none does, so a hunk that could not be placed
-     * stops the write after the whole patch has been checked. */
     if (p.bad) {
         if (p.bad > p.noted && p.err_n + 48 < p.err_cap)
             p.err_n += (size_t)snprintf(p.err + p.err_n, p.err_cap - p.err_n,
@@ -1722,7 +1651,7 @@ typedef struct {
     size_t skipped;
     b8 out_limited;
     b8 ignore_case;
-    b8 single; // the root is one file rather than a tree
+    b8 single;
     AgentIgnore ignore;
     char path[AGENT_MAX_PATH];
     size_t path_n;
@@ -1766,10 +1695,6 @@ static b8 name_matches(const Walk *w, const char *base) {
     return fnmatch(w->glob, walk_shown(w), FNM_PATHNAME) == 0;
 }
 
-/* The file arena is the walk's own, since `out` grows in the scratch arena
- * while this runs and rewinding that would free the results. A file that is
- * not one to search (too large, not regular, unreadable) is skipped without a
- * word: a walk answers with what it found. */
 static void walk_grep_file(Walk *w) {
     arena_reset(w->file);
     Str body;
@@ -2002,8 +1927,6 @@ static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep, char *err,
     if (!walk_start(&w, json_str(j, STR("path")), err, err_cap)) return false;
     walk_ignore_build(&w);
 
-    /* Carved once and never rewound past, since `out` keeps growing in
-     * `scratch` above them for as long as the walk finds something. */
     void *mem =
         arena_alloc(scratch, AGENT_WALK_BYTES + AGENT_MAX_GREP_FILE + 1, 16);
     if (!mem) {
@@ -2181,8 +2104,7 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
         r->off[r->n] = false;               \
         r->n++;                             \
     } while (0)
-#define BOTH (TOOL_IN_BUILD | TOOL_IN_PLAN)
-// What a subagent may call: read-only in both modes.
+#define BOTH  (TOOL_IN_BUILD | TOOL_IN_PLAN)
 #define READS (BOTH | TOOL_IN_SUB)
 
     /* NOTE: the todo schema spells its bounds out, since ADD needs a literal. */
@@ -2354,8 +2276,6 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
         "Hand the plan over", TOOL_IN_PLAN | TOOL_FIXED, TOOL_APPROVAL_NONE,
         "{\"type\":\"object\",\"properties\":{\"plan\":{\"type\":\"string\"}},\"required\":[\"plan\"]}",
         tool_agent_only);
-    /* The name promises more than the audience delivers, so the first
-     * sentence corrects it. */
     ADD("task",
         "Delegate an investigation to a subagent that only reads, "
         "searches and fetches: it has read, grep, find, internet_search "
@@ -2390,10 +2310,6 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
 #undef ADD
 }
 
-/* The task row is registered either way and turned off when the setting is,
- * which costs a request none of its schema bytes and lets /settings flip it
- * without a restart. It stays TOOL_FIXED, so it is neither a /tools row nor
- * something disable_tools can name. */
 void tools_set_subagents(ToolRegistry *r, b8 on) {
     size_t id = tools_find(r, STR("task"));
     if (id != TOOL_NONE) r->off[id] = !on;
@@ -2413,9 +2329,6 @@ b8 tools_run(const ToolRegistry *r, size_t id, Str args,
         snprintf(err, err_cap, "unknown tool");
         return false;
     }
-    /* A schema offered earlier in the conversation is still in the model's
-     * context, so plan mode's read-only promise and a tool the user turned
-     * off have to hold here rather than only in what is advertised now. */
     if (tools_disabled(r, id)) {
         snprintf(err, err_cap,
                  "%.*s is disabled: it is not available in this "
@@ -2480,7 +2393,6 @@ void tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api,
 }
 
 size_t tools_schema_bytes(const ToolRegistry *r, ToolAudience audience) {
-    /* The envelope either API wraps one tool in, to the nearest few bytes. */
     enum { PER_TOOL = 64 };
     size_t total = 0;
     if (!r || !r->name) return 0;

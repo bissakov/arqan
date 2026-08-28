@@ -125,9 +125,6 @@ void subagent_label(Buf *out, const Subagent *s) {
     if (s->label[0]) buf_putf(out, " (%s)", s->label);
 }
 
-/* Run every call the round asked for, appending each result to the sub
- * conversation. False means the conversation or its arena is full, which
- * ends the run with whatever the subagent has already said. */
 static b8 sub_run_calls(Subagent *s, const SubRun *r, size_t first) {
     Conv *c = &s->conv;
     size_t last = c->n;
@@ -167,9 +164,6 @@ SubOutcome subagent_slice(Subagent *s, const SubRun *r, Buf *out, char *err,
                           size_t err_cap) {
     s->slices++;
     u32 ran = 0;
-    /* Rolled back to between rounds rather than reset: `out` and whatever
-     * else the caller staged for this slice, a small-model Config among
-     * them, live below this mark and have to survive every round. */
     size_t mark = r->scratch->off;
     for (;;) {
         if (r->interrupt_flag && *r->interrupt_flag) {
@@ -181,12 +175,6 @@ SubOutcome subagent_slice(Subagent *s, const SubRun *r, Buf *out, char *err,
             subagent_progress(out, s);
             return SUB_INTERRUPTED;
         }
-        /* Predictive, and never before a round has run in this slice: a poll
-         * that parked without working would answer the parent forever while
-         * the task stood still. Once one has run, the question is whether
-         * another would finish inside the budget, since it is a round
-         * started in time and ended late that strands the parent past the
-         * cache window. */
         if (ran && r->deadline_s > 0.0
             && agent_now_seconds() + s->slowest_round_s > r->deadline_s) {
             buf_putf(out, "Task %u", s->id);

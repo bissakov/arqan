@@ -116,8 +116,6 @@ b8 todo_parse(Str args_json, Arena *scratch, TodoList *out, char *err,
     return true;
 }
 
-/* The list as todo_write_md left it in a compaction checkpoint, which is the
- * only carrier once the call that held it has been summarized away. */
 b8 todo_parse_md(Str doc, TodoList *out) {
     TodoList l = {0};
     size_t off = 0;
@@ -228,9 +226,6 @@ static b8 todo_stale_due(Str tool) {
     return true;
 }
 
-/* A turn is worth a list once it has run long and left the tree different,
- * which is the shape a turn that opened as a question grows into. Reads alone
- * stay silent however many they are: that is one answer, not several steps. */
 static b8 todo_cold_due(Str tool) {
     if (g_todo.asked_cold || g_todo.calls || g_todo.list.n) return false;
     g_todo.turn_calls++;
@@ -274,9 +269,6 @@ void todo_telemetry(TelEvent *e) {
                 (i64)(todo_done(&g_todo.list) * 100 / g_todo.list.n));
 }
 
-/* The newest slot that can state the list: a todo call, or the compaction
- * checkpoint that outlived one. The scan stops at a checkpoint either way,
- * since nothing before it survived the cut. */
 static size_t todo_source(const Conv *c, b8 *from_md) {
     for (size_t i = c->n; i > 0; i--) {
         size_t s = i - 1;
