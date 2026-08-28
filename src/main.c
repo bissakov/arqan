@@ -952,8 +952,24 @@ static void task_drop_log(TaskWorker *w) {
     w->path[0] = '\0';
 }
 
+static void task_slot_arm(TaskWorker *w) {
+    tasklog_reader_init(&w->reader, -1);
+    w->lifeline = -1;
+}
+
+static b8 task_slot_used(const TaskWorker *w) {
+    return w->sub.kept || w->running || w->ended || w->pid > 0
+           || w->reader.fd >= 0 || w->path[0];
+}
+
+static void task_slot_reset(TaskWorker *w) {
+    memset(w, 0, sizeof *w);
+    task_slot_arm(w);
+}
+
 static void task_workers_stop(void) {
     for (size_t i = 0; i < AGENT_MAX_TASKS; i++) {
+        if (!task_slot_used(&g_task.w[i])) continue;
         task_worker_stop(&g_task.w[i]);
         task_drop_log(&g_task.w[i]);
     }
@@ -962,11 +978,10 @@ static void task_workers_stop(void) {
 static void task_release(Agent *ag) {
     for (size_t i = 0; i < AGENT_MAX_TASKS; i++) {
         TaskWorker *w = &g_task.w[i];
+        if (!task_slot_used(w)) continue;
         task_worker_stop(w);
         task_drop_log(w);
-        memset(w, 0, sizeof *w);
-        tasklog_reader_init(&w->reader, -1);
-        w->lifeline = -1;
+        task_slot_reset(w);
     }
     g_task.focus = AGENT_MAX_TASKS;
     if (g_tview.showing == TVIEW_TASK) tview_show(ag, TVIEW_MAIN);
@@ -1555,9 +1570,7 @@ static void task_answer(Agent *ag, Str args, Str *result) {
     }
     task_worker_stop(w);
     task_drop_log(w);
-    memset(w, 0, sizeof *w);
-    tasklog_reader_init(&w->reader, -1);
-    w->lifeline = -1;
+    task_slot_reset(w);
     if (!subagent_begin(&w->sub, g_sub[slot], sizeof g_sub[slot],
                         g_task.next_id + 1, sys, prompt, label, err,
                         sizeof err)) {
@@ -6129,10 +6142,7 @@ i32 main(i32 argc, char **argv) {
     tui_set_reflow(reflow_transcript, &agent);
     g_task.ag = &agent;
     g_task.focus = AGENT_MAX_TASKS;
-    for (size_t i = 0; i < AGENT_MAX_TASKS; i++) {
-        tasklog_reader_init(&g_task.w[i].reader, -1);
-        g_task.w[i].lifeline = -1;
-    }
+    for (size_t i = 0; i < AGENT_MAX_TASKS; i++) task_slot_arm(&g_task.w[i]);
     if (!restart_exe(g_task.exe, sizeof g_task.exe, argv[0]))
         g_task.exe[0] = '\0';
     tui_set_tick(task_tick, NULL);

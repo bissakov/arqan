@@ -1876,9 +1876,11 @@ void tasklog_reader_init(TaskReader *r, i32 fd);
 b8 tasklog_parse(Str line, Arena *scratch, TaskEvent *out);
 size_t tasklog_read(TaskReader *r, Arena *scratch, TaskOnEvent on, void *ud);
 
+/* INVARIANT: `reader` and `report` sit last, and a slot is cleared only once
+ * it has run. A slot is 72KB, so clearing all of them would dirty 580KB of
+ * `.bss` in a session that never delegates. */
 typedef struct {
     Subagent sub;
-    TaskReader reader;
     pid_t pid;
     i32 lifeline;
     f64 started;
@@ -1886,9 +1888,10 @@ typedef struct {
     b8 fallback;
     SubOutcome outcome;
     u32 round;
-    char path[AGENT_SPILL_PATH_MAX];
-    char report[AGENT_TOOL_RESULT_BYTES];
     size_t report_n;
+    char path[AGENT_SPILL_PATH_MAX];
+    TaskReader reader;
+    char report[AGENT_TOOL_RESULT_BYTES];
 } TaskWorker;
 
 /* Model ids from GET <base_url>/models, in the order the endpoint serves
