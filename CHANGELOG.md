@@ -27,6 +27,10 @@
 - Name the delegate's model and provider in the report the parent reads, so
   a resumed session still says what the task ran on.
 
+- Keep the description of a picked answer in the transcript. An `ask` result
+  used to show the label alone; it now shows the detail the question offered
+  with it, live and in a resumed session.
+
 ### Fixed
 
 - Stop leaving a note in place of an older call's arguments where the model

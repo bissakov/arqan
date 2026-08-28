@@ -304,6 +304,50 @@ def test_ask_user_offers_the_options_and_feeds_back_the_choice(ctx):
     assert ctx.mock.tool_results() == ["postgres"], ctx.mock.tool_results()
 
 
+def answer_rows(s, answer):
+    """The result row holding `answer` and the rows under it."""
+    rows = s.screen.lines()
+    for i, row in enumerate(rows):
+        if row.lstrip().startswith("\u2514\u2500") and answer in row:
+            return [r.strip() for r in rows[i:]]
+    raise AssertionError(f"no result row holding {answer!r}\n{s.text()}")
+
+
+def test_ask_user_keeps_the_detail_of_the_answer(ctx):
+    """The answer alone is a label, so the transcript keeps what it meant."""
+    ctx.scenario(
+        ask(
+            "Which storage?",
+            [
+                {"label": "sqlite", "detail": "one file"},
+                {"label": "postgres", "detail": "a server", "recommended": True},
+            ],
+        )
+        + ",final_text=noted"
+    )
+    s = ctx.spawn()
+    to_plan(s)
+    s.submit("plan the storage")
+    s.wait_status("pick an answer")
+    s.key("up").sync()
+    s.key("enter")
+    s.wait_text("noted")
+    s.wait_turn_done()
+
+    rows = answer_rows(s, "sqlite")
+    assert rows[1] == "one file", rows[:3]
+    assert ctx.mock.tool_results() == ["sqlite"], ctx.mock.tool_results()
+    s.submit("/exit")
+    s.wait_exit()
+
+    again = ctx.spawn()
+    again.submit("/resume")
+    again.wait_text("plan the storage")
+    again.key("enter")
+    again.wait_text("noted")
+    assert answer_rows(again, "sqlite")[1] == "one file", again.text()
+
+
 def test_ask_user_wraps_option_details_to_the_picker_width(ctx):
     """A picker keeps a description visible and reflows it after a resize."""
     detail = (
