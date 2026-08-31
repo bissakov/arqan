@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include <unistd.h>
 
 /* ---- conversation SoA ---------------------------------------------------
  * The parallel arrays are allocated once at their final capacity, so a full
@@ -1257,11 +1258,39 @@ static b8 template_owned(Str key, const Provider *p) {
     if (str_eq(key, STR("reasoning_effort")) && p->cfg->api == API_OPENAI
         && p->cfg->reasoning_effort.n)
         return true;
+    if (str_eq(key, STR("prompt_cache_key")) && p->cfg->api == API_OPENAI)
+        return true;
     if (p->cfg->api != API_ANTHROPIC) return false;
     if (str_eq(key, STR("output_config")) && p->cfg->reasoning_effort.n)
         return true;
     return str_eq(key, STR("thinking"))
            && (p->cfg->thinking_budget.n || p->cfg->reasoning_effort.n);
+}
+
+/* ---- prompt cache key ----------------------------------------------------
+ * An OpenAI-compatible endpoint routes a request to a machine by the prompt's
+ * prefix and this key, so one value per working directory keeps every turn of
+ * a session, and of the next session in that directory, on the machine that
+ * already holds the prefix. It is a hash: the path never leaves the process.
+ */
+#define CACHE_KEY_BYTES 32
+
+static struct {
+    char text[CACHE_KEY_BYTES];
+    size_t n;
+} g_cache_key;
+
+static Str prompt_cache_key(void) {
+    if (!g_cache_key.n) {
+        char cwd[AGENT_MAX_PATH];
+        Str dir = getcwd(cwd, sizeof cwd) ? str_c(cwd) : STR("");
+        i32 n = snprintf(g_cache_key.text, sizeof g_cache_key.text,
+                         AGENT_NAME "-%016llx",
+                         (unsigned long long)str_hash64(dir));
+        if (n > 0 && (size_t)n < sizeof g_cache_key.text)
+            g_cache_key.n = (size_t)n;
+    }
+    return (Str){g_cache_key.text, g_cache_key.n};
 }
 
 static b8 write_template_value(Buf *b, const JVal *v, const Config *c,
@@ -1342,6 +1371,13 @@ static b8 build_request(Buf *b, const Provider *p, char *err, size_t err_cap) {
     if (!anth && p->cfg->reasoning_effort.n) {
         buf_puts(b, STR(",\"reasoning_effort\":"));
         buf_json_str(b, p->cfg->reasoning_effort);
+    }
+    if (!anth) {
+        Str key = prompt_cache_key();
+        if (key.n) {
+            buf_puts(b, STR(",\"prompt_cache_key\":"));
+            buf_json_str(b, key);
+        }
     }
     if (anth && p->cfg->reasoning_effort.n) {
         buf_puts(b, STR(",\"thinking\":{\"type\":\"adaptive\","

@@ -457,3 +457,39 @@ def test_the_settings_screen_cycles_the_guard(ctx):
 
     s.key("escape").sync()
     assert ctx.state()["cache_guard"] == "off", ctx.state()
+
+
+def test_every_openai_request_carries_one_cache_key(ctx):
+    """An OpenAI endpoint routes by the prompt's prefix and this key.
+
+    A key that changed between turns would send the second request to a
+    machine that never saw the first, which is the miss the key exists to
+    stop. Tool rounds are part of the same session and share it.
+    """
+    args = json.dumps({"command": "echo hello"})
+    ctx.scenario(f"tool=bash:{args},tool_rounds=2,text=ok,final_text=first")
+    s = ctx.spawn()
+    s.submit("go")
+    s.wait_text("first")
+    s.wait_turn_done()
+
+    ctx.scenario("text=sure,final_text=second")
+    s.submit("again")
+    s.wait_text("second")
+    s.wait_turn_done()
+
+    keys = [r.get("prompt_cache_key") for r in ctx.mock.requests]
+    assert len(keys) > 3, keys
+    assert all(k and k == keys[0] for k in keys), keys
+
+
+def test_the_anthropic_request_has_no_cache_key(ctx):
+    """That API places its cache by breakpoint, and refuses a field it does
+    not know."""
+    ctx.scenario("text=answered+here")
+    s = ctx.spawn(ARQAN_API="anthropic")
+    s.submit("go")
+    s.wait_text("answered here")
+    s.wait_turn_done()
+    assert "prompt_cache_key" not in ctx.mock.requests[-1], (
+        ctx.mock.requests[-1])
