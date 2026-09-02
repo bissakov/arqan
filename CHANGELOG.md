@@ -41,6 +41,11 @@
 
 ### Fixed
 
+- Link the math library, so a build without link-time optimization and
+  section garbage collection resolves the `ceil` call in the vendored HTML
+  parser. `make asan` and `make test-asan` failed to link on a system whose
+  linker will not take a math symbol from `libc` alone.
+
 - Open a session read-only when another instance already has it live. Two
   runs used to append to the same file at once. The instance that owns a
   session keeps writing; a second one that resumes it replays the transcript,
