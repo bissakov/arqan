@@ -44,6 +44,11 @@
 
 ### Fixed
 
+- Keep the leading backslash when a rewind reloads a message. A message that
+  starts with `/` or `!` is typed with a `\` in front so it is sent instead of
+  run. The picker used to put the message back without it, so sending it again
+  ran a command or a shell line.
+
 - Link the math library, so a build without link-time optimization and
   section garbage collection resolves the `ceil` call in the vendored HTML
   parser. `make asan` and `make test-asan` failed to link on a system whose
