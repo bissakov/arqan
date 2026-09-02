@@ -31,6 +31,14 @@
   used to show the label alone; it now shows the detail the question offered
   with it, live and in a resumed session.
 
+- Send `prompt_cache_key` on every OpenAI request. An OpenAI-compatible
+  endpoint routes a request to a machine by the prompt's prefix and this key,
+  so one value per working directory keeps a session's turns, and the next
+  session in that directory, on the machine that already holds the prefix.
+  The value is a hash; the path is not sent. A `reasoning_template` that sets
+  the same field is now refused, as one that sets any other field the request
+  owns already is.
+
 ### Fixed
 
 - Stop leaving a note in place of an older call's arguments where the model
