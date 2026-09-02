@@ -11,6 +11,7 @@ gives the delegate a scenario of its own, so one case drives both sides.
 """
 
 import json
+import re
 import signal
 import time
 
@@ -26,13 +27,19 @@ def a_small_tree(ctx):
     ctx.write_file("notes.txt", "alpha is a letter\n")
 
 
-def spawn(ctx, sub="text=the+cat+is+in+src/one.c", **env):
-    """A session whose small model is the subagent, on its own scenario."""
+def spawn(ctx, sub="text=the+cat+is+in+src/one.c", tasks=None, **env):
+    """A session whose small model is the subagent, on its own scenario.
+
+    `tasks` is how many run at once; the default of the setting is one, so a
+    case that wants two in flight has to say so.
+    """
     env.setdefault("ARQAN_SUBAGENT_MODEL", "small")
     env.setdefault("ARQAN_SMALL_MODEL", f"mock:{sub}")
     # Naming the session would go to the small model too, and its request is
     # not the one under test.
     env.setdefault("ARQAN_AUTO_TITLE", "false")
+    if tasks is not None:
+        env.setdefault("ARQAN_SUBAGENT_TASKS", str(tasks))
     return ctx.spawn(**env)
 
 
@@ -70,6 +77,14 @@ def tool_names(request):
     tools = request.get("tools") or []
     names = [t.get("function", {}).get("name") or t.get("name") for t in tools]
     return sorted(n for n in names if n)
+
+
+def task_description(request):
+    for t in request.get("tools") or []:
+        fn = t.get("function", t)
+        if fn.get("name") == "task":
+            return fn.get("description", "")
+    return ""
 
 
 def parent_results(ctx):
@@ -300,7 +315,7 @@ def test_two_tasks_run_at_the_same_time(ctx):
         'tool=task:{"prompt":"one","label":"a"}'
         ',tool=task:{"prompt":"two","label":"b"},final_text=done'
     )
-    s = spawn(ctx, sub="hold=1,text=too+slow")
+    s = spawn(ctx, sub="hold=1,text=too+slow", tasks=2)
     s.submit("delegate it")
     s.wait_turn_done()
 
@@ -320,7 +335,7 @@ def test_each_concurrent_task_can_be_collected_by_its_id(ctx):
         ',tool=task:{"id":1,"wait_ms":30000}'
         ',tool=task:{"id":2,"wait_ms":30000},final_text=done'
     )
-    s = spawn(ctx, sub="text=reported+work")
+    s = spawn(ctx, sub="text=reported+work", tasks=2)
     s.submit("delegate both")
     s.wait_text("done")
     s.wait_turn_done()
@@ -340,7 +355,7 @@ def test_dropping_one_task_does_not_stop_another(ctx):
         ',tool=task:{"id":1,"action":"drop"}'
         ',tool=task:{"id":2},final_text=done'
     )
-    s = spawn(ctx, sub="hold=1,text=reported+work")
+    s = spawn(ctx, sub="hold=1,text=reported+work", tasks=2)
     s.submit("delegate both")
     s.wait_text("done")
     s.wait_turn_done()
@@ -351,13 +366,118 @@ def test_dropping_one_task_does_not_stop_another(ctx):
     ctx.mock.release()
 
 
+def test_one_task_at_a_time_is_the_default(ctx):
+    """A parent that fires a second start is refused, so a turn cannot bill
+    for a row of delegates the user never asked for."""
+    a_small_tree(ctx)
+    ctx.scenario(
+        'tool=task:{"prompt":"one","label":"a"}'
+        ',tool=task:{"prompt":"two","label":"b"},final_text=done'
+    )
+    s = spawn(ctx, sub="hold=1,text=too+slow")
+    s.submit("delegate it")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    started, refused = parent_results(ctx)[:2]
+    assert "Task 1" in started, started
+    assert "ERROR" in refused, refused
+    assert "1 task is already active" in refused, refused
+    assert len(sub_requests(ctx)) <= 1, [r.get("model")
+                                         for r in sub_requests(ctx)]
+    ctx.mock.release()
+
+
+def test_the_setting_allows_as_many_tasks_as_it_names(ctx):
+    """Two run together when the setting says two, and the third waits."""
+    a_small_tree(ctx)
+    ctx.scenario(
+        'tool=task:{"prompt":"one","label":"a"}'
+        ',tool=task:{"prompt":"two","label":"b"}'
+        ',tool=task:{"prompt":"three","label":"c"},final_text=done'
+    )
+    s = spawn(ctx, sub="hold=1,text=too+slow", tasks=2)
+    s.submit("delegate them")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    first, second, refused = parent_results(ctx)[:3]
+    assert "Task 1" in first, first
+    assert "Task 2" in second, second
+    assert "ERROR" in refused, refused
+    assert "2 tasks are already active" in refused, refused
+    ctx.mock.release()
+
+
+def test_a_task_can_start_once_the_one_before_it_is_collected(ctx):
+    """The limit counts what is running, not what a conversation started."""
+    a_small_tree(ctx)
+    ctx.scenario(
+        'tool=task:{"prompt":"one","label":"a"}'
+        ',tool=task:{"id":1,"wait_ms":30000}'
+        ',tool=task:{"prompt":"two","label":"b"},final_text=done'
+    )
+    s = spawn(ctx, sub="text=reported+work")
+    s.submit("delegate it")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    collected, started = parent_results(ctx)[1:3]
+    assert "[task 1" in collected, collected
+    assert "Task 2" in started, started
+    assert "ERROR" not in started, started
+
+
+def test_the_task_tool_says_how_many_run_at_once(ctx):
+    """The description the model reads names the live limit, so it plans
+    around the number this session allows."""
+    ctx.scenario("final_text=hi")
+    s = spawn(ctx)
+    s.submit("hello")
+    s.wait_turn_done()
+
+    desc = task_description(parent_requests(ctx)[0])
+    assert "One task runs at a time" in desc, desc
+
+
+def test_a_raised_limit_reaches_the_tool_description(ctx):
+    ctx.scenario("final_text=hi")
+    s = spawn(ctx, tasks=3)
+    s.submit("hello")
+    s.wait_turn_done()
+
+    desc = task_description(parent_requests(ctx)[0])
+    assert "Up to 3 tasks run together" in desc, desc
+
+
+def test_the_settings_row_moves_the_limit(ctx):
+    """The row steps the number, and the next request carries it."""
+    ctx.scenario("final_text=hi")
+    s = spawn(ctx)
+    s.open_settings().settings_select("Delegate limit")
+    assert re.search(r"Delegate limit\s+1 task", s.text()), s.text()
+    s.key("left").sync()
+    assert re.search(r"Delegate limit\s+1 task", s.text()), \
+        "the floor holds rather than wrapping to eight"
+    s.key("right").sync()
+    s.wait_for(lambda t: re.search(r"Delegate limit\s+2 tasks", t.text()),
+               "the delegate limit row reading two")
+    s.key("esc")
+    s.wait_gone("Delegate limit")
+
+    s.submit("hello")
+    s.wait_turn_done()
+    desc = task_description(parent_requests(ctx)[0])
+    assert "Up to 2 tasks run together" in desc, desc
+
+
 def test_the_ninth_active_task_is_refused(ctx):
     starts = [
         f'tool=task:{{"prompt":"task {i}","label":"t{i}"}}'
         for i in range(1, 10)
     ]
     ctx.scenario(",".join(starts) + ",final_text=done")
-    s = spawn(ctx, sub="hold=1,text=too+slow")
+    s = spawn(ctx, sub="hold=1,text=too+slow", tasks=8)
     s.submit("delegate all")
     s.wait_text("done")
     s.wait_turn_done()
@@ -381,7 +501,7 @@ def test_a_slot_can_be_reused_after_its_task_is_collected(ctx):
         "final_text=done",
     ]
     ctx.scenario(",".join(calls))
-    s = spawn(ctx, sub="text=reported+work")
+    s = spawn(ctx, sub="text=reported+work", tasks=8)
     s.submit("delegate all")
     s.wait_text("done")
     s.wait_turn_done()

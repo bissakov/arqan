@@ -98,6 +98,7 @@ typedef bool b8;
 #define AGENT_SUB_BYTES          (4u << 20)
 #define AGENT_SUB_MESSAGES       512
 #define AGENT_TASK_SLICE_MS      120000
+#define AGENT_TASK_LIMIT         1
 #define AGENT_TASK_PROMPT_MAX    8192
 #define AGENT_TASK_LABEL_MAX     64
 #define AGENT_TASK_MODEL_MAX     96
@@ -626,6 +627,7 @@ typedef enum {
     CONF_CACHE_GUARD,
     CONF_SUBAGENTS,
     CONF_SUBAGENT_MODEL,
+    CONF_SUBAGENT_TASKS,
     CONF_SUBAGENT_SLICE_MS,
     CONF_N
 } ConfKey;
@@ -765,6 +767,7 @@ typedef struct {
     CacheGuardMode cache_guard;
     b8 subagents;
     b8 subagent_small;
+    i32 subagent_tasks;
     i32 subagent_slice_ms;
 
     i32 ask_timeout_ms;
@@ -985,9 +988,11 @@ typedef struct {
 #define TOOL_NONE ((size_t)-1)
 
 void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
-                b8 subagents);
+                b8 subagents, i32 subagent_tasks);
 
 void tools_set_subagents(ToolRegistry *r, b8 on);
+
+void tools_set_task_limit(ToolRegistry *r, i32 tasks);
 
 void tools_set_mode(AgentMode mode);
 

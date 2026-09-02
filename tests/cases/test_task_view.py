@@ -209,7 +209,7 @@ def test_ctrl_o_shows_the_newest_tasks_transcript(ctx):
     ctx.scenario('tool=task:{"prompt":"find the cat","label":"cats"},'
                  'tool=task:{"prompt":"find the dog","label":"dogs"},'
                  'final_text=done')
-    s = spawn(ctx, sub="hold=1,text=found+it")
+    s = spawn(ctx, sub="hold=1,text=found+it", ARQAN_SUBAGENT_TASKS="2")
     s.submit("delegate it")
     s.wait_text("done")
     s.wait_turn_done()
@@ -227,7 +227,7 @@ def test_polling_an_older_task_focuses_its_transcript(ctx):
     ctx.scenario('tool=task:{"prompt":"find the cat","label":"cats"},'
                  'tool=task:{"prompt":"find the dog","label":"dogs"},'
                  'tool=task:{"id":1},final_text=done')
-    s = spawn(ctx, sub="hold=1,text=found+it")
+    s = spawn(ctx, sub="hold=1,text=found+it", ARQAN_SUBAGENT_TASKS="2")
     s.submit("delegate it")
     s.wait_text("done")
     s.wait_turn_done()

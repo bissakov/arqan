@@ -104,6 +104,8 @@ static const ConfSpec k_conf[CONF_N] = {
     [CONF_SUBAGENTS] = {"subagents", "true", NULL, CV_BOOL, 0, 0, 0, true},
     [CONF_SUBAGENT_MODEL] = {"subagent_model", "main", "main,small", CV_ENUM, 0,
                              0, 0, true},
+    [CONF_SUBAGENT_TASKS] = {"subagent_tasks", CONF_TEXT(AGENT_TASK_LIMIT),
+                             NULL, CV_NUM, 1, AGENT_MAX_TASKS, 0, false},
     [CONF_SUBAGENT_SLICE_MS] = {"subagent_slice_ms",
                                 CONF_TEXT(AGENT_TASK_SLICE_MS), NULL, CV_NUM, 0,
                                 AGENT_JOB_WAIT_MAX_MS, 0, false},
@@ -497,6 +499,7 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
     c->subagents = conf_bool(conf, CONF_SUBAGENTS);
     c->subagent_small =
         str_eq(conf_str(conf, CONF_SUBAGENT_MODEL), STR("small"));
+    c->subagent_tasks = (i32)conf_num(conf, CONF_SUBAGENT_TASKS);
     c->subagent_slice_ms = (i32)conf_num(conf, CONF_SUBAGENT_SLICE_MS);
     Str guard = conf_str(conf, CONF_CACHE_GUARD);
     c->cache_guard = str_eq(guard, STR("off"))    ? CACHE_GUARD_OFF
