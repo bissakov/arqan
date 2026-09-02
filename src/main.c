@@ -458,8 +458,7 @@ static b8 save_session(Agent *ag) {
     return false;
 }
 
-#define READ_ONLY_NOTICE \
-    STR("read-only, /fork to continue in a copy")
+#define READ_ONLY_NOTICE STR("read-only, /fork to continue in a copy")
 
 static b8 read_only_blocked(const Agent *ag) {
     if (!ag->sess->read_only) return false;
