@@ -1226,18 +1226,30 @@ void todo_sync(const Conv *c, Arena *scratch);
  *
  * Paths live in the struct instead of an arena because /clear rewinds the
  * session arena and the file the next message appends to has to outlive it.
+ *
+ * One instance at a time appends to a session. While a session is live its
+ * instance holds an advisory lock on a file named after it under
+ * $XDG_STATE_HOME/arqan/locks/<cwd>/, so a second instance that resumes the
+ * same transcript gets `read_only`: it renders and exports the conversation
+ * but appends nothing. The lock sits beside the data rather than on the
+ * session file because a title write replaces that file.
  */
 typedef struct {
     char dir_buf[AGENT_MAX_PATH];
+    char lock_dir_buf[AGENT_MAX_PATH];
     char path_buf[AGENT_MAX_PATH];
     char name_buf[32];
 
     char title_buf[AGENT_MAX_TITLE + 1];
     Str dir;
+    Str lock_dir;
     Str path;
     Str name;
     Str title;
 
+    i32 lock_fd;
+    b8 read_only;
+    b8 resumed;
     b8 title_tried;
     b8 save_blocked;
     b8 sync_dir;
@@ -1251,6 +1263,7 @@ typedef struct {
     Str *path;
     Str *preview;
     Str *title;
+    b8 *live;
     size_t n;
 } SessionList;
 

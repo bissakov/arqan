@@ -6,6 +6,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -21,8 +22,89 @@ static size_t sess_cleared_path(const Session *s, char *out, size_t cap) {
     return n > 0 && (size_t)n < cap ? (size_t)n : 0;
 }
 
+/* ---- one live instance per session ---------------------------------------
+ * One instance appends to a session at a time. The one that has it live holds
+ * an advisory lock on a file named after the session under
+ * $XDG_STATE_HOME/arqan/locks/<cwd>/, so the session directory itself keeps
+ * holding transcripts and nothing else. The lock is taken with the first
+ * append and on resume, so a lock file exists only for a session that does.
+ *
+ * flock, not fcntl: a record lock dies when any descriptor for the file is
+ * closed, and this process opens its own files freely.
+ */
+
+typedef enum {
+    SESS_LOCK_TAKEN,
+    SESS_LOCK_HELD,
+    SESS_LOCK_UNSUPPORTED
+} SessLockState;
+
+static size_t sess_lock_path(const Session *s, Str path, char *out,
+                             size_t cap) {
+    if (!s->lock_dir.n) return 0;
+    size_t cut = path.n;
+    while (cut && path.p[cut - 1] != '/') cut--;
+    if (cut == path.n) return 0;
+    i32 n = snprintf(out, cap, "%.*s/%.*s.lock", (i32)s->lock_dir.n,
+                     s->lock_dir.p, (i32)(path.n - cut), path.p + cut);
+    return n > 0 && (size_t)n < cap ? (size_t)n : 0;
+}
+
+static SessLockState sess_lock_try(i32 fd) {
+    while (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        if (errno == EINTR) continue;
+        return errno == EWOULDBLOCK ? SESS_LOCK_HELD : SESS_LOCK_UNSUPPORTED;
+    }
+    return SESS_LOCK_TAKEN;
+}
+
+static SessLockState sess_lock_take(Session *s, Str path, i32 *fd) {
+    *fd = -1;
+    char lock[AGENT_MAX_PATH];
+    if (!sess_lock_path(s, path, lock, sizeof lock)
+        || !paths_ensure_dir(s->lock_dir))
+        return SESS_LOCK_UNSUPPORTED;
+    i32 f = open(lock, O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (f < 0) return SESS_LOCK_UNSUPPORTED;
+    SessLockState state = sess_lock_try(f);
+    if (state == SESS_LOCK_TAKEN) {
+        *fd = f;
+        return state;
+    }
+    close(f);
+    return state;
+}
+
+static b8 sess_lock_held(const Session *s, Str path) {
+    char lock[AGENT_MAX_PATH];
+    if (!sess_lock_path(s, path, lock, sizeof lock)) return false;
+    i32 fd = open(lock, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return false;
+    b8 held = sess_lock_try(fd) == SESS_LOCK_HELD;
+    close(fd);
+    return held;
+}
+
+static void sess_lock_forget(const Session *s, Str path) {
+    char lock[AGENT_MAX_PATH];
+    if (sess_lock_path(s, path, lock, sizeof lock)) unlink(lock);
+}
+
+static void sess_lock_drop(const Session *s, Str path, i32 fd) {
+    if (fd < 0) return;
+    if (!path.n || access(path.p, F_OK) != 0) sess_lock_forget(s, path);
+    close(fd);
+}
+
+static void sess_lock_release(Session *s) {
+    sess_lock_drop(s, s->path, s->lock_fd);
+    s->lock_fd = -1;
+    s->read_only = false;
+}
+
 b8 session_init(Session *s, Arena *scratch) {
     memset(s, 0, sizeof *s);
+    s->lock_fd = -1;
     Str base = paths_dir(AGENT_DIR_DATA, scratch);
     if (!base.n) return false;
     char slug[AGENT_SLUG_MAX + 32];
@@ -36,6 +118,17 @@ b8 session_init(Session *s, Arena *scratch) {
         return false;
     }
     s->dir = (Str){s->dir_buf, (size_t)n};
+
+    Str state = paths_dir(AGENT_DIR_STATE, scratch);
+    i32 ln = state.n ? snprintf(s->lock_dir_buf, sizeof s->lock_dir_buf,
+                                "%.*s/locks/%.*s", (i32)state.n, state.p,
+                                (i32)slug_n, slug)
+                     : -1;
+    if (ln <= 0 || (size_t)ln >= sizeof s->lock_dir_buf)
+        s->lock_dir_buf[0] = '\0';
+    else
+        s->lock_dir = (Str){s->lock_dir_buf, (size_t)ln};
+
     char mark[AGENT_MAX_PATH];
     s->cleared =
         sess_cleared_path(s, mark, sizeof mark) && access(mark, F_OK) == 0;
@@ -223,6 +316,7 @@ static b8 sess_title_replace(FILE *dst, void *ud) {
 
 b8 session_set_title(Session *s, Str title) {
     if (!s->path.n) return false;
+    if (s->read_only) return false;
     char clean[AGENT_MAX_TITLE + 1];
     size_t n = sess_title_clean(clean, sizeof clean, title);
     SessTitleUpdate update = {s->path.p, {clean, n}};
@@ -235,10 +329,12 @@ b8 session_set_title(Session *s, Str title) {
 
 
 b8 session_begin(Session *s) {
+    sess_lock_release(s);
     s->written = 0;
     s->elide_written = 0;
     s->save_blocked = false;
     s->sync_dir = false;
+    s->resumed = false;
 
     s->title_tried = false;
     telemetry_detach();
@@ -524,6 +620,10 @@ static b8 sess_put_media(SessOut *o, Str dir, const Conv *c, size_t i,
 
 b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
     if (err_cap) err[0] = '\0';
+    if (s->read_only) {
+        snprintf(err, err_cap, "this session is live in another " AGENT_NAME);
+        return false;
+    }
     if (s->save_blocked) {
         snprintf(err, err_cap,
                  "a previous failed append could not be rolled back");
@@ -545,6 +645,18 @@ b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
     if (!s->path.n) {
         snprintf(err, err_cap, "session storage is unavailable");
         return false;
+    }
+    if (s->lock_fd < 0) {
+        SessLockState state = sess_lock_take(s, s->path, &s->lock_fd);
+        if (state == SESS_LOCK_HELD && !s->resumed && session_begin(s))
+            state = sess_lock_take(s, s->path, &s->lock_fd);
+        if (state == SESS_LOCK_HELD) {
+            s->read_only = true;
+            snprintf(err, err_cap,
+                     "this session is live in another " AGENT_NAME);
+            return false;
+        }
+        elide_moved = c->elide_start != s->elide_written;
     }
     telemetry_bind(s->path);
     Str dir = s->dir;
@@ -662,6 +774,7 @@ b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
 
 static void sess_rebind(Session *s) {
     if (s->dir.n) s->dir.p = s->dir_buf;
+    if (s->lock_dir.n) s->lock_dir.p = s->lock_dir_buf;
     if (s->path.n) s->path.p = s->path_buf;
     if (s->name.n) s->name.p = s->name_buf;
     if (s->title.n) s->title.p = s->title_buf;
@@ -669,6 +782,7 @@ static void sess_rebind(Session *s) {
 
 b8 session_fork(Session *s, const Conv *c, char *err, size_t err_cap) {
     Session old = *s;
+    s->lock_fd = -1;
     if (!session_begin(s)) {
         snprintf(err, err_cap, "could not reserve a session path");
         *s = old;
@@ -676,10 +790,12 @@ b8 session_fork(Session *s, const Conv *c, char *err, size_t err_cap) {
         return false;
     }
     if (!session_save(s, c, err, err_cap)) {
+        sess_lock_release(s);
         *s = old;
         sess_rebind(s);
         return false;
     }
+    sess_lock_drop(s, (Str){old.path_buf, old.path.n}, old.lock_fd);
     if (old.title.n) session_set_title(s, (Str){old.title_buf, old.title.n});
     return true;
 }
@@ -918,7 +1034,9 @@ size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max) {
     out->path = arena_new(a, Str, n);
     out->preview = arena_new(a, Str, n);
     out->title = arena_new(a, Str, n);
-    if (!out->name || !out->path || !out->preview || !out->title) return 0;
+    out->live = arena_new(a, b8, n);
+    if (!out->name || !out->path || !out->preview || !out->title || !out->live)
+        return 0;
     size_t kept = 0;
     for (size_t i = 0; i < n; i++) {
         Buf b;
@@ -934,6 +1052,7 @@ size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max) {
         out->name[kept] = label;
         out->preview[kept] = sess_preview(a, path.p);
         out->title[kept] = sess_title_read(path, a);
+        out->live[kept] = sess_lock_held(s, path);
         kept++;
     }
     out->n = kept;
@@ -948,7 +1067,10 @@ b8 session_delete(const Session *s, Str path) {
     Str file = str_drop(path, s->dir.n + 1);
     if (memchr(file.p, '/', file.n) || str_eq(file, STR(".."))) return false;
     if (s->path.n && str_eq(path, s->path)) return false;
-    return unlink(path.p) == 0;
+    if (sess_lock_held(s, path)) return false;
+    if (unlink(path.p) != 0) return false;
+    sess_lock_forget(s, path);
+    return true;
 }
 
 Str session_read(Str path, Arena *scratch) {
@@ -1054,10 +1176,20 @@ static b8 sess_answer_pending(Conv *c) {
 
 b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
                  Arena *persist, Arena *scratch) {
+    sess_lock_release(s);
     sess_set_current(s, path, name);
-    telemetry_bind(s->path);
+    s->resumed = true;
+    if (s->path.n) {
+        i32 fd = -1;
+        s->read_only = sess_lock_take(s, s->path, &fd) == SESS_LOCK_HELD;
+        s->lock_fd = fd;
+    }
+    if (s->read_only)
+        telemetry_detach();
+    else
+        telemetry_bind(s->path);
     s->written = c->n;
-    if (s->cleared) session_set_cleared(s, false);
+    if (s->cleared && !s->read_only) session_set_cleared(s, false);
 
     {
         size_t mark = scratch->off;

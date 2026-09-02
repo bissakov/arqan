@@ -458,6 +458,15 @@ static b8 save_session(Agent *ag) {
     return false;
 }
 
+#define READ_ONLY_NOTICE \
+    STR("read-only, /fork to continue in a copy")
+
+static b8 read_only_blocked(const Agent *ag) {
+    if (!ag->sess->read_only) return false;
+    tui_notice(READ_ONLY_NOTICE);
+    return true;
+}
+
 static Str mode_name(AgentMode m) {
     return m == MODE_PLAN ? STR("plan") : STR("build");
 }
@@ -2261,6 +2270,10 @@ static size_t session_delete_row(void *ud, size_t row, size_t *moved) {
         tui_notice(STR("that session is the one running: /clear first"));
         return sp->n;
     }
+    if (sp->list.live[row]) {
+        tui_notice(STR("that session is live in another " AGENT_NAME));
+        return sp->n;
+    }
     if (!session_delete(sp->ag->sess, sp->list.path[row])) {
         tui_notice(STR("could not delete that session"));
         return sp->n;
@@ -2272,6 +2285,7 @@ static size_t session_delete_row(void *ud, size_t row, size_t *moved) {
         sp->list.name[i] = sp->list.name[i + 1];
         sp->list.path[i] = sp->list.path[i + 1];
         sp->list.preview[i] = sp->list.preview[i + 1];
+        sp->list.live[i] = sp->list.live[i + 1];
         sp->rows[i] = sp->rows[i + 1];
     }
     sp->list.n = sp->n;
@@ -2301,19 +2315,26 @@ static void resume_session(Agent *ag) {
     }
 
     for (size_t i = 0; i < n; i++) {
-        if (!sp.list.title[i].n) {
+        b8 titled = sp.list.title[i].n != 0;
+        b8 live = sp.list.live[i]
+                  && !(sess->path.n && str_eq(sp.list.path[i], sess->path));
+        if (!titled && !live) {
             items[i] = (TuiCmd){sp.list.name[i], sp.list.preview[i]};
             continue;
         }
         Buf desc;
-        buf_init(&desc, scratch, sp.list.name[i].n + sp.list.preview[i].n + 8);
-        buf_puts(&desc, sp.list.name[i]);
+        buf_init(&desc, scratch, sp.list.name[i].n + sp.list.preview[i].n + 32);
+        if (titled) buf_puts(&desc, sp.list.name[i]);
+        if (live) {
+            if (titled) buf_puts(&desc, STR(" \xc2\xb7 "));
+            buf_puts(&desc, STR("live elsewhere"));
+        }
         if (sp.list.preview[i].n) {
             buf_puts(&desc, STR(" \xc2\xb7 "));
             buf_puts(&desc, sp.list.preview[i]);
         }
         items[i] =
-            (TuiCmd){sp.list.title[i],
+            (TuiCmd){titled ? sp.list.title[i] : sp.list.name[i],
                      buf_ok(&desc) ? buf_finish(&desc) : sp.list.preview[i]};
     }
     sp.rows = items;
@@ -2349,9 +2370,10 @@ static void resume_session(Agent *ag) {
     tui_clear();
     render_conv(conv, ag->cfg, ag->show_instructions, scratch);
     tui_batch_end();
-    b8 saved = save_session(ag);
+    b8 saved = sess->read_only || save_session(ag);
     if (!whole && saved)
         tui_notice(STR("session truncated: the conversation is full"));
+    if (sess->read_only) tui_notice(READ_ONLY_NOTICE);
 }
 
 static b8 resume_latest(Session *sess, Conv *conv, Arena *persist,
@@ -2775,6 +2797,7 @@ static void title_command(Agent *ag, Str arg) {
         tui_notice(STR("nothing to name yet"));
         return;
     }
+    if (read_only_blocked(ag)) return;
     if (str_eq(arg, STR("auto"))) {
         name_session(ag, true, NULL);
         return;
@@ -4509,6 +4532,7 @@ static void run_shell(Agent *ag, Str cmd) {
         tui_notice(STR("no command to run"));
         return;
     }
+    if (read_only_blocked(ag)) return;
     Str stored = str_dup(ag->persist, cmd);
     size_t slot = stored.p ? conv_add_shell(conv, stored, (Str){0}) : CONV_NONE;
     if (slot == CONV_NONE) {
@@ -4703,6 +4727,7 @@ static void compact_session(Agent *ag) {
         tui_notice(STR("nothing to compact yet"));
         return;
     }
+    if (read_only_blocked(ag)) return;
     if (no_provider(ag->cfg)) {
         tui_notice(setup_hint(ag->cfg, ag->scratch));
         return;
@@ -5702,7 +5727,7 @@ i32 main(i32 argc, char **argv) {
         g_task.exe[0] = '\0';
     tui_set_tick(task_tick, NULL);
     if (!render_verbose()) tui_set_find_expand(find_expand, &agent);
-    b8 resumed_saved = !resumed || save_session(&agent);
+    b8 resumed_saved = !resumed || sess.read_only || save_session(&agent);
 
 
     if (opts.have_prompt) {
@@ -5724,6 +5749,7 @@ i32 main(i32 argc, char **argv) {
     if (tui_is_fullscreen()) tui_set_setup_hint(setup_hint(&cfg, &scratch));
     if (truncated && resumed_saved)
         tui_notice(STR("session truncated: the conversation is full"));
+    if (sess.read_only) tui_notice(READ_ONLY_NOTICE);
 
 
     static char line[AGENT_LINE_BUF];
@@ -5878,6 +5904,7 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
     send_message:
+        if (read_only_blocked(&agent)) continue;
         if (no_provider(&cfg)) {
             tui_notice(setup_hint(&cfg, &scratch));
             continue;

@@ -41,6 +41,13 @@
 
 ### Fixed
 
+- Open a session read-only when another instance already has it live. Two
+  runs used to append to the same file at once. The instance that owns a
+  session keeps writing; a second one that resumes it replays the transcript,
+  says it is read-only, and refuses to send, so `/fork` is how to carry on in
+  a copy. The picker marks such a session, and Ctrl-X leaves it alone.
+  Sessions are independent, so any number of instances can run their own.
+
 - Stop leaving a note in place of an older call's arguments where the model
   reads it as an example. A call to `read`, `grep` or `find` old enough to be
   dropped now leaves the conversation whole, with its result, instead of
