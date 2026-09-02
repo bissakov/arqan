@@ -2425,6 +2425,15 @@ static Str preview_line(Arena *a, Str s) {
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
 }
 
+static Str escape_command_prefix(Arena *a, Str s) {
+    if (!s.n || (s.p[0] != '/' && s.p[0] != '!')) return s;
+    Buf b;
+    buf_init(&b, a, s.n + 2);
+    buf_putc(&b, '\\');
+    buf_puts(&b, s);
+    return buf_ok(&b) ? buf_finish(&b) : s;
+}
+
 static void rewind_conversation(Agent *ag) {
     Conv *conv = ag->conv;
     Session *sess = ag->sess;
@@ -2464,7 +2473,9 @@ static void rewind_conversation(Agent *ag) {
         return;
     size_t slot = at[pick];
     size_t img_off = conv->media_off[slot], img_n = conv->media_n[slot];
-    tui_set_input(conv->text[slot]);
+    size_t mark = scratch->off;
+    tui_set_input(escape_command_prefix(scratch, conv->text[slot]));
+    scratch->off = mark;
     conv_truncate(conv, slot);
     task_release(ag);
     cache_guard_begin(&g_cache);

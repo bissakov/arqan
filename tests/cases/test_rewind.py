@@ -152,3 +152,19 @@ def test_nothing_to_rewind_to_answers_in_the_notice(ctx):
     s.key("esc").sync()
     s.key("esc")
     s.wait_text("no message to go back to")
+
+
+def test_an_escaped_command_prefix_comes_back_escaped(ctx):
+    """A message that only looks like a command reloads ready to send again."""
+    s = ctx.spawn()
+    turn(ctx, s, r"\/clear", "an answer")
+    assert ctx.mock.requests[-1]["messages"][-1]["content"] == "/clear"
+    s.submit("/rewind")
+    s.wait_status("rewind to a message")
+    s.key("enter")
+    s.wait_for(lambda t: s.composer_text() == r"\/clear", "the escaped message")
+
+    ctx.scenario("text=sent+again")
+    s.key("enter")
+    s.wait_turn_done()
+    assert ctx.mock.requests[-1]["messages"][-1]["content"] == "/clear"
