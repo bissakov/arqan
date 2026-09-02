@@ -596,6 +596,33 @@ def test_a_finished_list_is_left_alone(ctx):
     assert not [r for r in results if "[step list:" in r], results
 
 
+def test_the_ask_stays_out_of_the_transcript(ctx):
+    """The ask is for the model, so the shell result keeps its own status.
+
+    The ask is appended to the result, so a shell result ends with it rather
+    than with its exit line. Rendering read the last bracketed line as the
+    status, which put the ask where the exit code belongs and pushed the
+    exit code into the output.
+    """
+    bash = json.dumps({"command": "echo hi"})
+    ctx.scenario(todo(("wire the parser", "in_progress"), final="planned"))
+    s = ctx.spawn()
+    s.submit("do the long thing")
+    s.wait_text("planned")
+    s.wait_turn_done()
+
+    ctx.scenario(f"tool=bash:{bash},tool_rounds=8,text=ok,final_text=done")
+    s.submit("carry on")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    assert [r for r in results_on_the_wire(ctx) if "[step list:" in r]
+    text = s.text()
+    assert "step list" not in text, text
+    heads = [l for l in text.splitlines() if "\u2514\u2500" in l]
+    assert heads and "exit 0" in heads[-1], text
+
+
 def test_an_update_restarts_the_count(ctx):
     """A model that keeps the list current is never interrupted about it."""
     bash = json.dumps({"command": "true"})

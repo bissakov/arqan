@@ -1208,6 +1208,10 @@ void todo_clear(void);
  * done, or when the count is short. INVARIANT: the count lives here, so every
  * tool result must pass through this, and a `todo` result resets it. */
 void todo_note_stale(Str tool, Buf *out);
+/* Drops a trailing note written by todo_note_stale. The note is addressed to
+ * the model and stays in the conversation, so the transcript strips it rather
+ * than reading it as part of what the tool answered. */
+Str todo_note_strip(Str result);
 /* Asks for a first list instead, once a turn with no list has run
  * AGENT_TODO_COLD_CALLS results and changed something. Silent for a session
  * that has ever called the tool, and asks at most once, since a model that
