@@ -291,7 +291,7 @@ static b8 cache_guard_observe(CacheGuard *g, size_t prompt_tokens,
     if (!prompt_tokens) return false;
     f64 now = agent_now_seconds();
     if (cache_read) g->armed = true;
-    if (g->last_send_s && now - g->last_send_s > AGENT_CACHE_TTL_S)
+    if (g->last_send_s > 0.0 && now - g->last_send_s > AGENT_CACHE_TTL_S)
         cache_guard_cause(g, CACHE_CAUSE_TTL, 0);
     if (!g->expect_tokens) cache_guard_cause(g, CACHE_CAUSE_FIRST, 0);
 

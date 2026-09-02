@@ -7,6 +7,7 @@ CFLAGS  ?= -std=c17 -O2 -Wall -Wextra -Wpedantic -Wconversion \
            -fstack-protector-strong -D_FORTIFY_SOURCE=2
 LDFLAGS ?= -flto=auto $(SIZE_LDFLAGS)
 LIBS    ?= -lcurl
+MATH_LIBS ?= -Wl,--as-needed -lm
 
 CFLAGS += $(EXTRA_CFLAGS)
 
@@ -81,7 +82,7 @@ minimal: $(BIN)
 
 $(BIN): $(OBJ) $(LEXBOR_OBJ)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) $(OBJ) $(LEXBOR_OBJ) -o $@ $(LDFLAGS) $(LIBS)
+	$(CC) $(CFLAGS) $(OBJ) $(LEXBOR_OBJ) -o $@ $(LDFLAGS) $(LIBS) $(MATH_LIBS)
 
 $(OBJ): $(SRC) $(wildcard src/*.c) $(wildcard src/*.h)
 	@mkdir -p $(BUILDDIR)
@@ -98,7 +99,8 @@ $(TEST_OBJ): $(SRC) $(wildcard src/*.c) $(wildcard src/*.h)
 
 $(TEST_BIN): $(TEST_OBJ) $(LEXBOR_OBJ)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) $(TEST_OBJ) $(LEXBOR_OBJ) -o $@ $(LDFLAGS) $(LIBS)
+	$(CC) $(CFLAGS) $(TEST_OBJ) $(LEXBOR_OBJ) -o $@ $(LDFLAGS) $(LIBS) \
+	    $(MATH_LIBS)
 
 $(HL_BIN): $(HL_OBJ)
 	@mkdir -p $(BINDIR)
