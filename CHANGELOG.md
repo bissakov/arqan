@@ -44,6 +44,13 @@
 
 ### Fixed
 
+- Let the transcript scroll while the search box is open. Page Up, Page Down
+  and the wheel used to snap the view back to the current match on the next
+  repaint. The view now follows a match only when the search moves to it.
+
+- Drop the search highlight when the box closes. Matches stayed painted after
+  Escape until the query was cleared by hand.
+
 - Keep the leading backslash when a rewind reloads a message. A message that
   starts with `/` or `!` is typed with a `\` in front so it is sent instead of
   run. The picker used to put the message back without it, so sending it again

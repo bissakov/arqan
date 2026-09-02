@@ -132,6 +132,64 @@ def test_the_current_match_is_highlighted(ctx):
     )
 
 
+def match_cell(s, line: str, word: str):
+    """Screen row and column of `word` on the transcript line holding `line`."""
+    for r in range(s.term.rows):
+        row = s.row(r)
+        if "find:" in row:
+            continue
+        if line in row:
+            return r, row.index(word)
+    raise AssertionError(f"{line!r} not on screen\n{s.text()}")
+
+
+def test_closing_the_box_drops_the_highlight(ctx):
+    """The highlight belongs to the box: no box, no paint on the transcript."""
+    s = ctx.spawn()
+    a_transcript(ctx, s)
+    open_find(s, "needle")
+    r, c = match_cell(s, "gamma needle three", "needle")
+    assert s.term.attr_at(r, c).bg is not None, "an open box paints its matches"
+
+    s.key("esc").sync()
+    r, c = match_cell(s, "gamma needle three", "needle")
+    assert s.term.attr_at(r, c).bg is None, "Escape leaves the transcript plain"
+
+    s.key("ctrl-r").sync()
+    r, c = match_cell(s, "gamma needle three", "needle")
+    assert s.term.attr_at(r, c).bg is not None, "the reopened box paints again"
+
+
+def test_the_box_does_not_hold_the_viewport(ctx):
+    """The box owns the keys, not the page: the reader can still scroll away.
+
+    A search puts a match on screen once. After that the reader may want the
+    lines around it, so scrolling has to move the view and stay moved.
+    """
+    ctx.scenario("words=400,paragraphs=4,chunk=16")
+    s = ctx.spawn()
+    s.submit("write a lot")
+    s.wait_turn_done()
+    ctx.scenario("text=the+last+needle")
+    s.submit("and one more")
+    s.wait_turn_done()
+
+    open_find(s, "needle")
+    assert "1 of 1" in find_row(s), find_row(s)
+    at_match = s.row(0)
+
+    s.key("pageup").sync()
+    scrolled = s.row(0)
+    assert scrolled != at_match, "Page Up moves the view off the match"
+
+    s.sync()
+    assert s.row(0) == scrolled, "a repaint does not drag it back to the match"
+
+    s.key("wheel-up").sync()
+    assert s.row(0) != scrolled, "the wheel keeps going"
+    assert "find: needle" in find_row(s), "the box stays open and keeps its query"
+
+
 def test_escape_closes_the_box_and_keeps_the_draft(ctx):
     """The composer is covered by the box, never typed into by it."""
     s = ctx.spawn()
