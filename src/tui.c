@@ -224,6 +224,7 @@ typedef struct {
     size_t row_src[TUI_SEL_ROWS];
 
     b8 find_open;
+    b8 find_follow;
     void (*find_expand)(void *ud);
     void *find_expand_ud;
     b8 find_wrapped;
@@ -1348,7 +1349,7 @@ static struct {
 static void find_row_build(size_t off, size_t len) {
     g_find.n = 0;
     size_t q = g_tui.find_q_n;
-    if (!q || off == SIZE_MAX) return;
+    if (!q || off == SIZE_MAX || !g_tui.find_open) return;
 
     size_t from = off > q - 1 ? off - (q - 1) : 0;
     size_t stop = off + len;
@@ -2798,14 +2799,17 @@ static void repaint(void) {
                          transcript_rows, 1, body_col, cols, ROW_PLAIN, force);
     }
 
-    if (g_tui.find_open && g_tui.find_cur != SIZE_MAX && !g_find.moving
-        && (g_tui.find_cur < g_tui.view_first_off
-            || g_tui.find_cur >= g_tui.view_end_off)) {
-        g_find.moving = true;
-        find_goto(g_tui.find_cur);
-        repaint();
-        g_find.moving = false;
-        return;
+    if (g_tui.find_open && g_tui.find_follow && g_tui.find_cur != SIZE_MAX
+        && !g_find.moving) {
+        if (g_tui.find_cur < g_tui.view_first_off
+            || g_tui.find_cur >= g_tui.view_end_off) {
+            g_find.moving = true;
+            find_goto(g_tui.find_cur);
+            repaint();
+            g_find.moving = false;
+            return;
+        }
+        g_tui.find_follow = false;
     }
     paint_scrollbar(first, all_rows, transcript_rows, cols, force);
     if (activity_rows > 1)
@@ -3424,6 +3428,7 @@ static void find_survey(size_t limit, size_t *count, size_t *last,
 
 static void find_goto(size_t off) {
     if (off == SIZE_MAX) return;
+    g_tui.find_follow = true;
     if (off >= g_tui.view_first_off && off < g_tui.view_end_off) return;
     size_t view = g_tui.bar_visible ? g_tui.bar_visible : 1;
     size_t keep = view - view / 3;
@@ -3440,6 +3445,7 @@ static void find_seek(void) {
         g_tui.find_count = 0;
         g_tui.find_index = 0;
         g_tui.find_cur = SIZE_MAX;
+        g_tui.find_follow = false;
         return;
     }
     size_t limit = g_tui.scroll_rows ? g_tui.view_end_off : g_tui.transcript_n;
@@ -4643,6 +4649,7 @@ static b8 scroll_key(i32 key) {
         tui_scroll_to_bottom();
     else
         return false;
+    g_tui.find_follow = false;
     return true;
 }
 
@@ -5585,6 +5592,7 @@ static void find_close(void) {
     g_tui.find_open = false;
     g_tui.find_cur = SIZE_MAX;
     g_tui.find_wrapped = false;
+    g_tui.find_follow = false;
     repaint();
 }
 
