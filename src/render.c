@@ -730,6 +730,7 @@ static void write_syntax_lines(Str body, Str source, b8 grep,
 void render_tool_result(Str name, Str args, Str result, Arena *scratch, u32 id,
                         b8 expanded, u32 ms) {
     block_begin(id, expanded);
+    result = todo_note_strip(result);
     if (str_starts(result, STR("ERROR: "))) {
         Str msg = str_drop(result, 7);
         size_t off = 0;
@@ -891,6 +892,7 @@ Str render_result_text(Str name, Str args, Str result, Arena *scratch,
                        size_t *shown, YhlResult *syntax) {
     if (shown) *shown = R_RESULT_LINES;
     if (syntax) syntax->n = 0;
+    result = todo_note_strip(result);
     if (str_starts(result, STR("ERROR: "))) return str_drop(result, 7);
     Str body = result, status = {0};
     b8 shell = str_eq(name, STR("bash")) || str_eq(name, STR("shell"));

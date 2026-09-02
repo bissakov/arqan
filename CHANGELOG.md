@@ -48,6 +48,11 @@
   and the wheel used to snap the view back to the current match on the next
   repaint. The view now follows a match only when the search moves to it.
 
+- Keep the ask for a step list out of the transcript. The ask is appended to
+  a tool result for the model to read. A shell result then ended with it
+  instead of with its exit line, so the ask was rendered where the exit code
+  belongs and the exit code was pushed into the output.
+
 - Drop the search highlight when the box closes. Matches stayed painted after
   Escape until the query was cleared by hand.
 

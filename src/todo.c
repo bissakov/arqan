@@ -260,6 +260,22 @@ void todo_note_stale(Str tool, Buf *out) {
     buf_puts(out, STR(". Send todo with the current state.]"));
 }
 
+#define TODO_NOTE_BYTES 320
+
+Str todo_note_strip(Str result) {
+    if (!result.n || result.p[result.n - 1] != ']') return result;
+    size_t window = result.n < TODO_NOTE_BYTES ? result.n : TODO_NOTE_BYTES;
+    for (size_t i = 0; i < window; i++) {
+        size_t at = result.n - 1 - i;
+        if (result.p[at] != '\n') continue;
+        Str tail = str_drop(result, at);
+        if (str_starts(tail, STR("\n\n[step list: "))
+            || str_starts(tail, STR("\n\n[no step list: ")))
+            return (Str){result.p, at};
+    }
+    return result;
+}
+
 void todo_telemetry(TelEvent *e) {
     if (!g_todo.calls) return;
     tel_int(e, "todo_calls", (i64)g_todo.calls);
