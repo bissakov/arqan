@@ -2329,7 +2329,7 @@ static void update_activity_row(size_t screen_row, size_t screen_col,
         put_safe_clipped(STR(" \u00b7 "), body_cols - used, &used);
         if (used < body_cols)
             put_safe_clipped(queued ? STR("esc to cancel message")
-                                    : STR("esc to interrupt"),
+                                    : STR("esc or ctrl-c to interrupt"),
                              body_cols - used, &used);
     }
     paint_sel_tail(screen_row, screen_cols);

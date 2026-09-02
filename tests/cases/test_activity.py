@@ -12,7 +12,7 @@ def test_spinner_names_the_wait_and_counts_it(ctx):
     s.wait_activity("thinking")
     _, elapsed = s.activity()
     assert re.fullmatch(r"\d+s", elapsed), elapsed
-    assert "esc to interrupt" in s.text()
+    assert "esc or ctrl-c to interrupt" in s.text()
     s.wait_for(lambda t: s.activity()[1] != elapsed, "the clock to advance")
     ctx.mock.release()
     s.wait_turn_done()
@@ -58,7 +58,7 @@ def test_spinner_leaves_when_the_turn_ends(ctx):
     s.wait_text("done")
     s.wait_turn_done()
     assert s.activity() is None, s.text()
-    assert "esc to interrupt" not in s.text()
+    assert "to interrupt" not in s.text()
     ctx.check_screen(s)
 
 

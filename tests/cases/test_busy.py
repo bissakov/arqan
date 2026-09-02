@@ -202,6 +202,23 @@ def test_escape_cancels_a_queued_message_without_interrupting(ctx):
     assert "[interrupted]" not in s.text(), s.text()
 
 
+def test_ctrl_c_stops_the_turn_and_keeps_the_typed_text(ctx):
+    """A running turn outranks the composer.
+
+    Idle, Ctrl-C clears the line. While the agent works, the same key stops
+    the agent and leaves the draft where it was: the interrupt answers the
+    louder thing, and clearing the line cannot be undone.
+    """
+    s = running_turn(ctx)
+    s.type("half typed").sync()
+    s.key("ctrl-c")
+    s.wait_text("[interrupted]")
+    s.wait_turn_done()
+
+    assert s.composer_text() == "half typed", s.composer_text()
+    assert "done" not in s.text(), s.text()
+
+
 def test_shift_enter_does_not_interrupt_a_running_turn(ctx):
     """Shift-Enter edits the follow-up draft while the response continues."""
     s = running_turn(ctx)
