@@ -189,6 +189,22 @@ def test_a_project_config_may_define_a_provider(ctx):
     assert ctx.mock.requests[-1]["model"] == "repo-model"
 
 
+def test_a_project_config_may_not_raise_the_task_limit(ctx):
+    """How many delegates a turn may run is the user's spend, so a repository
+    does not get to widen it."""
+    ctx.write_project_config("subagent_tasks = 8\n")
+    ctx.scenario("text=ok")
+    out = ctx.run_cli("-p", "hello")
+    assert "subagent_tasks" in out.stderr, out.stderr
+    assert "may not set it" in out.stderr, out.stderr
+    desc = ""
+    for t in ctx.mock.requests[-1].get("tools") or []:
+        fn = t.get("function", t)
+        if fn.get("name") == "task":
+            desc = fn.get("description", "")
+    assert "One task runs at a time" in desc, desc
+
+
 # ---- bad input -------------------------------------------------------------
 
 def test_an_unknown_key_is_reported(ctx):

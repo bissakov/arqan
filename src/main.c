@@ -826,7 +826,21 @@ static TaskWorker *task_find(u32 id) {
     return NULL;
 }
 
-static TaskWorker *task_slot(size_t *slot) {
+static size_t task_active(void) {
+    size_t n = 0;
+    for (size_t i = 0; i < AGENT_MAX_TASKS; i++)
+        if (g_task.w[i].sub.live || g_task.w[i].running) n++;
+    return n;
+}
+
+static i32 task_limit(const Agent *ag) {
+    i32 limit = ag->cfg->subagent_tasks;
+    if (limit < 1) return 1;
+    return limit > AGENT_MAX_TASKS ? AGENT_MAX_TASKS : limit;
+}
+
+static TaskWorker *task_slot(size_t *slot, i32 limit) {
+    if (task_active() >= (size_t)limit) return NULL;
     for (size_t i = 0; i < AGENT_MAX_TASKS; i++) {
         if (g_task.w[i].sub.live || g_task.w[i].running) continue;
         *slot = i;
@@ -1471,12 +1485,13 @@ static void task_answer(Agent *ag, Str args, Str *result) {
         return;
     }
     size_t slot = 0;
-    w = task_slot(&slot);
+    i32 limit = task_limit(ag);
+    w = task_slot(&slot, limit);
     if (!w) {
         buf_putf(&out,
-                 "ERROR: %u tasks are already active. Collect or drop one "
-                 "before starting another.",
-                 (unsigned)AGENT_MAX_TASKS);
+                 "ERROR: %d task%s already active, which is the limit this "
+                 "session sets. Collect or drop one before starting another.",
+                 limit, limit == 1 ? " is" : "s are");
         *result = buf_finish(&out);
         return;
     }
@@ -3806,9 +3821,10 @@ enum {
     SET_CACHE_GUARD,
     SET_SUBAGENTS,
     SET_SUBAGENT_MODEL,
+    SET_SUBAGENT_TASKS,
     SET_SUBAGENT_SLICE
 };
-#define SET_MAX_ROWS (25 + AGENT_MAX_TOOLS)
+#define SET_MAX_ROWS (26 + AGENT_MAX_TOOLS)
 
 static Str setting_label(Arena *a, Str label, const char *box) {
     Buf b;
@@ -3985,6 +4001,12 @@ static i32 slice_ms_step(i32 cur, i32 dir) {
     return cur < SLICE_STEP_MS ? 0 : cur - SLICE_STEP_MS;
 }
 
+static i32 task_limit_step(i32 cur, i32 dir) {
+    i32 next = cur + (dir > 0 ? 1 : -1);
+    if (next < 1) return 1;
+    return next > AGENT_MAX_TASKS ? AGENT_MAX_TASKS : next;
+}
+
 #define SET_MAX_OPTIONS 64
 static size_t list_options(Str list, Str *out, size_t max) {
     size_t n = 0, off = 0;
@@ -4096,7 +4118,7 @@ static size_t settings_build(void *ud) {
         setting_check(rows_arena, cfg->subagents, STR("Subagents")),
         STR("Offer the task tool, which delegates a read-only investigation")};
 
-    for (size_t i = 0; i < reg->n && n + 10 < SET_MAX_ROWS; i++) {
+    for (size_t i = 0; i < reg->n && n + 11 < SET_MAX_ROWS; i++) {
         if (!tools_can_disable(reg, i)) continue;
         kind[n] = SET_TOOL;
         v->tool[n] = i;
@@ -4164,6 +4186,12 @@ static size_t settings_build(void *ud) {
                        setting_options(rows_arena, subagent_model_opts, 2,
                                        cfg->subagent_small ? 1 : 0, &marks[n])};
     n++;
+    char tasks[16];
+    snprintf(tasks, sizeof tasks, "%d task%s", cfg->subagent_tasks,
+             cfg->subagent_tasks == 1 ? "" : "s");
+    kind[n] = SET_SUBAGENT_TASKS;
+    rows[n++] = (TuiCmd){setting_value(rows_arena, STR("Delegate limit")),
+                         str_dup(rows_arena, str_c(tasks))};
     char slice[32];
     if (cfg->subagent_slice_ms > 0)
         snprintf(slice, sizeof slice, "%ds", cfg->subagent_slice_ms / 1000);
@@ -4229,6 +4257,7 @@ static b8 setting_shapes_request(u8 kind) {
         case SET_STREAM:
         case SET_MAX_TOKENS:
         case SET_SUBAGENTS:
+        case SET_SUBAGENT_TASKS:
         case SET_EFFORT:
         case SET_BUDGET: return true;
         default: return false;
@@ -4363,6 +4392,15 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
             remember_ui(scratch, CONF_SUBAGENT_MODEL,
                         cfg->subagent_small ? STR("small") : STR("main"));
             break;
+        case SET_SUBAGENT_TASKS: {
+            cfg->subagent_tasks = task_limit_step(cfg->subagent_tasks, delta);
+            tools_set_task_limit(ag->tools, cfg->subagent_tasks);
+            cache_guard_cause(&g_cache, CACHE_CAUSE_TOOLS, 0);
+            char value[16];
+            snprintf(value, sizeof value, "%d", cfg->subagent_tasks);
+            remember_ui(scratch, CONF_SUBAGENT_TASKS, str_c(value));
+            break;
+        }
         case SET_SUBAGENT_SLICE: {
             cfg->subagent_slice_ms =
                 slice_ms_step(cfg->subagent_slice_ms, delta);
@@ -5471,7 +5509,7 @@ static i32 task_worker_main(const CliOpts *opts) {
     cfg.stream = json_bool(j, STR("stream"));
 
     ToolRegistry tools;
-    tools_init(&tools, &persist, cfg.shell_timeout_ms, false);
+    tools_init(&tools, &persist, cfg.shell_timeout_ms, false, 1);
     tools_set_interactive(false);
     char err[AGENT_TOOL_ERR] = {0};
     if (disable.n) tools_disable_list(&tools, disable, err, sizeof err);
@@ -5592,7 +5630,8 @@ i32 main(i32 argc, char **argv) {
     arena_reset(&scratch);
 
     ToolRegistry tools;
-    tools_init(&tools, &persist, cfg.shell_timeout_ms, cfg.subagents);
+    tools_init(&tools, &persist, cfg.shell_timeout_ms, cfg.subagents,
+               cfg.subagent_tasks);
     b8 interactive =
         !opts.have_prompt && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
     tools_set_interactive(interactive);

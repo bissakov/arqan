@@ -2075,8 +2075,24 @@ b8 tools_disable_list(ToolRegistry *r, Str names, char *err, size_t err_cap) {
     return true;
 }
 
+static struct {
+    char text[1024];
+} g_task_desc;
+
+#define TASK_DESC_HEAD                                                \
+    "Delegate an investigation to a subagent that only reads, "       \
+    "searches and fetches: it has read, grep, find, internet_search " \
+    "and page_fetch, and cannot run commands, change files or ask "   \
+    "the user anything. Give it a self-contained prompt; it answers " \
+    "once, with findings and file paths. It runs in the background: " \
+    "the call answers at once with an id, you carry on with other "   \
+    "work, and task(id=N) collects the report or says what it has "   \
+    "done so far. Add wait_ms to wait for it when you have nothing "  \
+    "else to do. Keep polling rather than leaving tasks unattended. "
+#define TASK_DESC_TAIL ", and task ids last for this conversation only."
+
 void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
-                b8 subagents) {
+                b8 subagents, i32 subagent_tasks) {
     r->name = arena_new(persist, Str, AGENT_MAX_TOOLS);
     r->desc = arena_new(persist, Str, AGENT_MAX_TOOLS);
     r->brief = arena_new(persist, Str, AGENT_MAX_TOOLS);
@@ -2276,18 +2292,7 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
         "Hand the plan over", TOOL_IN_PLAN | TOOL_FIXED, TOOL_APPROVAL_NONE,
         "{\"type\":\"object\",\"properties\":{\"plan\":{\"type\":\"string\"}},\"required\":[\"plan\"]}",
         tool_agent_only);
-    ADD("task",
-        "Delegate an investigation to a subagent that only reads, "
-        "searches and fetches: it has read, grep, find, internet_search "
-        "and page_fetch, and cannot run commands, change files or ask "
-        "the user anything. Give it a self-contained prompt; it answers "
-        "once, with findings and file paths. It runs in the background: "
-        "the call answers at once with an id, you carry on with other "
-        "work, and task(id=N) collects the report or says what it has "
-        "done so far. Add wait_ms to wait for it when you have nothing "
-        "else to do. Keep polling rather than leaving tasks unattended. "
-        "Eight tasks run together, and task ids last for this conversation "
-        "only.",
+    ADD("task", TASK_DESC_HEAD "One task runs at a time" TASK_DESC_TAIL,
         "Delegate a read-only investigation", BOTH | TOOL_FIXED,
         TOOL_APPROVAL_NONE,
         "{\"type\":\"object\",\"properties\":{"
@@ -2305,6 +2310,7 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
         "\"required\":[]}",
         tool_agent_only);
     tools_set_subagents(r, subagents);
+    tools_set_task_limit(r, subagent_tasks);
 #undef READS
 #undef BOTH
 #undef ADD
@@ -2313,6 +2319,20 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
 void tools_set_subagents(ToolRegistry *r, b8 on) {
     size_t id = tools_find(r, STR("task"));
     if (id != TOOL_NONE) r->off[id] = !on;
+}
+
+void tools_set_task_limit(ToolRegistry *r, i32 tasks) {
+    size_t id = tools_find(r, STR("task"));
+    if (id == TOOL_NONE || tasks < 1) return;
+    if (tasks > AGENT_MAX_TASKS) tasks = AGENT_MAX_TASKS;
+    char *text = g_task_desc.text;
+    size_t cap = sizeof g_task_desc.text;
+    int n = tasks == 1 ? snprintf(text, cap, "%s",
+                                  TASK_DESC_HEAD "One task runs at a "
+                                                 "time" TASK_DESC_TAIL)
+                       : snprintf(text, cap, "%sUp to %d tasks run together%s",
+                                  TASK_DESC_HEAD, tasks, TASK_DESC_TAIL);
+    if (n > 0 && (size_t)n < cap) r->desc[id] = (Str){text, (size_t)n};
 }
 
 size_t tools_find(const ToolRegistry *r, Str name) {

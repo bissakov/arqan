@@ -9,14 +9,17 @@
   the background while the parent keeps working. Poll it with `task(id=N)`,
   or add `wait_ms` to wait for the written report.
 
-- Run up to eight tasks at the same time. Each keeps its own id, transcript
-  and report, and starting a ninth is refused until one is collected or
-  dropped. Ctrl-O shows the task last started or last polled.
+- Run one task at a time, or as many as `subagent_tasks` allows, up to eight.
+  A start over the limit is refused until a task is collected or dropped, and
+  the task tool is told how many the session allows. Each task keeps its own
+  id, transcript and report. Ctrl-O shows the task last started or last
+  polled. A project config file may not set `subagent_tasks`, so a repository
+  cannot widen what a turn spends.
 
 - Add `subagents` to turn the `task` tool on and off, `subagent_model` to run
-  the delegate on the small model, and `subagent_slice_ms` to set how long a
-  fallback slice runs when a worker cannot start. All three are rows of the
-  settings screen.
+  the delegate on the small model, `subagent_tasks` to set how many tasks run
+  at once, and `subagent_slice_ms` to set how long a fallback slice runs when
+  a worker cannot start. All four are rows of the settings screen.
 
 - Watch a delegated task. It now has its own transcript, shown the same way
   the conversation is. Ctrl-O switches to it and back, it updates as the task
