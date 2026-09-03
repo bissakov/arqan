@@ -64,7 +64,9 @@ def test_esc_cancels_the_picker(ctx):
 def test_ten_models_still_use_the_plain_popup(ctx):
     """The searchable popup starts above ten entries, not at it."""
     ctx.scenario("model_count=10")
-    s = ctx.spawn()
+    # The live model is one of the ten: an unlisted one would keep a row of
+    # its own and make eleven.
+    s = ctx.spawn(ARQAN_MODEL="model-000")
     open_picker(ctx, s)
     assert "search:" not in s.text(), s.text()
 
@@ -671,3 +673,102 @@ def test_ctrl_e_configures_the_row_rather_than_the_session(ctx):
     assert profile == {"context_window": "123456"}, profile
     assert s.status_field(1) == "alpha", "the session is untouched"
     assert not s.status_field(-2).endswith("/123k"), s.status_line()
+
+
+# ---- the model the session is on -----------------------------------------
+def one_provider(ctx, model="private-model", profile=""):
+    """`work` serving `model`, which its listing need not mention."""
+    ctx.write_config(
+        f'[providers.work]\nbase_url = "{ctx.mock.base_url}"\n'
+        f'api = "openai"\n' + profile)
+    p = ctx.state_file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f"provider = work\nmodel = {model}\n")
+
+
+def open_one_provider_picker(ctx, model="private-model", profile="",
+                             models="models=alpha|beta"):
+    ctx.scenario(models)
+    one_provider(ctx, model=model, profile=profile)
+    s = ctx.spawn(ARQAN_MODEL=None, ARQAN_BASE_URL=None, ARQAN_API_KEY=None)
+    open_picker(ctx, s)
+    return s
+
+
+def test_a_model_the_listing_omits_keeps_a_row(ctx):
+    """The picker must show the model the session is on, listed or not."""
+    s = open_one_provider_picker(ctx)
+    assert "private-model" in s.popup_selected(), s.popup_selected()
+    assert "current" in s.popup_selected(), s.popup_selected()
+    assert picker_rows(s, ["alpha", "beta", "private-model"]) == \
+        ["alpha", "beta", "private-model"], s.text()
+
+
+def test_a_model_the_listing_omits_can_be_configured(ctx):
+    """Ctrl-E reaches it too: settings are the reason the row is needed."""
+    s = open_one_provider_picker(ctx)
+    s.key("ctrl-e")
+    s.wait_text("context window")
+    s.type("200000").key("enter")
+    s.wait_text("Named efforts")
+    s.key("enter")
+    s.wait_text("model settings saved")
+    profile = ctx.settings(ctx.config_file())[
+        'providers.work.models."private-model"']
+    assert profile == {"context_window": "200000"}, profile
+
+
+def test_a_model_the_listing_omits_can_be_pinned(ctx):
+    """Unpinning takes the row of a pin, but not the row of the live model."""
+    s = open_one_provider_picker(ctx)
+    s.key("ctrl-f").sync()
+    assert "* private-model" in s.text(), s.text()
+    assert ctx.settings(ctx.state_file())["favorites.work"]["models"] == \
+        "private-model", ctx.settings(ctx.state_file())
+    s.key("ctrl-f").sync()
+    assert "* private-model" not in s.text(), s.text()
+    assert "private-model" in s.text(), "the live model keeps its row"
+
+
+def test_a_reasoning_template_that_is_not_an_object_is_refused(ctx):
+    """A bad template is a failed turn later, so it is caught where typed."""
+    s = open_one_provider_picker(ctx, model="alpha", models="models=alpha")
+    s.key("ctrl-e")
+    s.wait_text("context window")
+    s.key("enter")
+    s.wait_text("Custom JSON")
+    s.key("down", "down", "down", "enter")
+    s.wait_text("request JSON object")
+    s.type("[1, 2]").key("enter")
+    s.wait_text("reasoning template must be a JSON object")
+    assert 'providers.work.models."alpha"' not in \
+        ctx.settings(ctx.config_file()), ctx.settings(ctx.config_file())
+
+
+def test_switching_the_reasoning_control_keeps_the_other_list(ctx):
+    """The lists are definitions: choosing one control does not delete them."""
+    s = open_one_provider_picker(
+        ctx, model="alpha", models="models=alpha",
+        profile='\n[providers.work.models."alpha"]\n'
+                'reasoning_efforts = "low,high"\n'
+                'thinking_budgets = "1024,4096"\n'
+                'thinking_budget = "4096"\n')
+    s.key("ctrl-e")
+    s.wait_text("context window")
+    s.key("enter")
+    s.wait_text("Token budgets")
+    assert "Token budgets" in s.popup_selected(), \
+        "the control in use opens selected"
+    s.key("up", "enter")
+    s.wait_text("reasoning efforts")
+    s.key("enter")                       # keep the list as it stands
+    s.wait_text("active effort")
+    s.type("high").key("enter")
+    s.wait_text("model settings saved")
+    profile = ctx.settings(ctx.config_file())[
+        'providers.work.models."alpha"']
+    assert profile == {
+        "reasoning_efforts": "low,high",
+        "reasoning_effort": "high",
+        "thinking_budgets": "1024,4096",
+    }, profile

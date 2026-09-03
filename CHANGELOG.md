@@ -48,6 +48,21 @@
   and the wheel used to snap the view back to the current match on the next
   repaint. The view now follows a match only when the search moves to it.
 
+- Keep a `/model` row for the model the session is on, even when its provider
+  does not list it. A model entered by hand with Ctrl-O, or one served by a
+  provider that could not be reached, had no row, so Ctrl-F could not pin it
+  and Ctrl-E could not reach its settings. The cursor opens on that row, and
+  unpinning it leaves it where it is.
+
+- Check a custom reasoning template where it is typed. Ctrl-E used to store
+  anything, so text that is not a JSON object failed the next turn instead of
+  the dialog.
+
+- Keep the other reasoning list when the control changes. Ctrl-E offers named
+  efforts, token budgets and a custom template; choosing one used to delete
+  the lists of the others. Only `Off` clears them now, and the dialog opens on
+  the control the model is using.
+
 - Keep the ask for a step list out of the transcript. The ask is appended to
   a tool result for the model to read. A shell result then ended with it
   instead of with its exit line, so the ask was rendered where the exit code

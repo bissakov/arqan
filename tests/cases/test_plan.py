@@ -613,7 +613,9 @@ def test_ask_user_lifts_the_transcript_out_from_under_the_picker(ctx):
 
 def test_a_command_picker_leaves_the_transcript_where_it_was(ctx):
     """Only a screen asking about a block lifts it: /model covers as before."""
-    s = ctx.spawn(cols=80, rows=24)
+    # The live model is the one the listing names, so the picker is the one
+    # row it has always been.
+    s = ctx.spawn(cols=80, rows=24, ARQAN_MODEL="mock")
     to_plan(s)
     report_turn(ctx, s)
     assert any("report line 19" in row for row in s.screen.lines())

@@ -742,6 +742,7 @@ typedef struct {
     Str reasoning_template;
     size_t context_window;
     b8 base_url_set;
+    b8 model_set;
     Str system_prompt;
     Str plan_prompt;
     PromptSources system_sources, plan_sources;

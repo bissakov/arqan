@@ -413,7 +413,9 @@ def test_moving_the_conversation_keeps_the_chosen_small_model(ctx):
         "provider = mock\nsmall_model = tiny\nsmall_provider = spare\n")
     s.submit("/model")
     s.wait_status("pick a model")
-    s.key("down", "down").sync()
+    # The cursor opens on the live pair, which no listing names, so it is the
+    # last row and the endpoints are above it.
+    s.key("up").sync()
     assert "@ other" in s.popup_selected(), s.popup_selected()
     s.key("enter")
     s.wait_text("@ other")
