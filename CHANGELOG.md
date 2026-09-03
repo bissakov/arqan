@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Build the portable Linux archive from a pinned builder image. The image was
+  rebuilt from the Alpine repositories on every release, so one package update
+  changed the binary and the archive could not be checked by rebuilding it.
+
 ## [0.8.0] - 2026-09-03
 
 ### Added
