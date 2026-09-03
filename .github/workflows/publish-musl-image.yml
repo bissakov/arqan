@@ -1,0 +1,63 @@
+name: Publish musl builder image
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: publish-musl-image
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: Sign in to the container registry
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${{ secrets.GITHUB_TOKEN }}" |
+            docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build and push the builder image
+        id: publish
+        env:
+          ARQAN_MUSL_REPOSITORY: ghcr.io/${{ github.repository_owner }}/arqan-linux-musl
+        run: |
+          set -euo pipefail
+          ARQAN_MUSL_REPOSITORY=$(printf '%s' "$ARQAN_MUSL_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          export ARQAN_MUSL_REPOSITORY
+          scripts/publish-musl-image.sh
+          digest=$(sed -n 's/^PINNED_IMAGE=//p' scripts/build-musl.sh)
+          [ -n "$digest" ] || { echo 'no digest was recorded' >&2; exit 1; }
+          printf 'digest=%s\n' "$digest" >>"$GITHUB_OUTPUT"
+      - name: Build the portable binaries in the pushed image
+        env:
+          ARQAN_MUSL_IMAGE: ${{ steps.publish.outputs.digest }}
+        run: scripts/build-musl.sh --no-test
+      - name: Report the digest and what it builds
+        run: |
+          set -euo pipefail
+          {
+            echo '## Pin this in `scripts/build-musl.sh`'
+            echo
+            echo '```sh'
+            echo 'PINNED_IMAGE=${{ steps.publish.outputs.digest }}'
+            echo '```'
+            echo
+            echo 'Binaries this image produced:'
+            echo
+            echo '```'
+            sha256sum bin/musl/arqan bin/musl/arqan-highlight
+            echo '```'
+            echo
+            echo 'Set the package to public, or no other host can pull it.'
+          } >>"$GITHUB_STEP_SUMMARY"
+      - name: Sign out of the container registry
+        if: always()
+        run: docker logout ghcr.io
