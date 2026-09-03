@@ -2,110 +2,100 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-03
+
 ### Added
 
 - Delegate an investigation with the `task` tool. It starts a subagent with
-  its own conversation that can only read, search and fetch. The task runs in
-  the background while the parent keeps working. Poll it with `task(id=N)`,
-  or add `wait_ms` to wait for the written report.
-
-- Run one task at a time, or as many as `subagent_tasks` allows, up to eight.
-  A start over the limit is refused until a task is collected or dropped, and
-  the task tool is told how many the session allows. Each task keeps its own
-  id, transcript and report. Ctrl-O shows the task last started or last
-  polled. A project config file may not set `subagent_tasks`, so a repository
-  cannot widen what a turn spends.
+  its own conversation that can only read, search and fetch. It runs in the
+  background while the parent keeps working. Poll it with `task(id=N)`, or
+  add `wait_ms` to wait for the report, which names the model it ran on.
+  ([`13b0d6b`])
 
 - Add `subagents` to turn the `task` tool on and off, `subagent_model` to run
   the delegate on the small model, `subagent_tasks` to set how many tasks run
-  at once, and `subagent_slice_ms` to set how long a fallback slice runs when
-  a worker cannot start. All four are rows of the settings screen.
+  at once, up to eight, and `subagent_slice_ms` to set the fallback slice.
+  All four are rows of the settings screen. A project config file may not set
+  `subagent_tasks`, so a repository cannot widen what a turn spends.
+  ([`13b0d6b`])
 
 - Watch a delegated task. It now has its own transcript, shown the same way
-  the conversation is. Ctrl-O switches to it and back, it updates as the task
-  works, and it names the model and provider the task runs on. The transcript
-  stays there after the task reports, until the next task starts or the
-  conversation is cleared.
-
-- Name the delegate's model and provider in the report the parent reads, so
-  a resumed session still says what the task ran on.
+  the conversation is. Ctrl-O switches to it and back, and it names the model
+  and provider the task runs on. It stays until the next task starts or the
+  conversation is cleared. ([`7bb66a9`])
 
 - Keep the description of a picked answer in the transcript. An `ask` result
-  used to show the label alone; it now shows the detail the question offered
-  with it, live and in a resumed session.
+  used to show the label alone; it now shows the detail offered with it.
+  ([`c3b47af`])
 
 - Send `prompt_cache_key` on every OpenAI request. An OpenAI-compatible
-  endpoint routes a request to a machine by the prompt's prefix and this key,
-  so one value per working directory keeps a session's turns, and the next
-  session in that directory, on the machine that already holds the prefix.
-  The value is a hash; the path is not sent. A `reasoning_template` that sets
-  the same field is now refused, as one that sets any other field the request
-  owns already is.
+  endpoint routes a request by the prompt's prefix and this key, so a
+  session's turns, and the next session in the same directory, land on the
+  machine that already holds the prefix. The value is a hash; the path is not
+  sent. A `reasoning_template` that sets the same field is now refused.
+  ([`7716054`])
+
+### Changed
+
+- Name Ctrl-C in the hint shown while a turn runs. It read `esc to
+  interrupt` and now reads `esc or ctrl-c to interrupt`. ([`01b69c2`])
 
 ### Fixed
 
 - Let the transcript scroll while the search box is open. Page Up, Page Down
-  and the wheel used to snap the view back to the current match on the next
-  repaint. The view now follows a match only when the search moves to it.
+  and the wheel used to snap the view back to the current match. It now
+  follows a match only when the search moves to it. ([`9f1ba8f`])
 
 - Keep a `/model` row for the model the session is on, even when its provider
-  does not list it. A model entered by hand with Ctrl-O, or one served by a
-  provider that could not be reached, had no row, so Ctrl-F could not pin it
-  and Ctrl-E could not reach its settings. The cursor opens on that row, and
-  unpinning it leaves it where it is.
+  does not list it, so Ctrl-F can pin a model entered by hand and Ctrl-E can
+  reach its settings. ([`8ae12cf`])
 
 - Check a custom reasoning template where it is typed. Ctrl-E used to store
   anything, so text that is not a JSON object failed the next turn instead of
-  the dialog.
+  the dialog. ([`8ae12cf`])
 
 - Keep the other reasoning list when the control changes. Ctrl-E offers named
   efforts, token budgets and a custom template; choosing one used to delete
-  the lists of the others. Only `Off` clears them now, and the dialog opens on
-  the control the model is using.
+  the lists of the others. Only `Off` clears them now. ([`8ae12cf`])
 
 - Keep the ask for a step list out of the transcript. The ask is appended to
-  a tool result for the model to read. A shell result then ended with it
-  instead of with its exit line, so the ask was rendered where the exit code
-  belongs and the exit code was pushed into the output.
+  a tool result for the model to read, so a shell result ended with it
+  instead of with its exit line. ([`241fd8c`])
 
 - Drop the search highlight when the box closes. Matches stayed painted after
-  Escape until the query was cleared by hand.
+  Escape until the query was cleared by hand. ([`9f1ba8f`])
 
 - Keep the leading backslash when a rewind reloads a message. A message that
   starts with `/` or `!` is typed with a `\` in front so it is sent instead of
-  run. The picker used to put the message back without it, so sending it again
-  ran a command or a shell line.
+  run; the picker used to put it back without it. ([`0c2edb3`])
 
 - Link the math library, so a build without link-time optimization and
   section garbage collection resolves the `ceil` call in the vendored HTML
-  parser. `make asan` and `make test-asan` failed to link on a system whose
-  linker will not take a math symbol from `libc` alone.
+  parser. `make asan` and `make test-asan` failed to link on some systems.
+  ([`e598376`])
 
 - Open a session read-only when another instance already has it live. Two
-  runs used to append to the same file at once. The instance that owns a
-  session keeps writing; a second one that resumes it replays the transcript,
-  says it is read-only, and refuses to send, so `/fork` is how to carry on in
-  a copy. The picker marks such a session, and Ctrl-X leaves it alone.
-  Sessions are independent, so any number of instances can run their own.
+  runs used to append to the same file at once. The second one replays the
+  transcript, says it is read-only, and refuses to send, so `/fork` is how to
+  carry on in a copy. The picker marks such a session. ([`61d1498`])
 
 - Stop leaving a note in place of an older call's arguments where the model
-  reads it as an example. A call to `read`, `grep` or `find` old enough to be
-  dropped now leaves the conversation whole, with its result, instead of
-  being described; so does a call the tool refused. `patch` and `write` keep
-  their arguments however old the call is, so a retry has something to work
-  from. Notes that remain name the call they stand for.
+  reads it as an example. A `read`, `grep` or `find` call old enough to be
+  dropped now leaves the conversation whole, with its result, as does a call
+  the tool refused. `patch` and `write` keep their arguments. ([`143cc85`])
+
 - Refuse a tool call built from the note left where an older call's arguments
   were dropped. A model that read the note as an example used to have the call
-  run and fail with a missing argument.
+  run and fail with a missing argument. ([`cc33579`])
+
 - Keep one result per tool call when a session was answered twice, which
   happens when a second run resumes a session the first is still writing.
-  The provider used to refuse the whole conversation.
+  The provider used to refuse the whole conversation. ([`cc33579`])
+
 - Redraw tables and rules when the terminal is resized. A table drawn for a
-  wide window used to break apart once the window narrowed; it is now laid
-  out again for the new width.
-- Keep the scrolled transcript in place when the terminal is resized. The
-  view used to slide towards the end of the conversation as the window
-  changed width.
+  wide window used to break apart once the window narrowed. The scrolled
+  transcript also stays in place instead of sliding towards the end.
+  ([`0429772`])
 
 ## [0.7.0] - 2026-08-25
 
@@ -489,7 +479,8 @@
 - Portable Linux x86_64 archive, installer, checksum, and draft release
   automation.
 
-[Unreleased]: https://github.com/bissakov/arqan/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/bissakov/arqan/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/bissakov/arqan/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/bissakov/arqan/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/bissakov/arqan/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/bissakov/arqan/compare/v0.4.0...v0.5.0
@@ -498,6 +489,20 @@
 [0.2.0]: https://github.com/bissakov/arqan/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bissakov/arqan/releases/tag/v0.1.0
 
+[`13b0d6b`]: https://github.com/bissakov/arqan/commit/13b0d6bfd60d97bb318cecddf1dffef0a7fefc07
+[`7bb66a9`]: https://github.com/bissakov/arqan/commit/7bb66a97ad127ef20ea341577a91c7996bcdd416
+[`c3b47af`]: https://github.com/bissakov/arqan/commit/c3b47af1ea783fd5e2baae425f7d2b065b4c120b
+[`7716054`]: https://github.com/bissakov/arqan/commit/7716054a385c7d820ba1486c987373af585b2d73
+[`01b69c2`]: https://github.com/bissakov/arqan/commit/01b69c2634a2c2eeb3efd6541e85e6e9976596fe
+[`9f1ba8f`]: https://github.com/bissakov/arqan/commit/9f1ba8ffaa0f2964030353f6f193cc7b0cb208ed
+[`8ae12cf`]: https://github.com/bissakov/arqan/commit/8ae12cfce18ebf8d0323dcc9c6e8b4f04d1dae9b
+[`241fd8c`]: https://github.com/bissakov/arqan/commit/241fd8c61754ab823564756d51cfe2fc6375d44e
+[`0c2edb3`]: https://github.com/bissakov/arqan/commit/0c2edb30218e56d0bbc241fa03461d2d3e6ce708
+[`e598376`]: https://github.com/bissakov/arqan/commit/e5983761f5e80eba4bcdab2339f384bf25ff7371
+[`61d1498`]: https://github.com/bissakov/arqan/commit/61d1498f32cfa9d14e0e37270f4054050d89b3fc
+[`143cc85`]: https://github.com/bissakov/arqan/commit/143cc85f367d21bbd96d212c2fe91b34febb5d52
+[`cc33579`]: https://github.com/bissakov/arqan/commit/cc33579d75d08ecfd88cbbe77ce1edd56b2e418b
+[`0429772`]: https://github.com/bissakov/arqan/commit/042977259a6079bff96add074666b4c2c7ecde54
 [`f46c4ca`]: https://github.com/bissakov/arqan/commit/f46c4ca47365d0c4dbb1e01af0b170ca9bfb2c39
 [`a48577c`]: https://github.com/bissakov/arqan/commit/a48577c779726db76ccdf9989df95473eea0f3dd
 [`403fec6`]: https://github.com/bissakov/arqan/commit/403fec613497120afa8423faacc22a97856e180e
