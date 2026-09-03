@@ -363,6 +363,7 @@ b8 config_set_model(Config *c, Str model) {
     Str saved = config_owned(c->owned_model, sizeof c->owned_model, model);
     if (!saved.p) return false;
     c->model = saved;
+    c->model_set = true;
     return true;
 }
 
@@ -461,6 +462,7 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
     c->base_url = conf_str(conf, CONF_BASE_URL);
     c->base_url_set = c->base_url.n != 0;
     c->model = conf_str(conf, CONF_MODEL);
+    c->model_set = c->model.n != 0;
     c->small_model = conf_str(conf, CONF_SMALL_MODEL);
 
     c->small_provider =

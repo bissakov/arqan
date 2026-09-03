@@ -2895,6 +2895,23 @@ typedef struct {
 } ModelPick;
 
 
+static void profile_text(char *out, size_t cap, Str v) {
+    if (!v.n) {
+        out[0] = '\0';
+        return;
+    }
+    snprintf(out, cap, "%.*s", (i32)v.n, v.p);
+}
+
+static b8 reasoning_template_ok(Str templ, Arena *scratch) {
+    size_t mark = scratch->off;
+    const JVal *v = json_parse(scratch, templ);
+    b8 ok = v && v->type == J_OBJ;
+    scratch->off = mark;
+    if (!ok) tui_notice(STR("reasoning template must be a JSON object"));
+    return ok;
+}
+
 static b8 edit_model_profile(Config *cfg, Str provider, Str model,
                              Arena *scratch) {
     if (!provider.n || !model.n) {
@@ -2913,12 +2930,14 @@ static b8 edit_model_profile(Config *cfg, Str provider, Str model,
     if (old.context_window)
         snprintf(window, sizeof window, "%zu", old.context_window);
     const TuiCmd modes[] = {
-        {STR("Off"), STR("Send no reasoning fields")},
+        {STR("Off"), STR("Send no reasoning fields, and forget the lists")},
         {STR("Named efforts"), STR("Choose from user-defined string values")},
         {STR("Token budgets"), STR("Choose from user-defined token counts")},
         {STR("Custom JSON"), STR("Add a user-defined request object")},
     };
     size_t mode = old.reasoning_template.n  ? 3
+                  : old.reasoning_effort.n  ? 1
+                  : old.thinking_budget.n   ? 2
                   : old.reasoning_efforts.n ? 1
                   : old.thinking_budgets.n  ? 2
                                             : 0;
@@ -2928,31 +2947,31 @@ static b8 edit_model_profile(Config *cfg, Str provider, Str model,
                      TUI_PICK_FIRST, mode, &mode))
         return false;
     if (mode == 1) {
-        snprintf(efforts, sizeof efforts, "%.*s", (i32)old.reasoning_efforts.n,
-                 old.reasoning_efforts.p);
-        snprintf(effort, sizeof effort, "%.*s", (i32)old.reasoning_effort.n,
-                 old.reasoning_effort.p);
+        profile_text(efforts, sizeof efforts, old.reasoning_efforts);
+        profile_text(effort, sizeof effort, old.reasoning_effort);
+        profile_text(budgets, sizeof budgets, old.thinking_budgets);
         if (!tui_ask_edit(STR("reasoning efforts (comma separated)"), false,
                           efforts, sizeof efforts)
             || !tui_ask_edit(STR("active effort (empty is Off)"), true, effort,
                              sizeof effort))
             return false;
     } else if (mode == 2) {
-        snprintf(budgets, sizeof budgets, "%.*s", (i32)old.thinking_budgets.n,
-                 old.thinking_budgets.p);
-        snprintf(budget, sizeof budget, "%.*s", (i32)old.thinking_budget.n,
-                 old.thinking_budget.p);
+        profile_text(budgets, sizeof budgets, old.thinking_budgets);
+        profile_text(budget, sizeof budget, old.thinking_budget);
+        profile_text(efforts, sizeof efforts, old.reasoning_efforts);
         if (!tui_ask_edit(STR("thinking budgets (comma separated)"), false,
                           budgets, sizeof budgets)
             || !tui_ask_edit(STR("active budget (empty is Off)"), true, budget,
                              sizeof budget))
             return false;
     } else if (mode == 3) {
-        snprintf(templ, sizeof templ, "%.*s", (i32)old.reasoning_template.n,
-                 old.reasoning_template.p);
+        profile_text(templ, sizeof templ, old.reasoning_template);
         if (!tui_ask_edit(STR("request JSON object"), false, templ,
                           sizeof templ))
             return false;
+        if (!reasoning_template_ok(str_c(templ), scratch)) return false;
+        profile_text(efforts, sizeof efforts, old.reasoning_efforts);
+        profile_text(budgets, sizeof budgets, old.thinking_budgets);
     }
     ModelProfile p = {.reasoning_efforts = str_c(efforts),
                       .thinking_budgets = str_c(budgets),
@@ -3075,7 +3094,8 @@ static size_t model_favorite(void *ud, size_t row, size_t *moved) {
         snprintf(mp->msg, sizeof mp->msg, "%s",
                  err[0] ? err : "could not save the favorites");
 
-    if (!on && i >= mp->live) mp->cat->model[i] = (Str){0};
+    if (!on && i >= mp->live && !model_is_current(mp, i))
+        mp->cat->model[i] = (Str){0};
     size_t rows = model_build(mp);
     *moved = row < rows ? row : rows ? rows - 1 : 0;
     for (size_t r = 0; r < rows; r++)
@@ -3243,6 +3263,9 @@ static b8 pick_model(Config *cfg, const Endpoints *eps, Catalog *cat,
         return manual_model(cfg, eps, scratch, why, provider, model);
     }
 
+    if (cfg->model_set
+        && model_entry(&mp, cfg->provider, cfg->model) == SIZE_MAX)
+        catalog_add(cat, cfg->provider, cfg->model);
 
     for (size_t i = 1; i < cat->n && !mp.named; i++)
         mp.named = !str_eq(cat->provider[i], cat->provider[0]);
@@ -3733,6 +3756,7 @@ static b8 delete_endpoint(Config *cfg, const Endpoints *eps, size_t i,
         cfg->provider = (Str){0};
         cfg->api_key = (Str){0};
         cfg->base_url_set = false;
+        cfg->model_set = false;
         cfg->reasoning_efforts = (Str){0};
         cfg->thinking_budgets = (Str){0};
         cfg->reasoning_effort = (Str){0};
