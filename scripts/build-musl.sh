@@ -13,7 +13,7 @@ set -eu
 PROGRAM=arqan
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 DOCKERFILE=$ROOT/packaging/linux/Dockerfile.musl
-PINNED_IMAGE=
+PINNED_IMAGE=ghcr.io/bissakov/arqan-linux-musl@sha256:902f5f86a48b2584fd89e46e28cbc0c19f4156fe4da181933acfea1d04a58ada
 LOCAL_IMAGE=arqan-linux-musl:alpine3.22
 IMAGE=${ARQAN_MUSL_IMAGE:-}
 
