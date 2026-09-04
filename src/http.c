@@ -87,6 +87,10 @@ typedef struct {
     size_t polls;
     f64 last_write;
     f64 stall;
+
+    i64 status;
+    size_t err_n;
+    char err_body[AGENT_MAX_ERROR_BODY];
 } Ctx;
 
 
@@ -118,6 +122,17 @@ static b8 dispatch_line(Ctx *c, const char *p, size_t n) {
     return true;
 }
 
+static b8 status_is_error(i64 status) {
+    return status && (status < 200 || status >= 300);
+}
+
+static void err_body_put(Ctx *c, const char *p, size_t n) {
+    size_t room = sizeof c->err_body - c->err_n;
+    if (n > room) n = room;
+    memcpy(c->err_body + c->err_n, p, n);
+    c->err_n += n;
+}
+
 static size_t write_cb(char *p, size_t sz, size_t n, void *ud) {
     Ctx *c = (Ctx *)ud;
     size_t total = sz * n;
@@ -125,6 +140,10 @@ static size_t write_cb(char *p, size_t sz, size_t n, void *ud) {
     if (c->last_write > 0 && now - c->last_write > c->stall)
         c->stall = now - c->last_write;
     c->last_write = now;
+    if (status_is_error(c->status)) {
+        err_body_put(c, p, total);
+        return total;
+    }
     b8 consumed = dispatch_line(c, p, total);
 
     if (c->aborted) return total;
@@ -222,6 +241,31 @@ static size_t drop_header_cb(char *p, size_t sz, size_t n, void *ud) {
     (void)p;
     (void)ud;
     return sz * n;
+}
+
+static i64 status_line_code(Str line) {
+    size_t i = 0;
+    while (i < line.n && line.p[i] != ' ') i++;
+    while (i < line.n && line.p[i] == ' ') i++;
+    i64 code = 0;
+    size_t digits = 0;
+    while (i < line.n && line.p[i] >= '0' && line.p[i] <= '9' && digits < 3) {
+        code = code * 10 + (line.p[i] - '0');
+        digits++;
+        i++;
+    }
+    return digits == 3 ? code : 0;
+}
+
+static size_t status_header_cb(char *p, size_t sz, size_t n, void *ud) {
+    Ctx *c = (Ctx *)ud;
+    size_t total = sz * n;
+    Str line = {p, total};
+    if (str_starts(line, STR("HTTP/"))) {
+        c->status = status_line_code(line);
+        c->err_n = 0;
+    }
+    return total;
 }
 
 static b8 build_url(char *url, size_t cap, const char *base_url,
@@ -725,6 +769,7 @@ i32 http_post(const HttpReq *r) {
         agent_log(AGENT_LOG_ERROR, "streaming request without a line arena");
         return 1;
     }
+    if (r->err_body_out && r->err_body_cap) r->err_body_out[0] = '\0';
     char load_err[256] = {0};
     if (!curl_load(load_err, sizeof load_err)) {
         if (r->fail_out && r->fail_cap)
@@ -763,7 +808,8 @@ i32 http_post(const HttpReq *r) {
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, stream ? write_cb : body_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA,
                      stream ? (void *)&ctx : (void *)r->body_out);
-    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, drop_header_cb);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, status_header_cb);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &ctx);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
@@ -823,6 +869,15 @@ i32 http_post(const HttpReq *r) {
     i64 http = (i64)http_code;
     http_record("POST", path, url, curl, rc, http, stream ? &ctx : NULL,
                 interrupted);
+
+    if (status_is_error(http) && r->err_body_out && r->err_body_cap) {
+        Str raw = stream ? (Str){ctx.err_body, ctx.err_n} : (Str){0};
+        if (!stream && r->body_out && buf_ok(r->body_out))
+            raw = (Str){r->body_out->p, r->body_out->n};
+        raw = str_clip_utf8(raw, r->err_body_cap - 1);
+        if (raw.n) memcpy(r->err_body_out, raw.p, raw.n);
+        r->err_body_out[raw.n] = '\0';
+    }
 
     curl_multi_remove_handle(multi, curl);
     curl_multi_cleanup(multi);

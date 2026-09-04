@@ -313,7 +313,8 @@ def test_provider_creation_allows_an_unverified_manual_model(ctx):
     add_provider(s, ctx, "work")
     s.wait_text("could not be listed")
     s.key("down", "enter")               # store it anyway
-    s.wait_text("models: HTTP 401; enter a model manually")
+    s.wait_text("models: HTTP 401: mock provider error; enter a model "
+                "manually")
     s.type("manual-model").sync()
     s.key("enter")
     s.wait_text("entered manually; not verified")

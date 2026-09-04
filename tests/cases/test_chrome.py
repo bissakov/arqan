@@ -127,7 +127,7 @@ def test_notice_rows_are_styled_as_notices(ctx):
     ctx.scenario("status=500")
     s = ctx.spawn()
     s.submit("fail please")
-    s.wait_text("[provider error: HTTP 500]")
+    s.wait_text("[provider error: HTTP 500: mock provider error]")
     s.wait_turn_done()
     row = s.screen.find_row("[provider error")
     assert s.screen.attr_at(row, 2).fg == 221, "S_YELLOW notice"

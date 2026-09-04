@@ -14,8 +14,9 @@ def test_transient_failure_is_retried(ctx):
     s.wait_text("hello there")
     s.wait_turn_done()
     text = s.text()
-    assert "[HTTP 503; retrying in 10ms (attempt 2 of 4)]" in text, text
-    assert "[HTTP 503; retrying in 20ms (attempt 3 of 4)]" in text, text
+    assert "retrying in 10ms (attempt 2 of 4)]" in text, text
+    assert "retrying in 20ms (attempt 3 of 4)]" in text, text
+    assert "HTTP 503: mock provider error" in text, text
     assert len(ctx.mock.requests) == 3, ctx.mock.requests
     ctx.check_screen(s)
 
@@ -36,10 +37,40 @@ def test_refused_request_is_not_retried(ctx):
     ctx.scenario("fail_times=1,fail_status=401")
     s = ctx.spawn(**RETRY)
     s.submit("say hi")
-    s.wait_text("[provider error: HTTP 401]")
+    s.wait_text("[provider error: HTTP 401: mock provider error]")
     s.wait_turn_done()
     assert "retrying in" not in s.text(), s.text()
     assert len(ctx.mock.requests) == 1, ctx.mock.requests
+
+
+def test_a_refusal_carries_the_provider_message(ctx):
+    """A 400 says why, and fishing for it with curl should not be the way."""
+    ctx.scenario("status=400,error=caching+is+not+supported+for+this+model")
+    s = ctx.spawn()
+    s.submit("say hi")
+    s.wait_text("[provider error: HTTP 400: caching is not supported for "
+                "this model]")
+    s.wait_turn_done()
+
+
+def test_a_refusal_that_is_not_json_is_still_read(ctx):
+    """A proxy in the way answers in plain text; show that too."""
+    ctx.scenario("status=502,error=upstream+refused+the+request,"
+                 "error_body=text")
+    s = ctx.spawn()
+    s.submit("say hi")
+    s.wait_text("[provider error: HTTP 502: upstream refused the request]")
+    s.wait_turn_done()
+
+
+def test_a_long_refusal_is_bounded(ctx):
+    """The body is untrusted, so only its head reaches the transcript."""
+    ctx.scenario("status=400,error=refused,error_body=long")
+    s = ctx.spawn()
+    s.submit("say hi")
+    s.wait_text("[provider error: HTTP 400: refused refused")
+    s.wait_turn_done()
+    assert "tail-marker" not in s.text(), s.text()
 
 
 def test_dropped_connection_is_retried(ctx):
@@ -95,7 +126,7 @@ def test_retries_are_exhausted(ctx):
     ctx.scenario("fail_times=9")
     s = ctx.spawn(ARQAN_RETRIES=2, ARQAN_RETRY_DELAY_MS=10)
     s.submit("say hi")
-    s.wait_text("[provider error: HTTP 503]")
+    s.wait_text("[provider error: HTTP 503: mock provider error]")
     s.wait_turn_done()
     text = s.text()
     assert "(attempt 2 of 3)" in text, text

@@ -4,7 +4,7 @@
 |▌ please fail
 |▌
 |
-|  [provider error: HTTP 500]
+|  [provider error: HTTP 500: mock provider error]
 |
 |
 |

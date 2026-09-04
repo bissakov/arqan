@@ -1168,6 +1168,69 @@ static b8 read_message_anth(Provider *p, StreamState *s, Str raw,
     return true;
 }
 
+/* ---- error messages ------------------------------------------------------
+ * A refused request answers with text worth reading, so the transcript shows
+ * it instead of the bare status. The body is untrusted: bound it, flatten it
+ * to one line, and drop the key if the provider echoed it back. It never
+ * reaches telemetry, which keeps the status alone.
+ */
+static size_t redact_key(char *out, size_t n, Str key) {
+    if (key.n < 8) return n;
+    for (size_t i = 0; i + key.n <= n;) {
+        if (memcmp(out + i, key.p, key.n) != 0) {
+            i++;
+            continue;
+        }
+        memmove(out + i + 3, out + i + key.n, n - i - key.n);
+        memcpy(out + i, "***", 3);
+        n -= key.n - 3;
+        i += 3;
+    }
+    return n;
+}
+
+static Str status_body_text(Str raw, Arena *scratch) {
+    const JVal *doc = json_parse(scratch, raw);
+    const JVal *err = json_get(doc, STR("error"));
+    if (err && err->type == J_STR) return err->u.s;
+    Str msg = json_str(err, STR("message"));
+    if (!msg.n) msg = json_str(doc, STR("message"));
+    if (!msg.n) msg = json_str(doc, STR("detail"));
+    return msg.n ? msg : raw;
+}
+
+static void status_message(Str raw, Str api_key, Arena *scratch, char *out,
+                           size_t cap) {
+    if (!out || cap < 8) return;
+    out[0] = '\0';
+    raw = str_trim(raw);
+    if (!raw.n) return;
+    size_t mark = scratch->off;
+    Str msg = str_trim(status_body_text(raw, scratch));
+    size_t n = 0;
+    b8 gap = false;
+    for (size_t i = 0; i < msg.n;) {
+        u32 cp = 0;
+        size_t len = utf8_decode(msg.p + i, msg.n - i, &cp);
+        const char *src = len ? msg.p + i : "?";
+        size_t take = len ? len : 1;
+        i += take;
+        if (len && (cp <= ' ' || cp == 0x7f)) {
+            gap = n > 0;
+            continue;
+        }
+        size_t need = take + (gap ? 1 : 0);
+        if (n + need + 1 > cap) break;
+        if (gap) out[n++] = ' ';
+        gap = false;
+        memcpy(out + n, src, take);
+        n += take;
+    }
+    n = redact_key(out, n, api_key);
+    out[n] = '\0';
+    scratch->off = mark;
+}
+
 size_t provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
                        char *err, size_t err_cap) {
     if (!out || !max) return 0;
@@ -1178,9 +1241,18 @@ size_t provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
                       &body, why, sizeof why);
     if (rc != 0) {
         if (why[0] >= 'A' && why[0] <= 'Z') why[0] = (char)(why[0] - 'A' + 'a');
-        if (rc < 0)
-            snprintf(err, err_cap, "models: HTTP %d", -rc);
-        else if (why[0])
+        if (rc < 0) {
+            /* NOTE: the caller puts this in a one-line question, so it takes a
+             * shorter cut than a transcript message. */
+            char msg[121] = {0};
+            if (buf_ok(&body))
+                status_message(buf_finish(&body), cfg->api_key, scratch, msg,
+                               sizeof msg);
+            if (msg[0])
+                snprintf(err, err_cap, "models: HTTP %d: %s", -rc, msg);
+            else
+                snprintf(err, err_cap, "models: HTTP %d", -rc);
+        } else if (why[0])
             snprintf(err, err_cap, "models: %s", why);
         else
             snprintf(err, err_cap, "models: request failed (%d)", rc);
@@ -1441,6 +1513,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     p->cache_read_tokens = 0;
     p->total_tokens = 0;
     p->usage_valid = false;
+    p->status_msg[0] = '\0';
 
     StreamState *s = arena_new(scratch, StreamState, 1);
     if (!s) {
@@ -1499,6 +1572,9 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     char fail[128] = {0};
     r.fail_out = fail;
     r.fail_cap = sizeof fail;
+    char err_body[AGENT_MAX_ERROR_BODY + 1] = {0};
+    r.err_body_out = err_body;
+    r.err_body_cap = sizeof err_body;
 
     f64 started = agent_now_seconds();
     i32 attempts = p->cfg->retries > 0 ? p->cfg->retries + 1 : 1;
@@ -1527,16 +1603,22 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
             break;
 
         i32 delay = backoff_ms(p->cfg->retry_delay_ms, attempt);
-        char reason[160];
+        char reason[AGENT_MAX_PROVIDER_MSG + 96];
         if (s->stream_error)
             snprintf(reason, sizeof reason,
                      "the provider reported a stream error");
         else if (empty_reply)
             snprintf(reason, sizeof reason,
                      "the provider returned an empty response");
-        else if (rc < 0)
-            snprintf(reason, sizeof reason, "HTTP %d", -rc);
-        else
+        else if (rc < 0) {
+            char msg[AGENT_MAX_PROVIDER_MSG + 1] = {0};
+            status_message(str_c(err_body), p->cfg->api_key, scratch, msg,
+                           sizeof msg);
+            if (msg[0])
+                snprintf(reason, sizeof reason, "HTTP %d: %s", -rc, msg);
+            else
+                snprintf(reason, sizeof reason, "HTTP %d", -rc);
+        } else
             snprintf(reason, sizeof reason, "%s",
                      fail[0] ? fail : "the connection failed");
         TelEvent re;
@@ -1623,9 +1705,11 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         return -1;
     }
     if (rc != 0) {
-        if (rc < 0)
+        if (rc < 0) {
             snprintf(err, err_cap, "HTTP %d", -rc);
-        else if (fail[0])
+            status_message(str_c(err_body), p->cfg->api_key, scratch,
+                           p->status_msg, sizeof p->status_msg);
+        } else if (fail[0])
             snprintf(err, err_cap, "%s", fail);
         else
             snprintf(err, err_cap, "request failed (%d)", rc);

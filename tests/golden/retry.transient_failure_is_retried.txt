@@ -4,9 +4,9 @@
 |▌ say hi
 |▌
 |
-|  [HTTP 503; retrying in 10ms (attempt 2 of 4)]
+|  [HTTP 503: mock provider error; retrying in 10ms (attempt 2 of 4)]
 |
-|  [HTTP 503; retrying in 20ms (attempt 3 of 4)]
+|  [HTTP 503: mock provider error; retrying in 20ms (attempt 3 of 4)]
 |
 |  hello there
 |
