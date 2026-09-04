@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Say what the provider said when a request fails. A refusal used to show the
+  status alone, so the reason had to be fetched by hand with `curl`. The
+  transcript, the retry notice and the model list now carry the provider's
+  message beside the status. The body is bounded, flattened to one line, and
+  stripped of the key if the provider echoed it back. Telemetry keeps the
+  status alone.
+
 ### Fixed
 
 - Build the portable Linux archive from a pinned builder image. The image was

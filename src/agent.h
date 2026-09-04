@@ -86,6 +86,8 @@ typedef bool b8;
 #define AGENT_RETRIES            4
 #define AGENT_RETRY_DELAY_MS     2000
 #define AGENT_MAX_RETRY_DELAY_MS 30000
+#define AGENT_MAX_PROVIDER_MSG   200
+#define AGENT_MAX_ERROR_BODY     2048
 
 #define AGENT_ASK_TIMEOUT_MS 180000
 
@@ -901,6 +903,9 @@ typedef struct {
 
     char *fail_out;
     size_t fail_cap;
+
+    char *err_body_out;
+    size_t err_body_cap;
 } HttpReq;
 
 i32 http_post(const HttpReq *r);
@@ -1323,6 +1328,7 @@ typedef struct {
     size_t cache_read_tokens;
     size_t total_tokens;
     b8 usage_valid;
+    char status_msg[AGENT_MAX_PROVIDER_MSG + 1];
 } Provider;
 
 

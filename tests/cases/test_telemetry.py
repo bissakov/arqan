@@ -338,6 +338,20 @@ def test_diagnostics_land_beside_the_events(ctx):
     assert errors and errors[-1]["detail"] == "HTTP 500", events(ctx)
 
 
+def test_what_the_provider_said_stays_out_of_the_record(ctx):
+    """The status is session shape; the provider's words are content."""
+    ctx.scenario("status=400,error=quoting+back+the+user+prompt")
+    s = ctx.spawn()
+    s.settings_toggle("Telemetry")
+    s.submit("this will fail")
+    s.wait_turn_done()
+
+    assert "quoting back the user prompt" in s.text(), s.text()
+    errors = [e for e in events(ctx) if e["ev"] == "error"]
+    assert errors and errors[-1]["detail"] == "HTTP 400", events(ctx)
+    assert "quoting" not in body(ctx), body(ctx)
+
+
 def test_a_file_where_the_directory_goes_leaves_the_session_alone(ctx):
     """The record root may be taken by a file; a session must not care."""
     d = log_dir(ctx)

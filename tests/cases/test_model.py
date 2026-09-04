@@ -171,7 +171,8 @@ def test_an_unreachable_models_endpoint_answers_in_the_popup_slot(ctx):
     ctx.scenario("models_status=500")
     s = ctx.spawn()
     s.submit("/model")
-    s.wait_text("models: HTTP 500; enter a model manually")
+    s.wait_text("models: HTTP 500: mock provider error; enter a model "
+                "manually")
     s.type("manual-model").sync()
     s.key("enter")
     s.wait_text("entered manually; not verified")

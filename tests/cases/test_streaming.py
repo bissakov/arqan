@@ -228,7 +228,7 @@ def test_provider_error_is_surfaced(ctx):
     ctx.scenario("status=500")
     s = ctx.spawn()
     s.submit("please fail")
-    s.wait_text("[provider error: HTTP 500]")
+    s.wait_text("[provider error: HTTP 500: mock provider error]")
     s.wait_turn_done()
     ctx.check_screen(s)
     # the composer still accepts input afterwards

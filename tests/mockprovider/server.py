@@ -61,6 +61,9 @@ class Scenario:
         self.first_delay: float = float(kw.get("first_delay", 0.0))
         self.status: int = int(kw.get("status", 200))
         self.error: str = kw.get("error", "mock provider error")
+        # The shape of a refusal body: "json" like a provider, "text" from a
+        # proxy in the way, "long" for more text than a message should be.
+        self.error_body: str = kw.get("error_body", "json")
         # A turn the case holds open, until it calls `ctx.mock.release()`.
         # This is what a case needing a running turn should use: a wall-clock
         # `first_delay` long enough to be safe on a loaded machine is dead
@@ -876,13 +879,23 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
                 scenario = Scenario.parse(spec)
         return scenario
 
+    def _refuse(self, code: int, scenario) -> None:
+        """Answer with a failure, in the body shape the case asked for."""
+        if scenario.error_body == "text":
+            self._body(code, "text/plain", scenario.error.encode())
+        elif scenario.error_body == "long":
+            body = (scenario.error + " ") * 400 + "tail-marker"
+            self._body(code, "text/plain", body.encode())
+        else:
+            self._json(
+                code,
+                {"error": {"message": scenario.error, "type": "mock_error"}},
+            )
+
     def _refused(self, scenario) -> bool:
         """True once the request has been answered with a failure."""
         if scenario.status != 200:
-            self._json(
-                scenario.status,
-                {"error": {"message": scenario.error, "type": "mock_error"}},
-            )
+            self._refuse(scenario.status, scenario)
             return True
         if len(self.server.requests) <= scenario.fail_times:
             if scenario.fail_mode == "close":
@@ -890,10 +903,7 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
                 # transport failure a retry is for.
                 self.close_connection = True
                 return True
-            self._json(
-                scenario.fail_status,
-                {"error": {"message": scenario.error, "type": "mock_error"}},
-            )
+            self._refuse(scenario.fail_status, scenario)
             return True
         return False
 

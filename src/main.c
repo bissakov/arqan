@@ -5257,11 +5257,16 @@ static b8 agent_turn(Agent *ag, Str text) {
             tel_str(&ee, "where", STR("provider"));
             tel_str(&ee, "detail", str_c(err));
             tel_send(&ee);
+            char shown[AGENT_MAX_PROVIDER_MSG + sizeof err + 4];
+            if (p.status_msg[0])
+                snprintf(shown, sizeof shown, "%s: %s", err, p.status_msg);
+            else
+                snprintf(shown, sizeof shown, "%s", err);
             if (g_turn.one_shot)
-                one_shot_diag("provider error", (Str){0}, str_c(err));
+                one_shot_diag("provider error", (Str){0}, str_c(shown));
             else {
                 tui_block();
-                tui_printf("[provider error: %s]\n", err);
+                tui_printf("[provider error: %s]\n", shown);
             }
             tui_set_status("ready");
             snprintf(ending_buf, sizeof ending_buf, "%s", err);
