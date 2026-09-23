@@ -4,6 +4,12 @@
 
 ### Added
 
+- Read PNG, JPEG, GIF and WebP files with `read` to send their image content
+  to the model. Formats are detected from file contents, not extensions.
+  Images use the attachment limits and session sidecars. `offset` and `limit`
+  apply only to text. `images = off` and text-only subagents load no
+  conversation images.
+
 - Send images from MCP tool results to the model. Images use the same size
   and format checks as attachments and survive session replay. `images = off`
   blocks them, including images saved in a session. Anthropic receives images

@@ -1241,6 +1241,7 @@ void media_describe(char *out, size_t cap, const MediaSet *m, size_t id);
 void media_write_openai(Buf *b, const MediaSet *m, size_t id);
 void media_write_anthropic(Buf *b, const MediaSet *m, size_t id);
 void mcp_set_media(MediaSet *m);
+MediaSet *tools_set_media(MediaSet *m);
 
 /* ---- clipboard ----------------------------------------------------------
  * The image the system clipboard holds, read through the first helper that

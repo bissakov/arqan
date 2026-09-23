@@ -14,7 +14,7 @@
 |  └─ one hit · <t>                                                             ┃
 |                                                                               ┃
 |     [task 1 on mock:tool=grep:{"pattern":"alpha"},final_text=one+hit: 2       ┃
-|  rounds, 1 tool call, 1137 prompt and 5 completion tokens]                    ┃
+|  rounds, 1 tool call, 1213 prompt and 5 completion tokens]                    ┃
 |                                                                               ┃
 |  done                                                                         ┃
 |
