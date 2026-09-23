@@ -1033,26 +1033,21 @@ def test_binary_tool_output_is_sent_as_valid_utf8(ctx):
     results[-1].encode("utf-8")          # decoded cleanly, so it round-trips
 
 
-def test_read_of_an_image_names_the_image(ctx):
-    """read on a PNG says what the file is instead of paging its bytes.
-
-    Every ill-formed byte becomes U+FFFD on the wire, so paging an image
-    would charge the model for a page of replacement characters and tell it
-    nothing about the file.
-    """
+def test_read_of_an_image_with_images_off_is_refused(ctx):
+    """An image with images off returns an explanation, not binary text."""
     (ctx.work / "shot.png").write_bytes(png(1200, 800))
     ctx.scenario('tool=read:{"path":"shot.png"},final_text=that+is+a+picture')
-    s = ctx.spawn()
+    s = ctx.spawn(ARQAN_IMAGES="off")
     s.submit("read shot.png")
     s.wait_text("that is a picture")
     s.wait_turn_done()
 
     results = ctx.mock.tool_results()
     assert results and results[0].startswith("ERROR:"), results
-    assert "shot.png is a png image, 1200x800" in results[0], results[0]
+    assert "images are off" in results[0], results[0]
     assert "\ufffd" not in results[0], results[0]
     text = s.text()
-    assert "read returns text" in text, text
+    assert "images are off" in text, text
 
 
 def test_read_of_a_binary_file_is_refused(ctx):

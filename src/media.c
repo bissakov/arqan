@@ -174,7 +174,7 @@ size_t media_add(MediaSet *m, Arena *persist, Str bytes, Str label, char *err,
     }
     Str kept = str_dup(persist, bytes);
     Str name = str_dup_opt(persist, str_clip_utf8(label, 64));
-    if (!kept.p) {
+    if (!kept.p || (label.n && !name.p)) {
         snprintf(err, err_cap, "not enough memory to hold that image");
         return MEDIA_NONE;
     }

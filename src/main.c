@@ -1739,8 +1739,10 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         say_busy(status);
         f64 started = agent_now_seconds();
         size_t media_off = conv->media ? conv->media->n : 0;
+        MediaSet *previous_media = tools_set_media(conv->media);
         b8 ok = tools_run(ag->tools, tool, args, authorization, ag->scratch,
                           &out, err, sizeof err, TOOL_FOR_MAIN);
+        tools_set_media(previous_media);
         if (!ok) buf_error(&out, err, "tool failed");
         size_t media_n = ok && conv->media && conv->media->n > media_off
                              ? conv->media->n - media_off
@@ -1763,9 +1765,16 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         tel_bool(&e, "ok", ok);
         tel_shape(&e, "result", result);
         tel_send(&e);
-        if (!add_result_media(ag, i, name, keep_result(ag->persist, result), ms,
-                              media_off, media_n))
+        Str kept = str_dup(ag->persist, result);
+        if (!kept.p) {
+            if (conv->media) conv->media->n = media_off;
+            media_n = 0;
+            kept = STR("ERROR: out of memory");
+        }
+        if (!add_result_media(ag, i, name, kept, ms, media_off, media_n)) {
+            if (conv->media) conv->media->n = media_off;
             return TURN_FULL;
+        }
     }
     return pending;
 }
