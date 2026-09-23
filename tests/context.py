@@ -118,6 +118,7 @@ class Ctx:
         self.xdg.mkdir(parents=True)
         self.mock = MockProvider().start()
         self.sessions: list[Session] = []
+        self.helpers: list[subprocess.Popen] = []
         self._checked: list[str] = []
         self.quiet = QUIET
 
@@ -317,6 +318,12 @@ class Ctx:
     def cleanup(self, failed: bool = False):
         for s in self.sessions:
             s.close()
+        for p in self.helpers:
+            p.terminate()
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
         self.mock.stop()
         if self.keep and failed:
             print(f"  [kept] {self.tmp}")

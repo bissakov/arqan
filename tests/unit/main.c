@@ -307,6 +307,13 @@ static void str_handles_empty(void) {
     CHECK(str_eq(str_drop(STR("abc"), 1), STR("bc")));
 }
 
+static void str_compares_ascii_without_case(void) {
+    CHECK(str_eq_ci(STR("Content-Type"), STR("content-type")));
+    CHECK(str_eq_ci(STR("MCP"), STR("mcp")));
+    CHECK(!str_eq_ci(STR("mcp"), STR("mcpx")));
+    CHECK(!str_eq_ci(STR("mcp"), STR("map")));
+}
+
 /* ---- display width ----------------------------------------------------- */
 
 static void width_classifies_glyphs(void) {
@@ -514,6 +521,7 @@ int main(void) {
     RUN(json_error_names_a_position);
 
     RUN(str_handles_empty);
+    RUN(str_compares_ascii_without_case);
     RUN(width_classifies_glyphs);
 
     RUN(tasklog_round_trips);

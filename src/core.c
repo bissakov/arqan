@@ -63,6 +63,17 @@ b8 str_eq(Str a, Str b) {
     return a.n == b.n && (a.n == 0 || !memcmp(a.p, b.p, a.n));
 }
 
+static char str_lower(char c) {
+    return c >= 'A' && c <= 'Z' ? (char)(c + 32) : c;
+}
+
+b8 str_eq_ci(Str a, Str b) {
+    if (a.n != b.n) return false;
+    for (size_t i = 0; i < a.n; i++)
+        if (str_lower(a.p[i]) != str_lower(b.p[i])) return false;
+    return true;
+}
+
 Str str_dup(Arena *a, Str s) {
     char *dst = (char *)arena_alloc(a, s.n + 1, 1);
     if (!dst) return (Str){0};
@@ -542,24 +553,38 @@ void agent_log_set_sink(AgentLogSink sink, void *ud) {
     g_log.sink = sink;
     g_log.ud = ud;
 }
-void agent_log(i32 level, const char *fmt, ...) {
+static void log_emit(i32 level, b8 recorded, const char *fmt, va_list ap)
+    __attribute__((format(printf, 3, 0)));
+
+static void log_emit(i32 level, b8 recorded, const char *fmt, va_list ap) {
     if (level < g_log.level) return;
     static const char *tags[] = {"DBG", "INF", "WRN", "ERR"};
     if (level < AGENT_LOG_DEBUG || level > AGENT_LOG_ERROR)
         level = AGENT_LOG_ERROR;
     char msg[512];
-    va_list ap;
-    va_start(ap, fmt);
     i32 w = vsnprintf(msg, sizeof msg, fmt, ap);
-    va_end(ap);
     size_t n =
         w > 0 ? ((size_t)w < sizeof msg ? (size_t)w : sizeof msg - 1) : 0;
-    telemetry_log(level, (Str){msg, n});
+    if (recorded) telemetry_log(level, (Str){msg, n});
     if (g_log.sink) {
         g_log.sink(level, (Str){msg, n}, g_log.ud);
         return;
     }
     fprintf(stderr, "[" AGENT_NAME " %s] %.*s\n", tags[level], (i32)n, msg);
+}
+
+void agent_log(i32 level, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    log_emit(level, true, fmt, ap);
+    va_end(ap);
+}
+
+void agent_log_local(i32 level, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    log_emit(level, false, fmt, ap);
+    va_end(ap);
 }
 
 

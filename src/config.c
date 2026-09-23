@@ -109,6 +109,9 @@ static const ConfSpec k_conf[CONF_N] = {
     [CONF_SUBAGENT_SLICE_MS] = {"subagent_slice_ms",
                                 CONF_TEXT(AGENT_TASK_SLICE_MS), NULL, CV_NUM, 0,
                                 AGENT_JOB_WAIT_MAX_MS, 0, false},
+    [CONF_MCP] = {"mcp", "false", NULL, CV_BOOL, 0, 0, 0, false},
+    [CONF_MCP_TIMEOUT_MS] = {"mcp_timeout_ms", CONF_TEXT(AGENT_MCP_TIMEOUT_MS),
+                             NULL, CV_NUM, 0, AGENT_JOB_WAIT_MAX_MS, 0, false},
 };
 
 Str conf_key_name(ConfKey k) {
@@ -503,6 +506,8 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
         str_eq(conf_str(conf, CONF_SUBAGENT_MODEL), STR("small"));
     c->subagent_tasks = (i32)conf_num(conf, CONF_SUBAGENT_TASKS);
     c->subagent_slice_ms = (i32)conf_num(conf, CONF_SUBAGENT_SLICE_MS);
+    c->mcp = conf_bool(conf, CONF_MCP);
+    c->mcp_timeout_ms = (i32)conf_num(conf, CONF_MCP_TIMEOUT_MS);
     Str guard = conf_str(conf, CONF_CACHE_GUARD);
     c->cache_guard = str_eq(guard, STR("off"))    ? CACHE_GUARD_OFF
                      : str_eq(guard, STR("warn")) ? CACHE_GUARD_WARN

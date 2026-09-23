@@ -161,6 +161,35 @@ typedef bool b8;
 #define AGENT_MAX_NOTIFY_ARGV        16
 #define AGENT_MAX_REASONING_TEMPLATE (16u << 10)
 #define AGENT_MAX_MODEL_BYTES        (1u << 20)
+
+#define AGENT_MAX_MCP_SERVERS       8
+#define AGENT_MAX_MCP_TOOLS         32
+#define AGENT_MCP_NAME_BYTES        32
+#define AGENT_MCP_TOOL_NAME_BYTES   64
+#define AGENT_MCP_MAX_ARGS          16
+#define AGENT_MCP_MAX_ENV           16
+#define AGENT_MCP_MAX_PARAM_HEADERS 16
+#define AGENT_MCP_ARGV_BYTES        2048
+#define AGENT_MCP_ENV_BYTES         2048
+#define AGENT_MCP_MSG_BYTES         (256u << 10)
+#define AGENT_MCP_DESC_BYTES        1024
+#define AGENT_MCP_SCHEMA_BYTES      4096
+#define AGENT_MCP_CONFIG_BYTES      (64u << 10)
+#define AGENT_MCP_PAGES             8
+#define AGENT_MCP_TIMEOUT_MS        30000
+#define AGENT_MCP_PROTOCOL          "2025-11-25"
+#define AGENT_MCP_PROTOCOL_MODERN   "2026-07-28"
+#define AGENT_MCP_META_PREFIX       "io.modelcontextprotocol/"
+#define AGENT_MCP_ERR_HEADER        (-32020)
+#define AGENT_MCP_ERR_CAPABILITY    (-32021)
+#define AGENT_MCP_ERR_VERSION       (-32022)
+#define AGENT_MCP_PROBE_MS          8000
+#define AGENT_MCP_CONFIG_NAME       STR("mcp.json")
+#define AGENT_MCP_URL_BYTES         1024
+#define AGENT_MCP_SESSION_BYTES     128
+#define AGENT_MCP_VERSION_BYTES     32
+#define AGENT_MCP_HTTP_BYTES        (4u << 20)
+
 #define AGENT_MAX_CONTEXT_WINDOW     ((size_t)1 << 31)
 #define AGENT_WEB_BODY_BYTES         (2u << 20)
 #define AGENT_WEB_URL_BYTES          4096
@@ -200,6 +229,7 @@ Str str_c(const char *z);
 Str str_dup(Arena *a, Str s);
 Str str_dup_opt(Arena *a, Str s);
 b8 str_eq(Str a, Str b);
+b8 str_eq_ci(Str a, Str b);
 b8 str_starts(Str s, Str prefix);
 Str str_trim(Str s);
 Str str_take(Str s, size_t n);
@@ -262,6 +292,8 @@ b8 file_write_atomic_str(const char *path, Str data, u32 mode, b8 sync_parent);
 
 enum { AGENT_LOG_DEBUG, AGENT_LOG_INFO, AGENT_LOG_WARN, AGENT_LOG_ERROR };
 void agent_log(i32 level, const char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
+void agent_log_local(i32 level, const char *fmt, ...)
     __attribute__((format(printf, 2, 3)));
 void agent_log_set_level(i32 level);
 
@@ -573,6 +605,7 @@ typedef enum {
     TOOL_APPROVAL_BASH,
     TOOL_APPROVAL_WRITE,
     TOOL_APPROVAL_PATCH,
+    TOOL_APPROVAL_MCP,
 } ToolApprovalClass;
 
 
@@ -631,6 +664,8 @@ typedef enum {
     CONF_SUBAGENT_MODEL,
     CONF_SUBAGENT_TASKS,
     CONF_SUBAGENT_SLICE_MS,
+    CONF_MCP,
+    CONF_MCP_TIMEOUT_MS,
     CONF_N
 } ConfKey;
 
@@ -772,6 +807,8 @@ typedef struct {
     b8 subagent_small;
     i32 subagent_tasks;
     i32 subagent_slice_ms;
+    b8 mcp;
+    i32 mcp_timeout_ms;
 
     i32 ask_timeout_ms;
 
@@ -935,6 +972,34 @@ typedef struct {
 
 i32 http_url_get(HttpUrlReq *r);
 
+typedef struct {
+    const char *url;
+    const char *method;
+    const char *body;
+    const char *const *headers;
+    size_t header_n;
+    i32 timeout_ms;
+    size_t max_bytes;
+
+    Buf *out;
+    Arena *line_arena;
+    b8 (*on_event)(Str data, void *ud);
+    void (*on_header)(Str name, Str value, void *ud);
+    void *ud;
+
+    const volatile sig_atomic_t *interrupt_flag;
+    i32 idle_fd;
+    void (*on_idle)(void *ud);
+    void *idle_ud;
+
+    b8 sse;
+    b8 too_large;
+    i64 status;
+    char failure[256];
+} HttpRpc;
+
+i32 http_rpc(HttpRpc *r);
+
 #ifdef AGENT_TESTING
 
 void http_print_ca_trust(void);
@@ -978,6 +1043,8 @@ typedef b8 (*ToolRun)(Str args_json, Arena *scratch, Buf *out, char *err,
 
 typedef enum { TOOL_FOR_MAIN, TOOL_FOR_SUB } ToolAudience;
 
+typedef enum { TOOL_SRC_BUILTIN = 0, TOOL_SRC_MCP } ToolSource;
+
 typedef struct {
     Str *name;
     Str *desc;
@@ -986,6 +1053,8 @@ typedef struct {
     ToolRun *run;
     u8 *modes;
     u8 *approval;
+    u8 *source;
+    u16 *ext;
     b8 *off;
     size_t n;
 } ToolRegistry;
@@ -1017,6 +1086,12 @@ b8 tools_disabled(const ToolRegistry *r, size_t id);
 void tools_set_disabled(ToolRegistry *r, size_t id, b8 off);
 
 b8 tools_disable_list(ToolRegistry *r, Str names, char *err, size_t err_cap);
+
+b8 tools_add_mcp(ToolRegistry *r, Str name, Str desc, Str brief, Str schema,
+                 u16 server);
+size_t tools_mcp_count(const ToolRegistry *r);
+size_t tools_remove_mcp(ToolRegistry *r, u16 server);
+
 b8 tools_run(const ToolRegistry *r, size_t id, Str args,
              ToolAuthorization authorization, Arena *scratch, Buf *out,
              char *err, size_t err_cap, ToolAudience audience);
@@ -1024,6 +1099,66 @@ b8 tools_run(const ToolRegistry *r, size_t id, Str args,
 void tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api,
                          ToolAudience audience);
 size_t tools_schema_bytes(const ToolRegistry *r, ToolAudience audience);
+
+/* ---- MCP servers -------------------------------------------------------- */
+typedef enum { MCP_STDIO = 0, MCP_HTTP } McpTransport;
+
+typedef enum { MCP_ERA_MODERN = 0, MCP_ERA_LEGACY } McpEra;
+
+typedef enum {
+    MCP_PENDING = 0,
+    MCP_READY,
+    MCP_FAILED,
+    MCP_DISABLED,
+    MCP_UNAPPROVED,
+    MCP_REJECTED,
+} McpStatus;
+
+typedef enum { MCP_FROM_USER = 0, MCP_FROM_PROJECT } McpOrigin;
+
+typedef struct {
+    Str name;
+    Str command;
+    McpTransport transport;
+    McpEra era;
+    Str protocol;
+    McpStatus status;
+    McpOrigin origin;
+    size_t tools;
+    Str err;
+} McpInfo;
+
+void mcp_init(ToolRegistry *r, Arena *persist, Arena *scratch, b8 enabled,
+              i32 timeout_ms, Str disable_tools);
+void mcp_set_idle(void (*fn)(void *ud), void *ud, i32 idle_fd);
+void mcp_set_interrupt_flag(volatile sig_atomic_t *flag);
+
+b8 mcp_enabled(void);
+size_t mcp_configured(void);
+b8 mcp_may_disable(Str tool);
+
+b8 mcp_refresh(Arena *scratch, void (*starting)(Str name, void *ud), void *ud);
+
+b8 mcp_call(u16 server, Str tool, Str args, Arena *scratch, Buf *out, char *err,
+            size_t err_cap);
+
+size_t mcp_list(McpInfo *out, size_t max);
+Str mcp_status_name(McpStatus s);
+
+typedef enum {
+    MCP_DO_APPROVE,
+    MCP_DO_REJECT,
+    MCP_DO_RESTART,
+    MCP_DO_DISABLE,
+} McpAction;
+
+b8 mcp_manage(McpAction what, Str name, Arena *scratch, char *err,
+              size_t err_cap);
+Str mcp_argv_text(Str name, Arena *a);
+b8 mcp_prompt_list(Arena *scratch, Buf *out, char *err, size_t err_cap);
+b8 mcp_prompt_get(Str server, Str name, Str args, Arena *scratch, Buf *out,
+                  char *err, size_t err_cap);
+void mcp_shutdown(void);
 
 void web_set_idle(void (*fn)(void *ud), void *ud, i32 idle_fd,
                   const volatile sig_atomic_t *interrupt_flag);
