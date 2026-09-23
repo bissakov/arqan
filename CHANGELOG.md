@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Added
+
+- Send images from MCP tool results to the model. Images use the same size
+  and format checks as attachments and survive session replay. `images = off`
+  blocks them, including images saved in a session. Anthropic receives images
+  inside the tool result; OpenAI receives a follow-up user message naming the
+  source calls. Each result carries at most four images.
+
+- Use tools, resources and prompts from MCP servers. Set `mcp = on` and list
+  stdio commands or streamable HTTP URLs in `mcp.json`. Servers connect before
+  the first turn. Edits to `mcp.json` take effect on the next turn: a new
+  server starts, an edited one restarts, and a removed one stops. Both the
+  initialize and per-request protocol eras work, including HTTP sessions,
+  JSON and SSE replies, bearer tokens from the environment or a key store,
+  and session recovery. Remote tools use `<server>_<tool>`, and `mcp_read`
+  lists or reads resources. `/mcp prompts` lists server prompts, and `/mcp
+  prompt` loads one into the composer for review.
+
+- Add `mcp` to turn MCP on and `mcp_timeout_ms` to bound how long a server has
+  to answer. `/mcp` lists and manages servers. Project servers need approval
+  tied to their full definition before they can start. MCP tools keep the
+  usual tool disable, plan mode and per-call approval rules, and their results
+  use the usual paging and spill path.
+
 ### Changed
 
 - Say what the provider said when a request fails. A refusal used to show the

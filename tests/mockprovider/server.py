@@ -1173,10 +1173,26 @@ def _oai_turn_replies(messages) -> int:
     """Tool results in the turn being answered; see `_anth_turn_replies`."""
     start = 0
     for i in range(len(messages) - 1, -1, -1):
-        if messages[i].get("role") == "user":
+        if messages[i].get("role") == "user" and not _oai_tool_images(
+            messages[i]
+        ):
             start = i
             break
     return sum(1 for m in messages[start:] if m.get("role") == "tool")
+
+
+# The first text part of the user message that carries tool-result images
+# after a run of tool messages; AGENT_TOOL_IMAGES_NOTE in src/agent.h.
+TOOL_IMAGES_NOTE = "Images from the tool results above, in order:"
+
+
+def _oai_tool_images(message) -> bool:
+    """Whether a user message only carries images from tool results."""
+    content = message.get("content")
+    if not isinstance(content, list) or not content:
+        return False
+    first = content[0]
+    return first.get("type") == "text" and first.get("text") == TOOL_IMAGES_NOTE
 
 
 def _split(s: str, n: int) -> list[str]:

@@ -40,9 +40,10 @@ static f64 ctx_bytes(const Conv *c) {
 }
 
 
-static f64 ctx_slot_media(const Conv *c, size_t i) {
+static f64 ctx_slot_media(const Conv *c, size_t i, size_t recent) {
     const MediaSet *m = c->media;
-    if (!m) return 0;
+    if (!m || !c->media_n[i]) return 0;
+    if (conv_media_elided(c, i, recent)) return 0;
     f64 total = 0;
     size_t off = c->media_off[i], n = c->media_n[i];
     for (size_t k = 0; k < n; k++) {
@@ -60,7 +61,8 @@ static f64 ctx_slot_media(const Conv *c, size_t i) {
 
 static f64 ctx_media_tokens(const Conv *c) {
     f64 total = 0;
-    for (size_t i = 0; i < c->n; i++) total += ctx_slot_media(c, i);
+    size_t recent = conv_elide_start(c);
+    for (size_t i = 0; i < c->n; i++) total += ctx_slot_media(c, i, recent);
     return total;
 }
 
@@ -163,7 +165,8 @@ static f64 ctx_conv_tokens(const CtxGauge *g, const Conv *c, size_t from,
     f64 slope = g->slope > 0 ? g->slope : CTX_SLOPE_DEFAULT;
     f64 sum = 0;
     for (size_t i = from; i < to; i++)
-        sum += slope * ctx_slot_bytes(c, i, recent) + ctx_slot_media(c, i);
+        sum +=
+            slope * ctx_slot_bytes(c, i, recent) + ctx_slot_media(c, i, recent);
     return sum;
 }
 
@@ -204,6 +207,7 @@ size_t ctx_elide_gain(const CtxGauge *g, const Conv *c) {
         f64 before = ctx_slot_bytes(c, i, from);
         f64 after = ctx_slot_bytes(c, i, to);
         if (before > after) saved += slope * (before - after);
+        saved += ctx_slot_media(c, i, from) - ctx_slot_media(c, i, to);
     }
     return saved > 0 ? (size_t)saved : 0;
 }

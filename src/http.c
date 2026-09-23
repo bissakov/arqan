@@ -901,3 +901,279 @@ i32 http_post(const HttpReq *r) {
     if (http < 200 || http >= 300) { return -(i32)http; }
     return 0;
 }
+
+/* ---- JSON-RPC over HTTP -------------------------------------------------- */
+
+static char rpc_lower(char c) {
+    return c >= 'A' && c <= 'Z' ? (char)(c + 32) : c;
+}
+
+static b8 rpc_has_ci(Str hay, Str needle) {
+    if (needle.n > hay.n) return false;
+    for (size_t i = 0; i + needle.n <= hay.n; i++) {
+        size_t k = 0;
+        while (k < needle.n
+               && rpc_lower(hay.p[i + k]) == rpc_lower(needle.p[k]))
+            k++;
+        if (k == needle.n) return true;
+    }
+    return false;
+}
+
+typedef struct {
+    HttpRpc *r;
+    Buf line;
+    Buf data;
+    b8 in_event;
+    b8 stop;
+    b8 oom;
+    size_t bytes;
+    size_t events;
+} RpcCtx;
+
+static void rpc_header(RpcCtx *c, Str line) {
+    if (str_starts(line, STR("HTTP/"))) {
+        c->r->status = status_line_code(line);
+        if (c->r->out) c->r->out->n = 0;
+        c->r->sse = false;
+        return;
+    }
+    size_t colon = 0;
+    while (colon < line.n && line.p[colon] != ':') colon++;
+    if (colon >= line.n) return;
+    Str name = str_trim((Str){line.p, colon});
+    Str value = str_trim(str_drop(line, colon + 1));
+    if (str_eq_ci(name, STR("content-type"))
+        && rpc_has_ci(value, STR("text/event-stream")))
+        c->r->sse = true;
+    if (c->r->on_header) c->r->on_header(name, value, c->r->ud);
+}
+
+static size_t rpc_header_cb(char *p, size_t sz, size_t n, void *ud) {
+    RpcCtx *c = (RpcCtx *)ud;
+    size_t total = sz * n;
+    Str line = {p, total};
+    while (line.n && (line.p[line.n - 1] == '\n' || line.p[line.n - 1] == '\r'))
+        line.n--;
+    if (line.n) rpc_header(c, line);
+    return total;
+}
+
+static b8 rpc_event_end(RpcCtx *c) {
+    if (!c->in_event) return true;
+    c->in_event = false;
+    if (!buf_ok(&c->data)) {
+        c->oom = true;
+        return false;
+    }
+    c->events++;
+    Str payload = buf_finish(&c->data);
+    c->data.n = 0;
+    if (!payload.n) return true;
+    if (c->r->on_event && !c->r->on_event(payload, c->r->ud)) {
+        c->stop = true;
+        return false;
+    }
+    return true;
+}
+
+static b8 rpc_sse_line(RpcCtx *c, Str line) {
+    if (!line.n) return rpc_event_end(c);
+    if (line.p[0] == ':') return true;
+    size_t colon = 0;
+    while (colon < line.n && line.p[colon] != ':') colon++;
+    Str field = {line.p, colon};
+    Str value = colon < line.n ? str_drop(line, colon + 1) : (Str){0};
+    if (value.n && value.p[0] == ' ') value = str_drop(value, 1);
+    if (!str_eq(field, STR("data"))) return true;
+    if (c->data.n) buf_putc(&c->data, '\n');
+    buf_puts(&c->data, value);
+    c->in_event = true;
+    return buf_ok(&c->data);
+}
+
+static size_t rpc_body_cb(char *p, size_t sz, size_t n, void *ud) {
+    RpcCtx *c = (RpcCtx *)ud;
+    if (sz && n > SIZE_MAX / sz) return 0;
+    size_t total = sz * n;
+    c->bytes += total;
+    if (c->r->max_bytes && c->bytes > c->r->max_bytes) {
+        c->r->too_large = true;
+        return 0;
+    }
+    if (!c->r->sse) {
+        if (!c->r->out) return total;
+        buf_put(c->r->out, p, total);
+        if (!buf_ok(c->r->out)) {
+            c->oom = true;
+            return 0;
+        }
+        return total;
+    }
+    size_t start = 0;
+    for (size_t i = 0; i < total; i++) {
+        if (p[i] != '\n') continue;
+        buf_put(&c->line, p + start, i - start);
+        start = i + 1;
+        if (!buf_ok(&c->line)) {
+            c->oom = true;
+            return 0;
+        }
+        size_t len = c->line.n;
+        if (len && c->line.p[len - 1] == '\r') len--;
+        Str ln = {c->line.p, len};
+        c->line.n = 0;
+        if (!rpc_sse_line(c, ln)) return c->stop ? total : 0;
+    }
+    buf_put(&c->line, p + start, total - start);
+    if (!buf_ok(&c->line)) {
+        c->oom = true;
+        return 0;
+    }
+    return total;
+}
+
+i32 http_rpc(HttpRpc *r) {
+    r->failure[0] = '\0';
+    r->status = 0;
+    r->sse = false;
+    r->too_large = false;
+    if (!r->url || !*r->url) {
+        snprintf(r->failure, sizeof r->failure, "no url");
+        return 2;
+    }
+    char load_err[256] = {0};
+    if (!curl_load(load_err, sizeof load_err)) {
+        snprintf(r->failure, sizeof r->failure, "%s", load_err);
+        return 2;
+    }
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        snprintf(r->failure, sizeof r->failure, "curl init failed");
+        return 2;
+    }
+
+    RpcCtx ctx = {0};
+    ctx.r = r;
+    if (r->line_arena) {
+        buf_init(&ctx.line, r->line_arena, 8192);
+        buf_init(&ctx.data, r->line_arena, 8192);
+    }
+
+    struct curl_slist *hdrs = NULL;
+    for (size_t i = 0; i < r->header_n; i++) {
+        if (!r->headers[i]) continue;
+        struct curl_slist *next = curl_slist_append(hdrs, r->headers[i]);
+        if (!next) {
+            curl_slist_free_all(hdrs);
+            curl_easy_cleanup(curl);
+            snprintf(r->failure, sizeof r->failure,
+                     "out of memory building headers");
+            return 2;
+        }
+        hdrs = next;
+    }
+
+    const char *method = r->method ? r->method : "POST";
+    curl_easy_setopt(curl, CURLOPT_URL, r->url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
+    if (!strcmp(method, "POST")) {
+        curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, r->body ? r->body : "");
+    } else if (strcmp(method, "GET") != 0) {
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
+    }
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, rpc_body_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, rpc_header_cb);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &ctx);
+    /* NOTE: redirects stay off. Every custom header follows a redirect, and
+     * an MCP endpoint is one fixed URL, so a redirect is reported instead. */
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    if (r->timeout_ms > 0)
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, (long)r->timeout_ms);
+    http_apply_ca(curl);
+
+    CURLM *multi = curl_multi_init();
+    if (!multi) {
+        curl_slist_free_all(hdrs);
+        curl_easy_cleanup(curl);
+        snprintf(r->failure, sizeof r->failure, "curl multi init failed");
+        return 2;
+    }
+    curl_multi_add_handle(multi, curl);
+
+    CURLcode rc = CURLE_OK;
+    b8 interrupted = false;
+    i32 running = 1;
+    while (running) {
+        CURLMcode mc = curl_multi_perform(multi, &running);
+        if (ctx.stop) break;
+        if (mc == CURLM_OK && running) {
+            struct curl_waitfd extra = {r->idle_fd, CURL_WAIT_POLLIN, 0};
+            b8 watch = r->idle_fd >= 0;
+            i32 numfds = 0;
+            mc = curl_multi_poll(multi, watch ? &extra : NULL, watch ? 1u : 0u,
+                                 HTTP_POLL_MS, &numfds);
+        }
+        if (mc != CURLM_OK) {
+            rc = CURLE_RECV_ERROR;
+            break;
+        }
+        if (r->on_idle) r->on_idle(r->idle_ud);
+        if (r->interrupt_flag && *r->interrupt_flag) {
+            interrupted = true;
+            break;
+        }
+    }
+    if (!interrupted && !ctx.stop && rc == CURLE_OK) {
+        CURLMsg *msg;
+        i32 left = 0;
+        while ((msg = curl_multi_info_read(multi, &left)))
+            if (msg->msg == CURLMSG_DONE) rc = msg->data.result;
+    }
+    if (r->sse && !interrupted && !ctx.stop && rc == CURLE_OK) {
+        if (ctx.line.n) {
+            Str ln = {ctx.line.p, ctx.line.n};
+            ctx.line.n = 0;
+            rpc_sse_line(&ctx, ln);
+        }
+        rpc_event_end(&ctx);
+    }
+
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    if (http_code) r->status = (i64)http_code;
+    http_record(method, "/mcp", r->url, curl, rc, r->status, NULL, interrupted);
+
+    curl_multi_remove_handle(multi, curl);
+    curl_multi_cleanup(multi);
+    curl_slist_free_all(hdrs);
+    curl_easy_cleanup(curl);
+
+    if (interrupted) return 3;
+    if (r->too_large) {
+        snprintf(r->failure, sizeof r->failure, "the reply is over %zu bytes",
+                 r->max_bytes);
+        return 2;
+    }
+    if (ctx.oom) {
+        snprintf(r->failure, sizeof r->failure,
+                 "the reply did not fit in "
+                 "memory");
+        return 2;
+    }
+    if (rc != CURLE_OK && !ctx.stop) {
+        snprintf(r->failure, sizeof r->failure, "%s", curl_easy_strerror(rc));
+        return 2;
+    }
+    if (!r->status) {
+        snprintf(r->failure, sizeof r->failure,
+                 "the server sent no HTTP status");
+        return 2;
+    }
+    if (r->status < 200 || r->status >= 300) return -(i32)r->status;
+    return 0;
+}

@@ -2032,6 +2032,7 @@ Str tools_approval_name(ToolApprovalClass approval) {
         case TOOL_APPROVAL_BASH: return STR("bash");
         case TOOL_APPROVAL_WRITE: return STR("write");
         case TOOL_APPROVAL_PATCH: return STR("patch");
+        case TOOL_APPROVAL_MCP: return STR("MCP tool");
         case TOOL_APPROVAL_NONE: break;
     }
     return (Str){0};
@@ -2065,6 +2066,7 @@ b8 tools_disable_list(ToolRegistry *r, Str names, char *err, size_t err_cap) {
         if (i == start) break;
         Str name = {names.p + start, i - start};
         size_t id = tools_find(r, name);
+        if (id == TOOL_NONE && mcp_may_disable(name)) continue;
         if (id == TOOL_NONE || !tools_can_disable(r, id)) {
             snprintf(err, err_cap, "no tool named '%.*s' can be disabled",
                      (int)name.n, name.p);
@@ -2073,6 +2075,58 @@ b8 tools_disable_list(ToolRegistry *r, Str names, char *err, size_t err_cap) {
         tools_set_disabled(r, id, true);
     }
     return true;
+}
+
+b8 tools_add_mcp(ToolRegistry *r, Str name, Str desc, Str brief, Str schema,
+                 u16 server) {
+    if (!r->name || r->n >= AGENT_MAX_TOOLS) return false;
+    if (!name.n || !schema.n) return false;
+    r->name[r->n] = name;
+    r->desc[r->n] = desc;
+    r->brief[r->n] = brief;
+    r->schema[r->n] = schema;
+    r->run[r->n] = NULL;
+    r->modes[r->n] = TOOL_IN_BUILD;
+    r->approval[r->n] = TOOL_APPROVAL_MCP;
+    r->source[r->n] = TOOL_SRC_MCP;
+    r->ext[r->n] = server;
+    r->off[r->n] = false;
+    r->n++;
+    return true;
+}
+
+size_t tools_mcp_count(const ToolRegistry *r) {
+    if (!r->name) return 0;
+    size_t n = 0;
+    for (size_t i = 0; i < r->n; i++)
+        if (r->source[i] == TOOL_SRC_MCP) n++;
+    return n;
+}
+
+size_t tools_remove_mcp(ToolRegistry *r, u16 server) {
+    if (!r->name) return 0;
+    size_t out = 0, gone = 0;
+    for (size_t i = 0; i < r->n; i++) {
+        if (r->source[i] == TOOL_SRC_MCP && r->ext[i] == server) {
+            gone++;
+            continue;
+        }
+        if (out != i) {
+            r->name[out] = r->name[i];
+            r->desc[out] = r->desc[i];
+            r->brief[out] = r->brief[i];
+            r->schema[out] = r->schema[i];
+            r->run[out] = r->run[i];
+            r->modes[out] = r->modes[i];
+            r->approval[out] = r->approval[i];
+            r->source[out] = r->source[i];
+            r->ext[out] = r->ext[i];
+            r->off[out] = r->off[i];
+        }
+        out++;
+    }
+    r->n = out;
+    return gone;
 }
 
 static struct {
@@ -2100,10 +2154,12 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
     r->run = arena_new(persist, ToolRun, AGENT_MAX_TOOLS);
     r->modes = arena_new(persist, u8, AGENT_MAX_TOOLS);
     r->approval = arena_new(persist, u8, AGENT_MAX_TOOLS);
+    r->source = arena_new(persist, u8, AGENT_MAX_TOOLS);
+    r->ext = arena_new(persist, u16, AGENT_MAX_TOOLS);
     r->off = arena_new(persist, b8, AGENT_MAX_TOOLS);
     r->n = 0;
     if (!r->name || !r->desc || !r->brief || !r->schema || !r->run || !r->modes
-        || !r->approval || !r->off) {
+        || !r->approval || !r->source || !r->ext || !r->off) {
         r->name = NULL;
         return;
     }
@@ -2117,6 +2173,8 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
         r->run[r->n] = fn;                  \
         r->modes[r->n] = (md);              \
         r->approval[r->n] = (ap);           \
+        r->source[r->n] = TOOL_SRC_BUILTIN; \
+        r->ext[r->n] = 0;                   \
         r->off[r->n] = false;               \
         r->n++;                             \
     } while (0)
@@ -2231,6 +2289,8 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
         r->run[r->n] = tool_bash;
         r->modes[r->n] = TOOL_IN_BUILD;
         r->approval[r->n] = TOOL_APPROVAL_BASH;
+        r->source[r->n] = TOOL_SRC_BUILTIN;
+        r->ext[r->n] = 0;
         r->off[r->n] = false;
         r->n++;
     }
@@ -2375,7 +2435,10 @@ b8 tools_run(const ToolRegistry *r, size_t id, Str args,
                  cls.p);
         return false;
     }
-    b8 ok = r->run[id](args, scratch, out, err, err_cap);
+    b8 ok = r->source[id] == TOOL_SRC_MCP
+                ? mcp_call(r->ext[id], r->name[id], args, scratch, out, err,
+                           err_cap)
+                : r->run[id](args, scratch, out, err, err_cap);
     if (ok && out->n > AGENT_TOOL_RESULT_BYTES) {
         snprintf(err, err_cap, "result exceeds the %u byte limit",
                  (unsigned)AGENT_TOOL_RESULT_BYTES);

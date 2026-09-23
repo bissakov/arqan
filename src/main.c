@@ -24,6 +24,7 @@
 #include "cli.c"
 #include "ignore.c"
 #include "tools.c"
+#include "mcp.c"
 #include "todo.c"
 #include "prompt.c"
 #include "provider.c"
@@ -70,7 +71,7 @@ static struct {
     size_t n;
 } g_commands;
 
-static size_t commands_init(b8 images, b8 subagents) {
+static size_t commands_init(b8 images, b8 subagents, b8 mcp) {
     size_t n = 0;
     g_commands.v[n++] =
         (TuiCmd){STR("/clear"), STR("Start a fresh conversation")};
@@ -97,6 +98,10 @@ static size_t commands_init(b8 images, b8 subagents) {
         (TuiCmd){STR("/copy"), STR("Copy the last response to the clipboard")};
     g_commands.v[n++] =
         (TuiCmd){STR("/todo"), STR("Show the step list for the work in hand")};
+    if (mcp)
+        g_commands.v[n++] = (TuiCmd){
+            STR("/mcp"), STR("MCP servers: list, approve, reject, restart, "
+                             "disable, prompts, prompt")};
     if (subagents)
         g_commands.v[n++] =
             (TuiCmd){STR("/task"),
@@ -580,7 +585,8 @@ static void say_conv_full(void) {
     tui_write(STR("[conversation is full: /clear to start a new one]\n"));
 }
 
-static b8 add_result(Agent *ag, size_t call, Str name, Str result, u32 ms) {
+static b8 add_result_media(Agent *ag, size_t call, Str name, Str result, u32 ms,
+                           size_t media_off, size_t media_n) {
     Conv *conv = ag->conv;
     size_t slot = conv_add_tool(conv, conv->tool_call_id[call], result);
     if (slot == CONV_NONE) {
@@ -588,6 +594,7 @@ static b8 add_result(Agent *ag, size_t call, Str name, Str result, u32 ms) {
         return false;
     }
     conv->ms[slot] = ms;
+    conv_attach_media(conv, slot, media_off, media_n);
     if (g_turn.one_shot)
         one_shot_diag("tool result", name, result);
     else
@@ -595,6 +602,10 @@ static b8 add_result(Agent *ag, size_t call, Str name, Str result, u32 ms) {
                            (u32)(slot + 1), conv->expanded[slot], ms);
     save_session(ag);
     return true;
+}
+
+static b8 add_result(Agent *ag, size_t call, Str name, Str result, u32 ms) {
+    return add_result_media(ag, call, name, result, ms, 0, 0);
 }
 
 static u32 elapsed_ms(f64 started) {
@@ -706,6 +717,9 @@ tool_authorization(Agent *ag, ToolApprovalClass approval, size_t at) {
     } else if (approval == TOOL_APPROVAL_PATCH) {
         once = STR("Apply this patch");
         remembered = STR("Allow future patches until the process exits");
+    } else if (approval == TOOL_APPROVAL_MCP) {
+        once = STR("Call this MCP tool");
+        remembered = STR("Allow calls to any MCP tool until the process exits");
     }
     TuiCmd items[] = {
         {STR("Yes"), once},
@@ -1724,26 +1738,33 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         snprintf(status, sizeof status, "running %.*s", (i32)name.n, name.p);
         say_busy(status);
         f64 started = agent_now_seconds();
+        size_t media_off = conv->media ? conv->media->n : 0;
         b8 ok = tools_run(ag->tools, tool, args, authorization, ag->scratch,
                           &out, err, sizeof err, TOOL_FOR_MAIN);
         if (!ok) buf_error(&out, err, "tool failed");
+        size_t media_n = ok && conv->media && conv->media->n > media_off
+                             ? conv->media->n - media_off
+                             : 0;
         todo_note_stale(name, &out);
         Str result = buf_finish(&out);
 
         TelEvent e;
         tel_open(&e, "tool");
-        tel_str(&e, "name", name);
+        b8 remote =
+            tool != TOOL_NONE && ag->tools->source[tool] == TOOL_SRC_MCP;
+        tel_str(&e, "name", remote ? STR("mcp") : name);
         const char *outcome = tool_outcome(name, result, ok);
         tel_str(&e, "outcome", (Str){outcome, strlen(outcome)});
         tel_bool(&e, "known", tool != TOOL_NONE);
         tel_int(&e, "args_bytes", (i64)args.n);
-        tel_arg_keys(&e, "args", args, ag->scratch);
+        if (!remote) tel_arg_keys(&e, "args", args, ag->scratch);
         u32 ms = elapsed_ms(started);
         tel_int(&e, "ms", (i64)ms);
         tel_bool(&e, "ok", ok);
         tel_shape(&e, "result", result);
         tel_send(&e);
-        if (!add_result(ag, i, name, keep_result(ag->persist, result), ms))
+        if (!add_result_media(ag, i, name, keep_result(ag->persist, result), ms,
+                              media_off, media_n))
             return TURN_FULL;
     }
     return pending;
@@ -2556,6 +2577,56 @@ static void show_todo(void) {
     tui_info(STR("step list"), view.rows, l->n);
 }
 
+static void show_mcp(Arena *scratch) {
+    static struct {
+        TuiCmd rows[AGENT_MAX_MCP_SERVERS];
+        char desc[AGENT_MAX_MCP_SERVERS][256];
+        McpInfo info[AGENT_MAX_MCP_SERVERS];
+    } view;
+
+    if (!mcp_enabled()) {
+        tui_notice(STR("MCP is off; set mcp = on to use servers from "
+                       "mcp.json"));
+        return;
+    }
+    size_t n = mcp_list(view.info, AGENT_MAX_MCP_SERVERS);
+    if (!n) {
+        tui_notice(STR("no MCP server is configured in mcp.json"));
+        return;
+    }
+    size_t mark = scratch->off;
+    for (size_t i = 0; i < n; i++) {
+        const McpInfo *s = &view.info[i];
+        Str state = mcp_status_name(s->status);
+        Str from =
+            s->origin == MCP_FROM_PROJECT ? STR("project") : STR("config");
+        Str how = s->transport == MCP_HTTP ? STR("http") : STR("stdio");
+        Str argv = mcp_argv_text(s->name, scratch);
+        i32 len;
+        if (s->err.n)
+            len = snprintf(view.desc[i], sizeof view.desc[i],
+                           "%.*s: %.*s (%.*s)", (i32)state.n, state.p,
+                           (i32)s->err.n, s->err.p, (i32)from.n, from.p);
+        else if (s->status == MCP_UNAPPROVED)
+            len = snprintf(view.desc[i], sizeof view.desc[i],
+                           "%.*s, from a %.*s file: %.*s", (i32)state.n,
+                           state.p, (i32)from.n, from.p, (i32)argv.n, argv.p);
+        else
+            len = snprintf(view.desc[i], sizeof view.desc[i],
+                           "%.*s, %zu tools, %.*s%s%.*s, %.*s: %.*s",
+                           (i32)state.n, state.p, s->tools, (i32)how.n, how.p,
+                           s->protocol.n ? " " : "", (i32)s->protocol.n,
+                           s->protocol.p, (i32)from.n, from.p,
+                           (i32)s->command.n, s->command.p);
+        size_t desc_n = len <= 0 ? 0 : (size_t)len;
+        if (desc_n >= sizeof view.desc[i]) desc_n = sizeof view.desc[i] - 1;
+        view.rows[i].name = s->name;
+        view.rows[i].desc = (Str){view.desc[i], desc_n};
+    }
+    scratch->off = mark;
+    tui_info(STR("MCP servers"), view.rows, n);
+}
+
 static void notice_fmt(const char *fmt, ...)
     __attribute__((format(printf, 1, 2)));
 static void notice_fmt(const char *fmt, ...) {
@@ -2575,6 +2646,143 @@ static void attach_notice(const Agent *ag, size_t id) {
     media_describe(what, sizeof what, &g_media, id);
     notice_fmt("attached [Image #%zu] %.*s - %s", ag->pending_n,
                (i32)g_media.label[id].n, g_media.label[id].p, what);
+}
+
+static void show_mcp_prompts(Arena *scratch) {
+    static struct {
+        TuiCmd rows[32];
+        char text[8192];
+    } view;
+
+    size_t mark = scratch->off;
+    Buf b;
+    buf_init(&b, scratch, 4096);
+    char err[256];
+    if (!mcp_prompt_list(scratch, &b, err, sizeof err)) {
+        scratch->off = mark;
+        notice_fmt("%s", err);
+        return;
+    }
+    Str all = buf_finish(&b);
+    size_t used = all.n < sizeof view.text ? all.n : sizeof view.text;
+    memcpy(view.text, all.p, used);
+    scratch->off = mark;
+
+    Str text = {view.text, used};
+    size_t off = 0, n = 0;
+    Str line;
+    while (n < 32 && str_line(text, &off, &line)) {
+        Str name = line, desc = {0};
+        for (size_t i = 0; i + 3 <= line.n; i++)
+            if (!memcmp(line.p + i, " - ", 3)) {
+                name = str_take(line, i);
+                desc = str_drop(line, i + 3);
+                break;
+            }
+        view.rows[n].name = name;
+        view.rows[n].desc = desc;
+        n++;
+    }
+    tui_info(STR("MCP prompts"), view.rows, n);
+}
+
+static void mcp_starting(Str name, void *ud);
+
+static void mcp_prompt_command(Str rest, Arena *scratch) {
+    size_t cut = 0;
+    while (cut < rest.n && rest.p[cut] != ' ' && rest.p[cut] != '\t') cut++;
+    Str server = str_take(rest, cut);
+    Str tail = str_trim(str_drop(rest, cut));
+    cut = 0;
+    while (cut < tail.n && tail.p[cut] != ' ' && tail.p[cut] != '\t') cut++;
+    Str name = str_take(tail, cut);
+    Str args = str_trim(str_drop(tail, cut));
+    if (!server.n || !name.n) {
+        notice_fmt("/mcp prompt takes a server, a prompt name, and any "
+                   "key=value arguments");
+        return;
+    }
+
+    size_t mark = scratch->off;
+    Buf b;
+    buf_init(&b, scratch, 4096);
+    char err[256];
+    if (!mcp_prompt_get(server, name, args, scratch, &b, err, sizeof err)) {
+        scratch->off = mark;
+        notice_fmt("%s", err);
+        return;
+    }
+    Str prompt = buf_finish(&b);
+    if (prompt.n >= AGENT_LINE_BUF) {
+        scratch->off = mark;
+        notice_fmt("the prompt is over %u bytes and does not fit in the "
+                   "composer",
+                   (unsigned)(AGENT_LINE_BUF - 1));
+        return;
+    }
+    tui_set_input(prompt);
+    scratch->off = mark;
+    notice_fmt("loaded %.*s from %.*s; edit it or press enter to send",
+               (i32)name.n, name.p, (i32)server.n, server.p);
+}
+
+static void mcp_command(Str args, Arena *scratch) {
+    args = str_trim(args);
+    if (!mcp_enabled()) {
+        tui_notice(STR("MCP is off; set mcp = on to use servers from "
+                       "mcp.json"));
+        return;
+    }
+    if (!args.n) {
+        show_mcp(scratch);
+        return;
+    }
+    size_t cut = 0;
+    while (cut < args.n && args.p[cut] != ' ' && args.p[cut] != '\t') cut++;
+    Str verb = str_take(args, cut);
+    Str name = str_trim(str_drop(args, cut));
+
+    if (str_eq(verb, STR("prompts"))) {
+        mcp_refresh(scratch, mcp_starting, NULL);
+        tui_activity_end();
+        arena_reset(scratch);
+        show_mcp_prompts(scratch);
+        return;
+    }
+    if (str_eq(verb, STR("prompt"))) {
+        mcp_refresh(scratch, mcp_starting, NULL);
+        tui_activity_end();
+        arena_reset(scratch);
+        mcp_prompt_command(name, scratch);
+        return;
+    }
+
+    McpAction what;
+    if (str_eq(verb, STR("approve")))
+        what = MCP_DO_APPROVE;
+    else if (str_eq(verb, STR("reject")))
+        what = MCP_DO_REJECT;
+    else if (str_eq(verb, STR("restart")))
+        what = MCP_DO_RESTART;
+    else if (str_eq(verb, STR("disable")))
+        what = MCP_DO_DISABLE;
+    else {
+        notice_fmt("/mcp takes approve, reject, restart or disable with a "
+                   "server name, prompts, or prompt with a server and a "
+                   "prompt name");
+        return;
+    }
+    if (!name.n) {
+        notice_fmt("/mcp %.*s needs a server name", (i32)verb.n, verb.p);
+        return;
+    }
+
+    char msg[256];
+    size_t mark = scratch->off;
+    b8 ok = mcp_manage(what, name, scratch, msg, sizeof msg);
+    scratch->off = mark;
+    notice_fmt("%s", msg);
+    (void)ok;
 }
 
 
@@ -5156,6 +5364,13 @@ static b8 name_session_now(Agent *ag) {
     return interrupted;
 }
 
+static void mcp_starting(Str name, void *ud) {
+    (void)ud;
+    char label[64];
+    i32 n = snprintf(label, sizeof label, "starting %.*s", (i32)name.n, name.p);
+    if (n > 0) tui_activity((Str){label, (size_t)n});
+}
+
 static b8 agent_turn(Agent *ag, Str text) {
     Conv *conv = ag->conv;
 
@@ -5184,6 +5399,12 @@ static b8 agent_turn(Agent *ag, Str text) {
         render_user_message(conv, conv->n - 1);
     }
     save_session(ag);
+
+    if (mcp_enabled()) {
+        size_t mark = ag->scratch->off;
+        mcp_refresh(ag->scratch, g_turn.one_shot ? NULL : mcp_starting, NULL);
+        ag->scratch->off = mark;
+    }
 
     ctx_sync(&g_ctx, conv);
 
@@ -5676,6 +5897,10 @@ i32 main(i32 argc, char **argv) {
         !opts.have_prompt && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
     tools_set_interactive(interactive);
 
+    mcp_init(&tools, &persist, &scratch, cfg.mcp, cfg.mcp_timeout_ms,
+             cfg.disable_tools);
+    arena_reset(&scratch);
+
     char tools_err[128] = {0};
     if (cfg.disable_tools.n
         && !tools_disable_list(&tools, cfg.disable_tools, tools_err,
@@ -5719,8 +5944,10 @@ i32 main(i32 argc, char **argv) {
         return 1;
     }
 
-    if (cfg.images && media_init(&g_media, &persist, AGENT_MAX_MEDIA))
+    if (cfg.images && media_init(&g_media, &persist, AGENT_MAX_MEDIA)) {
         conv_set_media(&conv, &g_media);
+        mcp_set_media(&g_media);
+    }
 
     conv_add(&conv, M_SYSTEM,
              cfg.mode == MODE_PLAN ? cfg.plan_prompt : cfg.system_prompt);
@@ -5762,7 +5989,8 @@ i32 main(i32 argc, char **argv) {
     } else if (prefs.show_instructions && !opts.have_prompt) {
         render_instructions(&cfg);
     }
-    tui_set_commands(g_commands.v, commands_init(cfg.images, cfg.subagents));
+    tui_set_commands(g_commands.v,
+                     commands_init(cfg.images, cfg.subagents, cfg.mcp));
     tui_set_aliases(k_aliases, ALIAS_N);
     tui_set_history(&hist);
     tui_set_interrupt_flag(&g_got_sigint);
@@ -5771,8 +5999,12 @@ i32 main(i32 argc, char **argv) {
     shell_set_interrupt_flag(&g_got_sigint);
     shell_set_timeout(cfg.shell_timeout_ms);
 
+    mcp_set_idle(on_idle, NULL, tui_input_fd());
+    mcp_set_interrupt_flag(&g_got_sigint);
+
     atexit(jobs_stop);
     atexit(task_workers_stop);
+    atexit(mcp_shutdown);
     web_set_idle(on_idle, NULL, tui_input_fd(), &g_got_sigint);
     atexit(tui_stop);
     highlight_init(argv[0]);
@@ -5946,6 +6178,10 @@ i32 main(i32 argc, char **argv) {
         }
         if (!strcmp(line, "/todo")) {
             show_todo();
+            continue;
+        }
+        if (!strncmp(line, "/mcp", 4) && (ln == 4 || line[4] == ' ')) {
+            mcp_command((Str){line + 4, ln - 4}, &scratch);
             continue;
         }
         if (!strcmp(line, "/help")) {

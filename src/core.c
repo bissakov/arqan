@@ -63,6 +63,17 @@ b8 str_eq(Str a, Str b) {
     return a.n == b.n && (a.n == 0 || !memcmp(a.p, b.p, a.n));
 }
 
+static char str_lower(char c) {
+    return c >= 'A' && c <= 'Z' ? (char)(c + 32) : c;
+}
+
+b8 str_eq_ci(Str a, Str b) {
+    if (a.n != b.n) return false;
+    for (size_t i = 0; i < a.n; i++)
+        if (str_lower(a.p[i]) != str_lower(b.p[i])) return false;
+    return true;
+}
+
 Str str_dup(Arena *a, Str s) {
     char *dst = (char *)arena_alloc(a, s.n + 1, 1);
     if (!dst) return (Str){0};
@@ -519,6 +530,49 @@ void buf_base64(Buf *b, const void *p, size_t n) {
     b->p[b->n++] = '=';
 }
 
+static i32 base64_digit(char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+B64Status base64_decode(Arena *a, Str text, size_t max, Str *out) {
+    *out = (Str){0};
+    size_t n = text.n;
+    if (n % 4 == 0 && n && text.p[n - 1] == '=') n--;
+    if (n % 4 == 3 && n && text.p[n - 1] == '=') n--;
+    if (n % 4 == 1) return B64_MALFORMED;
+    if (n < text.n && (text.n % 4 || n % 4 == 0)) return B64_MALFORMED;
+    size_t bytes = n / 4 * 3 + (n % 4 ? n % 4 - 1 : 0);
+    if (bytes > max) return B64_TOO_LARGE;
+    if (!bytes) return n ? B64_MALFORMED : B64_OK;
+    u8 *p = arena_alloc(a, bytes, 1);
+    if (!p) return B64_NO_MEMORY;
+    size_t at = 0;
+    u32 acc = 0;
+    for (size_t i = 0; i < n; i++) {
+        i32 d = base64_digit(text.p[i]);
+        if (d < 0) return B64_MALFORMED;
+        acc = acc << 6 | (u32)d;
+        if (i % 4 == 3) {
+            p[at++] = (u8)(acc >> 16);
+            p[at++] = (u8)(acc >> 8);
+            p[at++] = (u8)acc;
+            acc = 0;
+        }
+    }
+    if (n % 4 == 2) p[at++] = (u8)(acc >> 4);
+    if (n % 4 == 3) {
+        p[at++] = (u8)(acc >> 10);
+        p[at++] = (u8)(acc >> 2);
+    }
+    *out = (Str){(const char *)p, at};
+    return B64_OK;
+}
+
 Str buf_finish(Buf *b) {
     if (b->n == b->cap && !buf_grow(b, b->n + 1)) {
         if (b->n == 0) return (Str){0};
@@ -542,24 +596,38 @@ void agent_log_set_sink(AgentLogSink sink, void *ud) {
     g_log.sink = sink;
     g_log.ud = ud;
 }
-void agent_log(i32 level, const char *fmt, ...) {
+static void log_emit(i32 level, b8 recorded, const char *fmt, va_list ap)
+    __attribute__((format(printf, 3, 0)));
+
+static void log_emit(i32 level, b8 recorded, const char *fmt, va_list ap) {
     if (level < g_log.level) return;
     static const char *tags[] = {"DBG", "INF", "WRN", "ERR"};
     if (level < AGENT_LOG_DEBUG || level > AGENT_LOG_ERROR)
         level = AGENT_LOG_ERROR;
     char msg[512];
-    va_list ap;
-    va_start(ap, fmt);
     i32 w = vsnprintf(msg, sizeof msg, fmt, ap);
-    va_end(ap);
     size_t n =
         w > 0 ? ((size_t)w < sizeof msg ? (size_t)w : sizeof msg - 1) : 0;
-    telemetry_log(level, (Str){msg, n});
+    if (recorded) telemetry_log(level, (Str){msg, n});
     if (g_log.sink) {
         g_log.sink(level, (Str){msg, n}, g_log.ud);
         return;
     }
     fprintf(stderr, "[" AGENT_NAME " %s] %.*s\n", tags[level], (i32)n, msg);
+}
+
+void agent_log(i32 level, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    log_emit(level, true, fmt, ap);
+    va_end(ap);
+}
+
+void agent_log_local(i32 level, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    log_emit(level, false, fmt, ap);
+    va_end(ap);
 }
 
 

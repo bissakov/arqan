@@ -1241,7 +1241,8 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
         }
         if (slot != CONV_NONE && ms && ms->type == J_NUM && ms->u.n > 0)
             c->ms[slot] = ms->u.n > (f64)UINT32_MAX ? UINT32_MAX : (u32)ms->u.n;
-        if (slot != CONV_NONE && c->role[slot] == M_USER)
+        if (slot != CONV_NONE
+            && (c->role[slot] == M_USER || c->role[slot] == M_TOOL))
             sess_apply_media(s, v, c, slot, persist, scratch);
         if (slot != CONV_NONE && c->role[slot] == M_ASSISTANT)
             c->anthropic_thinking[slot] = sess_thinking(persist, v);
