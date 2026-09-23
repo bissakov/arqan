@@ -24,6 +24,8 @@ void telemetry_log(i32 level, Str msg) {
 #include "width.c"
 #include "json.c"
 #include "tasklog.c"
+#include "spill.c"
+#include "media.c"
 
 #include <fcntl.h>
 #include <stdlib.h>
@@ -549,6 +551,32 @@ static void tasklog_writes_the_end_past_the_cap(void) {
     log_pair_close(&p);
 }
 
+static void media_refuses_a_short_label_allocation(void) {
+    WITH_ARENA(storage, 4096);
+    WITH_ARENA(payload, 17);
+    MediaSet m;
+    CHECK(media_init(&m, &storage, 1));
+    char err[128] = "";
+    Str image = STR("GIF89a\x01\0\x01\0\0\0\0\0\0\0");
+    CHECK(media_add(&m, &payload, image, STR("picture"), err, sizeof err)
+          == MEDIA_NONE);
+    CHECK(m.n == 0);
+    CHECK(err[0] != '\0');
+}
+
+static void media_refuses_full_capacity(void) {
+    WITH_ARENA(a, 4096);
+    MediaSet m;
+    CHECK(media_init(&m, &a, 1));
+    char err[128] = "";
+    Str image = STR("GIF89a\x01\0\x01\0\0\0\0\0\0\0");
+    CHECK(media_add(&m, &a, image, STR("first"), err, sizeof err) == 0);
+    CHECK(media_add(&m, &a, image, STR("second"), err, sizeof err)
+          == MEDIA_NONE);
+    CHECK(m.n == 1);
+    CHECK(str_eq(m.bytes[0], image));
+}
+
 int main(void) {
     agent_log_set_level(AGENT_LOG_ERROR + 1);
 
@@ -587,6 +615,8 @@ int main(void) {
     RUN(tasklog_skips_what_it_cannot_read);
     RUN(tasklog_resynchronizes_after_a_huge_line);
     RUN(tasklog_writes_the_end_past_the_cap);
+    RUN(media_refuses_a_short_label_allocation);
+    RUN(media_refuses_full_capacity);
     if (g_fail) {
         printf("%d failure(s) in %d cases\n", g_fail, g_ran);
         return 1;

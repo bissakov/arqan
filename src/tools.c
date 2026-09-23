@@ -128,21 +128,19 @@ static b8 arg_page_limit(const JVal *j, size_t dflt, size_t max, size_t *out,
 
 #define READ_SNIFF 8000
 
+static struct {
+    MediaSet *destination;
+} g_read_media;
+
+MediaSet *tools_set_media(MediaSet *m) {
+    MediaSet *previous = g_read_media.destination;
+    g_read_media.destination = m;
+    return previous;
+}
+
 static b8 read_not_text(const char *path, Str body, char *err, size_t err_cap) {
     char size[32];
     spill_size_text(size, sizeof size, body.n);
-    Str mime;
-    u32 w = 0, h = 0;
-    if (media_sniff(body, &mime, &w, &h)) {
-        Str kind = media_kind(mime);
-        char dim[32] = "";
-        if (w && h) snprintf(dim, sizeof dim, ", %ux%u", w, h);
-        snprintf(err, err_cap,
-                 "%s is a %.*s image%s, %s; read returns text. The user can "
-                 "attach an image for you to see it.",
-                 path, (int)kind.n, kind.p, dim, size);
-        return true;
-    }
     Str head = body.n > READ_SNIFF ? (Str){body.p, READ_SNIFF} : body;
     if (memchr(head.p, 0, head.n)) {
         snprintf(err, err_cap,
@@ -171,6 +169,33 @@ static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err,
 
     Str body;
     if (!slurp(z, scratch, &body, err, err_cap)) return false;
+    Str mime;
+    u32 w, h;
+    if (media_sniff(body, &mime, &w, &h)) {
+        MediaSet *m = g_read_media.destination;
+        if (!m || !m->arena) {
+            snprintf(err, err_cap,
+                     "cannot read image: images are off or this conversation "
+                     "does not support images");
+            return false;
+        }
+        size_t mark = m->arena->off;
+        size_t id = media_add(m, m->arena, body, str_c(z), err, err_cap);
+        if (id == MEDIA_NONE) {
+            m->arena->off = mark;
+            return false;
+        }
+        char description[160];
+        media_describe(description, sizeof description, m, id);
+        buf_putf(out, "[Image #%zu] %s", id + 1, description);
+        if (!buf_ok(out)) {
+            m->n = id;
+            m->arena->off = mark;
+            snprintf(err, err_cap, "not enough memory for image result");
+            return false;
+        }
+        return true;
+    }
     if (body.n && read_not_text(z, body, err, err_cap)) return false;
 
     size_t off = 0;
@@ -2212,7 +2237,10 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
     ADD("read",
         "Read a page of a text file: up to 2000 lines or 8KB, "
         "whichever is less. Use offset and limit to page through a long "
-        "file one range at a time rather than reading it whole.",
+        "file one range at a time rather than reading it whole. "
+        "With images enabled, PNG, JPEG, GIF and WebP files return their "
+        "whole image content. Offset and limit apply only to text; they "
+        "do not crop or page images.",
         "Read a page of a file", READS, TOOL_APPROVAL_NONE,
         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},"
         "\"offset\":{\"type\":\"integer\",\"description\":\"first line, 1-based\"},"
@@ -2435,10 +2463,13 @@ b8 tools_run(const ToolRegistry *r, size_t id, Str args,
                  cls.p);
         return false;
     }
+    MediaSet *previous = g_read_media.destination;
+    if (audience == TOOL_FOR_SUB) tools_set_media(NULL);
     b8 ok = r->source[id] == TOOL_SRC_MCP
                 ? mcp_call(r->ext[id], r->name[id], args, scratch, out, err,
                            err_cap)
                 : r->run[id](args, scratch, out, err, err_cap);
+    tools_set_media(previous);
     if (ok && out->n > AGENT_TOOL_RESULT_BYTES) {
         snprintf(err, err_cap, "result exceeds the %u byte limit",
                  (unsigned)AGENT_TOOL_RESULT_BYTES);
