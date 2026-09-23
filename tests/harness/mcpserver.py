@@ -7,6 +7,7 @@ all speaks the same handshake.
 """
 
 import argparse
+import base64
 import json
 import os
 import sys
@@ -259,6 +260,15 @@ def call(mode, name, args):
             "isError": True,
         }
     if name == "picture":
+        image = os.environ.get("MCP_TEST_IMAGE")
+        if image:
+            with open(image, "rb") as source:
+                data = base64.b64encode(source.read()).decode("ascii")
+            count = int(os.environ.get("MCP_TEST_IMAGE_COUNT", "1"))
+            return {"content": [{"type": "text", "text": "here it is"}] + [
+                {"type": "image", "data": data, "mimeType": "image/png"}
+                for _ in range(count)
+            ]}
         return {
             "content": [
                 {"type": "text", "text": "here it is"},

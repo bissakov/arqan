@@ -4,6 +4,12 @@
 
 ### Added
 
+- Send images from MCP tool results to the model. Images use the same size
+  and format checks as attachments and survive session replay. `images = off`
+  blocks them, including images saved in a session. Anthropic receives images
+  inside the tool result; OpenAI receives a follow-up user message naming the
+  source calls. Each result carries at most four images.
+
 - Use tools, resources and prompts from MCP servers. Set `mcp = on` and list
   stdio commands or streamable HTTP URLs in `mcp.json`. Servers connect before
   the first turn. Edits to `mcp.json` take effect on the next turn: a new

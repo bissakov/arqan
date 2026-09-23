@@ -144,6 +144,60 @@ static void buf_json_str_escapes_control(void) {
     CHECK(str_eq((Str){b.p, b.n}, STR("\"\\u0001\"")));
 }
 
+static void base64_round_trips(void) {
+    WITH_ARENA(a, 8192);
+    u8 raw[256];
+    for (size_t i = 0; i < sizeof raw; i++) raw[i] = (u8)i;
+    for (size_t n = 0; n <= sizeof raw; n += n < 8 ? 1 : 37) {
+        size_t mark = a.off;
+        Buf b;
+        buf_init(&b, &a, 16);
+        buf_base64(&b, raw, n);
+        Str text = buf_finish(&b);
+        Str back = {0};
+        CHECK(base64_decode(&a, text, sizeof raw, &back) == B64_OK);
+        CHECK(back.n == n);
+        CHECK(n == 0 || memcmp(back.p, raw, n) == 0);
+        a.off = mark;
+    }
+}
+
+static void base64_accepts_missing_padding(void) {
+    WITH_ARENA(a, 1024);
+    Str out = {0};
+    CHECK(base64_decode(&a, STR("aGk"), 16, &out) == B64_OK);
+    CHECK(str_eq(out, STR("hi")));
+    CHECK(base64_decode(&a, STR("aA"), 16, &out) == B64_OK);
+    CHECK(str_eq(out, STR("h")));
+}
+
+static void base64_rejects_malformed(void) {
+    WITH_ARENA(a, 1024);
+    static const char *const bad[] = {
+        "a",    "aGk=a",  "aG=k", "aGk==", "a===", "aGk!",
+        "aG k", "aGk=\n", "=",    "====",  "aGl-", "aGl_",
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        Str out = {0};
+        CHECK(base64_decode(&a, str_c(bad[i]), 64, &out) == B64_MALFORMED);
+    }
+}
+
+static void base64_refuses_before_allocating(void) {
+    WITH_ARENA(a, 64);
+    Str out = {0};
+    size_t used = arena_used(&a);
+    CHECK(base64_decode(&a, STR("aGVsbG8gd29ybGQ="), 10, &out)
+          == B64_TOO_LARGE);
+    CHECK(arena_used(&a) == used);
+    CHECK(base64_decode(&a, STR("aGVsbG8gd29ybGQ="), 11, &out) == B64_OK);
+    CHECK(str_eq(out, STR("hello world")));
+
+    WITH_ARENA(tiny, 8);
+    CHECK(base64_decode(&tiny, STR("aGVsbG8gd29ybGQ="), 64, &out)
+          == B64_NO_MEMORY);
+}
+
 /* ---- json -------------------------------------------------------------- */
 
 static void json_rejects_malformed(void) {
@@ -508,6 +562,10 @@ int main(void) {
     RUN(buf_reserve_reports_failure);
     RUN(buf_json_str_escapes);
     RUN(buf_json_str_escapes_control);
+    RUN(base64_round_trips);
+    RUN(base64_accepts_missing_padding);
+    RUN(base64_rejects_malformed);
+    RUN(base64_refuses_before_allocating);
 
     RUN(json_rejects_malformed);
     RUN(json_accepts_wellformed);

@@ -20,6 +20,7 @@ def start_http_server(
     delay_ms=0,
     status=0,
     extra=(),
+    env=None,
 ):
     """Run the fake server over HTTP and answer with its base url."""
     port_file = ctx.tmp / ("port-%d" % len(ctx.helpers))
@@ -47,7 +48,7 @@ def start_http_server(
     if log:
         argv += ["--log", str(log)]
     argv += list(extra)
-    ctx.helpers.append(subprocess.Popen(argv))
+    ctx.helpers.append(subprocess.Popen(argv, env=env))
 
     deadline = time.time() + 10
     while time.time() < deadline:

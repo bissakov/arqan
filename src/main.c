@@ -585,7 +585,8 @@ static void say_conv_full(void) {
     tui_write(STR("[conversation is full: /clear to start a new one]\n"));
 }
 
-static b8 add_result(Agent *ag, size_t call, Str name, Str result, u32 ms) {
+static b8 add_result_media(Agent *ag, size_t call, Str name, Str result, u32 ms,
+                           size_t media_off, size_t media_n) {
     Conv *conv = ag->conv;
     size_t slot = conv_add_tool(conv, conv->tool_call_id[call], result);
     if (slot == CONV_NONE) {
@@ -593,6 +594,7 @@ static b8 add_result(Agent *ag, size_t call, Str name, Str result, u32 ms) {
         return false;
     }
     conv->ms[slot] = ms;
+    conv_attach_media(conv, slot, media_off, media_n);
     if (g_turn.one_shot)
         one_shot_diag("tool result", name, result);
     else
@@ -600,6 +602,10 @@ static b8 add_result(Agent *ag, size_t call, Str name, Str result, u32 ms) {
                            (u32)(slot + 1), conv->expanded[slot], ms);
     save_session(ag);
     return true;
+}
+
+static b8 add_result(Agent *ag, size_t call, Str name, Str result, u32 ms) {
+    return add_result_media(ag, call, name, result, ms, 0, 0);
 }
 
 static u32 elapsed_ms(f64 started) {
@@ -1732,9 +1738,13 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         snprintf(status, sizeof status, "running %.*s", (i32)name.n, name.p);
         say_busy(status);
         f64 started = agent_now_seconds();
+        size_t media_off = conv->media ? conv->media->n : 0;
         b8 ok = tools_run(ag->tools, tool, args, authorization, ag->scratch,
                           &out, err, sizeof err, TOOL_FOR_MAIN);
         if (!ok) buf_error(&out, err, "tool failed");
+        size_t media_n = ok && conv->media && conv->media->n > media_off
+                             ? conv->media->n - media_off
+                             : 0;
         todo_note_stale(name, &out);
         Str result = buf_finish(&out);
 
@@ -1753,7 +1763,8 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         tel_bool(&e, "ok", ok);
         tel_shape(&e, "result", result);
         tel_send(&e);
-        if (!add_result(ag, i, name, keep_result(ag->persist, result), ms))
+        if (!add_result_media(ag, i, name, keep_result(ag->persist, result), ms,
+                              media_off, media_n))
             return TURN_FULL;
     }
     return pending;
@@ -5933,8 +5944,10 @@ i32 main(i32 argc, char **argv) {
         return 1;
     }
 
-    if (cfg.images && media_init(&g_media, &persist, AGENT_MAX_MEDIA))
+    if (cfg.images && media_init(&g_media, &persist, AGENT_MAX_MEDIA)) {
         conv_set_media(&conv, &g_media);
+        mcp_set_media(&g_media);
+    }
 
     conv_add(&conv, M_SYSTEM,
              cfg.mode == MODE_PLAN ? cfg.plan_prompt : cfg.system_prompt);

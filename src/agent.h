@@ -45,6 +45,7 @@ typedef bool b8;
 #define AGENT_MAX_IMAGE_SIDE     8000u
 #define AGENT_MAX_MEDIA          64
 #define AGENT_MAX_MEDIA_PER_TURN 4
+#define AGENT_TOOL_IMAGES_NOTE   "Images from the tool results above, in order:"
 #define AGENT_TOOL_RESULT_BYTES  (8u << 10)
 #define AGENT_READ_LINES         2000
 
@@ -172,6 +173,7 @@ typedef bool b8;
 #define AGENT_MCP_ARGV_BYTES        2048
 #define AGENT_MCP_ENV_BYTES         2048
 #define AGENT_MCP_MSG_BYTES         (256u << 10)
+#define AGENT_MCP_LARGE_MSG_BYTES   (AGENT_MAX_IMAGE_BYTES / 3 * 4 + (1u << 20))
 #define AGENT_MCP_DESC_BYTES        1024
 #define AGENT_MCP_SCHEMA_BYTES      4096
 #define AGENT_MCP_CONFIG_BYTES      (64u << 10)
@@ -188,7 +190,7 @@ typedef bool b8;
 #define AGENT_MCP_URL_BYTES         1024
 #define AGENT_MCP_SESSION_BYTES     128
 #define AGENT_MCP_VERSION_BYTES     32
-#define AGENT_MCP_HTTP_BYTES        (4u << 20)
+#define AGENT_MCP_HTTP_BYTES        AGENT_MCP_LARGE_MSG_BYTES
 
 #define AGENT_MAX_CONTEXT_WINDOW     ((size_t)1 << 31)
 #define AGENT_WEB_BODY_BYTES         (2u << 20)
@@ -266,6 +268,10 @@ void buf_json_str(Buf *b, Str s);
 void buf_json_chars(Buf *b, Str s);
 void buf_base64(Buf *b, const void *p, size_t n);
 Str buf_finish(Buf *b);
+
+typedef enum { B64_OK, B64_MALFORMED, B64_TOO_LARGE, B64_NO_MEMORY } B64Status;
+
+B64Status base64_decode(Arena *a, Str text, size_t max, Str *out);
 
 /* ---- files ---------------------------------------------------------------
  * The one reader every file arqan owns goes through, so a size that comes from
@@ -1234,6 +1240,7 @@ void media_describe(char *out, size_t cap, const MediaSet *m, size_t id);
 
 void media_write_openai(Buf *b, const MediaSet *m, size_t id);
 void media_write_anthropic(Buf *b, const MediaSet *m, size_t id);
+void mcp_set_media(MediaSet *m);
 
 /* ---- clipboard ----------------------------------------------------------
  * The image the system clipboard holds, read through the first helper that
@@ -1299,6 +1306,7 @@ size_t conv_elide_next(const Conv *c);
 b8 conv_elide_advance(Conv *c);
 b8 conv_result_elided(const Conv *c, size_t i, size_t recent);
 b8 conv_slot_dropped(const Conv *c, size_t i, size_t recent);
+b8 conv_media_elided(const Conv *c, size_t i, size_t recent);
 b8 conv_args_elided(const Conv *c, size_t i, size_t recent);
 b8 conv_args_are_stub(Str args, Arena *scratch);
 

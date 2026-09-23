@@ -151,6 +151,8 @@ size_t conv_add_tool(Conv *c, Str tool_call_id, Str text) {
                 && str_eq(c->tool_call_id[i], tool_call_id)) {
                 c->text[i] = text;
                 c->ms[i] = 0;
+                c->media_off[i] = 0;
+                c->media_n[i] = 0;
                 return i;
             }
         }
@@ -361,6 +363,15 @@ static size_t conv_media_live(const Conv *c, size_t i) {
     return live;
 }
 
+b8 conv_media_elided(const Conv *c, size_t i, size_t recent) {
+    return c->role[i] == M_TOOL && i < recent;
+}
+
+static size_t conv_tool_media(const Conv *c, size_t i, size_t recent) {
+    if (c->role[i] != M_TOOL || conv_media_elided(c, i, recent)) return 0;
+    return conv_media_live(c, i);
+}
+
 
 #define ARGS_STUB_NAME  48
 #define ARGS_STUB_HEAD  56
@@ -468,6 +479,41 @@ static void oai_write_content(Buf *b, const Conv *c, size_t i) {
     buf_putc(b, ']');
 }
 
+/* NOTE: the chat completions format takes only text in a tool message, so the
+ * images of a run of tool results follow it as one user message. Its first
+ * text part is AGENT_TOOL_IMAGES_NOTE; tests/mockprovider keys on it. */
+static void oai_write_tool_images(Buf *b, const Conv *c, size_t i,
+                                  size_t recent) {
+    size_t next = i + 1;
+    while (next < c->n && conv_slot_dropped(c, next, recent)) next++;
+    if (next < c->n && c->role[next] == M_TOOL) return;
+    size_t start = i;
+    while (start > 0 && c->role[start - 1] == M_TOOL) start--;
+    b8 any = false;
+    for (size_t j = start; j <= i && !any; j++)
+        any = !conv_slot_dropped(c, j, recent)
+              && conv_tool_media(c, j, recent) > 0;
+    if (!any) return;
+    buf_puts(b, STR(",{\"role\":\"user\",\"content\":[{\"type\":\"text\","
+                    "\"text\":\"" AGENT_TOOL_IMAGES_NOTE "\"}"));
+    for (size_t j = start; j <= i; j++) {
+        if (conv_slot_dropped(c, j, recent) || !conv_tool_media(c, j, recent))
+            continue;
+        buf_puts(b, STR(",{\"type\":\"text\",\"text\":\"From call "));
+        buf_json_chars(b, c->tool_call_id[j]);
+        buf_puts(b, STR(" ("));
+        buf_json_chars(b, conv_call_name(c, j));
+        buf_puts(b, STR("):\"}"));
+        for (size_t k = 0; k < c->media_n[j]; k++) {
+            size_t id = (size_t)c->media_off[j] + k;
+            if (!media_live(c->media, id)) continue;
+            buf_putc(b, ',');
+            media_write_openai(b, c->media, id);
+        }
+    }
+    buf_puts(b, STR("]}"));
+}
+
 
 void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
     (void)reg;
@@ -501,6 +547,7 @@ void conv_write_json(Buf *b, const Conv *c, const ToolRegistry *reg) {
             buf_putf(b, ",\"content\":");
             write_tool_result(b, c, i, recent);
             buf_putc(b, '}');
+            oai_write_tool_images(b, c, i, recent);
             continue;
         }
         if (c->role[i] == M_ASSISTANT && c->has_tool_call[i]) {
@@ -565,6 +612,7 @@ static b8 anth_has_block(const Conv *c, size_t i) {
 
 
 static void anth_write_media(Buf *b, const Conv *c, size_t i, b8 *first) {
+    if (c->role[i] == M_TOOL) return;
     for (size_t k = 0; k < c->media_n[i]; k++) {
         size_t id = (size_t)c->media_off[i] + k;
         if (!media_live(c->media, id)) continue;
@@ -625,7 +673,20 @@ static void anth_write_block(Buf *b, const Conv *c, size_t i, size_t recent,
         buf_puts(b, STR("{\"type\":\"tool_result\",\"tool_use_id\":"));
         buf_json_str(b, c->tool_call_id[i]);
         buf_puts(b, STR(",\"content\":"));
-        write_tool_result(b, c, i, recent);
+        if (conv_tool_media(c, i, recent)) {
+            buf_puts(b, STR("[{\"type\":\"text\",\"text\":"));
+            write_tool_result(b, c, i, recent);
+            buf_putc(b, '}');
+            for (size_t k = 0; k < c->media_n[i]; k++) {
+                size_t id = (size_t)c->media_off[i] + k;
+                if (!media_live(c->media, id)) continue;
+                buf_putc(b, ',');
+                media_write_anthropic(b, c->media, id);
+            }
+            buf_putc(b, ']');
+        } else {
+            write_tool_result(b, c, i, recent);
+        }
         anth_write_cache(b, cache);
         buf_putc(b, '}');
         return;

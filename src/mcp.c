@@ -92,6 +92,8 @@ typedef struct {
     i32 in_fd, out_fd;
 
     char *buf;
+    char *line;
+    size_t line_cap;
     size_t buf_n;
     size_t taken;
 } McpServer;
@@ -114,6 +116,12 @@ typedef struct {
     void *idle_ud;
     i32 idle_fd;
     volatile sig_atomic_t *interrupt;
+
+    char *large;
+    const McpServer *large_owner;
+
+    MediaSet *media;
+    size_t call_images;
 } McpState;
 
 static McpState g_mcp = {.idle_fd = -1};
@@ -122,6 +130,10 @@ void mcp_set_idle(void (*fn)(void *ud), void *ud, i32 idle_fd) {
     g_mcp.idle = fn;
     g_mcp.idle_ud = ud;
     g_mcp.idle_fd = idle_fd;
+}
+
+void mcp_set_media(MediaSet *m) {
+    g_mcp.media = m;
 }
 
 void mcp_set_interrupt_flag(volatile sig_atomic_t *flag) {
@@ -889,6 +901,9 @@ static void mcp_close(McpServer *s) {
     s->out_fd = -1;
     s->buf_n = 0;
     s->taken = 0;
+    s->line = s->buf;
+    s->line_cap = AGENT_MCP_MSG_BYTES;
+    if (g_mcp.large_owner == s) g_mcp.large_owner = NULL;
 }
 
 static char **mcp_child_env(McpServer *s) {
@@ -977,6 +992,8 @@ static b8 mcp_spawn(McpServer *s) {
         mcp_fail(s, "out of memory for the read buffer");
         return false;
     }
+    s->line = s->buf;
+    s->line_cap = AGENT_MCP_MSG_BYTES;
     return true;
 }
 
@@ -1074,26 +1091,64 @@ static b8 mcp_write_all(McpServer *s, Str msg, f64 deadline, b8 interruptible,
     return true;
 }
 
+/* NOTE: one large buffer serves every stdio server, since only one is read at
+ * a time. A server moves into it when a message outgrows its own buffer, and
+ * moves back once what is left fits again. */
+static b8 mcp_line_grow(McpServer *s, char *err, size_t err_cap) {
+    if (s->line_cap >= AGENT_MCP_LARGE_MSG_BYTES) {
+        snprintf(err, err_cap, "a reply over %u bytes cannot be parsed",
+                 (unsigned)AGENT_MCP_LARGE_MSG_BYTES);
+        return false;
+    }
+    if (g_mcp.large_owner && g_mcp.large_owner != s) {
+        snprintf(err, err_cap,
+                 "a reply over %u bytes arrived while another server held "
+                 "the large-reply buffer",
+                 (unsigned)AGENT_MCP_MSG_BYTES);
+        return false;
+    }
+    if (!g_mcp.large)
+        g_mcp.large = arena_alloc(g_mcp.persist, AGENT_MCP_LARGE_MSG_BYTES, 1);
+    if (!g_mcp.large) {
+        snprintf(err, err_cap, "out of memory for a reply over %u bytes",
+                 (unsigned)AGENT_MCP_MSG_BYTES);
+        return false;
+    }
+    memcpy(g_mcp.large, s->line, s->buf_n);
+    g_mcp.large_owner = s;
+    s->line = g_mcp.large;
+    s->line_cap = AGENT_MCP_LARGE_MSG_BYTES;
+    return true;
+}
+
+static void mcp_line_shrink(McpServer *s) {
+    if (s->line == s->buf || s->buf_n > AGENT_MCP_MSG_BYTES) return;
+    memcpy(s->buf, s->line, s->buf_n);
+    s->line = s->buf;
+    s->line_cap = AGENT_MCP_MSG_BYTES;
+    g_mcp.large_owner = NULL;
+}
+
 static b8 mcp_read_line(McpServer *s, f64 deadline, Str *line, char *err,
                         size_t err_cap) {
     if (s->taken) {
-        memmove(s->buf, s->buf + s->taken, s->buf_n - s->taken);
+        memmove(s->line, s->line + s->taken, s->buf_n - s->taken);
         s->buf_n -= s->taken;
         s->taken = 0;
+        mcp_line_shrink(s);
     }
+    size_t scanned = 0;
     for (;;) {
-        char *nl = memchr(s->buf, '\n', s->buf_n);
+        char *nl = memchr(s->line + scanned, '\n', s->buf_n - scanned);
         if (nl) {
-            size_t len = (size_t)(nl - s->buf);
+            size_t len = (size_t)(nl - s->line);
             s->taken = len + 1;
-            *line = (Str){s->buf, len};
+            *line = (Str){s->line, len};
             return true;
         }
-        if (s->buf_n >= AGENT_MCP_MSG_BYTES) {
-            snprintf(err, err_cap, "a reply over %u bytes cannot be parsed",
-                     (unsigned)AGENT_MCP_MSG_BYTES);
+        scanned = s->buf_n;
+        if (s->buf_n >= s->line_cap && !mcp_line_grow(s, err, err_cap))
             return false;
-        }
         if (mcp_interrupted()) {
             snprintf(err, err_cap, "interrupted");
             return false;
@@ -1113,8 +1168,7 @@ static b8 mcp_read_line(McpServer *s, f64 deadline, Str *line, char *err,
             }
             continue;
         }
-        ssize_t n =
-            read(s->out_fd, s->buf + s->buf_n, AGENT_MCP_MSG_BYTES - s->buf_n);
+        ssize_t n = read(s->out_fd, s->line + s->buf_n, s->line_cap - s->buf_n);
         if (n < 0) {
             if (errno == EINTR) continue;
             s->broken = true;
@@ -1262,10 +1316,15 @@ static b8 mcp_stdio_request(McpServer *s, Str method, Str params, u32 id,
         Str line;
         if (!mcp_read_line(s, deadline, &line, err, err_cap)) {
             if (!str_eq(method, STR("initialize"))) mcp_cancel(s, id, scratch);
+            if (!mcp_interrupted() || s->buf_n) s->broken = true;
             return false;
         }
         if (!str_trim(line).n) continue;
         JVal *msg = json_parse(scratch, line);
+        memmove(s->line, s->line + s->taken, s->buf_n - s->taken);
+        s->buf_n -= s->taken;
+        s->taken = 0;
+        mcp_line_shrink(s);
         if (!msg || msg->type != J_OBJ) {
             s->broken = true;
             snprintf(err, err_cap,
@@ -2231,7 +2290,49 @@ b8 mcp_manage(McpAction what, Str name, Arena *scratch, char *msg,
 
 /* ---- calling a tool ----------------------------------------------------- */
 
-static void mcp_put_block(Buf *out, McpServer *s, const JVal *block) {
+static void mcp_put_image(Buf *out, const McpServer *s, const JVal *block,
+                          Arena *scratch) {
+    char why[160] = {0};
+    if (!g_mcp.media) {
+        snprintf(why, sizeof why, "images are off");
+    } else if (g_mcp.call_images >= AGENT_MAX_MEDIA_PER_TURN) {
+        snprintf(why, sizeof why, "a result carries at most %d images",
+                 AGENT_MAX_MEDIA_PER_TURN);
+    } else {
+        size_t mark = scratch->off;
+        Str bytes = {0};
+        B64Status st = base64_decode(scratch, json_str(block, STR("data")),
+                                     AGENT_MAX_IMAGE_BYTES, &bytes);
+        size_t id = MEDIA_NONE;
+        if (st == B64_TOO_LARGE) {
+            char max[32];
+            spill_size_text(max, sizeof max, AGENT_MAX_IMAGE_BYTES);
+            snprintf(why, sizeof why, "image is over the %s limit", max);
+        } else if (st == B64_NO_MEMORY) {
+            snprintf(why, sizeof why, "not enough memory to decode it");
+        } else if (st != B64_OK || !bytes.n) {
+            snprintf(why, sizeof why, "its data is not valid base64");
+        } else {
+            id = media_add(g_mcp.media, g_mcp.persist, bytes,
+                           (Str){s->name, s->name_n}, why, sizeof why);
+        }
+        scratch->off = mark;
+        if (id != MEDIA_NONE) {
+            char what[64];
+            media_describe(what, sizeof what, g_mcp.media, id);
+            buf_putf(out, "[Image #%zu from the %.*s server: %s]",
+                     ++g_mcp.call_images, (i32)s->name_n, s->name, what);
+            return;
+        }
+    }
+    buf_putf(out,
+             "[the %.*s server returned an image, which is not passed "
+             "on: %s]",
+             (i32)s->name_n, s->name, why);
+}
+
+static void mcp_put_block(Buf *out, McpServer *s, const JVal *block,
+                          Arena *images) {
     Str type = json_str(block, STR("type"));
     if (str_eq(type, STR("text"))) {
         Str text = json_str(block, STR("text"));
@@ -2262,8 +2363,10 @@ static void mcp_put_block(Buf *out, McpServer *s, const JVal *block) {
             return;
         }
     }
-    /* TODO: pass an image block to the model through media_add once a tool
-     * result can carry media on both provider shapes. */
+    if (images && str_eq(type, STR("image"))) {
+        mcp_put_image(out, s, block, images);
+        return;
+    }
     buf_putf(out,
              "[the %.*s server returned a %.*s block, which is not "
              "passed on]",
@@ -2424,10 +2527,8 @@ static b8 mcp_read(Str tool, Str args, Arena *scratch, Buf *out, char *err,
     return true;
 }
 
-b8 mcp_call(u16 server, Str tool, Str args, Arena *scratch, Buf *out, char *err,
-            size_t err_cap) {
-    if (server == AGENT_MAX_MCP_SERVERS && str_eq(tool, STR("mcp_read")))
-        return mcp_read(tool, args, scratch, out, err, err_cap);
+static b8 mcp_call_tool(u16 server, Str tool, Str args, Arena *scratch,
+                        Buf *out, char *err, size_t err_cap) {
     if (server >= g_mcp.n) {
         snprintf(err, err_cap, "the server behind this tool is gone");
         return false;
@@ -2483,7 +2584,7 @@ b8 mcp_call(u16 server, Str tool, Str args, Arena *scratch, Buf *out, char *err,
     const JVal *content = json_get(result, STR("content"));
     if (content && content->type == J_ARR)
         for (size_t i = 0; i < content->u.arr.n; i++)
-            mcp_put_block(&text, s, json_at(content, i));
+            mcp_put_block(&text, s, json_at(content, i), scratch);
     const JVal *structured = json_get(result, STR("structuredContent"));
     if (!text.n && structured) json_write(&text, structured);
     if (!buf_ok(&text)) {
@@ -2505,6 +2606,17 @@ b8 mcp_call(u16 server, Str tool, Str args, Arena *scratch, Buf *out, char *err,
     }
     mcp_page_result(out, joined, tool);
     return true;
+}
+
+b8 mcp_call(u16 server, Str tool, Str args, Arena *scratch, Buf *out, char *err,
+            size_t err_cap) {
+    if (server == AGENT_MAX_MCP_SERVERS && str_eq(tool, STR("mcp_read")))
+        return mcp_read(tool, args, scratch, out, err, err_cap);
+    size_t media_n = g_mcp.media ? g_mcp.media->n : 0;
+    g_mcp.call_images = 0;
+    b8 ok = mcp_call_tool(server, tool, args, scratch, out, err, err_cap);
+    if (!ok && g_mcp.media) g_mcp.media->n = media_n;
+    return ok;
 }
 
 size_t mcp_list(McpInfo *out, size_t max) {
@@ -2647,10 +2759,10 @@ b8 mcp_prompt_get(Str server, Str name, Str args, Arena *scratch, Buf *out,
         if (!content) continue;
         if (content->type == J_ARR) {
             for (size_t k = 0; k < content->u.arr.n; k++)
-                mcp_put_block(out, s, json_at(content, k));
+                mcp_put_block(out, s, json_at(content, k), NULL);
             continue;
         }
-        mcp_put_block(out, s, content);
+        mcp_put_block(out, s, content, NULL);
     }
     if (!buf_ok(out)) {
         snprintf(err, err_cap, "the prompt does not fit in memory");
