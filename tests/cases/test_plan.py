@@ -59,6 +59,36 @@ def test_plan_mode_withholds_the_writing_tools(ctx):
     assert "submit_plan" in names and "ask_user" in names, names
 
 
+ASK_BEFORE_PLAN = 'with the options "No, write the plan"'
+
+
+def test_plan_prompt_asks_for_additions_before_the_plan(ctx):
+    """One last question catches an addition before the plan is written."""
+    ctx.scenario("text=ok")
+    s = ctx.spawn(ARQAN_SYSTEM_PROMPT=None)
+    to_plan(s)
+    s.submit("plan it")
+    s.wait_turn_done()
+
+    system = ctx.mock.requests[-1]["messages"][0]["content"]
+    assert ASK_BEFORE_PLAN in system, system
+    assert "Yes, I'll say it in my next message" in system, system
+
+
+def test_one_shot_plan_prompt_does_not_ask(ctx):
+    """ask_user is not offered without a terminal, so nothing tells the
+    model to call it."""
+    ctx.scenario("text=ok")
+    out = ctx.run_cli("-p", "plan it", ARQAN_MODE="plan", ARQAN_SYSTEM_PROMPT=None)
+    assert out.returncode == 0, out
+
+    request = ctx.mock.requests[-1]
+    assert "ask_user" not in tool_names(request), tool_names(request)
+    system = request["messages"][0]["content"]
+    assert "submit_plan" in system, system
+    assert ASK_BEFORE_PLAN not in system, system
+
+
 def test_build_mode_offers_questions_but_withholds_plan_submission(ctx):
     """Build can ask for a decision but cannot submit a plan for approval."""
     ctx.scenario("text=on+it")

@@ -2133,16 +2133,16 @@ static struct {
     char text[1024];
 } g_task_desc;
 
-#define TASK_DESC_HEAD                                                \
-    "Delegate an investigation to a subagent that only reads, "       \
-    "searches and fetches: it has read, grep, find, internet_search " \
-    "and page_fetch, and cannot run commands, change files or ask "   \
-    "the user anything. Give it a self-contained prompt; it answers " \
-    "once, with findings and file paths. It runs in the background: " \
-    "the call answers at once with an id, you carry on with other "   \
-    "work, and task(id=N) collects the report or says what it has "   \
-    "done so far. Add wait_ms to wait for it when you have nothing "  \
-    "else to do. Keep polling rather than leaving tasks unattended. "
+#define TASK_DESC_HEAD                                                   \
+    "Delegate an investigation to a subagent that only reads, "          \
+    "searches and fetches: it has the read-only tools of this session, " \
+    "and cannot run commands, change files or ask the user anything. "   \
+    "Give it a self-contained prompt; it answers once, with findings "   \
+    "and file paths. It runs in the background: the call answers at "    \
+    "once with an id, you carry on with other work, and task(id=N) "     \
+    "collects the report or says what it has done so far. Add wait_ms "  \
+    "to wait for it when you have nothing else to do, and collect "      \
+    "every task before your final answer. "
 #define TASK_DESC_TAIL ", and task ids last for this conversation only."
 
 void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
@@ -2275,8 +2275,7 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
             "command and a cd into the working directory is redundant. "
             "Use offset and limit to page output, "
             "and prefer head, tail, sed -n or grep to target the lines you "
-            "need. The harness may pause for approval; do not ask in prose "
-            "or retry a denial blindly. Commands run without a terminal, so "
+            "need. Commands run without a terminal, so "
             "anything that prompts for input, sudo included, fails rather "
             "than waits. A command still running after the deadline is not "
             "killed: it carries on as a job the result names, and the job "
@@ -2312,19 +2311,17 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
         "\"required\":[]}",
         tool_job);
     ADD("patch",
-        "Change files atomically with unified diff or a *** Begin "
-        "Patch envelope. Hunks use context, not @@ numbers. After failure, "
-        "rebuild from returned current text. --- /dev/null creates a file; "
-        "+++ /dev/null deletes one. The harness may pause for approval; do "
-        "not ask in prose or retry a denial blindly.",
+        "Change files atomically with a unified diff or a *** Begin "
+        "Patch envelope. Hunks match by context, not by @@ line numbers. If "
+        "a hunk fails, the result shows the file's current text: rebuild "
+        "the hunk from that. --- /dev/null creates a file; +++ /dev/null "
+        "deletes one.",
         "Change files with a diff", TOOL_IN_BUILD, TOOL_APPROVAL_PATCH,
         "{\"type\":\"object\",\"properties\":{\"patch\":{\"type\":\"string\","
         "\"description\":\"unified diff over one or more files\"}},"
         "\"required\":[\"patch\"]}",
         tool_patch);
-    ADD("write",
-        "Write a file whole, creating or overwriting it. The harness "
-        "may pause for approval; do not ask in prose or retry a denial blindly.",
+    ADD("write", "Write a file whole, creating or overwriting it.",
         "Write a file whole", TOOL_IN_BUILD, TOOL_APPROVAL_WRITE,
         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}",
         tool_write);
