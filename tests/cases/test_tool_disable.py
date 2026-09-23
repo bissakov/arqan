@@ -6,6 +6,7 @@ the shell.
 """
 
 import json
+import re
 
 
 def tool_names(request: dict) -> list[str]:
@@ -119,6 +120,30 @@ def test_the_flag_keeps_them_out_of_the_prompt(ctx):
     system = ctx.mock.requests[-1]["messages"][0]["content"]
     assert "- read:" in system, system
     assert "- bash:" not in system, system
+
+
+def test_the_guidelines_name_only_the_tools_offered(ctx):
+    """A guideline about a disabled tool would send the model after it."""
+    ctx.scenario("text=fine")
+    s = ctx.spawn(
+        args=["--disable-tools", "bash,patch,write"], ARQAN_SYSTEM_PROMPT=None
+    )
+    s.submit("say something")
+    s.wait_turn_done()
+
+    system = ctx.mock.requests[-1]["messages"][0]["content"]
+    guidelines = system[: system.index("Current working directory:")]
+    guidelines = guidelines[guidelines.index("Available tools:"):]
+    listing = [line for line in guidelines.splitlines() if line.startswith("- ")]
+    for line in listing:
+        if any(line.startswith(f"- {name}: ") for name in (
+            "read", "grep", "find", "internet_search", "page_fetch", "job",
+            "todo", "ask_user", "task",
+        )):
+            continue
+        for name in ("bash", "patch", "write"):
+            assert not re.search(rf"\b{name}\b", line), (name, line)
+    assert "approval" not in guidelines, guidelines
 
 
 def test_an_unknown_tool_name_is_refused(ctx):

@@ -10,27 +10,23 @@ static const char PROMPT_BUILTIN[] =
     "\n"
     "Available tools:\n"
     "{tools}\n"
-    "In addition to the tools above, you may have access to other custom "
-    "tools depending on the project.\n"
     "{mcp_guidance}"
     "\n"
     "Guidelines:\n"
-    "- Use grep and find to locate code, and bash for everything else a "
-    "shell does; each returns a page, so narrow a search with a path or "
-    "glob and page through the rest with offset\n"
-    "- Use read to examine files instead of cat or sed, and its offset and "
-    "limit to page through a long one rather than reading it whole\n"
-    "- In bash, prefer head, tail, sed -n or grep over dumping a command's "
-    "full output\n"
-    "- Inspect environment variables for current model and session details "
-    "when relevant\n"
-    "- Change code with patch, giving each hunk enough context to match one "
-    "place in the file; put every file of one change in a single call\n"
-    "- Use write only for a whole file, and read a file before patching it\n"
+    "- Carry a task through to the end: keep going until it is done or "
+    "blocked on something only the user can resolve\n"
+    "- Make the change that was asked for; do not refactor, reformat or "
+    "rename beyond it, and do not undo changes you did not make\n"
+    "- Do not commit, push, reset, or delete files or branches unless the "
+    "user asks\n"
+    "{tool_guidance}"
     "{todo_guidance}"
     "{ask_user_guidance}"
-    "- Be concise in responses\n"
-    "- Show file paths clearly when working with files\n"
+    "- Say plainly when something failed, is uncertain, or went unchecked\n"
+    "- Be concise: no preamble, no restating the request, and no summary of "
+    "what you just showed\n"
+    "- Refer to files by path relative to the working directory, with a line "
+    "number when you point at code\n"
     "\n"
     "Current working directory: {cwd}\n";
 
@@ -45,14 +41,20 @@ static const char PROMPT_PLAN_BUILTIN[] =
     "Guidelines:\n"
     "- Read the code before planning it: a plan built on a guess about the "
     "codebase is worse than no plan\n"
+    "- If the request needs no change, such as a question about the code, "
+    "answer it directly and do not call submit_plan\n"
     "{ask_user_guidance}"
     "- Call submit_plan once the plan is complete: the plan is its argument, "
     "written as Markdown, and the user decides from it whether the work goes "
     "ahead\n"
     "- The plan states what changes, in which files, and in what order; it "
     "carries no code beyond what a step needs to be unambiguous\n"
+    "- The plan says how to check each change, such as the build or test to "
+    "run, and names any risk or open question\n"
     "- Assume the plan may be carried out in a session that has none of this "
     "conversation, so it stands on its own\n"
+    "- Be concise, and refer to files by path relative to the working "
+    "directory\n"
     "\n"
     "Current working directory: {cwd}\n";
 
@@ -60,25 +62,25 @@ static const char PROMPT_COMPACT_BUILTIN[] =
     "You summarize a conversation. Create a structured context checkpoint "
     "summary that another assistant will use to continue the work.\n"
     "\n"
-    "Use this EXACT format:\n"
+    "Use these headings, in this order:\n"
     "\n"
     "## Goal\n"
     "[What is the user trying to accomplish? Can be multiple items if the "
-    "session covers different tasks.]\n"
+    "session covers different tasks. End with the user's latest request, "
+    "quoted exactly.]\n"
     "\n"
     "## Constraints & Preferences\n"
-    "- [Any constraints, preferences, or requirements mentioned by user]\n"
-    "- [Or \"(none)\" if none were mentioned]\n"
+    "- [Any constraints, preferences, or requirements the user stated]\n"
     "\n"
     "## Progress\n"
     "### Done\n"
-    "- [x] [Completed tasks/changes]\n"
+    "- [x] [Completed tasks and changes, naming the files changed]\n"
     "\n"
     "### In Progress\n"
-    "- [ ] [Current work]\n"
+    "- [ ] [Current work, and exactly where it stopped]\n"
     "\n"
     "### Blocked\n"
-    "- [Issues preventing progress]\n"
+    "- [Issues preventing progress, with the exact error text]\n"
     "\n"
     "## Key Decisions\n"
     "- **[Decision]**: [Brief rationale]\n"
@@ -89,12 +91,16 @@ static const char PROMPT_COMPACT_BUILTIN[] =
     "## Critical Context\n"
     "- [Any data, examples, or references needed to continue]\n"
     "\n"
-    "Always write the Goal and Constraints & Preferences sections. Every "
-    "other section and subsection is optional: write one only when this "
-    "session has something to record under it, and otherwise leave it out "
-    "entirely, heading included. Never write a heading with a placeholder, "
-    "\"(none)\" or \"n/a\" under it. Keep whichever sections you write in the "
-    "order above.\n"
+    "Always write the Goal and Constraints & Preferences sections. When the "
+    "user stated no constraints, write \"None stated.\" under Constraints & "
+    "Preferences. Every other section and subsection is optional: write one "
+    "only when this session has something to record under it, and otherwise "
+    "leave it out entirely, heading included. Never write an optional "
+    "heading with a placeholder, \"(none)\" or \"n/a\" under it.\n"
+    "\n"
+    "If the conversation starts with an earlier context checkpoint, merge "
+    "it into this one: carry forward what still holds, and do not describe "
+    "the checkpoint itself.\n"
     "\n"
     "Keep each section concise. Preserve exact file paths, function names, "
     "and error messages. Write the summary and nothing else: no preamble, no "
@@ -118,12 +124,15 @@ static const char PROMPT_SUB_BUILTIN[] =
     "Guidelines:\n"
     "- Answer once, when you are done: your final message is the whole "
     "report, and nothing before it is read\n"
+    "- Stop searching once you can answer the question; it needs an answer, "
+    "not a survey of everything related\n"
     "- Ground every claim in what you read, and name the file paths, "
-    "symbols and line ranges that carry it\n"
+    "symbols and line ranges that carry it; quote a few lines when the exact "
+    "code matters\n"
     "- Keep the report under roughly a thousand words; it is replayed in "
     "full to the agent that asked, so length is a cost it pays\n"
-    "- Say plainly when the answer is not in this repository, or when you "
-    "found only part of it, instead of guessing at the rest\n"
+    "- Say plainly when you could not find the answer, or found only part "
+    "of it, instead of guessing at the rest\n"
     "- Do not propose edits, write patches or plan the work; report what is "
     "there and let the caller decide\n"
     "\n"
@@ -237,7 +246,17 @@ static void prompt_ask_user(Buf *b, const ToolRegistry *tools, AgentMode mode) {
                         "make, offering the options you see and marking the "
                         "one you recommend\n"
                         "- Ask about one thing at a time, not a form of "
-                        "questions at once\n"));
+                        "questions at once\n"
+                        "- Do not ask the user for information you can find "
+                        "by reading the project\n"
+                        "- Once you know what the plan will say, and before "
+                        "writing it, call ask_user once to ask whether the "
+                        "user has anything to add, with the options \"No, "
+                        "write the plan\" (recommended) and \"Yes, I'll say "
+                        "it in my next message\". If they pick the second, "
+                        "end your turn with one short line and write nothing "
+                        "else. Ask again only if their answer changed the "
+                        "plan\n"));
         return;
     }
     buf_puts(b, STR("- Call ask_user instead of ending your turn with a "
@@ -258,6 +277,58 @@ static void prompt_todo(Buf *b, const ToolRegistry *tools, AgentMode mode) {
                     "- Keep the list current: one item in_progress at a "
                     "time, marked done as soon as it is done, and the whole "
                     "list sent on every update\n"));
+}
+
+static b8 prompt_offers(const ToolRegistry *tools, Str name, AgentMode mode) {
+    size_t id = tools ? tools_find(tools, name) : TOOL_NONE;
+    return id != TOOL_NONE && tools_available(tools, id, mode);
+}
+
+static void prompt_tool_guidance(Buf *b, const ToolRegistry *tools,
+                                 AgentMode mode) {
+    if (!tools) return;
+    const Str lookers[] = {STR("read"), STR("grep"), STR("find")};
+    Str offered[3];
+    size_t n_offered = 0;
+    for (size_t i = 0; i < 3; i++)
+        if (prompt_offers(tools, lookers[i], mode))
+            offered[n_offered++] = lookers[i];
+    b8 bash = prompt_offers(tools, STR("bash"), mode);
+    b8 patch = prompt_offers(tools, STR("patch"), mode);
+    b8 write = prompt_offers(tools, STR("write"), mode);
+
+    if (bash && n_offered) {
+        buf_puts(b, STR("- Use "));
+        for (size_t i = 0; i < n_offered; i++) {
+            if (i) buf_puts(b, i + 1 == n_offered ? STR(" and ") : STR(", "));
+            buf_puts(b, offered[i]);
+        }
+        buf_puts(b, STR(" to look at files, and keep bash for what they "
+                        "cannot do\n"));
+    }
+    if (bash)
+        buf_puts(b, STR("- After changing code, run the project's build or "
+                        "tests when you can find them, and say so when you "
+                        "could not\n"));
+    if (patch)
+        buf_puts(b, STR("- Change existing files with patch, giving each hunk "
+                        "enough context to match one place; put every file "
+                        "of one change in a single call\n"));
+    if (patch && write)
+        buf_puts(b, STR("- Use write only to create a file or replace one "
+                        "whole\n"));
+    if ((patch || write) && prompt_offers(tools, STR("read"), mode))
+        buf_puts(b, STR("- Read a file before you change it\n"));
+
+    for (size_t i = 0; i < tools->n; i++) {
+        if (!tools_available(tools, i, mode)
+            || tools_approval_class(tools, i) == TOOL_APPROVAL_NONE)
+            continue;
+        buf_puts(b, STR("- Some calls wait for the user's approval, so make "
+                        "the call instead of asking permission in prose; if "
+                        "the user denies one, do not retry it unchanged\n"));
+        break;
+    }
 }
 
 static void prompt_mcp(Buf *b) {
@@ -291,6 +362,8 @@ static void prompt_expand(Buf *b, Str tmpl, const ToolRegistry *tools,
             prompt_ask_user(b, tools, mode);
         else if (str_eq(name, STR("todo_guidance")))
             prompt_todo(b, tools, mode);
+        else if (str_eq(name, STR("tool_guidance")))
+            prompt_tool_guidance(b, tools, mode);
         else if (str_eq(name, STR("mcp_guidance")))
             prompt_mcp(b);
         else {
@@ -361,7 +434,9 @@ static Str prompt_for(const ToolRegistry *tools, AgentMode mode, Str configured,
     buf_puts(&b, expanded);
     if (n_agents) {
         buf_puts(&b, STR("\n\nProject-specific instructions and "
-                         "guidelines:\n"));
+                         "guidelines. They override the defaults above; "
+                         "where two of them conflict, the later one, nearer "
+                         "the working directory, wins:\n"));
         for (size_t i = n_agents; i > 0; i--)
             buf_putf(&b,
                      "\n<project_instructions path=\"%.*s\">\n%.*s\n"
