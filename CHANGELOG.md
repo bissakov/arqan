@@ -4,9 +4,6 @@
 
 ## [0.9.1] - 2026-09-24
 
-The v0.9.0 tag exists, but 0.9.0 was never released: its release build
-failed. 0.9.1 is the first release with these changes.
-
 ### Added
 
 - Press Tab on an `ask_user` option to choose it and add your own words.
