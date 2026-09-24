@@ -524,6 +524,9 @@ b8 secret_erase(SecretSource src, Str account, char *err, size_t err_cap);
  * lives under the same section of $XDG_STATE_HOME/arqan/credentials.toml, so
  * a shared configuration cannot carry a secret. An oversized field is dropped
  * on load rather than truncated, since a cut URL names a different service.
+ *
+ * A project file may add a provider but may not redefine one that a user or
+ * system file names. A provider that only a project defines gets no key.
  */
 typedef struct {
     Str name[AGENT_MAX_ENDPOINTS];
@@ -533,6 +536,7 @@ typedef struct {
 
     Str small_model[AGENT_MAX_ENDPOINTS];
     ApiKind api[AGENT_MAX_ENDPOINTS];
+    b8 from_project[AGENT_MAX_ENDPOINTS];
     size_t n;
 } Endpoints;
 
@@ -548,8 +552,8 @@ b8 endpoints_put(Endpoints *e, Str name, Str base_url, ApiKind api, Arena *a);
 
 b8 endpoints_save_one(Str name, Str base_url, ApiKind api, Arena *scratch);
 Str endpoints_small_model(Str name, Arena *scratch);
-Str endpoints_key(Str name, Arena *out, Arena *scratch, char *err,
-                  size_t err_cap);
+Str endpoints_key(const Endpoints *e, size_t i, Arena *out, Arena *scratch,
+                  char *err, size_t err_cap);
 
 SecretSource endpoints_key_source(Str name, Arena *scratch);
 
@@ -690,6 +694,7 @@ typedef struct {
     Str val[CONF_N];
     u8 origin[CONF_N];
     ModelProfile model_profile;
+    b8 project_provider_keyless;
 } Conf;
 
 void conf_resolve(Conf *c, Arena *persist, Arena *scratch);

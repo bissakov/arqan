@@ -51,13 +51,22 @@ static void endpoint_warn_credential_keys(const Settings *s, Str section,
     }
 }
 
-static void endpoints_collect(Endpoints *e, const Settings *s, Arena *a) {
+static void endpoints_collect(Endpoints *e, const Settings *s, Str where,
+                              b8 project, Arena *a) {
     Str sections[AGENT_MAX_ENDPOINTS];
     size_t n =
         settings_sections(s, ENDPOINT_SECTION, sections, AGENT_MAX_ENDPOINTS);
     for (size_t i = 0; i < n; i++) {
         Str name = str_trim(str_drop(sections[i], ENDPOINT_SECTION.n));
         if (!endpoint_name_ok(name)) continue;
+        size_t known = endpoints_find(e, name);
+        if (project && known != ENDPOINT_NONE && !e->from_project[known]) {
+            agent_log(AGENT_LOG_WARN,
+                      "ignoring [%.*s] in %.*s: a project file may not "
+                      "redefine a provider the user configured",
+                      (i32)sections[i].n, sections[i].p, (i32)where.n, where.p);
+            continue;
+        }
         endpoint_warn_credential_keys(s, sections[i], name);
         Str url =
             endpoint_field(s, sections[i], STR("base_url"), AGENT_MAX_URL);
@@ -72,21 +81,23 @@ static void endpoints_collect(Endpoints *e, const Settings *s, Arena *a) {
         if (at == ENDPOINT_NONE) continue;
         e->model[at] = str_dup_opt(a, model);
         e->small_model[at] = str_dup_opt(a, small);
+        e->from_project[at] = project;
     }
 }
 
 size_t endpoints_load(Endpoints *e, Arena *a) {
     memset(e, 0, sizeof *e);
     Str files[AGENT_MAX_CONFIG_FILES + AGENT_MAX_PROJECT_FILES];
-    size_t n =
+    size_t own =
         paths_config_files(AGENT_CONFIG_NAME, a, files, AGENT_MAX_CONFIG_FILES);
-
-    n += paths_project_files(AGENT_CONFIG_NAME, a, files + n,
-                             AGENT_MAX_PROJECT_FILES);
+    size_t n = own
+               + paths_project_files(AGENT_CONFIG_NAME, a, files + own,
+                                     AGENT_MAX_PROJECT_FILES);
 
     for (size_t i = 0; i < n; i++) {
         Settings s;
-        if (settings_load(&s, files[i], a)) endpoints_collect(e, &s, a);
+        if (settings_load(&s, files[i], a))
+            endpoints_collect(e, &s, files[i], i >= own, a);
     }
     return e->n;
 }
@@ -115,6 +126,7 @@ b8 endpoints_put(Endpoints *e, Str name, Str base_url, ApiKind api, Arena *a) {
     if (!url.p) return false;
     e->base_url[i] = url;
     e->api[i] = api;
+    e->from_project[i] = false;
     return true;
 }
 
@@ -190,8 +202,10 @@ SecretSource endpoints_key_source(Str name, Arena *scratch) {
     return src;
 }
 
-Str endpoints_key(Str name, Arena *out, Arena *scratch, char *err,
-                  size_t err_cap) {
+Str endpoints_key(const Endpoints *e, size_t i, Arena *out, Arena *scratch,
+                  char *err, size_t err_cap) {
+    if (!e || i >= e->n || e->from_project[i]) return (Str){0};
+    Str name = e->name[i];
     Settings s;
     size_t mark = scratch->off;
     Str key = {0};

@@ -51,6 +51,13 @@
   rebuilt from the Alpine repositories on every release, so one package update
   changed the binary and the archive could not be checked by rebuilding it.
 
+- Stop a project config from sending your API key to an address it chooses.
+  A project `.arqan/config.toml` can no longer set `base_url` or `api`, or
+  redefine a provider that a user or system config already defines. A
+  provider that only the project defines gets no API key until you add it
+  with `/provider`. If you used a project `base_url` for a shared proxy, add
+  that proxy with `/provider`.
+
 ## [0.8.0] - 2026-09-03
 
 ### Added

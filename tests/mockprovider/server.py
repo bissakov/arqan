@@ -755,6 +755,7 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
     # -- routes ------------------------------------------------------------
     def do_GET(self):
         srv = self.server
+        srv.paths.append(("GET", self.path))
         path = urlsplit(self.path).path
         if path.startswith("/web/"):
             srv.web_user_agents.append(self.headers.get("User-Agent"))
@@ -841,6 +842,8 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
 
     def do_POST(self):
         srv = self.server
+        if not self.path.startswith("/__"):
+            srv.paths.append(("POST", self.path))
         if self.path.startswith("/__reset"):
             srv.requests.clear()
             srv.auth.clear()
@@ -1212,6 +1215,7 @@ class MockProvider:
         self.httpd.requests = []           # type: ignore[attr-defined]
         self.httpd.bad_utf8 = []           # type: ignore[attr-defined]
         self.httpd.auth = []               # type: ignore[attr-defined]
+        self.httpd.paths = []              # type: ignore[attr-defined]
         self.httpd.keys = []               # type: ignore[attr-defined]
         self.httpd.versions = []           # type: ignore[attr-defined]
         self.httpd.listings = []           # type: ignore[attr-defined]
@@ -1290,6 +1294,11 @@ class MockProvider:
         return self.httpd.auth  # type: ignore[attr-defined]
 
     @property
+    def paths(self) -> list:
+        """One (method, path) per request, so a case can see where one went."""
+        return self.httpd.paths  # type: ignore[attr-defined]
+
+    @property
     def keys(self) -> list:
         """The x-api-key header of each request, which is where the Anthropic
         API carries the key."""
@@ -1328,6 +1337,7 @@ class MockProvider:
         self.requests.clear()
         self.bad_utf8.clear()
         self.auth.clear()
+        self.paths.clear()
         self.keys.clear()
         self.versions.clear()
         self.listings.clear()

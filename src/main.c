@@ -2218,8 +2218,7 @@ static Str help_build(Agent *ag) {
     for (size_t i = 0; i < endpoints.n; i++) {
         size_t mark = a->off;
         char key_err[AGENT_MAX_PATH + 96] = {0};
-        Str key =
-            endpoints_key(endpoints.name[i], a, a, key_err, sizeof key_err);
+        Str key = endpoints_key(&endpoints, i, a, a, key_err, sizeof key_err);
         b8 has_key = key.n != 0;
         a->off = mark;
         buf_putf(&b, "### %.*s%s\n", (i32)endpoints.name[i].n,
@@ -3605,7 +3604,7 @@ static b8 use_model(Config *cfg, const Endpoints *eps, Str provider, Str model,
             return false;
         }
         char err[AGENT_MAX_PATH + 96] = {0};
-        Str key = endpoints_key(provider, scratch, scratch, err, sizeof err);
+        Str key = endpoints_key(eps, i, scratch, scratch, err, sizeof err);
         if (err[0]) {
             tui_notice(str_c(err));
             scratch->off = mark;
@@ -3908,8 +3907,7 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i, Arena *persist,
     char err[AGENT_MAX_PATH + 64] = {0};
     Str saved_key = {0};
     if (key_action == KEY_KEEP || key_action == KEY_MOVE) {
-        saved_key =
-            endpoints_key(eps->name[i], persist, scratch, err, sizeof err);
+        saved_key = endpoints_key(eps, i, persist, scratch, err, sizeof err);
         if (err[0]) {
             tui_notice(str_c(err));
             return false;
@@ -4902,7 +4900,7 @@ static b8 small_model_endpoint(Config *small, Str name, Str model, b8 manual,
     char err[AGENT_MAX_PATH + 96] = {0};
     Str key = i == ENDPOINT_NONE
                   ? (Str){0}
-                  : endpoints_key(name, scratch, scratch, err, sizeof err);
+                  : endpoints_key(&eps, i, scratch, scratch, err, sizeof err);
     b8 ok = i != ENDPOINT_NONE && !err[0]
             && config_set_endpoint(small, name, eps.base_url[i], model,
                                    eps.api[i], key);
@@ -6098,6 +6096,9 @@ i32 main(i32 argc, char **argv) {
     if (truncated && resumed_saved)
         tui_notice(STR("session truncated: the conversation is full"));
     if (sess.read_only) tui_notice(READ_ONLY_NOTICE);
+    if (conf.project_provider_keyless)
+        notice_fmt("project provider %.*s gets no API key; /provider trusts it",
+                   (i32)cfg.provider.n, cfg.provider.p);
 
 
     static char line[AGENT_LINE_BUF];

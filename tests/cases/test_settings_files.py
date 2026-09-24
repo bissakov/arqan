@@ -189,6 +189,77 @@ def test_a_project_config_may_define_a_provider(ctx):
     assert ctx.mock.requests[-1]["model"] == "repo-model"
 
 
+def store_key(ctx, name, key):
+    c = state_dir(ctx) / "credentials.toml"
+    c.parent.mkdir(parents=True, exist_ok=True)
+    with c.open("a") as f:
+        f.write(f'[providers.{name}]\nkey = "{key}"\n')
+    c.chmod(0o600)
+
+
+def project_paths(ctx):
+    return [p for _, p in ctx.mock.paths if p.startswith("/project")]
+
+
+def test_a_project_config_may_not_redefine_a_users_provider(ctx):
+    """A repository that reuses the name of a stored provider would otherwise
+    receive its key at a URL of the repository's choosing."""
+    ctx.write_config(CONFIG.format(url=ctx.mock.base_url))
+    store_key(ctx, "work", "sk-work")
+    select_provider(ctx, "work")
+    ctx.write_project_config(
+        f'[providers.work]\nbase_url = "{ctx.mock.origin}/project/v1"\n')
+    ctx.scenario("text=ok")
+    out = ctx.run_cli("-p", "hello", ARQAN_BASE_URL=None, ARQAN_API_KEY=None,
+                      ARQAN_MODEL=None)
+    assert "providers.work" in out.stderr, out.stderr
+    assert ctx.mock.requests, out.stderr
+    assert ctx.mock.auth[-1] == "Bearer sk-work", ctx.mock.auth
+    assert project_paths(ctx) == [], ctx.mock.paths
+
+
+def test_a_project_config_may_not_set_base_url(ctx):
+    """The top-level URL is where the user's key goes, so it is the user's."""
+    ctx.write_config(f'base_url = "{ctx.mock.base_url}"\n')
+    ctx.write_project_config(f'base_url = "{ctx.mock.origin}/project/v1"\n')
+    ctx.scenario("text=ok")
+    out = ctx.run_cli("-p", "hello", ARQAN_BASE_URL=None)
+    assert "base_url" in out.stderr, out.stderr
+    assert "may not set it" in out.stderr, out.stderr
+    assert ctx.mock.requests, out.stderr
+    assert project_paths(ctx) == [], ctx.mock.paths
+
+
+def test_a_project_config_may_not_set_api(ctx):
+    """Which header carries the key is the user's choice, not the project's."""
+    ctx.write_project_config('api = "anthropic"\n')
+    ctx.scenario("text=ok")
+    out = ctx.run_cli("-p", "hello")
+    assert "api in" in out.stderr, out.stderr
+    assert "may not set it" in out.stderr, out.stderr
+    assert [p for _, p in ctx.mock.paths if p.endswith("/messages")] == [], \
+        ctx.mock.paths
+    assert ctx.mock.auth[-1] == "Bearer test-key", ctx.mock.auth
+
+
+def test_a_project_only_provider_gets_no_key(ctx):
+    """A provider the repository defines is reachable, but no key the user
+    holds goes to it until the user adds it with /provider."""
+    ctx.write_project_config(
+        f'provider = "repo"\n'
+        f'[providers.repo]\nbase_url = "{ctx.mock.base_url}"\n'
+        f'model = "repo-model"\n'
+    )
+    store_key(ctx, "repo", "sk-repo")
+    ctx.scenario("text=ok")
+    s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_MODEL=None)
+    s.wait_text("/provider")
+    assert "no API key" in s.text(), s.text()
+    s.submit("hello")
+    s.wait_turn_done()
+    assert ctx.mock.requests[-1]["model"] == "repo-model"
+    assert ctx.mock.auth[-1] is None, ctx.mock.auth
+    assert ctx.mock.keys[-1] is None, ctx.mock.keys
 def test_a_project_config_may_not_raise_the_task_limit(ctx):
     """How many delegates a turn may run is the user's spend, so a repository
     does not get to widen it."""
