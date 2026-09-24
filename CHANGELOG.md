@@ -62,6 +62,10 @@
   another user owns, or that others can write, and say which one was skipped.
   Before, a file planted in a shared directory such as `/tmp` was trusted.
 
+- Refuse redirects on provider requests. The request fails and names the
+  host it was sent to, so set `base_url` to the final address. Before, the
+  key went along to the new host.
+
 ## [0.8.0] - 2026-09-03
 
 ### Added

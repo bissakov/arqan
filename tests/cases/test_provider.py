@@ -746,3 +746,24 @@ def test_the_new_provider_form_lists_only_its_own_models(ctx):
     s.wait_status("pick a model")
     assert "@" not in s.text(), "one provider serves the list, so no row names one"
     assert "* beta" not in s.text(), s.text()
+
+
+def test_a_redirected_turn_fails_and_sends_the_key_nowhere(ctx):
+    """The Anthropic key rides in x-api-key, a header libcurl may carry to
+    another host on a redirect, so a provider request follows none."""
+    ctx.scenario("redirect=1,text=ok")
+    out = ctx.run_cli("-p", "hello", ARQAN_API="anthropic")
+    assert out.returncode != 0, out
+    assert "redirect to localhost" in out.stderr, out.stderr
+    assert "set base_url to the final address" in out.stderr, out.stderr
+    assert ctx.mock.landed == [], ctx.mock.landed
+
+
+def test_a_redirected_model_list_fails_and_sends_the_key_nowhere(ctx):
+    """Listing models carries the key too, so it follows no redirect either."""
+    ctx.scenario("redirect=1")
+    s = ctx.spawn(cols=160, ARQAN_API="anthropic")
+    s.submit("/model")
+    s.wait_text("redirect to localhost")
+    s.key("esc")
+    assert ctx.mock.landed == [], ctx.mock.landed
