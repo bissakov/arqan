@@ -14,7 +14,7 @@
 |
 |
 |    Which storage?
-|    no answer in 180s picks the recommended option
+|    no answer in 180s picks the recommended option - Tab adds to an answer
 |    sqlite            one file
 |  › postgres          recommended · a server
 |    + something else  Answer in your own words
