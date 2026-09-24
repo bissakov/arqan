@@ -1829,7 +1829,7 @@ b8 tui_pick_notice(Str title, Str notice, const TuiCmd *items, size_t n,
                    TuiPickAnchor anchor, size_t start, size_t *out);
 b8 tui_pick_timed(Str title, Str notice, const TuiCmd *items, size_t n,
                   TuiPickAnchor anchor, size_t start, i32 timeout_ms,
-                  size_t *out, b8 *expired);
+                  size_t *out, b8 *expired, b8 *amended);
 
 b8 tui_pick_search_count(Str title, const TuiCmd *items, size_t n,
                          size_t search_n, TuiPickAnchor anchor, size_t start,

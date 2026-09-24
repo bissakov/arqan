@@ -651,21 +651,51 @@ static Str ask_user_answer(Agent *ag, Str args) {
 
 
     i32 wait_ms = recommended ? ag->cfg->ask_timeout_ms : 0;
+    char hint[128];
+    i32 hn;
     if (wait_ms > 0) {
-        char hint[96];
-        i32 hn = snprintf(hint, sizeof hint,
-                          "no answer in %ds picks the recommended option",
-                          wait_ms / 1000 > 0 ? wait_ms / 1000 : 1);
-        if (hn > 0 && (size_t)hn < sizeof hint)
-            tui_notice((Str){hint, (size_t)hn});
+        hn = snprintf(hint, sizeof hint,
+                      "no answer in %ds picks the recommended option - "
+                      "Tab adds to an answer",
+                      wait_ms / 1000 > 0 ? wait_ms / 1000 : 1);
+    } else {
+        hn =
+            snprintf(hint, sizeof hint, "Tab adds your own words to an answer");
     }
+    if (hn > 0 && (size_t)hn < sizeof hint) tui_notice((Str){hint, (size_t)hn});
 
     size_t pick = 0;
     b8 expired = false;
-    tui_keep_visible(at);
-    if (!tui_pick_timed(STR("pick an answer"), question, items, n + 1,
-                        TUI_PICK_FIRST, start, wait_ms, &pick, &expired))
-        return (Str){0};
+    b8 amended = false;
+    char typed[512];
+    for (;;) {
+        tui_keep_visible(at);
+        if (!tui_pick_timed(STR("pick an answer"), question, items, n + 1,
+                            TUI_PICK_FIRST, start, wait_ms, &pick, &expired,
+                            &amended))
+            return (Str){0};
+        if (!amended || pick >= n) break;
+
+        Str label = items[pick].name;
+        char prompt[160];
+        i32 pn = snprintf(prompt, sizeof prompt, "add to \"%.*s\"",
+                          (i32)(label.n < 100 ? label.n : 100), label.p);
+        Str ask = pn > 0 && (size_t)pn < sizeof prompt
+                      ? (Str){prompt, (size_t)pn}
+                      : STR("add to the answer");
+        if (!tui_ask(ask, false, typed, sizeof typed)) {
+            start = pick;
+            continue;
+        }
+        Str note = str_c(typed);
+        Buf b;
+        Str note_label = STR("\nNote from the user: ");
+        buf_init(&b, ag->persist, label.n + note_label.n + note.n);
+        buf_puts(&b, label);
+        buf_puts(&b, note_label);
+        buf_puts(&b, note);
+        return buf_ok(&b) ? buf_finish(&b) : (Str){0};
+    }
     if (pick < n) {
         if (!expired) return str_dup(ag->persist, items[pick].name);
 
@@ -680,7 +710,6 @@ static Str ask_user_answer(Agent *ag, Str args) {
                           : str_dup(ag->persist, items[pick].name);
     }
 
-    char typed[512];
     if (!tui_ask(STR("your answer"), false, typed, sizeof typed))
         return (Str){0};
     return str_dup(ag->persist, str_c(typed));

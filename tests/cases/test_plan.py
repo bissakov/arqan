@@ -501,6 +501,62 @@ def test_ask_user_takes_an_answer_of_its_own(ctx):
     assert "neither, use files" in s.text(), s.text()
 
 
+def test_ask_user_adds_own_words_to_an_answer(ctx):
+    """Tab keeps the chosen option and adds what the user types under it."""
+    ctx.scenario(
+        ask(
+            "Which storage?",
+            [
+                {"label": "sqlite", "detail": "one file"},
+                {"label": "postgres", "detail": "a server", "recommended": True},
+            ],
+        )
+        + ",final_text=noted"
+    )
+    s = ctx.spawn()
+    to_plan(s)
+    s.submit("plan the storage")
+    s.wait_status("pick an answer")
+    assert "Tab adds to an answer" in s.text(), s.text()
+    s.key("up").sync()
+    s.key("tab")
+    s.wait_text('add to "sqlite"')
+    s.type("but keep it in memory for tests")
+    s.key("enter")
+    s.wait_text("noted")
+    s.wait_turn_done()
+
+    assert ctx.mock.tool_results() == [
+        "sqlite\nNote from the user: but keep it in memory for tests"
+    ], ctx.mock.tool_results()
+    rows = answer_rows(s, "sqlite")
+    assert rows[1] == "one file", rows[:4]
+    assert rows[2] == "Note from the user: but keep it in memory for tests", rows[:4]
+
+
+def test_ask_user_returns_to_the_options_when_the_addition_is_cancelled(ctx):
+    """Esc while adding words goes back to the list instead of dismissing."""
+    ctx.scenario(
+        ask("Which storage?", [{"label": "sqlite"}, {"label": "postgres"}])
+        + ",final_text=noted"
+    )
+    s = ctx.spawn()
+    to_plan(s)
+    s.submit("plan the storage")
+    s.wait_status("pick an answer")
+    assert "Tab adds your own words to an answer" in s.text(), s.text()
+    s.key("down").sync()
+    s.key("tab")
+    s.wait_text('add to "postgres"')
+    s.key("esc")
+    s.wait_status("pick an answer")
+    s.key("enter")
+    s.wait_text("noted")
+    s.wait_turn_done()
+
+    assert ctx.mock.tool_results() == ["postgres"], ctx.mock.tool_results()
+
+
 def test_ask_user_answers_itself_when_nobody_answers(ctx):
     """An unattended question takes the recommendation instead of waiting."""
     ctx.scenario(

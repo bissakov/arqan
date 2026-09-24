@@ -4802,6 +4802,8 @@ typedef struct {
     b8 chosen;
     b8 has_action;
     b8 expired;
+    b8 amendable;
+    b8 amended;
     PickKind kind;
     TuiSettings set;
     TuiPickAction action;
@@ -4979,9 +4981,21 @@ static b8 pick_enter(const TuiSettings *set) {
     return false;
 }
 
+static b8 pick_amend(const TuiSettings *set) {
+    if (!g_pick.amendable) {
+        repaint();
+        return true;
+    }
+    b8 open = pick_enter(set);
+    g_pick.amended = g_pick.chosen;
+    return open;
+}
+
 #define PICK_KEYS(X)                                                          \
     X(0x0d, "Enter", "Choose the row, or act on it", return pick_enter(set);) \
     X(0x0a, "", "", return pick_enter(set);)                                  \
+    X(0x09, "Tab", "Choose the row and add your own words, where offered",    \
+      return pick_amend(set);)                                                \
     X(0x03, "Ctrl-C", "Close without choosing", return false;)                \
     X(0x04, "", "", return false;)                                            \
     X(' ', "Space", "Act on the settings row",                                \
@@ -5100,12 +5114,13 @@ static b8 pick_impl(Str title, const TuiCmd *items, const TuiMark *marks,
                     size_t n, size_t search_n, TuiPickAnchor anchor,
                     size_t start, PickKind kind, size_t *out,
                     const TuiSettings *set, const TuiPickAction *act,
-                    Str notice, i32 timeout_ms) {
+                    Str notice, i32 timeout_ms, b8 amendable) {
     if (!out) return false;
     if (!pick_open(title, items, marks, n, search_n, anchor, start, kind, set,
                    act, notice, true))
         return false;
 
+    g_pick.amendable = amendable;
     if (timeout_ms > 0 && start < g_tui.cmd_n) {
         g_pick.timeout_ms = timeout_ms;
         g_pick.fallback = start;
@@ -5119,22 +5134,24 @@ static b8 pick_impl(Str title, const TuiCmd *items, const TuiMark *marks,
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t start, size_t *out) {
     return pick_impl(title, items, NULL, n, n, anchor, start, PICK_CHOOSE, out,
-                     NULL, NULL, (Str){0}, 0);
+                     NULL, NULL, (Str){0}, 0, false);
 }
 
 b8 tui_pick_notice(Str title, Str notice, const TuiCmd *items, size_t n,
                    TuiPickAnchor anchor, size_t start, size_t *out) {
     return pick_impl(title, items, NULL, n, n, anchor, start, PICK_CHOOSE, out,
-                     NULL, NULL, notice, 0);
+                     NULL, NULL, notice, 0, false);
 }
 
 b8 tui_pick_timed(Str title, Str notice, const TuiCmd *items, size_t n,
                   TuiPickAnchor anchor, size_t start, i32 timeout_ms,
-                  size_t *out, b8 *expired) {
+                  size_t *out, b8 *expired, b8 *amended) {
     if (expired) *expired = false;
+    if (amended) *amended = false;
     b8 ok = pick_impl(title, items, NULL, n, n, anchor, start, PICK_CHOOSE, out,
-                      NULL, NULL, notice, timeout_ms);
+                      NULL, NULL, notice, timeout_ms, amended != NULL);
     if (ok && expired) *expired = g_pick.expired;
+    if (ok && amended) *amended = g_pick.amended;
     return ok;
 }
 
@@ -5142,14 +5159,14 @@ b8 tui_pick_search_count(Str title, const TuiCmd *items, size_t n,
                          size_t search_n, TuiPickAnchor anchor, size_t start,
                          size_t *out) {
     return pick_impl(title, items, NULL, n, search_n, anchor, start,
-                     PICK_CHOOSE, out, NULL, NULL, (Str){0}, 0);
+                     PICK_CHOOSE, out, NULL, NULL, (Str){0}, 0, false);
 }
 
 b8 tui_pick_action(Str title, size_t n, size_t search_n, TuiPickAnchor anchor,
                    size_t start, const TuiPickAction *act, size_t *out) {
     if (!act || !act->rows || !act->bindings || !act->n_bindings) return false;
     return pick_impl(title, act->rows, NULL, n, search_n, anchor, start,
-                     PICK_CHOOSE, out, NULL, act, (Str){0}, 0);
+                     PICK_CHOOSE, out, NULL, act, (Str){0}, 0, false);
 }
 
 void tui_settings(Str title, const TuiSettings *set) {
@@ -5158,7 +5175,7 @@ void tui_settings(Str title, const TuiSettings *set) {
     if (!n) return;
     size_t out = 0;
     (void)pick_impl(title, set->rows, set->marks, n, n, TUI_PICK_FIRST, 0,
-                    PICK_SETTINGS, &out, set, NULL, (Str){0}, 0);
+                    PICK_SETTINGS, &out, set, NULL, (Str){0}, 0, false);
 }
 
 b8 tui_settings_open(Str title, const TuiSettings *set) {
@@ -5184,7 +5201,7 @@ void tui_info(Str title, const TuiCmd *rows, size_t n) {
     }
     size_t row = 0;
     (void)pick_impl(title, rows, NULL, n, n, TUI_PICK_FIRST, 0, PICK_INFO, &row,
-                    NULL, NULL, (Str){0}, 0);
+                    NULL, NULL, (Str){0}, 0, false);
 }
 
 b8 tui_info_open(Str title, const TuiCmd *rows, size_t n) {

@@ -4,6 +4,10 @@
 
 ### Added
 
+- Press Tab on an `ask_user` option to choose it and add your own words.
+  The model gets the option and, on the next line, your note. Esc while
+  typing the note goes back to the options.
+
 - Read PNG, JPEG, GIF and WebP files with `read` to send their image content
   to the model. Formats are detected from file contents, not extensions.
   Images use the attachment limits and session sidecars. `offset` and `limit`
