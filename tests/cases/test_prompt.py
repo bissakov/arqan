@@ -177,3 +177,27 @@ def test_env_prompt_outranks_the_files(ctx):
     content = system_message(ctx, s)
 
     assert content == "You are a test fixture."
+
+
+def test_agents_md_writable_by_others_is_not_appended(ctx):
+    """Anyone could have written it, so it does not get to steer the agent."""
+    p = ctx.write_file("AGENTS.md", "PLANTED CONTEXT\n")
+    p.chmod(0o666)
+    ctx.scenario("text=ok")
+    out = ctx.run_cli("-p", "hi", ARQAN_SYSTEM_PROMPT=None)
+    assert out.returncode == 0, out.stderr
+    content = ctx.mock.requests[-1]["messages"][0]["content"]
+    assert "PLANTED CONTEXT" not in content, content
+    assert "AGENTS.md" in out.stderr and "writable" in out.stderr, out.stderr
+
+
+def test_project_system_md_writable_by_others_is_not_used(ctx):
+    """The same holds for a project prompt, which replaces the built-in one."""
+    p = ctx.write_file(".arqan/SYSTEM.md", "PLANTED PROMPT\n")
+    p.chmod(0o666)
+    ctx.scenario("text=ok")
+    out = ctx.run_cli("-p", "hi", ARQAN_SYSTEM_PROMPT=None)
+    assert out.returncode == 0, out.stderr
+    content = ctx.mock.requests[-1]["messages"][0]["content"]
+    assert "PLANTED PROMPT" not in content, content
+    assert "expert coding assistant" in content, content

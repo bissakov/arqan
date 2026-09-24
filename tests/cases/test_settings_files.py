@@ -260,6 +260,33 @@ def test_a_project_only_provider_gets_no_key(ctx):
     assert ctx.mock.requests[-1]["model"] == "repo-model"
     assert ctx.mock.auth[-1] is None, ctx.mock.auth
     assert ctx.mock.keys[-1] is None, ctx.mock.keys
+
+
+def test_a_project_config_writable_by_others_is_ignored(ctx):
+    """Anyone on the machine could have written it, so it is not the
+    project's word. The owner check needs a second user, so it is not tested
+    here."""
+    ctx.write_config("max_tokens = 1000\n")
+    p = ctx.write_project_config("max_tokens = 2000\n")
+    p.chmod(0o666)
+    ctx.scenario("text=ok")
+    out = ctx.run_cli("-p", "hello")
+    assert str(p) in out.stderr and "writable" in out.stderr, out.stderr
+    assert out.stderr.count(str(p)) == 1, out.stderr
+    assert ctx.mock.requests[-1]["max_tokens"] == 1000, ctx.mock.requests[-1]
+
+
+def test_a_project_config_in_a_directory_writable_by_others_is_ignored(ctx):
+    """Whoever can write the directory can replace the file."""
+    ctx.write_config("max_tokens = 1000\n")
+    p = ctx.write_project_config("max_tokens = 2000\n")
+    p.parent.chmod(0o777)
+    ctx.scenario("text=ok")
+    out = ctx.run_cli("-p", "hello")
+    assert str(p) in out.stderr, out.stderr
+    assert ctx.mock.requests[-1]["max_tokens"] == 1000, ctx.mock.requests[-1]
+
+
 def test_a_project_config_may_not_raise_the_task_limit(ctx):
     """How many delegates a turn may run is the user's spend, so a repository
     does not get to widen it."""

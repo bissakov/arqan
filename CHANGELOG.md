@@ -58,6 +58,10 @@
   with `/provider`. If you used a project `base_url` for a shared proxy, add
   that proxy with `/provider`.
 
+- Ignore project config files, `mcp.json`, prompts and `AGENTS.md` files that
+  another user owns, or that others can write, and say which one was skipped.
+  Before, a file planted in a shared directory such as `/tmp` was trusted.
+
 ## [0.8.0] - 2026-09-03
 
 ### Added

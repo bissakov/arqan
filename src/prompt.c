@@ -175,6 +175,10 @@ static Str prompt_project(Str dir, const char *suffix, size_t suffix_size,
         memcpy(path + off, suffix, suffix_size);
         Str body = prompt_read((Str){path, off + suffix_size - 1}, scratch, err,
                                err_cap);
+        if ((body.n || *err) && !paths_project_trusted(path)) {
+            body = (Str){0};
+            *err = '\0';
+        }
         if (body.n || *err) {
             if (body.n && path_out)
                 *path_out =
@@ -214,6 +218,10 @@ static size_t prompt_agents(Str dir, Arena *scratch, Str *body, Str *path_out,
         memcpy(path + off, suffix, sizeof suffix);
         Str full = {path, off + sizeof suffix - 1};
         Str text = prompt_read(full, scratch, err, err_cap);
+        if ((text.n || *err) && !paths_project_trusted(path)) {
+            text = (Str){0};
+            *err = '\0';
+        }
         if (*err) return found;
         if (text.n && found < cap) {
             Str p = str_dup(scratch, full);

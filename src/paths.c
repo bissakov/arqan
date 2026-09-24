@@ -167,6 +167,57 @@ Str paths_project_dir(Arena *a) {
     return out.n < AGENT_MAX_PATH ? out : (Str){0};
 }
 
+static struct {
+    u64 warned[AGENT_MAX_PROJECT_FILES * 4];
+    size_t n;
+} g_project_trust;
+
+static void project_distrust(const char *path, const char *why) {
+    u64 h = str_hash64(str_c(path));
+    for (size_t i = 0; i < g_project_trust.n; i++)
+        if (g_project_trust.warned[i] == h) return;
+    if (g_project_trust.n
+        < sizeof g_project_trust.warned / sizeof *g_project_trust.warned)
+        g_project_trust.warned[g_project_trust.n++] = h;
+    agent_log_local(AGENT_LOG_WARN, "ignoring %s: %s", path, why);
+}
+
+static const char *project_stat_distrust(const struct stat *st, b8 dir) {
+    uid_t me = getuid();
+    if (st->st_uid != me && st->st_uid != 0)
+        return dir ? "its directory belongs to another user"
+                   : "it belongs to another user";
+    if (st->st_mode & S_IWOTH)
+        return dir ? "its directory is writable by others"
+                   : "it is writable by others";
+    return NULL;
+}
+
+static b8 project_trusted_stat(const char *path, const struct stat *st) {
+    const char *why = project_stat_distrust(st, false);
+    if (!why) {
+        size_t n = strlen(path);
+        if (!n || n >= AGENT_MAX_PATH) return false;
+        char dir[AGENT_MAX_PATH];
+        memcpy(dir, path, n + 1);
+        while (n > 1 && dir[n - 1] != '/') n--;
+        while (n > 1 && dir[n - 1] == '/') n--;
+        dir[n] = '\0';
+        struct stat dst;
+        if (stat(dir, &dst) != 0) return false;
+        why = project_stat_distrust(&dst, true);
+    }
+    if (!why) return true;
+    project_distrust(path, why);
+    return false;
+}
+
+b8 paths_project_trusted(const char *path) {
+    struct stat st;
+    if (!path || path[0] != '/' || stat(path, &st) != 0) return false;
+    return project_trusted_stat(path, &st);
+}
+
 size_t paths_project_files(Str name, Arena *a, Str *out, size_t max) {
     char cwd[AGENT_MAX_PATH];
     if (!out || max == 0 || !name.n) return 0;
@@ -179,7 +230,8 @@ size_t paths_project_files(Str name, Arena *a, Str *out, size_t max) {
     for (;;) {
         Str p = project_file(cwd, n == 1 ? 0 : n, name, a);
         struct stat st;
-        if (p.n && stat(p.p, &st) == 0 && S_ISREG(st.st_mode)) {
+        if (p.n && stat(p.p, &st) == 0 && S_ISREG(st.st_mode)
+            && project_trusted_stat(p.p, &st)) {
             near[found++] = p;
             if (found == max) break;
         }

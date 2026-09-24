@@ -409,6 +409,8 @@ size_t paths_config_files(Str name, Arena *a, Str *out, size_t max);
 
 size_t paths_project_files(Str name, Arena *a, Str *out, size_t max);
 
+b8 paths_project_trusted(const char *path);
+
 Str paths_project_dir(Arena *a);
 
 /* ---- settings files ------------------------------------------------------
