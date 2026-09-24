@@ -246,7 +246,13 @@ size_t utf8_decode(const char *s, size_t n, u32 *cp);
 i32 agent_width(u32 cp);
 i64 str_int(Str s, b8 *ok);
 
+/* NOTE: FNV-1a collisions can be built on purpose. Pin trust with sha256. */
 u64 str_hash64(Str s);
+
+#define SHA256_BYTES 32
+void sha256(const void *p, size_t n, u8 out[SHA256_BYTES]);
+/* INVARIANT: `out` holds 2n + 1 bytes: 2n hex digits and a NUL. */
+void hex_encode(const u8 *p, size_t n, char *out);
 
 typedef struct {
     char *p;

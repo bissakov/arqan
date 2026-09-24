@@ -670,3 +670,49 @@ def test_telemetry_keeps_server_names_and_messages_out(ctx):
     connect = [e for e in events(ctx) if e["ev"] == "mcp_connect"]
     assert connect and connect[0]["ok"] is True, connect
     assert connect[0]["transport"] == "stdio", connect
+
+
+def fnv1a64(data: bytes) -> str:
+    h = 1469598103934665603
+    for b in data:
+        h ^= b
+        h = (h * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return f"{h:016x}"
+
+
+def test_an_approval_in_the_old_form_is_asked_again(ctx):
+    """A 64-bit FNV print can be collided on purpose, so an approval stored
+    that way no longer counts and the server waits for a new one."""
+    write_project_mcp(ctx)
+    entry = {"command": sys.executable, "args": [SERVER, "--mode", "ok"]}
+    old = fnv1a64(json.dumps(entry, separators=(",", ":")).encode())
+    ctx.scenario("text=zebra")
+    first = ctx.spawn(ARQAN_MCP="on")
+    first.send("/mcp approve demo\r")
+    first.wait_text("approved")
+    first.close()
+
+    path = ctx.state_file()
+    lines = path.read_text().splitlines()
+    kept = [ln for ln in lines if ln.split("=")[0].strip() == "demo"]
+    assert len(kept) == 1, lines
+    stored = kept[0].split("=", 1)[1].strip().strip('"')
+    assert stored.startswith("sha256:") and len(stored) == 7 + 64, stored
+    path.write_text("\n".join(
+        f'demo = "{old}"' if ln is kept[0] else ln for ln in lines) + "\n")
+
+    s = ctx.spawn(ARQAN_MCP="on")
+    s.submit("hello")
+    s.wait_text("zebra")
+    s.wait_turn_done()
+    assert not [n for n in tool_names(ctx.mock.requests[-1]) if "demo" in n]
+    s.send("/mcp\r")
+    s.wait_text("waiting for approval")
+
+
+def test_approving_says_what_the_approval_pins(ctx):
+    """The print covers the command line; a script it runs can still change."""
+    write_project_mcp(ctx)
+    s = ctx.spawn(ARQAN_MCP="on")
+    s.send("/mcp approve demo\r")
+    s.wait_text("not the contents of a script it runs")

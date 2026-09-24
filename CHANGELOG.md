@@ -45,6 +45,10 @@
   stripped of the key if the provider echoed it back. Telemetry keeps the
   status alone.
 
+- Pin MCP server approvals with SHA-256 instead of a 64-bit hash. Approvals
+  saved in the old form no longer match, so approve project MCP servers
+  again once.
+
 ### Fixed
 
 - Build the portable Linux archive from a pinned builder image. The image was

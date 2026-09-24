@@ -81,7 +81,7 @@ typedef struct {
     i32 call_timeout_ms;
     SecretSource auth_source;
     char supported[256];
-    u64 print;
+    u8 print[SHA256_BYTES];
     u32 epoch;
     Str call_schema;
 
@@ -389,21 +389,25 @@ static Str mcp_state_section(Arena *a) {
     return buf_ok(&b) ? buf_finish(&b) : (Str){0};
 }
 
-static b8 mcp_fingerprint(const JVal *def, Arena *scratch, u64 *out) {
+static b8 mcp_fingerprint(const JVal *def, Arena *scratch,
+                          u8 out[SHA256_BYTES]) {
     size_t mark = scratch->off;
     Buf b;
     buf_init(&b, scratch, 1024);
     json_write(&b, def);
     b8 ok = buf_ok(&b);
-    if (ok) *out = str_hash64(buf_finish(&b));
+    if (ok) sha256(b.p, b.n, out);
     scratch->off = mark;
     return ok;
 }
 
-static Str mcp_print_text(u64 print, Arena *a) {
-    char hex[32];
-    i32 n = snprintf(hex, sizeof hex, "%016llx", (unsigned long long)print);
-    return n > 0 ? str_dup(a, (Str){hex, (size_t)n}) : (Str){0};
+#define MCP_PRINT_PREFIX "sha256:"
+
+static Str mcp_print_text(const u8 print[SHA256_BYTES], Arena *a) {
+    char text[sizeof MCP_PRINT_PREFIX + 2 * SHA256_BYTES];
+    memcpy(text, MCP_PRINT_PREFIX, sizeof MCP_PRINT_PREFIX - 1);
+    hex_encode(print, SHA256_BYTES, text + sizeof MCP_PRINT_PREFIX - 1);
+    return str_dup(a, (Str){text, sizeof text - 1});
 }
 
 static b8 mcp_is_approved(const McpServer *s, Arena *scratch) {
@@ -675,8 +679,8 @@ static void mcp_parse_entry(Str name, const JVal *def, McpOrigin origin,
             return;
         }
 
-    u64 print = 0;
-    if (!mcp_fingerprint(def, scratch, &print)) {
+    u8 print[SHA256_BYTES];
+    if (!mcp_fingerprint(def, scratch, print)) {
         agent_log_local(AGENT_LOG_WARN,
                         "mcp: %.*s: out of memory reading the entry",
                         (i32)name.n, name.p);
@@ -691,7 +695,7 @@ static void mcp_parse_entry(Str name, const JVal *def, McpOrigin origin,
         if (have->epoch == g_mcp.epoch) {
             if (origin == MCP_FROM_PROJECT && have->origin == MCP_FROM_USER)
                 return;
-        } else if (!have->removed && have->print == print
+        } else if (!have->removed && !memcmp(have->print, print, sizeof print)
                    && have->origin == origin) {
             have->epoch = g_mcp.epoch;
             return;
@@ -718,7 +722,7 @@ static void mcp_parse_entry(Str name, const JVal *def, McpOrigin origin,
                         AGENT_MAX_MCP_SERVERS, (i32)name.n, name.p);
         return;
     }
-    s->print = print;
+    memcpy(s->print, print, sizeof s->print);
 
     Str command = json_str(def, STR("command"));
     Str url = json_str(def, STR("url"));

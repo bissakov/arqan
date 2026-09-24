@@ -2818,8 +2818,12 @@ static void mcp_command(Str args, Arena *scratch) {
     size_t mark = scratch->off;
     b8 ok = mcp_manage(what, name, scratch, msg, sizeof msg);
     scratch->off = mark;
+    if (ok && what == MCP_DO_APPROVE) {
+        tui_block();
+        tui_write(STR("[approval pins the command line, not the contents of "
+                      "a script it runs]\n"));
+    }
     notice_fmt("%s", msg);
-    (void)ok;
 }
 
 
