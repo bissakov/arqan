@@ -67,6 +67,13 @@ smoke_deb() {
         "$image" sh -ec '
             sentinel=${ARQAN_SMOKE_SENTINEL:-arqan-package-sentinel}
             export DEBIAN_FRONTEND=noninteractive
+            # NOTE: deb.debian.org no longer serves the bullseye-security
+            # pool, so Debian 11 uses the snapshot lines its image ships.
+            # See packaging/linux/Dockerfile.
+            if grep -q "^# deb http://snapshot" /etc/apt/sources.list 2>/dev/null; then
+                sed -i -e "/^deb /d" -e "s|^# deb http://snapshot|deb http://snapshot|" /etc/apt/sources.list
+                echo "Acquire::Check-Valid-Until \"false\";" >/etc/apt/apt.conf.d/99snapshot
+            fi
             apt-get update >/dev/null
             apt-get install -y "/packages/'"$deb"'" >/dev/null
             arqan --version
