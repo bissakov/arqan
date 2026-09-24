@@ -234,7 +234,15 @@ static curl_socket_t public_open_cb(void *ud, curlsocktype purpose,
         ctx->blocked = true;
         return CURL_SOCKET_BAD;
     }
-    return socket(address->family, address->socktype, address->protocol);
+#ifdef SOCK_CLOEXEC
+    return socket(address->family, address->socktype | SOCK_CLOEXEC,
+                  address->protocol);
+#else
+    curl_socket_t fd =
+        socket(address->family, address->socktype, address->protocol);
+    if (fd >= 0) fcntl(fd, F_SETFD, FD_CLOEXEC);
+    return fd;
+#endif
 }
 
 static size_t drop_header_cb(char *p, size_t sz, size_t n, void *ud) {
@@ -459,6 +467,26 @@ static b8 host_is_loopback(Str host) {
 }
 
 
+static b8 http_redirect_fail(CURL *curl, i64 status, char *out, size_t cap) {
+    if (status < 300 || status >= 400) return false;
+    if (!out || !cap) return true;
+    char *to = NULL;
+    if (curl_easy_getinfo(curl, CURLINFO_REDIRECT_URL, &to) != CURLE_OK)
+        to = NULL;
+    Str host = url_host(to);
+    if (host.n > 128) host.n = 128;
+    if (host.n)
+        snprintf(out, cap,
+                 "the provider answered with a redirect to %.*s; set "
+                 "base_url to the final address",
+                 (i32)host.n, host.p);
+    else
+        snprintf(out, cap,
+                 "the provider answered with a redirect; set base_url to "
+                 "the final address");
+    return true;
+}
+
 static i64 curl_ms(CURL *curl, CURLINFO info) {
     curl_off_t us = 0;
     if (curl_easy_getinfo(curl, info, &us) != CURLE_OK || us < 0) return -1;
@@ -541,7 +569,7 @@ i32 http_get(const char *base_url, const char *path, const char *api_key,
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, body_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, drop_header_cb);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
@@ -551,8 +579,12 @@ i32 http_get(const char *base_url, const char *path, const char *api_key,
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     http_record("GET", path, url, curl, rc, (i64)http_code, NULL, false);
+    b8 redirected =
+        rc == CURLE_OK
+        && http_redirect_fail(curl, (i64)http_code, fail_out, fail_cap);
     curl_slist_free_all(hdrs);
     curl_easy_cleanup(curl);
+    if (redirected) return 4;
 
     if (rc != CURLE_OK) {
         agent_log(AGENT_LOG_DEBUG, "curl: %s", curl_easy_strerror(rc));
@@ -810,7 +842,7 @@ i32 http_post(const HttpReq *r) {
                      stream ? (void *)&ctx : (void *)r->body_out);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, status_header_cb);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &ctx);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
 
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
@@ -869,6 +901,8 @@ i32 http_post(const HttpReq *r) {
     i64 http = (i64)http_code;
     http_record("POST", path, url, curl, rc, http, stream ? &ctx : NULL,
                 interrupted);
+    b8 redirected = !interrupted && rc == CURLE_OK
+                    && http_redirect_fail(curl, http, r->fail_out, r->fail_cap);
 
     if (status_is_error(http) && r->err_body_out && r->err_body_cap) {
         Str raw = stream ? (Str){ctx.err_body, ctx.err_n} : (Str){0};
@@ -898,6 +932,7 @@ i32 http_post(const HttpReq *r) {
             snprintf(r->fail_out, r->fail_cap, "%s", curl_easy_strerror(rc));
         return 2;
     }
+    if (redirected) return 4;
     if (http < 200 || http >= 300) { return -(i32)http; }
     return 0;
 }

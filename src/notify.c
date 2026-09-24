@@ -128,7 +128,7 @@ static void run_command(NotifyKind kind, Str text) {
     n = lit_put(payload, sizeof payload, n, "\"}\n");
 
     i32 fds[2];
-    if (pipe(fds) != 0) return;
+    if (!pipe_cloexec(fds)) return;
     pid_t pid = fork();
     if (pid < 0) {
         close(fds[0]);
@@ -145,8 +145,7 @@ static void run_command(NotifyKind kind, Str text) {
                 dup2(null_wr, STDERR_FILENO);
                 if (null_wr > STDERR_FILENO) close(null_wr);
             }
-            close(fds[0]);
-            close(fds[1]);
+            child_close_fds(3);
             execvp(argv[0], (char *const *)(uintptr_t)argv);
             _exit(127);
         }

@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <limits.h>
+#include <sys/stat.h>
 
 
 static Str spill_dir(void) {
@@ -107,6 +109,26 @@ void spill_putf(Spill *s, const char *fmt, ...) {
     spill_put(s, line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
 }
 
+
+b8 spill_path_ours(const char *resolved) {
+    char dir[PATH_MAX];
+    Str tmp = spill_dir();
+    if (tmp.n >= sizeof dir) return false;
+    memcpy(dir, tmp.p, tmp.n);
+    dir[tmp.n] = '\0';
+    char real_dir[PATH_MAX];
+    if (!realpath(dir, real_dir)) return false;
+    size_t n = strlen(real_dir);
+    if (n == 1) n = 0;
+    if (strncmp(resolved, real_dir, n) != 0 || resolved[n] != '/') return false;
+    const char *name = resolved + n + 1;
+    Str prefix = STR(AGENT_NAME "-");
+    if (strchr(name, '/') || strncmp(name, prefix.p, prefix.n) != 0)
+        return false;
+    struct stat st;
+    return stat(resolved, &st) == 0 && S_ISREG(st.st_mode)
+           && st.st_uid == getuid();
+}
 
 void spill_size_text(char *z, size_t cap, size_t n) {
     if (n < 1024)

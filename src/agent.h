@@ -246,7 +246,16 @@ size_t utf8_decode(const char *s, size_t n, u32 *cp);
 i32 agent_width(u32 cp);
 i64 str_int(Str s, b8 *ok);
 
+/* NOTE: FNV-1a collisions can be built on purpose. Pin trust with sha256. */
 u64 str_hash64(Str s);
+
+#define SHA256_BYTES 32
+void sha256(const void *p, size_t n, u8 out[SHA256_BYTES]);
+
+b8 pipe_cloexec(i32 fds[2]);
+void child_close_fds(i32 keep_from);
+/* INVARIANT: `out` holds 2n + 1 bytes: 2n hex digits and a NUL. */
+void hex_encode(const u8 *p, size_t n, char *out);
 
 typedef struct {
     char *p;
@@ -409,6 +418,8 @@ size_t paths_config_files(Str name, Arena *a, Str *out, size_t max);
 
 size_t paths_project_files(Str name, Arena *a, Str *out, size_t max);
 
+b8 paths_project_trusted(const char *path);
+
 Str paths_project_dir(Arena *a);
 
 /* ---- settings files ------------------------------------------------------
@@ -524,6 +535,9 @@ b8 secret_erase(SecretSource src, Str account, char *err, size_t err_cap);
  * lives under the same section of $XDG_STATE_HOME/arqan/credentials.toml, so
  * a shared configuration cannot carry a secret. An oversized field is dropped
  * on load rather than truncated, since a cut URL names a different service.
+ *
+ * A project file may add a provider but may not redefine one that a user or
+ * system file names. A provider that only a project defines gets no key.
  */
 typedef struct {
     Str name[AGENT_MAX_ENDPOINTS];
@@ -533,6 +547,7 @@ typedef struct {
 
     Str small_model[AGENT_MAX_ENDPOINTS];
     ApiKind api[AGENT_MAX_ENDPOINTS];
+    b8 from_project[AGENT_MAX_ENDPOINTS];
     size_t n;
 } Endpoints;
 
@@ -548,8 +563,8 @@ b8 endpoints_put(Endpoints *e, Str name, Str base_url, ApiKind api, Arena *a);
 
 b8 endpoints_save_one(Str name, Str base_url, ApiKind api, Arena *scratch);
 Str endpoints_small_model(Str name, Arena *scratch);
-Str endpoints_key(Str name, Arena *out, Arena *scratch, char *err,
-                  size_t err_cap);
+Str endpoints_key(const Endpoints *e, size_t i, Arena *out, Arena *scratch,
+                  char *err, size_t err_cap);
 
 SecretSource endpoints_key_source(Str name, Arena *scratch);
 
@@ -612,6 +627,7 @@ typedef enum {
     TOOL_APPROVAL_WRITE,
     TOOL_APPROVAL_PATCH,
     TOOL_APPROVAL_MCP,
+    TOOL_APPROVAL_OUTSIDE,
 } ToolApprovalClass;
 
 
@@ -690,6 +706,7 @@ typedef struct {
     Str val[CONF_N];
     u8 origin[CONF_N];
     ModelProfile model_profile;
+    b8 project_provider_keyless;
 } Conf;
 
 void conf_resolve(Conf *c, Arena *persist, Arena *scratch);
@@ -1034,6 +1051,7 @@ void spill_finish(Spill *s, Buf *out, b8 keep);
 i32 spill_release(Spill *s, char *path, size_t path_cap, size_t *written);
 
 void spill_size_text(char *z, size_t cap, size_t n);
+b8 spill_path_ours(const char *resolved);
 
 
 typedef b8 (*ToolRun)(Str args_json, Arena *scratch, Buf *out, char *err,
@@ -1084,6 +1102,8 @@ b8 tools_available_to(const ToolRegistry *r, size_t id, AgentMode mode,
                       ToolAudience audience);
 size_t tools_find(const ToolRegistry *r, Str name);
 ToolApprovalClass tools_approval_class(const ToolRegistry *r, size_t id);
+ToolApprovalClass tools_call_approval(const ToolRegistry *r, size_t id,
+                                      Str args, Arena *scratch);
 
 Str tools_approval_name(ToolApprovalClass approval);
 
@@ -1511,6 +1531,8 @@ typedef struct {
     const Config *cfg;
     const ToolRegistry *tools;
     Arena *scratch;
+    PermissionPolicy permissions;
+    u8 permission_grants;
     f64 deadline_s;
     const volatile sig_atomic_t *interrupt_flag;
     i32 idle_fd;

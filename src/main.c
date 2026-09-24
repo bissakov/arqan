@@ -749,13 +749,17 @@ tool_authorization(Agent *ag, ToolApprovalClass approval, size_t at) {
     } else if (approval == TOOL_APPROVAL_MCP) {
         once = STR("Call this MCP tool");
         remembered = STR("Allow calls to any MCP tool until the process exits");
+    } else if (approval == TOOL_APPROVAL_OUTSIDE) {
+        once = STR("Read this path");
+        remembered =
+            STR("Allow reads outside the project until the process exits");
     }
     TuiCmd items[] = {
         {STR("Yes"), once},
         {STR("Yes and remember"), remembered},
         {STR("No"), STR("Execute nothing and report the denial")},
     };
-    char title[32];
+    char title[64];
     i32 n = snprintf(title, sizeof title, "allow %.*s?", (i32)cls.n, cls.p);
     size_t pick = 2;
     tui_keep_visible(at);
@@ -1123,6 +1127,8 @@ static b8 task_send_record(Agent *ag, i32 fd, const Config *cfg, Str sys,
     rec_str(&b, "template", cfg->reasoning_template);
     rec_str(&b, "disable_tools", cfg->disable_tools);
     buf_putf(&b, ",\"api\":%d,\"mode\":%d", (i32)cfg->api, (i32)cfg->mode);
+    buf_putf(&b, ",\"permissions\":%d,\"grants\":%d", (i32)ag->cfg->permissions,
+             (i32)ag->permission_grants);
     buf_putf(&b, ",\"max_tokens\":%d,\"retries\":%d,\"retry_delay_ms\":%d",
              cfg->max_tokens, cfg->retries, cfg->retry_delay_ms);
     buf_putf(&b, ",\"stream\":%s,\"small\":%s}\n",
@@ -1158,6 +1164,7 @@ static void task_child(i32 log, i32 ctl, i32 lifeline) {
     if (lifeline >= 0 && lifeline != 3 && lifeline != 4) close(lifeline);
     close(a);
     close(b);
+    child_close_fds(5);
     char *argv[] = {g_task.exe, (char *)"--task-worker=3,4", NULL};
     execv(g_task.exe, argv);
     _exit(127);
@@ -1183,19 +1190,7 @@ static b8 task_spawn(Agent *ag, const Config *cfg, Str sys, Str task, b8 small,
 
     i32 ctl[2] = {-1, -1};
     i32 tail = open(w->path, O_RDONLY | O_CLOEXEC);
-    b8 have_pipe = pipe(ctl) == 0;
-    if (have_pipe) {
-        i32 read_flags = fcntl(ctl[0], F_GETFD);
-        i32 write_flags = fcntl(ctl[1], F_GETFD);
-        if (read_flags < 0 || write_flags < 0
-            || fcntl(ctl[0], F_SETFD, read_flags | FD_CLOEXEC) < 0
-            || fcntl(ctl[1], F_SETFD, write_flags | FD_CLOEXEC) < 0) {
-            close(ctl[0]);
-            close(ctl[1]);
-            ctl[0] = ctl[1] = -1;
-            have_pipe = false;
-        }
-    }
+    b8 have_pipe = pipe_cloexec(ctl);
     if (tail < 0 || !have_pipe) {
         if (tail >= 0) close(tail);
         close(log);
@@ -1329,6 +1324,8 @@ static void task_run_here(Agent *ag, const Config *cfg, Buf *out,
         .cfg = cfg,
         .tools = ag->tools,
         .scratch = ag->scratch,
+        .permissions = ag->cfg->permissions,
+        .permission_grants = ag->permission_grants,
         .deadline_s =
             slice_ms > 0 ? agent_now_seconds() + (f64)slice_ms / 1000.0 : 0.0,
         .interrupt_flag = &g_got_sigint,
@@ -1744,7 +1741,7 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         ToolApprovalClass approval = TOOL_APPROVAL_NONE;
         if (tool != TOOL_NONE && !tools_disabled(ag->tools, tool)
             && tools_available(ag->tools, tool, ag->cfg->mode))
-            approval = tools_approval_class(ag->tools, tool);
+            approval = tools_call_approval(ag->tools, tool, args, ag->scratch);
         ToolAuthorization authorization =
             tool_authorization(ag, approval, call_at);
         if (authorization == TOOL_AUTH_DENIED
@@ -2218,8 +2215,7 @@ static Str help_build(Agent *ag) {
     for (size_t i = 0; i < endpoints.n; i++) {
         size_t mark = a->off;
         char key_err[AGENT_MAX_PATH + 96] = {0};
-        Str key =
-            endpoints_key(endpoints.name[i], a, a, key_err, sizeof key_err);
+        Str key = endpoints_key(&endpoints, i, a, a, key_err, sizeof key_err);
         b8 has_key = key.n != 0;
         a->off = mark;
         buf_putf(&b, "### %.*s%s\n", (i32)endpoints.name[i].n,
@@ -2819,8 +2815,12 @@ static void mcp_command(Str args, Arena *scratch) {
     size_t mark = scratch->off;
     b8 ok = mcp_manage(what, name, scratch, msg, sizeof msg);
     scratch->off = mark;
+    if (ok && what == MCP_DO_APPROVE) {
+        tui_block();
+        tui_write(STR("[approval pins the command line, not the contents of "
+                      "a script it runs]\n"));
+    }
     notice_fmt("%s", msg);
-    (void)ok;
 }
 
 
@@ -3605,7 +3605,7 @@ static b8 use_model(Config *cfg, const Endpoints *eps, Str provider, Str model,
             return false;
         }
         char err[AGENT_MAX_PATH + 96] = {0};
-        Str key = endpoints_key(provider, scratch, scratch, err, sizeof err);
+        Str key = endpoints_key(eps, i, scratch, scratch, err, sizeof err);
         if (err[0]) {
             tui_notice(str_c(err));
             scratch->off = mark;
@@ -3908,8 +3908,7 @@ static b8 edit_endpoint(Config *cfg, Endpoints *eps, size_t i, Arena *persist,
     char err[AGENT_MAX_PATH + 64] = {0};
     Str saved_key = {0};
     if (key_action == KEY_KEEP || key_action == KEY_MOVE) {
-        saved_key =
-            endpoints_key(eps->name[i], persist, scratch, err, sizeof err);
+        saved_key = endpoints_key(eps, i, persist, scratch, err, sizeof err);
         if (err[0]) {
             tui_notice(str_c(err));
             return false;
@@ -4902,7 +4901,7 @@ static b8 small_model_endpoint(Config *small, Str name, Str model, b8 manual,
     char err[AGENT_MAX_PATH + 96] = {0};
     Str key = i == ENDPOINT_NONE
                   ? (Str){0}
-                  : endpoints_key(name, scratch, scratch, err, sizeof err);
+                  : endpoints_key(&eps, i, scratch, scratch, err, sizeof err);
     b8 ok = i != ENDPOINT_NONE && !err[0]
             && config_set_endpoint(small, name, eps.base_url[i], model,
                                    eps.api[i], key);
@@ -5806,6 +5805,10 @@ static i32 task_worker_main(const CliOpts *opts) {
     cfg.retry_delay_ms = rec_int(j, "retry_delay_ms", cfg.retry_delay_ms);
     cfg.mode = (AgentMode)rec_int(j, "mode", (i32)cfg.mode);
     cfg.stream = json_bool(j, STR("stream"));
+    PermissionPolicy permissions =
+        rec_int(j, "permissions", 0) == (i32)PERMISSION_FREE ? PERMISSION_FREE
+                                                             : PERMISSION_ASK;
+    u8 grants = (u8)rec_int(j, "grants", 0);
 
     ToolRegistry tools;
     tools_init(&tools, &persist, cfg.shell_timeout_ms, false, 1);
@@ -5842,6 +5845,8 @@ static i32 task_worker_main(const CliOpts *opts) {
         .cfg = &cfg,
         .tools = &tools,
         .scratch = &scratch,
+        .permissions = permissions,
+        .permission_grants = grants,
         .interrupt_flag = &g_worker_stop,
         .idle_fd = g_worker.ctl,
         .on_idle = worker_idle,
@@ -6098,6 +6103,9 @@ i32 main(i32 argc, char **argv) {
     if (truncated && resumed_saved)
         tui_notice(STR("session truncated: the conversation is full"));
     if (sess.read_only) tui_notice(READ_ONLY_NOTICE);
+    if (conf.project_provider_keyless)
+        notice_fmt("project provider %.*s gets no API key; /provider trusts it",
+                   (i32)cfg.provider.n, cfg.provider.p);
 
 
     static char line[AGENT_LINE_BUF];

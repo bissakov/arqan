@@ -137,11 +137,11 @@ static b8 highlight_start(void) {
     if (g_hl.disabled) return false;
     if (g_hl.pid > 0) return true;
     i32 to_child[2], from_child[2];
-    if (pipe(to_child) != 0) {
+    if (!pipe_cloexec(to_child)) {
         g_hl.disabled = true;
         return false;
     }
-    if (pipe(from_child) != 0) {
+    if (!pipe_cloexec(from_child)) {
         close(to_child[0]);
         close(to_child[1]);
         g_hl.disabled = true;
@@ -162,11 +162,7 @@ static b8 highlight_start(void) {
             || dup2(from_child[1], STDOUT_FILENO) < 0)
             _exit(126);
         if (devnull >= 0) dup2(devnull, STDERR_FILENO);
-        close(to_child[0]);
-        close(to_child[1]);
-        close(from_child[0]);
-        close(from_child[1]);
-        if (devnull > STDERR_FILENO) close(devnull);
+        child_close_fds(3);
         if (g_hl.path_only)
             execl(g_hl.path, g_hl.path, (char *)NULL);
         else

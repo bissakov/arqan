@@ -45,11 +45,43 @@
   stripped of the key if the provider echoed it back. Telemetry keeps the
   status alone.
 
+- Ask before `read`, `grep` or `find` touches a path outside the project. A
+  link that leads out of the project counts as outside. Spill files and job
+  logs the agent wrote stay readable without a prompt. "Yes and remember" or
+  `permissions = free` stops the prompts. A subagent cannot ask, so it reads
+  outside the project only when the session already allows it.
+
+- Pin MCP server approvals with SHA-256 instead of a 64-bit hash. Approvals
+  saved in the old form no longer match, so approve project MCP servers
+  again once.
+
 ### Fixed
 
 - Build the portable Linux archive from a pinned builder image. The image was
   rebuilt from the Alpine repositories on every release, so one package update
   changed the binary and the archive could not be checked by rebuilding it.
+
+- Stop a project config from sending your API key to an address it chooses.
+  A project `.arqan/config.toml` can no longer set `base_url` or `api`, or
+  redefine a provider that a user or system config already defines. A
+  provider that only the project defines gets no API key until you add it
+  with `/provider`. If you used a project `base_url` for a shared proxy, add
+  that proxy with `/provider`.
+
+- Ignore project config files, `mcp.json`, prompts and `AGENTS.md` files that
+  another user owns, or that others can write, and say which one was skipped.
+  Before, a file planted in a shared directory such as `/tmp` was trusted.
+
+- Refuse redirects on provider requests. The request fails and names the
+  host it was sent to, so set `base_url` to the final address. Before, the
+  key went along to the new host.
+
+- Finish `!cmd &` and `bash` calls when the shell exits, even if a background
+  process still holds the output open. They used to wait for the background
+  process, so `!sleep 30 &` hung until Ctrl-C.
+
+- Stop commands, helpers and MCP servers from inheriting the agent's open
+  files, such as provider sockets and pipes to other children.
 
 ## [0.8.0] - 2026-09-03
 

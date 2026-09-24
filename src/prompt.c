@@ -175,6 +175,10 @@ static Str prompt_project(Str dir, const char *suffix, size_t suffix_size,
         memcpy(path + off, suffix, suffix_size);
         Str body = prompt_read((Str){path, off + suffix_size - 1}, scratch, err,
                                err_cap);
+        if ((body.n || *err) && !paths_project_trusted(path)) {
+            body = (Str){0};
+            *err = '\0';
+        }
         if (body.n || *err) {
             if (body.n && path_out)
                 *path_out =
@@ -214,6 +218,10 @@ static size_t prompt_agents(Str dir, Arena *scratch, Str *body, Str *path_out,
         memcpy(path + off, suffix, sizeof suffix);
         Str full = {path, off + sizeof suffix - 1};
         Str text = prompt_read(full, scratch, err, err_cap);
+        if ((text.n || *err) && !paths_project_trusted(path)) {
+            text = (Str){0};
+            *err = '\0';
+        }
         if (*err) return found;
         if (text.n && found < cap) {
             Str p = str_dup(scratch, full);
@@ -319,16 +327,19 @@ static void prompt_tool_guidance(Buf *b, const ToolRegistry *tools,
                         "whole\n"));
     if ((patch || write) && prompt_offers(tools, STR("read"), mode))
         buf_puts(b, STR("- Read a file before you change it\n"));
+    if (n_offered)
+        buf_puts(b, STR("- Reading, searching or listing a path outside the "
+                        "project needs the user's approval, so stay inside "
+                        "it unless the task needs more\n"));
 
-    for (size_t i = 0; i < tools->n; i++) {
-        if (!tools_available(tools, i, mode)
-            || tools_approval_class(tools, i) == TOOL_APPROVAL_NONE)
-            continue;
+    b8 approvals = n_offered > 0;
+    for (size_t i = 0; !approvals && i < tools->n; i++)
+        approvals = tools_available(tools, i, mode)
+                    && tools_approval_class(tools, i) != TOOL_APPROVAL_NONE;
+    if (approvals)
         buf_puts(b, STR("- Some calls wait for the user's approval, so make "
                         "the call instead of asking permission in prose; if "
                         "the user denies one, do not retry it unchanged\n"));
-        break;
-    }
 }
 
 static void prompt_mcp(Buf *b) {

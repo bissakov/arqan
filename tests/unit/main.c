@@ -577,6 +577,60 @@ static void media_refuses_full_capacity(void) {
     CHECK(str_eq(m.bytes[0], image));
 }
 
+/* ---- sha-256 ------------------------------------------------------------ */
+
+static b8 sha256_is(const void *p, size_t n, const char *want) {
+    u8 digest[32];
+    char hex[65];
+    sha256(p, n, digest);
+    hex_encode(digest, sizeof digest, hex);
+    return strcmp(hex, want) == 0;
+}
+
+static void sha256_matches_known_answers(void) {
+    CHECK(sha256_is("", 0,
+                    "e3b0c44298fc1c149afbf4c8996fb924"
+                    "27ae41e4649b934ca495991b7852b855"));
+    CHECK(sha256_is("abc", 3,
+                    "ba7816bf8f01cfea414140de5dae2223"
+                    "b00361a396177a9cb410ff61f20015ad"));
+    static const char nist[] =
+        "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+    CHECK(sha256_is(nist, sizeof nist - 1,
+                    "248d6a61d20638b8e5c026930c3e6039"
+                    "a33ce45964ff2167f6ecedd419db06c1"));
+    static char million[1000000];
+    memset(million, 'a', sizeof million);
+    CHECK(sha256_is(million, sizeof million,
+                    "cdc76e5c9914fb9281a1c7e284d73e67"
+                    "f1809a48a497200e046d39ccc7112cd0"));
+}
+
+static void sha256_pads_at_the_block_edges(void) {
+    static const char text[] =
+        "The quick brown fox jumps over the lazy dog. The quick brown fox "
+        "jumps over the lazy dog. The quick brown fox jumps over.";
+    static const struct {
+        size_t n;
+        const char *hex;
+    } cases[] = {
+        {55,
+         "24f97e70d9742a384ecd9abb0a543b15eba57b06aa5084991a5d6705a32bfe1f"},
+        {56,
+         "f1629a1264c01780c6a928c503a7b440059992800034238d1ce1fc439f7f2038"},
+        {63,
+         "f35d185537ff4332e1c413bd5875ae84554231d2205332bf8076c3ffdea82e0e"},
+        {64,
+         "3e65a688760ada5cffafb936ef148f2399478da10c177369b4ff6931e0df2881"},
+        {65,
+         "dea97e0b2552edb41fe9bbb4fef494b7374306bbcb9be507fbff71ae3e621058"},
+        {119,
+         "693ec834a9f17110c83394a10636ca8fddcb77b6fc3c570c36622153d01cec0c"},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++)
+        CHECK(sha256_is(text, cases[i].n, cases[i].hex));
+}
+
 int main(void) {
     agent_log_set_level(AGENT_LOG_ERROR + 1);
 
@@ -609,6 +663,8 @@ int main(void) {
     RUN(str_handles_empty);
     RUN(str_compares_ascii_without_case);
     RUN(width_classifies_glyphs);
+    RUN(sha256_matches_known_answers);
+    RUN(sha256_pads_at_the_block_edges);
 
     RUN(tasklog_round_trips);
     RUN(tasklog_keeps_a_partial_tail);

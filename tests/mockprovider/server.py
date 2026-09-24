@@ -124,6 +124,11 @@ class Scenario:
         self.model_window: int = int(kw.get("model_window", 0))
         self.model_window_key: str = kw.get("model_window_key",
                                             "context_length")
+        # redirect=1 answers the chat POST and GET /v1/models with a 307 to
+        # the same path under /landed on "localhost", a host name that differs
+        # from the 127.0.0.1 a case connects to. What reaches /landed is kept
+        # in `landed`, so a case can see whether a key followed the redirect.
+        self.redirect: bool = _truthy(kw.get("redirect", "0"))
 
     def model_ids(self) -> list[str]:
         if self.models_empty:
@@ -752,9 +757,37 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             return False
 
+    def _redirected(self) -> bool:
+        """Answer a redirect=1 scenario, or record a request that followed one."""
+        srv = self.server
+        if self.path.startswith("/landed/"):
+            srv.landed.append({
+                "path": self.path,
+                "auth": self.headers.get("Authorization"),
+                "key": self.headers.get("x-api-key"),
+            })
+            self._json(200, {"object": "list", "data": []})
+            return True
+        provider_path = (self.path.startswith("/v1/models")
+                         or self.path.endswith("/chat/completions")
+                         or self.path.endswith("/messages"))
+        if not (provider_path and srv.scenario.redirect):
+            return False
+        port = srv.server_address[1]
+        self.send_response(307)
+        self.send_header("Location", f"http://localhost:{port}/landed{self.path}")
+        self.send_header("Content-Length", "0")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        return True
+
     # -- routes ------------------------------------------------------------
     def do_GET(self):
         srv = self.server
+        srv.paths.append(("GET", self.path))
+        if self._redirected():
+            return
         path = urlsplit(self.path).path
         if path.startswith("/web/"):
             srv.web_user_agents.append(self.headers.get("User-Agent"))
@@ -841,6 +874,8 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
 
     def do_POST(self):
         srv = self.server
+        if not self.path.startswith("/__"):
+            srv.paths.append(("POST", self.path))
         if self.path.startswith("/__reset"):
             srv.requests.clear()
             srv.auth.clear()
@@ -853,6 +888,8 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             body = self._read_body()
             srv.scenario = Scenario.parse(body.get("scenario", ""))
             self._json(200, {"ok": True})
+            return
+        if self._redirected():
             return
         if self.path.endswith("/chat/completions"):
             self._completions()
@@ -1212,6 +1249,8 @@ class MockProvider:
         self.httpd.requests = []           # type: ignore[attr-defined]
         self.httpd.bad_utf8 = []           # type: ignore[attr-defined]
         self.httpd.auth = []               # type: ignore[attr-defined]
+        self.httpd.paths = []              # type: ignore[attr-defined]
+        self.httpd.landed = []             # type: ignore[attr-defined]
         self.httpd.keys = []               # type: ignore[attr-defined]
         self.httpd.versions = []           # type: ignore[attr-defined]
         self.httpd.listings = []           # type: ignore[attr-defined]
@@ -1290,6 +1329,16 @@ class MockProvider:
         return self.httpd.auth  # type: ignore[attr-defined]
 
     @property
+    def paths(self) -> list:
+        """One (method, path) per request, so a case can see where one went."""
+        return self.httpd.paths  # type: ignore[attr-defined]
+
+    @property
+    def landed(self) -> list:
+        """Requests that followed a redirect=1 answer, with their key headers."""
+        return self.httpd.landed  # type: ignore[attr-defined]
+
+    @property
     def keys(self) -> list:
         """The x-api-key header of each request, which is where the Anthropic
         API carries the key."""
@@ -1328,6 +1377,8 @@ class MockProvider:
         self.requests.clear()
         self.bad_utf8.clear()
         self.auth.clear()
+        self.paths.clear()
+        self.landed.clear()
         self.keys.clear()
         self.versions.clear()
         self.listings.clear()

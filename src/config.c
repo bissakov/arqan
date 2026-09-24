@@ -25,10 +25,11 @@ static const ConfSpec k_conf[CONF_N] = {
 
     [CONF_PROVIDER] = {"provider", "", NULL, CV_STR, 0, 0,
                        AGENT_MAX_ENDPOINT_NAME, true},
-    [CONF_BASE_URL] = {"base_url", "", NULL, CV_STR, 0, 0, AGENT_MAX_URL, true},
+    [CONF_BASE_URL] = {"base_url", "", NULL, CV_STR, 0, 0, AGENT_MAX_URL,
+                       false},
     [CONF_MODEL] = {"model", "", NULL, CV_STR, 0, 0, AGENT_MAX_MODEL_NAME,
                     true},
-    [CONF_API] = {"api", "openai", "openai,anthropic", CV_ENUM, 0, 0, 0, true},
+    [CONF_API] = {"api", "openai", "openai,anthropic", CV_ENUM, 0, 0, 0, false},
     [CONF_API_KEY] = {"api_key", "", NULL, CV_STR, 0, 0, AGENT_MAX_API_KEY,
                       false},
     [CONF_MAX_TOKENS] = {"max_tokens", CONF_TEXT(AGENT_MAX_TOKENS), NULL,
@@ -280,10 +281,20 @@ static void conf_apply_endpoint(Conf *c, Arena *persist, Arena *scratch) {
 
     model_profile_load(&c->model_profile, name, conf_str(c, CONF_MODEL),
                        persist, scratch);
-    scratch->off = mark;
 
+    if (e.from_project[i]) {
+        c->val[CONF_API_KEY] = (Str){0};
+        c->project_provider_keyless = true;
+        agent_log(AGENT_LOG_WARN,
+                  "provider %.*s comes from a project file, so it gets no API "
+                  "key; add it with /provider to trust it",
+                  (i32)name.n, name.p);
+        scratch->off = mark;
+        return;
+    }
     char err[AGENT_MAX_PATH + 96] = {0};
-    Str key = endpoints_key(name, persist, scratch, err, sizeof err);
+    Str key = endpoints_key(&e, i, persist, scratch, err, sizeof err);
+    scratch->off = mark;
     if (err[0]) agent_log(AGENT_LOG_WARN, "%s", err);
     if (key.n)
         conf_take(c, CONF_API_KEY, key, CONF_FROM_ENDPOINT, where, persist);

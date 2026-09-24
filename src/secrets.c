@@ -194,11 +194,11 @@ static b8 secret_exec(const SecretCmd *c, Str input, char *out, size_t out_cap,
                       size_t *out_n, char *err, size_t err_cap) {
     *out_n = 0;
     i32 in_fds[2] = {-1, -1}, out_fds[2] = {-1, -1};
-    if (pipe(out_fds) != 0) {
+    if (!pipe_cloexec(out_fds)) {
         snprintf(err, err_cap, "pipe failed");
         return false;
     }
-    if (input.p && pipe(in_fds) != 0) {
+    if (input.p && !pipe_cloexec(in_fds)) {
         close(out_fds[0]);
         close(out_fds[1]);
         snprintf(err, err_cap, "pipe failed");
@@ -227,12 +227,7 @@ static b8 secret_exec(const SecretCmd *c, Str input, char *out, size_t out_cap,
         if (null_wr >= 0) dup2(null_wr, STDERR_FILENO);
         if (null_rd > STDERR_FILENO) close(null_rd);
         if (null_wr > STDERR_FILENO) close(null_wr);
-        if (in_fds[0] >= 0) {
-            close(in_fds[0]);
-            close(in_fds[1]);
-        }
-        close(out_fds[0]);
-        close(out_fds[1]);
+        child_close_fds(3);
         execvp(c->argv[0], (char *const *)(uintptr_t)c->argv);
         _exit(127);
     }

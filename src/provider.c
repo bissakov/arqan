@@ -1630,7 +1630,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         .fail_out = NULL,
         .fail_cap = 0,
     };
-    char fail[128] = {0};
+    char fail[256] = {0};
     r.fail_out = fail;
     r.fail_cap = sizeof fail;
     char err_body[AGENT_MAX_ERROR_BODY + 1] = {0};

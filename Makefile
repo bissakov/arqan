@@ -65,13 +65,13 @@ PYTHON  ?= python3
 CLANG_FORMAT ?= clang-format
 CLANG_FORMAT_VERSION := 22
 FMT_SRC := $(wildcard src/*.c src/*.h highlight/*.c highlight/*.h \
-                      tests/unit/*.c tests/unit/*.h)
+                      tests/unit/*.c tests/unit/*.h tests/fuzz/*.c)
 
 .PHONY: all minimal clean clean-asan run test test-update asan test-asan mock \
         test-ci \
         clean-fil fil test-fil clean-static static test-static \
         clean-el9 el9 test-el9 \
-        bench bench-slow bench-baseline \
+        bench bench-fast bench-slow bench-baseline fuzz \
         bench-guard check-curl-types check-cppcheck check-sparse check-flawfinder check-valgrind check-lint lint \
         check-globals test-unit fmt check-format check-clang-format \
         package-linux test-package-linux release-linux publish-repos
@@ -203,22 +203,28 @@ check-curl-types:
 check-globals:
 	$(PYTHON) scripts/check-globals.py
 
+# NOTE: each recipe is one shell, so a missing tool skips the rest of it. Under CI
+# a missing tool fails instead.
 check-cppcheck:
-	@command -v cppcheck >/dev/null 2>&1 || { echo "cppcheck not found"; exit 0; }
+	@if ! command -v cppcheck >/dev/null 2>&1; then \
+	    echo "cppcheck not found"; [ -z "$(CI)" ]; exit; fi; \
 	cppcheck --enable=warning,performance,portability --inline-suppr --quiet --error-exitcode=1 -Isrc src/
 
 check-sparse:
-	@command -v cgcc >/dev/null 2>&1 || { echo "cgcc not found (sparse)"; exit 0; }
-	@out=$$(cgcc -Isrc -D_DEFAULT_SOURCE -std=c17 -c src/main.c -o /tmp/_sparse.o 2>&1 | grep -v "unknown escape sequence" | grep -v "note: in included" | grep -v "^$$" | grep -v "too many warnings"); \
+	@if ! command -v cgcc >/dev/null 2>&1; then \
+	    echo "cgcc not found (sparse)"; [ -z "$(CI)" ]; exit; fi; \
+	out=$$(cgcc -Isrc -D_DEFAULT_SOURCE -std=c17 -c src/main.c -o /tmp/_sparse.o 2>&1 | grep -v "unknown escape sequence" | grep -v "note: in included" | grep -v "^$$" | grep -v "too many warnings"); \
 	if echo "$$out" | grep -q "warning:"; then echo "$$out"; exit 1; fi
 
 check-flawfinder:
-	@command -v flawfinder >/dev/null 2>&1 || { echo "flawfinder not found"; exit 0; }
+	@if ! command -v flawfinder >/dev/null 2>&1; then \
+	    echo "flawfinder not found"; [ -z "$(CI)" ]; exit; fi; \
 	flawfinder --minlevel=5 --error-level=5 --quiet src/
 
 check-valgrind: all $(UNIT_BIN)
-	@command -v valgrind >/dev/null 2>&1 || { echo "valgrind not found"; exit 0; }
-	valgrind --tool=memcheck --leak-check=full --error-exitcode=1 --errors-for-leak-kinds=definite,indirect ./$(BIN) --help >/dev/null
+	@if ! command -v valgrind >/dev/null 2>&1; then \
+	    echo "valgrind not found"; [ -z "$(CI)" ]; exit; fi; \
+	valgrind --tool=memcheck --leak-check=full --error-exitcode=1 --errors-for-leak-kinds=definite,indirect ./$(BIN) --help >/dev/null && \
 	valgrind --tool=memcheck --error-exitcode=1 ./$(UNIT_BIN) >/dev/null
 
 check-lint: check-cppcheck check-sparse check-flawfinder
@@ -252,6 +258,18 @@ $(UNIT_BIN): $(UNIT_SRC) $(wildcard src/*.c) $(wildcard src/*.h)
 
 test-unit: $(UNIT_BIN)
 	$(UNIT_BIN)
+
+FUZZ_CC     ?= clang
+FUZZ_SRC    := $(wildcard tests/fuzz/*.c)
+FUZZ_BIN    := $(patsubst tests/fuzz/%.c,$(BINDIR)/fuzz/%,$(FUZZ_SRC))
+FUZZ_CFLAGS := -std=c17 -g -O1 -fsanitize=fuzzer,address,undefined \
+               -fno-sanitize-recover=undefined -Isrc
+
+$(BINDIR)/fuzz/%: tests/fuzz/%.c $(wildcard src/*.c) $(wildcard src/*.h)
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) $< -o $@
+
+fuzz: $(FUZZ_BIN)
 
 el9:
 	$(MAKE) all $(EL9_BIN)/arqan-test \

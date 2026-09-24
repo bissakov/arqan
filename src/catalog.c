@@ -51,7 +51,7 @@ static b8 catalog_probe(Config *probe, Str name, const Config *cfg,
         return false;
     }
     char key_err[AGENT_MAX_PATH + 96] = {0};
-    Str key = endpoints_key(name, tmp, tmp, key_err, sizeof key_err);
+    Str key = endpoints_key(e, i, tmp, tmp, key_err, sizeof key_err);
     if (key_err[0]) {
         snprintf(err, err_cap, "%s", key_err);
         return false;
