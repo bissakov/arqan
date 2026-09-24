@@ -2,23 +2,25 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-24
+
 ### Added
 
 - Press Tab on an `ask_user` option to choose it and add your own words.
   The model gets the option and, on the next line, your note. Esc while
-  typing the note goes back to the options.
+  typing the note goes back to the options. ([`c8e2184`])
 
 - Read PNG, JPEG, GIF and WebP files with `read` to send their image content
   to the model. Formats are detected from file contents, not extensions.
   Images use the attachment limits and session sidecars. `offset` and `limit`
   apply only to text. `images = off` and text-only subagents load no
-  conversation images.
+  conversation images. ([`1b5a667`])
 
 - Send images from MCP tool results to the model. Images use the same size
   and format checks as attachments and survive session replay. `images = off`
   blocks them, including images saved in a session. Anthropic receives images
   inside the tool result; OpenAI receives a follow-up user message naming the
-  source calls. Each result carries at most four images.
+  source calls. Each result carries at most four images. ([`5dc3e0f`])
 
 - Use tools, resources and prompts from MCP servers. Set `mcp = on` and list
   stdio commands or streamable HTTP URLs in `mcp.json`. Servers connect before
@@ -28,13 +30,13 @@
   JSON and SSE replies, bearer tokens from the environment or a key store,
   and session recovery. Remote tools use `<server>_<tool>`, and `mcp_read`
   lists or reads resources. `/mcp prompts` lists server prompts, and `/mcp
-  prompt` loads one into the composer for review.
+  prompt` loads one into the composer for review. ([`5dc3e0f`])
 
 - Add `mcp` to turn MCP on and `mcp_timeout_ms` to bound how long a server has
   to answer. `/mcp` lists and manages servers. Project servers need approval
   tied to their full definition before they can start. MCP tools keep the
   usual tool disable, plan mode and per-call approval rules, and their results
-  use the usual paging and spill path.
+  use the usual paging and spill path. ([`5dc3e0f`])
 
 ### Changed
 
@@ -43,45 +45,47 @@
   transcript, the retry notice and the model list now carry the provider's
   message beside the status. The body is bounded, flattened to one line, and
   stripped of the key if the provider echoed it back. Telemetry keeps the
-  status alone.
+  status alone. ([`167d1a8`])
 
 - Ask before `read`, `grep` or `find` touches a path outside the project. A
   link that leads out of the project counts as outside. Spill files and job
   logs the agent wrote stay readable without a prompt. "Yes and remember" or
   `permissions = free` stops the prompts. A subagent cannot ask, so it reads
-  outside the project only when the session already allows it.
+  outside the project only when the session already allows it. ([`d000eee`])
 
 - Pin MCP server approvals with SHA-256 instead of a 64-bit hash. Approvals
   saved in the old form no longer match, so approve project MCP servers
-  again once.
+  again once. ([`d000eee`])
 
 ### Fixed
 
 - Build the portable Linux archive from a pinned builder image. The image was
   rebuilt from the Alpine repositories on every release, so one package update
   changed the binary and the archive could not be checked by rebuilding it.
+  ([`8d0d370`])
 
 - Stop a project config from sending your API key to an address it chooses.
   A project `.arqan/config.toml` can no longer set `base_url` or `api`, or
   redefine a provider that a user or system config already defines. A
   provider that only the project defines gets no API key until you add it
   with `/provider`. If you used a project `base_url` for a shared proxy, add
-  that proxy with `/provider`.
+  that proxy with `/provider`. ([`d000eee`])
 
 - Ignore project config files, `mcp.json`, prompts and `AGENTS.md` files that
   another user owns, or that others can write, and say which one was skipped.
   Before, a file planted in a shared directory such as `/tmp` was trusted.
+  ([`d000eee`])
 
 - Refuse redirects on provider requests. The request fails and names the
   host it was sent to, so set `base_url` to the final address. Before, the
-  key went along to the new host.
+  key went along to the new host. ([`d000eee`])
 
 - Finish `!cmd &` and `bash` calls when the shell exits, even if a background
   process still holds the output open. They used to wait for the background
-  process, so `!sleep 30 &` hung until Ctrl-C.
+  process, so `!sleep 30 &` hung until Ctrl-C. ([`d000eee`])
 
 - Stop commands, helpers and MCP servers from inheriting the agent's open
-  files, such as provider sockets and pipes to other children.
+  files, such as provider sockets and pipes to other children. ([`d000eee`])
 
 ## [0.8.0] - 2026-09-03
 
@@ -560,7 +564,8 @@
 - Portable Linux x86_64 archive, installer, checksum, and draft release
   automation.
 
-[Unreleased]: https://github.com/bissakov/arqan/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/bissakov/arqan/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/bissakov/arqan/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/bissakov/arqan/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/bissakov/arqan/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/bissakov/arqan/compare/v0.5.0...v0.6.0
@@ -570,6 +575,12 @@
 [0.2.0]: https://github.com/bissakov/arqan/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bissakov/arqan/releases/tag/v0.1.0
 
+[`c8e2184`]: https://github.com/bissakov/arqan/commit/c8e21848d9ac96ba3c5789b5f32829d96a177667
+[`1b5a667`]: https://github.com/bissakov/arqan/commit/1b5a66778c895a3d1999fc67b876e02a938634ac
+[`5dc3e0f`]: https://github.com/bissakov/arqan/commit/5dc3e0fc5016089544cd14e4e021da7aa5db032d
+[`167d1a8`]: https://github.com/bissakov/arqan/commit/167d1a814d81cd2e8126e729039555fa24d46087
+[`d000eee`]: https://github.com/bissakov/arqan/commit/d000eeee87ac729abab97f0e92152b6f14cffd43
+[`8d0d370`]: https://github.com/bissakov/arqan/commit/8d0d370854d0cafc8a138a322b842eda9d51e4f2
 [`13b0d6b`]: https://github.com/bissakov/arqan/commit/13b0d6bfd60d97bb318cecddf1dffef0a7fefc07
 [`7bb66a9`]: https://github.com/bissakov/arqan/commit/7bb66a97ad127ef20ea341577a91c7996bcdd416
 [`c3b47af`]: https://github.com/bissakov/arqan/commit/c3b47af1ea783fd5e2baae425f7d2b065b4c120b
