@@ -29,7 +29,9 @@ void telemetry_log(i32 level, Str msg) {
 
 #include <fcntl.h>
 #include <stdlib.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static int g_fail;
@@ -631,6 +633,52 @@ static void sha256_pads_at_the_block_edges(void) {
         CHECK(sha256_is(text, cases[i].n, cases[i].hex));
 }
 
+/* ---- child processes --------------------------------------------------- */
+
+static void child_close_fds_reaches_past_the_fallback_cap(void) {
+    enum { LOW_FD = 100, HIGH_FD = 65536 + 8 };
+    struct rlimit saved;
+    if (getrlimit(RLIMIT_NOFILE, &saved) != 0) {
+        CHECK(!"getrlimit");
+        return;
+    }
+    if (saved.rlim_max != RLIM_INFINITY && saved.rlim_max <= (rlim_t)HIGH_FD) {
+        printf("  %s: skipped, the descriptor limit is below %d\n", g_case,
+               HIGH_FD + 1);
+        return;
+    }
+    struct rlimit raised = saved;
+    if (raised.rlim_cur != RLIM_INFINITY && raised.rlim_cur <= (rlim_t)HIGH_FD)
+        raised.rlim_cur = (rlim_t)HIGH_FD + 1;
+    if (setrlimit(RLIMIT_NOFILE, &raised) != 0) {
+        CHECK(!"setrlimit");
+        return;
+    }
+    int null_fd = open("/dev/null", O_RDONLY);
+    b8 low_placed = null_fd >= 0 && dup2(null_fd, LOW_FD) == LOW_FD;
+    b8 high_placed = null_fd >= 0 && dup2(null_fd, HIGH_FD) == HIGH_FD;
+    CHECK(low_placed && high_placed);
+    if (low_placed && high_placed) {
+        pid_t pid = fork();
+        CHECK(pid >= 0);
+        if (pid == 0) {
+            child_close_fds(3);
+            b8 closed =
+                fcntl(LOW_FD, F_GETFD) == -1 && fcntl(HIGH_FD, F_GETFD) == -1;
+            _exit(closed ? 0 : 1);
+        }
+        if (pid > 0) {
+            int status = 0;
+            CHECK(waitpid(pid, &status, 0) == pid && WIFEXITED(status)
+                  && WEXITSTATUS(status) == 0);
+        }
+    }
+    if (high_placed) close(HIGH_FD);
+    if (low_placed) close(LOW_FD);
+    if (null_fd >= 0) close(null_fd);
+    CHECK(setrlimit(RLIMIT_NOFILE, &saved) == 0);
+}
+
 int main(void) {
     agent_log_set_level(AGENT_LOG_ERROR + 1);
 
@@ -673,6 +721,8 @@ int main(void) {
     RUN(tasklog_writes_the_end_past_the_cap);
     RUN(media_refuses_a_short_label_allocation);
     RUN(media_refuses_full_capacity);
+
+    RUN(child_close_fds_reaches_past_the_fallback_cap);
     if (g_fail) {
         printf("%d failure(s) in %d cases\n", g_fail, g_ran);
         return 1;
