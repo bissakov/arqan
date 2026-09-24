@@ -45,6 +45,12 @@
   stripped of the key if the provider echoed it back. Telemetry keeps the
   status alone.
 
+- Ask before `read`, `grep` or `find` touches a path outside the project. A
+  link that leads out of the project counts as outside. Spill files and job
+  logs the agent wrote stay readable without a prompt. "Yes and remember" or
+  `permissions = free` stops the prompts. A subagent cannot ask, so it reads
+  outside the project only when the session already allows it.
+
 - Pin MCP server approvals with SHA-256 instead of a 64-bit hash. Approvals
   saved in the old form no longer match, so approve project MCP servers
   again once.

@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <limits.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -325,6 +326,7 @@ typedef struct {
 typedef struct {
     AgentMode mode;
     b8 interactive;
+    Str root;
 } ToolsPolicy;
 
 typedef struct {
@@ -2052,12 +2054,84 @@ ToolApprovalClass tools_approval_class(const ToolRegistry *r, size_t id) {
     return (ToolApprovalClass)r->approval[id];
 }
 
+static b8 path_has_dotdot(const char *rest) {
+    for (const char *p = rest; *p;) {
+        while (*p == '/') p++;
+        const char *end = p;
+        while (*end && *end != '/') end++;
+        if (end - p == 2 && p[0] == '.' && p[1] == '.') return true;
+        p = end;
+    }
+    return false;
+}
+
+static b8 path_resolve_near(const char *path, char *out) {
+    if (realpath(path, out)) return true;
+    char head[PATH_MAX];
+    size_t n = strlen(path);
+    if (n >= sizeof head) return false;
+    memcpy(head, path, n + 1);
+    while (n) {
+        while (n > 1 && head[n - 1] == '/') n--;
+        while (n && head[n - 1] != '/') n--;
+        const char *rest = path + n;
+        if (path_has_dotdot(rest)) return false;
+        while (n > 1 && head[n - 1] == '/') n--;
+        head[n] = '\0';
+        if (!realpath(n ? head : ".", out)) continue;
+        size_t have = strlen(out);
+        while (*rest == '/') rest++;
+        i32 w = snprintf(out + have, PATH_MAX - have, "%s%s",
+                         have && out[have - 1] == '/' ? "" : "/", rest);
+        return w >= 0 && (size_t)w < PATH_MAX - have;
+    }
+    return false;
+}
+
+static b8 path_under_root(const char *resolved) {
+    Str root = g_tools.policy.root;
+    if (!root.n) return false;
+    if (strncmp(resolved, root.p, root.n) != 0) return false;
+    return resolved[root.n] == '\0' || resolved[root.n] == '/'
+           || (root.n == 1 && root.p[0] == '/');
+}
+
+static b8 tools_path_inside(Str path) {
+    if (!path.n) path = STR(".");
+    if (path.n >= PATH_MAX || memchr(path.p, 0, path.n)) return false;
+    char z[PATH_MAX];
+    memcpy(z, path.p, path.n);
+    z[path.n] = '\0';
+    char resolved[PATH_MAX];
+    if (!path_resolve_near(z, resolved)) return false;
+    return path_under_root(resolved) || spill_path_ours(resolved);
+}
+
+static b8 tool_reads_paths(const ToolRegistry *r, size_t id) {
+    if (!r->run || id >= r->n || r->source[id] != TOOL_SRC_BUILTIN)
+        return false;
+    ToolRun run = r->run[id];
+    return run == tool_read || run == tool_grep || run == tool_find;
+}
+
+ToolApprovalClass tools_call_approval(const ToolRegistry *r, size_t id,
+                                      Str args, Arena *scratch) {
+    ToolApprovalClass fixed = tools_approval_class(r, id);
+    if (fixed != TOOL_APPROVAL_NONE || !tool_reads_paths(r, id)) return fixed;
+    size_t mark = scratch->off;
+    JVal *j = json_parse(scratch, args);
+    b8 inside = !j || tools_path_inside(json_str(j, STR("path")));
+    scratch->off = mark;
+    return inside ? TOOL_APPROVAL_NONE : TOOL_APPROVAL_OUTSIDE;
+}
+
 Str tools_approval_name(ToolApprovalClass approval) {
     switch (approval) {
         case TOOL_APPROVAL_BASH: return STR("bash");
         case TOOL_APPROVAL_WRITE: return STR("write");
         case TOOL_APPROVAL_PATCH: return STR("patch");
         case TOOL_APPROVAL_MCP: return STR("MCP tool");
+        case TOOL_APPROVAL_OUTSIDE: return STR("read outside the project");
         case TOOL_APPROVAL_NONE: break;
     }
     return (Str){0};
@@ -2183,6 +2257,9 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
     r->ext = arena_new(persist, u16, AGENT_MAX_TOOLS);
     r->off = arena_new(persist, b8, AGENT_MAX_TOOLS);
     r->n = 0;
+    char root[PATH_MAX];
+    g_tools.policy.root =
+        realpath(".", root) ? str_dup(persist, str_c(root)) : (Str){0};
     if (!r->name || !r->desc || !r->brief || !r->schema || !r->run || !r->modes
         || !r->approval || !r->source || !r->ext || !r->off) {
         r->name = NULL;
@@ -2240,7 +2317,8 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
         "file one range at a time rather than reading it whole. "
         "With images enabled, PNG, JPEG, GIF and WebP files return their "
         "whole image content. Offset and limit apply only to text; they "
-        "do not crop or page images.",
+        "do not crop or page images. A path outside the project needs the "
+        "user's approval.",
         "Read a page of a file", READS, TOOL_APPROVAL_NONE,
         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},"
         "\"offset\":{\"type\":\"integer\",\"description\":\"first line, 1-based\"},"
@@ -2250,7 +2328,8 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
     ADD("grep",
         "Search file contents for a literal string, recursively. "
         "Returns up to 100 matches; narrow with a path or glob, and use "
-        "offset to page through the rest.",
+        "offset to page through the rest. A path outside the project needs "
+        "the user's approval.",
         "Search file contents", READS, TOOL_APPROVAL_NONE,
         "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},"
         "\"path\":{\"type\":\"string\",\"description\":\"file or dir, default .\"},"
@@ -2263,7 +2342,8 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
     ADD("find",
         "List files whose name matches a glob, recursively. "
         "Returns up to 200 paths; narrow with a path, and use offset to "
-        "page through the rest.",
+        "page through the rest. A path outside the project needs the "
+        "user's approval.",
         "List files by name", READS, TOOL_APPROVAL_NONE,
         "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\","
         "\"description\":\"glob; matched on the path when it has a /\"},"
@@ -2453,7 +2533,7 @@ b8 tools_run(const ToolRegistry *r, size_t id, Str args,
                  (int)r->name[id].n, r->name[id].p);
         return false;
     }
-    ToolApprovalClass approval = tools_approval_class(r, id);
+    ToolApprovalClass approval = tools_call_approval(r, id, args, scratch);
     if (approval != TOOL_APPROVAL_NONE && authorization != TOOL_AUTH_GRANTED) {
         Str cls = tools_approval_name(approval);
         snprintf(err, err_cap, "%.*s call was not authorized", (int)cls.n,

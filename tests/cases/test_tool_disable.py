@@ -123,10 +123,14 @@ def test_the_flag_keeps_them_out_of_the_prompt(ctx):
 
 
 def test_the_guidelines_name_only_the_tools_offered(ctx):
-    """A guideline about a disabled tool would send the model after it."""
+    """A guideline about a disabled tool would send the model after it.
+
+    read, grep and find ask before they leave the project, so they go too
+    for the approval guideline to have no tool left to describe."""
     ctx.scenario("text=fine")
     s = ctx.spawn(
-        args=["--disable-tools", "bash,patch,write"], ARQAN_SYSTEM_PROMPT=None
+        args=["--disable-tools", "bash,patch,write,read,grep,find"],
+        ARQAN_SYSTEM_PROMPT=None,
     )
     s.submit("say something")
     s.wait_turn_done()
@@ -144,6 +148,21 @@ def test_the_guidelines_name_only_the_tools_offered(ctx):
         for name in ("bash", "patch", "write"):
             assert not re.search(rf"\b{name}\b", line), (name, line)
     assert "approval" not in guidelines, guidelines
+
+
+def test_the_guidelines_say_outside_reads_need_approval(ctx):
+    """With only the read tools left, approval still applies to them."""
+    ctx.scenario("text=fine")
+    s = ctx.spawn(
+        args=["--disable-tools", "bash,patch,write"], ARQAN_SYSTEM_PROMPT=None
+    )
+    s.submit("say something")
+    s.wait_turn_done()
+
+    system = ctx.mock.requests[-1]["messages"][0]["content"]
+    guidelines = system[system.index("Guidelines:"):]
+    assert "outside the project needs the user's approval" in guidelines, \
+        guidelines
 
 
 def test_an_unknown_tool_name_is_refused(ctx):

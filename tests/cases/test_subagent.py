@@ -706,3 +706,68 @@ def test_an_interrupt_leaves_the_worker_running(ctx):
     s.wait_turn_done()
 
     assert "the cat is in src/one.c" in last_result(ctx), last_result(ctx)
+
+
+# ---- reads outside the project --------------------------------------------
+
+
+def sub_tool_results(ctx):
+    out = []
+    for r in sub_requests(ctx):
+        for m in r.get("messages", []):
+            if m.get("role") == "tool":
+                out.append(m.get("content", ""))
+    return out
+
+
+def outside_read(ctx):
+    p = ctx.tmp / "elsewhere" / "secret.txt"
+    p.parent.mkdir(exist_ok=True)
+    p.write_text("outside body\n")
+    return "tool=read:" + json.dumps({"path": str(p)}) + ",final_text=read+it"
+
+
+def test_a_subagent_may_not_read_outside_the_project_unasked(ctx):
+    """Nobody is there to ask, so the read is refused and the delegate is
+    told why."""
+    ctx.scenario(collect(ctx))
+    s = spawn(ctx, sub=outside_read(ctx), ARQAN_PERMISSIONS="ask")
+    s.submit("delegate it")
+    s.wait_text("done", timeout=WAIT / 1000)
+    s.wait_turn_done()
+    results = sub_tool_results(ctx)
+    assert results, sub_requests(ctx)
+    assert "outside the project" in results[0], results
+    assert "outside body" not in results[0], results
+
+
+def test_a_subagent_reads_outside_the_project_under_free(ctx):
+    ctx.scenario(collect(ctx))
+    s = spawn(ctx, sub=outside_read(ctx), ARQAN_PERMISSIONS="free")
+    s.submit("delegate it")
+    s.wait_text("done", timeout=WAIT / 1000)
+    s.wait_turn_done()
+    results = sub_tool_results(ctx)
+    assert results and "outside body" in results[0], results
+
+
+def test_a_subagent_reads_outside_the_project_after_a_remembered_grant(ctx):
+    p = ctx.tmp / "elsewhere" / "first.txt"
+    p.parent.mkdir(exist_ok=True)
+    p.write_text("first body\n")
+    ctx.scenario("tool=read:" + json.dumps({"path": str(p)})
+                 + ",final_text=granted")
+    s = spawn(ctx, sub=outside_read(ctx), ARQAN_PERMISSIONS="ask")
+    s.submit("read it yourself")
+    s.wait_status("allow read outside the project?")
+    s.key("down").sync()
+    s.key("enter")
+    s.wait_text("granted")
+    s.wait_turn_done()
+
+    ctx.scenario(collect(ctx))
+    s.submit("delegate it")
+    s.wait_text("done", timeout=WAIT / 1000)
+    s.wait_turn_done()
+    results = sub_tool_results(ctx)
+    assert results and "outside body" in results[0], results

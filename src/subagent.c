@@ -140,8 +140,19 @@ static b8 sub_run_calls(Subagent *s, const SubRun *r, size_t first) {
         buf_init(&out, r->scratch, 4096);
         char err[AGENT_TOOL_ERR] = {0};
         f64 call_started = agent_now_seconds();
-        b8 ok = tools_run(r->tools, id, c->text[i], TOOL_AUTH_GRANTED,
+        ToolApprovalClass approval =
+            tools_call_approval(r->tools, id, c->text[i], r->scratch);
+        b8 granted = approval == TOOL_APPROVAL_NONE
+                     || r->permissions == PERMISSION_FREE
+                     || (r->permission_grants & ((u8)1u << (u8)approval));
+        b8 ok = tools_run(r->tools, id, c->text[i],
+                          granted ? TOOL_AUTH_GRANTED : TOOL_AUTH_DENIED,
                           r->scratch, &out, err, sizeof err, TOOL_FOR_SUB);
+        if (!ok && !granted && approval == TOOL_APPROVAL_OUTSIDE)
+            snprintf(err, sizeof err,
+                     "this path is outside the project, and a subagent "
+                     "cannot ask the user to approve reading it; report "
+                     "that you need it instead");
         f64 call_s = agent_now_seconds() - call_started;
         if (!ok) {
             out.n = 0;

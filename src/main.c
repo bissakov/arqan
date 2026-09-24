@@ -749,13 +749,17 @@ tool_authorization(Agent *ag, ToolApprovalClass approval, size_t at) {
     } else if (approval == TOOL_APPROVAL_MCP) {
         once = STR("Call this MCP tool");
         remembered = STR("Allow calls to any MCP tool until the process exits");
+    } else if (approval == TOOL_APPROVAL_OUTSIDE) {
+        once = STR("Read this path");
+        remembered =
+            STR("Allow reads outside the project until the process exits");
     }
     TuiCmd items[] = {
         {STR("Yes"), once},
         {STR("Yes and remember"), remembered},
         {STR("No"), STR("Execute nothing and report the denial")},
     };
-    char title[32];
+    char title[64];
     i32 n = snprintf(title, sizeof title, "allow %.*s?", (i32)cls.n, cls.p);
     size_t pick = 2;
     tui_keep_visible(at);
@@ -1123,6 +1127,8 @@ static b8 task_send_record(Agent *ag, i32 fd, const Config *cfg, Str sys,
     rec_str(&b, "template", cfg->reasoning_template);
     rec_str(&b, "disable_tools", cfg->disable_tools);
     buf_putf(&b, ",\"api\":%d,\"mode\":%d", (i32)cfg->api, (i32)cfg->mode);
+    buf_putf(&b, ",\"permissions\":%d,\"grants\":%d", (i32)ag->cfg->permissions,
+             (i32)ag->permission_grants);
     buf_putf(&b, ",\"max_tokens\":%d,\"retries\":%d,\"retry_delay_ms\":%d",
              cfg->max_tokens, cfg->retries, cfg->retry_delay_ms);
     buf_putf(&b, ",\"stream\":%s,\"small\":%s}\n",
@@ -1329,6 +1335,8 @@ static void task_run_here(Agent *ag, const Config *cfg, Buf *out,
         .cfg = cfg,
         .tools = ag->tools,
         .scratch = ag->scratch,
+        .permissions = ag->cfg->permissions,
+        .permission_grants = ag->permission_grants,
         .deadline_s =
             slice_ms > 0 ? agent_now_seconds() + (f64)slice_ms / 1000.0 : 0.0,
         .interrupt_flag = &g_got_sigint,
@@ -1744,7 +1752,7 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
         ToolApprovalClass approval = TOOL_APPROVAL_NONE;
         if (tool != TOOL_NONE && !tools_disabled(ag->tools, tool)
             && tools_available(ag->tools, tool, ag->cfg->mode))
-            approval = tools_approval_class(ag->tools, tool);
+            approval = tools_call_approval(ag->tools, tool, args, ag->scratch);
         ToolAuthorization authorization =
             tool_authorization(ag, approval, call_at);
         if (authorization == TOOL_AUTH_DENIED
@@ -5808,6 +5816,10 @@ static i32 task_worker_main(const CliOpts *opts) {
     cfg.retry_delay_ms = rec_int(j, "retry_delay_ms", cfg.retry_delay_ms);
     cfg.mode = (AgentMode)rec_int(j, "mode", (i32)cfg.mode);
     cfg.stream = json_bool(j, STR("stream"));
+    PermissionPolicy permissions =
+        rec_int(j, "permissions", 0) == (i32)PERMISSION_FREE ? PERMISSION_FREE
+                                                             : PERMISSION_ASK;
+    u8 grants = (u8)rec_int(j, "grants", 0);
 
     ToolRegistry tools;
     tools_init(&tools, &persist, cfg.shell_timeout_ms, false, 1);
@@ -5844,6 +5856,8 @@ static i32 task_worker_main(const CliOpts *opts) {
         .cfg = &cfg,
         .tools = &tools,
         .scratch = &scratch,
+        .permissions = permissions,
+        .permission_grants = grants,
         .interrupt_flag = &g_worker_stop,
         .idle_fd = g_worker.ctl,
         .on_idle = worker_idle,

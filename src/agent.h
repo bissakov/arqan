@@ -624,6 +624,7 @@ typedef enum {
     TOOL_APPROVAL_WRITE,
     TOOL_APPROVAL_PATCH,
     TOOL_APPROVAL_MCP,
+    TOOL_APPROVAL_OUTSIDE,
 } ToolApprovalClass;
 
 
@@ -1047,6 +1048,7 @@ void spill_finish(Spill *s, Buf *out, b8 keep);
 i32 spill_release(Spill *s, char *path, size_t path_cap, size_t *written);
 
 void spill_size_text(char *z, size_t cap, size_t n);
+b8 spill_path_ours(const char *resolved);
 
 
 typedef b8 (*ToolRun)(Str args_json, Arena *scratch, Buf *out, char *err,
@@ -1097,6 +1099,8 @@ b8 tools_available_to(const ToolRegistry *r, size_t id, AgentMode mode,
                       ToolAudience audience);
 size_t tools_find(const ToolRegistry *r, Str name);
 ToolApprovalClass tools_approval_class(const ToolRegistry *r, size_t id);
+ToolApprovalClass tools_call_approval(const ToolRegistry *r, size_t id,
+                                      Str args, Arena *scratch);
 
 Str tools_approval_name(ToolApprovalClass approval);
 
@@ -1524,6 +1528,8 @@ typedef struct {
     const Config *cfg;
     const ToolRegistry *tools;
     Arena *scratch;
+    PermissionPolicy permissions;
+    u8 permission_grants;
     f64 deadline_s;
     const volatile sig_atomic_t *interrupt_flag;
     i32 idle_fd;

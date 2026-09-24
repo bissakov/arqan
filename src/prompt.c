@@ -327,16 +327,19 @@ static void prompt_tool_guidance(Buf *b, const ToolRegistry *tools,
                         "whole\n"));
     if ((patch || write) && prompt_offers(tools, STR("read"), mode))
         buf_puts(b, STR("- Read a file before you change it\n"));
+    if (n_offered)
+        buf_puts(b, STR("- Reading, searching or listing a path outside the "
+                        "project needs the user's approval, so stay inside "
+                        "it unless the task needs more\n"));
 
-    for (size_t i = 0; i < tools->n; i++) {
-        if (!tools_available(tools, i, mode)
-            || tools_approval_class(tools, i) == TOOL_APPROVAL_NONE)
-            continue;
+    b8 approvals = n_offered > 0;
+    for (size_t i = 0; !approvals && i < tools->n; i++)
+        approvals = tools_available(tools, i, mode)
+                    && tools_approval_class(tools, i) != TOOL_APPROVAL_NONE;
+    if (approvals)
         buf_puts(b, STR("- Some calls wait for the user's approval, so make "
                         "the call instead of asking permission in prose; if "
                         "the user denies one, do not retry it unchanged\n"));
-        break;
-    }
 }
 
 static void prompt_mcp(Buf *b) {
