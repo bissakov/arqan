@@ -9,6 +9,9 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#endif
 
 // ---- arena --------------------------------------------------------------
 void arena_init(Arena *a, void *mem, size_t cap) {
@@ -270,7 +273,22 @@ int pipe2(int fds[2], int flags);
 #if defined(__GLIBC__) \
     && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
 int close_range(unsigned int first, unsigned int last, int flags);
-#define AGENT_HAVE_CLOSE_RANGE 1
+
+static b8 close_fds_from(u32 first) {
+    return close_range(first, ~0u, 0) == 0;
+}
+#elif defined(__NR_close_range)
+/* NOTE: the release builds use glibc 2.31 and musl, which have no close_range
+ * wrapper, so call the kernel directly. Fil-C refuses raw syscall() and takes
+ * the wrapper branch above. */
+static b8 close_fds_from(u32 first) {
+    return syscall(__NR_close_range, first, ~0u, 0u) == 0;
+}
+#else
+static b8 close_fds_from(u32 first) {
+    (void)first;
+    return false;
+}
 #endif
 
 b8 pipe_cloexec(i32 fds[2]) {
@@ -289,9 +307,7 @@ b8 pipe_cloexec(i32 fds[2]) {
 
 void child_close_fds(i32 keep_from) {
     if (keep_from < 0) keep_from = 0;
-#ifdef AGENT_HAVE_CLOSE_RANGE
-    if (close_range((unsigned int)keep_from, ~0u, 0) == 0) return;
-#endif
+    if (close_fds_from((u32)keep_from)) return;
     long max = sysconf(_SC_OPEN_MAX);
     if (max < 0 || max > 65536) max = 65536;
     for (i32 fd = keep_from; fd < (i32)max; fd++) close(fd);
