@@ -231,3 +231,52 @@ def processes_matching(needle: str) -> list[str]:
         if needle in cmdline:
             out.append(cmdline.replace("\0", " ").strip())
     return out
+
+
+# ---- background processes and inherited files ------------------------------
+
+
+def test_a_background_process_does_not_hold_a_user_run(ctx):
+    """The run ends with its shell. A background child that keeps the output
+    open is not waited for."""
+    s = ctx.spawn()
+    started = time.monotonic()
+    s.submit("!sleep 30 & echo started")
+    s.wait_text("\u2514\u2500 exit 0", timeout=8.0)
+    s.wait_status("ready")
+    assert time.monotonic() - started < 8.0
+    text = s.text()
+    assert "started" in text, text
+    assert "background process still holds the output" in text, text
+
+
+def test_a_background_process_does_not_hold_a_bash_call(ctx):
+    """The call answers when its shell exits, well before the deadline."""
+    ctx.scenario("tool=bash:" + json.dumps({"command": "sleep 30 & echo started"})
+                 + ",final_text=done")
+    s = ctx.spawn(ARQAN_SHELL_TIMEOUT_MS="20000")
+    started = time.monotonic()
+    s.submit("run it")
+    s.wait_text("done", timeout=10.0)
+    s.wait_turn_done()
+    assert time.monotonic() - started < 10.0
+    result = ctx.mock.tool_results()[-1]
+    assert result.startswith("started\n"), result
+    assert "background process still holds the output" in result, result
+    assert "still running as job" not in result, result
+    assert result.endswith("[exit 0]"), result
+
+
+def test_a_command_inherits_no_open_files(ctx):
+    """Only the standard streams reach a command, and the directory ls has
+    open to list them."""
+    if not Path("/proc/self/fd").exists():
+        return
+    ctx.scenario('tool=bash:{"command":"ls /proc/self/fd"},final_text=listed')
+    s = ctx.spawn()
+    s.submit("list them")
+    s.wait_text("listed")
+    s.wait_turn_done()
+    result = ctx.mock.tool_results()[-1]
+    fds = [line for line in result.splitlines() if line.isdigit()]
+    assert sorted(fds, key=int) == ["0", "1", "2", "3"], result

@@ -234,7 +234,15 @@ static curl_socket_t public_open_cb(void *ud, curlsocktype purpose,
         ctx->blocked = true;
         return CURL_SOCKET_BAD;
     }
-    return socket(address->family, address->socktype, address->protocol);
+#ifdef SOCK_CLOEXEC
+    return socket(address->family, address->socktype | SOCK_CLOEXEC,
+                  address->protocol);
+#else
+    curl_socket_t fd =
+        socket(address->family, address->socktype, address->protocol);
+    if (fd >= 0) fcntl(fd, F_SETFD, FD_CLOEXEC);
+    return fd;
+#endif
 }
 
 static size_t drop_header_cb(char *p, size_t sz, size_t n, void *ud) {

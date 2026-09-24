@@ -7,7 +7,9 @@ continues to arrive, and that nothing it started survives the session.
 """
 
 import json
+import os
 import time
+from pathlib import Path
 
 
 def bash(command: str) -> str:
@@ -255,3 +257,43 @@ def test_a_deadline_past_the_cache_window_is_refused(ctx):
     ctx.scenario("text=ok")
     out = ctx.run_cli("-p", "hello")
     assert "shell_timeout_ms" in out.stderr, out.stderr
+
+
+def drainers_of(pid: int) -> list[int]:
+    """Children of `pid` that run the same program: the forked drainers."""
+    exe = os.readlink(f"/proc/{pid}/exe")
+    out = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text()
+            ppid = int(stat.rsplit(")", 1)[1].split()[1])
+            if ppid == pid and os.readlink(entry / "exe") == exe:
+                out.append(int(entry.name))
+        except (OSError, ValueError, IndexError):
+            continue
+    return out
+
+
+def test_a_drainer_holds_only_its_pipe_and_log(ctx):
+    """The drainer never execs, so it would otherwise keep every file the
+    agent had open, the terminal and provider sockets included."""
+    if not Path("/proc/self/fd").exists():
+        return
+    ctx.scenario("tool=" + bash("sleep 5") + ",final_text=detached")
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="200")
+    s.submit("run something slow")
+    s.wait_text("detached")
+    s.wait_turn_done()
+    assert "still running as job 1" in results(ctx)[0], results(ctx)[0]
+
+    drainers = drainers_of(s.proc.pid)
+    assert len(drainers) == 1, drainers
+    fd_dir = Path(f"/proc/{drainers[0]}/fd")
+    targets = sorted(os.readlink(fd_dir / fd) for fd in os.listdir(fd_dir))
+    assert targets.count("/dev/null") == 3, targets
+    rest = [t for t in targets if t != "/dev/null"]
+    assert len(rest) == 2, targets
+    assert any(t.startswith("pipe:") for t in rest), targets
+    assert any("arqan-bash-" in t for t in rest), targets

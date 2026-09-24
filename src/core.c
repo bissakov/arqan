@@ -263,6 +263,40 @@ static void sha256_block(u32 h[8], const u8 *p) {
     h[6] += g;
     h[7] += k;
 }
+
+#if defined(__linux__)
+int pipe2(int fds[2], int flags);
+#endif
+#if defined(__GLIBC__) \
+    && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
+int close_range(unsigned int first, unsigned int last, int flags);
+#define AGENT_HAVE_CLOSE_RANGE 1
+#endif
+
+b8 pipe_cloexec(i32 fds[2]) {
+#if defined(__linux__)
+    return pipe2(fds, O_CLOEXEC) == 0;
+#else
+    if (pipe(fds) != 0) return false;
+    if (fcntl(fds[0], F_SETFD, FD_CLOEXEC) == 0
+        && fcntl(fds[1], F_SETFD, FD_CLOEXEC) == 0)
+        return true;
+    close(fds[0]);
+    close(fds[1]);
+    return false;
+#endif
+}
+
+void child_close_fds(i32 keep_from) {
+    if (keep_from < 0) keep_from = 0;
+#ifdef AGENT_HAVE_CLOSE_RANGE
+    if (close_range((unsigned int)keep_from, ~0u, 0) == 0) return;
+#endif
+    long max = sysconf(_SC_OPEN_MAX);
+    if (max < 0 || max > 65536) max = 65536;
+    for (i32 fd = keep_from; fd < (i32)max; fd++) close(fd);
+}
+
 void sha256(const void *p, size_t n, u8 out[SHA256_BYTES]) {
     u32 h[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
                 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};

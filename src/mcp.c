@@ -941,22 +941,16 @@ static b8 mcp_spawn(McpServer *s) {
     char **envp = mcp_child_env(s);
 
     i32 to_child[2], from_child[2];
-    if (pipe(to_child) != 0) {
+    if (!pipe_cloexec(to_child)) {
         mcp_fail(s, "pipe failed");
         return false;
     }
-    if (pipe(from_child) != 0) {
+    if (!pipe_cloexec(from_child)) {
         close(to_child[0]);
         close(to_child[1]);
         mcp_fail(s, "pipe failed");
         return false;
     }
-    /* NOTE: a server started later, or a shell command, would otherwise hold
-     * these ends open, and this server would never see its input close. */
-    fcntl(to_child[0], F_SETFD, FD_CLOEXEC);
-    fcntl(to_child[1], F_SETFD, FD_CLOEXEC);
-    fcntl(from_child[0], F_SETFD, FD_CLOEXEC);
-    fcntl(from_child[1], F_SETFD, FD_CLOEXEC);
     pid_t pid = fork();
     if (pid < 0) {
         close(to_child[0]);
@@ -975,10 +969,7 @@ static b8 mcp_spawn(McpServer *s) {
             dup2(null_fd, 2);
             close(null_fd);
         }
-        close(to_child[0]);
-        close(to_child[1]);
-        close(from_child[0]);
-        close(from_child[1]);
+        child_close_fds(3);
         if (s->cwd[0] && chdir(s->cwd) != 0) _exit(126);
         environ = envp;
         execvp(argv[0], argv);

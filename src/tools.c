@@ -365,66 +365,111 @@ void shell_set_timeout(i32 ms) {
 
 #define JOB_DRAIN_MS 200
 
-b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
-    static char z[AGENT_MAX_COMMAND];
-    if (!arg_cstr(cmd, z, sizeof z, "command", err, err_cap)) return false;
-    if (g_tools.shell.interrupt && *g_tools.shell.interrupt) {
-        buf_puts(out, STR("[interrupted]\n[exit 130]"));
-        return true;
-    }
+typedef struct {
+    char command[AGENT_MAX_COMMAND];
+    char ring[AGENT_SHELL_OUT_BYTES];
+    Spill spill;
+} ShellIo;
 
+static ShellIo g_shell_io;
+
+typedef struct {
+    void (*put)(void *ud, const char *p, size_t n);
+    b8 (*detach)(void *ud, pid_t pid, i32 fd, f64 started);
+    void *ud;
+    i32 detach_ms;
+} ShellSink;
+
+typedef enum {
+    SHELL_FAILED,
+    SHELL_DONE,
+    SHELL_INTERRUPTED,
+    SHELL_DETACHED
+} ShellEnd;
+
+typedef struct {
+    i32 status;
+    b8 reaped;
+    b8 held;
+} ShellExit;
+
+static b8 shell_interrupted(void) {
+    return g_tools.shell.interrupt && *g_tools.shell.interrupt;
+}
+
+static void shell_kill(pid_t pid, b8 reaped, i32 sig) {
+    if (kill(-pid, sig) != 0 && !reaped) kill(pid, sig);
+}
+
+static ShellEnd shell_run(const char *command, const ShellSink *sink,
+                          ShellExit *exit, char *err, size_t err_cap) {
+    *exit = (ShellExit){0};
     i32 fds[2];
-    if (pipe(fds) != 0) {
+    if (!pipe_cloexec(fds)) {
         snprintf(err, err_cap, "pipe failed");
-        return false;
+        return SHELL_FAILED;
     }
     pid_t pid = fork();
     if (pid < 0) {
         close(fds[0]);
         close(fds[1]);
         snprintf(err, err_cap, "fork failed");
-        return false;
+        return SHELL_FAILED;
     }
     if (pid == 0) {
         if (setsid() < 0) setpgid(0, 0);
         i32 null_fd = open("/dev/null", O_RDONLY);
-        if (null_fd >= 0) {
-            dup2(null_fd, 0);
-            close(null_fd);
-        }
+        if (null_fd >= 0) dup2(null_fd, 0);
         dup2(fds[1], 1);
         dup2(fds[1], 2);
-        close(fds[0]);
-        close(fds[1]);
-        execl("/bin/sh", "sh", "-c", z, (char *)NULL);
+        child_close_fds(3);
+        execl("/bin/sh", "sh", "-c", command, (char *)NULL);
         _exit(127);
     }
     close(fds[1]);
 
-    static char ring[AGENT_SHELL_OUT_BYTES];
-    size_t head = 0, len = 0, total = 0;
     char block[4096];
     struct pollfd pfd = {fds[0], POLLIN, 0};
     b8 interrupted = false;
     b8 killed = false;
+    b8 undetachable = false;
+    f64 started = agent_now_seconds();
+    f64 drain_until = 0.0;
     for (;;) {
-        if (g_tools.shell.interrupt && *g_tools.shell.interrupt) {
+        if (shell_interrupted()) {
             interrupted = true;
             if (!killed) {
-                if (kill(-pid, SIGTERM) != 0) kill(pid, SIGTERM);
+                shell_kill(pid, exit->reaped, SIGTERM);
                 killed = true;
             }
         }
-        i32 ready = poll(&pfd, 1, SHELL_POLL_MS);
-        if (g_tools.shell.idle) g_tools.shell.idle(g_tools.shell.idle_ud);
-        if (g_tools.shell.interrupt && *g_tools.shell.interrupt) {
-            interrupted = true;
-            if (!killed) {
-                if (kill(-pid, SIGTERM) != 0) kill(pid, SIGTERM);
-                killed = true;
-            } else {
-                if (kill(-pid, SIGKILL) != 0) kill(pid, SIGKILL);
+        i32 wait_ms = SHELL_POLL_MS;
+        if (exit->reaped) {
+            f64 left = (drain_until - agent_now_seconds()) * 1000.0;
+            if (left <= 0.0) {
+                exit->held = !interrupted;
+                break;
             }
+            if (left < (f64)wait_ms) wait_ms = (i32)left + 1;
+        }
+        i32 ready = poll(&pfd, 1, wait_ms);
+        if (g_tools.shell.idle) g_tools.shell.idle(g_tools.shell.idle_ud);
+        if (shell_interrupted()) {
+            interrupted = true;
+            shell_kill(pid, exit->reaped, killed ? SIGKILL : SIGTERM);
+            killed = true;
+        }
+        if (!exit->reaped && waitpid(pid, &exit->status, WNOHANG) == pid) {
+            exit->reaped = true;
+            drain_until = agent_now_seconds() + JOB_DRAIN_MS / 1000.0;
+        }
+        if (!interrupted && !undetachable && !exit->reaped && sink->detach
+            && sink->detach_ms > 0
+            && (agent_now_seconds() - started) * 1000.0
+                   >= (f64)sink->detach_ms) {
+            if (sink->detach(sink->ud, pid, fds[0], started))
+                return SHELL_DETACHED;
+            undetachable = true;
         }
         if (ready < 0) {
             if (errno == EINTR) continue;
@@ -432,11 +477,8 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
         }
         if (ready == 0) {
             if (interrupted) {
-                pid_t w = waitpid(pid, NULL, WNOHANG);
-                if (w == pid) break;
-                if (killed) {
-                    if (kill(-pid, SIGKILL) != 0) kill(pid, SIGKILL);
-                }
+                if (exit->reaped) break;
+                if (killed) shell_kill(pid, false, SIGKILL);
             }
             continue;
         }
@@ -446,50 +488,86 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
             break;
         }
         if (n == 0) break;
-        total += (size_t)n;
-        ring_put(ring, sizeof ring, &head, &len, block, (size_t)n);
+        sink->put(sink->ud, block, (size_t)n);
     }
     if (interrupted) {
-        if (kill(-pid, SIGKILL) != 0) kill(pid, SIGKILL);
+        shell_kill(pid, exit->reaped, SIGKILL);
         i32 flags = fcntl(fds[0], F_GETFL, 0);
         if (flags >= 0) fcntl(fds[0], F_SETFL, flags | O_NONBLOCK);
         for (;;) {
             ssize_t n = read(fds[0], block, sizeof block);
             if (n <= 0) break;
-            total += (size_t)n;
-            ring_put(ring, sizeof ring, &head, &len, block, (size_t)n);
+            sink->put(sink->ud, block, (size_t)n);
         }
     }
     close(fds[0]);
-
-    if (total > len)
-        buf_putf(out, "[output truncated: last %zu of %zu bytes]\n", len,
-                 total);
-    buf_put(out, ring + head, len < sizeof ring ? len : sizeof ring - head);
-    if (len == sizeof ring) buf_put(out, ring, head);
-
-    if (interrupted) {
-        i32 status = 0;
+    if (!exit->reaped) {
         pid_t done;
-        while ((done = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {}
-        (void)status;
-        (void)done;
-        buf_puts(out, STR("\n[interrupted]"));
+        while ((done = waitpid(pid, &exit->status, 0)) < 0 && errno == EINTR) {}
+        exit->reaped = done == pid;
+    }
+    return interrupted ? SHELL_INTERRUPTED : SHELL_DONE;
+}
+
+static void shell_put_held(Buf *out, const ShellExit *exit) {
+    if (!exit->held) return;
+    if (out->n && out->p[out->n - 1] != '\n') buf_putc(out, '\n');
+    buf_puts(out, STR("[a background process still holds the output; the "
+                      "rest is not shown]\n"));
+}
+
+static void shell_put_status(Buf *out, const ShellExit *exit) {
+    if (!exit->reaped)
+        buf_puts(out, STR("\n[exit unknown]"));
+    else if (WIFSIGNALED(exit->status))
+        buf_putf(out, "\n[killed by signal %d]", WTERMSIG(exit->status));
+    else
+        buf_putf(out, "\n[exit %d]",
+                 WIFEXITED(exit->status) ? WEXITSTATUS(exit->status) : -1);
+}
+
+typedef struct {
+    size_t head, len, total;
+} ShellRing;
+
+static void shell_ring_put(void *ud, const char *p, size_t n) {
+    ShellRing *r = ud;
+    r->total += n;
+    ring_put(g_shell_io.ring, sizeof g_shell_io.ring, &r->head, &r->len, p, n);
+}
+
+b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
+    if (!arg_cstr(cmd, g_shell_io.command, sizeof g_shell_io.command, "command",
+                  err, err_cap))
+        return false;
+    if (shell_interrupted()) {
+        buf_puts(out, STR("[interrupted]\n[exit 130]"));
         return true;
     }
 
-    i32 status = 0;
-    pid_t done;
-    while ((done = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {}
-    if (done < 0)
-        buf_puts(out, STR("\n[exit unknown]"));
-    else if (WIFSIGNALED(status))
-        buf_putf(out, "\n[killed by signal %d]", WTERMSIG(status));
-    else
-        buf_putf(out, "\n[exit %d]",
-                 WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+    ShellRing ring = {0};
+    ShellSink sink = {.put = shell_ring_put, .ud = &ring};
+    ShellExit exit;
+    ShellEnd end = shell_run(g_shell_io.command, &sink, &exit, err, err_cap);
+    if (end == SHELL_FAILED) return false;
+
+    const char *r = g_shell_io.ring;
+    size_t cap = sizeof g_shell_io.ring;
+    if (ring.total > ring.len)
+        buf_putf(out, "[output truncated: last %zu of %zu bytes]\n", ring.len,
+                 ring.total);
+    buf_put(out, r + ring.head, ring.len < cap ? ring.len : cap - ring.head);
+    if (ring.len == cap) buf_put(out, r, ring.head);
+
+    if (end == SHELL_INTERRUPTED) {
+        buf_puts(out, STR("\n[interrupted]"));
+        return true;
+    }
+    shell_put_held(out, &exit);
+    shell_put_status(out, &exit);
     return true;
 }
+
 
 /* ---- jobs ----
  * A command that outlives the deadline is detached rather than killed: the
@@ -577,14 +655,22 @@ static void job_drain(i32 in, i32 out, size_t written) {
     signal(SIGHUP, SIG_IGN);
     signal(SIGPIPE, SIG_IGN);
 
-    if (in > 2 && out > 2) {
+    i32 in_copy = fcntl(in, F_DUPFD_CLOEXEC, 5);
+    i32 out_copy = fcntl(out, F_DUPFD_CLOEXEC, 5);
+    b8 moved = in_copy >= 0 && out_copy >= 0;
+    if (moved || (in > 2 && out > 2)) {
         i32 null_fd = open("/dev/null", O_RDWR);
         if (null_fd >= 0) {
             dup2(null_fd, 0);
             dup2(null_fd, 1);
             dup2(null_fd, 2);
-            close(null_fd);
+            if (null_fd > 2) close(null_fd);
         }
+    }
+    if (moved && dup2(in_copy, 3) == 3 && dup2(out_copy, 4) == 4) {
+        in = 3;
+        out = 4;
+        child_close_fds(5);
     }
     char block[4096];
     b8 noted = false;
@@ -734,186 +820,81 @@ static size_t job_page(Job *j, Buf *out, size_t limit, size_t *pending) {
 }
 
 
+typedef struct {
+    Buf *out;
+    Str cmd;
+    size_t first, limit, shown, total;
+} ShellPage;
+
+static void shell_page_put(void *ud, const char *p, size_t n) {
+    ShellPage *pg = ud;
+    spill_put(&g_shell_io.spill, p, n);
+    if (pg->total + n > pg->first && pg->shown < pg->limit) {
+        size_t at = pg->total < pg->first ? pg->first - pg->total : 0;
+        size_t take = n - at;
+        if (take > pg->limit - pg->shown) take = pg->limit - pg->shown;
+        buf_put(pg->out, p + at, take);
+        pg->shown += take;
+    }
+    pg->total += n;
+}
+
+static b8 shell_page_detach(void *ud, pid_t pid, i32 fd, f64 started) {
+    ShellPage *pg = ud;
+    u32 job = job_detach(pid, fd, &g_shell_io.spill, pg->cmd);
+    if (!job) return false;
+    if (pg->total > pg->first + pg->shown)
+        buf_putf(pg->out, "\n[shown %zu of %zu output bytes so far]", pg->shown,
+                 pg->total);
+    job_note(pg->out, job, started);
+    return true;
+}
+
 static b8 shell_capture_page(Str cmd, size_t offset, size_t limit,
                              i32 timeout_ms, Buf *out, char *err,
                              size_t err_cap) {
-    static char z[AGENT_MAX_COMMAND];
-    if (!arg_cstr(cmd, z, sizeof z, "command", err, err_cap)) return false;
-    if (g_tools.shell.interrupt && *g_tools.shell.interrupt) {
+    if (!arg_cstr(cmd, g_shell_io.command, sizeof g_shell_io.command, "command",
+                  err, err_cap))
+        return false;
+    if (shell_interrupted()) {
         buf_puts(out, STR("[interrupted]\n[exit 130]"));
         return true;
     }
 
-    static Spill spill;
-    spill_open(&spill, "bash", "log", cmd);
-
-    i32 fds[2];
-    if (pipe(fds) != 0) {
-        spill_finish(&spill, out, false);
-        snprintf(err, err_cap, "pipe failed");
+    spill_open(&g_shell_io.spill, "bash", "log", cmd);
+    ShellPage pg = {
+        .out = out, .cmd = cmd, .first = offset - 1, .limit = limit};
+    ShellSink sink = {.put = shell_page_put,
+                      .detach = shell_page_detach,
+                      .ud = &pg,
+                      .detach_ms = timeout_ms};
+    ShellExit exit;
+    ShellEnd end = shell_run(g_shell_io.command, &sink, &exit, err, err_cap);
+    if (end == SHELL_FAILED) {
+        spill_finish(&g_shell_io.spill, out, false);
         return false;
     }
-    pid_t pid = fork();
-    if (pid < 0) {
-        close(fds[0]);
-        close(fds[1]);
-        spill_finish(&spill, out, false);
-        snprintf(err, err_cap, "fork failed");
-        return false;
-    }
-    if (pid == 0) {
-        if (setsid() < 0) setpgid(0, 0);
-        i32 null_fd = open("/dev/null", O_RDONLY);
-        if (null_fd >= 0) {
-            dup2(null_fd, 0);
-            close(null_fd);
-        }
-        dup2(fds[1], 1);
-        dup2(fds[1], 2);
-        close(fds[0]);
-        close(fds[1]);
-        execl("/bin/sh", "sh", "-c", z, (char *)NULL);
-        _exit(127);
-    }
-    close(fds[1]);
-
-    size_t total = 0, shown = 0, first = offset - 1;
-    char block[4096];
-    struct pollfd pfd = {fds[0], POLLIN, 0};
-    b8 interrupted = false;
-    b8 killed = false;
-    b8 undetachable = false;
-    f64 started = agent_now_seconds();
-    for (;;) {
-        if (g_tools.shell.interrupt && *g_tools.shell.interrupt) {
-            interrupted = true;
-            if (!killed) {
-                if (kill(-pid, SIGTERM) != 0) kill(pid, SIGTERM);
-                killed = true;
-            }
-        }
-        i32 ready = poll(&pfd, 1, SHELL_POLL_MS);
-        if (g_tools.shell.idle) g_tools.shell.idle(g_tools.shell.idle_ud);
-        if (g_tools.shell.interrupt && *g_tools.shell.interrupt) {
-            interrupted = true;
-            if (!killed) {
-                if (kill(-pid, SIGTERM) != 0) kill(pid, SIGTERM);
-                killed = true;
-            } else {
-                if (kill(-pid, SIGKILL) != 0) kill(pid, SIGKILL);
-            }
-        }
-        if (!interrupted && !undetachable && timeout_ms > 0
-            && (agent_now_seconds() - started) * 1000.0 >= (f64)timeout_ms) {
-            u32 job = job_detach(pid, fds[0], &spill, cmd);
-            if (job) {
-                if (total > first + shown)
-                    buf_putf(out, "\n[shown %zu of %zu output bytes so far]",
-                             shown, total);
-                job_note(out, job, started);
-                return buf_ok(out) && out->n <= AGENT_TOOL_RESULT_BYTES;
-            }
-            undetachable = true;
-        }
-        if (ready < 0) {
-            if (errno == EINTR) continue;
-            break;
-        }
-        if (ready == 0) {
-            if (interrupted) {
-                pid_t w = waitpid(pid, NULL, WNOHANG);
-                if (w == pid) break;
-                if (killed) {
-                    if (kill(-pid, SIGKILL) != 0) kill(pid, SIGKILL);
-                }
-            }
-            continue;
-        }
-        ssize_t n = read(fds[0], block, sizeof block);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            break;
-        }
-        if (n == 0) break;
-        size_t bytes = (size_t)n;
-        spill_put(&spill, block, bytes);
-        if (total + bytes > first && shown < limit) {
-            size_t at = total < first ? first - total : 0;
-            size_t take = bytes - at;
-            if (take > limit - shown) take = limit - shown;
-            buf_put(out, block + at, take);
-            shown += take;
-        }
-        total += bytes;
-    }
-    if (interrupted) {
-        if (kill(-pid, SIGKILL) != 0) kill(pid, SIGKILL);
-        i32 flags = fcntl(fds[0], F_GETFL, 0);
-        if (flags >= 0) fcntl(fds[0], F_SETFL, flags | O_NONBLOCK);
-        for (;;) {
-            ssize_t n = read(fds[0], block, sizeof block);
-            if (n <= 0) break;
-            size_t bytes = (size_t)n;
-            spill_put(&spill, block, bytes);
-            if (total + bytes > first && shown < limit) {
-                size_t at = total < first ? first - total : 0;
-                size_t take = bytes - at;
-                if (take > limit - shown) take = limit - shown;
-                buf_put(out, block + at, take);
-                shown += take;
-            }
-            total += bytes;
-        }
-    }
-    close(fds[0]);
-
-    if (interrupted) {
-        if (offset > total) {
-            if (!total && offset == 1)
-                buf_puts(out, STR("[command produced no output]\n"));
-            else
-                buf_putf(out,
-                         "[output has %zu bytes; offset %zu is past its end]\n",
-                         total, offset);
-        } else if (total > first + shown) {
-            buf_putf(
-                out,
-                "[read %zu of %zu output bytes; continue with offset=%zu]\n",
-                shown, total, offset + shown);
-        }
-        spill_finish(&spill, out, shown < total);
-        i32 status = 0;
-        pid_t done;
-        while ((done = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {}
-        (void)status;
-        (void)done;
-        buf_puts(out, STR("\n[interrupted]"));
+    if (end == SHELL_DETACHED)
         return buf_ok(out) && out->n <= AGENT_TOOL_RESULT_BYTES;
-    }
 
-    if (offset > total) {
-        if (!total && offset == 1)
+    if (end == SHELL_DONE) shell_put_held(out, &exit);
+    if (offset > pg.total) {
+        if (!pg.total && offset == 1)
             buf_puts(out, STR("[command produced no output]\n"));
         else
             buf_putf(out,
                      "[output has %zu bytes; offset %zu is past its end]\n",
-                     total, offset);
-    } else if (total > first + shown) {
+                     pg.total, offset);
+    } else if (pg.total > pg.first + pg.shown) {
         buf_putf(out,
                  "[read %zu of %zu output bytes; continue with offset=%zu]\n",
-                 shown, total, offset + shown);
+                 pg.shown, pg.total, offset + pg.shown);
     }
-    spill_finish(&spill, out, shown < total);
-    i32 status = 0;
-    pid_t done;
-    while ((done = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {}
-    if (done < 0)
-        buf_puts(out, STR("\n[exit unknown]"));
-    else if (WIFSIGNALED(status))
-        buf_putf(out, "\n[killed by signal %d]", WTERMSIG(status));
+    spill_finish(&g_shell_io.spill, out, pg.shown < pg.total);
+    if (end == SHELL_INTERRUPTED)
+        buf_puts(out, STR("\n[interrupted]"));
     else
-        buf_putf(out, "\n[exit %d]",
-                 WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        shell_put_status(out, &exit);
     return buf_ok(out) && out->n <= AGENT_TOOL_RESULT_BYTES;
 }
 

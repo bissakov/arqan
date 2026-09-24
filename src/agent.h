@@ -251,6 +251,9 @@ u64 str_hash64(Str s);
 
 #define SHA256_BYTES 32
 void sha256(const void *p, size_t n, u8 out[SHA256_BYTES]);
+
+b8 pipe_cloexec(i32 fds[2]);
+void child_close_fds(i32 keep_from);
 /* INVARIANT: `out` holds 2n + 1 bytes: 2n hex digits and a NUL. */
 void hex_encode(const u8 *p, size_t n, char *out);
 

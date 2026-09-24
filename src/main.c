@@ -1164,6 +1164,7 @@ static void task_child(i32 log, i32 ctl, i32 lifeline) {
     if (lifeline >= 0 && lifeline != 3 && lifeline != 4) close(lifeline);
     close(a);
     close(b);
+    child_close_fds(5);
     char *argv[] = {g_task.exe, (char *)"--task-worker=3,4", NULL};
     execv(g_task.exe, argv);
     _exit(127);
@@ -1189,19 +1190,7 @@ static b8 task_spawn(Agent *ag, const Config *cfg, Str sys, Str task, b8 small,
 
     i32 ctl[2] = {-1, -1};
     i32 tail = open(w->path, O_RDONLY | O_CLOEXEC);
-    b8 have_pipe = pipe(ctl) == 0;
-    if (have_pipe) {
-        i32 read_flags = fcntl(ctl[0], F_GETFD);
-        i32 write_flags = fcntl(ctl[1], F_GETFD);
-        if (read_flags < 0 || write_flags < 0
-            || fcntl(ctl[0], F_SETFD, read_flags | FD_CLOEXEC) < 0
-            || fcntl(ctl[1], F_SETFD, write_flags | FD_CLOEXEC) < 0) {
-            close(ctl[0]);
-            close(ctl[1]);
-            ctl[0] = ctl[1] = -1;
-            have_pipe = false;
-        }
-    }
+    b8 have_pipe = pipe_cloexec(ctl);
     if (tail < 0 || !have_pipe) {
         if (tail >= 0) close(tail);
         close(log);

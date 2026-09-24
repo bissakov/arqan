@@ -76,6 +76,13 @@
   host it was sent to, so set `base_url` to the final address. Before, the
   key went along to the new host.
 
+- Finish `!cmd &` and `bash` calls when the shell exits, even if a background
+  process still holds the output open. They used to wait for the background
+  process, so `!sleep 30 &` hung until Ctrl-C.
+
+- Stop commands, helpers and MCP servers from inheriting the agent's open
+  files, such as provider sockets and pipes to other children.
+
 ## [0.8.0] - 2026-09-03
 
 ### Added
