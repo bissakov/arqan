@@ -21,6 +21,7 @@
 #define TUI_SEL_ROWS         512
 #define TUI_SEL_ROW_BYTES    2048
 #define TUI_SEL_BYTES        (1u << 16)
+#define TUI_SEL_PAD          '\x1f'
 #define TUI_VIEW_BYTES       AGENT_RESP_BUF
 #define TUI_VIEW_RUNS        YHL_RUN_MAX
 #define TUI_POPUP_ROWS       8
@@ -73,6 +74,8 @@ _Static_assert(TUI_STATUS_N == AGENT_STATUS_FIELDS,
 
 #define S_FIND     "\033[48;5;94m"
 #define S_FIND_CUR "\033[48;5;214m\033[38;5;16m"
+
+enum { SEL_JOIN_BREAK, SEL_JOIN_GAP, SEL_JOIN_TIGHT };
 
 typedef struct {
     struct termios original_termios;
@@ -222,6 +225,8 @@ typedef struct {
     u16 row_text_w[TUI_SEL_ROWS];
 
     size_t row_src[TUI_SEL_ROWS];
+    u16 row_lead[TUI_SEL_ROWS];
+    u8 row_join[TUI_SEL_ROWS];
 
     b8 find_open;
     b8 find_follow;
@@ -469,6 +474,7 @@ static size_t next_glyph(const char *s, size_t n, size_t at) {
 static struct {
     size_t row;
     size_t col;
+    b8 pad;
 } g_cap;
 
 static size_t row_byte_at(size_t r, size_t cell, size_t *reached) {
@@ -516,6 +522,12 @@ static void snap_put(const char *s, size_t used, size_t width) {
 }
 
 
+static void row_meta_reset(void) {
+    memset(g_tui.row_src, 0xff, sizeof g_tui.row_src);
+    memset(g_tui.row_lead, 0, sizeof g_tui.row_lead);
+    memset(g_tui.row_join, SEL_JOIN_BREAK, sizeof g_tui.row_join);
+}
+
 static void sel_norm(size_t *r0, size_t *c0, size_t *r1, size_t *c1) {
     b8 forward =
         g_tui.sel_ar < g_tui.sel_br
@@ -551,7 +563,10 @@ static void put_text(const char *s, size_t n) {
             reverse = selected;
         }
         put_raw(s + i, used);
-        snap_put(s + i, used, width > 0 ? (size_t)width : 0);
+        if (g_cap.pad)
+            snap_put((const char[]){TUI_SEL_PAD}, 1, 1);
+        else
+            snap_put(s + i, used, width > 0 ? (size_t)width : 0);
         i += used;
     }
     if (reverse) put_str("\033[27m");
@@ -575,14 +590,21 @@ static size_t sel_extract(char *out, size_t cap) {
     if (r1 >= TUI_SEL_ROWS) r1 = TUI_SEL_ROWS - 1;
     for (size_t r = r0; r <= r1; r++) {
         size_t reached = 0;
-        size_t a = row_byte_at(r, r == r0 ? c0 : 0, &reached);
+        size_t from = r == r0 ? c0 : 0;
+        if (from < g_tui.row_lead[r]) from = g_tui.row_lead[r];
+        size_t a = row_byte_at(r, from, &reached);
         size_t b = row_byte_at(r, r == r1 ? c1 : (size_t)-1, &reached);
         while (b > a && g_bulk.row_text[r][b - 1] == ' ') b--;
         for (size_t i = a; i < b && n + 1 < cap; i++)
-            out[n++] = g_bulk.row_text[r][i];
-        if (r < r1 && n + 1 < cap) out[n++] = '\n';
+            if (g_bulk.row_text[r][i] != TUI_SEL_PAD)
+                out[n++] = g_bulk.row_text[r][i];
+        if (r == r1 || n + 1 >= cap) continue;
+        if (g_tui.row_join[r] == SEL_JOIN_BREAK)
+            out[n++] = '\n';
+        else if (g_tui.row_join[r] == SEL_JOIN_GAP)
+            out[n++] = ' ';
     }
-    while (n && out[n - 1] == '\n') n--;
+    while (n && (out[n - 1] == '\n' || out[n - 1] == ' ')) n--;
     return n;
 }
 
@@ -1213,7 +1235,9 @@ static void just_gap(Just *j) {
     size_t take =
         (j->seen + 1) * j->extra / j->gaps - j->seen * j->extra / j->gaps;
     j->seen++;
+    g_cap.pad = true;
     while (take--) put_text(" ", 1);
+    g_cap.pad = false;
 }
 
 static void put_just(const char *p, size_t n, Just *j) {
@@ -1652,6 +1676,13 @@ static void update_text_rows(Str s, size_t base_off, size_t cols,
                 prefix = prompt_indent(prompt_cells);
             u8 row_kind = kind;
             size_t text_off = SIZE_MAX;
+            size_t sr = screen_row + row - first_row - 1;
+            if (sr < TUI_SEL_ROWS) {
+                g_tui.row_lead[sr] = (u16)(screen_col - 1 + prompt_cells);
+                g_tui.row_join[sr] = r.hard           ? SEL_JOIN_BREAK
+                                     : r.next > r.end ? SEL_JOIN_GAP
+                                                      : SEL_JOIN_TIGHT;
+            }
             if (kind == ROW_PLAIN) {
                 u8 sk = span_kind(base_off + start);
                 if (kind_is_block(sk))
@@ -1659,7 +1690,6 @@ static void update_text_rows(Str s, size_t base_off, size_t cols,
                 else if (user_at_off(base_off + start))
                     row_kind = ROW_USER;
                 text_off = base_off + start;
-                size_t sr = screen_row + row - first_row - 1;
                 if (sr < TUI_SEL_ROWS) g_tui.row_src[sr] = base_off + start;
 
                 u32 zone = zone_at_off(base_off + start);
@@ -2662,7 +2692,7 @@ static void repaint(void) {
         b8 force = !g_tui.frame_valid || !g_tui.size_warning || g_winch
                    || paint_rows != g_tui.painted_rows
                    || paint_cols != g_tui.painted_cols;
-        memset(g_tui.row_src, 0xff, sizeof g_tui.row_src);
+        row_meta_reset();
         g_winch = 0;
         frame_begin();
         if (force) {
@@ -2690,7 +2720,7 @@ static void repaint(void) {
     b8 force = !g_tui.frame_valid || g_tui.size_warning || g_winch
                || rows != g_tui.painted_rows || cols != g_tui.painted_cols;
     view_layout(rows, cols);
-    memset(g_tui.row_src, 0xff, sizeof g_tui.row_src);
+    row_meta_reset();
     g_winch = 0;
     frame_begin();
     if (force) {
