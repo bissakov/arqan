@@ -23,6 +23,7 @@ TOO_COMPLEX = 3
 
 TEXT = 253
 MUTED = 245
+SUBTLE = 250
 GREEN = 114
 YELLOW = 221
 PURPLE = 177
@@ -311,7 +312,7 @@ def test_typed_grep_colours_only_match_text(ctx):
     s = ctx.spawn()
     s.submit("find it")
     s.wait_turn_done()
-    assert cell(s, "one.c:1:").fg == MUTED
+    assert cell(s, "one.c:1:").fg == SUBTLE
     assert cell(s, "int answer").fg == CYAN
     assert cell(s, "int answer", 4).fg == TEXT
     assert cell(s, "42").fg == YELLOW
@@ -324,14 +325,14 @@ def test_untyped_grep_and_shell_like_source_stay_plain(ctx):
     s = ctx.spawn()
     s.submit("find it")
     s.wait_turn_done()
-    assert cell(s, "int answer").fg == MUTED
+    assert cell(s, "int answer").fg == SUBTLE
 
     args = json.dumps({"command": "printf 'int answer = 42;\\n'"})
     ctx.scenario(f"tool=bash:{args},final_text=done")
     s2 = ctx.spawn()
     s2.submit("run it")
     s2.wait_turn_done()
-    assert cell(s2, "   int answer", 3).fg == MUTED
+    assert cell(s2, "   int answer", 3).fg == SUBTLE
 
 
 def test_missing_helper_is_a_silent_fallback(ctx):

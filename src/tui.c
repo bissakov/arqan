@@ -50,6 +50,7 @@ _Static_assert(TUI_STATUS_N == AGENT_STATUS_FIELDS,
 #define S_PANEL_BG "\033[48;5;236m"
 #define S_TEXT     "\033[38;5;253m"
 #define S_MUTED    "\033[38;5;245m"
+#define S_SUBTLE   "\033[38;5;250m"
 #define S_CYAN     "\033[1;38;5;81m"
 #define S_BLUE     "\033[1;38;5;75m"
 #define S_GREEN    "\033[1;38;5;114m"
@@ -61,7 +62,7 @@ _Static_assert(TUI_STATUS_N == AGENT_STATUS_FIELDS,
 #define S_NOBOLD       "\033[22m"
 #define S_ITALIC       "\033[3m"
 #define S_MONO         "\033[38;5;180m"
-#define S_STRIKE       "\033[9;38;5;245m"
+#define S_STRIKE       "\033[9;38;5;253m"
 #define S_USER_BG      "\033[48;5;238m"
 #define S_CODE_BG      "\033[48;5;235m"
 #define S_USER_CODE_BG "\033[48;5;236m"
@@ -851,6 +852,7 @@ enum {
     ROW_STATUS,
     ROW_USER,
     ROW_REASON,
+    ROW_DIM,
     ROW_TOOL,
     ROW_RESULT,
     ROW_ERROR,
@@ -879,7 +881,7 @@ static b8 kind_is_block(u8 kind) {
 static const char *kind_style(u8 kind) {
     switch (kind) {
         case ROW_USER: return S_USER_BG S_TEXT;
-        case ROW_REASON: return S_MUTED;
+        case ROW_REASON: return S_SUBTLE;
         case ROW_TOOL: return S_YELLOW;
         case ROW_RESULT: return S_GREEN;
         case ROW_ERROR: return S_RED;
@@ -891,14 +893,15 @@ static const char *kind_style(u8 kind) {
         case ROW_COMPOSER: return S_PANEL_BG S_TEXT;
         case ROW_ZONE: return S_LINK;
         case ROW_ZONE_HOVER: return S_POPUP_BG S_LINK_HOVER;
-        case ROW_QUOTE: return S_MUTED;
+        case ROW_QUOTE: return S_SUBTLE;
 
         case ROW_SOURCE: return S_TEXT;
         case ROW_BOLD: return S_BOLD S_TEXT;
-        case ROW_EMPH: return S_ITALIC S_MUTED;
+        case ROW_EMPH: return S_ITALIC S_TEXT;
         case ROW_MONO: return S_MONO;
         case ROW_MARKER: return S_BLUE;
         case ROW_STRIKE: return S_STRIKE;
+        case ROW_DIM: return S_MUTED;
         case ROW_PLAIN: return S_TEXT;
         default: return NULL;
     }
@@ -3804,6 +3807,9 @@ void tui_write_styled(Str s, TuiStyle st) {
 
 void tui_write_muted(Str s) {
     write_span(s, ROW_REASON);
+}
+void tui_write_dim(Str s) {
+    write_span(s, ROW_DIM);
 }
 void tui_write_text(Str s) {
     write_span(s, ROW_PLAIN);

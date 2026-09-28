@@ -1969,6 +1969,7 @@ void tui_write_text(Str s);
 
 void tui_write_source(Str s);
 void tui_write_muted(Str s);
+void tui_write_dim(Str s);
 void tui_write_tool(Str s);
 void tui_write_result(Str s);
 void tui_write_error(Str s);

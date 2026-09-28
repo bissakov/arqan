@@ -111,7 +111,7 @@ static void write_elapsed(u32 ms) {
     else
         len = snprintf(buf, sizeof buf, " \u00b7 %um%02us", ms / 60000u,
                        ms / 1000u % 60u);
-    if (len > 0) tui_write_muted((Str){buf, (size_t)len});
+    if (len > 0) tui_write_dim((Str){buf, (size_t)len});
 }
 
 
@@ -148,12 +148,13 @@ static void write_styled(Str body, Str gutter, size_t max, size_t bytes,
     Str line;
     while (shown < cap && str_line(body, &off, &line)) {
         Sink put = style ? style(line) : sink;
-        put(gutter);
+        tui_write_dim(gutter);
         write_clipped(line, bytes, put);
         put(STR("\n"));
         shown++;
     }
-    write_tail(gutter, str_lines(str_drop(body, off)), shown, max, sink);
+    write_tail(gutter, str_lines(str_drop(body, off)), shown, max,
+               tui_write_dim);
 }
 
 static void write_lines(Str body, Str gutter, size_t max, size_t bytes,
@@ -182,7 +183,7 @@ static Str patch_target(Str patch, char *buf, size_t cap, Str *hint) {
 }
 
 static void render_todo_row(const TodoList *l, size_t i) {
-    tui_write_muted(STR("\u2502 "));
+    tui_write_dim(STR("\u2502 "));
     switch (l->status[i]) {
         case TODO_DONE:
             tui_write_result(STR("\u2713 "));
@@ -193,7 +194,7 @@ static void render_todo_row(const TodoList *l, size_t i) {
             tui_write_text(clip(todo_text(l, i), R_LINE_BYTES));
             break;
         default:
-            tui_write_muted(STR("\u25cb "));
+            tui_write_dim(STR("\u25cb "));
             tui_write_text(clip(todo_text(l, i), R_LINE_BYTES));
             break;
     }
@@ -207,7 +208,7 @@ static void render_todo_call(Str args, Arena *scratch, const Conv *c,
     tui_block();
     if (!todo_parse(args, scratch, &l, err, sizeof err)) {
         tui_write_tool(STR("\u25c6  todo\n"));
-        tui_write_muted(STR("\u2502 "));
+        tui_write_dim(STR("\u2502 "));
         tui_write_error(clip(str_c(err), R_LINE_BYTES));
         tui_write(STR("\n"));
         return;
@@ -382,7 +383,7 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
         write_lines(args, STR("\u2502 "), R_ARG_LINES, R_LINE_BYTES,
                     tui_write_muted);
     } else {
-        write_tail(STR("\u2502 "), 0, 0, R_ARG_LINES, tui_write_muted);
+        write_tail(STR("\u2502 "), 0, 0, R_ARG_LINES, tui_write_dim);
     }
 
     scratch->off = mark;
@@ -438,7 +439,7 @@ void render_question(Str question) {
     size_t off = 0;
     Str line;
     while (str_line(question, &off, &line)) {
-        tui_write_muted(STR("\u2502 "));
+        tui_write_dim(STR("\u2502 "));
         tui_write(line);
         tui_write(STR("\n"));
     }
@@ -453,7 +454,7 @@ void render_task_header(u32 id, Str label, Str model, Str provider, b8 small,
                     : snprintf(row, sizeof row, "\u25c6  task %u\n", id);
     if (n > 0) tui_write_tool((Str){row, (size_t)n});
 
-    tui_write_muted(STR("\u2502 "));
+    tui_write_dim(STR("\u2502 "));
     if (!model.n) {
         tui_write_muted(STR("the model this session uses"));
     } else {
@@ -465,7 +466,8 @@ void render_task_header(u32 id, Str label, Str model, Str provider, b8 small,
         if (n > 0) tui_write_muted((Str){row, (size_t)n});
     }
     if (small) tui_write_muted(STR(" \u00b7 small model"));
-    tui_write_muted(STR("\n\u2502 "));
+    tui_write_muted(STR("\n"));
+    tui_write_dim(STR("\u2502 "));
     tui_write_muted(live ? STR("in progress") : STR("finished"));
     tui_write_muted(STR(" \u00b7 Ctrl-O returns to the conversation\n"));
 }
@@ -554,7 +556,7 @@ static void write_patch_lines(Str patch, Str source, const YhlResult *hl,
     size_t off = 0, shown = 0, source_off = 0;
     Str line;
     while (shown < cap && str_line(patch, &off, &line)) {
-        tui_write_muted(gutter);
+        tui_write_dim(gutter);
         Str head = clip(line, R_LINE_BYTES);
         Str full_fragment;
         if (patch_fragment(line, &full_fragment)) {
@@ -580,7 +582,7 @@ static void write_patch_lines(Str patch, Str source, const YhlResult *hl,
         shown++;
     }
     write_tail(gutter, str_lines(str_drop(patch, off)), shown, max,
-               tui_write_muted);
+               tui_write_dim);
     tui_syntax_commit();
 }
 
@@ -702,7 +704,7 @@ static void write_syntax_lines(Str body, Str source, b8 grep,
     size_t off = 0, shown = 0, source_off = 0;
     Str line;
     while (shown < cap && str_line(body, &off, &line)) {
-        tui_write_muted(gutter);
+        tui_write_dim(gutter);
         Str head = clip(line, bytes);
         if (grep) {
             Str full_prefix, full_fragment;
@@ -730,7 +732,7 @@ static void write_syntax_lines(Str body, Str source, b8 grep,
         shown++;
     }
     write_tail(gutter, str_lines(str_drop(body, off)), shown, max,
-               tui_write_muted);
+               tui_write_dim);
     tui_syntax_commit();
 }
 

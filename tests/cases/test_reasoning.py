@@ -1,6 +1,6 @@
 """Thinking models: reasoning deltas are shown, muted, and never sent back."""
 
-MUTED = 245  # S_MUTED
+SUBTLE = 250  # S_SUBTLE
 TEXT = 253   # S_TEXT
 CYAN = 81    # S_CYAN
 BLUE = 75    # S_BLUE
@@ -46,7 +46,7 @@ def test_reasoning_is_muted_and_reply_is_not(ctx):
     s.submit("go")
     s.wait_text("the answer")
     s.wait_turn_done()
-    assert fg_of(s, "thinking hard") == MUTED
+    assert fg_of(s, "thinking hard") == SUBTLE
     assert fg_of(s, "the answer") == TEXT
 
 
@@ -65,7 +65,7 @@ def test_reasoning_markdown_is_formatted_with_a_muted_base(ctx):
     assert "Approach" in text and "• check facts with code" in text, text
     assert attr_of(s, "Approach").fg == CYAN
     assert attr_of(s, "•").fg == BLUE
-    assert attr_of(s, "check").fg == MUTED
+    assert attr_of(s, "check").fg == SUBTLE
     assert attr_of(s, "facts").bold
     assert attr_of(s, "code").fg == MONO
     assert attr_of(s, "final").bold, "reply Markdown starts a fresh stream"
@@ -80,7 +80,7 @@ def test_openrouter_reasoning_field(ctx):
     s.submit("go")
     s.wait_text("done")
     s.wait_turn_done()
-    assert fg_of(s, "via openrouter") == MUTED
+    assert fg_of(s, "via openrouter") == SUBTLE
 
 
 def test_structured_reasoning_summaries_keep_their_boundaries(ctx):
