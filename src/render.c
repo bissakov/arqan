@@ -185,15 +185,15 @@ static void render_todo_row(const TodoList *l, size_t i) {
     switch (l->status[i]) {
         case TODO_DONE:
             tui_write_result(STR("\u2713 "));
-            tui_write_muted(clip(todo_text(l, i), R_LINE_BYTES));
+            tui_write_text(clip(todo_text(l, i), R_LINE_BYTES));
             break;
         case TODO_ACTIVE:
             tui_write_tool(STR("\u25b8 "));
-            tui_write(clip(todo_text(l, i), R_LINE_BYTES));
+            tui_write_text(clip(todo_text(l, i), R_LINE_BYTES));
             break;
         default:
             tui_write_muted(STR("\u25cb "));
-            tui_write_muted(clip(todo_text(l, i), R_LINE_BYTES));
+            tui_write_text(clip(todo_text(l, i), R_LINE_BYTES));
             break;
     }
     tui_write(STR("\n"));

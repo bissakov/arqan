@@ -3,6 +3,7 @@
 import json
 
 from .test_budget import windowed
+from .test_reasoning import TEXT, fg_of
 from .test_telemetry import body, events
 
 
@@ -47,6 +48,26 @@ def test_a_list_is_rendered_as_a_checklist(ctx):
     assert "wire the parser" in text, text
     assert "{" not in text and "in_progress" not in text, text
     ctx.check_screen(s)
+
+
+def test_item_text_is_not_muted(ctx):
+    """Every step reads in the text colour, whatever its status."""
+    ctx.scenario(
+        todo(
+            ("read the decoder", "done"),
+            ("wire the parser", "in_progress"),
+            ("add a regression case", "pending"),
+            final="all+set",
+        )
+    )
+    s = ctx.spawn()
+    s.submit("do the long thing")
+    s.wait_text("all set")
+    s.wait_turn_done()
+
+    assert fg_of(s, "read the decoder") == TEXT
+    assert fg_of(s, "wire the parser") == TEXT
+    assert fg_of(s, "add a regression case") == TEXT
 
 
 def test_the_result_reports_the_shape_of_the_list(ctx):
