@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import select
 import struct
 import subprocess
 import time
@@ -43,6 +44,22 @@ def request(proc, request_id: int, hint_kind: int, hint: bytes, source: bytes):
     assert magic == MAGIC and got_id == request_id
     runs = [RUN.unpack(proc.stdout.read(RUN.size)) for _ in range(count)]
     return status, runs
+
+
+def timed_request(proc, request_id: int, hint: bytes, source: bytes,
+                  limit: float):
+    """A request that fails instead of blocking when the helper overruns."""
+    proc.stdin.write(REQ.pack(MAGIC, request_id, 1, len(hint), len(source)))
+    proc.stdin.write(hint + source)
+    proc.stdin.flush()
+    before = time.monotonic()
+    ready, _, _ = select.select([proc.stdout], [], [], limit)
+    assert ready, f"no answer for {hint!r} within {limit}s"
+    elapsed = time.monotonic() - before
+    magic, got_id, status, count = RESP.unpack(proc.stdout.read(RESP.size))
+    assert magic == MAGIC and got_id == request_id
+    runs = [RUN.unpack(proc.stdout.read(RUN.size)) for _ in range(count)]
+    return status, runs, elapsed
 
 
 def helper():
@@ -140,6 +157,42 @@ def test_helper_request_local_fallbacks_keep_it_alive(ctx):
         assert status == OK and runs
     finally:
         proc.terminate()
+        proc.wait(timeout=2)
+
+
+def test_cargo_lock_is_toml_by_name(ctx):
+    """Cargo.lock has no TOML extension and still resolves to TOML."""
+    source = b'name = "arqan" # c\n'
+    proc = helper()
+    try:
+        for request_id, hint in enumerate(
+            (b"Cargo.lock", b"dir/Cargo.lock", b"/abs/CARGO.LOCK"), 1
+        ):
+            status, runs = request(proc, request_id, 2, hint, source)
+            assert status == OK and runs, (hint, status)
+            quote = source.index(b'"')
+            assert any(a <= quote < b and kind == 2 for a, b, kind in runs)
+        status, runs = request(proc, 9, 2, b"other.lock", source)
+        assert status == UNKNOWN and runs == []
+    finally:
+        proc.terminate()
+        proc.wait(timeout=2)
+
+
+def test_pathological_nesting_answers_within_budget(ctx):
+    """Deep nesting that makes the query quadratic is cut off, not waited on."""
+    proc = helper()
+    try:
+        for request_id, hint in enumerate((b"c", b"bash", b"python"), 1):
+            status, runs, elapsed = timed_request(
+                proc, request_id, hint, b"(" * 65536, 2.0
+            )
+            assert status == TOO_COMPLEX and runs == [], (hint, status)
+            assert elapsed < 0.45, (hint, elapsed)
+        status, runs, _ = timed_request(proc, 9, b"c", b"int n = 1;\n", 2.0)
+        assert status == OK and runs
+    finally:
+        proc.kill()
         proc.wait(timeout=2)
 
 
@@ -419,6 +472,48 @@ def test_one_stalled_answer_does_not_end_highlighting(ctx):
     s.submit("answers after")
     s.wait_turn_done()
     assert cell(s, "long m").fg == CYAN, s.text()
+
+
+def test_failing_language_does_not_end_other_languages(ctx):
+    """A grammar that keeps crashing loses its colours alone, and is not
+    retried once it has used up its strikes."""
+    tally = ctx.work / "c-requests"
+    picky = ctx.write_file(
+        "picky-helper",
+        "#!/usr/bin/python3\n"
+        "import os, struct, sys\n"
+        f"tally = {str(tally)!r}\n"
+        "def exact(n):\n"
+        "    out = b''\n"
+        "    while len(out) < n:\n"
+        "        chunk = os.read(0, n - len(out))\n"
+        "        if not chunk: sys.exit(0)\n"
+        "        out += chunk\n"
+        "    return out\n"
+        "while True:\n"
+        "    h = exact(20)\n"
+        "    rid = struct.unpack_from('<I', h, 4)[0]\n"
+        "    hn, sn = struct.unpack_from('<II', h, 12)\n"
+        "    hint = exact(hn)\n"
+        "    exact(sn)\n"
+        "    if hint == b'c':\n"
+        "        with open(tally, 'a') as f: f.write('c\\n')\n"
+        "        sys.exit(1)\n"
+        "    os.write(1, struct.pack('<4sIB3xI', b'YHL1', rid, 0, 1))\n"
+        "    os.write(1, struct.pack('<IIB3x', 0, 4, 5))\n",
+    )
+    picky.chmod(0o755)
+
+    ctx.scenario(
+        "text=```c\nint+a;\n```\n\n```c\nint+b;\n```\n\n```c\nint+c;\n```\n\n"
+        "```c\nint+d;\n```\n\n```python\nlong+p\n```"
+    )
+    s = ctx.spawn(ARQAN_HIGHLIGHTER=picky)
+    s.submit("four c and one python")
+    s.wait_turn_done()
+    assert cell(s, "long p").fg == CYAN, s.text()
+    assert cell(s, "int d").fg == TEXT
+    assert len(tally.read_text().splitlines()) <= 3
 
 
 def window_cell(s, needle: str, offset: int = 0):

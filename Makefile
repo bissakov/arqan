@@ -269,6 +269,24 @@ $(BINDIR)/fuzz/%: tests/fuzz/%.c $(wildcard src/*.c) $(wildcard src/*.h)
 	@mkdir -p $(dir $@)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) $< -o $@
 
+FUZZ_HL_BUILD := $(BUILDDIR)/fuzz-highlight
+FUZZ_HL_OBJ := $(patsubst $(BUILDDIR)/%,$(FUZZ_HL_BUILD)/%,\
+               $(filter-out $(BUILDDIR)/highlight/arqan-highlight.o,$(HL_OBJ)))
+FUZZ_HL_VENDOR_CFLAGS := -std=c17 -g -O1 -w \
+                         -fsanitize=fuzzer-no-link,address,undefined \
+                         -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L
+
+$(BINDIR)/fuzz/fuzz_highlight: tests/fuzz/fuzz_highlight.c \
+                               highlight/arqan-highlight.c highlight/queries.c \
+                               highlight/queries.h src/highlight_protocol.h \
+                               $(wildcard vendor/tree-sitter/runtime/*) \
+                               $(wildcard vendor/tree-sitter/grammars/*/*.c)
+	$(MAKE) --no-print-directory BUILDDIR='$(FUZZ_HL_BUILD)' CC='$(FUZZ_CC)' \
+	    CFLAGS='$(FUZZ_HL_VENDOR_CFLAGS)' \
+	    VENDOR_CFLAGS='$(FUZZ_HL_VENDOR_CFLAGS)' $(FUZZ_HL_OBJ)
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) $(HL_CPPFLAGS) $< $(FUZZ_HL_OBJ) -o $@
+
 fuzz: $(FUZZ_BIN)
 
 el9:

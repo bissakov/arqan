@@ -6,10 +6,12 @@
 #include <tree_sitter/api.h>
 
 #include <errno.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #define YHL_LANG_COUNT 12u
@@ -33,7 +35,7 @@ const TSLanguage *tree_sitter_yaml(void);
 typedef struct {
     const char *name;
     const char *aliases;
-    const char *extensions;
+    const char *files;
     LanguageFn language;
     TSQuery *query;
     int broken;
@@ -53,9 +55,19 @@ static Language languages[YHL_LANG_COUNT] = {
     {"tsx", "tsx", ".tsx", tree_sitter_tsx, NULL, 0},
     {"bash", "bash sh shell", ".sh .bash .bashrc", tree_sitter_bash, NULL, 0},
     {"json", "json", ".json", tree_sitter_json, NULL, 0},
-    {"toml", "toml", ".toml Cargo.lock", tree_sitter_toml, NULL, 0},
+    {"toml", "toml", ".toml cargo.lock", tree_sitter_toml, NULL, 0},
     {"yaml", "yaml yml", ".yaml .yml", tree_sitter_yaml, NULL, 0},
 };
+
+typedef struct {
+    uint64_t deadline_ns;
+    bool spent;
+} Budget;
+
+typedef struct {
+    const char *text;
+    uint32_t n;
+} SourceInput;
 
 static unsigned char source[YHL_SOURCE_MAX];
 static char hint[YHL_FILENAME_MAX + 1u];
@@ -141,11 +153,12 @@ static Language *language_for(uint8_t kind) {
     }
     const char *base = strrchr(hint, '/');
     base = base ? base + 1 : hint;
-    if (strcmp(base, "cargo.lock") == 0) return &languages[10];
+    for (size_t i = 0; i < YHL_LANG_COUNT; i++)
+        if (token_has(languages[i].files, base)) return &languages[i];
     const char *dot = strrchr(base, '.');
     if (!dot) return NULL;
     for (size_t i = 0; i < YHL_LANG_COUNT; i++)
-        if (token_has(languages[i].extensions, dot)) return &languages[i];
+        if (token_has(languages[i].files, dot)) return &languages[i];
     return NULL;
 }
 
@@ -226,10 +239,44 @@ static void queries_delete(void) {
         if (languages[i].query) ts_query_delete(languages[i].query);
 }
 
+static uint64_t monotonic_ns(void) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return UINT64_MAX;
+    return (uint64_t)now.tv_sec * 1000000000u + (uint64_t)now.tv_nsec;
+}
+
+static bool budget_spent(Budget *budget) {
+    if (!budget->spent && monotonic_ns() >= budget->deadline_ns)
+        budget->spent = true;
+    return budget->spent;
+}
+
+static bool parse_progress(TSParseState *state) {
+    return budget_spent(state->payload);
+}
+
+static bool query_progress(TSQueryCursorState *state) {
+    return budget_spent(state->payload);
+}
+
+static const char *source_read(void *payload, uint32_t at, TSPoint point,
+                               uint32_t *bytes_read) {
+    (void)point;
+    const SourceInput *input = payload;
+    if (at >= input->n) {
+        *bytes_read = 0;
+        return "";
+    }
+    *bytes_read = input->n - at;
+    return input->text + at;
+}
+
 static uint8_t make_runs(Language *lang, TSQuery *query, uint32_t source_n,
                          uint32_t *run_count) {
     *run_count = 0;
     if (!source_n) return YHL_STATUS_OK;
+    Budget budget = {monotonic_ns() + (uint64_t)YHL_BUDGET_MS * 1000000u,
+                     false};
     memset(byte_kind, 0, source_n);
     for (uint32_t i = 0; i < source_n; i++) byte_width[i] = UINT32_MAX;
     memset(byte_pattern, 0, source_n * sizeof byte_pattern[0]);
@@ -242,15 +289,19 @@ static uint8_t make_runs(Language *lang, TSQuery *query, uint32_t source_n,
         if (parser) ts_parser_delete(parser);
         return YHL_STATUS_INTERNAL;
     }
-    TSTree *tree =
-        ts_parser_parse_string(parser, NULL, (const char *)source, source_n);
+    SourceInput input = {(const char *)source, source_n};
+    TSTree *tree = ts_parser_parse_with_options(
+        parser, NULL, (TSInput){&input, source_read, TSInputEncodingUTF8, NULL},
+        (TSParseOptions){&budget, parse_progress});
     if (!tree) {
         ts_query_cursor_delete(cursor);
         ts_parser_delete(parser);
-        return YHL_STATUS_INTERNAL;
+        return budget.spent ? YHL_STATUS_TOO_COMPLEX : YHL_STATUS_INTERNAL;
     }
     ts_query_cursor_set_match_limit(cursor, YHL_RUN_MAX);
-    ts_query_cursor_exec(cursor, query, ts_tree_root_node(tree));
+    TSQueryCursorOptions query_options = {&budget, query_progress};
+    ts_query_cursor_exec_with_options(cursor, query, ts_tree_root_node(tree),
+                                      &query_options);
     TSQueryMatch match;
     uint32_t capture_index = 0;
     uint32_t captures = 0;
@@ -291,7 +342,7 @@ static uint8_t make_runs(Language *lang, TSQuery *query, uint32_t source_n,
     ts_query_cursor_delete(cursor);
     ts_parser_delete(parser);
     if (status != YHL_STATUS_OK) return status;
-    if (exceeded) return YHL_STATUS_TOO_COMPLEX;
+    if (exceeded || budget.spent) return YHL_STATUS_TOO_COMPLEX;
 
     uint32_t runs = 0;
     for (uint32_t i = 0; i < source_n;) {

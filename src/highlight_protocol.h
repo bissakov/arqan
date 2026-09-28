@@ -10,6 +10,7 @@
 #define YHL_ALIAS_MAX    32u
 #define YHL_FILENAME_MAX 4096u
 #define YHL_RUN_MAX      16384u
+#define YHL_BUDGET_MS    200u
 
 enum {
     YHL_HINT_ALIAS = 1,

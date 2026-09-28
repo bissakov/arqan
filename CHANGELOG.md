@@ -14,6 +14,14 @@
   and the prompt marker stay behind, rows the screen wrapped join back into
   one line, and the extra spaces of justified text are dropped.
 
+- Deeply nested code no longer stalls the screen while it is highlighted.
+  The highlighter gives up after 200 ms and shows the code plain. Before,
+  such a block held the screen for about a second and counted as a failure.
+
+- A language whose highlighter keeps failing loses its colours alone. Before,
+  three failures in a row turned off highlighting for every language until
+  restart.
+
 ## [0.9.1] - 2026-09-24
 
 ### Added
