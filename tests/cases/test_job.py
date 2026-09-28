@@ -46,6 +46,8 @@ def test_a_slow_command_is_detached_into_a_job(ctx):
     assert "\u2514\u2500 still running as job 1" in s.text(), s.text()
     # and the follow-up call is shown by the job it acts on
     assert "\u25c6  job 1" in s.text(), s.text()
+    # the header says everything the arguments do, so they are not repeated
+    assert '"id"' not in s.text(), s.text()
     # the command ran on to completion; its later output reaches the follow-up
     assert "done-late" in followed, followed
     assert "[job 1 exit 0" in followed, followed

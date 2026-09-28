@@ -245,6 +245,13 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
     }
     JVal *j = json_parse(scratch, args);
 
+    if (str_eq(name, STR("ask_user"))) {
+        render_question(json_str(j, STR("question")));
+        scratch->off = mark;
+        block_end();
+        return;
+    }
+
     Str path = json_str(j, STR("path"));
     if (str_eq(name, STR("page_fetch"))) path = json_str(j, STR("url"));
     Str cmd = json_str(j, STR("command"));
@@ -371,7 +378,7 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
     } else if (task_prompt.n) {
         write_lines(task_prompt, STR("\u2502 "), R_ARG_LINES, R_LINE_BYTES,
                     tui_write_muted);
-    } else if (!path.n && !query.n) {
+    } else if (!path.n && !query.n && !str_eq(name, STR("job"))) {
         write_lines(args, STR("\u2502 "), R_ARG_LINES, R_LINE_BYTES,
                     tui_write_muted);
     } else {
@@ -432,7 +439,7 @@ void render_question(Str question) {
     Str line;
     while (str_line(question, &off, &line)) {
         tui_write_muted(STR("\u2502 "));
-        tui_write(clip(line, R_LINE_BYTES));
+        tui_write(line);
         tui_write(STR("\n"));
     }
 }
@@ -656,7 +663,7 @@ static void render_ask_result(Str args, Str result, Arena *scratch, u32 ms) {
     Str answer = result;
     str_line(result, &off, &answer);
     tui_write_result(STR("\u2514\u2500 "));
-    tui_write_result(clip(answer, R_LINE_BYTES));
+    tui_write_result(answer);
     write_elapsed(ms);
     tui_write_result(STR("\n"));
 
@@ -672,8 +679,7 @@ static void render_ask_result(Str args, Str result, Arena *scratch, u32 ms) {
         }
         if (buf_ok(&b)) body = buf_finish(&b);
     }
-    write_lines(body, STR("   "), R_RESULT_LINES, R_LINE_BYTES,
-                tui_write_muted);
+    write_lines(body, STR("   "), SIZE_MAX, SIZE_MAX, tui_write_muted);
     if (scratch) scratch->off = mark;
 }
 
@@ -881,6 +887,10 @@ Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
         if (syntax && str_eq(name, STR("bash")))
             highlight_request(YHL_HINT_MARKDOWN_ALIAS, STR("bash"), cmd,
                               syntax);
+    } else if (str_eq(name, STR("ask_user"))) {
+        body = json_str(j, STR("question"));
+    } else if (str_eq(name, STR("job"))) {
+        body = (Str){0};
     } else if (!path.n && !query.n) {
         body = args;
     } else {

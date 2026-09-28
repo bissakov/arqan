@@ -376,6 +376,10 @@ def test_ask_user_keeps_the_detail_of_the_answer(ctx):
     again.key("enter")
     again.wait_text("noted")
     assert answer_rows(again, "sqlite")[1] == "one file", again.text()
+    # a replayed call shows the question as it did live, not its arguments
+    assert "\u25c6  ask\n" in again.text(), again.text()
+    assert "\u2502 Which storage?" in again.text(), again.text()
+    assert '"question"' not in again.text(), again.text()
 
 
 def test_ask_user_wraps_option_details_to_the_picker_width(ctx):
@@ -499,6 +503,42 @@ def test_ask_user_takes_an_answer_of_its_own(ctx):
 
     assert ctx.mock.tool_results() == ["neither, use files"], ctx.mock.tool_results()
     assert "neither, use files" in s.text(), s.text()
+
+
+def test_ask_user_keeps_a_long_question_and_answer_whole(ctx):
+    """The transcript keeps the whole question and answer, live and resumed:
+    they are what the user decided, so a clipped tail loses the decision."""
+    question = " ".join(f"question-word-{i:02d}" for i in range(20)) + " Q-END?"
+    label = " ".join(f"answer-word-{i:02d}" for i in range(16)) + " A-END"
+    detail = " ".join(f"detail-word-{i:02d}" for i in range(16)) + " D-END"
+    assert len(question) > 300 and len(label) > 200 and len(detail) > 200
+    ctx.scenario(
+        ask(question, [{"label": label, "detail": detail, "recommended": True}])
+        + ",final_text=noted"
+    )
+    s = ctx.spawn(cols=120, rows=30)
+    to_plan(s)
+    s.submit("plan it")
+    s.wait_status("pick an answer")
+    s.key("enter")
+    s.wait_text("noted")
+    s.wait_turn_done()
+
+    assert ctx.mock.tool_results() == [label], ctx.mock.tool_results()
+    assert "Q-END?" in s.text(), s.text()
+    assert "A-END" in s.text(), s.text()
+    assert "D-END" in s.text(), s.text()
+    s.submit("/exit")
+    s.wait_exit()
+
+    again = ctx.spawn(cols=120, rows=30)
+    again.submit("/resume")
+    again.wait_text("plan it")
+    again.key("enter")
+    again.wait_text("noted")
+    assert "Q-END?" in again.text(), again.text()
+    assert "A-END" in again.text(), again.text()
+    assert "D-END" in again.text(), again.text()
 
 
 def test_ask_user_adds_own_words_to_an_answer(ctx):
