@@ -11,10 +11,15 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define YHL_TIMEOUT_MS 500
-#define YHL_POLL_MS    25
-#define YHL_ATTEMPTS   2
-#define YHL_STRIKES    3
+#define YHL_TIMEOUT_MS     500
+#define YHL_POLL_MS        25
+#define YHL_ATTEMPTS       2
+#define YHL_STRIKES        3
+#define YHL_HELPER_STRIKES 6
+#define YHL_LANGUAGE_SLOTS 16
+
+_Static_assert(YHL_BUDGET_MS * 2 <= YHL_TIMEOUT_MS,
+               "the helper gives up well before the client does");
 
 typedef struct {
     char path[AGENT_MAX_PATH];
@@ -25,6 +30,8 @@ typedef struct {
     i32 out_fd;
     u32 next_id;
     i32 strikes;
+    u64 language_key[YHL_LANGUAGE_SLOTS];
+    u8 language_strikes[YHL_LANGUAGE_SLOTS];
 } HighlightClient;
 
 typedef enum {
@@ -267,6 +274,50 @@ static HlOutcome highlight_exchange(YhlHintKind kind, Str hint, Str source,
     return HL_OK;
 }
 
+static u64 language_key(YhlHintKind kind, Str hint) {
+    Str name = hint;
+    if (kind == YHL_HINT_PATH) {
+        for (size_t i = hint.n; i > 0; i--) {
+            if (hint.p[i - 1] == '/') {
+                name = (Str){hint.p + i, hint.n - i};
+                break;
+            }
+        }
+        for (size_t i = name.n; i > 0; i--) {
+            if (name.p[i - 1] == '.') {
+                name = (Str){name.p + i - 1, name.n - i + 1};
+                break;
+            }
+        }
+    }
+    return str_hash64(name) ^ (u64)kind;
+}
+
+static i32 language_slot(u64 key) {
+    for (i32 i = 0; i < YHL_LANGUAGE_SLOTS; i++)
+        if (g_hl.language_strikes[i] && g_hl.language_key[i] == key) return i;
+    return -1;
+}
+
+static b8 language_struck_out(u64 key) {
+    i32 slot = language_slot(key);
+    return slot >= 0 && g_hl.language_strikes[slot] >= YHL_STRIKES;
+}
+
+static void language_clear(u64 key) {
+    i32 slot = language_slot(key);
+    if (slot >= 0) g_hl.language_strikes[slot] = 0;
+}
+
+static void language_strike(u64 key) {
+    i32 slot = language_slot(key);
+    for (i32 i = 0; slot < 0 && i < YHL_LANGUAGE_SLOTS; i++)
+        if (!g_hl.language_strikes[i]) slot = i;
+    if (slot < 0) return;
+    g_hl.language_key[slot] = key;
+    g_hl.language_strikes[slot]++;
+}
+
 b8 highlight_request(YhlHintKind kind, Str hint, Str source,
                      YhlResult *result) {
     result->n = 0;
@@ -274,28 +325,29 @@ b8 highlight_request(YhlHintKind kind, Str hint, Str source,
     size_t hint_max =
         kind == YHL_HINT_MARKDOWN_ALIAS ? YHL_ALIAS_MAX : YHL_FILENAME_MAX;
     if (!hint.n || hint.n > hint_max || source.n > YHL_SOURCE_MAX) return false;
+    u64 key = language_key(kind, hint);
+    if (language_struck_out(key)) return false;
 
     for (i32 attempt = 0; attempt < YHL_ATTEMPTS; attempt++) {
         if (!highlight_start()) return false;
         HlOutcome outcome = highlight_exchange(kind, hint, source, result);
-        if (outcome == HL_OK) {
+        if (outcome == HL_OK || outcome == HL_NONE) {
             g_hl.strikes = 0;
-            return true;
+            language_clear(key);
+            return outcome == HL_OK;
         }
         result->n = 0;
-        if (outcome == HL_NONE) {
-            g_hl.strikes = 0;
-            return false;
-        }
         if (outcome == HL_BROKEN) {
             highlight_disable();
             return false;
         }
         highlight_retire();
-        if (++g_hl.strikes >= YHL_STRIKES) {
+        if (++g_hl.strikes >= YHL_HELPER_STRIKES) {
             g_hl.disabled = true;
             return false;
         }
+        language_strike(key);
+        if (language_struck_out(key)) return false;
     }
     return false;
 }
