@@ -93,9 +93,10 @@ static void write_read_range(const JVal *args) {
     if (len > 0) tui_write_tool((Str){buf, (size_t)len});
 }
 
-static void write_count(size_t n, const char *what, Sink sink) {
+static void write_count(size_t n, const char *one, const char *many,
+                        Sink sink) {
     char buf[64];
-    i32 len = snprintf(buf, sizeof buf, "%zu %s%s", n, what, n == 1 ? "" : "s");
+    i32 len = snprintf(buf, sizeof buf, "%zu %s", n, n == 1 ? one : many);
     if (len > 0) sink((Str){buf, (size_t)len});
 }
 
@@ -782,9 +783,9 @@ void render_tool_result(Str name, Str args, Str result, Arena *scratch, u32 id,
     if (have_status) {
         tui_write_result(status);
     } else if (str_eq(name, STR("read"))) {
-        write_count(str_lines(result), "line", tui_write_result);
+        write_count(str_lines(result), "line", "lines", tui_write_result);
     } else if (grep) {
-        write_count(grep_matches(result), "match", tui_write_result);
+        write_count(grep_matches(result), "match", "matches", tui_write_result);
     } else {
         size_t off = 0;
         Str first = body;
