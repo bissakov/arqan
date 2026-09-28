@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Tool output, tool arguments, reasoning and block quotes use a brighter grey
+  and are easier to read. Gutters, separators and timings keep the dim grey.
+  Emphasis and strikeout text no longer turn grey.
+
 ### Fixed
 
 - Text copied with the mouse no longer carries the layout. The left margin

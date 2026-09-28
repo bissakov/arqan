@@ -5,7 +5,7 @@ import re
 from tests.mockprovider import Scenario
 
 TEXT = 253      # S_TEXT
-MUTED = 245     # S_MUTED
+SUBTLE = 250    # S_SUBTLE, quotes and reasoning
 CYAN = 81       # S_CYAN, headings
 BLUE = 75       # S_BLUE, bullets and other markers
 MONO = 180      # S_MONO, inline code
@@ -79,7 +79,7 @@ def test_emphasis_is_styled_not_spelled(ctx):
     assert "*" not in text and "`" not in text, text
     assert cell(s, "loud").bold, "emphasis should be bold"
     assert cell(s, "ls ").fg == MONO
-    assert cell(s, "soft").fg == MUTED
+    assert cell(s, "soft").fg == TEXT, "emphasis must not dim text"
 
 
 def test_newest_emphasis_survives_style_capacity(ctx):
@@ -129,7 +129,7 @@ def test_block_quote_and_rule(ctx):
     assert "\u2502 quoted wisdom" in text, text
     assert "\u2500\u2500\u2500" in text, text
     assert "---" not in text, text
-    assert cell(s, "quoted wisdom").fg == MUTED
+    assert cell(s, "quoted wisdom").fg == SUBTLE
 
 
 def test_link_keeps_its_target(ctx):
@@ -445,6 +445,7 @@ def test_common_gfm_extensions_are_formatted(ctx):
     assert "~~~" not in text, text
     assert cell(s, "echo ok").bg == CODE_BG
     assert cell(s, "https://example.com").fg == BLUE
+    assert cell(s, "obsolete").fg == TEXT, "strikeout must not dim text"
 
 
 def test_raw_toggles_formatting_off_and_back_on(ctx):

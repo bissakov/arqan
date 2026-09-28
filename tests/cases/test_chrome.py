@@ -74,6 +74,27 @@ def test_transcript_roles_are_styled(ctx):
     assert fg_of("\u2514\u2500 1 line") == 114  # S_GREEN
 
 
+def test_tool_output_is_brighter_than_its_gutter(ctx):
+    """Tool output reads in the content grey; the gutter stays dim."""
+    ctx.scenario(
+        'tool=bash:{"command":"echo first\\necho second"},final_text=done'
+    )
+    s = ctx.spawn()
+    s.submit("run it")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    def attr(needle, offset=0):
+        row = s.screen.find_row(needle)
+        assert row >= 0, f"{needle!r} missing\n{s.text()}"
+        col = s.screen.row_text(row).index(needle) + offset
+        return s.screen.attr_at(row, col)
+
+    assert attr("\u2502 echo second").fg == 245   # S_MUTED
+    assert attr("   first", 3).fg == 250          # S_SUBTLE
+    assert attr("   second", 3).fg == 250
+
+
 def test_user_message_is_a_box(ctx):
     """A user turn is a padded block of background, with no role label."""
     ctx.scenario("text=answered")
