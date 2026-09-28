@@ -88,9 +88,9 @@ def test_a_drag_under_tmux_says_what_carries_the_copy_once(ctx):
 def test_multi_row_selection_joins_with_newlines(ctx):
     """Dragging across rows copies them separated by line breaks.
 
-    Selection is linear, as in xterm: rows after the first are taken from
-    column one, so the body gutter comes along. Trailing padding is trimmed,
-    since that is background the painter added rather than content.
+    Selection is linear, as in xterm, but the body gutter is layout rather
+    than text, so it stays behind. Trailing padding is trimmed, since that is
+    background the painter added rather than content.
     """
     s = ctx.spawn()
     ctx.scenario("text=first+row\\nsecond+row")
@@ -104,7 +104,81 @@ def test_multi_row_selection_joins_with_newlines(ctx):
     s.mouse("down", first, 3)
     s.mouse("drag", second, 3 + len("second row") - 1)
     s.mouse("up", second, 3 + len("second row") - 1).sync()
-    assert s.screen.clipboard == "first row\n  second row", repr(s.screen.clipboard)
+    assert s.screen.clipboard == "first row\nsecond row", repr(s.screen.clipboard)
+
+
+# Words of five different lengths, so the rows wrap ragged and justification
+# has gaps to widen.
+WRAP_WORDS = [f"w{i:02d}" + "x" * (i % 5) for i in range(40)]
+WRAP_TEXT = " ".join(WRAP_WORDS)
+
+
+def wrapped_reply(ctx, s, text):
+    ctx.scenario("text=" + text.replace(" ", "+"))
+    s.submit("say it")
+    s.wait_text(text.split()[-1])
+    s.wait_turn_done()
+    first = row_of(s, text.split()[0])
+    last = row_of(s, text.split()[-1])
+    assert last > first, s.text()
+    return first, last
+
+
+def drag_rows(s, first, last):
+    s.mouse("down", first, 1)
+    s.mouse("drag", last, s.screen.cols)
+    s.mouse("up", last, s.screen.cols)
+    return s.sync()
+
+
+def test_a_wrapped_line_copies_as_one_line(ctx):
+    """Rows the painter wrapped join back into the line the text had, with
+    the gap they broke at and without the gutter."""
+    s = ctx.spawn()
+    first, last = wrapped_reply(ctx, s, WRAP_TEXT)
+    drag_rows(s, first, last)
+    assert s.screen.clipboard == WRAP_TEXT, repr(s.screen.clipboard)
+
+
+def test_a_justified_line_copies_without_the_padding(ctx):
+    """Justification widens the gaps on screen, not in the copied text."""
+    s = ctx.spawn()
+    first, last = wrapped_reply(ctx, s, WRAP_TEXT)
+    s.settings_act("Text wrap")
+    s.wait_for(lambda t: s.settings_option("Text wrap") == "Justified",
+               "justified wrapping")
+    s.key("esc")
+    s.wait_gone("Text wrap")
+    first = row_of(s, WRAP_WORDS[0])
+    last = row_of(s, WRAP_WORDS[-1])
+    assert "  " in s.screen.row_text(first - 1).strip(), s.text()
+    drag_rows(s, first, last)
+    assert s.screen.clipboard == WRAP_TEXT, repr(s.screen.clipboard)
+
+
+def test_a_word_split_by_the_width_copies_whole(ctx):
+    """A word wider than the row is split with no gap, so it joins with
+    none."""
+    s = ctx.spawn(cols=40, rows=20)
+    word = "z" * 60
+    first, last = wrapped_reply(ctx, s, f"head {word} tail")
+    drag_rows(s, first, last)
+    assert s.screen.clipboard == f"head {word} tail", repr(s.screen.clipboard)
+
+
+def test_a_wrapped_draft_copies_as_typed(ctx):
+    """The composer's prompt marker and wrapping are layout too."""
+    s = ctx.spawn(cols=40, rows=20)
+    draft = "alpha bravo charlie delta echo foxtrot golf"
+    s.type(draft).sync()
+    first = row_of(s, "alpha bravo")
+    last = row_of(s, "foxtrot golf")
+    assert last == first + 1, s.text()
+    s.mouse("down", first, 1)
+    s.mouse("drag", last, 5 + len("foxtrot golf") - 1)
+    s.mouse("up", last, 5 + len("foxtrot golf") - 1)
+    s.sync()
+    assert s.screen.clipboard == draft, repr(s.screen.clipboard)
 
 
 def test_chrome_is_selectable_too(ctx):
