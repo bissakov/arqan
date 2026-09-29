@@ -642,7 +642,7 @@ def test_the_first_run_without_a_key_says_how_to_add_one(ctx):
     s = ctx.spawn(ARQAN_BASE_URL=None, ARQAN_API_KEY=None, ARQAN_MODEL=None)
     s.wait_text("+ add a provider")
     assert s.status_kind() == "setup", s.status_line()
-    assert "gpt-4o-mini" not in s.status_line(), s.status_line()
+    assert "gpt-5.6-sol" not in s.status_line(), s.status_line()
     assert "api.openai.com" not in s.status_line(), s.status_line()
     assert "a name for this provider" not in s.text(), s.text()
     ctx.check_screen(s)

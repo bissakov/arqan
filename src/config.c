@@ -543,7 +543,7 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
                           ? str_c("https://api.anthropic.com/v1")
                           : str_c("https://api.openai.com/v1");
     if (!c->model.n)
-        c->model = c->api == API_ANTHROPIC ? str_c("claude-sonnet-4-5")
-                                           : str_c("gpt-4o-mini");
+        c->model = c->api == API_ANTHROPIC ? str_c("claude-opus-5")
+                                           : str_c("gpt-5.6-sol");
     return true;
 }
