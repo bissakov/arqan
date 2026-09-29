@@ -8,6 +8,9 @@
   and are easier to read. Gutters, separators and timings keep the dim grey.
   Emphasis and strikeout text no longer turn grey.
 
+- The syntax highlighter binary is about 5 MB smaller: 8 MB instead of 13 MB.
+  Highlighting takes up to about 10% longer.
+
 ### Fixed
 
 - Text copied with the mouse no longer carries the layout. The left margin
