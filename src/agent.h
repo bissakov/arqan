@@ -1787,7 +1787,8 @@ typedef enum {
     TUI_EMPH,
     TUI_MONO,
     TUI_MARKER,
-    TUI_STRIKE
+    TUI_STRIKE,
+    TUI_REASON
 } TuiStyle;
 
 typedef enum {
@@ -1970,6 +1971,7 @@ void tui_write_text(Str s);
 void tui_write_source(Str s);
 void tui_write_muted(Str s);
 void tui_write_dim(Str s);
+void tui_write_reason(Str s);
 void tui_write_tool(Str s);
 void tui_write_result(Str s);
 void tui_write_error(Str s);

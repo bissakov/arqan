@@ -4,9 +4,10 @@
 
 ### Changed
 
-- Tool output, tool arguments, reasoning and block quotes use a brighter grey
-  and are easier to read. Gutters, separators and timings keep the dim grey.
-  Emphasis and strikeout text no longer turn grey.
+- Tool output, tool arguments and block quotes use a brighter grey and are
+  easier to read. Reasoning, gutters, separators and timings keep the dim
+  grey, so reasoning stays easy to tell apart from the reply. Emphasis and
+  strikeout text no longer turn grey.
 
 - With no model set, arqan now uses `gpt-5.6-sol` for the OpenAI API and
   `claude-opus-5` for the Anthropic API, instead of `gpt-4o-mini` and
@@ -16,6 +17,10 @@
   Highlighting takes up to about 10% longer.
 
 ### Fixed
+
+- A question from `ask_user` that wraps now reads in one colour. Its first
+  row took the grey of the gutter, while the rows after it used the text
+  colour.
 
 - Text copied with the mouse no longer carries the layout. The left margin
   and the prompt marker stay behind, rows the screen wrapped join back into

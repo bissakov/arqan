@@ -1,5 +1,6 @@
 """Thinking models: reasoning deltas are shown, muted, and never sent back."""
 
+MUTED = 245   # S_MUTED
 SUBTLE = 250  # S_SUBTLE
 TEXT = 253   # S_TEXT
 CYAN = 81    # S_CYAN
@@ -46,7 +47,7 @@ def test_reasoning_is_muted_and_reply_is_not(ctx):
     s.submit("go")
     s.wait_text("the answer")
     s.wait_turn_done()
-    assert fg_of(s, "thinking hard") == SUBTLE
+    assert fg_of(s, "thinking hard") == MUTED
     assert fg_of(s, "the answer") == TEXT
 
 
@@ -65,7 +66,7 @@ def test_reasoning_markdown_is_formatted_with_a_muted_base(ctx):
     assert "Approach" in text and "• check facts with code" in text, text
     assert attr_of(s, "Approach").fg == CYAN
     assert attr_of(s, "•").fg == BLUE
-    assert attr_of(s, "check").fg == SUBTLE
+    assert attr_of(s, "check").fg == MUTED
     assert attr_of(s, "facts").bold
     assert attr_of(s, "code").fg == MONO
     assert attr_of(s, "final").bold, "reply Markdown starts a fresh stream"
@@ -80,7 +81,7 @@ def test_openrouter_reasoning_field(ctx):
     s.submit("go")
     s.wait_text("done")
     s.wait_turn_done()
-    assert fg_of(s, "via openrouter") == SUBTLE
+    assert fg_of(s, "via openrouter") == MUTED
 
 
 def test_structured_reasoning_summaries_keep_their_boundaries(ctx):
@@ -139,3 +140,48 @@ def test_a_reasoning_delta_larger_than_the_line_buffer_arrives(ctx):
     s.wait_turn_done()
     # The tail of the trace is the last thing above the reply.
     assert "thought3999" in s.text(), s.text()
+
+
+def test_reasoning_is_dimmer_than_tool_output(ctx):
+    """Reasoning keeps the dim grey so it stands apart from tool output."""
+    ctx.scenario(
+        'reasoning=weighing+options,'
+        'tool=bash:{"command":"echo toolword"},final_text=done'
+    )
+    s = ctx.spawn()
+    s.submit("go")
+    s.wait_text("done")
+    s.wait_turn_done()
+    assert fg_of(s, "weighing options") == MUTED
+    output = next(
+        r for r in range(s.screen.rows)
+        if s.screen.row_text(r).strip() == "toolword"
+    )
+    col = s.screen.row_text(output).index("toolword")
+    assert s.screen.attr_at(output, col).fg == SUBTLE
+
+
+def test_raw_reasoning_stays_dim(ctx):
+    """With raw display on, reasoning still reads in the dim grey."""
+    ctx.scenario("reasoning=raw+thoughts,text=the+answer")
+    s = ctx.spawn()
+    s.settings_toggle("Display raw")
+    s.submit("go")
+    s.wait_text("the answer")
+    s.wait_turn_done()
+    assert fg_of(s, "raw thoughts") == MUTED
+    assert fg_of(s, "the answer") == TEXT
+
+
+def test_reasoning_table_cells_stay_dim(ctx):
+    """Table cells in reasoning use the reasoning grey, not the text colour."""
+    ctx.scenario(
+        "reasoning=|+Key+|+Val+|\\n|---|---|\\n|+alpha+|+beta+|\\n\\nafter,"
+        "text=done"
+    )
+    s = ctx.spawn()
+    s.submit("go")
+    s.wait_text("done")
+    s.wait_turn_done()
+    assert attr_of(s, "Key").bold
+    assert attr_of(s, "alpha").fg == MUTED
