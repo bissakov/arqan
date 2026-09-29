@@ -440,7 +440,7 @@ void render_question(Str question) {
     Str line;
     while (str_line(question, &off, &line)) {
         tui_write_dim(STR("\u2502 "));
-        tui_write(line);
+        tui_write_text(line);
         tui_write(STR("\n"));
     }
 }

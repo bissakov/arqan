@@ -853,6 +853,7 @@ enum {
     ROW_USER,
     ROW_REASON,
     ROW_DIM,
+    ROW_MUTED,
     ROW_TOOL,
     ROW_RESULT,
     ROW_ERROR,
@@ -881,7 +882,8 @@ static b8 kind_is_block(u8 kind) {
 static const char *kind_style(u8 kind) {
     switch (kind) {
         case ROW_USER: return S_USER_BG S_TEXT;
-        case ROW_REASON: return S_SUBTLE;
+        case ROW_REASON: return S_MUTED;
+        case ROW_MUTED: return S_SUBTLE;
         case ROW_TOOL: return S_YELLOW;
         case ROW_RESULT: return S_GREEN;
         case ROW_ERROR: return S_RED;
@@ -1646,7 +1648,9 @@ static size_t wrap_seek(size_t row, size_t *at_row) {
 
 static size_t justify_pad(Str text, u8 kind, Row r, size_t cols, size_t col0) {
     if (!g_tui.justify || r.hard) return 0;
-    if (kind != ROW_PLAIN && kind != ROW_USER && kind != ROW_QUOTE) return 0;
+    if (kind != ROW_PLAIN && kind != ROW_USER && kind != ROW_QUOTE
+        && kind != ROW_REASON)
+        return 0;
     size_t used = col0 + r.width;
     if (used >= cols) return 0;
     size_t pad = cols - used;
@@ -3797,7 +3801,7 @@ void tui_write_styled(Str s, TuiStyle st) {
         [TUI_CODE] = ROW_CODE,     [TUI_QUOTE] = ROW_QUOTE,
         [TUI_BOLD] = ROW_BOLD,     [TUI_EMPH] = ROW_EMPH,
         [TUI_MONO] = ROW_MONO,     [TUI_MARKER] = ROW_MARKER,
-        [TUI_STRIKE] = ROW_STRIKE,
+        [TUI_STRIKE] = ROW_STRIKE, [TUI_REASON] = ROW_REASON,
     };
     if (st == TUI_PLAIN || (size_t)st >= sizeof kinds)
         tui_write(s);
@@ -3806,6 +3810,9 @@ void tui_write_styled(Str s, TuiStyle st) {
 }
 
 void tui_write_muted(Str s) {
+    write_span(s, ROW_MUTED);
+}
+void tui_write_reason(Str s) {
     write_span(s, ROW_REASON);
 }
 void tui_write_dim(Str s) {

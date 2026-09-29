@@ -755,3 +755,26 @@ def test_a_command_picker_leaves_the_transcript_where_it_was(ctx):
     s.key("esc")
     s.wait_status("ready")
     assert any("report line 19" in row for row in s.screen.lines())
+
+
+def test_ask_user_question_keeps_one_colour_when_it_wraps(ctx):
+    """A wrapped question reads in the text colour on every row."""
+    words = " ".join(f"word{i}" for i in range(40))
+    ctx.scenario(
+        ask(words, [{"label": "yes"}, {"label": "no"}]) + ",final_text=noted"
+    )
+    s = ctx.spawn()
+    s.submit("ask me")
+    s.wait_status("pick an answer")
+    s.key("enter")
+    s.wait_text("noted")
+    s.wait_turn_done()
+
+    first = s.screen.find_row("\u2502 word0 ")
+    assert first >= 0, s.text()
+    row = s.screen.row_text(first)
+    assert s.screen.attr_at(first, row.index("\u2502")).fg == 245  # S_MUTED
+    assert s.screen.attr_at(first, row.index("word0")).fg == 253  # S_TEXT
+    tail = s.screen.row_text(first + 1)
+    assert "word" in tail and "\u2502" not in tail, s.text()
+    assert s.screen.attr_at(first + 1, tail.index("word")).fg == 253

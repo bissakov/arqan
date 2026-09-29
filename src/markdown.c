@@ -123,7 +123,7 @@ static TuiStyle md_base(void) {
         case MD_BLOCK_HEAD: return TUI_HEADING;
         case MD_BLOCK_QUOTE: return TUI_QUOTE;
         case MD_BLOCK_CODE: return TUI_CODE;
-        default: return g_md.modes.muted ? TUI_QUOTE : TUI_PLAIN;
+        default: return g_md.modes.muted ? TUI_REASON : TUI_PLAIN;
     }
 }
 
@@ -692,7 +692,7 @@ static void md_cell_build(MdCell *c, Str src) {
 }
 
 static TuiStyle md_cell_base(b8 head) {
-    return head ? TUI_BOLD : g_md.modes.muted ? TUI_QUOTE : TUI_PLAIN;
+    return head ? TUI_BOLD : g_md.modes.muted ? TUI_REASON : TUI_PLAIN;
 }
 
 
@@ -704,7 +704,9 @@ static void md_cell_emit(const MdCell *c, size_t a, size_t b, b8 head) {
         TuiStyle style = md_cell_base(head);
         if (run < c->runs) {
             TuiStyle got = (TuiStyle)c->run_style[run];
-            if (!head || (got != TUI_PLAIN && got != TUI_QUOTE)) style = got;
+            if (!head
+                || (got != TUI_PLAIN && got != TUI_QUOTE && got != TUI_REASON))
+                style = got;
         }
         md_emit((Str){c->text.p + a, end - a}, style);
         a = end;
@@ -977,7 +979,7 @@ static b8 md_row_prefix(void) {
 void md_write(Str delta) {
     if (g_md.modes.raw || !tui_is_fullscreen()) {
         if (g_md.modes.muted && tui_is_fullscreen())
-            tui_write_muted(delta);
+            tui_write_reason(delta);
         else
             tui_write(delta);
         return;
