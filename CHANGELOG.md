@@ -8,6 +8,10 @@
   and are easier to read. Gutters, separators and timings keep the dim grey.
   Emphasis and strikeout text no longer turn grey.
 
+- With no model set, arqan now uses `gpt-5.6-sol` for the OpenAI API and
+  `claude-opus-5` for the Anthropic API, instead of `gpt-4o-mini` and
+  `claude-sonnet-4-5`.
+
 - The syntax highlighter binary is about 5 MB smaller: 8 MB instead of 13 MB.
   Highlighting takes up to about 10% longer.
 

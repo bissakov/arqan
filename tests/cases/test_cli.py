@@ -19,6 +19,15 @@ def test_short_help_matches_long(ctx):
     assert ctx.run_cli("-h").stdout == ctx.run_cli("--help").stdout
 
 
+def test_help_names_project_config_chain(ctx):
+    """--help says a project config is found in the working directory or above."""
+    out = ctx.run_cli("--help")
+    assert out.returncode == 0, out
+    text = " ".join(out.stdout.split())
+    assert "$PWD/.arqan/config.toml" not in text, out.stdout
+    assert ".arqan/config.toml in this directory or any directory above it; the nearest wins" in text, out.stdout
+
+
 def test_version(ctx):
     """--version and -v print the version and nothing else."""
     out = ctx.run_cli("--version")
@@ -80,6 +89,18 @@ def test_default_max_tokens_fits_a_long_reply(ctx):
     s.submit("hi")
     s.wait_turn_done()
     assert ctx.mock.requests[-1]["max_tokens"] == 32768, ctx.mock.requests[-1]
+
+
+def test_unset_model_falls_back_per_api(ctx):
+    """With no model set, each API gets its own current default model."""
+    ctx.scenario("text=ok")
+    out = ctx.run_cli("-p", "hi", ARQAN_MODEL=None)
+    assert out.returncode == 0, out
+    assert ctx.mock.requests[-1]["model"] == "gpt-5.6-sol", ctx.mock.requests[-1]
+    ctx.scenario("text=ok")
+    out = ctx.run_cli("-p", "hi", ARQAN_MODEL=None, ARQAN_API="anthropic")
+    assert out.returncode == 0, out
+    assert ctx.mock.requests[-1]["model"] == "claude-opus-5", ctx.mock.requests[-1]
 
 
 def test_prompt_flag_runs_one_turn(ctx):

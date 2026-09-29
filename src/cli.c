@@ -29,7 +29,8 @@ static const char g_usage[] =
     "STREAM,\n" AGENT_ENV_PREFIX "MODE, " AGENT_ENV_PREFIX
     "DISABLE_TOOLS, plus " AGENT_ENV_PREFIX "SYSTEM_PROMPT.\n"
     "Config: $XDG_CONFIG_HOME/" AGENT_NAME "/config.toml, overridden by\n"
-    "$PWD/." AGENT_NAME "/config.toml.\n"
+    "." AGENT_NAME "/config.toml in this directory or any directory above it;\n"
+    "the nearest wins.\n"
     "Without any of them, " AGENT_NAME
     " asks for a provider; /provider stores\n"
     "connections and /model picks a model from any of them.\n";
