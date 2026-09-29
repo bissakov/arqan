@@ -299,3 +299,92 @@ def test_a_start_that_saves_nothing_leaves_no_lock(ctx):
     assert not root.exists() or not [
         p for d in root.iterdir() for p in d.iterdir()
     ], "no lock file is started"
+
+
+def lock_root(ctx):
+    return ctx.home / ".local" / "state" / "arqan" / "locks"
+
+
+def lock_files(ctx):
+    root = lock_root(ctx)
+    if not root.exists():
+        return []
+    return sorted(p for d in root.iterdir() for p in d.iterdir())
+
+
+def test_an_exit_removes_the_lock_file(ctx):
+    """A lock exists only while its session is live, and so does its dir."""
+    s = live(ctx)
+    wait_until(lambda: lock_files(ctx), "a lock file for the live session")
+    s.submit("/exit")
+    s.wait_exit()
+
+    assert lock_files(ctx) == [], lock_files(ctx)
+    assert not lock_root(ctx).exists() or not list(lock_root(ctx).iterdir())
+    assert session_file(ctx).exists(), "the transcript stays"
+
+
+def test_clear_removes_the_lock_of_the_session_it_leaves(ctx):
+    """/clear ends the live session, so its lock goes with it."""
+    s = live(ctx)
+    wait_until(lambda: lock_files(ctx), "a lock file for the live session")
+
+    s.submit("/clear")
+    s.wait_gone("first answer")
+    wait_until(lambda: lock_files(ctx) == [], "the lock file removed")
+
+
+def test_a_leftover_lock_is_removed_when_sessions_are_listed(ctx):
+    """A process killed while live leaves a file no one holds; it is pruned."""
+    first = live(ctx)
+    first.submit("/exit")
+    first.wait_exit()
+
+    slug = sessions_dir(ctx).name
+    folder = lock_root(ctx) / slug
+    folder.mkdir(parents=True, exist_ok=True)
+    leftover = folder / (session_file(ctx).name + ".lock")
+    orphan = folder / "19700101-000000.jsonl.lock"
+    leftover.touch()
+    orphan.touch()
+
+    second = ctx.spawn()
+    second.submit("/resume")
+    second.wait_status("pick a session")
+    assert "live elsewhere" not in second.text(), second.text()
+    assert not leftover.exists() and not orphan.exists(), lock_files(ctx)
+
+
+def test_a_leftover_lock_does_not_block_resume(ctx):
+    """An unheld lock file is not a live session."""
+    first = live(ctx)
+    first.submit("/exit")
+    first.wait_exit()
+
+    folder = lock_root(ctx) / sessions_dir(ctx).name
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / (session_file(ctx).name + ".lock")).touch()
+
+    second = ctx.spawn(ARQAN_RESUME_LAST="true")
+    second.wait_text("first answer")
+    second.settle()
+    assert READ_ONLY not in second.text(), second.text()
+    second.submit("/exit")
+    second.wait_exit()
+    assert lock_files(ctx) == [], lock_files(ctx)
+
+
+def test_deleting_a_session_removes_its_lock(ctx):
+    """Ctrl-X takes the transcript and leaves no lock behind."""
+    first = live(ctx)
+    first.submit("/exit")
+    first.wait_exit()
+
+    second = ctx.spawn()
+    second.submit("/resume")
+    second.wait_status("pick a session")
+    second.key("ctrl-x").sync()
+    second.key("ctrl-x")
+    wait_until(lambda: not any(sessions_dir(ctx).glob("*.jsonl")),
+               "the transcript deleted")
+    assert lock_files(ctx) == [], lock_files(ctx)

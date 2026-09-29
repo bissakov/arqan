@@ -1411,7 +1411,9 @@ void todo_sync(const Conv *c, Arena *scratch);
  * $XDG_STATE_HOME/arqan/locks/<cwd>/, so a second instance that resumes the
  * same transcript gets `read_only`: it renders and exports the conversation
  * but appends nothing. The lock sits beside the data rather than on the
- * session file because a title write replaces that file.
+ * session file because a title write replaces that file. The lock file is
+ * removed when its session stops being live; one left by a killed process is
+ * pruned when sessions are listed or an instance ends.
  */
 typedef struct {
     char dir_buf[AGENT_MAX_PATH];
@@ -1448,6 +1450,7 @@ typedef struct {
 
 b8 session_init(Session *s, Arena *scratch);
 b8 session_begin(Session *s);
+void session_end(Session *s);
 void session_set_cleared(Session *s, b8 cleared);
 b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap);
 

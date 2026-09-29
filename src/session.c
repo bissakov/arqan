@@ -27,10 +27,16 @@ static size_t sess_cleared_path(const Session *s, char *out, size_t cap) {
  * an advisory lock on a file named after the session under
  * $XDG_STATE_HOME/arqan/locks/<cwd>/, so the session directory itself keeps
  * holding transcripts and nothing else. The lock is taken with the first
- * append and on resume, so a lock file exists only for a session that does.
+ * append and on resume, and the file is removed when the session stops being
+ * live, so a lock file exists only while its session is live.
  *
  * flock, not fcntl: a record lock dies when any descriptor for the file is
  * closed, and this process opens its own files freely.
+ *
+ * INVARIANT: a lock file is unlinked only by a process that holds its flock,
+ * and a lock counts as taken only when the path still names the locked inode.
+ * Otherwise a waiter can lock an unlinked file while a third process locks a
+ * new one at the same path, and both append.
  */
 
 typedef enum {
@@ -38,6 +44,8 @@ typedef enum {
     SESS_LOCK_HELD,
     SESS_LOCK_UNSUPPORTED
 } SessLockState;
+
+#define SESS_LOCK_TRIES 8
 
 static size_t sess_lock_path(const Session *s, Str path, char *out,
                              size_t cap) {
@@ -58,21 +66,36 @@ static SessLockState sess_lock_try(i32 fd) {
     return SESS_LOCK_TAKEN;
 }
 
-static SessLockState sess_lock_take(Session *s, Str path, i32 *fd) {
+static b8 sess_lock_current(i32 fd, const char *lock) {
+    struct stat held, named;
+    return fstat(fd, &held) == 0 && lstat(lock, &named) == 0
+           && held.st_dev == named.st_dev && held.st_ino == named.st_ino;
+}
+
+static SessLockState sess_lock_take(const Session *s, Str path, i32 *fd) {
     *fd = -1;
     char lock[AGENT_MAX_PATH];
-    if (!sess_lock_path(s, path, lock, sizeof lock)
-        || !paths_ensure_dir(s->lock_dir))
+    if (!sess_lock_path(s, path, lock, sizeof lock))
         return SESS_LOCK_UNSUPPORTED;
-    i32 f = open(lock, O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
-    if (f < 0) return SESS_LOCK_UNSUPPORTED;
-    SessLockState state = sess_lock_try(f);
-    if (state == SESS_LOCK_TAKEN) {
-        *fd = f;
-        return state;
+    for (i32 tries = 0; tries < SESS_LOCK_TRIES; tries++) {
+        if (!paths_ensure_dir(s->lock_dir)) return SESS_LOCK_UNSUPPORTED;
+        i32 f = open(lock, O_WRONLY | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (f < 0) {
+            if (errno == ENOENT) continue;
+            return SESS_LOCK_UNSUPPORTED;
+        }
+        SessLockState state = sess_lock_try(f);
+        b8 current =
+            state != SESS_LOCK_UNSUPPORTED && sess_lock_current(f, lock);
+        if (state == SESS_LOCK_TAKEN && current) {
+            *fd = f;
+            return state;
+        }
+        close(f);
+        if (state == SESS_LOCK_UNSUPPORTED) return state;
+        if (state == SESS_LOCK_HELD && current) return state;
     }
-    close(f);
-    return state;
+    return SESS_LOCK_HELD;
 }
 
 static b8 sess_lock_held(const Session *s, Str path) {
@@ -85,21 +108,44 @@ static b8 sess_lock_held(const Session *s, Str path) {
     return held;
 }
 
-static void sess_lock_forget(const Session *s, Str path) {
-    char lock[AGENT_MAX_PATH];
-    if (sess_lock_path(s, path, lock, sizeof lock)) unlink(lock);
-}
-
 static void sess_lock_drop(const Session *s, Str path, i32 fd) {
     if (fd < 0) return;
-    if (!path.n || access(path.p, F_OK) != 0) sess_lock_forget(s, path);
+    char lock[AGENT_MAX_PATH];
+    if (sess_lock_path(s, path, lock, sizeof lock)) unlink(lock);
     close(fd);
+    rmdir(s->lock_dir_buf);
 }
 
 static void sess_lock_release(Session *s) {
     sess_lock_drop(s, s->path, s->lock_fd);
     s->lock_fd = -1;
     s->read_only = false;
+}
+
+static void sess_lock_prune(const Session *s) {
+    if (!s->lock_dir.n) return;
+    DIR *d = opendir(s->lock_dir_buf);
+    if (!d) return;
+    for (struct dirent *e; (e = readdir(d));) {
+        Str name = str_c(e->d_name);
+        if (name.n <= 5 || memcmp(name.p + name.n - 5, ".lock", 5)) continue;
+        char lock[AGENT_MAX_PATH];
+        i32 n = snprintf(lock, sizeof lock, "%.*s/%s", (i32)s->lock_dir.n,
+                         s->lock_dir.p, e->d_name);
+        if (n <= 0 || (size_t)n >= sizeof lock) continue;
+        i32 fd = open(lock, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (fd < 0) continue;
+        if (sess_lock_try(fd) == SESS_LOCK_TAKEN && sess_lock_current(fd, lock))
+            unlink(lock);
+        close(fd);
+    }
+    closedir(d);
+    rmdir(s->lock_dir_buf);
+}
+
+void session_end(Session *s) {
+    sess_lock_release(s);
+    sess_lock_prune(s);
 }
 
 b8 session_init(Session *s, Arena *scratch) {
@@ -1004,6 +1050,7 @@ size_t session_list(const Session *s, Arena *a, SessionList *out, size_t max) {
     memset(out, 0, sizeof *out);
     if (!s->dir.n || !max) return 0;
     if (max > AGENT_MAX_SESSIONS) max = AGENT_MAX_SESSIONS;
+    sess_lock_prune(s);
 
     SessEntry ents[AGENT_MAX_SESSIONS];
     size_t n = 0;
@@ -1067,10 +1114,11 @@ b8 session_delete(const Session *s, Str path) {
     Str file = str_drop(path, s->dir.n + 1);
     if (memchr(file.p, '/', file.n) || str_eq(file, STR(".."))) return false;
     if (s->path.n && str_eq(path, s->path)) return false;
-    if (sess_lock_held(s, path)) return false;
-    if (unlink(path.p) != 0) return false;
-    sess_lock_forget(s, path);
-    return true;
+    i32 fd = -1;
+    if (sess_lock_take(s, path, &fd) == SESS_LOCK_HELD) return false;
+    b8 gone = unlink(path.p) == 0;
+    sess_lock_drop(s, path, fd);
+    return gone;
 }
 
 Str session_read(Str path, Arena *scratch) {

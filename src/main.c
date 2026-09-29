@@ -6095,6 +6095,7 @@ i32 main(i32 argc, char **argv) {
         }
         b8 ok = agent_turn(&agent, opts.prompt);
         if (ok) write_final_reply(&conv);
+        session_end(&sess);
         tui_stop();
         return ok ? 0 : 1;
     }
@@ -6272,6 +6273,7 @@ i32 main(i32 argc, char **argv) {
         agent_turn_interactive(&agent, (Str){line, ln});
     }
 
+    session_end(&sess);
     tui_stop();
     return 0;
 }
