@@ -20,6 +20,7 @@ trap 'exit 1' HUP INT TERM
 
 GENERATOR_URL=https://github.com/tree-sitter/tree-sitter/releases/download/v0.26.11/tree-sitter-linux-x64.gz
 GENERATOR_SHA=8dac3c89bb632eece700ea7a261ad963b251f2228c4aef3b58458ebea8dbe4eb
+DENSE_ROW_MIN_ENTRIES=256
 
 fetch() {
     role=$1 owner=$2 repo=$3 ref=$4 expected=$5
@@ -114,6 +115,9 @@ for parser in "$OUT"/grammars/*/parser.c; do
     }
 done
 
+python3 "$ROOT/scripts/compact-parse-tables.py" \
+    --max-entries "$DENSE_ROW_MIN_ENTRIES" "$OUT"/grammars/*/parser.c
+
 python3 "$ROOT/scripts/embed-highlights.py" "$OUT" "$WORK/queries.c"
 
 {
@@ -125,6 +129,10 @@ python3 "$ROOT/scripts/embed-highlights.py" "$OUT" "$WORK/queries.c"
     echo
     echo "Source archives:"
     sed -n '/^[^#]/p' "$SOURCES"
+    echo
+    echo "Parse table rows with at most $DENSE_ROW_MIN_ENTRIES entries are moved"
+    echo "from the dense table to the small table by"
+    echo "scripts/compact-parse-tables.py. The parsers accept the same input."
     echo
     echo "Resolved embedded-query sha256:"
     sed -n 's/.*{ "\([^"]*\)".*"\([0-9a-f][0-9a-f]*\)" }.*/\1\t\2/p' \

@@ -12,6 +12,9 @@
   `claude-opus-5` for the Anthropic API, instead of `gpt-4o-mini` and
   `claude-sonnet-4-5`.
 
+- The syntax highlighter binary is about 5 MB smaller: 8 MB instead of 13 MB.
+  Highlighting takes up to about 10% longer.
+
 ### Fixed
 
 - Text copied with the mouse no longer carries the layout. The left margin

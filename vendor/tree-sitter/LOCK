@@ -10,6 +10,10 @@ the tags recorded there. TypeScript generation additionally uses its declared
 tree-sitter-javascript v0.23.1 grammar dependency. Every shipped parser is ABI
 15 and every upstream license is copied under licenses/.
 
+Parse table rows with at most 256 entries are moved
+from the dense table to the small table by
+scripts/compact-parse-tables.py. The parsers accept the same input.
+
 Resolved embedded-query sha256:
 c	3378d854dda695b2b282b9468247524ed4271ef74af691033d2e36883379409c
 cpp	da7f4979c8aebcf8432dc454da8c3506c56a8a90ddbc0e5d2c775bbf15ccb5cc
