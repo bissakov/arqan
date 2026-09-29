@@ -8,6 +8,10 @@
   and are easier to read. Gutters, separators and timings keep the dim grey.
   Emphasis and strikeout text no longer turn grey.
 
+- With no model set, arqan now uses `gpt-5.6-sol` for the OpenAI API and
+  `claude-opus-5` for the Anthropic API, instead of `gpt-4o-mini` and
+  `claude-sonnet-4-5`.
+
 ### Fixed
 
 - Text copied with the mouse no longer carries the layout. The left margin

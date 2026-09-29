@@ -1,56 +1,33 @@
 # arqan
 
-`arqan` is a C17 terminal coding agent for OpenAI-compatible Chat Completions
-and Anthropic Messages APIs. It streams replies in a fullscreen TUI and can
-read, write, patch, search local files and the public web, fetch web pages,
-and run shell commands. `/attach` sends an image with a message to a model
-that can see it, by path, from the `@` picker, or straight from the clipboard
-with Ctrl-V.
+`arqan` is a terminal coding agent written in C17. It talks to any
+OpenAI-compatible Chat Completions API or to the Anthropic Messages API, and
+runs in a fullscreen TUI.
 
-## Build
+The model can read, search, write and patch files, run shell commands, search
+the web and fetch pages. It can also ask you to pick between options, keep a
+step list, and hand a read-only question to a subagent. You approve file
+changes and shell commands unless you turn that off.
 
-```sh
-make                 # bin/arqan and bin/arqan-highlight
-make minimal         # bin/arqan only
-make fmt             # format the sources with clang-format
-make test
-make test-asan
-```
+Linux x86_64 only.
 
-Building requires a C17 compiler and libcurl development files. Lexbor 3.0.0
-is vendored and built as a separate object; no system Lexbor package, browser,
-JavaScript runtime, API key, or web-search daemon is needed.
+## Install
 
-`.clang-format` is the house style and CI enforces it with
-`make check-format`. The clang-format major version is pinned, since output
-differs between them: `pipx install clang-format==22.1.8`.
+| Package | Needs |
+| --- | --- |
+| `.deb` (Debian, Ubuntu) | glibc 2.31+, libcurl 7.66+ (`libcurl.so.4`) |
+| `.rpm` (Fedora, RHEL and similar) | glibc 2.34+, libcurl 7.66+ (`libcurl.so.4`) |
+| `.pkg.tar.zst` (Arch and similar) | glibc 2.34+, libcurl 7.66+ (`libcurl.so.4`) |
+| `.tar.gz` (portable) | nothing but the kernel |
 
-Run `./bin/arqan`, or supply a prompt for a non-interactive response:
+All four need a CA certificate bundle at run time.
 
-```sh
-arqan -p "summarise src/tui.c"
-arqan --disable-tools bash,write,patch
-arqan --disable-tools internet_search,page_fetch
-```
+### From the package repositories
 
-## Linux installation
-
-The project release is for Linux x86_64 systems. The `.deb`, the `.rpm` and
-the `.pkg.tar.zst` link the distribution's libraries: the `.deb` wants glibc
-2.31 or newer, the `.rpm` and the Arch package glibc 2.34 or newer, and all
-three `libcurl.so.4` from libcurl 7.66 or newer; the portable archive borrows
-nothing and wants only the kernel. All four read a CA certificate bundle at
-run time. macOS, Windows, aarch64 and the AUR are not part of this release
-milestone.
-
-Install from the signed package repository to let the system package manager
-carry upgrades, or take a single package from the release and install it by
-hand.
-
-### Package repositories
-
-The repositories live at <https://bissakov.github.io/arqan>, which also prints
-the fingerprint of the key every index is signed with. They carry x86_64 only.
+The signed repositories live at <https://bissakov.github.io/arqan>. That page
+also shows the fingerprint of the signing key. Your package manager then
+handles upgrades. The repositories keep the ten newest releases; older ones
+are on the GitHub release page.
 
 Debian and Ubuntu:
 
@@ -63,7 +40,7 @@ sudo curl -fsSLo /etc/apt/sources.list.d/arqan.sources \
 sudo apt update && sudo apt install arqan
 ```
 
-RPM-based systems:
+Fedora, RHEL and similar:
 
 ```sh
 sudo rpm --import https://bissakov.github.io/arqan/arqan-archive-keyring.asc
@@ -72,8 +49,8 @@ sudo curl -fsSLo /etc/yum.repos.d/arqan.repo \
 sudo dnf install arqan
 ```
 
-Arch and its derivatives take the key, sign it locally with the fingerprint the
-landing page names, then append the repository to `/etc/pacman.conf`:
+Arch and similar. Check that the fingerprint below matches the one on the
+repository page before you sign the key:
 
 ```sh
 curl -fsSLo /tmp/arqan-archive-keyring.asc \
@@ -88,152 +65,375 @@ EOF
 sudo pacman -Syu arqan
 ```
 
-A repository carries the ten newest releases. Older ones stay on the GitHub
-release page.
+### From a release
 
-### Single packages
-
-Download `SHA256SUMS` and the package for your system, then verify and install
-it. Debian and Ubuntu users can install the native package with:
+Download `SHA256SUMS` and one package from the GitHub release page. Check it:
 
 ```sh
 sha256sum --ignore-missing -c SHA256SUMS
-sudo apt install ./arqan_X.Y.Z-1_amd64.deb
 ```
 
-RPM-based systems can install with:
+Then install it:
 
 ```sh
-sha256sum --ignore-missing -c SHA256SUMS
-sudo dnf install ./arqan-X.Y.Z-1.x86_64.rpm
+sudo apt install ./arqan_X.Y.Z-1_amd64.deb             # Debian, Ubuntu
+sudo dnf install ./arqan-X.Y.Z-1.x86_64.rpm            # Fedora, RHEL
+sudo pacman -U ./arqan-X.Y.Z-1-x86_64.pkg.tar.zst      # Arch
 ```
 
-Arch Linux and its derivatives can install with:
+To upgrade, run the same command with the newer package.
+
+The portable archive holds static musl builds. Use it when no package fits:
+a musl distribution, an older glibc, or a container with no libcurl. It runs
+in place:
 
 ```sh
-sha256sum --ignore-missing -c SHA256SUMS
-sudo pacman -U ./arqan-X.Y.Z-1-x86_64.pkg.tar.zst
-```
-
-Upgrade by passing the newer local package to the same `apt install`,
-`dnf install` or `pacman -U` command. Remove a package with:
-
-```sh
-sudo apt remove arqan       # Debian or Ubuntu
-sudo dnf remove arqan       # RPM-based systems
-sudo pacman -R arqan        # Arch-based systems
-```
-
-Package removal deletes only package-owned programs and documentation. It
-preserves configuration under `${XDG_CONFIG_HOME:-$HOME/.config}/arqan`, state
-and credentials under `${XDG_STATE_HOME:-$HOME/.local/state}/arqan`, sessions
-under `${XDG_DATA_HOME:-$HOME/.local/share}/arqan`, and project `.arqan`
-directories.
-
-The portable archive is an installer-free fallback and the choice where the
-native packages do not install. Its two programs are static-pie musl builds:
-they name no interpreter, need no shared library, and so run on a musl
-distribution, on a glibc older than the packages ask for, and in a container
-with no libcurl. They still find the system CA store at run time, and
-`SSL_CERT_FILE` or `SSL_CERT_DIR` names one elsewhere. Verify the archive
-with the same manifest, extract it, and run it in place:
-
-```sh
-sha256sum --ignore-missing -c SHA256SUMS
 tar -xzf arqan-X.Y.Z-linux-x86_64.tar.gz
-cd arqan-X.Y.Z-linux-x86_64
-./bin/arqan
+./arqan-X.Y.Z-linux-x86_64/bin/arqan
 ```
 
-On first launch, use `/provider` to add a connection and `/model` to pick a
-model. A source checkout can instead be built and run with `make` and
-`./bin/arqan`.
+If it cannot find the system CA store, point `SSL_CERT_FILE` or
+`SSL_CERT_DIR` at it.
 
-Maintainers can run `scripts/build-musl.sh`, which builds and tests the static
-pair in the pinned Alpine container and leaves it in `bin/musl`, then
-`make package-linux` to produce the tarball, `.deb`, `.rpm`, `.pkg.tar.zst`,
-and checksum manifest. The `.deb` takes the host binaries from `bin`, the
-`.rpm` and the Arch package take the EL9 ones, the archive takes the static
-ones, and packaging fails rather than shipping an archive that borrows a
-library. `make test-package-linux` checks all four formats and
-reproducibility. `make release-linux` (or `scripts/release-linux.sh`) performs
-a clean build, all tests, both builds, and packaging in the pinned Debian 11
-and Alpine containers, then tests native install, reinstall, and removal in
-disposable Debian, Ubuntu, Fedora-family, and Arch containers, checks the Arch
-package against its own file manifest with `pacman -Qkk`, and runs the archive
-in Alpine and Debian 11.
+### Remove
 
-`make publish-repos` (or `scripts/publish-repos.sh`) rebuilds the signed apt,
-dnf and pacman repositories from the packages attached to the published
-releases, and `.github/workflows/publish-repos.yml` runs it on every published
-release and deploys the result to GitHub Pages.
-`packaging/linux/REPOSITORIES.md` records the layout, what each format signs,
-and how the signing key is held.
+```sh
+sudo apt remove arqan       # Debian, Ubuntu
+sudo dnf remove arqan       # Fedora, RHEL
+sudo pacman -R arqan        # Arch
+```
+
+Removing the package does not touch your files. These stay:
+
+- config in `${XDG_CONFIG_HOME:-$HOME/.config}/arqan`
+- state and API keys in `${XDG_STATE_HOME:-$HOME/.local/state}/arqan`
+- sessions in `${XDG_DATA_HOME:-$HOME/.local/share}/arqan`
+- `.arqan` directories in your projects
+
+## First run
+
+Run `arqan`. It asks for a provider on first start. Use `/provider` to add a
+connection (base URL, API type and key), then `/model` to pick a model.
+
+## Use
+
+Type a message and press Enter. `/` opens the command list and `@` opens the
+file picker.
+
+### Modes and permissions
+
+- **Build mode** is the default. The model can use every tool.
+- **Plan mode** allows only tools that read. The model ends with a plan for
+  you to approve. Switch with `/mode` or Shift+Tab.
+
+With `permissions = "ask"`, the default, arqan asks before it runs a shell
+command, writes or patches a file, calls an MCP tool, or reads outside the
+project. You can approve one call or the whole class until arqan exits. With
+`permissions = "free"` it never asks. Change it in `/settings`.
+
+### Commands
+
+| Command | Does |
+| --- | --- |
+| `/clear` (`/new`) | Start a new conversation |
+| `/resume` | Resume or delete a saved session from this directory |
+| `/fork` | Continue in a copy of this session |
+| `/rewind` | Go back to an earlier message and edit it |
+| `/compact` | Summarize this session and continue in a new one |
+| `/title` | Name this session; `/title auto` lets the small model do it |
+| `/export` | Export this session as Markdown |
+| `/model` | Pick a model from any provider |
+| `/provider` | Add, edit or remove a provider |
+| `/mode` | Switch between Build and Plan mode (Shift+Tab) |
+| `/attach` | Attach an image, by path or from the clipboard (Ctrl-V) |
+| `/copy` | Copy the last reply to the clipboard |
+| `/find` (`/search`) | Search the transcript (Ctrl-R) |
+| `/todo` | Show the model's step list |
+| `/task` | Show what the subagent is doing (Ctrl-O) |
+| `/mcp` | List, approve, reject, restart or disable MCP servers |
+| `/settings` (`/config`) | Change settings |
+| `/statusline` | Choose what the status line shows |
+| `/keys` | Show the keyboard shortcuts |
+| `/help` | Ask the model how to use arqan |
+| `/about` | Version and contributors |
+| `/restart` | Restart arqan |
+| `/exit` (`/quit`) | Quit |
+
+`/attach` exists only when `images` is not `off`, `/task` only when
+`subagents` is on, and `/mcp` only when `mcp` is on.
+
+### One-shot runs
+
+```sh
+arqan -p "summarise src/tui.c"
+arqan -p "list the TODOs" --disable-tools bash,write,patch
+```
+
+`-p` runs one turn and prints the reply. In `ask` mode there is no one to
+approve a call, so shell commands and file changes are refused. Set
+`permissions = "free"` only for input you trust. Run `arqan --help` for all
+options.
+
+### Images
+
+`/attach` sends an image with your next message, to a model that can see
+images. Give a path, pick a file with `@`, or paste from the clipboard with
+Ctrl-V (needs `wl-paste`, `xclip` or `pngpaste`). An image over the size limit
+is refused, not resized. Set `images = "off"` to send no images at all.
+
+### Sessions
+
+Every conversation is saved per working directory, under
+`${XDG_DATA_HOME:-$HOME/.local/share}/arqan/sessions/`. Use `/resume` to go
+back to one, or set `resume_last = true` to start in the newest.
+
+When the context fills up, arqan first replaces old tool output with a short
+note (`elide_at`, 75% of the window by default). At `compact_at` (85%) it
+summarizes the session and continues in a new one. Set `compact = "manual"`
+to only compact with `/compact`, or `"off"` to never do it.
 
 ## Configure
 
-A provider is a connection: a base URL, an API flavour, and a key. A model is
-a `(provider, model)` pair. `/provider` adds, edits, and removes connections;
-`/model` lists every configured provider and picks a pair from any of them, so
-there is no provider to switch. Alternatively set:
+### Providers and keys
+
+A provider is a connection: a base URL, an API type and a key. A model is a
+pair of provider and model name. `/model` lists models from every provider,
+so you never switch provider by hand.
+
+`/provider` saves the connection to your config file and the key to
+`${XDG_STATE_HOME:-$HOME/.local/state}/arqan/credentials.toml` with mode 0600.
+arqan refuses that file if group or others have any permission on it. Instead of the file,
+`/provider` can keep the key in the Secret Service (`secret-tool`), in
+`pass`, in the macOS keychain, or read it from a command you give.
+
+You can also skip `/provider` and use the environment:
 
 ```sh
 export ARQAN_BASE_URL=https://api.openai.com/v1
-export ARQAN_MODEL=gpt-5.6-sol
-export ARQAN_API_KEY=sk-...
 export ARQAN_API=openai       # or anthropic
+export ARQAN_MODEL=example-model
+export ARQAN_API_KEY=sk-...
 ```
 
-Every setting is `ARQAN_<NAME>` in the environment and `<name>` in a config
-file, which is TOML:
+### Config files
+
+Config files are TOML. Every setting is `name` in a file and `ARQAN_NAME` in
+the environment.
 
 ```toml
-# $XDG_CONFIG_HOME/arqan/config.toml
-base_url = "https://api.openai.com/v1"
-model = "gpt-4o-mini"
-api_key = "sk-..."
-api = "openai"
+# ~/.config/arqan/config.toml
+provider = "openai"        # the [providers.<name>] section to use
+model = "example-model"
 max_tokens = 32768
-stream = true
-images = "auto"    # "off" withdraws /attach and sends no image
-resume_last = false  # true starts in this directory's newest session
+permissions = "ask"
 
 [providers.openai]
 base_url = "https://api.openai.com/v1"
-api = "openai"
+api = "openai"             # or "anthropic"
+model = "example-model"    # default model for this provider
+small_model = "example-small-model"
 ```
 
-A project overrides that in `.arqan/config.toml`, which is looked for in the
-working directory and every directory above it, nearest last. It arrives with
-a `git clone`, so it may not set `api_key` or anything naming a key store;
-such a line is reported and ignored.
+A setting can come from several places. Later ones win:
 
-Precedence, lowest first: defaults, `$XDG_CONFIG_DIRS/arqan/config.toml`,
-`$XDG_CONFIG_HOME/arqan/config.toml`, `.arqan/config.toml`, remembered UI
-choices in `$XDG_STATE_HOME/arqan/state.toml`, the chosen provider's section,
-`ARQAN_*`, then command-line options. `/provider` writes provider definitions
-to the user's config and keys to `$XDG_STATE_HOME/arqan/credentials.toml`
-(mode 0600); `/model` remembers the chosen pair in the state file. Run
-`arqan --help` for all options.
+1. built-in defaults
+2. `$XDG_CONFIG_DIRS/arqan/config.toml`
+3. `$XDG_CONFIG_HOME/arqan/config.toml`
+4. `.arqan/config.toml` in the working directory and each directory above
+   it; the nearest one wins
+5. choices remembered in `$XDG_STATE_HOME/arqan/state.toml`, such as the
+   model you picked
+6. the chosen provider's section
+7. `ARQAN_*` environment variables
+8. command-line options
+
+### Project config
+
+A `.arqan/config.toml` comes with a `git clone`, so arqan does not trust it.
+It may not set anything that sends data or a key somewhere, runs a command,
+or widens what the model may do. These settings are refused in a project file:
+
+`base_url`, `api`, `api_key`, `permissions`, `telemetry`, `notify_command`,
+`search_endpoint`, `search_api_key`, `search_engine_id`, `small_provider`,
+`ask_timeout_ms`, `shell_timeout_ms`, `images`, `cache_guard`,
+`subagent_tasks`, `subagent_slice_ms`, `mcp`, `mcp_timeout_ms`.
+
+A refused line is reported and dropped. A provider defined in a project file
+gets no API key and may not redefine a provider you configured. arqan also
+ignores a project file, prompt or `AGENTS.md` that belongs to another user or
+that others can write to.
+
+### Settings
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `provider` | | Provider section to use |
+| `model` | | Model name |
+| `base_url` | | API base URL |
+| `api` | `openai` | `openai` or `anthropic` |
+| `api_key` | | API key |
+| `max_tokens` | `32768` | Most tokens one reply may use |
+| `max_messages` | `4096` | Most messages in one conversation |
+| `stream` | `true` | Show a reply as it arrives |
+| `mode` | `build` | `build` or `plan` |
+| `permissions` | `ask` | `ask` or `free` |
+| `disable_tools` | | Comma-separated tools the model may not call |
+| `retries` | `4` | Retries for a failed request |
+| `retry_delay_ms` | `2000` | Delay before the first retry; it doubles each time |
+| `shell_timeout_ms` | `120000` | Longest wait for a shell command |
+| `ask_timeout_ms` | `180000` | How long a question with a recommended answer waits for you |
+| `small_model` | | Cheaper model for titles, and optionally compaction and subagents |
+| `small_provider` | | Provider of `small_model` |
+| `auto_title` | `true` | Name a session after its first turn (needs `small_model`) |
+| `resume_last` | `false` | Start in this directory's newest session |
+| `compact` | `auto` | `off`, `manual` or `auto` |
+| `compact_at` | `85` | Percent of the context window that triggers compaction |
+| `elide_at` | `75` | Percent at which old tool output is replaced by a note |
+| `compact_model` | `main` | `main` or `small` |
+| `cache_guard` | `stop` | On a prompt cache rebuild arqan did not cause: `stop`, `warn` or `off` |
+| `subagents` | `true` | Offer the `task` tool |
+| `subagent_model` | `main` | `main` or `small` |
+| `subagent_tasks` | `1` | Subagent tasks that may run at once |
+| `subagent_slice_ms` | `120000` | How long a subagent task runs before it reports back; `0` for no limit |
+| `images` | `auto` | `auto` or `off` |
+| `search_backend` | `auto` | See [Web search](#web-search) |
+| `search_endpoint` | | SearXNG URL |
+| `search_api_key` | | Brave API or Google key |
+| `search_engine_id` | | Google engine ID |
+| `mcp` | `false` | Start MCP servers from `mcp.json` |
+| `mcp_timeout_ms` | `30000` | Timeout for an MCP request |
+| `notify` | `osc9` | `off`, `bel`, `osc9` or `both` |
+| `notify_command` | | Command to run on a notification |
+| `notify_min_ms` | `10000` | Notify only for turns longer than this |
+| `telemetry` | `false` | Write a local debug log |
+| `wrap` | `word` | `word` or `justified` |
+| `verbose_tools` | `false` | Show every line of tool output |
+| `raw_markdown` | `false` | No Markdown or syntax highlighting |
+| `show_ignored` | `false` | Offer files that `.gitignore` and `.ignore` exclude |
+| `show_instructions` | `false` | Show the system prompt and `AGENTS.md` in the transcript |
+| `status_fields` | `2047` | Status line fields, as a bit mask; set it with `/statusline` |
+
+### System prompt and AGENTS.md
+
+arqan uses the first system prompt it finds:
+
+1. `--system` or `ARQAN_SYSTEM_PROMPT`
+2. `.arqan/SYSTEM.md` in the working directory or a directory above it
+3. `SYSTEM.md` in the arqan config directory
+4. the built-in prompt
+
+Plan mode reads `PLAN.md` from the same places instead.
+
+Every `AGENTS.md` from the working directory up to `/` is added after the
+prompt. Where two conflict, the one nearer the working directory wins.
+
+### Web search
+
+`internet_search` needs no key by default. `search_backend` picks the engine:
+
+| Value | Needs |
+| --- | --- |
+| `auto` | nothing; tries DuckDuckGo, then Brave |
+| `ddg` | nothing |
+| `brave` | nothing |
+| `brave_api` | `search_api_key` |
+| `google` | `search_api_key` and `search_engine_id` |
+| `searxng` | `search_endpoint` |
+
+### MCP servers
+
+Set `mcp = true`, then list servers in `mcp.json` in the arqan config
+directory or in a project `.arqan` directory:
+
+```json
+{
+  "servers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_TOKEN": "$GITHUB_TOKEN" }
+    },
+    "linear": {
+      "url": "https://mcp.linear.app/mcp",
+      "auth": { "type": "bearer", "token": "$LINEAR_TOKEN" }
+    }
+  }
+}
+```
+
+`command` starts a local server; `url` connects over HTTP. A server from a
+project file does not start until you approve it with `/mcp approve <name>`.
+The file is read again before each turn. See [docs/mcp.md](docs/mcp.md) for
+the details.
+
+### Notifications
+
+When a turn ends or needs your input, arqan notifies through the terminal with
+OSC 9 (`notify`). Set `notify_command` to run a program instead. It gets one
+line of JSON on stdin with `kind`, `text` and `cwd`.
+
+### Telemetry
+
+Off by default. When on, arqan writes an anonymized debug log to
+`${XDG_STATE_HOME:-$HOME/.local/state}/arqan/telemetry/` for you to attach to
+a bug report. It records the shape of a session, not your messages, the
+model's replies, file paths, tool arguments or URLs. Nothing is sent anywhere.
 
 ## tmux
 
-arqan copies (`/copy` and a drag-select) with OSC 52 and notifies with OSC 9,
-which is what makes both work over ssh with no helper process. tmux stands
-between arqan and the terminal for each of them and drops both by default:
+arqan copies (`/copy` and mouse selection) with OSC 52 and notifies with
+OSC 9. Both work over ssh with no helper program. tmux drops both by default.
+Add to `~/.tmux.conf`:
 
 ```sh
-set -s set-clipboard on        # let arqan set the clipboard
-set -g allow-passthrough all   # let desktop notifications through, from any
-                               # pane, visible or not (tmux 3.4+; 'on' covers
-                               # only the visible ones)
+set -s set-clipboard on        # allow copying
+set -g allow-passthrough all   # allow notifications from any pane (tmux 3.4+;
+                               # 'on' covers only visible panes)
 ```
 
-`set-clipboard` also needs the `Ms` capability for the terminal outside tmux,
-which tmux adds by itself only for `TERM` matching `xterm*`; otherwise add
-`set -as terminal-features ',<term>:clipboard'`. A copy is written blind, so
-arqan cannot report whether it landed: under tmux it says which option
-carries it rather than claiming success.
+`set-clipboard` also needs the outer terminal to have the `Ms` capability.
+tmux adds it on its own only when `TERM` matches `xterm*`. For another
+terminal, add `set -as terminal-features ',<term>:clipboard'`.
+
+arqan cannot confirm that a copy worked. Under tmux it tells you which option
+must be on.
+
+## Build from source
+
+You need a C17 compiler and the libcurl development files. Lexbor 3.0.0 and
+Tree-sitter are vendored.
+
+```sh
+make            # bin/arqan and bin/arqan-highlight
+make minimal    # bin/arqan only
+./bin/arqan
+```
+
+`arqan-highlight` does syntax highlighting in code blocks. arqan looks for it
+next to its own binary, then on `PATH`. Without it, code shows without colour.
+
+## Development
+
+The app is a unity build: `src/main.c` includes every `.c` file, and
+`src/agent.h` is the shared header. Memory comes from arenas set up at start,
+not `malloc`. `AGENTS.md` has the full rules.
+
+```sh
+make test         # end-to-end TUI suite
+make test-unit    # arena, string and JSON tests
+make test-asan    # ASan and UBSan
+make bench        # benchmarks and stress cases
+make fmt          # format with clang-format
+make check-format # check formatting only
+```
+
+`make fmt` needs clang-format 22, since other versions format differently:
+`pipx install clang-format==22.1.8`. CI runs `make check-format`.
+
+See [tests/README.md](tests/README.md) for writing test cases,
+[bench/README.md](bench/README.md) for the benchmarks, and
+[packaging/linux/README.md](packaging/linux/README.md) for building and
+publishing release packages.
 
 ## Performance
 
@@ -267,19 +467,13 @@ metrics and slow stress cases.
 ## License
 
 Except where otherwise noted, arqan is licensed under the
-[Mozilla Public License 2.0](LICENSE). Vendored Tree-sitter components retain
-their upstream licenses under
-[`vendor/tree-sitter/licenses/`](vendor/tree-sitter/licenses/). The vendored
-Lexbor 3.0.0 HTML parser retains its Apache-2.0 license and notice in
-[`vendor/lexbor/`](vendor/lexbor/).
+[Mozilla Public License 2.0](LICENSE). Vendored Tree-sitter components keep
+their licenses in [`vendor/tree-sitter/licenses/`](vendor/tree-sitter/licenses/).
+The vendored Lexbor 3.0.0 HTML parser keeps its Apache-2.0 license and notice
+in [`vendor/lexbor/`](vendor/lexbor/). See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-## Development
+## Links
 
-The app is a unity build: `src/main.c` includes all implementation files and
-`src/agent.h` is the shared header. Application memory comes from startup
-arenas, not `malloc`. See [tests/README.md](tests/README.md) for the TUI test
-harness and writing cases.
-
-`make bench` measures the same binary through the same harness: cost per
-keystroke, per delta, per turn and per tool call, plus stress cases that only
-assert survival. See [bench/README.md](bench/README.md).
+- [CHANGELOG.md](CHANGELOG.md)
+- Issues: <https://github.com/bissakov/arqan/issues>
