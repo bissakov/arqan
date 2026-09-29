@@ -2457,7 +2457,7 @@ static const WelcomeLine k_welcome[] = {
     WLINE(" \\__,_|_|  \\__, |\\__,_|_| |_|", true),
     WLINE("              |_|", true),
     WLINE("", false),
-    WLINE(AGENT_NAME " " AGENT_VERSION " · a tiny terminal coding agent",
+    WLINE(AGENT_NAME " " AGENT_BUILD_VERSION " · a tiny terminal coding agent",
           false),
     WLINE("", false),
     WLINE("type a message and press Enter to begin", false),
@@ -3085,11 +3085,11 @@ void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
         char banner[512];
         i32 n = setup ? snprintf(banner, sizeof banner,
                                  AGENT_NAME " %s · setup tools=%zu\n",
-                                 AGENT_VERSION, tool_count)
+                                 AGENT_BUILD_VERSION, tool_count)
                       : snprintf(banner, sizeof banner,
                                  AGENT_NAME
                                  " %s · model=%.*s base=%.*s tools=%zu\n",
-                                 AGENT_VERSION, (i32)model.n, model.p,
+                                 AGENT_BUILD_VERSION, (i32)model.n, model.p,
                                  (i32)base_url.n, base_url.p, tool_count);
         if (n > 0)
             put_raw(banner,

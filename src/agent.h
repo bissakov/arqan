@@ -24,6 +24,10 @@ typedef double f64;
 typedef bool b8;
 
 #define AGENT_VERSION "0.9.1"
+#ifndef AGENT_BUILD_REV
+#define AGENT_BUILD_REV ""
+#endif
+#define AGENT_BUILD_VERSION AGENT_VERSION AGENT_BUILD_REV
 
 #define AGENT_NAME       "arqan"
 #define AGENT_ENV_PREFIX "ARQAN_"

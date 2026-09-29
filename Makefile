@@ -11,6 +11,26 @@ MATH_LIBS ?= -Wl,--as-needed -lm
 
 CFLAGS += $(EXTRA_CFLAGS)
 
+ifeq ($(origin BUILD_REV),undefined)
+BUILD_REV := $(shell \
+    top=$$(git -C '$(CURDIR)' rev-parse --show-toplevel 2>/dev/null) && \
+    [ "$$top" = '$(CURDIR)' ] && \
+    hash=$$(git -C '$(CURDIR)' rev-parse --short=7 HEAD 2>/dev/null) && \
+    { git -C '$(CURDIR)' update-index -q --refresh >/dev/null 2>&1; \
+      if git -C '$(CURDIR)' diff-index --quiet HEAD -- 2>/dev/null; \
+      then echo "g$$hash"; else echo "g$$hash-dirty"; fi; })
+endif
+export BUILD_REV
+
+ifneq ($(BUILD_REV),)
+ifneq ($(shell printf '%s\n' '$(BUILD_REV)' | grep -Ex 'g[0-9a-f]{7,40}(-dirty)?'),$(BUILD_REV))
+$(error BUILD_REV must look like g1a2b3c4 or g1a2b3c4-dirty, or be empty)
+endif
+REV_CFLAGS := -DAGENT_BUILD_REV='"+$(BUILD_REV)"'
+else
+REV_CFLAGS :=
+endif
+
 CURL_MODE ?= dlopen
 CURL_CFLAGS :=
 ifeq ($(CURL_MODE),dlopen)
@@ -41,6 +61,7 @@ BINDIR  ?= bin
 
 SRC     := src/main.c
 OBJ     := $(BUILDDIR)/arqan.o
+REV_STAMP := $(BUILDDIR)/build-rev
 LEXBOR_OBJ := $(BUILDDIR)/vendor/lexbor.o
 BIN     := $(BINDIR)/arqan
 TEST_OBJ := $(BUILDDIR)/arqan-test.o
@@ -74,7 +95,7 @@ FMT_SRC := $(wildcard src/*.c src/*.h highlight/*.c highlight/*.h \
         bench bench-fast bench-slow bench-baseline fuzz \
         bench-guard check-curl-types check-cppcheck check-sparse check-flawfinder check-valgrind check-lint lint \
         check-globals test-unit fmt check-format check-clang-format \
-        package-linux test-package-linux release-linux publish-repos
+        package-linux test-package-linux release-linux publish-repos FORCE
 
 all: $(BIN) $(HL_BIN)
 
@@ -84,9 +105,16 @@ $(BIN): $(OBJ) $(LEXBOR_OBJ)
 	@mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) $(OBJ) $(LEXBOR_OBJ) -o $@ $(LDFLAGS) $(LIBS) $(MATH_LIBS)
 
-$(OBJ): $(SRC) $(wildcard src/*.c) $(wildcard src/*.h)
+$(REV_STAMP): FORCE
 	@mkdir -p $(BUILDDIR)
-	$(CC) $(CFLAGS) $(CURL_CFLAGS) -c $(SRC) -o $@
+	@if [ ! -f '$@' ] || [ "$$(cat '$@')" != '$(BUILD_REV)' ]; then \
+	    printf '%s\n' '$(BUILD_REV)' > '$@'; fi
+
+FORCE:
+
+$(OBJ): $(SRC) $(wildcard src/*.c) $(wildcard src/*.h) $(REV_STAMP)
+	@mkdir -p $(BUILDDIR)
+	$(CC) $(CFLAGS) $(CURL_CFLAGS) $(REV_CFLAGS) -c $(SRC) -o $@
 
 $(LEXBOR_OBJ): vendor/lexbor/bridge.c vendor/lexbor/bridge.h \
                vendor/lexbor/lexbor.c

@@ -97,6 +97,14 @@ for path in README.md CHANGELOG.md LICENSE THIRD_PARTY_NOTICES.md \
     chmod 0644 "$payload/doc/$path"
 done
 
+# A release names its version only. The rpm's pair cannot run on this host,
+# so look for the build metadata in the bytes.
+for staged in bin el9 static; do
+    if LC_ALL=C grep -aqF "$version+g" "$payload/$staged/arqan"; then
+        fail "$staged/arqan carries a build commit; rebuild with BUILD_REV= or run scripts/release-linux.sh"
+    fi
+done
+
 "$payload/bin/arqan" --version >/dev/null || fail 'staged arqan diagnostic failed'
 "$payload/bin/arqan-highlight" --version >/dev/null || fail 'staged arqan-highlight diagnostic failed'
 "$payload/static/arqan" --version >/dev/null || fail 'staged static arqan diagnostic failed'

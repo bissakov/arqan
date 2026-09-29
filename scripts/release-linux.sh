@@ -11,6 +11,10 @@ FEDORA_IMAGE=fedora:43@sha256:762d73ba1c455232b0272c5d445a34f36c4b9f421cbc05ce81
 ALPINE_IMAGE=alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
 ARCH_IMAGE=archlinux:base@sha256:b0deabeb3d283da2c7f7dbf0eea051b7b2cd0554e0b737cc457fd21683bdcdd1
 
+# A release reports the plain version, even when HEAD is not the merged commit.
+BUILD_REV=
+export BUILD_REV
+
 fail() {
     printf '%s\n' "$PROGRAM release: $*" >&2
     exit 1
@@ -44,6 +48,7 @@ release_in() {
         --user "$uid:$gid" \
         -e HOME=/tmp/arqan-home \
         -e SOURCE_DATE_EPOCH="$epoch" \
+        -e BUILD_REV \
         -v "$ROOT:/work" \
         -w /work \
         "$IMAGE" \
