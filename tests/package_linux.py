@@ -168,6 +168,13 @@ def check_member(
         fail(f"unexpected entry type: {member.name}")
 
 
+def check_plain_version(binary: Path) -> None:
+    """A release reports its version with no build commit."""
+    out = run(binary, "--version").stdout
+    if out != f"arqan {version()}\n":
+        fail(f"{binary} --version printed {out!r}, not the plain version")
+
+
 def check_executables(root: Path) -> None:
     # libcurl is opened at the first request, so it is named by the package's
     # dependencies and not by the binary. Debian 11 predates glibc 2.34 and
@@ -180,6 +187,7 @@ def check_executables(root: Path) -> None:
         binary = root / "usr/bin" / name
         run(binary, "--version")
         check_elf(binary, dependencies)
+    check_plain_version(root / "usr/bin/arqan")
 
 
 def check_el9_executables(root: Path) -> None:
@@ -229,6 +237,7 @@ def check_tarball(archive: Path, top: str, epoch: int, temp: Path) -> None:
     check_static_elf(root / "bin/arqan-highlight")
     run(root / "bin/arqan", "--version")
     run(root / "bin/arqan-highlight", "--version")
+    check_plain_version(root / "bin/arqan")
 
 
 def deb_expected() -> set[str]:

@@ -1,8 +1,11 @@
 """Command line: help, version, option errors, overrides and one-shot runs."""
 
 import json
+import os
+import re
+import subprocess
 
-from tests.context import VERSION
+from tests.context import BIN, VERSION
 
 
 def test_help_exits_cleanly(ctx):
@@ -34,6 +37,41 @@ def test_version(ctx):
     assert out.returncode == 0, out
     assert out.stdout == f"arqan {VERSION}\n", out.stdout
     assert ctx.run_cli("-v").stdout == out.stdout
+
+
+def test_dev_build_names_its_commit(ctx):
+    """The development binary adds the commit it was built from to its version.
+
+    `make` exports BUILD_REV, so under `make test` the expected text is exact.
+    Run another way, the suffix may be absent but must have the Git form.
+    """
+    dev_bin = BIN.parent / "arqan"
+
+    def run(*args: str, stdin_text: str = ""):
+        return subprocess.run(
+            [str(dev_bin), *args],
+            input=stdin_text,
+            env=ctx.env(),
+            cwd=str(ctx.work),
+            capture_output=True,
+            text=True,
+            timeout=15.0,
+        )
+
+    out = run("--version")
+    assert out.returncode == 0, out
+    if "BUILD_REV" in os.environ:
+        rev = os.environ["BUILD_REV"]
+        want = f"arqan {VERSION}+{rev}\n" if rev else f"arqan {VERSION}\n"
+        assert out.stdout == want, (out.stdout, want)
+    else:
+        pattern = rf"^arqan {re.escape(VERSION)}(\+g[0-9a-f]{{7,40}}(-dirty)?)?\n$"
+        assert re.match(pattern, out.stdout), out.stdout
+    assert run("-v").stdout == out.stdout
+
+    banner = run(stdin_text="/exit\n")
+    assert banner.returncode == 0, banner
+    assert f"{out.stdout.strip()} " in banner.stdout, (out.stdout, banner.stdout)
 
 
 def test_unknown_option_is_refused(ctx):

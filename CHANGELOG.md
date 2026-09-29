@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- Development builds show the commit they came from, as in `0.9.1+g1a2b3c4`,
+  with `-dirty` when tracked files have uncommitted changes. Release packages
+  show the plain version.
+
 ### Changed
 
 - Tool output, tool arguments and block quotes use a brighter grey and are

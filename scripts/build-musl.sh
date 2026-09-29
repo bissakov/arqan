@@ -50,6 +50,7 @@ fi
 docker run --rm --platform linux/amd64 \
     --user "$(id -u):$(id -g)" \
     -e HOME=/tmp/$PROGRAM-home \
+    -e BUILD_REV \
     -v "$ROOT:/work" \
     -w /work \
     "$IMAGE" \

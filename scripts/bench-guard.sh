@@ -54,6 +54,8 @@ flush() {
 
 printf 'reference %s (%s)\n' "$(git rev-parse --short "$sha")" "$ref"
 git worktree add --detach "$tree" "$sha" >/dev/null
+# The outer make exported this tree's commit; each build works out its own.
+unset BUILD_REV
 make -C "$tree" -j"$jobs" all >/dev/null
 flush "$tree"
 

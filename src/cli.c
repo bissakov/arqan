@@ -101,7 +101,7 @@ static b8 cli_option(CliArg *a, char c, const char *lng, b8 *done) {
         return true;
     }
     if (OPT('v', "version")) {
-        printf(AGENT_NAME " %s\n", AGENT_VERSION);
+        printf(AGENT_NAME " %s\n", AGENT_BUILD_VERSION);
         *done = true;
         return true;
     }
