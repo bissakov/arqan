@@ -1,5 +1,6 @@
 --- screen 80x24 ---
 |
+|  Sent at <clk>
 |▌
 |▌ what is in notes.txt?
 |▌
@@ -9,7 +10,6 @@
 |     hello from disk
 |
 |  I read the file.
-|
 |
 |
 |

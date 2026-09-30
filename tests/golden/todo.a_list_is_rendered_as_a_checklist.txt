@@ -1,5 +1,6 @@
 --- screen 80x24 ---
 |
+|  Sent at <clk>
 |▌
 |▌ do the long thing
 |▌
@@ -11,7 +12,6 @@
 |  └─ 3 todos: 1 done, 1 in progress, 1 pending · <t>
 |
 |  all set
-|
 |
 |
 |

@@ -1,6 +1,7 @@
 """A full turn against the dummy provider: request, SSE deltas, transcript."""
 
 import json
+import re
 
 RULE = "\u258c"     # the rule down the left of a user turn
 
@@ -164,7 +165,7 @@ def test_conversation_is_cumulative(ctx):
 
 
 def test_reply_keeps_one_blank_row_before_the_next_turn(ctx):
-    """A reply and the user box that follows it are one blank row apart."""
+    """A reply and the next turn's timestamp are one blank row apart."""
     ctx.scenario("text=first+answer")
     s = ctx.spawn()
     s.submit("one")
@@ -179,13 +180,13 @@ def test_reply_keeps_one_blank_row_before_the_next_turn(ctx):
     lines = s.screen.lines()
     reply = s.screen.find_row("first answer")
     box = s.screen.find_row("two")
-    # One air row, then the box's own top padding row: the padding carries no
-    # text either, but it belongs to the turn and so carries its rule.
     empty = [i for i in range(reply + 1, box) if not lines[i].strip(RULE)]
     assert len(empty) == 2, s.screen.snapshot()
     assert not lines[reply + 1], s.screen.snapshot()
+    assert re.fullmatch(r"Sent at \d{2}:\d{2}", lines[reply + 2].strip()), \
+        s.screen.snapshot()
     assert lines[box - 1] == RULE, s.screen.snapshot()
-    assert box - reply == 3, s.screen.snapshot()
+    assert box - reply == 4, s.screen.snapshot()
 
 
 def test_long_output_scrolls_and_shows_a_scrollbar(ctx):

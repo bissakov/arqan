@@ -44,6 +44,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -1859,8 +1860,19 @@ static void render_user_media(const Conv *c, size_t i) {
 
 static void render_user_message(const Conv *c, size_t i) {
     Str text = c->text[i];
+    char timestamp[32];
+    Str shown = {0};
+    if (c->sent_at[i] > 0) {
+        time_t sent_at = (time_t)c->sent_at[i];
+        struct tm local;
+        if ((i64)sent_at == c->sent_at[i] && localtime_r(&sent_at, &local)) {
+            size_t n =
+                strftime(timestamp, sizeof timestamp, "Sent at %H:%M", &local);
+            if (n) shown = (Str){timestamp, n};
+        }
+    }
     tui_pin((u32)(i + 1));
-    tui_user_begin();
+    tui_user_begin(shown);
     md_write(text);
     md_end();
     render_user_media(c, i);
@@ -5411,6 +5423,7 @@ static void mcp_starting(Str name, void *ud) {
 
 static b8 agent_turn(Agent *ag, Str text) {
     Conv *conv = ag->conv;
+    time_t sent_at = time(NULL);
 
     size_t media_off = 0, media_n = 0;
     Str user_text = turn_bind_images(ag, text, &media_off, &media_n);
@@ -5428,6 +5441,7 @@ static b8 agent_turn(Agent *ag, Str text) {
         say_conv_full();
         return false;
     }
+    if (sent_at > 0) conv->sent_at[conv->n - 1] = (i64)sent_at;
     if (media_n) conv_attach_media(conv, conv->n - 1, media_off, media_n);
     ag->compact_seen = false;
     ag->compact_short = false;

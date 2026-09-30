@@ -1,11 +1,11 @@
 --- screen 80x24 ---
 |
+|  Sent at <clk>
 |▌
 |▌ hi
 |▌
 |
 |  done
-|
 |
 |
 |

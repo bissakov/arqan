@@ -3875,9 +3875,13 @@ void tui_syntax_commit(void) {
     repaint();
 }
 
-void tui_user_begin(void) {
+void tui_user_begin(Str timestamp) {
     if (g_tui.detached) return;
     tui_block();
+    if (timestamp.n) {
+        tui_write_dim(timestamp);
+        tui_write(STR("\n"));
+    }
     if (!g_tui.fullscreen) {
         tui_write(STR("> "));
         return;
@@ -3899,7 +3903,7 @@ void tui_user_end(void) {
 }
 
 void tui_write_user(Str s) {
-    tui_user_begin();
+    tui_user_begin((Str){0});
     tui_write(s);
     tui_user_end();
 }

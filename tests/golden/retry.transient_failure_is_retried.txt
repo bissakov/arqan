@@ -1,5 +1,6 @@
 --- screen 80x24 ---
 |
+|  Sent at <clk>
 |▌
 |▌ say hi
 |▌
@@ -9,7 +10,6 @@
 |  [HTTP 503: mock provider error; retrying in 20ms (attempt 3 of 4)]
 |
 |  hello there
-|
 |
 |
 |

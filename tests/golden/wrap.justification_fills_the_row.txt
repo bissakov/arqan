@@ -1,5 +1,6 @@
 --- screen 80x24 ---
 |
+|  Sent at <clk>
 |▌
 |▌ say it
 |▌
@@ -8,7 +9,6 @@
 |  w13xxx w14xxxx w15 w16x w17xx w18xxx  w19xxxx w20 w21x w22xx w23xxx  w24xxxx
 |  w25 w26x w27xx w28xxx w29xxxx w30  w31x w32xx w33xxx w34xxxx w35 w36x  w37xx
 |  w38xxx w39xxxx
-|
 |
 |
 |

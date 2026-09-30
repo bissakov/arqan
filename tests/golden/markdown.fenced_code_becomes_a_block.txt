@@ -1,5 +1,6 @@
 --- screen 80x24 ---
 |
+|  Sent at <clk>
 |▌
 |▌ show me code
 |▌
@@ -9,7 +10,6 @@
 |    int main(void)
 |
 |  done
-|
 |
 |
 |

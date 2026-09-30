@@ -775,6 +775,8 @@ b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
         serialized = sess_put_media(&out, dir, c, i, err, err_cap);
         if (!serialized) break;
         if (c->ms[i]) sess_out_putf(&out, ",\"ms\":%u", c->ms[i]);
+        if (c->sent_at[i] > 0)
+            sess_out_putf(&out, ",\"sent_at\":%lld", (long long)c->sent_at[i]);
         sess_out_puts(&out, STR(",\"content\":"));
         sess_out_json(&out, c->text[i]);
         sess_out_puts(&out, STR("}\n"));
@@ -1289,6 +1291,12 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
         }
         if (slot != CONV_NONE && ms && ms->type == J_NUM && ms->u.n > 0)
             c->ms[slot] = ms->u.n > (f64)UINT32_MAX ? UINT32_MAX : (u32)ms->u.n;
+        const JVal *sent_at = json_get(v, STR("sent_at"));
+        if (slot != CONV_NONE && c->role[slot] == M_USER
+            && !conv_is_shell(c, slot) && sent_at && sent_at->type == J_NUM
+            && sent_at->u.n > 0 && sent_at->u.n <= 253402300799.0
+            && (f64)(i64)sent_at->u.n == sent_at->u.n)
+            c->sent_at[slot] = (i64)sent_at->u.n;
         if (slot != CONV_NONE
             && (c->role[slot] == M_USER || c->role[slot] == M_TOOL))
             sess_apply_media(s, v, c, slot, persist, scratch);

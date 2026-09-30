@@ -1,6 +1,6 @@
 --- screen 80x24 ---
 |▌                                                                              │
-|▌ delegate it                                                                  ┃
+|▌ delegate it                                                                  │
 |▌                                                                              ┃
 |                                                                               ┃
 |  ◆  task cats                                                                 ┃
