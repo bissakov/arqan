@@ -384,7 +384,8 @@ def test_deleting_a_session_removes_its_lock(ctx):
     second.submit("/resume")
     second.wait_status("pick a session")
     second.key("ctrl-x").sync()
-    second.key("ctrl-x")
+    second.key("ctrl-x").sync()
+    assert "deleted 1 saved session" in second.text(), second.text()
     wait_until(lambda: not any(sessions_dir(ctx).glob("*.jsonl")),
                "the transcript deleted")
     assert lock_files(ctx) == [], lock_files(ctx)
