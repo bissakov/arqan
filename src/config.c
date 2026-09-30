@@ -58,6 +58,8 @@ static const ConfSpec k_conf[CONF_N] = {
     [CONF_WRAP] = {"wrap", "word", "word,justified", CV_ENUM, 0, 0, 0, true},
     [CONF_STATUS_FIELDS] = {"status_fields", "2047", NULL, CV_NUM, 0, 2047, 0,
                             true},
+    [CONF_THEME] = {"theme", "dark", NULL, CV_STR, 0, 0, AGENT_MAX_THEME_NAME,
+                    true},
 
     [CONF_TELEMETRY] = {"telemetry", "false", NULL, CV_BOOL, 0, 0, 0, false},
     [CONF_NOTIFY] = {"notify", "osc9", "off,bel,osc9,both", CV_ENUM, 0, 0, 0,
@@ -357,6 +359,7 @@ void ui_prefs_load(UiPrefs *p, const Conf *conf) {
     p->telemetry = conf_bool(conf, CONF_TELEMETRY);
     p->justify = str_eq(conf_str(conf, CONF_WRAP), STR("justified"));
     p->status_fields = (u64)conf_num(conf, CONF_STATUS_FIELDS);
+    p->theme = conf_str(conf, CONF_THEME);
 }
 
 

@@ -46,35 +46,10 @@ _Static_assert(TUI_STATUS_N == AGENT_STATUS_FIELDS,
 #define TUI_MAX_USERS     512
 
 
-#define S_RESET    "\033[0m"
-#define S_PANEL_BG "\033[48;5;236m"
-#define S_TEXT     "\033[38;5;253m"
-#define S_MUTED    "\033[38;5;245m"
-#define S_SUBTLE   "\033[38;5;250m"
-#define S_CYAN     "\033[1;38;5;81m"
-#define S_BLUE     "\033[1;38;5;75m"
-#define S_GREEN    "\033[1;38;5;114m"
-#define S_YELLOW   "\033[1;38;5;221m"
-#define S_RED      "\033[1;38;5;203m"
-#define S_PURPLE   "\033[1;38;5;177m"
-#define S_BOLD     "\033[1m"
-
-#define S_NOBOLD       "\033[22m"
-#define S_ITALIC       "\033[3m"
-#define S_MONO         "\033[38;5;180m"
-#define S_STRIKE       "\033[9;38;5;253m"
-#define S_USER_BG      "\033[48;5;238m"
-#define S_CODE_BG      "\033[48;5;235m"
-#define S_USER_CODE_BG "\033[48;5;236m"
-
-#define S_USER_RULE  "\033[38;5;81m"
-#define S_POPUP_BG   "\033[48;5;237m"
-#define S_POPUP_SEL  "\033[48;5;24m"
-#define S_LINK       "\033[4;38;5;81m"
-#define S_LINK_HOVER "\033[1;4;38;5;81m"
-
-#define S_FIND     "\033[48;5;94m"
-#define S_FIND_CUR "\033[48;5;214m\033[38;5;16m"
+#define S_RESET  "\033[0m"
+#define S_BOLD   "\033[1m"
+#define S_NOBOLD "\033[22m"
+#define S_ITALIC "\033[3m"
 
 enum { SEL_JOIN_BREAK, SEL_JOIN_GAP, SEL_JOIN_TIGHT };
 
@@ -88,6 +63,7 @@ typedef struct {
     b8 busy;
     b8 input_eof;
     b8 color;
+    b8 cursor_tinted;
     b8 pasting;
     b8 paste_cr;
     b8 detached;
@@ -351,6 +327,26 @@ static void put_str(const char *s) {
 }
 static void style(const char *s) {
     if (g_tui.color) put_str(s);
+}
+
+static void put_reset(void) {
+    const char *page = g_tui.color && g_tui.fullscreen ? theme_page() : "";
+    put_str(*page ? page : S_RESET);
+}
+
+static void style_reset(void) {
+    if (g_tui.color) put_reset();
+}
+
+static void cursor_tint(void) {
+    const char *tint = g_tui.color && g_tui.fullscreen ? theme_cursor() : "";
+    if (*tint) {
+        put_str(tint);
+        g_tui.cursor_tinted = true;
+    } else if (g_tui.cursor_tinted) {
+        put_str("\033]112\a");
+        g_tui.cursor_tinted = false;
+    }
 }
 
 
@@ -834,7 +830,7 @@ static void put_status_field(Str field, const char *field_style,
     if (!field.n || *used >= body_cols) return;
     if (*have_field) {
         if (body_cols - *used <= 3) return;
-        style(S_MUTED);
+        style(theme_sgr(THEME_MUTED));
         put_safe_clipped(STR(" · "), body_cols - *used, used);
     }
     style(field_style);
@@ -879,34 +875,56 @@ static b8 kind_is_block(u8 kind) {
 }
 
 
-static const char *kind_style(u8 kind) {
+static void put_kind_style(u8 kind) {
+    ThemeSlot bg = THEME_SLOT_N, fg;
+    const char *attr = NULL;
     switch (kind) {
-        case ROW_USER: return S_USER_BG S_TEXT;
-        case ROW_REASON: return S_MUTED;
-        case ROW_MUTED: return S_SUBTLE;
-        case ROW_TOOL: return S_YELLOW;
-        case ROW_RESULT: return S_GREEN;
-        case ROW_ERROR: return S_RED;
-        case ROW_NOTICE: return S_YELLOW;
-        case ROW_WELCOME_ART: return S_CYAN;
-        case ROW_WELCOME_TEXT: return S_MUTED;
-        case ROW_HEADING: return S_CYAN;
-        case ROW_CODE: return S_CODE_BG S_TEXT;
-        case ROW_COMPOSER: return S_PANEL_BG S_TEXT;
-        case ROW_ZONE: return S_LINK;
-        case ROW_ZONE_HOVER: return S_POPUP_BG S_LINK_HOVER;
-        case ROW_QUOTE: return S_SUBTLE;
-
-        case ROW_SOURCE: return S_TEXT;
-        case ROW_BOLD: return S_BOLD S_TEXT;
-        case ROW_EMPH: return S_ITALIC S_TEXT;
-        case ROW_MONO: return S_MONO;
-        case ROW_MARKER: return S_BLUE;
-        case ROW_STRIKE: return S_STRIKE;
-        case ROW_DIM: return S_MUTED;
-        case ROW_PLAIN: return S_TEXT;
-        default: return NULL;
+        case ROW_USER:
+            bg = THEME_USER_BG;
+            fg = THEME_TEXT;
+            break;
+        case ROW_REASON: fg = THEME_MUTED; break;
+        case ROW_MUTED: fg = THEME_SUBTLE; break;
+        case ROW_TOOL: fg = THEME_WARNING; break;
+        case ROW_RESULT: fg = THEME_SUCCESS; break;
+        case ROW_ERROR: fg = THEME_ERROR; break;
+        case ROW_NOTICE: fg = THEME_WARNING; break;
+        case ROW_WELCOME_ART: fg = THEME_ACCENT; break;
+        case ROW_WELCOME_TEXT: fg = THEME_MUTED; break;
+        case ROW_HEADING: fg = THEME_ACCENT; break;
+        case ROW_CODE:
+            bg = THEME_CODE_BG;
+            fg = THEME_TEXT;
+            break;
+        case ROW_COMPOSER:
+            bg = THEME_PANEL_BG;
+            fg = THEME_TEXT;
+            break;
+        case ROW_ZONE: fg = THEME_LINK; break;
+        case ROW_ZONE_HOVER:
+            bg = THEME_POPUP_BG;
+            fg = THEME_LINK_HOVER;
+            break;
+        case ROW_QUOTE: fg = THEME_SUBTLE; break;
+        case ROW_SOURCE: fg = THEME_TEXT; break;
+        case ROW_BOLD:
+            attr = S_BOLD;
+            fg = THEME_TEXT;
+            break;
+        case ROW_EMPH:
+            attr = S_ITALIC;
+            fg = THEME_TEXT;
+            break;
+        case ROW_MONO: fg = THEME_MONO; break;
+        case ROW_MARKER: fg = THEME_MARKER; break;
+        case ROW_STRIKE: fg = THEME_STRIKE; break;
+        case ROW_DIM: fg = THEME_MUTED; break;
+        case ROW_PLAIN: fg = THEME_TEXT; break;
+        default: return;
     }
+    if (bg != THEME_SLOT_N) style(theme_sgr(bg));
+    if (attr) style(attr);
+    style(theme_sgr(fg));
 }
 
 static u64 hash_add(u64 h, const void *data, size_t n) {
@@ -1269,13 +1287,13 @@ static void put_just(const char *p, size_t n, Just *j) {
 
 static const char *syntax_style(u8 kind) {
     switch (kind) {
-        case YHL_SEM_COMMENT: return S_MUTED S_ITALIC;
-        case YHL_SEM_STRING: return "\033[38;5;114m";
-        case YHL_SEM_NUMBER: return "\033[38;5;221m";
-        case YHL_SEM_KEYWORD: return "\033[38;5;177m";
-        case YHL_SEM_TYPE: return "\033[38;5;81m";
-        case YHL_SEM_FUNCTION: return "\033[38;5;75m";
-        case YHL_SEM_BUILTIN: return S_MONO;
+        case YHL_SEM_COMMENT: return theme_sgr(THEME_SYNTAX_COMMENT);
+        case YHL_SEM_STRING: return theme_sgr(THEME_SYNTAX_STRING);
+        case YHL_SEM_NUMBER: return theme_sgr(THEME_SYNTAX_NUMBER);
+        case YHL_SEM_KEYWORD: return theme_sgr(THEME_SYNTAX_KEYWORD);
+        case YHL_SEM_TYPE: return theme_sgr(THEME_SYNTAX_TYPE);
+        case YHL_SEM_FUNCTION: return theme_sgr(THEME_SYNTAX_FUNCTION);
+        case YHL_SEM_BUILTIN: return theme_sgr(THEME_SYNTAX_BUILTIN);
         default: return NULL;
     }
 }
@@ -1437,7 +1455,12 @@ static void put_hits(const char *p, size_t rel, size_t n, Just *j,
         b8 cur = false;
         b8 hit = find_row_run(rel + k, n - k, &seg, &cur);
         if (restore) restore(ud);
-        if (hit) style(cur ? S_FIND_CUR : S_FIND);
+        if (hit && cur) {
+            style(theme_sgr(THEME_FIND_CURRENT_BG));
+            style(theme_sgr(THEME_FIND_CURRENT_FG));
+        } else if (hit) {
+            style(theme_sgr(THEME_FIND_BG));
+        }
         put_just(p + k, seg, j);
         k += seg;
     }
@@ -1450,21 +1473,21 @@ typedef struct {
 
 
 static const char *user_bg(u8 kind) {
-    return kind == ROW_CODE ? S_USER_CODE_BG : S_USER_BG;
+    return theme_sgr(kind == ROW_CODE ? THEME_USER_CODE_BG : THEME_USER_BG);
 }
 
 
 static void paint_user_rule(size_t screen_row, size_t screen_col) {
     if (screen_col < 2) return;
     cup(screen_row, screen_col > 2 ? screen_col - 2 : 1);
-    style(S_USER_RULE);
+    style(theme_sgr(THEME_USER_RULE));
     put_str("▌");
 }
 
 static void run_style(void *ud) {
     const RunStyle *r = ud;
-    style(S_RESET);
-    style(kind_style(r->kind ? r->kind : r->base));
+    style_reset();
+    put_kind_style(r->kind ? r->kind : r->base);
 
     if (r->user) style(user_bg(r->base));
     if (r->syntax) style(syntax_style(r->syntax));
@@ -1530,10 +1553,13 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
     if (!row_changed(screen_row, hash, force)) return;
     g_tui.bar_valid = false;
     cup(screen_row, 1);
-    put_str(S_RESET "\033[2K");
+    put_reset();
+    put_str("\033[2K");
 
     if (kind == ROW_COMPOSER || user || kind == ROW_CODE) {
-        style(user ? user_bg(kind) : kind == ROW_CODE ? S_CODE_BG : S_PANEL_BG);
+        style(user ? user_bg(kind)
+                   : theme_sgr(kind == ROW_CODE ? THEME_CODE_BG
+                                                : THEME_PANEL_BG));
         pad_row(0, screen_cols);
         if (user) paint_user_rule(screen_row, screen_col);
         cup(screen_row, screen_col);
@@ -1542,19 +1568,21 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
     }
 
     if (kind == ROW_COMPOSER && is_marker(prefix)) {
-        const char *mark =
-            prefix.p[0] == '!' ? S_PANEL_BG S_RED : S_PANEL_BG S_CYAN;
-        style(g_tui.busy ? S_PANEL_BG S_MUTED : mark);
+        ThemeSlot mark = prefix.p[0] == '!' ? THEME_ERROR : THEME_ACCENT;
+        style(theme_sgr(THEME_PANEL_BG));
+        style(theme_sgr(g_tui.busy ? THEME_MUTED : mark));
         put_text(prefix.p, prefix.n);
 
-        style(S_PANEL_BG S_NOBOLD S_TEXT);
+        style(theme_sgr(THEME_PANEL_BG));
+        style(S_NOBOLD);
+        style(theme_sgr(THEME_TEXT));
     } else if (prefix.n) {
         if (kind == ROW_WELCOME_ART)
-            style(S_CYAN);
+            style(theme_sgr(THEME_ACCENT));
         else if (kind == ROW_WELCOME_TEXT)
-            style(S_MUTED);
+            style(theme_sgr(THEME_MUTED));
         else if (kind == ROW_COMPOSER)
-            style(S_PANEL_BG);
+            style(theme_sgr(THEME_PANEL_BG));
         put_text(prefix.p, prefix.n);
     }
 
@@ -1564,7 +1592,8 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
         size_t gutter = screen_col - 1;
         size_t body = screen_cols > gutter * 2 ? screen_cols - gutter * 2 : 0;
         size_t room = body > 2 ? body - 2 : 0;
-        style(S_PANEL_BG S_MUTED);
+        style(theme_sgr(THEME_PANEL_BG));
+        style(theme_sgr(THEME_MUTED));
         put_safe_clipped(prefix.p[0] == '!' ? STR("Run a shell command...")
                                             : STR("Message " AGENT_NAME "..."),
                          room, NULL);
@@ -1578,16 +1607,15 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
             put_text(text.p + lead, text.n - lead);
         else
             put_hits(text.p + lead, lead, text.n - lead, NULL, run_style, &rs);
-        style(S_RESET);
+        style_reset();
     } else if (text_off != SIZE_MAX) {
         paint_runs(text, text_off, &just, kind, user);
     } else {
-        const char *s = kind_style(kind);
-        if (s) style(s);
+        put_kind_style(kind);
         put_just(text.p, text.n, &just);
     }
     paint_sel_tail(screen_row, screen_cols);
-    style(S_RESET);
+    style_reset();
 }
 
 
@@ -1761,9 +1789,11 @@ static void update_popup_row(size_t screen_row, Str name, Str desc,
 
     g_tui.bar_valid = false;
 
-    const char *bg = selected ? S_POPUP_SEL : S_POPUP_BG;
+    const char *bg =
+        theme_sgr(selected ? THEME_POPUP_SELECTED_BG : THEME_POPUP_BG);
     cup(screen_row, 1);
-    put_str(S_RESET "\033[2K");
+    put_reset();
+    put_str("\033[2K");
     style(bg);
     pad_row(0, screen_cols);
     cup(screen_row, screen_col);
@@ -1771,14 +1801,14 @@ static void update_popup_row(size_t screen_row, Str name, Str desc,
     size_t used = 0;
     style(bg);
     if (separator) {
-        style(S_CYAN);
+        style(theme_sgr(THEME_ACCENT));
         put_safe_clipped(STR("  "), body_cols, &used);
         if (used < body_cols) put_safe_clipped(name, body_cols - used, &used);
         paint_sel_tail(screen_row, screen_cols);
-        style(S_RESET);
+        style_reset();
         return;
     }
-    style(selected ? S_CYAN : S_TEXT);
+    style(theme_sgr(selected ? THEME_ACCENT : THEME_TEXT));
     put_safe_clipped(selected && first_line ? STR("\u203a ") : STR("  "),
                      body_cols, &used);
 
@@ -1789,7 +1819,7 @@ static void update_popup_row(size_t screen_row, Str name, Str desc,
         used++;
     }
     style(bg);
-    style(S_MUTED);
+    style(theme_sgr(THEME_MUTED));
 
     size_t m0 = mark.n && mark.off < desc.n ? mark.off : desc.n;
     size_t m1 = m0 + mark.n <= desc.n ? m0 + mark.n : desc.n;
@@ -1797,18 +1827,18 @@ static void update_popup_row(size_t screen_row, Str name, Str desc,
         put_safe_clipped((Str){desc.p, m0}, body_cols - used, &used);
     if (m1 > m0) {
         style(bg);
-        style(S_GREEN);
+        style(theme_sgr(THEME_SUCCESS));
         if (used < body_cols)
             put_safe_clipped((Str){desc.p + m0, m1 - m0}, body_cols - used,
                              &used);
         style(bg);
-        style(S_MUTED);
+        style(theme_sgr(THEME_MUTED));
     }
     if (m1 < desc.n && used < body_cols)
         put_safe_clipped((Str){desc.p + m1, desc.n - m1}, body_cols - used,
                          &used);
     paint_sel_tail(screen_row, screen_cols);
-    style(S_RESET);
+    style_reset();
 }
 
 size_t tui_text_cells(Str s) {
@@ -1892,16 +1922,18 @@ static void update_notice_row(size_t screen_row, Str text, size_t screen_col,
     g_tui.bar_valid = false;
 
     cup(screen_row, 1);
-    put_str(S_RESET "\033[2K");
-    style(S_POPUP_BG);
+    put_reset();
+    put_str("\033[2K");
+    style(theme_sgr(THEME_POPUP_BG));
     pad_row(0, screen_cols);
     cup(screen_row, screen_col);
-    style(S_POPUP_BG S_YELLOW);
+    style(theme_sgr(THEME_POPUP_BG));
+    style(theme_sgr(THEME_WARNING));
     size_t used = 0;
     put_safe_clipped(STR("  "), body_cols, &used);
     if (used < body_cols) put_safe_clipped(text, body_cols - used, &used);
     paint_sel_tail(screen_row, screen_cols);
-    style(S_RESET);
+    style_reset();
 }
 
 static size_t notice_text_cols(size_t body_cols) {
@@ -2015,15 +2047,17 @@ static void paint_view_border(size_t row, size_t col, size_t width,
 
     g_tui.bar_valid = false;
     cup(row, 1);
-    put_str(S_RESET "\033[2K");
+    put_reset();
+    put_str("\033[2K");
     cup(row, col);
-    style(S_POPUP_BG S_MUTED);
+    style(theme_sgr(THEME_POPUP_BG));
+    style(theme_sgr(THEME_MUTED));
     put_text(left.p, left.n);
     for (size_t i = 2; i < width; i++) put_text(fill.p, fill.n);
     put_text(right.p, right.n);
-    style(S_RESET);
+    style_reset();
     paint_sel_tail(row, screen_cols);
-    style(S_RESET);
+    style_reset();
 }
 
 static void paint_view_header(size_t row, size_t col, size_t width,
@@ -2038,17 +2072,22 @@ static void paint_view_header(size_t row, size_t col, size_t width,
     if (!row_changed(row, hash, force)) return;
     g_tui.bar_valid = false;
     cup(row, 1);
-    put_str(S_RESET "\033[2K");
+    put_reset();
+    put_str("\033[2K");
     cup(row, col);
-    style(S_POPUP_BG S_CYAN);
+    style(theme_sgr(THEME_POPUP_BG));
+    style(theme_sgr(THEME_ACCENT));
     put_text("│", sizeof "│" - 1);
     size_t inner = width > 2 ? width - 2 : 0;
     size_t used = 0;
     if (inner) put_safe_clipped(STR(" "), inner, &used);
-    style(S_POPUP_BG S_BOLD S_TEXT);
+    style(theme_sgr(THEME_POPUP_BG));
+    style(S_BOLD);
+    style(theme_sgr(THEME_TEXT));
     size_t title_room = inner > used + 5 ? inner - used - 5 : 0;
     put_safe_clipped(title, title_room, &used);
-    style(S_POPUP_BG S_MUTED);
+    style(theme_sgr(THEME_POPUP_BG));
+    style(theme_sgr(THEME_MUTED));
     while (used + 4 < inner) {
         put_text(" ", 1);
         used++;
@@ -2058,11 +2097,12 @@ static void paint_view_header(size_t row, size_t col, size_t width,
         put_text(" ", 1);
         used++;
     }
-    style(S_POPUP_BG S_CYAN);
+    style(theme_sgr(THEME_POPUP_BG));
+    style(theme_sgr(THEME_ACCENT));
     put_text("│", sizeof "│" - 1);
-    style(S_RESET);
+    style_reset();
     paint_sel_tail(row, screen_cols);
-    style(S_RESET);
+    style_reset();
 }
 
 
@@ -2118,11 +2158,14 @@ static void paint_view_body_row(size_t screen_row, size_t col, size_t width,
     if (!row_changed(screen_row, hash, force)) return;
     g_tui.bar_valid = false;
     cup(screen_row, 1);
-    put_str(S_RESET "\033[2K");
+    put_reset();
+    put_str("\033[2K");
     cup(screen_row, col);
-    style(S_POPUP_BG S_CYAN);
+    style(theme_sgr(THEME_POPUP_BG));
+    style(theme_sgr(THEME_ACCENT));
     put_text("│", sizeof "│" - 1);
-    style(S_POPUP_BG S_TEXT);
+    style(theme_sgr(THEME_POPUP_BG));
+    style(theme_sgr(THEME_TEXT));
     size_t inner = width > 2 ? width - 2 : 0;
     size_t used = 0;
     if (inner && !g_view.syn_n) put_safe_clipped(text, inner, &used);
@@ -2130,23 +2173,25 @@ static void paint_view_body_row(size_t screen_row, size_t col, size_t width,
         size_t end = 0;
         u8 kind = view_syn_run(off + i, off + text.n, &end);
         size_t take = end - (off + i);
-        style(S_POPUP_BG);
-        style(kind ? syntax_style(kind) : S_TEXT);
+        style(theme_sgr(THEME_POPUP_BG));
+        style(kind ? syntax_style(kind) : theme_sgr(THEME_TEXT));
         if (put_safe_clipped((Str){text.p + i, take}, inner - used, &used)
             < take)
             break;
         i += take;
     }
-    style(S_POPUP_BG S_TEXT);
+    style(theme_sgr(THEME_POPUP_BG));
+    style(theme_sgr(THEME_TEXT));
     while (used < inner) {
         put_text(" ", 1);
         used++;
     }
-    style(S_POPUP_BG S_CYAN);
+    style(theme_sgr(THEME_POPUP_BG));
+    style(theme_sgr(THEME_ACCENT));
     put_text("│", sizeof "│" - 1);
-    style(S_RESET);
+    style_reset();
     paint_sel_tail(screen_row, screen_cols);
-    style(S_RESET);
+    style_reset();
 }
 
 static void view_layout(size_t rows, size_t cols) {
@@ -2246,16 +2291,20 @@ static void update_find_row(size_t screen_row, size_t screen_col,
     g_tui.bar_valid = false;
 
     cup(screen_row, 1);
-    put_str(S_RESET "\033[2K");
-    style(S_POPUP_BG);
+    put_reset();
+    put_str("\033[2K");
+    style(theme_sgr(THEME_POPUP_BG));
     pad_row(0, screen_cols);
     cup(screen_row, screen_col);
     size_t used = 0;
-    style(S_POPUP_BG S_CYAN);
+    style(theme_sgr(THEME_POPUP_BG));
+    style(theme_sgr(THEME_ACCENT));
     put_safe_clipped(STR("  find: "), body_cols, &used);
-    style(S_POPUP_BG S_TEXT);
+    style(theme_sgr(THEME_POPUP_BG));
+    style(theme_sgr(THEME_TEXT));
     if (used < body_cols) put_safe_clipped(query, body_cols - used, &used);
-    style(S_POPUP_BG S_MUTED);
+    style(theme_sgr(THEME_POPUP_BG));
+    style(theme_sgr(THEME_MUTED));
     if (used + 3 < body_cols) {
         put_safe_clipped(STR("  \u00b7  "), body_cols - used, &used);
         put_safe_clipped(status, body_cols - used, &used);
@@ -2270,7 +2319,7 @@ static void update_find_row(size_t screen_row, size_t screen_col,
         put_safe_clipped(hint, body_cols - used, &used);
     }
     paint_sel_tail(screen_row, screen_cols);
-    style(S_RESET);
+    style_reset();
 }
 
 
@@ -2340,15 +2389,16 @@ static void update_activity_row(size_t screen_row, size_t screen_col,
     g_tui.bar_valid = false;
 
     cup(screen_row, 1);
-    put_str(S_RESET "\033[2K");
+    put_reset();
+    put_str("\033[2K");
     cup(screen_row, screen_col);
     size_t used = 0;
-    style(S_CYAN);
+    style(theme_sgr(THEME_ACCENT));
     put_safe_clipped(str_c(k_spinner[frame]), body_cols, &used);
     if (used < body_cols) put_safe_clipped(STR(" "), body_cols - used, &used);
-    style(S_TEXT);
+    style(theme_sgr(THEME_TEXT));
     if (used < body_cols) put_safe_clipped(label, body_cols - used, &used);
-    style(S_MUTED);
+    style(theme_sgr(THEME_MUTED));
     if (used + 3 <= body_cols)
         put_safe_clipped(STR(" \u00b7 "), body_cols - used, &used);
     if (used < body_cols) put_safe_clipped(secs, body_cols - used, &used);
@@ -2371,7 +2421,7 @@ static void update_activity_row(size_t screen_row, size_t screen_col,
                              body_cols - used, &used);
     }
     paint_sel_tail(screen_row, screen_cols);
-    style(S_RESET);
+    style_reset();
 }
 
 static void paint_completions(size_t top_row, size_t rows, size_t screen_col,
@@ -2578,18 +2628,18 @@ static void paint_scrollbar(size_t first_row, size_t total_rows,
     for (size_t i = 0; i < visible_rows; i++) {
         if (view_locks_row(i + 1)) continue;
         cup(i + 1, screen_col);
-        style(S_RESET);
+        style_reset();
         if (!scrollable) {
             put_str(" ");
         } else if (i >= thumb_top && i < thumb_top + thumb_rows) {
-            style(S_CYAN);
+            style(theme_sgr(THEME_ACCENT));
             put_str("┃");
         } else {
-            style(S_MUTED);
+            style(theme_sgr(THEME_MUTED));
             put_str("│");
         }
     }
-    style(S_RESET);
+    style_reset();
 }
 
 
@@ -2704,7 +2754,9 @@ static void repaint(void) {
         frame_begin();
         if (force) {
             sel_clear();
-            put_str("\033[?25l\033[H\033[2J");
+            put_str("\033[?25l\033[H");
+            if (g_tui.color) put_str(theme_page());
+            put_str("\033[2J");
             memset(g_tui.row_hash, 0, sizeof g_tui.row_hash);
             memset(g_tui.row_text_n, 0, sizeof g_tui.row_text_n);
             memset(g_tui.row_text_w, 0, sizeof g_tui.row_text_w);
@@ -2732,7 +2784,9 @@ static void repaint(void) {
     frame_begin();
     if (force) {
         sel_clear();
-        put_str("\033[?25l\033[H\033[2J");
+        put_str("\033[?25l\033[H");
+        if (g_tui.color) put_str(theme_page());
+        put_str("\033[2J");
         memset(g_tui.row_hash, 0, sizeof g_tui.row_hash);
         memset(g_tui.row_text_n, 0, sizeof g_tui.row_text_n);
         memset(g_tui.row_text_w, 0, sizeof g_tui.row_text_w);
@@ -2936,7 +2990,8 @@ static void repaint(void) {
     status_hash = hash_add(status_hash, &cols, sizeof cols);
     if (row_changed(status_row, status_hash, force)) {
         cup(status_row, 1);
-        put_str(S_RESET "\033[2K");
+        put_reset();
+        put_str("\033[2K");
         cup(status_row, body_col);
         char context_buf[48];
         Str context = format_context_size(context_buf, sizeof context_buf);
@@ -2950,16 +3005,16 @@ static void repaint(void) {
             }
         }
         size_t used = 0;
-        const char *status_style = S_BLUE;
+        ThemeSlot status_style = THEME_MARKER;
         if (!strcmp(status, "ready"))
-            status_style = S_GREEN;
+            status_style = THEME_SUCCESS;
         else if (strstr(status, "error"))
-            status_style = S_RED;
+            status_style = THEME_ERROR;
         else if (!strcmp(status, "thinking"))
-            status_style = S_PURPLE;
+            status_style = THEME_THINKING;
         b8 have_field = false;
         if (g_tui.status_visible[TUI_STATUS_STATE]) {
-            style(status_style);
+            style(theme_sgr(status_style));
             put_safe_clipped(STR("● "), body_cols, &used);
             if (!g_tui.activity_n && used < body_cols) {
                 put_safe_clipped(str_c(status), body_cols - used, &used);
@@ -2967,14 +3022,15 @@ static void repaint(void) {
             }
         }
         if (g_tui.status_visible[TUI_STATUS_MODEL])
-            put_status_field(g_tui.model, S_TEXT, body_cols, &used,
-                             &have_field);
+            put_status_field(g_tui.model, theme_sgr(THEME_TEXT), body_cols,
+                             &used, &have_field);
         if (g_tui.status_visible[TUI_STATUS_REASONING]) {
             Str effort = g_tui.reasoning_effort;
             b8 off = str_eq(effort, STR("off")) || str_eq(effort, STR("Off"))
                      || str_eq(effort, STR("OFF"));
             if (!off)
-                put_status_field(effort, S_TEXT, body_cols, &used, &have_field);
+                put_status_field(effort, theme_sgr(THEME_TEXT), body_cols,
+                                 &used, &have_field);
         }
         if (g_tui.status_visible[TUI_STATUS_THINKING]) {
             Str budget = g_tui.thinking_budget;
@@ -2985,18 +3041,19 @@ static void repaint(void) {
                 i32 n = snprintf(thinking, sizeof thinking, "thinking %.*s",
                                  (i32)budget.n, budget.p);
                 if (n > 0)
-                    put_status_field((Str){thinking, (size_t)n}, S_TEXT,
-                                     body_cols, &used, &have_field);
+                    put_status_field((Str){thinking, (size_t)n},
+                                     theme_sgr(THEME_TEXT), body_cols, &used,
+                                     &have_field);
             }
         }
         if (g_tui.status_visible[TUI_STATUS_MODE])
-            put_status_field(g_tui.mode == MODE_PLAN ? STR("plan")
-                                                     : STR("build"),
-                             g_tui.mode == MODE_PLAN ? S_YELLOW : S_TEXT,
-                             body_cols, &used, &have_field);
+            put_status_field(
+                g_tui.mode == MODE_PLAN ? STR("plan") : STR("build"),
+                theme_sgr(g_tui.mode == MODE_PLAN ? THEME_WARNING : THEME_TEXT),
+                body_cols, &used, &have_field);
         if (g_tui.status_visible[TUI_STATUS_PROVIDER])
-            put_status_field(g_tui.provider, S_TEXT, body_cols, &used,
-                             &have_field);
+            put_status_field(g_tui.provider, theme_sgr(THEME_TEXT), body_cols,
+                             &used, &have_field);
         /* INVARIANT: paint order is priority, but TuiStatusItem is the bit
          * layout of the status_fields setting and may not follow it. */
         if (g_tui.todo_total && g_tui.status_visible[TUI_STATUS_TODO]) {
@@ -3005,24 +3062,28 @@ static void repaint(void) {
                              g_tui.todo_total);
             if (n > 0)
                 put_status_field((Str){todo, (size_t)n},
-                                 g_tui.todo_done == g_tui.todo_total ? S_GREEN
-                                                                     : S_TEXT,
+                                 theme_sgr(g_tui.todo_done == g_tui.todo_total
+                                               ? THEME_SUCCESS
+                                               : THEME_TEXT),
                                  body_cols, &used, &have_field);
         }
         if (g_tui.status_visible[TUI_STATUS_CWD])
-            put_status_field(cwd, S_TEXT, body_cols, &used, &have_field);
-        if (g_tui.status_visible[TUI_STATUS_CONTEXT])
-            put_status_field(context, S_TEXT, body_cols, &used, &have_field);
-        if (copied && g_tui.status_visible[TUI_STATUS_COPY])
-            put_status_field(STR("copied"), S_GREEN, body_cols, &used,
+            put_status_field(cwd, theme_sgr(THEME_TEXT), body_cols, &used,
                              &have_field);
+        if (g_tui.status_visible[TUI_STATUS_CONTEXT])
+            put_status_field(context, theme_sgr(THEME_TEXT), body_cols, &used,
+                             &have_field);
+        if (copied && g_tui.status_visible[TUI_STATUS_COPY])
+            put_status_field(STR("copied"), theme_sgr(THEME_SUCCESS), body_cols,
+                             &used, &have_field);
         if (g_tui.status_visible[TUI_STATUS_PERMISSIONS])
             put_status_field(
                 g_tui.permissions == PERMISSION_FREE ? STR("free") : STR("ask"),
-                g_tui.permissions == PERMISSION_ASK ? S_YELLOW : S_TEXT,
+                theme_sgr(g_tui.permissions == PERMISSION_ASK ? THEME_WARNING
+                                                              : THEME_TEXT),
                 body_cols, &used, &have_field);
         paint_sel_tail(status_row, cols);
-        style(S_RESET);
+        style_reset();
     }
 
     paint_view(cols, force);
@@ -3129,6 +3190,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
     g_tui.editing = true;
 
     put_str("\033[?1049h\033[?7l\033[?25l\033[?1003h\033[?1006h\033[?2004h");
+    cursor_tint();
     repaint();
 }
 
@@ -3142,6 +3204,9 @@ void tui_stop(void) {
     g_view.active = false;
     agent_log_set_sink(NULL, NULL);
     if (g_tui.fullscreen) {
+        if (g_tui.color && *theme_page()) put_str(S_RESET);
+        if (g_tui.cursor_tinted) put_str("\033]112\a");
+        g_tui.cursor_tinted = false;
         put_str("\033[?2004l\033[?1006l\033[?1003l\033[?25h\033[?7h"
                 "\033[?1049l");
         flush_out();
@@ -3388,6 +3453,12 @@ void tui_clear_transcript(void) {
 
 void tui_transcript_detach(void) {
     g_tui.detached = true;
+}
+
+void tui_restyle(void) {
+    cursor_tint();
+    g_tui.frame_valid = false;
+    repaint();
 }
 
 void tui_transcript_attach(void) {

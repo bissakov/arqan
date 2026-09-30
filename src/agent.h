@@ -465,6 +465,72 @@ b8 state_set_many(const Str *keys, const Str *vals, size_t n, Arena *scratch);
 
 b8 state_set_in(Str section, Str key, Str val, Arena *scratch);
 
+/* ---- colour themes -------------------------------------------------------
+ * Every colour the TUI paints is a slot that the active theme fills. A theme
+ * is built in, or a themes/<name>.toml file in the XDG config dirs that
+ * starts from a built-in base. A theme value is parsed into a colour and the
+ * SGR sequence is built from that, so no theme text reaches the terminal.
+ */
+#define AGENT_MAX_THEME_NAME 32
+#define AGENT_MAX_THEMES     64
+
+typedef enum {
+    THEME_PAGE_FG,
+    THEME_PAGE_BG,
+    THEME_TEXT,
+    THEME_MUTED,
+    THEME_SUBTLE,
+    THEME_ACCENT,
+    THEME_MARKER,
+    THEME_SUCCESS,
+    THEME_WARNING,
+    THEME_ERROR,
+    THEME_THINKING,
+    THEME_MONO,
+    THEME_STRIKE,
+    THEME_USER_RULE,
+    THEME_LINK,
+    THEME_LINK_HOVER,
+    THEME_PANEL_BG,
+    THEME_USER_BG,
+    THEME_CODE_BG,
+    THEME_USER_CODE_BG,
+    THEME_POPUP_BG,
+    THEME_POPUP_SELECTED_BG,
+    THEME_FIND_BG,
+    THEME_FIND_CURRENT_BG,
+    THEME_FIND_CURRENT_FG,
+    THEME_SYNTAX_COMMENT,
+    THEME_SYNTAX_STRING,
+    THEME_SYNTAX_NUMBER,
+    THEME_SYNTAX_KEYWORD,
+    THEME_SYNTAX_TYPE,
+    THEME_SYNTAX_FUNCTION,
+    THEME_SYNTAX_BUILTIN,
+    THEME_SLOT_N
+} ThemeSlot;
+
+typedef enum {
+    THEME_COLOUR_DEFAULT,
+    THEME_COLOUR_INDEX,
+    THEME_COLOUR_RGB
+} ThemeColourKind;
+
+typedef struct {
+    u8 kind;
+    u8 index;
+    u8 r, g, b;
+} ThemeColour;
+
+b8 theme_colour_parse(Str v, ThemeColour *out);
+u8 theme_nearest_256(u8 r, u8 g, u8 b);
+b8 theme_load(Str name, Arena *scratch);
+const char *theme_sgr(ThemeSlot s);
+const char *theme_page(void);
+const char *theme_cursor(void);
+Str theme_current(void);
+size_t theme_list(Str *names, Str *where, size_t max, Arena *a);
+
 /* ---- prompt history ------------------------------------------------------
  * A ring of past prompts, mirrored to $XDG_STATE_HOME/arqan/history as they
  * are submitted. `cursor` is the browse position; cursor == n is the live
@@ -666,6 +732,7 @@ typedef enum {
     CONF_SHOW_INSTRUCTIONS,
     CONF_WRAP,
     CONF_STATUS_FIELDS,
+    CONF_THEME,
     CONF_TELEMETRY,
     CONF_NOTIFY,
     CONF_NOTIFY_COMMAND,
@@ -734,6 +801,7 @@ typedef struct {
     b8 justify;
     b8 telemetry;
     u64 status_fields;
+    Str theme;
 } UiPrefs;
 
 void ui_prefs_load(UiPrefs *p, const Conf *conf);
@@ -1925,6 +1993,8 @@ void tui_set_provider(Str name);
 void tui_set_reasoning(Str effort, Str thinking_budget);
 
 void tui_set_setup(b8 on);
+
+void tui_restyle(void);
 
 b8 tui_status_visible(TuiStatusItem item);
 void tui_set_status_visible(TuiStatusItem item, b8 visible);

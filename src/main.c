@@ -14,6 +14,7 @@
 #include "media.c"
 #include "clipboard.c"
 #include "settings.c"
+#include "theme.c"
 #include "telemetry.c"
 #include "history.c"
 #include "secrets.c"
@@ -119,6 +120,7 @@ static size_t commands_init(b8 images, b8 subagents, b8 mcp) {
         (TuiCmd){STR("/settings"), STR("Change how " AGENT_NAME " behaves")};
     g_commands.v[n++] =
         (TuiCmd){STR("/statusline"), STR("Choose what the status line shows")};
+    g_commands.v[n++] = (TuiCmd){STR("/theme"), STR("Choose the colour theme")};
     g_commands.v[n++] = (TuiCmd){
         STR("/about"), STR("About " AGENT_NAME " and its contributors")};
     g_commands.v[n++] = (TuiCmd){
@@ -2259,6 +2261,7 @@ static Str help_build(Agent *ag) {
     help_path(&b, "working directory", cwd);
     help_path(&b, "user config directory", paths_dir(AGENT_DIR_CONFIG, a));
     help_path_candidates(&b, a, AGENT_CONFIG_NAME, "config candidate");
+    help_path_candidates(&b, a, STR("themes"), "theme directory candidate");
     {
         Str project[AGENT_MAX_PROJECT_FILES];
         size_t pn = paths_project_files(AGENT_CONFIG_NAME, a, project,
@@ -4258,6 +4261,31 @@ static void choose_statusline(Arena *scratch) {
     tui_settings(STR("status line"), statusline_screen(scratch));
 }
 
+static void choose_theme(Arena *scratch) {
+    size_t mark = scratch->off;
+    Str names[AGENT_MAX_THEMES], where[AGENT_MAX_THEMES];
+    TuiCmd rows[AGENT_MAX_THEMES];
+    size_t n = theme_list(names, where, AGENT_MAX_THEMES, scratch);
+    Str current = theme_current();
+    size_t start = 0;
+    for (size_t i = 0; i < n; i++) {
+        rows[i] = (TuiCmd){names[i], where[i].n ? where[i] : STR("built-in")};
+        if (str_eq(names[i], current)) start = i;
+    }
+    size_t pick = 0;
+    if (tui_pick(STR("theme"), rows, n, TUI_PICK_FIRST, start, &pick)
+        && pick < n) {
+        if (theme_load(names[pick], scratch)) {
+            remember_ui(scratch, CONF_THEME, names[pick]);
+            tui_restyle();
+        } else {
+            notice_fmt("could not load theme %.*s", (i32)names[pick].n,
+                       names[pick].p);
+        }
+    }
+    scratch->off = mark;
+}
+
 static const i32 g_token_steps[] = {1024,  2048,  4096,   8192,  16384,
                                     32768, 65536, 131072, 262144};
 
@@ -5944,6 +5972,9 @@ i32 main(i32 argc, char **argv) {
     }
     UiPrefs prefs;
     ui_prefs_load(&prefs, &conf);
+    if (!theme_load(prefs.theme, &scratch))
+        agent_log(AGENT_LOG_WARN, "no theme named %.*s; using dark",
+                  (i32)prefs.theme.n, prefs.theme.p);
     notify_init(&conf, &persist);
     web_search_init(&conf, &persist);
     arena_reset(&scratch);
@@ -6228,6 +6259,10 @@ i32 main(i32 argc, char **argv) {
         }
         if (!strcmp(line, "/statusline")) {
             choose_statusline(&scratch);
+            continue;
+        }
+        if (!strcmp(line, "/theme")) {
+            choose_theme(&scratch);
             continue;
         }
         if (!strcmp(line, "/about")) {

@@ -11,6 +11,16 @@
   with `-dirty` when tracked files have uncommitted changes. Release packages
   show the plain version.
 
+- Colour themes. The `theme` setting picks one, and `/theme` switches themes
+  while arqan runs and remembers the choice. Five themes are built in: `dark`
+  (the default and the colours so far), `light`, `kanagawa-wave`,
+  `kanagawa-dragon` and `kanagawa-lotus`. A theme file in
+  `themes/<name>.toml` under the config directory adds a theme of your own.
+  The light and Kanagawa themes paint the whole screen, so they read the same
+  on a dark or a light terminal, and they set the cursor colour to match. In
+  the two light themes, all text has a contrast of at least 5:1 against the
+  page.
+
 ### Changed
 
 - Tool output, tool arguments and block quotes use a brighter grey and are
