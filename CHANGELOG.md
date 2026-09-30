@@ -4,6 +4,9 @@
 
 ### Added
 
+- User turns show a dim `Sent at HH:mm` line above the message block. The
+  time is saved with the session and shown in local time on replay.
+
 - Development builds show the commit they came from, as in `0.9.1+g1a2b3c4`,
   with `-dirty` when tracked files have uncommitted changes. Release packages
   show the plain version.

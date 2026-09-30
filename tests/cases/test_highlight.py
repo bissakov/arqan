@@ -235,7 +235,7 @@ def test_open_fence_streams_before_retroactive_colour(ctx):
     s.wait_text("after")
     s.wait_turn_done()
     assert cell(s, "int n").fg == CYAN
-    assert cell(s, "1").fg == YELLOW
+    assert cell(s, "= 1", 2).fg == YELLOW
 
 
 def test_tilde_and_unterminated_fences_highlight(ctx):
@@ -246,7 +246,7 @@ def test_tilde_and_unterminated_fences_highlight(ctx):
     s.wait_turn_done()
     assert cell(s, "def f").fg == PURPLE
     assert cell(s, "return 7").fg == PURPLE
-    assert cell(s, "7").fg == YELLOW
+    assert cell(s, "return 7", 7).fg == YELLOW
     assert cell(s, '"ok"').fg == GREEN
 
 
@@ -275,7 +275,7 @@ def test_read_result_uses_call_path(ctx):
     assert cell(s, "// note").fg == MUTED
     assert cell(s, "int answer").fg == CYAN
     assert cell(s, "int answer", 4).fg == TEXT
-    assert cell(s, "42").fg == YELLOW
+    assert cell(s, "= 42", 2).fg == YELLOW
     assert cell(s, "   // note").fg == MUTED
 
 
@@ -287,7 +287,7 @@ def test_raw_mode_disables_tool_syntax_highlighting(ctx):
     s.submit("read it")
     s.wait_turn_done()
     assert cell(s, "int answer").fg == TEXT
-    assert cell(s, "42").fg == TEXT
+    assert cell(s, "= 42", 2).fg == TEXT
 
     s.settings_toggle("Display raw")
     ctx.write_file("sample.c", "int restored = 7;\n")
@@ -295,7 +295,7 @@ def test_raw_mode_disables_tool_syntax_highlighting(ctx):
     s.submit("read it again")
     s.wait_turn_done()
     assert cell(s, "int restored").fg == CYAN
-    assert cell(s, "7").fg == YELLOW
+    assert cell(s, "= 7", 2).fg == YELLOW
 
 
 def test_patch_preview_highlights_code_but_not_diff_markers(ctx):
@@ -315,7 +315,7 @@ def test_patch_preview_highlights_code_but_not_diff_markers(ctx):
     assert cell(s, "-int answer", 1).fg == CYAN
     assert cell(s, "+int answer", 1).fg == CYAN
     assert cell(s, "+int answer", 5).fg == TEXT
-    assert cell(s, "42").fg == YELLOW
+    assert cell(s, "= 42", 2).fg == YELLOW
 
 
 def test_empty_patch_fragments_survive_syntax_batching(ctx):
@@ -368,7 +368,7 @@ def test_typed_grep_colours_only_match_text(ctx):
     assert cell(s, "one.c:1:").fg == SUBTLE
     assert cell(s, "int answer").fg == CYAN
     assert cell(s, "int answer", 4).fg == TEXT
-    assert cell(s, "42").fg == YELLOW
+    assert cell(s, "= 42", 2).fg == YELLOW
 
 
 def test_untyped_grep_and_shell_like_source_stay_plain(ctx):

@@ -1,12 +1,12 @@
 --- screen 80x24 ---
 |
+|  Sent at <clk>
 |▌
 |▌ write a heading
 |▌
 |
 |  Plans
 |  details
-|
 |
 |
 |

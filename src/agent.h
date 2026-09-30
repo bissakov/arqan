@@ -1365,6 +1365,7 @@ typedef struct {
     b8 *args_object;
 
     u32 *ms;
+    i64 *sent_at;
     u32 *media_off;
     u16 *media_n;
     MediaSet *media;
@@ -2053,7 +2054,7 @@ void tui_write_tool(Str s);
 void tui_write_result(Str s);
 void tui_write_error(Str s);
 
-void tui_user_begin(void);
+void tui_user_begin(Str timestamp);
 void tui_user_end(void);
 void tui_write_user(Str s);
 

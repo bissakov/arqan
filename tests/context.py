@@ -285,6 +285,7 @@ class Ctx:
     # thing on screen a rerun cannot reproduce. Layout is what a golden is
     # about, so the number is normalised and its shape is left to assert on.
     ELAPSED = re.compile(r"\u00b7 (\d+ms|\d+\.\d+s|\d+m\d\ds|\d+s)")
+    SENT_AT = re.compile(r"(?m)^(\| *Sent at )\d{2}:\d{2}(?= *[\u2502\u2503]?$)")
 
     @staticmethod
     def _mask_elapsed(m: re.Match) -> str:
@@ -292,6 +293,7 @@ class Ctx:
 
     def check_text(self, actual: str, name: str | None = None):
         actual = self.ELAPSED.sub(self._mask_elapsed, actual)
+        actual = self.SENT_AT.sub(r"\g<1><clk>", actual)
         path = self.golden_path(name)
         self._checked.append(path.name)
         if self.update or not path.exists():

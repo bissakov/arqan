@@ -21,6 +21,7 @@ b8 conv_init(Conv *c, Arena *persist, size_t cap) {
     c->expanded = arena_new(persist, b8, cap);
     c->args_object = arena_new(persist, b8, cap);
     c->ms = arena_new(persist, u32, cap);
+    c->sent_at = arena_new(persist, i64, cap);
     c->media_off = arena_new(persist, u32, cap);
     c->media_n = arena_new(persist, u16, cap);
     c->media = NULL;
@@ -30,8 +31,8 @@ b8 conv_init(Conv *c, Arena *persist, size_t cap) {
     c->cap = cap;
     if (!c->role || !c->text || !c->anthropic_thinking || !c->tool_name
         || !c->tool_call_id || !c->shell_out || !c->has_tool_call
-        || !c->expanded || !c->args_object || !c->ms || !c->media_off
-        || !c->media_n) {
+        || !c->expanded || !c->args_object || !c->ms || !c->sent_at
+        || !c->media_off || !c->media_n) {
         c->cap = 0;
         return false;
     }
@@ -90,6 +91,7 @@ b8 conv_clone_head(Conv *dst, const Conv *src, size_t keep, Arena *a,
     memcpy(dst->expanded, src->expanded, n * sizeof *dst->expanded);
     memcpy(dst->args_object, src->args_object, n * sizeof *dst->args_object);
     memcpy(dst->ms, src->ms, n * sizeof *dst->ms);
+    memcpy(dst->sent_at, src->sent_at, n * sizeof *dst->sent_at);
     memcpy(dst->media_off, src->media_off, n * sizeof *dst->media_off);
     memcpy(dst->media_n, src->media_n, n * sizeof *dst->media_n);
     dst->media = src->media;
@@ -117,6 +119,7 @@ static size_t conv_push(Conv *c, MRole role, Str text, Str id, Str name,
     c->expanded[i] = false;
     c->args_object[i] = false;
     c->ms[i] = 0;
+    c->sent_at[i] = 0;
     c->media_off[i] = 0;
     c->media_n[i] = 0;
     return i;
@@ -322,6 +325,7 @@ b8 conv_compact_head(Conv *c, size_t keep, Str checkpoint) {
     CONV_SLIDE(expanded);
     CONV_SLIDE(args_object);
     CONV_SLIDE(ms);
+    CONV_SLIDE(sent_at);
     CONV_SLIDE(media_off);
     CONV_SLIDE(media_n);
 #undef CONV_SLIDE
@@ -336,6 +340,7 @@ b8 conv_compact_head(Conv *c, size_t keep, Str checkpoint) {
     c->expanded[1] = false;
     c->args_object[1] = false;
     c->ms[1] = 0;
+    c->sent_at[1] = 0;
     c->media_off[1] = 0;
     c->media_n[1] = 0;
     c->n = 2 + tail;

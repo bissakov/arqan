@@ -1,12 +1,12 @@
 --- screen 48x20 ---
 |
+|  Sent at <clk>
 |▌
 |▌ plan the storage
 |▌
 |
 |  ◆  ask
 |  │ Which storage?
-|
 |
 |    Which storage?
 |    Tab adds your own words to an answer

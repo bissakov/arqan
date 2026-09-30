@@ -1,11 +1,11 @@
 --- screen 80x24 ---
 |
+|  Sent at <clk>
 |▌
 |▌ say hi
 |▌
 |
 |  Hello from the mock provider.
-|
 |
 |
 |
