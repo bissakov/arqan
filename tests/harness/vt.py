@@ -171,11 +171,12 @@ class Buffer:
         self.chars = [[BLANK] * cols for _ in range(rows)]
         self.attrs = [[DEFAULT_ATTR] * cols for _ in range(rows)]
 
-    def clear(self):
+    def clear(self, attr=None):
         cols = self.cols
+        fill = attr or DEFAULT_ATTR
         for r in range(self.rows):
             self.chars[r][:] = [BLANK] * cols
-            self.attrs[r][:] = [DEFAULT_ATTR] * cols
+            self.attrs[r][:] = [fill] * cols
 
     def resize(self, cols: int, rows: int):
         old_chars, old_attrs = self.chars, self.attrs
@@ -211,6 +212,8 @@ class Terminal:
         self.notifications: list[str] = []
         self.bell_count = 0
         self.title: str | None = None
+        # OSC 12 sets the cursor colour and OSC 112 gives it back.
+        self.cursor_colour: str | None = None
         self.unknown: list[str] = []
         # Sequence number of the last idle beacon the test build emitted. It
         # only ever grows within one process, and each bump is one settled
@@ -565,7 +568,7 @@ class Terminal:
         self.screen_seq += 1
         b = self.buf
         if mode == 2 or mode == 3:
-            b.clear()
+            b.clear(self._erase_attr())
             return
         if mode == 0:
             self._erase_line(0)
@@ -574,7 +577,7 @@ class Terminal:
             self._erase_line(1)
             rng = range(0, self.row)
         blank = [BLANK] * self.cols
-        plain = [DEFAULT_ATTR] * self.cols
+        plain = [self._erase_attr()] * self.cols
         for r in rng:
             b.chars[r][:] = blank
             b.attrs[r][:] = plain
@@ -591,7 +594,12 @@ class Terminal:
         if hi <= lo:
             return
         b.chars[self.row][lo:hi] = [BLANK] * (hi - lo)
-        b.attrs[self.row][lo:hi] = [DEFAULT_ATTR] * (hi - lo)
+        b.attrs[self.row][lo:hi] = [self._erase_attr()] * (hi - lo)
+
+    def _erase_attr(self):
+        """Erased cells take the current background, as xterm's back colour
+        erase does."""
+        return attr_of(bg=self.attr.key()[1])
 
     def _sgr(self, params):
         if not params:
@@ -636,6 +644,12 @@ class Terminal:
                         bg = colour
                     i += 2
                 elif i + 1 < len(params) and params[i + 1] == 2:
+                    rgb = tuple(params[i + 2:i + 5])
+                    if len(rgb) == 3:
+                        if v == 38:
+                            fg = rgb
+                        else:
+                            bg = rgb
                     i += 4
             i += 1
         self.attr = attr_of(fg, bg, bold, reverse, underline)
@@ -686,6 +700,10 @@ class Terminal:
                 self.clipboard_writes.append(text)
         elif payload.startswith("9;"):
             self.notifications.append(payload[2:])
+        elif payload.startswith("12;"):
+            self.cursor_colour = payload[3:]
+        elif payload == "112":
+            self.cursor_colour = None
         elif payload.startswith(("0;", "2;")):
             self.title = payload.split(";", 1)[1]
 

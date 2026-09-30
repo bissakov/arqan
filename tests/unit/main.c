@@ -26,6 +26,9 @@ void telemetry_log(i32 level, Str msg) {
 #include "tasklog.c"
 #include "spill.c"
 #include "media.c"
+#include "paths.c"
+#include "settings.c"
+#include "theme.c"
 
 #include <fcntl.h>
 #include <stdlib.h>
@@ -633,6 +636,92 @@ static void sha256_pads_at_the_block_edges(void) {
         CHECK(sha256_is(text, cases[i].n, cases[i].hex));
 }
 
+/* ---- theme colours ----------------------------------------------------- */
+
+static void theme_colour_parse_accepts_the_value_forms(void) {
+    ThemeColour c;
+    CHECK(theme_colour_parse(STR("0"), &c) && c.kind == THEME_COLOUR_INDEX
+          && c.index == 0);
+    CHECK(theme_colour_parse(STR("255"), &c) && c.kind == THEME_COLOUR_INDEX
+          && c.index == 255);
+    CHECK(theme_colour_parse(STR("#000000"), &c) && c.kind == THEME_COLOUR_RGB
+          && c.r == 0 && c.g == 0 && c.b == 0);
+    CHECK(theme_colour_parse(STR("#FFffFF"), &c) && c.kind == THEME_COLOUR_RGB
+          && c.r == 255 && c.g == 255 && c.b == 255);
+    CHECK(theme_colour_parse(STR("default"), &c)
+          && c.kind == THEME_COLOUR_DEFAULT);
+}
+
+static void theme_colour_parse_rejects_everything_else(void) {
+    static const char *const bad[] = {"256",     "-1",  "#12345", "#1234567",
+                                      "#gg0000", "",    "1\0332", "\033[0m",
+                                      "Default", "12 ", "0x10"};
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        ThemeColour c = {THEME_COLOUR_INDEX, 7, 1, 2, 3};
+        CHECK(!theme_colour_parse(str_c(bad[i]), &c));
+        CHECK(c.kind == THEME_COLOUR_INDEX && c.index == 7);
+    }
+}
+
+/* NOTE: the unit build links no libm, so the WCAG gamma curve is computed
+ * with Newton steps: x^2.4 is x^2 times the fifth root of x^2. */
+static double unit_root5(double v) {
+    if (v <= 0) return 0;
+    double x = v < 1 ? 1 : v;
+    for (int i = 0; i < 60; i++) {
+        double x4 = x * x * x * x;
+        x -= (x4 * x - v) / (5 * x4);
+    }
+    return x;
+}
+
+static double unit_channel(u8 c) {
+    double v = c / 255.0;
+    if (v <= 0.03928) return v / 12.92;
+    double b = (v + 0.055) / 1.055;
+    return b * b * unit_root5(b * b);
+}
+
+static double unit_contrast(ThemeColour a, ThemeColour b) {
+    u8 x[3], y[3];
+    if (!theme_rgb(a, x) || !theme_rgb(b, y)) return 0;
+    double la = 0.2126 * unit_channel(x[0]) + 0.7152 * unit_channel(x[1])
+                + 0.0722 * unit_channel(x[2]);
+    double lb = 0.2126 * unit_channel(y[0]) + 0.7152 * unit_channel(y[1])
+                + 0.0722 * unit_channel(y[2]);
+    return la > lb ? (la + 0.05) / (lb + 0.05) : (lb + 0.05) / (la + 0.05);
+}
+
+static void theme_light_text_reads_on_the_page(void) {
+    static const size_t light_columns[] = {1, 4};
+    CHECK(!strcmp(k_theme_names[1], "light"));
+    CHECK(!strcmp(k_theme_names[4], "kanagawa-lotus"));
+    for (size_t t = 0; t < 2; t++) {
+        const ThemeColour *page = &k_theme_builtin[THEME_PAGE_BG][0];
+        size_t col = light_columns[t];
+        for (size_t s = 0; s < THEME_SLOT_N; s++) {
+            if (k_theme_slots[s].bg) continue;
+            ThemeColour fg = k_theme_builtin[s][col];
+            ThemeColour bg = page[col];
+            if (s == THEME_FIND_CURRENT_FG)
+                bg = k_theme_builtin[THEME_FIND_CURRENT_BG][col];
+            double ratio = unit_contrast(fg, bg);
+            if (ratio < 5.0)
+                printf("  %s %s: %.2f:1\n", k_theme_names[col],
+                       k_theme_slots[s].name, ratio);
+            CHECK(ratio >= 5.0);
+        }
+    }
+}
+
+static void theme_maps_hex_to_the_nearest_256_colour(void) {
+    CHECK(theme_nearest_256(0x00, 0x00, 0x00) == 16);
+    CHECK(theme_nearest_256(0xff, 0xff, 0xff) == 231);
+    CHECK(theme_nearest_256(0x80, 0x80, 0x80) == 244);
+    CHECK(theme_nearest_256(0xff, 0x00, 0x00) == 196);
+    CHECK(theme_nearest_256(0x5f, 0x87, 0xaf) == 67);
+}
+
 /* ---- child processes --------------------------------------------------- */
 
 static void child_close_fds_reaches_past_the_fallback_cap(void) {
@@ -721,6 +810,11 @@ int main(void) {
     RUN(tasklog_writes_the_end_past_the_cap);
     RUN(media_refuses_a_short_label_allocation);
     RUN(media_refuses_full_capacity);
+
+    RUN(theme_colour_parse_accepts_the_value_forms);
+    RUN(theme_colour_parse_rejects_everything_else);
+    RUN(theme_maps_hex_to_the_nearest_256_colour);
+    RUN(theme_light_text_reads_on_the_page);
 
     RUN(child_close_fds_reaches_past_the_fallback_cap);
     if (g_fail) {
