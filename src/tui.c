@@ -92,6 +92,8 @@ typedef struct {
     size_t activity_n;
     f64 activity_started;
     f64 activity_turn;
+    size_t activity_received;
+    b8 activity_receiving;
     size_t transcript_n;
     size_t pend_nl;
     size_t trail_nl;
@@ -2373,6 +2375,25 @@ static Str format_elapsed(char *buf, size_t cap, f64 secs) {
     return (Str){buf, len};
 }
 
+static Str format_received(char *buf, size_t cap, size_t bytes) {
+    static const char *const units[] = {"KiB", "MiB", "GiB"};
+    i32 written;
+    if (bytes < 1024) {
+        written = snprintf(buf, cap, "%zu B received", bytes);
+    } else {
+        f64 value = (f64)bytes / 1024.0;
+        size_t unit = 0;
+        while (value >= 1024.0 && unit + 1 < sizeof units / sizeof units[0]) {
+            value /= 1024.0;
+            unit++;
+        }
+        written = snprintf(buf, cap, "%.1f %s received", value, units[unit]);
+    }
+    size_t len = written > 0 ? (size_t)written : 0;
+    if (len >= cap) len = cap ? cap - 1 : 0;
+    return (Str){buf, len};
+}
+
 
 #ifdef AGENT_TESTING
 static b8 activity_clock_frozen(void) {
@@ -2402,6 +2423,11 @@ static void update_activity_row(size_t screen_row, size_t screen_col,
     char secs_buf[24];
     Str secs = format_elapsed(secs_buf, sizeof secs_buf, elapsed);
 
+    char received_buf[48];
+    Str received = g_tui.activity_receiving
+                       ? format_received(received_buf, sizeof received_buf,
+                                         g_tui.activity_received)
+                       : (Str){0};
     char total_buf[24];
     Str total = {0};
     if (g_tui.activity_started - g_tui.activity_turn >= 1.0)
@@ -2413,6 +2439,7 @@ static void update_activity_row(size_t screen_row, size_t screen_col,
     b8 stoppable = g_tui.busy && g_tui.interrupt != NULL;
 
     u64 hash = row_hash(secs, label, ROW_TOOL);
+    hash = hash_add(hash, received.p, received.n);
     hash = hash_add(hash, total.p, total.n);
     hash = hash_add(hash, &frame, sizeof frame);
     hash = hash_add(hash, &queued, sizeof queued);
@@ -2435,6 +2462,11 @@ static void update_activity_row(size_t screen_row, size_t screen_col,
     style(theme_sgr(THEME_TEXT));
     if (used < body_cols) put_safe_clipped(label, body_cols - used, &used);
     style(theme_sgr(THEME_MUTED));
+    if (received.n && used + 3 <= body_cols) {
+        put_safe_clipped(STR(" \u00b7 "), body_cols - used, &used);
+        if (used < body_cols)
+            put_safe_clipped(received, body_cols - used, &used);
+    }
     if (used + 3 <= body_cols)
         put_safe_clipped(STR(" \u00b7 "), body_cols - used, &used);
     if (used < body_cols) put_safe_clipped(secs, body_cols - used, &used);
@@ -3282,6 +3314,8 @@ void tui_activity_end(void) {
     g_tui.activity_n = 0;
     g_tui.activity_started = 0;
     g_tui.activity_turn = 0;
+    g_tui.activity_received = 0;
+    g_tui.activity_receiving = false;
     repaint();
 }
 
@@ -3297,9 +3331,21 @@ void tui_activity(Str label) {
 
     if (!g_tui.activity_n) g_tui.activity_turn = agent_now_seconds();
     g_tui.activity_started = agent_now_seconds();
+    g_tui.activity_received = 0;
+    g_tui.activity_receiving = false;
     memcpy(g_tui.activity, label.p, n);
     g_tui.activity_n = n;
     repaint();
+}
+
+void tui_tool_call_progress(size_t received) {
+    if (!g_tui.fullscreen) return;
+    if (!g_tui.activity_receiving) {
+        tui_set_status("preparing tool call");
+        tui_activity(STR("preparing tool call"));
+    }
+    g_tui.activity_received = received;
+    g_tui.activity_receiving = true;
 }
 
 b8 tui_is_fullscreen(void) {

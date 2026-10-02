@@ -1586,7 +1586,8 @@ typedef struct {
     void (*on_text)(Str delta, void *ud);
 
     void (*on_reason)(Str delta, void *ud);
-    void (*on_tool_call)(i32 index, Str id, Str name, Str args_delta, void *ud);
+    void (*on_tool_call)(i32 index, Str id, Str name, Str args_delta,
+                         size_t received, void *ud);
     void (*on_usage)(const Conv *conv, size_t prompt_tokens,
                      size_t completion_tokens, void *ud);
 
@@ -2116,6 +2117,7 @@ b8 tui_queued_pending(void);
 Str tui_queued_take(void);
 void tui_set_busy_command(b8 (*fn)(Str line, void *ud), void *ud);
 void tui_activity(Str label);
+void tui_tool_call_progress(size_t received);
 void tui_activity_end(void);
 void tui_poll_input(void);
 void tui_set_tick(b8 (*fn)(void *ud), void *ud);

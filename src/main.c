@@ -227,13 +227,14 @@ static void on_text(Str delta, void *ud) {
     }
     md_write(delta);
 }
-static void on_tool_call(i32 idx, Str id, Str name, Str args_delta, void *ud) {
+static void on_tool_call(i32 idx, Str id, Str name, Str args_delta,
+                         size_t received, void *ud) {
     (void)ud;
     (void)idx;
     (void)id;
     (void)name;
     (void)args_delta;
-    say_busy("preparing tool call");
+    tui_tool_call_progress(received);
 }
 static CtxGauge g_ctx;
 

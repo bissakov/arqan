@@ -324,7 +324,9 @@ class Session:
     # The spinner row under the transcript: "<frame> <label> · <elapsed>".
     ACTIVITY_ROW = re.compile(
         "[\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f]"
-        " (.+?) \u00b7 (\\d+m\\d\\ds|\\d+s)"
+        " (.+?) \u00b7 "
+        "(?:\\d+(?:\\.\\d+)? (?:B|KiB|MiB|GiB) received \u00b7 )?"
+        "(\\d+m\\d\\ds|\\d+s)"
     )
 
     def activity(self) -> tuple[str, str] | None:

@@ -77,6 +77,7 @@ class Scenario:
         self.hold_final: bool = _truthy(kw.get("hold_final", "0"))
         self.hold_round: int = int(kw.get("hold_round", 0))
         self.hold_after: int = int(kw.get("hold_after", 0))
+        self.hold_tool_args: bool = _truthy(kw.get("hold_tool_args", "0"))
         # Transient failures: the first `fail_times` completion requests fail,
         # with `status` (default 503) or, with fail_mode=close, by dropping the
         # connection before answering. `abort_after` drops it mid-stream, after
@@ -460,6 +461,8 @@ class _AnthropicHandlerMixin:
                     return
                 index += 1
                 completion_chars += len(args)
+            if scenario.hold_tool_args:
+                self._gate()
             stop = "tool_use"
         else:
             text = scenario.body_text() if tool_replies == 0 else scenario.follow_up_text()
@@ -1077,6 +1080,8 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
                         return
                     self._pace(scenario)
                 completion_chars += len(args)
+            if scenario.hold_tool_args:
+                self._gate()
             finish = "tool_calls"
         else:
             text = scenario.body_text() if tool_replies == 0 else scenario.follow_up_text()

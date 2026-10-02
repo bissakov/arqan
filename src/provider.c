@@ -788,6 +788,7 @@ typedef struct {
     Str name[AGENT_MAX_TOOL_CALLS];
     Buf args[AGENT_MAX_TOOL_CALLS];
     b8 used[AGENT_MAX_TOOL_CALLS];
+    size_t args_bytes;
     i32 count;
     i32 dropped;
     Buf text;
@@ -917,10 +918,13 @@ static void take_call(Provider *p, StreamState *s, const JVal *tc, i32 idx) {
     Str args = json_str(fn, STR("arguments"));
     if (id.n) s->id[sl] = str_dup(s->scratch, id);
     if (name.n) s->name[sl] = str_dup(s->scratch, name);
+    size_t before = s->args[sl].n;
     if (args.n) buf_puts(&s->args[sl], args);
+    s->args_bytes += s->args[sl].n - before;
     if (p->on_tool_call && s->name[sl].p)
         p->on_tool_call(sl, s->id[sl], s->name[sl],
-                        (Str){s->args[sl].p, s->args[sl].n}, p->ud);
+                        (Str){s->args[sl].p, s->args[sl].n}, s->args_bytes,
+                        p->ud);
 }
 
 static void openai_event(Provider *p, StreamState *s, const JVal *ev) {
@@ -1020,7 +1024,8 @@ static void anth_open_tool(Provider *p, StreamState *s, const JVal *blk) {
     if (name.n) s->name[sl] = str_dup(s->scratch, name);
     if (p->on_tool_call && s->name[sl].p)
         p->on_tool_call(sl, s->id[sl], s->name[sl],
-                        (Str){s->args[sl].p, s->args[sl].n}, p->ud);
+                        (Str){s->args[sl].p, s->args[sl].n}, s->args_bytes,
+                        p->ud);
 }
 
 static void anth_block_sep(StreamState *s) {
@@ -1115,10 +1120,13 @@ static void anth_event(Provider *p, StreamState *s, const JVal *ev) {
             anth_signature_delta(s, json_str(d, STR("signature")));
         } else if (str_eq(kind, STR("input_json_delta")) && s->open_slot >= 0) {
             i32 sl = s->open_slot;
+            size_t before = s->args[sl].n;
             buf_puts(&s->args[sl], json_str(d, STR("partial_json")));
+            s->args_bytes += s->args[sl].n - before;
             if (p->on_tool_call && s->name[sl].p)
                 p->on_tool_call(sl, s->id[sl], s->name[sl],
-                                (Str){s->args[sl].p, s->args[sl].n}, p->ud);
+                                (Str){s->args[sl].p, s->args[sl].n},
+                                s->args_bytes, p->ud);
         }
         return;
     }
