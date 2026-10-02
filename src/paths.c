@@ -152,21 +152,6 @@ static Str project_file(const char *dir, size_t n, Str name, Arena *a) {
     return out.n < AGENT_MAX_PATH ? out : (Str){0};
 }
 
-Str paths_project_dir(Arena *a) {
-    char cwd[AGENT_MAX_PATH];
-    if (!getcwd(cwd, sizeof cwd) || cwd[0] != '/') return (Str){0};
-    size_t n = strlen(cwd);
-    while (n > 1 && cwd[n - 1] == '/') n--;
-    Buf b;
-    buf_init(&b, a, n + AGENT_PROJECT_DIR.n + 2);
-    buf_put(&b, cwd, n == 1 ? 0 : n);
-    buf_putc(&b, '/');
-    buf_puts(&b, AGENT_PROJECT_DIR);
-    if (!buf_ok(&b)) return (Str){0};
-    Str out = buf_finish(&b);
-    return out.n < AGENT_MAX_PATH ? out : (Str){0};
-}
-
 static struct {
     u64 warned[AGENT_MAX_PROJECT_FILES * 4];
     size_t n;

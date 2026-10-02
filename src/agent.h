@@ -343,8 +343,6 @@ void telemetry_set_header(TelHeader fn, void *ud);
 
 b8 telemetry_set(b8 on, Arena *scratch);
 
-Str telemetry_file(void);
-
 void telemetry_log(i32 level, Str msg);
 
 void tel_open(TelEvent *e, const char *ev);
@@ -426,8 +424,6 @@ size_t paths_config_files(Str name, Arena *a, Str *out, size_t max);
 size_t paths_project_files(Str name, Arena *a, Str *out, size_t max);
 
 b8 paths_project_trusted(const char *path);
-
-Str paths_project_dir(Arena *a);
 
 /* ---- settings files ------------------------------------------------------
  * One syntax for every setting arqan owns, a subset of TOML: "key = value"
@@ -1426,7 +1422,6 @@ size_t conv_add_shell(Conv *c, Str cmd, Str out);
 b8 conv_is_shell(const Conv *c, size_t i);
 b8 conv_is_call(const Conv *c, size_t i);
 size_t conv_room(const Conv *c);
-b8 conv_clone(Conv *dst, const Conv *src, Arena *a, size_t extra);
 b8 conv_clone_head(Conv *dst, const Conv *src, size_t keep, Arena *a,
                    size_t extra);
 
@@ -1964,15 +1959,10 @@ void tui_keep_visible(size_t off);
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t start, size_t *out);
 
-b8 tui_pick_notice(Str title, Str notice, const TuiCmd *items, size_t n,
-                   TuiPickAnchor anchor, size_t start, size_t *out);
 b8 tui_pick_timed(Str title, Str notice, const TuiCmd *items, size_t n,
                   TuiPickAnchor anchor, size_t start, i32 timeout_ms,
                   size_t *out, b8 *expired, b8 *amended);
 
-b8 tui_pick_search_count(Str title, const TuiCmd *items, size_t n,
-                         size_t search_n, TuiPickAnchor anchor, size_t start,
-                         size_t *out);
 typedef struct {
     size_t (*act)(void *ud, size_t row, size_t *moved);
     void *ud;
@@ -2008,8 +1998,6 @@ typedef struct {
 } TuiViewPart;
 b8 tui_view_open(Str title, const TuiViewPart *parts, size_t n, size_t start);
 size_t tui_key_rows(TuiCmd *rows, size_t max);
-
-b8 tui_screen_open(void);
 
 b8 tui_ask(Str question, b8 secret, char *out, size_t cap);
 
@@ -2096,7 +2084,6 @@ void tui_write_error(Str s);
 
 void tui_user_begin(Str timestamp);
 void tui_user_end(void);
-void tui_write_user(Str s);
 
 void tui_write_styled(Str s, TuiStyle style);
 
