@@ -83,6 +83,18 @@ def test_batch_write_creates_directories_then_reads(ctx):
     assert (ctx.work / "nested/new.txt").read_text() == "hello\n"
 
 
+def test_batch_grep_empty_result_is_summarised_once(ctx):
+    ctx.write_file("notes.txt", "alpha\n")
+    s = run_batch(ctx, [step("grep", pattern="absent", path="notes.txt")])
+
+    text = s.text()
+    assert text.count("\u2514\u2500 0 matches") == 1, text
+    assert "no matches" not in text, text
+    out = result(ctx)
+    assert out["status"] == "completed", out
+    assert out["steps"][0]["result"] == "no matches\n", out
+
+
 def test_batch_children_have_a_rail_and_regular_tools_do_not(ctx):
     ctx.write_file("first.txt", "first output\n")
     ctx.write_file("second.txt", "second output\n")
