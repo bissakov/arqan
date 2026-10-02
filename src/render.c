@@ -931,6 +931,7 @@ static void render_tool_result_nested(Str name, Str args, Str result,
         write_count(str_lines(result), "line", "lines", tui_write_result);
     } else if (grep) {
         write_count(grep_matches(result), "match", "matches", tui_write_result);
+        if (str_eq(str_trim(body), STR("no matches"))) body = (Str){0};
     } else {
         size_t off = 0;
         Str first = body;

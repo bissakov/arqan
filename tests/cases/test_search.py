@@ -65,6 +65,24 @@ def test_grep_matches_case_sensitively_unless_told_otherwise(ctx):
     assert "shout.txt:1: ALPHA" in hit, hit
 
 
+def test_grep_empty_result_is_summarised_once(ctx):
+    """An empty search shows only its count, but keeps the model's result."""
+    ctx.write_file("notes.txt", "alpha\n")
+    ctx.scenario('tool=grep:{"pattern":"absent","path":"notes.txt"},final_text=done')
+    s = ctx.spawn()
+    s.submit("search the file")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    for verbose in (False, True):
+        if verbose:
+            s.settings_toggle("Verbose tool output")
+        text = s.text()
+        assert text.count("\u2514\u2500 0 matches") == 1, text
+        assert "no matches" not in text, text
+    assert ctx.mock.tool_results() == ["no matches\n"], ctx.mock.tool_results()
+
+
 def test_grep_caps_its_results_and_says_so(ctx):
     """A wide pattern costs a page, not the repository."""
     ctx.write_file("many.txt", "".join(f"hit {i}\n" for i in range(50)))

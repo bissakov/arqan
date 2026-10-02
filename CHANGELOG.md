@@ -54,6 +54,9 @@
 
 ### Fixed
 
+- Empty `grep` results show only `0 matches`, without a second `no matches`
+  line. The model still receives the full tool result.
+
 - Saved code gets syntax highlighting when the last session resumes at
   startup. Before, it stayed plain until the transcript was rebuilt.
 
