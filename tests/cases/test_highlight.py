@@ -318,6 +318,145 @@ def test_patch_preview_highlights_code_but_not_diff_markers(ctx):
     assert cell(s, "= 42", 2).fg == YELLOW
 
 
+def test_envelope_patch_preview_highlights_code(ctx):
+    """Envelope file headers supply the same language hint as unified diffs."""
+    ctx.write_file("sample.c", "int answer = 1;\n")
+    diff = (
+        "*** Begin Patch\n*** Update File: sample.c\n@@\n"
+        "-int answer = 1;\n+int answer = 42;\n*** End Patch\n"
+    )
+    args = json.dumps({"patch": diff})
+    ctx.scenario(f"tool=patch:{args},final_text=done")
+    s = ctx.spawn()
+    s.submit("patch it")
+    s.wait_turn_done()
+    assert cell(s, "-int answer").fg == 203
+    assert cell(s, "+int answer").fg == GREEN
+    assert cell(s, "-int answer", 1).fg == CYAN
+    assert cell(s, "+int answer", 1).fg == CYAN
+    assert cell(s, "= 42", 2).fg == YELLOW
+    assert "\u25c6  patch sample.c" in s.text(), s.text()
+    assert (ctx.work / "sample.c").read_text() == "int answer = 42;\n"
+
+    s.settings_toggle("Display raw")
+    assert cell(s, "+int answer", 1).fg == TEXT
+    s.settings_toggle("Display raw")
+    assert cell(s, "+int answer", 1).fg == CYAN
+
+
+def test_patch_preview_uses_each_files_language(ctx):
+    """Both patch formats keep each file's syntax and leave unknown files plain."""
+    diffs = [
+        "*** Begin Patch\n*** Update File: sample.c\n@@\n"
+        "-int answer = 1;\n+int answer = 42;\n"
+        "*** Update File: sample.py\n@@\n"
+        "-def answer(): return 'no'\n+def answer(): return 'yes'\n"
+        "*** Add File: plain.txt\n+int plain = 7;\n*** End Patch\n",
+        "--- a/sample.c\n+++ b/sample.c\n@@ -1 +1 @@\n"
+        "-int answer = 1;\n+int answer = 42;\n"
+        "--- a/sample.py\n+++ b/sample.py\n@@ -1 +1 @@\n"
+        "-def answer(): return 'no'\n+def answer(): return 'yes'\n"
+        "--- /dev/null\n+++ b/plain.txt\n@@ -0,0 +1 @@\n+int plain = 7;\n",
+    ]
+    for index, diff in enumerate(diffs):
+        diff = diff.replace("plain.txt", f"plain{index}.txt")
+        ctx.write_file("sample.c", "int answer = 1;\n")
+        ctx.write_file("sample.py", "def answer(): return 'no'\n")
+        args = json.dumps({"patch": diff})
+        ctx.scenario(f"tool=patch:{args},final_text=done")
+        s = ctx.spawn(rows=32)
+        s.submit("patch both")
+        s.wait_turn_done()
+        assert cell(s, "+int answer", 1).fg == CYAN
+        assert cell(s, "= 42", 2).fg == YELLOW
+        assert cell(s, "+def answer").fg == GREEN
+        assert cell(s, "+def answer", 1).fg == PURPLE
+        assert cell(s, "+def answer", 5).fg == BLUE
+        assert cell(s, "'yes'").fg == GREEN
+        assert cell(s, "+int plain", 1).fg == TEXT
+        assert "\u25c6  patch sample.c +2 more" in s.text(), s.text()
+
+
+def test_startup_resume_keeps_patch_and_fence_syntax(ctx):
+    """Startup replay colours saved patches and fences without a rewind."""
+    ctx.write_file("sample.c", "int answer = 1;\n")
+    ctx.write_file("sample.py", "def answer(): return 'no'\n")
+    diff = (
+        "*** Begin Patch\n*** Update File: sample.c\n@@\n"
+        "-int answer = 1;\n+int answer = 42;\n"
+        "*** Update File: sample.py\n@@\n"
+        "-def answer(): return 'no'\n+def answer(): return 'yes'\n"
+        "*** End Patch\n"
+    )
+    args = json.dumps({"patch": diff})
+    reply = '```json\n{"saved":true}\n```'
+    ctx.scenario(f"tool=patch:{args},final_text={reply}")
+    original = ctx.spawn(rows=48)
+    original.submit("patch both")
+    original.wait_turn_done()
+    assert cell(original, "+int answer", 1).fg == CYAN
+    assert cell(original, "+def answer", 1).fg == PURPLE
+    assert cell(original, '"saved"').fg == GREEN
+    original.submit("/exit")
+    assert original.wait_exit() == 0
+
+    for automatic in (True, False):
+        s = ctx.spawn(rows=48, ARQAN_RESUME_LAST=str(automatic).lower())
+        if not automatic:
+            s.submit("/resume")
+            s.wait_status("pick a session")
+            s.key("enter")
+        s.wait_text('"saved"')
+        s.wait_status("ready")
+        assert cell(s, "-int answer").fg == 203
+        assert cell(s, "+int answer").fg == GREEN
+        assert cell(s, "+int answer", 1).fg == CYAN
+        assert cell(s, "= 42", 2).fg == YELLOW
+        assert cell(s, "+def answer", 1).fg == PURPLE
+        assert cell(s, "'yes'").fg == GREEN
+        assert cell(s, '"saved"').fg == GREEN
+
+        ctx.scenario("text=still+here")
+        s.submit("continue")
+        s.wait_turn_done()
+        assert cell(s, "+int answer", 1).fg == CYAN
+        assert cell(s, "+def answer", 1).fg == PURPLE
+        assert cell(s, '"saved"').fg == GREEN
+        s.submit("/exit")
+        assert s.wait_exit() == 0
+
+
+def test_patch_preview_highlights_created_and_deleted_files(ctx):
+    """New envelope files and deleted unified files use their real paths."""
+    ctx.write_file("old.c", "int gone = 1;\n")
+    diff = (
+        "--- a/old.c\n+++ /dev/null\n@@ -1 +0,0 @@\n-int gone = 1;\n"
+    )
+    args = json.dumps({"patch": diff})
+    ctx.scenario(f"tool=patch:{args},final_text=done")
+    s = ctx.spawn()
+    s.submit("delete it")
+    s.wait_turn_done()
+    assert cell(s, "-int gone").fg == 203
+    assert cell(s, "-int gone", 1).fg == CYAN
+    assert "\u25c6  patch old.c" in s.text(), s.text()
+    assert not (ctx.work / "old.c").exists()
+
+    diff = (
+        "*** Begin Patch\n*** Add File: new.py\n"
+        "+def answer():\n+    return 'yes'\n*** End Patch\n"
+    )
+    args = json.dumps({"patch": diff})
+    ctx.scenario(f"tool=patch:{args},final_text=created")
+    s2 = ctx.spawn()
+    s2.submit("create it")
+    s2.wait_turn_done()
+    assert cell(s2, "+def answer", 1).fg == PURPLE
+    assert cell(s2, "return 'yes'").fg == PURPLE
+    assert cell(s2, "'yes'").fg == GREEN
+    assert (ctx.work / "new.py").read_text() == "def answer():\n    return 'yes'\n"
+
+
 def test_empty_patch_fragments_survive_syntax_batching(ctx):
     """A patch line that adds nothing has an empty fragment and no bytes."""
     ctx.write_file("sample.c", "int answer = 1;\n")
@@ -581,6 +720,33 @@ def test_window_over_a_grep_result_colours_only_match_text(ctx):
     assert window_cell(s, "one.c:13:").fg == TEXT
     assert window_cell(s, "int v0012").fg == CYAN
     assert window_cell(s, "= 12", 2).fg == YELLOW
+
+
+def test_window_over_an_envelope_patch_uses_each_files_language(ctx):
+    """The full patch window maps each file's syntax back to its own lines."""
+    body = "\n".join(f"int v{i:04d} = {i};" for i in range(18)) + "\n"
+    ctx.write_file("big.c", body)
+    diff = (
+        "*** Begin Patch\n*** Update File: big.c\n@@\n"
+        + "".join(" " + line + "\n" for line in body.splitlines())
+        + "+int extra = 42;\n*** Add File: new.py\n"
+        "+def answer(): return 'yes'\n*** End Patch\n"
+    )
+    args = json.dumps({"patch": diff})
+    ctx.scenario(f"tool=patch:{args},hold_final,final_text=done")
+    s = ctx.spawn()
+    s.submit("patch both")
+    s.wait_text("\u25be 9 more lines")
+    s.wait_text("big.c +1 -0")
+    s.wait_activity("thinking")
+    click_tail(s, "\u25be 9 more lines")
+    s.key("home").sync()
+    assert window_cell(s, "int v0000").fg == CYAN
+    s.key("end").sync()
+    assert window_cell(s, "int extra").fg == CYAN
+    assert window_cell(s, "= 42", 2).fg == YELLOW
+    assert window_cell(s, "def answer").fg == PURPLE
+    assert window_cell(s, "'yes'").fg == GREEN
 
 
 def test_window_over_a_shell_run_highlights_the_command_only(ctx):

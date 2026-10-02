@@ -54,9 +54,10 @@ static void add_line_syntax(const YhlResult *hl, Str source, size_t source_off,
 static void write_syntax_lines(Str body, Str source, b8 grep,
                                const YhlResult *hl, Str gutter, size_t max,
                                size_t bytes);
-static size_t patch_batch(Str patch, char *out, size_t cap);
-static void write_patch_lines(Str patch, Str source, const YhlResult *hl,
-                              Str gutter, size_t max);
+static void batched_syntax(Str body, b8 grep, Str hint, Arena *scratch,
+                           YhlResult *out);
+static void write_patch_lines(Str patch, const YhlResult *hl, Str gutter,
+                              size_t max);
 
 
 static void write_clipped(Str s, size_t max, Sink sink) {
@@ -162,19 +163,64 @@ static void write_lines(Str body, Str gutter, size_t max, size_t bytes,
     write_styled(body, gutter, max, bytes, sink, NULL);
 }
 
-static Str patch_target(Str patch, char *buf, size_t cap, Str *hint) {
-    size_t off = 0, files = 0;
-    Str line, first = {0};
-    while (str_line(patch, &off, &line)) {
-        if (!str_starts(line, STR("+++ "))) continue;
-        if (!files++) {
-            first = str_trim(str_drop(line, 4));
-            const char *tab = (const char *)memchr(first.p, '\t', first.n);
-            if (tab) first.n = (size_t)(tab - first.p);
-            if (str_starts(first, STR("b/"))) first = str_drop(first, 2);
+static b8 patch_file_header(Str patch, Str line, size_t *off, Str *hint) {
+    if (str_starts(line, STR("--- "))) {
+        size_t peek = *off;
+        Str next;
+        if (!str_line(patch, &peek, &next) || !str_starts(next, STR("+++ ")))
+            return false;
+        Str path = str_trim(str_drop(next, 4));
+        if (str_eq(path, STR("/dev/null"))) path = str_trim(str_drop(line, 4));
+        const char *tab = (const char *)memchr(path.p, '\t', path.n);
+        if (tab) path.n = (size_t)(tab - path.p);
+        if (str_starts(path, STR("a/")) || str_starts(path, STR("b/")))
+            path = str_drop(path, 2);
+        *hint = path;
+        *off = peek;
+        return true;
+    }
+    static const Str prefixes[] = {
+        {"*** Update File: ", sizeof("*** Update File: ") - 1},
+        {"*** Add File: ", sizeof("*** Add File: ") - 1},
+        {"*** Delete File: ", sizeof("*** Delete File: ") - 1}};
+    for (size_t i = 0; i < sizeof prefixes / sizeof *prefixes; i++) {
+        if (str_starts(line, prefixes[i])) {
+            *hint = str_trim(str_drop(line, prefixes[i].n));
+            return true;
         }
     }
-    *hint = first;
+    return false;
+}
+
+static b8 patch_section(Str patch, size_t *off, Str *body, Str *hint) {
+    Str line;
+    b8 found = false;
+    while (str_line(patch, off, &line)) {
+        if (patch_file_header(patch, line, off, hint)) {
+            found = true;
+            break;
+        }
+    }
+    if (!found) return false;
+    size_t start = *off, end = *off;
+    while (str_line(patch, off, &line)) {
+        size_t peek = *off;
+        Str next_hint;
+        if (patch_file_header(patch, line, &peek, &next_hint)) {
+            *off = end;
+            break;
+        }
+        end = *off;
+    }
+    *body = (Str){patch.p + start, end - start};
+    return true;
+}
+
+static Str patch_target(Str patch, char *buf, size_t cap) {
+    size_t off = 0, files = 0;
+    Str body, hint, first = {0};
+    while (patch_section(patch, &off, &body, &hint))
+        if (!files++) first = hint;
     if (files < 2) return first;
     i32 len =
         snprintf(buf, cap, "%.*s +%zu more", (i32)first.n, first.p, files - 1);
@@ -271,9 +317,7 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
     Str content = json_str(j, STR("content"));
     Str patch = json_str(j, STR("patch"));
     char patch_buf[R_TARGET_BYTES + 32];
-    Str patch_hint = {0};
-    if (patch.n)
-        path = patch_target(patch, patch_buf, sizeof patch_buf, &patch_hint);
+    if (patch.n) path = patch_target(patch, patch_buf, sizeof patch_buf);
     Str query = str_eq(name, STR("grep"))   ? json_str(j, STR("pattern"))
                 : str_eq(name, STR("find")) ? json_str(j, STR("name"))
                 : str_eq(name, STR("internet_search"))
@@ -329,7 +373,6 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
 
     if (target_cmd) str_line(cmd, &cmd_off, &target);
     static YhlResult syntax;
-    static char patch_source[YHL_SOURCE_MAX];
     syntax.n = 0;
     b8 source_code = false;
     Str syntax_source = content;
@@ -342,11 +385,8 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
         highlight_request(YHL_HINT_MARKDOWN_ALIAS, STR("bash"), cmd, &syntax);
     } else if (patch.n) {
         source_code = true;
-        size_t n = patch_batch(patch, patch_source, sizeof patch_source);
-        syntax_source = (Str){patch_source, n};
-        if (n && patch_hint.n)
-            highlight_request(YHL_HINT_PATH, patch_hint, syntax_source,
-                              &syntax);
+        syntax_source = patch;
+        batched_syntax(patch, false, (Str){0}, scratch, &syntax);
     }
 
     tui_block();
@@ -378,8 +418,7 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
             write_lines(content, STR("\u2502 "), R_ARG_LINES, R_LINE_BYTES,
                         tui_write_muted);
     } else if (patch.n) {
-        write_patch_lines(patch, syntax_source, &syntax, STR("\u2502 "),
-                          R_ARG_LINES * 2);
+        write_patch_lines(patch, &syntax, STR("\u2502 "), R_ARG_LINES * 2);
     } else if (cmd.n) {
         if (source_code)
             write_syntax_lines(str_drop(cmd, cmd_off), syntax_source, false,
@@ -569,10 +608,10 @@ static size_t patch_batch(Str patch, char *out, size_t cap) {
     return n;
 }
 
-static void write_patch_lines(Str patch, Str source, const YhlResult *hl,
-                              Str gutter, size_t max) {
+static void write_patch_lines(Str patch, const YhlResult *hl, Str gutter,
+                              size_t max) {
     size_t cap = line_cap(max);
-    size_t off = 0, shown = 0, source_off = 0;
+    size_t off = 0, shown = 0;
     Str line;
     while (shown < cap && str_line(patch, &off, &line)) {
         tui_write_dim(gutter);
@@ -587,9 +626,9 @@ static void write_patch_lines(Str patch, Str source, const YhlResult *hl,
             if (fragment.n) {
                 size_t at = tui_transcript_pos();
                 tui_write_source(fragment);
-                add_line_syntax(hl, source, source_off, fragment, at);
+                add_line_syntax(hl, patch, (size_t)(full_fragment.p - patch.p),
+                                fragment, at);
             }
-            source_off += full_fragment.n + 1;
         } else if (str_starts(line, STR("+++ "))
                    || str_starts(line, STR("--- "))) {
             tui_write_tool(head);
@@ -926,8 +965,7 @@ void render_batch_child_result(Str name, Str args, Str result, Arena *scratch,
 }
 
 static void unbatch_syntax(const YhlResult *hl, Str body, b8 grep,
-                           YhlResult *out) {
-    out->n = 0;
+                           size_t body_off, YhlResult *out) {
     size_t off = 0, src = 0, k = 0;
     Str line;
     while (k < hl->n && str_line(body, &off, &line)) {
@@ -935,7 +973,8 @@ static void unbatch_syntax(const YhlResult *hl, Str body, b8 grep,
         if (grep ? !grep_fragment(line, &prefix, &fragment)
                  : !patch_fragment(line, &fragment))
             continue;
-        size_t at = (size_t)(fragment.p - body.p), end = src + fragment.n;
+        size_t at = body_off + (size_t)(fragment.p - body.p);
+        size_t end = src + fragment.n;
         while (k < hl->n && hl->run[k].start < end) {
             size_t a = hl->run[k].start, b = hl->run[k].end;
             if (b > end) b = end;
@@ -953,15 +992,32 @@ static void unbatch_syntax(const YhlResult *hl, Str body, b8 grep,
 
 static void batched_syntax(Str body, b8 grep, Str hint, Arena *scratch,
                            YhlResult *out) {
-    if (!hint.n || !scratch) return;
+    if (!scratch || (grep && !hint.n)) return;
+    size_t mark = scratch->off;
     char *batch = arena_alloc(scratch, YHL_SOURCE_MAX, 1);
     YhlResult *hl = arena_alloc(scratch, sizeof *hl, alignof(YhlResult));
-    if (!batch || !hl) return;
-    size_t n = grep ? grep_batch(body, batch, YHL_SOURCE_MAX)
-                    : patch_batch(body, batch, YHL_SOURCE_MAX);
-    if (!n) return;
-    if (highlight_request(YHL_HINT_PATH, hint, (Str){batch, n}, hl))
-        unbatch_syntax(hl, body, grep, out);
+    if (batch && hl) {
+        if (grep) {
+            size_t n = grep_batch(body, batch, YHL_SOURCE_MAX);
+            if (n
+                && highlight_request(YHL_HINT_PATH, hint, (Str){batch, n}, hl))
+                unbatch_syntax(hl, body, true, 0, out);
+        } else {
+            size_t off = 0, files = 0;
+            Str section;
+            while (files < AGENT_MAX_PATCH_FILES && out->n < YHL_RUN_MAX
+                   && patch_section(body, &off, &section, &hint)) {
+                files++;
+                size_t n = patch_batch(section, batch, YHL_SOURCE_MAX);
+                if (n
+                    && highlight_request(YHL_HINT_PATH, hint, (Str){batch, n},
+                                         hl))
+                    unbatch_syntax(hl, section, false,
+                                   (size_t)(section.p - body.p), out);
+            }
+        }
+    }
+    scratch->off = mark;
 }
 
 
@@ -1039,12 +1095,7 @@ Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
     } else if (patch.n) {
         if (shown) *shown = R_ARG_LINES * 2;
         body = patch;
-        if (syntax) {
-            char buf[R_TARGET_BYTES + 32];
-            Str hint = {0};
-            (void)patch_target(patch, buf, sizeof buf, &hint);
-            batched_syntax(patch, false, hint, scratch, syntax);
-        }
+        if (syntax) batched_syntax(patch, false, (Str){0}, scratch, syntax);
     } else if (cmd.n) {
         if (shown) *shown = R_ARG_LINES + 1;
         body = cmd;

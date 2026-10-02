@@ -54,6 +54,12 @@
 
 ### Fixed
 
+- Saved code gets syntax highlighting when the last session resumes at
+  startup. Before, it stayed plain until the transcript was rebuilt.
+
+- Patch previews and expansion windows highlight code in both patch formats.
+  Each file uses its own language, including patches that change several files.
+
 - Patches match whole lines, never a suffix inside another line. Context
   errors show the text near a known mismatch instead of the end of the file.
 
