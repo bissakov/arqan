@@ -135,10 +135,6 @@ b8 telemetry_on(void) {
     return g_tel.on && g_tel.ready;
 }
 
-Str telemetry_file(void) {
-    return g_tel.ready && g_tel.path_buf[0] ? str_c(g_tel.path_buf) : (Str){0};
-}
-
 void telemetry_init(Arena *scratch, b8 on) {
     g_tel.t0 = agent_now_seconds();
     size_t mark = scratch->off;

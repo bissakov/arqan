@@ -101,10 +101,6 @@ b8 conv_clone_head(Conv *dst, const Conv *src, size_t keep, Arena *a,
     return true;
 }
 
-b8 conv_clone(Conv *dst, const Conv *src, Arena *a, size_t extra) {
-    return conv_clone_head(dst, src, src->n, a, extra);
-}
-
 static size_t conv_push(Conv *c, MRole role, Str text, Str id, Str name,
                         b8 has_call) {
     if (c->n >= c->cap) return CONV_NONE;

@@ -4058,12 +4058,6 @@ void tui_user_end(void) {
     g_tui.pend_nl = 1;
 }
 
-void tui_write_user(Str s) {
-    tui_user_begin((Str){0});
-    tui_write(s);
-    tui_user_end();
-}
-
 void tui_set_interrupt_flag(volatile sig_atomic_t *flag) {
     g_tui.interrupt = flag;
 }
@@ -5340,12 +5334,6 @@ b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
                      NULL, NULL, (Str){0}, 0, false);
 }
 
-b8 tui_pick_notice(Str title, Str notice, const TuiCmd *items, size_t n,
-                   TuiPickAnchor anchor, size_t start, size_t *out) {
-    return pick_impl(title, items, NULL, n, n, anchor, start, PICK_CHOOSE, out,
-                     NULL, NULL, notice, 0, false);
-}
-
 b8 tui_pick_timed(Str title, Str notice, const TuiCmd *items, size_t n,
                   TuiPickAnchor anchor, size_t start, i32 timeout_ms,
                   size_t *out, b8 *expired, b8 *amended) {
@@ -5356,13 +5344,6 @@ b8 tui_pick_timed(Str title, Str notice, const TuiCmd *items, size_t n,
     if (ok && expired) *expired = g_pick.expired;
     if (ok && amended) *amended = g_pick.amended;
     return ok;
-}
-
-b8 tui_pick_search_count(Str title, const TuiCmd *items, size_t n,
-                         size_t search_n, TuiPickAnchor anchor, size_t start,
-                         size_t *out) {
-    return pick_impl(title, items, NULL, n, search_n, anchor, start,
-                     PICK_CHOOSE, out, NULL, NULL, (Str){0}, 0, false);
 }
 
 b8 tui_pick_action(Str title, size_t n, size_t search_n, TuiPickAnchor anchor,
@@ -5504,10 +5485,6 @@ b8 tui_view_open(Str title, const TuiViewPart *parts, size_t n, size_t start) {
     sel_clear();
     repaint();
     return true;
-}
-
-b8 tui_screen_open(void) {
-    return g_pick.active || g_view.active;
 }
 
 static void kill_store(const char *s, size_t n) {
