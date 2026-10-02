@@ -4,6 +4,12 @@
 
 ### Added
 
+- The `batch` tool runs up to eight known tool calls in order. Each step keeps
+  its normal display and approval. A batch stops on an error, denied approval,
+  nonzero command exit, or a still-running job, and reports the steps it skipped.
+  Child arguments use the selected tool's schema, and completed steps are saved
+  while a later step runs.
+
 - User turns show a dim `Sent at HH:mm` line above the message block. The
   time is saved with the session and shown in local time on replay.
 
@@ -23,6 +29,10 @@
 
 ### Changed
 
+- File editing tools create missing parent directories for new files. Patches
+  accept repeated update headers for one file and `@@ literal line` anchors
+  to narrow the search for matching context.
+
 - Tool output, tool arguments and block quotes use a brighter grey and are
   easier to read. Reasoning, gutters, separators and timings keep the dim
   grey, so reasoning stays easy to tell apart from the reply. Emphasis and
@@ -36,6 +46,9 @@
   Highlighting takes up to about 10% longer.
 
 ### Fixed
+
+- Patches match whole lines, never a suffix inside another line. Context
+  errors show the text near a known mismatch instead of the end of the file.
 
 - A question from `ask_user` that wraps now reads in one colour. Its first
   row took the grey of the gutter, while the rows after it used the text

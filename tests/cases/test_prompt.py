@@ -46,6 +46,36 @@ def test_global_system_md_replaces_the_prompt(ctx):
     assert "expert coding assistant" not in content, content
 
 
+def test_builtin_prompt_guides_readable_sequential_batches(ctx):
+    ctx.scenario("text=ok")
+    s = ctx.spawn(ARQAN_SYSTEM_PROMPT=None)
+    content = system_message(ctx, s)
+
+    assert "- batch: " in content, content
+    assert "whose arguments are already known" in content, content
+    assert "Do not batch a read with an edit" in content, content
+    assert "inline scripts or shell redirection" in content, content
+    assert "Do not rerun completed steps" in content, content
+
+
+def test_disabled_batch_has_no_batch_guidance(ctx):
+    ctx.scenario("text=ok")
+    s = ctx.spawn(ARQAN_SYSTEM_PROMPT=None, ARQAN_DISABLE_TOOLS="batch")
+    content = system_message(ctx, s)
+
+    assert "- batch: " not in content, content
+    assert "Use batch for" not in content, content
+    assert "Do not rerun completed steps" not in content, content
+
+
+def test_disabled_editing_tools_have_no_shell_editing_guidance(ctx):
+    ctx.scenario("text=ok")
+    s = ctx.spawn(ARQAN_SYSTEM_PROMPT=None, ARQAN_DISABLE_TOOLS="patch,write")
+    content = system_message(ctx, s)
+
+    assert "inline scripts or shell redirection" not in content, content
+
+
 def test_project_system_md_wins_over_the_global_one(ctx):
     """.arqan/SYSTEM.md is the more local statement, so it is the one used."""
     write_global(ctx, "GLOBAL PROMPT\n")

@@ -51,7 +51,10 @@ typedef bool b8;
 #define AGENT_MAX_MEDIA_PER_TURN 4
 #define AGENT_TOOL_IMAGES_NOTE   "Images from the tool results above, in order:"
 #define AGENT_TOOL_RESULT_BYTES  (8u << 10)
-#define AGENT_READ_LINES         2000
+#define AGENT_MAX_BATCH_STEPS    8u
+#define AGENT_BATCH_RESULT_BYTES \
+    (AGENT_MAX_BATCH_STEPS * (6u * AGENT_TOOL_RESULT_BYTES + 512u) + 128u)
+#define AGENT_READ_LINES 2000
 
 #define AGENT_READ_BYTES (AGENT_TOOL_RESULT_BYTES - 256u)
 
@@ -1146,6 +1149,7 @@ typedef struct {
     Str *desc;
     Str *brief;
     Str *schema;
+    Str *batch_schema;
     ToolRun *run;
     u8 *modes;
     u8 *approval;
@@ -1158,8 +1162,8 @@ typedef struct {
 
 #define TOOL_NONE ((size_t)-1)
 
-void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
-                b8 subagents, i32 subagent_tasks);
+void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
+                i32 shell_timeout_ms, b8 subagents, i32 subagent_tasks);
 
 void tools_set_subagents(ToolRegistry *r, b8 on);
 
@@ -1173,6 +1177,7 @@ b8 tools_available(const ToolRegistry *r, size_t id, AgentMode mode);
 b8 tools_available_to(const ToolRegistry *r, size_t id, AgentMode mode,
                       ToolAudience audience);
 size_t tools_find(const ToolRegistry *r, Str name);
+b8 tools_batchable(const ToolRegistry *r, size_t id);
 ToolApprovalClass tools_approval_class(const ToolRegistry *r, size_t id);
 ToolApprovalClass tools_call_approval(const ToolRegistry *r, size_t id,
                                       Str args, Arena *scratch);
@@ -1193,6 +1198,39 @@ size_t tools_remove_mcp(ToolRegistry *r, u16 server);
 b8 tools_run(const ToolRegistry *r, size_t id, Str args,
              ToolAuthorization authorization, Arena *scratch, Buf *out,
              char *err, size_t err_cap, ToolAudience audience);
+
+typedef struct {
+    b8 pending;
+    u32 job_id;
+    i32 exit_code;
+} ToolExecution;
+
+b8 tools_run_report(const ToolRegistry *r, size_t id, Str args,
+                    ToolAuthorization authorization, Arena *scratch, Buf *out,
+                    char *err, size_t err_cap, ToolAudience audience,
+                    ToolExecution *execution);
+
+typedef struct {
+    size_t tool;
+    Str name, args, result, status;
+    ToolExecution execution;
+    u32 ms;
+} BatchStep;
+
+typedef struct {
+    BatchStep steps[AGENT_MAX_BATCH_STEPS];
+    size_t n, attempted;
+} ToolBatch;
+
+b8 batch_parse(ToolBatch *batch, const ToolRegistry *r, AgentMode mode,
+               Str args, Arena *scratch, char *err, size_t err_cap);
+void batch_write_schema(Buf *out, const ToolRegistry *r, AgentMode mode,
+                        ToolAudience audience);
+size_t batch_schema_bytes(const ToolRegistry *r, AgentMode mode,
+                          ToolAudience audience);
+Str batch_compact_schema(Str schema, Arena *persist, Arena *scratch);
+void batch_write(Buf *out, const ToolBatch *batch, Str status, size_t shown);
+void batch_summary(Buf *out, Str status, size_t attempted, size_t total);
 
 void tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api,
                          ToolAudience audience);
@@ -1526,6 +1564,8 @@ b8 session_begin(Session *s);
 void session_end(Session *s);
 void session_set_cleared(Session *s, b8 cleared);
 b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap);
+b8 session_update_tool(Session *s, const Conv *c, size_t slot, char *err,
+                       size_t err_cap);
 
 b8 session_fork(Session *s, const Conv *c, char *err, size_t err_cap);
 

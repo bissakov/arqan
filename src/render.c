@@ -246,6 +246,18 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
     }
     JVal *j = json_parse(scratch, args);
 
+    if (str_eq(name, STR("batch"))) {
+        const JVal *steps = json_get(j, STR("steps"));
+        tui_block();
+        tui_write_tool(STR("\u25c6  batch "));
+        write_count(steps && steps->type == J_ARR ? steps->u.arr.n : 0, "step",
+                    "steps", tui_write_tool);
+        tui_write_tool(STR("\n"));
+        scratch->off = mark;
+        block_end();
+        return;
+    }
+
     if (str_eq(name, STR("ask_user"))) {
         render_question(json_str(j, STR("question")));
         scratch->off = mark;
@@ -736,8 +748,79 @@ static void write_syntax_lines(Str body, Str source, b8 grep,
     tui_syntax_commit();
 }
 
+static b8 render_batch_result(Str args, Str result, Arena *scratch, u32 id,
+                              b8 expanded, u32 ms) {
+    if (!scratch || !str_starts(result, STR("{"))) return false;
+    size_t mark = scratch->off;
+    const JVal *root = json_parse(scratch, result);
+    const JVal *rows = json_get(root, STR("steps"));
+    const JVal *call = json_parse(scratch, args);
+    const JVal *steps = json_get(call, STR("steps"));
+    Str status = json_str(root, STR("status"));
+    if (!rows || rows->type != J_ARR || rows->u.arr.n > AGENT_MAX_BATCH_STEPS
+        || !status.n) {
+        scratch->off = mark;
+        return false;
+    }
+    for (size_t i = 0; i < rows->u.arr.n; i++) {
+        const JVal *row = &rows->u.arr.items[i];
+        Str name = json_str(row, STR("tool"));
+        if (str_eq(name, STR("batch"))) {
+            scratch->off = mark;
+            return false;
+        }
+    }
+    for (size_t i = 0; i < rows->u.arr.n; i++) {
+        const JVal *row = &rows->u.arr.items[i];
+        Str name = json_str(row, STR("tool"));
+        if (!name.n) continue;
+        Buf child;
+        buf_init(&child, scratch, 256);
+        const JVal *input = steps && steps->type == J_ARR && i < steps->u.arr.n
+                                ? json_get(&steps->u.arr.items[i], STR("args"))
+                                : NULL;
+        if (input)
+            json_write(&child, input);
+        else
+            buf_puts(&child, STR("{}"));
+        if (!buf_ok(&child)) break;
+        Str child_args = buf_finish(&child);
+        render_tool_call(name, child_args, scratch, id, expanded, NULL,
+                         CONV_NONE);
+        if (str_eq(json_str(row, STR("status")), STR("running"))) continue;
+        const JVal *duration = json_get(row, STR("ms"));
+        u32 child_ms = duration && duration->type == J_NUM && duration->u.n >= 0
+                               && duration->u.n <= UINT32_MAX
+                           ? (u32)duration->u.n
+                           : 0;
+        render_tool_result(name, child_args, json_str(row, STR("result")),
+                           scratch, id, expanded, child_ms);
+    }
+    const JVal *tried = json_get(root, STR("attempted"));
+    const JVal *total = json_get(root, STR("total"));
+    size_t n = total && total->type == J_NUM && total->u.n >= 0
+                       && total->u.n <= AGENT_MAX_BATCH_STEPS
+                   ? (size_t)total->u.n
+                   : rows->u.arr.n;
+    size_t attempted =
+        tried && tried->type == J_NUM && tried->u.n >= 0 && tried->u.n <= (f64)n
+            ? (size_t)tried->u.n
+            : rows->u.arr.n;
+    Buf summary;
+    buf_init(&summary, scratch, 128);
+    batch_summary(&summary, str_clip_utf8(status, 32), attempted, n);
+    if (buf_ok(&summary))
+        render_tool_result(STR("batch"), (Str){0}, buf_finish(&summary),
+                           scratch, id, expanded, ms);
+    scratch->off = mark;
+    return true;
+}
+
 void render_tool_result(Str name, Str args, Str result, Arena *scratch, u32 id,
                         b8 expanded, u32 ms) {
+    if (str_eq(name, STR("batch"))
+        && render_batch_result(args, result, scratch, id, expanded, ms))
+        return;
     block_begin(id, expanded);
     result = todo_note_strip(result);
     if (str_starts(result, STR("ERROR: "))) {
@@ -853,11 +936,61 @@ static void batched_syntax(Str body, b8 grep, Str hint, Arena *scratch,
 }
 
 
+static Str render_batch_text(Str args, Str result, b8 input, Arena *scratch) {
+    Str source = input ? args : result;
+    const JVal *root = json_parse(scratch, source);
+    const JVal *rows = json_get(root, STR("steps"));
+    const JVal *call = input ? root : json_parse(scratch, args);
+    const JVal *steps = json_get(call, STR("steps"));
+    if (!rows || rows->type != J_ARR || rows->u.arr.n > AGENT_MAX_BATCH_STEPS)
+        return source;
+    for (size_t i = 0; i < rows->u.arr.n; i++)
+        if (str_eq(json_str(&rows->u.arr.items[i], STR("tool")), STR("batch")))
+            return source;
+    Buf out;
+    buf_init(&out, scratch, 4096);
+    for (size_t i = 0; i < rows->u.arr.n; i++) {
+        const JVal *row = &rows->u.arr.items[i];
+        Str name = json_str(row, STR("tool"));
+        if (!name.n) continue;
+        const JVal *child = steps && steps->type == J_ARR && i < steps->u.arr.n
+                                ? json_get(&steps->u.arr.items[i], STR("args"))
+                                : NULL;
+        Buf encoded;
+        buf_init(&encoded, scratch, 256);
+        if (child)
+            json_write(&encoded, child);
+        else
+            buf_puts(&encoded, STR("{}"));
+        if (!buf_ok(&encoded)) return STR("out of memory opening batch");
+        Str child_args = buf_finish(&encoded);
+        if (out.n) buf_putc(&out, '\n');
+        buf_putf(&out, "%zu. %.*s", i + 1, (i32)str_clip_utf8(name, 128).n,
+                 name.p);
+        Str path = json_str(child, STR("path"));
+        if (path.n) {
+            buf_putc(&out, ' ');
+            buf_puts(&out, path);
+        }
+        buf_putc(&out, '\n');
+        Str body = input
+                       ? render_call_text(name, child_args, scratch, NULL, NULL)
+                       : render_result_text(name, child_args,
+                                            json_str(row, STR("result")),
+                                            scratch, NULL, NULL);
+        buf_puts(&out, body);
+        if (body.n && body.p[body.n - 1] != '\n') buf_putc(&out, '\n');
+    }
+    return buf_ok(&out) ? buf_finish(&out) : STR("out of memory opening batch");
+}
+
 Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
                      YhlResult *syntax) {
     if (shown) *shown = R_ARG_LINES;
     if (syntax) syntax->n = 0;
     if (!scratch) return args;
+    if (str_eq(name, STR("batch")))
+        return render_batch_text(args, (Str){0}, true, scratch);
     JVal *j = json_parse(scratch, args);
     Str path = json_str(j, STR("path"));
     if (str_eq(name, STR("page_fetch"))) path = json_str(j, STR("url"));
@@ -907,6 +1040,8 @@ Str render_result_text(Str name, Str args, Str result, Arena *scratch,
     if (syntax) syntax->n = 0;
     result = todo_note_strip(result);
     if (str_starts(result, STR("ERROR: "))) return str_drop(result, 7);
+    if (str_eq(name, STR("batch")) && scratch && str_starts(result, STR("{")))
+        return render_batch_text(args, result, false, scratch);
     Str body = result, status = {0};
     b8 shell = str_eq(name, STR("bash")) || str_eq(name, STR("shell"));
     if (shell && split_status(result, &body, &status)) return body;

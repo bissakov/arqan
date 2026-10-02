@@ -20,6 +20,7 @@ static const char PROMPT_BUILTIN[] =
     "- Do not commit, push, reset, or delete files or branches unless the "
     "user asks\n"
     "{tool_guidance}"
+    "{batch_guidance}"
     "{todo_guidance}"
     "{ask_user_guidance}"
     "- Say plainly when something failed, is uncertain, or went unchecked\n"
@@ -41,6 +42,7 @@ static const char PROMPT_PLAN_BUILTIN[] =
     "Guidelines:\n"
     "- Read the code before planning it: a plan built on a guess about the "
     "codebase is worse than no plan\n"
+    "{batch_guidance}"
     "- If the request needs no change, such as a question about the code, "
     "answer it directly and do not call submit_plan\n"
     "{ask_user_guidance}"
@@ -318,6 +320,12 @@ static void prompt_tool_guidance(Buf *b, const ToolRegistry *tools,
         buf_puts(b, STR("- After changing code, run the project's build or "
                         "tests when you can find them, and say so when you "
                         "could not\n"));
+    if (bash && (patch || write))
+        buf_puts(b,
+                 STR("- Keep file edits in the editing tools. Use bash for "
+                     "builds, tests, Git, and named generators or formatters, "
+                     "not inline scripts or shell redirection that replace "
+                     "the editing tools\n"));
     if (patch)
         buf_puts(b, STR("- Change existing files with patch, giving each hunk "
                         "enough context to match one place; put every file "
@@ -340,6 +348,35 @@ static void prompt_tool_guidance(Buf *b, const ToolRegistry *tools,
         buf_puts(b, STR("- Some calls wait for the user's approval, so make "
                         "the call instead of asking permission in prose; if "
                         "the user denies one, do not retry it unchanged\n"));
+}
+
+static void prompt_batch(Buf *b, const ToolRegistry *tools, AgentMode mode,
+                         ToolAudience audience) {
+    size_t id = tools_find(tools, STR("batch"));
+    if (id == TOOL_NONE || !tools_available_to(tools, id, mode, audience))
+        return;
+    buf_puts(
+        b,
+        STR("- Use batch for ordered tool calls whose arguments are already known; "
+            "each step keeps its normal rendering and tool permissions\n"));
+    if (mode == MODE_BUILD && prompt_offers(tools, STR("read"), mode)
+        && (prompt_offers(tools, STR("patch"), mode)
+            || prompt_offers(tools, STR("write"), mode)))
+        buf_puts(
+            b,
+            STR("- Separate investigation from execution. Do not batch a read with an edit "
+                "that depends on inspecting its result; read first, decide, then batch "
+                "the known actions\n"));
+    else
+        buf_puts(
+            b,
+            STR("- Do not batch steps whose arguments depend on inspecting "
+                "an earlier result; gather that result first, then decide\n"));
+    buf_puts(
+        b,
+        STR("- A batch stops on errors, denied permission, nonzero command exits, "
+            "or a still-running job. Earlier steps stay applied. Follow the reported "
+            "job before sending only the remaining steps. Do not rerun completed steps\n"));
 }
 
 static void prompt_mcp(Buf *b) {
@@ -375,6 +412,8 @@ static void prompt_expand(Buf *b, Str tmpl, const ToolRegistry *tools,
             prompt_todo(b, tools, mode);
         else if (str_eq(name, STR("tool_guidance")))
             prompt_tool_guidance(b, tools, mode);
+        else if (str_eq(name, STR("batch_guidance")))
+            prompt_batch(b, tools, mode, audience);
         else if (str_eq(name, STR("mcp_guidance")))
             prompt_mcp(b);
         else {
