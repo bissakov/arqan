@@ -404,6 +404,13 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
 }
 
 
+void render_batch_child_call(Str name, Str args, Arena *scratch, u32 id,
+                             b8 expanded, const Conv *c, size_t slot) {
+    tui_tool_nest_begin();
+    render_tool_call(name, args, scratch, id, expanded, c, slot);
+    tui_tool_nest_end();
+}
+
 void render_shell_call(Str cmd, u32 id, b8 expanded) {
     block_begin(id, expanded);
     size_t off = 0;
@@ -785,16 +792,17 @@ static b8 render_batch_result(Str args, Str result, Arena *scratch, u32 id,
             buf_puts(&child, STR("{}"));
         if (!buf_ok(&child)) break;
         Str child_args = buf_finish(&child);
-        render_tool_call(name, child_args, scratch, id, expanded, NULL,
-                         CONV_NONE);
+        render_batch_child_call(name, child_args, scratch, id, expanded, NULL,
+                                CONV_NONE);
         if (str_eq(json_str(row, STR("status")), STR("running"))) continue;
         const JVal *duration = json_get(row, STR("ms"));
         u32 child_ms = duration && duration->type == J_NUM && duration->u.n >= 0
                                && duration->u.n <= UINT32_MAX
                            ? (u32)duration->u.n
                            : 0;
-        render_tool_result(name, child_args, json_str(row, STR("result")),
-                           scratch, id, expanded, child_ms);
+        render_batch_child_result(name, child_args,
+                                  json_str(row, STR("result")), scratch, id,
+                                  expanded, child_ms);
     }
     const JVal *tried = json_get(root, STR("attempted"));
     const JVal *total = json_get(root, STR("total"));
@@ -816,19 +824,25 @@ static b8 render_batch_result(Str args, Str result, Arena *scratch, u32 id,
     return true;
 }
 
-void render_tool_result(Str name, Str args, Str result, Arena *scratch, u32 id,
-                        b8 expanded, u32 ms) {
+static void render_tool_result_nested(Str name, Str args, Str result,
+                                      Arena *scratch, u32 id, b8 expanded,
+                                      u32 ms, b8 nested) {
     if (str_eq(name, STR("batch"))
         && render_batch_result(args, result, scratch, id, expanded, ms))
         return;
     block_begin(id, expanded);
     result = todo_note_strip(result);
+    b8 dim_edge = nested || str_eq(name, STR("batch"));
+    if (str_eq(name, STR("batch")) && str_starts(result, STR("batch ")))
+        tui_write_dim(STR("\u2502\n"));
     if (str_starts(result, STR("ERROR: "))) {
         Str msg = str_drop(result, 7);
         size_t off = 0;
         Str first = msg;
         str_line(msg, &off, &first);
-        tui_write_error(STR("\u2514\u2500 error: "));
+        Sink edge = dim_edge ? tui_write_dim : tui_write_error;
+        edge(STR("\u2514\u2500 "));
+        tui_write_error(STR("error: "));
         tui_write_error(clip(first, R_LINE_BYTES));
         write_elapsed(ms);
         tui_write_error(STR("\n"));
@@ -870,7 +884,8 @@ void render_tool_result(Str name, Str args, Str result, Arena *scratch, u32 id,
         }
     }
     if (scratch) scratch->off = mark;
-    tui_write_result(STR("\u2514\u2500 "));
+    Sink edge = dim_edge ? tui_write_dim : tui_write_result;
+    edge(STR("\u2514\u2500 "));
     if (have_status) {
         tui_write_result(status);
     } else if (str_eq(name, STR("read"))) {
@@ -894,6 +909,20 @@ void render_tool_result(Str name, Str args, Str result, Arena *scratch, u32 id,
                     tui_write_muted);
     }
     block_end();
+}
+
+void render_tool_result(Str name, Str args, Str result, Arena *scratch, u32 id,
+                        b8 expanded, u32 ms) {
+    render_tool_result_nested(name, args, result, scratch, id, expanded, ms,
+                              false);
+}
+
+void render_batch_child_result(Str name, Str args, Str result, Arena *scratch,
+                               u32 id, b8 expanded, u32 ms) {
+    tui_tool_nest_begin();
+    render_tool_result_nested(name, args, result, scratch, id, expanded, ms,
+                              true);
+    tui_tool_nest_end();
 }
 
 static void unbatch_syntax(const YhlResult *hl, Str body, b8 grep,

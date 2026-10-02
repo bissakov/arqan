@@ -29,6 +29,9 @@
 
 ### Changed
 
+- Batch children are indented inside a dim left rail. The rail continues
+  through blank lines and wrapped output, and the batch summary closes it.
+
 - File editing tools create missing parent directories for new files. Patches
   accept repeated update headers for one file and `@@ literal line` anchors
   to narrow the search for matching context.

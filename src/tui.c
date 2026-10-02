@@ -44,6 +44,8 @@ _Static_assert(TUI_STATUS_N == AGENT_STATUS_FIELDS,
 #define TUI_MAX_ZONES     512
 #define TUI_MAX_PINS      512
 #define TUI_MAX_USERS     512
+#define TUI_MAX_NESTS     512
+#define TUI_NEST_CELLS    3
 
 
 #define S_RESET  "\033[0m"
@@ -122,6 +124,10 @@ typedef struct {
     size_t user_n;
     size_t user_open_a;
     b8 user_open;
+    size_t nest_a[TUI_MAX_NESTS];
+    size_t nest_b[TUI_MAX_NESTS];
+    size_t nest_n;
+    b8 nest_open;
     size_t zone_a[TUI_MAX_ZONES];
     size_t zone_b[TUI_MAX_ZONES];
     u32 zone_id[TUI_MAX_ZONES];
@@ -1073,6 +1079,30 @@ static b8 user_at_off(size_t off) {
     return lo < g_tui.user_n && off >= g_tui.user_a[lo];
 }
 
+static void nests_shift(size_t delta) {
+    size_t w = 0;
+    for (size_t i = 0; i < g_tui.nest_n; i++) {
+        if (g_tui.nest_b[i] <= delta) continue;
+        g_tui.nest_a[w] = g_tui.nest_a[i] > delta ? g_tui.nest_a[i] - delta : 0;
+        g_tui.nest_b[w] =
+            g_tui.nest_b[i] == SIZE_MAX ? SIZE_MAX : g_tui.nest_b[i] - delta;
+        w++;
+    }
+    g_tui.nest_n = w;
+}
+
+static b8 nest_at_off(size_t off) {
+    size_t lo = 0, hi = g_tui.nest_n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (g_tui.nest_b[mid] <= off)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return lo < g_tui.nest_n && off >= g_tui.nest_a[lo];
+}
+
 
 static void zone_add(size_t a, size_t b, u32 id) {
     if (a >= b) return;
@@ -1583,6 +1613,8 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
             style(theme_sgr(THEME_MUTED));
         else if (kind == ROW_COMPOSER)
             style(theme_sgr(THEME_PANEL_BG));
+        else if (str_eq(prefix, STR("\u2502  ")))
+            style(theme_sgr(THEME_MUTED));
         put_text(prefix.p, prefix.n);
     }
 
@@ -1652,7 +1684,7 @@ static size_t wrap_scan(size_t cols) {
     Str s = {g_bulk.transcript, g_tui.transcript_n};
     size_t i = g_tui.wrap_scanned, row = g_tui.wrap_rows;
     for (;;) {
-        Row r = row_break(s, i, cols, 0);
+        Row r = row_break(s, i, cols, nest_at_off(i) ? TUI_NEST_CELLS : 0);
         if (r.hard && r.end >= s.n) break;
         i = r.next;
         row++;
@@ -1702,6 +1734,8 @@ static void update_text_rows(Str s, size_t base_off, size_t cols,
                              b8 force) {
     size_t row = 0, col0 = prompt_cells, painted = 0;
     for (size_t start = 0;;) {
+        b8 nested = kind == ROW_PLAIN && nest_at_off(base_off + start);
+        col0 = nested ? TUI_NEST_CELLS : prompt_cells;
         Row r = row_break(s, start, cols, col0);
         if (row >= first_row && row < first_row + visible_rows) {
             Str prefix = (Str){0};
@@ -1709,11 +1743,13 @@ static void update_text_rows(Str s, size_t base_off, size_t cols,
                 prefix = composer_shell() ? STR("! ") : STR("› ");
             else if (prompt_cells)
                 prefix = prompt_indent(prompt_cells);
+            else if (nested)
+                prefix = STR("\u2502  ");
             u8 row_kind = kind;
             size_t text_off = SIZE_MAX;
             size_t sr = screen_row + row - first_row - 1;
             if (sr < TUI_SEL_ROWS) {
-                g_tui.row_lead[sr] = (u16)(screen_col - 1 + prompt_cells);
+                g_tui.row_lead[sr] = (u16)(screen_col - 1 + col0);
                 g_tui.row_join[sr] = r.hard           ? SEL_JOIN_BREAK
                                      : r.next > r.end ? SEL_JOIN_GAP
                                                       : SEL_JOIN_TIGHT;
@@ -3440,6 +3476,8 @@ void tui_clear_transcript(void) {
     g_tui.transcript_epoch++;
     g_tui.user_n = 0;
     g_tui.user_open = false;
+    g_tui.nest_n = 0;
+    g_tui.nest_open = false;
     g_tui.zone_n = 0;
     g_tui.zone_open = 0;
     g_tui.pin_n = 0;
@@ -3506,7 +3544,7 @@ static size_t rows_below(size_t off) {
         Str s = {g_bulk.transcript, g_tui.transcript_n};
         size_t row = k * g_tui.ckpt_step, i = g_tui.ckpt_off[k];
         while (i < off) {
-            Row r = row_break(s, i, cols, 0);
+            Row r = row_break(s, i, cols, nest_at_off(i) ? TUI_NEST_CELLS : 0);
             if (r.next <= i || r.next > off) break;
             i = r.next;
             row++;
@@ -3515,7 +3553,15 @@ static size_t rows_below(size_t off) {
         return all > row ? all - row : 1;
     }
     Str tail = {g_bulk.transcript + off, g_tui.transcript_n - off};
-    return text_rows(tail, cols, 0, 0, NULL, NULL);
+    size_t rows = 1;
+    for (size_t i = 0;;) {
+        Row r =
+            row_break(tail, i, cols, nest_at_off(off + i) ? TUI_NEST_CELLS : 0);
+        if (r.hard && r.end >= tail.n) break;
+        i = r.next;
+        rows++;
+    }
+    return rows;
 }
 
 
@@ -3722,6 +3768,9 @@ static void transcript_put(Str s) {
         g_tui.syntax_head = 0;
         g_tui.transcript_epoch++;
         g_tui.user_n = 0;
+        g_tui.nest_n = g_tui.nest_open ? 1 : 0;
+        g_tui.nest_a[0] = 0;
+        g_tui.nest_b[0] = SIZE_MAX;
         g_tui.zone_n = 0;
         g_tui.pin_n = 0;
         g_tui.keep_off = SIZE_MAX;
@@ -3738,6 +3787,7 @@ static void transcript_put(Str s) {
         syntax_shift(g_tui.transcript_n - keep);
         g_tui.transcript_epoch++;
         users_shift(g_tui.transcript_n - keep);
+        nests_shift(g_tui.transcript_n - keep);
         zones_shift(g_tui.transcript_n - keep);
         pins_shift(g_tui.transcript_n - keep);
         find_shift(g_tui.transcript_n - keep);
@@ -3780,6 +3830,8 @@ static void content_put(Str s) {
         transcript_put(s);
         return;
     }
+    if (g_tui.nest_open && (g_tui.trail_nl || !g_tui.wrote_any))
+        put_str("\u2502  ");
     put_raw(s.p, s.n);
     g_tui.trail_nl = 0;
     g_tui.wrote_any = true;
@@ -3793,9 +3845,42 @@ static void nl_commit(void) {
     if (g_tui.fullscreen) {
         transcript_put((Str){"\n\n", n});
     } else {
-        put_raw("\n\n", n);
+        for (size_t i = 0; i < n; i++) {
+            if (g_tui.nest_open && (g_tui.trail_nl || i)) put_str("\u2502");
+            put_raw("\n", 1);
+        }
         g_tui.trail_nl += n;
     }
+}
+
+void tui_tool_nest_begin(void) {
+    if (g_tui.detached) return;
+    g_tui.nest_open = true;
+    if (!g_tui.fullscreen) return;
+    size_t n = g_tui.nest_n;
+    if (n && g_tui.nest_b[n - 1] == g_tui.transcript_n) {
+        g_tui.nest_b[n - 1] = SIZE_MAX;
+        return;
+    }
+    if (n == TUI_MAX_NESTS) {
+        memmove(g_tui.nest_a, g_tui.nest_a + 1,
+                sizeof g_tui.nest_a - sizeof g_tui.nest_a[0]);
+        memmove(g_tui.nest_b, g_tui.nest_b + 1,
+                sizeof g_tui.nest_b - sizeof g_tui.nest_b[0]);
+        n--;
+        wrap_invalidate();
+    }
+    g_tui.nest_a[n] = g_tui.transcript_n;
+    g_tui.nest_b[n] = SIZE_MAX;
+    g_tui.nest_n = n + 1;
+}
+
+void tui_tool_nest_end(void) {
+    if (!g_tui.nest_open) return;
+    if (!g_tui.detached) nl_commit();
+    if (g_tui.fullscreen && g_tui.nest_n)
+        g_tui.nest_b[g_tui.nest_n - 1] = g_tui.transcript_n;
+    g_tui.nest_open = false;
 }
 
 void tui_block(void) {
