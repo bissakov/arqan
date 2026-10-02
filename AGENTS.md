@@ -43,10 +43,12 @@ Run the other suites when a change touches what they cover:
 - `test-fil` for memory bugs, and always for arena, buffer, bounds and pointer
   arithmetic. Fil-C carries bounds on the pointer, so it catches an
   out-of-bounds access that lands inside another valid object; ASan cannot.
-- `bench-guard` before changing startup, rendering, tool output, or session
-  replay. It fails when CPU per operation grows past 1.4x or private memory
-  past 1.15x. Never widen a tolerance to pass. It runs the binary it built, so
-  do not rebuild while it runs: that causes a false failure. `bench/README.md`
+- `bench-guard` after making changes to startup, rendering, tool output, or
+  session replay, before handing them over. Do not run it before making the
+  change or on an unchanged tree: it already measures the reference commit.
+  It fails when CPU per operation grows past 1.4x or private memory past 1.15x.
+  Never widen a tolerance to pass. It runs the binary it built, so do not
+  rebuild while it runs: that causes a false failure. `bench/README.md`
   explains what is measured.
 
 Startup time, throughput and memory use are user-visible. A change that costs
