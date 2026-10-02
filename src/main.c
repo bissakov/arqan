@@ -6233,6 +6233,7 @@ i32 main(i32 argc, char **argv) {
     tui_set_permissions(cfg.permissions);
     if (cfg.provider.n) tui_set_provider(cfg.provider);
     tui_set_reasoning(cfg.reasoning_effort, cfg.thinking_budget);
+    highlight_init(argv[0]);
     if (resumed) {
         tui_batch_begin();
         render_conv(&conv, &cfg, prefs.show_instructions, &scratch);
@@ -6259,7 +6260,6 @@ i32 main(i32 argc, char **argv) {
     atexit(mcp_shutdown);
     web_set_idle(on_idle, NULL, tui_input_fd(), &g_got_sigint);
     atexit(tui_stop);
-    highlight_init(argv[0]);
     atexit(highlight_close);
 
     telemetry_init(&scratch, prefs.telemetry);
