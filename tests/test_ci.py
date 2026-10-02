@@ -29,7 +29,7 @@ class ShardTests(unittest.TestCase):
                     parse_shard(value)
 
     def test_every_case_runs_once(self):
-        for count in (1, 2, 4):
+        for count in (1, 2, 3, 4):
             with self.subTest(count=count):
                 shards = [select_cases(self.cases, (i, count)) for i in range(count)]
                 names = [name for shard in shards for name, _ in shard]
@@ -44,11 +44,13 @@ class ShardTests(unittest.TestCase):
 
     def test_assignment_survives_added_removed_and_reordered_cases(self):
         changed = list(reversed(self.cases[10:] + [("new.case", object())]))
-        for index in range(4):
-            original = {name for name, _ in select_cases(self.cases, (index, 4))}
-            current = {name for name, _ in select_cases(changed, (index, 4))}
-            common = {name for name, _ in self.cases[10:]}
-            self.assertEqual(original & common, current & common)
+        for count in (3, 4):
+            for index in range(count):
+                with self.subTest(count=count, index=index):
+                    original = {name for name, _ in select_cases(self.cases, (index, count))}
+                    current = {name for name, _ in select_cases(changed, (index, count))}
+                    common = {name for name, _ in self.cases[10:]}
+                    self.assertEqual(original & common, current & common)
 
     def test_preserves_slow_marker(self):
         slow = SimpleNamespace(slow=True)
@@ -95,10 +97,11 @@ class RunnerTests(unittest.TestCase):
     def test_real_runners_cover_each_case_once(self):
         root = Path(__file__).resolve().parent.parent
         for suite, count, command in (
+            ("bench", 3, ["-m", "bench.run"]),
             ("bench", 4, ["-m", "bench.run"]),
             ("test", 2, ["tests/run.py"]),
         ):
-            with self.subTest(suite=suite):
+            with self.subTest(suite=suite, count=count):
                 expected = self.listed(*command, "--list", cwd=root)
                 shards = [
                     self.listed("scripts/ci_run.py", suite, f"{i + 1}/{count}", "--list", cwd=root)
