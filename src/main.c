@@ -1662,7 +1662,7 @@ typedef struct {
 } ToolCallResult;
 
 static ToolCallResult run_regular_tool(Agent *ag, size_t call, size_t tool,
-                                       Str name, Str args) {
+                                       Str name, Str args, b8 nested) {
     Conv *conv = ag->conv;
     ToolCallResult run = {.media_off = conv->media ? conv->media->n : 0};
     Buf out;
@@ -1670,9 +1670,14 @@ static ToolCallResult run_regular_tool(Agent *ag, size_t call, size_t tool,
     char err[AGENT_TOOL_ERR] = {0};
     if (g_turn.one_shot) one_shot_diag("tool call", name, args);
     size_t call_at = tui_transcript_pos();
-    if (!g_turn.one_shot)
-        render_tool_call(name, args, ag->scratch, (u32)(call + 1),
-                         conv->expanded[call], conv, call);
+    if (!g_turn.one_shot) {
+        if (nested)
+            render_batch_child_call(name, args, ag->scratch, (u32)(call + 1),
+                                    conv->expanded[call], conv, call);
+        else
+            render_tool_call(name, args, ag->scratch, (u32)(call + 1),
+                             conv->expanded[call], conv, call);
+    }
     ToolApprovalClass approval = TOOL_APPROVAL_NONE;
     if (tool != TOOL_NONE && !tools_disabled(ag->tools, tool)
         && tools_available(ag->tools, tool, ag->cfg->mode))
@@ -1782,8 +1787,8 @@ static TurnAction batch_answer(Agent *ag, size_t call, Str args) {
             stored = false;
             break;
         }
-        ToolCallResult run =
-            run_regular_tool(ag, call, step->tool, step->name, step->args);
+        ToolCallResult run = run_regular_tool(ag, call, step->tool, step->name,
+                                              step->args, true);
         step->result = run.text;
         step->execution = run.execution;
         step->ms = run.ms;
@@ -1804,9 +1809,9 @@ static TurnAction batch_answer(Agent *ag, size_t call, Str args) {
         if (g_turn.one_shot)
             one_shot_diag("tool result", step->name, step->result);
         else
-            render_tool_result(step->name, step->args, step->result,
-                               ag->scratch, (u32)(slot + 1),
-                               ag->conv->expanded[slot], run.ms);
+            render_batch_child_result(step->name, step->args, step->result,
+                                      ag->scratch, (u32)(slot + 1),
+                                      ag->conv->expanded[slot], run.ms);
         if (!stored || !str_eq(step->status, STR("ok"))) break;
     }
     status = batch.attempted == batch.n
@@ -1949,7 +1954,7 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
             if (act != TURN_CONTINUE) return act;
             continue;
         }
-        ToolCallResult run = run_regular_tool(ag, i, tool, name, args);
+        ToolCallResult run = run_regular_tool(ag, i, tool, name, args, false);
         Str kept = str_dup(ag->persist, run.text);
         if (!kept.p) {
             if (conv->media) conv->media->n = run.media_off;

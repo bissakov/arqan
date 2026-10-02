@@ -83,6 +83,55 @@ def test_batch_write_creates_directories_then_reads(ctx):
     assert (ctx.work / "nested/new.txt").read_text() == "hello\n"
 
 
+def test_batch_children_have_a_rail_and_regular_tools_do_not(ctx):
+    ctx.write_file("first.txt", "first output\n")
+    ctx.write_file("second.txt", "second output\n")
+    ctx.scenario("tool=" + batch_call([
+        step("read", path="first.txt"), step("read", path="second.txt")])
+        + ',tool=read:{"path":"first.txt"},final_text=done')
+    s = ctx.spawn(rows=40)
+    s.submit("run it")
+    s.wait_text("done")
+    s.wait_turn_done()
+    rows = [line.strip() for line in s.text().splitlines()]
+    head = rows.index("\u25c6  batch 2 steps")
+    end = next(i for i, row in enumerate(rows)
+               if row.startswith("\u2514\u2500 batch completed:"))
+    assert all(row.startswith("\u2502") for row in rows[head + 1:end]), rows
+    assert "\u2502  \u25c6  read first.txt" in rows, rows
+    assert "\u2502  \u25c6  read second.txt" in rows, rows
+    assert "\u2502     first output" in rows, rows
+    assert "\u2502     second output" in rows, rows
+    assert rows[end - 1] == "\u2502", rows
+    assert "\u25c6  read first.txt" in rows[end + 1:], rows
+    assert "first output" in rows[end + 1:], rows
+    child = s.screen.find_row("\u2502  \u2514\u2500")
+    rail_fg = s.screen.attr_at(child, 2).fg
+    assert s.screen.attr_at(child, 5).fg == rail_fg
+    assert s.screen.attr_at(child, 8).fg != rail_fg
+    assert s.screen.attr_at(end, 2).fg == rail_fg
+    assert s.screen.attr_at(end, 5).fg != rail_fg
+
+
+def test_batch_rail_continues_on_wrapped_rows_after_resize(ctx):
+    body = "wrap-" * 26
+    ctx.write_file("wrapped.txt", body + "\n")
+    s = run_batch(ctx, [step("read", path="wrapped.txt")])
+    for cols in (50, 70):
+        s.resize(cols, 40)
+        s.settle()
+        rows = [line.strip() for line in s.text().splitlines()]
+        start = next(i for i, row in enumerate(rows)
+                     if row.startswith("\u2502  \u2514\u2500 1 line"))
+        end = next(i for i, row in enumerate(rows)
+                   if row.startswith("\u2514\u2500 batch completed:"))
+        wrapped = rows[start + 1:end - 1]
+        assert len(wrapped) >= 2, rows
+        assert all(row.startswith("\u2502  ") for row in wrapped), rows
+        shown = "".join(row[3:].strip() for row in wrapped)
+        assert shown == body, rows
+
+
 def test_batch_failure_stops_later_steps_without_rolling_back(ctx):
     run_batch(ctx, [step("write", path="before.txt", content="keep\n"),
                     step("read", path="missing.txt"),
@@ -437,6 +486,9 @@ def test_batch_results_and_diffs_survive_session_replay(ctx):
     assert "\u25c6  patch edit.txt" in text, text
     assert "\u2502 -old" in text and "\u2502 +new" in text, text
     assert "\u25c6  read edit.txt" in text, text
+    assert "\u2502  \u25c6  patch edit.txt" in text, text
+    assert "\u2502  \u25c6  read edit.txt" in text, text
+    assert "\u2502     new" in text, text
     assert '"steps"' not in text, text
 
 
@@ -451,6 +503,8 @@ def test_batch_in_progress_children_survive_a_resize(ctx):
     s.resize(90, 40)
     s.wait_text("sleep 1.5; printf finished")
     assert "write before.txt" in s.text(), s.text()
+    assert "\u2502  \u25c6  write before.txt" in s.text(), s.text()
+    assert "\u2502  \u25c6  bash sleep 1.5; printf finished" in s.text(), s.text()
     s.wait_text("done")
     s.wait_turn_done()
     assert result(ctx)["status"] == "completed", result(ctx)
@@ -532,7 +586,7 @@ def test_batch_output_window_shows_text_not_encoded_json(ctx):
     s.wait_text(tail)
     s.settle()
     row = s.screen.find_row(tail) + 1
-    s.mouse("down", row, 6).mouse("up", row, 6).sync()
+    s.mouse("down", row, 9).mouse("up", row, 9).sync()
     s.wait_text("batch output")
     s.wait_text("line 0012 of output")
     assert '"steps"' not in s.text(), s.text()
@@ -548,7 +602,7 @@ def test_batch_input_window_shows_content_not_encoded_json(ctx):
     s.wait_text(tail)
     s.settle()
     row = s.screen.find_row(tail) + 1
-    s.mouse("down", row, 6).mouse("up", row, 6).sync()
+    s.mouse("down", row, 9).mouse("up", row, 9).sync()
     s.wait_text("batch input")
     s.wait_text("line 0010 of input")
     assert '"steps"' not in s.text(), s.text()

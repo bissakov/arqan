@@ -2082,6 +2082,8 @@ void tui_set_find_expand(void (*fn)(void *ud), void *ud);
 void tui_width_fitted(void);
 void tui_set_reflow(void (*fn)(void *ud), void *ud);
 void tui_block(void);
+void tui_tool_nest_begin(void);
+void tui_tool_nest_end(void);
 void tui_write(Str s);
 
 void tui_write_text(Str s);
@@ -2152,11 +2154,15 @@ b8 md_muted(void);
 
 void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
                       const Conv *c, size_t slot);
+void render_batch_child_call(Str name, Str args, Arena *scratch, u32 id,
+                             b8 expanded, const Conv *c, size_t slot);
 
 void render_shell_call(Str cmd, u32 id, b8 expanded);
 
 void render_tool_result(Str name, Str args, Str result, Arena *scratch, u32 id,
                         b8 expanded, u32 ms);
+void render_batch_child_result(Str name, Str args, Str result, Arena *scratch,
+                               u32 id, b8 expanded, u32 ms);
 
 void render_plan(Str plan);
 void render_question(Str question);
