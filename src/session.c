@@ -819,6 +819,76 @@ b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
     return true;
 }
 
+b8 session_update_tool(Session *s, const Conv *c, size_t slot, char *err,
+                       size_t err_cap) {
+    if (err_cap) err[0] = '\0';
+    if (slot >= c->n || c->role[slot] != M_TOOL || slot >= s->written) {
+        snprintf(err, err_cap, "tool progress is not saved yet");
+        return false;
+    }
+    if (s->read_only) {
+        snprintf(err, err_cap, "this session is live in another " AGENT_NAME);
+        return false;
+    }
+    if (s->save_blocked) {
+        snprintf(err, err_cap,
+                 "a previous failed append could not be rolled back");
+        return false;
+    }
+    if (!s->path.n || s->lock_fd < 0) {
+        snprintf(err, err_cap, "session storage is unavailable");
+        return false;
+    }
+    i32 fd = open(s->path.p, O_RDWR);
+    if (fd < 0) {
+        snprintf(err, err_cap, "could not open session file: %s",
+                 strerror(errno));
+        return false;
+    }
+    off_t old_end = lseek(fd, 0, SEEK_END);
+    if (old_end < 0) {
+        i32 saved = errno;
+        close(fd);
+        snprintf(err, err_cap, "could not inspect session file: %s",
+                 strerror(saved));
+        return false;
+    }
+    SessOut out = {.fd = fd};
+    sess_out_puts(&out, STR("{\"type\":\"tool_update\",\"id\":"));
+    sess_out_json(&out, c->tool_call_id[slot]);
+    b8 serialized = sess_put_media(&out, s->dir, c, slot, err, err_cap);
+    if (serialized && c->ms[slot])
+        sess_out_putf(&out, ",\"ms\":%u", c->ms[slot]);
+    if (serialized) {
+        sess_out_puts(&out, STR(",\"content\":"));
+        sess_out_json(&out, c->text[slot]);
+        sess_out_puts(&out, STR("}\n"));
+    }
+    b8 ok = serialized && sess_out_flush(&out) && fsync(fd) == 0;
+    i32 saved = out.error ? out.error : ok ? 0 : errno;
+    if (!ok) {
+        b8 restored = ftruncate(fd, old_end) == 0 && fsync(fd) == 0;
+        if (close(fd) != 0) restored = false;
+        if (!restored) s->save_blocked = true;
+        if (!err[0])
+            snprintf(err, err_cap, "could not write session file: %s",
+                     strerror(saved ? saved : EIO));
+        if (!restored) {
+            size_t used = strlen(err);
+            if (used < err_cap)
+                snprintf(err + used, err_cap - used,
+                         "; refusing further appends");
+        }
+        return false;
+    }
+    if (close(fd) != 0) {
+        snprintf(err, err_cap, "could not close session file: %s",
+                 strerror(errno));
+        return false;
+    }
+    return true;
+}
+
 
 static void sess_rebind(Session *s) {
     if (s->dir.n) s->dir.p = s->dir_buf;
@@ -1178,9 +1248,19 @@ static void sess_apply_media(const Session *s, const JVal *v, Conv *c,
                              size_t slot, Arena *persist, Arena *scratch) {
     const JVal *arr = json_get(v, STR("media"));
     if (!c->media || !arr || arr->type != J_ARR || !arr->u.arr.n) return;
+    size_t limit = AGENT_MAX_MEDIA_PER_TURN;
+    if (c->role[slot] == M_TOOL) {
+        for (size_t i = slot; i-- > 0;) {
+            if (!conv_is_call(c, i)
+                || !str_eq(c->tool_call_id[i], c->tool_call_id[slot]))
+                continue;
+            if (str_eq(c->tool_name[i], STR("batch")))
+                limit *= AGENT_MAX_BATCH_STEPS;
+            break;
+        }
+    }
     size_t off = c->media->n, kept = 0;
-    for (size_t i = 0; i < arr->u.arr.n && kept < AGENT_MAX_MEDIA_PER_TURN;
-         i++) {
+    for (size_t i = 0; i < arr->u.arr.n && kept < limit; i++) {
         const JVal *e = &arr->u.arr.items[i];
         if (e->type != J_OBJ) continue;
         Str file = json_str(e, STR("file"));
@@ -1263,10 +1343,35 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
         JVal *v = json_parse(scratch, line);
         Str role = json_str(v, STR("role"));
         if (!role.n) {
-            if (str_eq(json_str(v, STR("type")), STR("elide"))) {
+            Str type = json_str(v, STR("type"));
+            if (str_eq(type, STR("elide"))) {
                 const JVal *at = json_get(v, STR("start"));
                 if (at && at->type == J_NUM && at->u.n > 0)
                     elide = (size_t)at->u.n;
+            } else if (str_eq(type, STR("tool_update"))) {
+                Str id = json_str(v, STR("id"));
+                size_t slot = CONV_NONE;
+                for (size_t k = c->n; k-- > 0;) {
+                    if (c->role[k] == M_TOOL
+                        && str_eq(c->tool_call_id[k], id)) {
+                        slot = k;
+                        break;
+                    }
+                }
+                if (slot != CONV_NONE) {
+                    c->text[slot] = sess_field(persist, v, STR("content"));
+                    const JVal *ms = json_get(v, STR("ms"));
+                    c->ms[slot] = ms && ms->type == J_NUM && ms->u.n > 0
+                                      ? ms->u.n > (f64)UINT32_MAX ? UINT32_MAX
+                                                                  : (u32)ms->u.n
+                                      : 0;
+                    if (c->media && c->media_n[slot]
+                        && (size_t)c->media_off[slot] + c->media_n[slot]
+                               == c->media->n)
+                        c->media->n = c->media_off[slot];
+                    c->media_n[slot] = 0;
+                    sess_apply_media(s, v, c, slot, persist, scratch);
+                }
             }
             scratch->off = line_mark;
             continue;

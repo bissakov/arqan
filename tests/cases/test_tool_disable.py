@@ -25,7 +25,7 @@ def test_the_tools_are_rows_of_the_settings_screen(ctx):
     s.open_settings().settings_select("write")   # the last row: all eight show
     text = s.text()
     for name in (
-        "read", "grep", "find", "internet_search", "page_fetch", "bash", "patch", "write"
+        "read", "grep", "find", "internet_search", "page_fetch", "bash", "batch", "patch", "write"
     ):
         assert f"[x] {name}" in text, text
     assert "submit_plan" not in text and "ask_user" not in text, text
@@ -105,7 +105,7 @@ def test_the_flag_disables_a_list(ctx):
 
     names = tool_names(ctx.mock.requests[-1])
     assert names == [
-        "ask_user", "find", "grep", "internet_search", "job", "page_fetch",
+        "ask_user", "batch", "find", "grep", "internet_search", "job", "page_fetch",
         "read", "task", "todo"
     ], names
 

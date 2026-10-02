@@ -245,6 +245,43 @@ static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err,
 }
 
 
+static b8 tool_write_parents(const char *path, size_t *created) {
+    char parent[AGENT_MAX_PATH];
+    size_t n = strlen(path);
+    *created = 0;
+    if (!n || n >= sizeof parent) {
+        errno = n ? ENAMETOOLONG : EINVAL;
+        return false;
+    }
+    if (path[n - 1] == '/') {
+        errno = EISDIR;
+        return false;
+    }
+    memcpy(parent, path, n + 1);
+    for (size_t i = 1; i < n; i++) {
+        if (parent[i] != '/' || parent[i - 1] == '/') continue;
+        parent[i] = '\0';
+        if (mkdir(parent, 0777) == 0) {
+            (*created)++;
+        } else {
+            struct stat st;
+            if (errno != EEXIST || stat(parent, &st) != 0) return false;
+            if (!S_ISDIR(st.st_mode)) {
+                errno = ENOTDIR;
+                return false;
+            }
+        }
+        parent[i] = '/';
+    }
+    return true;
+}
+
+static void tool_write_directories(Buf *out, size_t created) {
+    if (created)
+        buf_putf(out, "created %zu parent director%s\n", created,
+                 created == 1 ? "y" : "ies");
+}
+
 static b8 tool_write(Str args, Arena *scratch, Buf *out, char *err,
                      size_t err_cap) {
     JVal *j = tool_args(args, scratch, err, err_cap);
@@ -257,12 +294,15 @@ static b8 tool_write(Str args, Arena *scratch, Buf *out, char *err,
         snprintf(err, err_cap, "missing content");
         return false;
     }
-    if (!file_write_atomic_str(z, content, 0666, true)) {
+    size_t created;
+    if (!tool_write_parents(z, &created)
+        || !file_write_atomic_str(z, content, 0666, true)) {
         i32 saved = errno;
         snprintf(err, err_cap, "write %s failed: %s", z,
                  strerror(saved ? saved : EIO));
         return false;
     }
+    tool_write_directories(out, created);
     buf_putf(out, "wrote %zu bytes to %s", content.n, z);
     return true;
 }
@@ -338,6 +378,7 @@ typedef struct {
     ShellHost shell;
     ToolsPolicy policy;
     JobTable job;
+    ToolExecution execution;
 } ToolsState;
 
 static ToolsState g_tools = {
@@ -843,11 +884,18 @@ static b8 shell_page_detach(void *ud, pid_t pid, i32 fd, f64 started) {
     ShellPage *pg = ud;
     u32 job = job_detach(pid, fd, &g_shell_io.spill, pg->cmd);
     if (!job) return false;
+    g_tools.execution = (ToolExecution){.pending = true, .job_id = job};
     if (pg->total > pg->first + pg->shown)
         buf_putf(pg->out, "\n[shown %zu of %zu output bytes so far]", pg->shown,
                  pg->total);
     job_note(pg->out, job, started);
     return true;
+}
+
+static i32 shell_exit_code(i32 status) {
+    return WIFEXITED(status)     ? WEXITSTATUS(status)
+           : WIFSIGNALED(status) ? 128 + WTERMSIG(status)
+                                 : 1;
 }
 
 static b8 shell_capture_page(Str cmd, size_t offset, size_t limit,
@@ -857,6 +905,7 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit,
                   err, err_cap))
         return false;
     if (shell_interrupted()) {
+        g_tools.execution.exit_code = 130;
         buf_puts(out, STR("[interrupted]\n[exit 130]"));
         return true;
     }
@@ -877,6 +926,8 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit,
     if (end == SHELL_DETACHED)
         return buf_ok(out) && out->n <= AGENT_TOOL_RESULT_BYTES;
 
+    g_tools.execution.exit_code =
+        end == SHELL_INTERRUPTED ? 130 : shell_exit_code(exit.status);
     if (end == SHELL_DONE) shell_put_held(out, &exit);
     if (offset > pg.total) {
         if (!pg.total && offset == 1)
@@ -1008,15 +1059,21 @@ static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
                  job->path);
     }
     if (job->running) {
+        g_tools.execution = (ToolExecution){.pending = true, .job_id = job->id};
         buf_putf(out, "[job %u still running after %s]", job->id, age);
     } else {
+        g_tools.execution = (ToolExecution){
+            .job_id = job->id, .exit_code = shell_exit_code(job->status)};
         char state[32];
         job_status_text(job, state, sizeof state);
         buf_putf(out, "[job %u %s after %s]", job->id, state, age);
 
         if (!pending) job->reported = true;
     }
-    if (interrupted) buf_puts(out, STR("\n[interrupted]"));
+    if (interrupted) {
+        g_tools.execution.exit_code = 130;
+        buf_puts(out, STR("\n[interrupted]"));
+    }
     return buf_ok(out) && out->n <= AGENT_TOOL_RESULT_BYTES;
 }
 
@@ -1035,6 +1092,8 @@ static size_t find_matches(Str hay, Str needle, size_t *offs, size_t max) {
     size_t count = 0;
     if (!needle.n || hay.n < needle.n) return 0;
     for (size_t i = 0; i + needle.n <= hay.n; i++) {
+        if (i && hay.p[i - 1] != '\n') continue;
+        if (needle.p[needle.n - 1] != '\n' && i + needle.n != hay.n) continue;
         if (memcmp(hay.p + i, needle.p, needle.n)) continue;
         if (count < max) offs[count] = i;
         count++;
@@ -1122,7 +1181,8 @@ static size_t patch_agree(Str body, size_t boff, Str oldt, size_t ooff,
     }
 }
 
-static void patch_diverge(Str body, Str oldt, char *note, size_t cap) {
+static size_t patch_diverge(Str body, size_t start, Str oldt, char *note,
+                            size_t cap) {
     Str anchor = {NULL, 0};
     size_t off = 0, anchor_off = 0;
     for (;;) {
@@ -1136,18 +1196,18 @@ static void patch_diverge(Str body, Str oldt, char *note, size_t cap) {
     }
     if (!anchor.n) {
         note[0] = 0;
-        return;
+        return body.n;
     }
 
     b8 have = false;
     size_t best = 0, bad = 0;
     Str bl = {NULL, 0}, ol = {NULL, 0};
-    off = 0;
+    off = start;
     for (;;) {
         size_t at = off;
         Str line;
         if (!str_line(body, &off, &line)) break;
-        if (!str_eq(line, anchor)) continue;
+        if (!str_eq(line, anchor) && !same_but_space(line, anchor)) continue;
         size_t b_at = 0;
         Str b_line, o_line;
         size_t score =
@@ -1157,25 +1217,26 @@ static void patch_diverge(Str body, Str oldt, char *note, size_t cap) {
     }
     if (!have) {
         snprintf(note, cap, "; no line of its context is in the file");
-        return;
+        return body.n;
     }
     if (!ol.n && !bl.n) {
         snprintf(note, cap, "; its context is already there from line %zu",
                  line_of(body, bad));
-        return;
+        return bad;
     }
-    char want[48];
+    char want[128];
     quote_line(want, sizeof want, ol);
     if (!bl.n) {
         snprintf(note, cap, "; the file ends at line %zu, before \"%s\"",
                  line_of(body, bad), want);
-        return;
+        return bad;
     }
-    char has[48];
+    char has[128];
     quote_line(has, sizeof has, bl);
     snprintf(note, cap, "; line %zu is \"%s\" where the hunk wants \"%s\"%s",
              line_of(body, bad), has, want,
              same_but_space(bl, ol) ? " (only spacing differs)" : "");
+    return bad;
 }
 
 typedef struct {
@@ -1284,6 +1345,18 @@ static void patch_current(Patch *p, const char *path, Str body, size_t off) {
 static PatchFile *patch_open(Patch *p, Str oldp, Str newp) {
     b8 create = str_eq(oldp, STR("/dev/null"));
     b8 gone = str_eq(newp, STR("/dev/null"));
+    char path[AGENT_MAX_PATH];
+    if (!arg_cstr(gone ? oldp : newp, path, sizeof path, "path", p->err,
+                  p->err_cap))
+        return NULL;
+    for (size_t i = 0; i < p->n; i++) {
+        PatchFile *existing = &p->file[i];
+        if (strcmp(existing->path, path)) continue;
+        if (!create && !gone && !existing->create && !existing->unlink_it)
+            return existing;
+        patch_fail(p, "%s has conflicting file headers", path);
+        return NULL;
+    }
     if (p->n >= AGENT_MAX_PATCH_FILES) {
         patch_fail(p, "patch touches more than %u files",
                    AGENT_MAX_PATCH_FILES);
@@ -1291,16 +1364,7 @@ static PatchFile *patch_open(Patch *p, Str oldp, Str newp) {
     }
     PatchFile *f = &p->file[p->n];
     *f = (PatchFile){0};
-    if (!arg_cstr(gone ? oldp : newp, f->path, sizeof f->path, "path", p->err,
-                  p->err_cap))
-        return NULL;
-    for (size_t i = 0; i < p->n; i++) {
-        if (!strcmp(p->file[i].path, f->path)) {
-            patch_fail(p, "%s appears twice; put its hunks under one header",
-                       f->path);
-            return NULL;
-        }
-    }
+    memcpy(f->path, path, strlen(path) + 1);
     f->create = create;
     f->unlink_it = gone;
     if (create) {
@@ -1358,7 +1422,48 @@ static size_t hunk_scan(Str text, size_t off, Buf *o, Buf *n, PatchFile *f) {
 }
 
 
-static b8 patch_hunk(Patch *p, PatchFile *f, Str text, size_t *off) {
+static b8 patch_anchor(Patch *p, PatchFile *f, Str header, size_t *start) {
+    Str anchor = str_trim(str_drop(header, 2));
+    *start = 0;
+    if (!anchor.n
+        || (anchor.n > 1 && anchor.p[0] == '-' && anchor.p[1] >= '0'
+            && anchor.p[1] <= '9'))
+        return true;
+
+    Str body = patch_body(f), line;
+    size_t off = 0, count = 0;
+    while (off < body.n) {
+        size_t at = off;
+        if (!str_line(body, &off, &line)) break;
+        if (!str_eq(str_trim(line), anchor)) continue;
+        if (!count) *start = at;
+        count++;
+    }
+    if (count == 1) return true;
+    char quoted[128];
+    quote_line(quoted, sizeof quoted, anchor);
+    if (count)
+        patch_bad_hunk(p,
+                       "%s hunk %zu: anchor \"%s\" matches %zu places; "
+                       "use a unique anchor line",
+                       f->path, f->hunk_n, quoted, count);
+    else
+        patch_bad_hunk(p, "%s hunk %zu: anchor \"%s\" not found", f->path,
+                       f->hunk_n, quoted);
+    patch_current(p, f->path, body, *start);
+    return false;
+}
+
+static size_t patch_matches(Str body, Str oldt, size_t start, size_t *hits,
+                            size_t max) {
+    size_t count = find_matches(str_drop(body, start), oldt, hits, max);
+    size_t shown = count < max ? count : max;
+    for (size_t i = 0; i < shown; i++) hits[i] += start;
+    return count;
+}
+
+static b8 patch_hunk(Patch *p, PatchFile *f, Str header, Str text,
+                     size_t *off) {
     if (++p->hunks > AGENT_MAX_PATCH_HUNKS)
         return patch_fail(p, "patch carries more than %u hunks",
                           AGENT_MAX_PATCH_HUNKS);
@@ -1402,13 +1507,16 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str text, size_t *off) {
     size_t hits[AGENT_MAX_PATCH_NOTES];
     size_t count;
     Str body = patch_body(f);
-    count = find_matches(body, oldt, hits, sizeof hits / sizeof *hits);
+    size_t start;
+    if (!patch_anchor(p, f, header, &start)) return true;
+    count = patch_matches(body, oldt, start, hits, sizeof hits / sizeof *hits);
     size_t at = count == 1 ? hits[0] : (size_t)-1;
 
     if (at == (size_t)-1 && !count && oldt.p[oldt.n - 1] == '\n'
         && (!body.n || body.p[body.n - 1] != '\n')) {
         Str o2 = {oldt.p, oldt.n - 1};
-        size_t n2 = find_matches(body, o2, hits, sizeof hits / sizeof *hits);
+        size_t n2 =
+            patch_matches(body, o2, start, hits, sizeof hits / sizeof *hits);
         if (n2 == 1 && hits[0] + o2.n == body.n) {
             at = hits[0];
             count = 1;
@@ -1437,11 +1545,11 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str text, size_t *off) {
                            count > shown ? ", ..." : "");
             patch_current(p, f->path, body, hits[0]);
         } else {
-            char note[192];
-            patch_diverge(body, oldt, note, sizeof note);
+            char note[384];
+            size_t bad = patch_diverge(body, start, oldt, note, sizeof note);
             patch_bad_hunk(p, "%s hunk %zu: context not found%s", f->path,
                            f->hunk_n, note);
-            patch_current(p, f->path, body, body.n);
+            patch_current(p, f->path, body, bad);
         }
         return true;
     }
@@ -1568,7 +1676,7 @@ static b8 patch_parse(Patch *p, Str text) {
         } else if (str_starts(line, STR("@@"))) {
             if (!f)
                 return patch_no_header(p, "a hunk before any --- / +++ header");
-            if (!patch_hunk(p, f, text, &off)) return false;
+            if (!patch_hunk(p, f, line, text, &off)) return false;
         }
     }
     if (!p->n)
@@ -1576,9 +1684,13 @@ static b8 patch_parse(Patch *p, Str text) {
     return true;
 }
 
-static b8 patch_write(Patch *p, const PatchFile *f) {
+static b8 patch_write(Patch *p, const PatchFile *f, Buf *out) {
+    size_t created = 0;
+    if (f->create && !tool_write_parents(f->path, &created))
+        return patch_fail(p, "write %s failed: %s", f->path, strerror(errno));
     if (!file_write_atomic_str(f->path, patch_body(f), 0666, true))
         return patch_fail(p, "write %s failed: %s", f->path, strerror(errno));
+    tool_write_directories(out, created);
     return true;
 }
 
@@ -1629,7 +1741,7 @@ static b8 tool_patch(Str args, Arena *scratch, Buf *out, char *err,
                                   strerror(errno));
             buf_putf(out, "%s deleted\n", f->path);
         } else {
-            if (!patch_write(&p, f)) return false;
+            if (!patch_write(&p, f, out)) return false;
             buf_putf(out, "%s %s+%zu -%zu\n", f->path,
                      f->create ? "created " : "", f->added, f->removed);
         }
@@ -2165,6 +2277,7 @@ b8 tools_add_mcp(ToolRegistry *r, Str name, Str desc, Str brief, Str schema,
     r->desc[r->n] = desc;
     r->brief[r->n] = brief;
     r->schema[r->n] = schema;
+    r->batch_schema[r->n] = schema;
     r->run[r->n] = NULL;
     r->modes[r->n] = TOOL_IN_BUILD;
     r->approval[r->n] = TOOL_APPROVAL_MCP;
@@ -2196,6 +2309,7 @@ size_t tools_remove_mcp(ToolRegistry *r, u16 server) {
             r->desc[out] = r->desc[i];
             r->brief[out] = r->brief[i];
             r->schema[out] = r->schema[i];
+            r->batch_schema[out] = r->batch_schema[i];
             r->run[out] = r->run[i];
             r->modes[out] = r->modes[i];
             r->approval[out] = r->approval[i];
@@ -2225,12 +2339,13 @@ static struct {
     "every task before your final answer. "
 #define TASK_DESC_TAIL ", and task ids last for this conversation only."
 
-void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
-                b8 subagents, i32 subagent_tasks) {
+void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
+                i32 shell_timeout_ms, b8 subagents, i32 subagent_tasks) {
     r->name = arena_new(persist, Str, AGENT_MAX_TOOLS);
     r->desc = arena_new(persist, Str, AGENT_MAX_TOOLS);
     r->brief = arena_new(persist, Str, AGENT_MAX_TOOLS);
     r->schema = arena_new(persist, Str, AGENT_MAX_TOOLS);
+    r->batch_schema = arena_new(persist, Str, AGENT_MAX_TOOLS);
     r->run = arena_new(persist, ToolRun, AGENT_MAX_TOOLS);
     r->modes = arena_new(persist, u8, AGENT_MAX_TOOLS);
     r->approval = arena_new(persist, u8, AGENT_MAX_TOOLS);
@@ -2241,8 +2356,9 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
     char root[PATH_MAX];
     g_tools.policy.root =
         realpath(".", root) ? str_dup(persist, str_c(root)) : (Str){0};
-    if (!r->name || !r->desc || !r->brief || !r->schema || !r->run || !r->modes
-        || !r->approval || !r->source || !r->ext || !r->off) {
+    if (!r->name || !r->desc || !r->brief || !r->schema || !r->batch_schema
+        || !r->run || !r->modes || !r->approval || !r->source || !r->ext
+        || !r->off) {
         r->name = NULL;
         return;
     }
@@ -2253,6 +2369,7 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
         r->desc[r->n] = STR(dsc);           \
         r->brief[r->n] = STR(brf);          \
         r->schema[r->n] = STR(sch);         \
+        r->batch_schema[r->n] = STR(sch);   \
         r->run[r->n] = fn;                  \
         r->modes[r->n] = (md);              \
         r->approval[r->n] = (ap);           \
@@ -2374,6 +2491,7 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
             "should be waited out.");
         r->brief[r->n] = STR("Run a shell command");
         r->schema[r->n] = (Str){bash_schema, (size_t)schema_n};
+        r->batch_schema[r->n] = r->schema[r->n];
         r->run[r->n] = tool_bash;
         r->modes[r->n] = TOOL_IN_BUILD;
         r->approval[r->n] = TOOL_APPROVAL_BASH;
@@ -2382,6 +2500,25 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
         r->off[r->n] = false;
         r->n++;
     }
+    ADD("batch",
+        "Run 1 through 8 existing tool calls in order when their arguments "
+        "are already known. Each step uses its normal permissions and availability "
+        "checks, and is shown separately with its normal rendering. "
+        "Stops on a tool error, denied permission, nonzero command exit, or a "
+        "command or job still running. Earlier steps are not rolled back. "
+        "Returns structured results for attempted steps and the skipped count; "
+        "each child keeps its normal output limit and spill note. Follow a "
+        "reported job before submitting only the remaining steps. No nested "
+        "batches, todo, task, ask_user or submit_plan. No variables, conditions "
+        "or output interpolation. Do not batch a read with an edit that depends "
+        "on inspecting that read.",
+        "Run tools in order", TOOL_IN_BUILD | TOOL_IN_PLAN, TOOL_APPROVAL_NONE,
+        "{\"type\":\"object\",\"properties\":{\"steps\":{\"type\":\"array\","
+        "\"minItems\":1,\"maxItems\":8,\"items\":{\"type\":\"object\","
+        "\"properties\":{\"tool\":{\"type\":\"string\"},\"args\":{\"type\":\"object\"}},"
+        "\"required\":[\"tool\",\"args\"],\"additionalProperties\":false}}},"
+        "\"required\":[\"steps\"],\"additionalProperties\":false}",
+        NULL);
     ADD("job",
         "Follow a command bash detached because it outran its "
         "deadline. Each call returns the output since the last one and says "
@@ -2403,14 +2540,19 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
         "Change files atomically with a unified diff or a *** Begin "
         "Patch envelope. Hunks match by context, not by @@ line numbers. If "
         "a hunk fails, the result shows the file's current text: rebuild "
-        "the hunk from that. --- /dev/null creates a file; +++ /dev/null "
+        "the hunk from that. An @@ literal line header requires a unique "
+        "anchor line, then unique exact hunk context at or after it. "
+        "Repeated update headers for one file apply in order. "
+        "--- /dev/null creates a file and any missing parent directories; +++ /dev/null "
         "deletes one.",
         "Change files with a diff", TOOL_IN_BUILD, TOOL_APPROVAL_PATCH,
         "{\"type\":\"object\",\"properties\":{\"patch\":{\"type\":\"string\","
         "\"description\":\"unified diff over one or more files\"}},"
         "\"required\":[\"patch\"]}",
         tool_patch);
-    ADD("write", "Write a file whole, creating or overwriting it.",
+    ADD("write",
+        "Write a file whole, creating or overwriting it and creating "
+        "missing parent directories.",
         "Write a file whole", TOOL_IN_BUILD, TOOL_APPROVAL_WRITE,
         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}",
         tool_write);
@@ -2457,6 +2599,9 @@ void tools_init(ToolRegistry *r, Arena *persist, i32 shell_timeout_ms,
         tool_agent_only);
     tools_set_subagents(r, subagents);
     tools_set_task_limit(r, subagent_tasks);
+    for (size_t i = 0; i < r->n; i++)
+        r->batch_schema[i] =
+            batch_compact_schema(r->schema[i], persist, scratch);
 #undef READS
 #undef BOTH
 #undef ADD
@@ -2488,9 +2633,26 @@ size_t tools_find(const ToolRegistry *r, Str name) {
     return TOOL_NONE;
 }
 
+b8 tools_batchable(const ToolRegistry *r, size_t id) {
+    return id < r->n
+           && (r->source[id] == TOOL_SRC_MCP
+               || (r->run[id] && r->run[id] != tool_agent_only
+                   && !str_eq(r->name[id], STR("todo"))));
+}
+
 b8 tools_run(const ToolRegistry *r, size_t id, Str args,
              ToolAuthorization authorization, Arena *scratch, Buf *out,
              char *err, size_t err_cap, ToolAudience audience) {
+    return tools_run_report(r, id, args, authorization, scratch, out, err,
+                            err_cap, audience, NULL);
+}
+
+b8 tools_run_report(const ToolRegistry *r, size_t id, Str args,
+                    ToolAuthorization authorization, Arena *scratch, Buf *out,
+                    char *err, size_t err_cap, ToolAudience audience,
+                    ToolExecution *execution) {
+    g_tools.execution = (ToolExecution){0};
+    if (execution) *execution = (ToolExecution){0};
     if (!r->run || id >= r->n) {
         snprintf(err, err_cap, "unknown tool");
         return false;
@@ -2522,12 +2684,18 @@ b8 tools_run(const ToolRegistry *r, size_t id, Str args,
         return false;
     }
     MediaSet *previous = g_read_media.destination;
+    if (r->source[id] != TOOL_SRC_MCP && !r->run[id]) {
+        snprintf(err, err_cap, "this tool requires the main agent loop");
+        return false;
+    }
     if (audience == TOOL_FOR_SUB) tools_set_media(NULL);
     b8 ok = r->source[id] == TOOL_SRC_MCP
                 ? mcp_call(r->ext[id], r->name[id], args, scratch, out, err,
                            err_cap)
                 : r->run[id](args, scratch, out, err, err_cap);
     tools_set_media(previous);
+    if (execution) *execution = g_tools.execution;
+    g_tools.execution = (ToolExecution){0};
     if (ok && out->n > AGENT_TOOL_RESULT_BYTES) {
         snprintf(err, err_cap, "result exceeds the %u byte limit",
                  (unsigned)AGENT_TOOL_RESULT_BYTES);
@@ -2551,14 +2719,24 @@ void tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api,
                 buf_json_str(b, r->name[i]);
                 buf_putf(b, ",\"description\":");
                 buf_json_str(b, r->desc[i]);
-                buf_putf(b, ",\"input_schema\":%s}", r->schema[i].p);
+                buf_puts(b, STR(",\"input_schema\":"));
+                if (str_eq(r->name[i], STR("batch")))
+                    batch_write_schema(b, r, g_tools.policy.mode, audience);
+                else
+                    buf_puts(b, r->schema[i]);
+                buf_putc(b, '}');
                 continue;
             }
             buf_putf(b, "{\"type\":\"function\",\"function\":{\"name\":");
             buf_json_str(b, r->name[i]);
             buf_putf(b, ",\"description\":");
             buf_json_str(b, r->desc[i]);
-            buf_putf(b, ",\"parameters\":%s}}", r->schema[i].p);
+            buf_puts(b, STR(",\"parameters\":"));
+            if (str_eq(r->name[i], STR("batch")))
+                batch_write_schema(b, r, g_tools.policy.mode, audience);
+            else
+                buf_puts(b, r->schema[i]);
+            buf_puts(b, STR("}}"));
         }
     }
     buf_putc(b, ']');
@@ -2570,7 +2748,11 @@ size_t tools_schema_bytes(const ToolRegistry *r, ToolAudience audience) {
     if (!r || !r->name) return 0;
     for (size_t i = 0; i < r->n; i++) {
         if (!tools_available_to(r, i, g_tools.policy.mode, audience)) continue;
-        total += r->name[i].n + r->desc[i].n + r->schema[i].n + PER_TOOL;
+        size_t schema =
+            str_eq(r->name[i], STR("batch"))
+                ? batch_schema_bytes(r, g_tools.policy.mode, audience)
+                : r->schema[i].n;
+        total += r->name[i].n + r->desc[i].n + schema + PER_TOOL;
     }
     return total;
 }

@@ -180,6 +180,51 @@ def test_write_tool_preserves_an_existing_files_mode(ctx):
     assert stat.S_IMODE(path.stat().st_mode) == 0o751
 
 
+def test_write_creates_missing_parent_directories(ctx):
+    args = json.dumps({"path": "nested/deeper/new.txt", "content": "new\n"})
+    ctx.scenario(f"tool=write:{args},final_text=done")
+    s = ctx.spawn()
+    s.submit("write it")
+    s.wait_turn_done()
+
+    assert (ctx.work / "nested/deeper/new.txt").read_text() == "new\n"
+    result = ctx.mock.tool_results()[-1]
+    assert "created 2 parent directories\n" in result, result
+
+
+def test_write_rejects_a_parent_that_is_a_file(ctx):
+    path = ctx.write_file("parent", "keep\n")
+    args = json.dumps({"path": "parent/deeper/new.txt", "content": "new\n"})
+    ctx.scenario(f"tool=write:{args},final_text=done")
+    s = ctx.spawn()
+    s.submit("write it")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert result.startswith("ERROR:"), result
+    assert "Not a directory" in result, result
+    assert path.read_text() == "keep\n"
+
+
+def test_write_denial_does_not_create_parent_directories(ctx):
+    args = json.dumps({"path": "nested/new.txt", "content": "new\n"})
+    ctx.scenario(f"tool=write:{args},final_text=done")
+    out = ctx.run_cli("-p", "write it", ARQAN_PERMISSIONS="ask")
+
+    assert out.returncode == 1, out
+    assert not (ctx.work / "nested").exists()
+
+
+def test_write_invalid_arguments_do_not_create_parent_directories(ctx):
+    ctx.scenario('tool=write:{"path":"nested/new.txt"},final_text=done')
+    s = ctx.spawn()
+    s.submit("write it")
+    s.wait_turn_done()
+
+    assert ctx.mock.tool_results()[-1].startswith("ERROR:"), ctx.mock.tool_results()
+    assert not (ctx.work / "nested").exists()
+
+
 def test_write_failure_keeps_the_original_file(ctx):
     path = ctx.write_file("important.txt", "original")
     path.chmod(0o640)
@@ -262,6 +307,153 @@ def test_patch_ambiguous_context_names_matching_lines(ctx):
     result = ctx.mock.tool_results()[-1]
     assert "matches 2 places (lines 1, 3)" in result, result
     assert (ctx.work / "edit.txt").read_text() == "repeat\nother\nrepeat\n"
+
+
+def test_patch_anchor_locates_a_repeated_block(ctx):
+    original = "first\nold\nlast\nsecond\nold\nlast\n"
+    path = ctx.write_file("edit.txt", original)
+    diff = (
+        "*** Begin Patch\n*** Update File: edit.txt\n"
+        "@@ second\n-old\n+new\n last\n*** End Patch"
+    )
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit the second block")
+    s.wait_turn_done()
+
+    assert path.read_text() == "first\nold\nlast\nsecond\nnew\nlast\n"
+
+
+def test_patch_missing_anchor_never_falls_back_to_global_context(ctx):
+    path = ctx.write_file("edit.txt", "first\nold\nlast\n")
+    diff = "--- edit.txt\n+++ edit.txt\n@@ missing\n-old\n+new\n"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "anchor" in result and "not found" in result, result
+    assert path.read_text() == "first\nold\nlast\n"
+
+
+def test_patch_repeated_anchor_is_refused(ctx):
+    original = "anchor\nother\nanchor\nold\n"
+    path = ctx.write_file("edit.txt", original)
+    diff = "--- edit.txt\n+++ edit.txt\n@@ anchor\n-old\n+new\n"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "anchor" in result and "matches 2 places" in result, result
+    assert path.read_text() == original
+
+
+def test_patch_anchor_does_not_choose_between_later_matches(ctx):
+    original = "anchor\nold\nother\nold\n"
+    path = ctx.write_file("edit.txt", original)
+    diff = "--- edit.txt\n+++ edit.txt\n@@ anchor\n-old\n+new\n"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    assert "matches 2 places" in ctx.mock.tool_results()[-1], ctx.mock.tool_results()
+    assert path.read_text() == original
+
+
+def test_patch_anchor_does_not_match_text_before_it(ctx):
+    original = "old\nanchor\nother\n"
+    path = ctx.write_file("edit.txt", original)
+    diff = "--- edit.txt\n+++ edit.txt\n@@ anchor\n-old\n+new\n"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    assert ctx.mock.tool_results()[-1].startswith("ERROR:"), ctx.mock.tool_results()
+    assert path.read_text() == original
+
+
+def test_patch_anchor_preserves_a_tail_without_a_newline(ctx):
+    path = ctx.write_file("edit.txt", "old\nanchor\nold")
+    diff = "--- edit.txt\n+++ edit.txt\n@@ anchor\n-old\n+new\n"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    assert path.read_text() == "old\nanchor\nnew"
+
+
+def test_patch_numeric_header_remains_a_hint_not_a_location(ctx):
+    path = ctx.write_file("edit.txt", "old\n")
+    diff = "--- edit.txt\n+++ edit.txt\n@@ -999 +999 @@ ignored\n-old\n+new\n"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    assert path.read_text() == "new\n"
+
+
+def test_patch_mismatch_excerpt_shows_the_divergence_not_eof(ctx):
+    original = "anchor\nactual\n" + "".join(f"tail {i}\n" for i in range(30))
+    path = ctx.write_file("edit.txt", original)
+    diff = "--- edit.txt\n+++ edit.txt\n@@\n anchor\n-expected\n+new\n"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert 'line 2 is "actual" where the hunk wants "expected"' in result, result
+    assert "2: actual" in result, result
+    assert path.read_text() == original
+
+
+def test_patch_anchored_mismatch_keeps_absolute_line_numbers(ctx):
+    original = "before\nanchor\nkeep\nactual\n" + "tail\n" * 30
+    path = ctx.write_file("edit.txt", original)
+    diff = "--- edit.txt\n+++ edit.txt\n@@ anchor\n keep\n-expected\n+new\n"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert 'line 4 is "actual"' in result, result
+    assert "4: actual" in result, result
+    assert path.read_text() == original
+
+
+def test_patch_spacing_mismatch_shows_nearby_text_without_applying(ctx):
+    original = "    old\n" + "".join(f"tail {i}\n" for i in range(30))
+    path = ctx.write_file("edit.txt", original)
+    diff = "--- edit.txt\n+++ edit.txt\n@@\n-  old\n+  new\n"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "only spacing differs" in result, result
+    assert "1:     old" in result, result
+    assert path.read_text() == original
+
+
+def test_patch_does_not_replace_a_suffix_of_a_line(ctx):
+    path = ctx.write_file("edit.txt", "prefix-old\n")
+    diff = "--- edit.txt\n+++ edit.txt\n@@\n-old\n+new\n"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    assert ctx.mock.tool_results()[-1].startswith("ERROR:"), ctx.mock.tool_results()
+    assert path.read_text() == "prefix-old\n"
 
 
 def test_patch_accepts_apply_patch_envelope(ctx):
@@ -370,6 +562,7 @@ def test_reading_a_directory_points_to_directory_tools(ctx):
 
 
 def test_write_failure_includes_the_system_reason(ctx):
+    path = ctx.write_file("missing", "keep\n")
     args = json.dumps({"path": "missing/file.txt", "content": "x"})
     ctx.scenario(f"tool=write:{args},final_text=not+written")
     s = ctx.spawn()
@@ -379,7 +572,8 @@ def test_write_failure_includes_the_system_reason(ctx):
 
     result = ctx.mock.tool_results()[-1]
     assert "write missing/file.txt failed:" in result, result
-    assert "No such file or directory" in result, result
+    assert "Not a directory" in result, result
+    assert path.read_text() == "keep\n"
 
 
 def test_patch_keeps_a_file_that_ends_without_a_newline(ctx):
@@ -434,6 +628,65 @@ def test_patch_over_several_files_is_one_call(ctx):
     assert (ctx.work / "a.txt").read_text() == "ALPHA\n"
     assert (ctx.work / "b.txt").read_text() == "BETA\n"
     assert "\u25c6  patch a.txt +1 more" in s.text(), s.text()
+
+
+def test_patch_repeated_update_headers_apply_in_order(ctx):
+    path = ctx.write_file("edit.txt", "old\n")
+    diff = (
+        "*** Begin Patch\n*** Update File: edit.txt\n@@\n-old\n+middle\n"
+        "*** Update File: edit.txt\n@@\n-middle\n+new\n*** End Patch"
+    )
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    assert path.read_text() == "new\n"
+    result = ctx.mock.tool_results()[-1]
+    assert result.count("edit.txt +2 -2") == 1, result
+
+
+def test_patch_conflicting_headers_leave_files_untouched(ctx):
+    path = ctx.write_file("edit.txt", "old\n")
+    diff = (
+        "*** Begin Patch\n*** Update File: edit.txt\n@@\n-old\n+new\n"
+        "*** Delete File: edit.txt\n*** End Patch"
+    )
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    assert ctx.mock.tool_results()[-1].startswith("ERROR:"), ctx.mock.tool_results()
+    assert path.read_text() == "old\n"
+
+
+def test_patch_creates_missing_parent_directories(ctx):
+    diff = "*** Begin Patch\n*** Add File: nested/deeper/new.txt\n+new\n*** End Patch"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("create it")
+    s.wait_turn_done()
+
+    assert (ctx.work / "nested/deeper/new.txt").read_text() == "new\n"
+    result = ctx.mock.tool_results()[-1]
+    assert "created 2 parent directories\n" in result, result
+
+
+def test_patch_invalid_hunk_does_not_create_parent_directories(ctx):
+    path = ctx.write_file("edit.txt", "old\n")
+    diff = (
+        "*** Begin Patch\n*** Add File: nested/new.txt\n+new\n"
+        "*** Update File: edit.txt\n@@\n-missing\n+changed\n*** End Patch"
+    )
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    assert ctx.mock.tool_results()[-1].startswith("ERROR:"), ctx.mock.tool_results()
+    assert not (ctx.work / "nested").exists()
+    assert path.read_text() == "old\n"
 
 
 def test_bash_tool_runs_a_command(ctx):

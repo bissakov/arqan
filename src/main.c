@@ -25,6 +25,7 @@
 #include "cli.c"
 #include "ignore.c"
 #include "tools.c"
+#include "batch.c"
 #include "mcp.c"
 #include "todo.c"
 #include "prompt.c"
@@ -438,9 +439,8 @@ typedef struct {
     size_t pending_n;
 } Agent;
 
-static b8 save_session(Agent *ag) {
-    char err[256] = {0};
-    if (session_save(ag->sess, ag->conv, err, sizeof err)) {
+static b8 save_session_result(Agent *ag, b8 ok, const char *err) {
+    if (ok) {
         if (ag->session_save_failed) {
             if (g_turn.one_shot)
                 one_shot_diag("warning", (Str){0},
@@ -455,7 +455,7 @@ static b8 save_session(Agent *ag) {
         char msg[384];
         i32 n = snprintf(msg, sizeof msg,
                          "session was not saved: %s; it remains in memory",
-                         err[0] ? err : "unknown persistence failure");
+                         err && err[0] ? err : "unknown persistence failure");
         Str text = {msg, n > 0 && (size_t)n < sizeof msg ? (size_t)n
                                                          : sizeof msg - 1};
         if (g_turn.one_shot)
@@ -465,6 +465,19 @@ static b8 save_session(Agent *ag) {
     }
     ag->session_save_failed = true;
     return false;
+}
+
+static b8 save_session(Agent *ag) {
+    char err[256] = {0};
+    b8 ok = session_save(ag->sess, ag->conv, err, sizeof err);
+    return save_session_result(ag, ok, err);
+}
+
+static b8 save_tool_progress(Agent *ag, size_t slot) {
+    if (ag->sess->written <= slot) return save_session(ag);
+    char err[256] = {0};
+    b8 ok = session_update_tool(ag->sess, ag->conv, slot, err, sizeof err);
+    return save_session_result(ag, ok, err);
 }
 
 #define READ_ONLY_NOTICE STR("read-only, /fork to continue in a copy")
@@ -1640,6 +1653,203 @@ static const char *tool_outcome(Str name, Str result, b8 ran) {
     return ran ? "operation_failure" : "invocation_failure";
 }
 
+typedef struct {
+    Str text;
+    ToolExecution execution;
+    size_t media_off, media_n;
+    u32 ms;
+    b8 ok, denied;
+} ToolCallResult;
+
+static ToolCallResult run_regular_tool(Agent *ag, size_t call, size_t tool,
+                                       Str name, Str args) {
+    Conv *conv = ag->conv;
+    ToolCallResult run = {.media_off = conv->media ? conv->media->n : 0};
+    Buf out;
+    buf_init(&out, ag->scratch, 4096);
+    char err[AGENT_TOOL_ERR] = {0};
+    if (g_turn.one_shot) one_shot_diag("tool call", name, args);
+    size_t call_at = tui_transcript_pos();
+    if (!g_turn.one_shot)
+        render_tool_call(name, args, ag->scratch, (u32)(call + 1),
+                         conv->expanded[call], conv, call);
+    ToolApprovalClass approval = TOOL_APPROVAL_NONE;
+    if (tool != TOOL_NONE && !tools_disabled(ag->tools, tool)
+        && tools_available(ag->tools, tool, ag->cfg->mode))
+        approval = tools_call_approval(ag->tools, tool, args, ag->scratch);
+    ToolAuthorization authorization = tool_authorization(ag, approval, call_at);
+    if (authorization == TOOL_AUTH_DENIED && approval != TOOL_APPROVAL_NONE) {
+        Str cls = tools_approval_name(approval);
+        (void)tools_run(ag->tools, tool, args, authorization, ag->scratch, &out,
+                        err, sizeof err, TOOL_FOR_MAIN);
+        out.n = 0;
+        buf_putf(&out,
+                 "DENIED: the user did not approve this %.*s call. "
+                 "Do not retry it blindly.",
+                 (i32)cls.n, cls.p);
+        run.text =
+            buf_ok(&out) ? buf_finish(&out) : STR("ERROR: out of memory");
+        run.denied = true;
+        return run;
+    }
+    char status[32];
+    snprintf(status, sizeof status, "running %.*s", (i32)name.n, name.p);
+    say_busy(status);
+    f64 started = agent_now_seconds();
+    MediaSet *previous_media = tools_set_media(conv->media);
+    run.ok =
+        tools_run_report(ag->tools, tool, args, authorization, ag->scratch,
+                         &out, err, sizeof err, TOOL_FOR_MAIN, &run.execution);
+    tools_set_media(previous_media);
+    if (!run.ok) buf_error(&out, err, "tool failed");
+    run.media_n = run.ok && conv->media && conv->media->n > run.media_off
+                      ? conv->media->n - run.media_off
+                      : 0;
+    todo_note_stale(name, &out);
+    run.text = buf_ok(&out) ? buf_finish(&out) : STR("ERROR: out of memory");
+    if (!buf_ok(&out)) run.ok = false;
+    run.ms = elapsed_ms(started);
+
+    TelEvent e;
+    tel_open(&e, "tool");
+    b8 remote = tool != TOOL_NONE && ag->tools->source[tool] == TOOL_SRC_MCP;
+    tel_str(&e, "name", remote ? STR("mcp") : name);
+    const char *outcome = tool_outcome(name, run.text, run.ok);
+    tel_str(&e, "outcome", (Str){outcome, strlen(outcome)});
+    tel_bool(&e, "known", tool != TOOL_NONE);
+    tel_int(&e, "args_bytes", (i64)args.n);
+    if (!remote) tel_arg_keys(&e, "args", args, ag->scratch);
+    tel_int(&e, "ms", (i64)run.ms);
+    tel_bool(&e, "ok", run.ok);
+    tel_shape(&e, "result", run.text);
+    tel_send(&e);
+    return run;
+}
+
+static b8 batch_publish(Agent *ag, size_t slot, Buf *doc, Buf *staged,
+                        const ToolBatch *batch, Str status, size_t shown) {
+    staged->n = 0;
+    batch_write(staged, batch, status, shown);
+    if (!buf_ok(staged) || staged->n > AGENT_BATCH_RESULT_BYTES
+        || !buf_reserve(doc, staged->n))
+        return false;
+    doc->n = 0;
+    buf_puts(doc, buf_finish(staged));
+    ag->conv->text[slot] = buf_finish(doc);
+    return true;
+}
+
+static TurnAction batch_answer(Agent *ag, size_t call, Str args) {
+    ToolBatch batch;
+    char err[AGENT_TOOL_ERR] = {0};
+    if (g_turn.one_shot)
+        one_shot_diag("tool call", STR("batch"), args);
+    else
+        render_tool_call(STR("batch"), args, ag->scratch, (u32)(call + 1),
+                         ag->conv->expanded[call], ag->conv, call);
+    if (!batch_parse(&batch, ag->tools, ag->cfg->mode, args, ag->scratch, err,
+                     sizeof err)) {
+        Buf out;
+        buf_init(&out, ag->scratch, 256);
+        buf_error(&out, err, "invalid batch");
+        return add_result(
+                   ag, call, STR("batch"),
+                   keep_result(ag->persist, buf_ok(&out)
+                                                ? buf_finish(&out)
+                                                : STR("ERROR: out of memory")),
+                   0)
+                   ? TURN_CONTINUE
+                   : TURN_FULL;
+    }
+    size_t slot =
+        conv_add_tool(ag->conv, ag->conv->tool_call_id[call], STR("{}"));
+    if (slot == CONV_NONE) {
+        say_conv_full();
+        return TURN_FULL;
+    }
+    Buf doc, staged;
+    buf_init(&doc, ag->persist, 4096);
+    buf_init(&staged, ag->scratch, 4096);
+    f64 started = agent_now_seconds();
+    size_t media_off = ag->conv->media ? ag->conv->media->n : 0;
+    Str status = STR("running");
+    b8 stored = true;
+    for (size_t i = 0; i < batch.n; i++) {
+        if (g_got_sigint) break;
+        BatchStep *step = &batch.steps[i];
+        step->status = STR("running");
+        if (!batch_publish(ag, slot, &doc, &staged, &batch, status, i + 1)) {
+            stored = false;
+            break;
+        }
+        ToolCallResult run =
+            run_regular_tool(ag, call, step->tool, step->name, step->args);
+        step->result = run.text;
+        step->execution = run.execution;
+        step->ms = run.ms;
+        step->status = run.denied                           ? STR("denied")
+                       : !run.ok || run.execution.exit_code ? STR("error")
+                       : run.execution.pending              ? STR("pending")
+                                                            : STR("ok");
+        batch.attempted++;
+        size_t progress_media_n =
+            ag->conv->media && ag->conv->media->n > media_off
+                ? ag->conv->media->n - media_off
+                : 0;
+        conv_attach_media(ag->conv, slot, media_off, progress_media_n);
+        if (!batch_publish(ag, slot, &doc, &staged, &batch, status,
+                           batch.attempted))
+            stored = false;
+        if (stored) save_tool_progress(ag, slot);
+        if (g_turn.one_shot)
+            one_shot_diag("tool result", step->name, step->result);
+        else
+            render_tool_result(step->name, step->args, step->result,
+                               ag->scratch, (u32)(slot + 1),
+                               ag->conv->expanded[slot], run.ms);
+        if (!stored || !str_eq(step->status, STR("ok"))) break;
+    }
+    status = batch.attempted == batch.n
+                     && str_eq(batch.steps[batch.n - 1].status, STR("ok"))
+                 ? STR("completed")
+                 : STR("stopped");
+    if (!stored
+        || !batch_publish(ag, slot, &doc, &staged, &batch, status,
+                          batch.attempted)) {
+        stored = false;
+        status = STR("stopped");
+        ag->conv->text[slot] = STR(
+            "ERROR: could not store batch results within memory and output limits; "
+            "earlier steps may have changed files. Do not rerun them blindly.");
+    }
+    u32 ms = elapsed_ms(started);
+    ag->conv->ms[slot] = ms;
+    size_t media_n = ag->conv->media && ag->conv->media->n > media_off
+                         ? ag->conv->media->n - media_off
+                         : 0;
+    conv_attach_media(ag->conv, slot, media_off, media_n);
+    Buf summary;
+    buf_init(&summary, ag->scratch, 128);
+    batch_summary(&summary, status, batch.attempted, batch.n);
+    Str shown = buf_ok(&summary) ? buf_finish(&summary)
+                                 : STR("batch stopped: out of memory");
+    if (!stored) shown = ag->conv->text[slot];
+    if (g_turn.one_shot)
+        one_shot_diag("tool result", STR("batch"), shown);
+    else
+        render_tool_result(STR("batch"), (Str){0}, shown, ag->scratch,
+                           (u32)(slot + 1), ag->conv->expanded[slot], ms);
+    save_tool_progress(ag, slot);
+    TelEvent e;
+    tel_open(&e, "batch");
+    tel_int(&e, "steps", (i64)batch.n);
+    tel_int(&e, "attempted", (i64)batch.attempted);
+    tel_str(&e, "status", status);
+    tel_int(&e, "ms", (i64)ms);
+    tel_send(&e);
+    return ag->permission_blocked_one_shot ? TURN_DENIED : TURN_CONTINUE;
+}
+
 static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
     Conv *conv = ag->conv;
     ag->permission_blocked_one_shot = false;
@@ -1665,9 +1875,9 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
                 return TURN_FULL;
             continue;
         }
-        b8 agent_ui = str_eq(name, STR("submit_plan"))
-                      || str_eq(name, STR("ask_user"))
-                      || str_eq(name, STR("task"));
+        b8 agent_ui =
+            str_eq(name, STR("submit_plan")) || str_eq(name, STR("ask_user"))
+            || str_eq(name, STR("task")) || str_eq(name, STR("batch"));
         if (agent_ui
             && (tool == TOOL_NONE
                 || !tools_available(ag->tools, tool, ag->cfg->mode))) {
@@ -1734,77 +1944,24 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
                 return TURN_FULL;
             continue;
         }
-        Buf out;
-        buf_init(&out, ag->scratch, 4096);
-        char err[AGENT_TOOL_ERR] = {0};
-        if (g_turn.one_shot) one_shot_diag("tool call", name, args);
-        size_t call_at = tui_transcript_pos();
-        if (!g_turn.one_shot)
-            render_tool_call(name, args, ag->scratch, (u32)(i + 1),
-                             conv->expanded[i], conv, i);
-        ToolApprovalClass approval = TOOL_APPROVAL_NONE;
-        if (tool != TOOL_NONE && !tools_disabled(ag->tools, tool)
-            && tools_available(ag->tools, tool, ag->cfg->mode))
-            approval = tools_call_approval(ag->tools, tool, args, ag->scratch);
-        ToolAuthorization authorization =
-            tool_authorization(ag, approval, call_at);
-        if (authorization == TOOL_AUTH_DENIED
-            && approval != TOOL_APPROVAL_NONE) {
-            Str cls = tools_approval_name(approval);
-            (void)tools_run(ag->tools, tool, args, authorization, ag->scratch,
-                            &out, err, sizeof err, TOOL_FOR_MAIN);
-            out.n = 0;
-            buf_putf(&out,
-                     "DENIED: the user did not approve this %.*s call. "
-                     "Do not retry it blindly.",
-                     (i32)cls.n, cls.p);
-            Str result = buf_finish(&out);
-            if (!add_result(ag, i, name, keep_result(ag->persist, result), 0))
-                return TURN_FULL;
-            if (ag->permission_blocked_one_shot) return TURN_DENIED;
+        if (str_eq(name, STR("batch"))) {
+            TurnAction act = batch_answer(ag, i, args);
+            if (act != TURN_CONTINUE) return act;
             continue;
         }
-        char status[32];
-        snprintf(status, sizeof status, "running %.*s", (i32)name.n, name.p);
-        say_busy(status);
-        f64 started = agent_now_seconds();
-        size_t media_off = conv->media ? conv->media->n : 0;
-        MediaSet *previous_media = tools_set_media(conv->media);
-        b8 ok = tools_run(ag->tools, tool, args, authorization, ag->scratch,
-                          &out, err, sizeof err, TOOL_FOR_MAIN);
-        tools_set_media(previous_media);
-        if (!ok) buf_error(&out, err, "tool failed");
-        size_t media_n = ok && conv->media && conv->media->n > media_off
-                             ? conv->media->n - media_off
-                             : 0;
-        todo_note_stale(name, &out);
-        Str result = buf_finish(&out);
-
-        TelEvent e;
-        tel_open(&e, "tool");
-        b8 remote =
-            tool != TOOL_NONE && ag->tools->source[tool] == TOOL_SRC_MCP;
-        tel_str(&e, "name", remote ? STR("mcp") : name);
-        const char *outcome = tool_outcome(name, result, ok);
-        tel_str(&e, "outcome", (Str){outcome, strlen(outcome)});
-        tel_bool(&e, "known", tool != TOOL_NONE);
-        tel_int(&e, "args_bytes", (i64)args.n);
-        if (!remote) tel_arg_keys(&e, "args", args, ag->scratch);
-        u32 ms = elapsed_ms(started);
-        tel_int(&e, "ms", (i64)ms);
-        tel_bool(&e, "ok", ok);
-        tel_shape(&e, "result", result);
-        tel_send(&e);
-        Str kept = str_dup(ag->persist, result);
+        ToolCallResult run = run_regular_tool(ag, i, tool, name, args);
+        Str kept = str_dup(ag->persist, run.text);
         if (!kept.p) {
-            if (conv->media) conv->media->n = media_off;
-            media_n = 0;
+            if (conv->media) conv->media->n = run.media_off;
+            run.media_n = 0;
             kept = STR("ERROR: out of memory");
         }
-        if (!add_result_media(ag, i, name, kept, ms, media_off, media_n)) {
-            if (conv->media) conv->media->n = media_off;
+        if (!add_result_media(ag, i, name, kept, run.ms, run.media_off,
+                              run.media_n)) {
+            if (conv->media) conv->media->n = run.media_off;
             return TURN_FULL;
         }
+        if (ag->permission_blocked_one_shot) return TURN_DENIED;
     }
     return pending;
 }
@@ -5854,7 +6011,7 @@ static i32 task_worker_main(const CliOpts *opts) {
     u8 grants = (u8)rec_int(j, "grants", 0);
 
     ToolRegistry tools;
-    tools_init(&tools, &persist, cfg.shell_timeout_ms, false, 1);
+    tools_init(&tools, &persist, &scratch, cfg.shell_timeout_ms, false, 1);
     tools_set_interactive(false);
     char err[AGENT_TOOL_ERR] = {0};
     if (disable.n) tools_disable_list(&tools, disable, err, sizeof err);
@@ -5980,7 +6137,7 @@ i32 main(i32 argc, char **argv) {
     arena_reset(&scratch);
 
     ToolRegistry tools;
-    tools_init(&tools, &persist, cfg.shell_timeout_ms, cfg.subagents,
+    tools_init(&tools, &persist, &scratch, cfg.shell_timeout_ms, cfg.subagents,
                cfg.subagent_tasks);
     b8 interactive =
         !opts.have_prompt && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);

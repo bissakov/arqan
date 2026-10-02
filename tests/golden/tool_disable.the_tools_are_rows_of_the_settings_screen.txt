@@ -7,20 +7,20 @@
 |
 |
 |    search:  · Space or Left/Right changes the selected row · Esc closes
-|    [x] Subagents            Offer the task tool, which delegates a
-|                             read-only investigation
 |    [x] read                 Read a page of a file
 |    [x] grep                 Search file contents
 |    [x] find                 List files by name
 |    [x] internet_search      Search the public web
 |    [x] page_fetch           Fetch a public web page
 |    [x] bash                 Run a shell command
+|    [x] batch                Run tools in order
 |    [x] job                  Follow a background command
 |    [x] patch                Change files with a diff
 |  › [x] write                Write a file whole
+|    [x] todo                 Track the step list
 |
 |  › Message arqan...
 |
 |
-|  ● settings · mock-model · build · local · ~/work · ~2k · free
+|  ● settings · mock-model · build · local · ~/work · ~3k · free
 --- cursor row=21 col=5 visible=yes ---
