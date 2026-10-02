@@ -30,10 +30,14 @@ jobs:
         id: detect
         uses: ./.github/actions/detect-changes
 
-  suite:
+  run:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     env:
       # ccache returns byte-identical objects, so this buys build time and
       # changes nothing that is tested. The unity translation unit misses
@@ -43,6 +47,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: Check CI sharding
+        run: python3 -m unittest tests.test_ci
       # Static, needs no toolchain, so it fails fast and before the build.
       - name: Check for loose globals
         run: make check-globals
@@ -55,8 +61,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
               libcurl4-openssl-dev ccache
-      # Restored after the checkout, so the cached objects are newer than the
-      # sources and make does not rebuild what ccache would have served.
       - name: Restore the compiler cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -75,9 +79,24 @@ jobs:
       # The suite drives a pty against a mock provider on loopback and needs
       # no network. A warning is a failure here, as it is in the guidelines.
       - name: Run the end-to-end suite
-        run: make test EXTRA_CFLAGS=-Werror
+        run: python3 scripts/ci_run.py test ${{ matrix.shard }}/2
         env:
+          ARQAN_TEST_BIN: bin/arqan-test
           # The runner has four shared cores and the suite's waits are quiet
           # windows, so the usual three-per-core oversubscription starves
           # children long enough for a stall to read as a settled screen.
           ARQAN_TEST_JOBS: 4
+
+  suite:
+    needs: [changes, run]
+    if: always() && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check test results
+        env:
+          PASSED: ${{ needs.changes.result == 'success' && needs.run.result == 'success' }}
+        run: |
+          if [ "$PASSED" != true ]; then
+            echo "a test shard or change detection failed" >&2
+            exit 1
+          fi

@@ -59,12 +59,20 @@ unset BUILD_REV
 make -C "$tree" -j"$jobs" all >/dev/null
 flush "$tree"
 
+run_bench() {
+    if [ -n "${BENCH_SHARD:-}" ]; then
+        python3 "$root/scripts/ci_run.py" bench "$BENCH_SHARD" "$@"
+    else
+        python3 -m bench.run "$@"
+    fi
+}
+
 measure_base() {  # report path, then bench arguments
     out=$1
     shift
     # The reference measures itself with its own bench/, so a case this change
     # adds is simply absent from the baseline rather than a phantom regression.
-    ( cd "$tree" && python3 -m bench.run --no-budgets --json "$out" "$@" ) || :
+    ( cd "$tree" && run_bench --no-budgets --json "$out" "$@" ) || :
 }
 
 measure_base "$base_json" "$@"
@@ -73,7 +81,7 @@ make -j"$jobs" all >/dev/null
 flush "$root"
 # $gate is deliberately unquoted: it carries zero, one or two option pairs.
 rm -f "$regressed"
-if python3 -m bench.run --json "$head_json" --baseline "$base_json" \
+if run_bench --json "$head_json" --baseline "$base_json" \
         --regressed "$regressed" $gate "$@"; then
     exit 0
 fi
@@ -87,5 +95,5 @@ cases=$(cat "$regressed")
 printf '\nconfirming %s\n' "$cases"
 measure_base "$root/bench-base-confirm.json" -k "$cases"
 flush "$root"
-python3 -m bench.run --json "$root/bench-head-confirm.json" \
+run_bench --json "$root/bench-head-confirm.json" \
     --baseline "$root/bench-base-confirm.json" $gate -k "$cases"
