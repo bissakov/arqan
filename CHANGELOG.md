@@ -29,6 +29,10 @@
 
 ### Changed
 
+- The preparing-tool-call spinner shows how many bytes of tool arguments
+  have arrived. The count updates while the provider streams, without
+  restarting the timers.
+
 - Batch children are indented inside a dim left rail. The rail continues
   through blank lines and wrapped output, and the batch summary closes it.
 
