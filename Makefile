@@ -236,7 +236,9 @@ check-globals:
 check-cppcheck:
 	@if ! command -v cppcheck >/dev/null 2>&1; then \
 	    echo "cppcheck not found"; [ -z "$(CI)" ]; exit; fi; \
-	cppcheck --enable=warning,performance,portability --inline-suppr --quiet --error-exitcode=1 -Isrc src/
+	cppcheck --enable=warning,performance,portability --inline-suppr --quiet --error-exitcode=1 -Isrc src/ && \
+	$(PYTHON) -m unittest tests.test_unused_functions && \
+	$(PYTHON) scripts/check-unused-functions.py
 
 check-sparse:
 	@if ! command -v cgcc >/dev/null 2>&1; then \
