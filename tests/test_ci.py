@@ -56,6 +56,61 @@ class ShardTests(unittest.TestCase):
         slow = SimpleNamespace(slow=True)
         self.assertEqual(select_cases([("group.slow", slow)], (0, 1)), [("group.slow", slow)])
 
+    def test_override_moves_only_its_case(self):
+        count = 3
+        name = self.cases[0][0]
+        original = next(i for i in range(count) if self.cases[0] in select_cases(self.cases, (i, count)))
+        target = (original + 1) % count
+        overrides = {name: target}
+        all_selected = []
+        for index in range(count):
+            selected = select_cases(self.cases, (index, count), overrides)
+            unchanged = select_cases(self.cases[1:], (index, count))
+            expected = ([self.cases[0]] if index == target else []) + unchanged
+            self.assertEqual(selected, expected)
+            all_selected.extend(selected)
+        self.assertEqual(Counter(name for name, _ in all_selected), Counter(name for name, _ in self.cases))
+
+    def test_invalid_overrides_fail_instead_of_dropping_cases(self):
+        for target in (-1, 3, 0.5, "2", None):
+            with self.subTest(target=target):
+                with self.assertRaises(ValueError):
+                    select_cases(self.cases, (0, 3), {self.cases[0][0]: target})
+
+    def test_overrides_preserve_assignment_across_case_sets(self):
+        overrides = {self.cases[11][0]: 2}
+        changed = list(reversed(self.cases[10:] + [("new.case", object())]))
+        common = {name for name, _ in self.cases[10:]}
+        for index in range(3):
+            original = {name for name, _ in select_cases(self.cases, (index, 3), overrides)}
+            current = {name for name, _ in select_cases(changed, (index, 3), overrides)}
+            self.assertEqual(original & common, current & common)
+
+    def test_overrides_preserve_slow_marker(self):
+        slow = SimpleNamespace(slow=True)
+        selected = select_cases([("group.slow", slow)], (2, 3), {"group.slow": 2})
+        self.assertEqual(selected, [("group.slow", slow)])
+        self.assertIs(selected[0][1], slow)
+
+    def test_benchmark_overrides_do_not_apply_to_tests_or_other_layouts(self):
+        cases = [("stress.hostile_provider", object()), ("stress.overlay_churn", object())]
+        for suite, count in (("bench", 3), ("bench", 4), ("test", 3)):
+            for index in range(count):
+                with self.subTest(suite=suite, count=count, index=index):
+                    observed = []
+
+                    def run(options):
+                        observed.extend(runner.load_cases())
+                        return 0
+
+                    runner = SimpleNamespace(load_cases=lambda: cases, main=run)
+                    with patch("scripts.ci_run.importlib.import_module", return_value=runner):
+                        self.assertEqual(main([suite, f"{index + 1}/{count}"]), 0)
+                    if suite == "bench" and count == 3:
+                        self.assertEqual(observed, cases if index == 2 else [])
+                    else:
+                        self.assertEqual(observed, select_cases(cases, (index, count)))
+
     def test_runner_receives_options_and_returns_status(self):
         discovered = lambda: self.cases
         observed = []
@@ -93,6 +148,15 @@ class RunnerTests(unittest.TestCase):
     def listed(self, *args, cwd=None):
         output = subprocess.check_output([sys.executable, *args], text=True, cwd=cwd)
         return [line.split()[0] for line in output.splitlines()]
+
+    def test_benchmark_three_way_balance_assignments(self):
+        root = Path(__file__).resolve().parent.parent
+        expected = ["stress.hostile_provider", "stress.overlay_churn"]
+        for index in range(3):
+            with self.subTest(index=index):
+                listed = self.listed("scripts/ci_run.py", "bench", f"{index + 1}/3", "--list", cwd=root)
+                actual = sorted(set(listed) & set(expected))
+                self.assertEqual(actual, expected if index == 2 else [])
 
     def test_real_runners_cover_each_case_once(self):
         root = Path(__file__).resolve().parent.parent
