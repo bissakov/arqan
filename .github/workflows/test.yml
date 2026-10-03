@@ -32,7 +32,7 @@ jobs:
 
   suite:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: always() && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false')
     runs-on: ubuntu-24.04
     env:
       # ccache returns byte-identical objects, so this buys build time and
@@ -41,8 +41,15 @@ jobs:
       # objects under build/highlight are a constant and always hit.
       CC: ccache cc
     steps:
+      - name: Check change detection
+        if: needs.changes.result != 'success' || needs.changes.outputs.code != 'true'
+        run: |
+          echo "change detection failed" >&2
+          exit 1
       - name: Check out source
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: Check CI sharding
+        run: python3 -m unittest tests.test_ci
       # Static, needs no toolchain, so it fails fast and before the build.
       - name: Check for loose globals
         run: make check-globals
@@ -55,8 +62,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
               libcurl4-openssl-dev ccache
-      # Restored after the checkout, so the cached objects are newer than the
-      # sources and make does not rebuild what ccache would have served.
       - name: Restore the compiler cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
