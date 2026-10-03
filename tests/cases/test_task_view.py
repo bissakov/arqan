@@ -255,7 +255,7 @@ def test_the_view_fills_in_while_the_delegate_is_still_working(ctx):
     s.wait_for(lambda _: len(ctx.mock.requests) >= 3, "the delegate's round")
     s.key("ctrl-o").sync()
 
-    s.wait_text("grep alpha")
+    s.wait_text('grep "alpha" in .')
     text = s.text()
     assert "in progress" in text, text
     assert "found it" not in text, text

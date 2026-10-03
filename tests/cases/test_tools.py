@@ -1166,6 +1166,127 @@ def test_a_second_turn_still_gets_its_tool_call(ctx):
     assert tools == ["first file\n", "second file\n"], tools
 
 
+def search_header_colours(s, header):
+    row = s.screen.find_row(header)
+    assert row >= 0, s.text()
+    line = s.row(row)
+    separator = line.index(" in ")
+    columns = (line.index(header) + 3, line.index('"') + 1,
+               separator + 1, separator + 4)
+    return tuple(s.screen.attr_at(row, col).fg for col in columns)
+
+
+def test_search_headers_name_the_root(ctx):
+    ctx.write_file("src/main.c", "needle in source\n")
+    ctx.scenario(
+        'tool=find:{"name":"*.c","path":"src"},'
+        'tool=grep:{"pattern":"needle","path":"src/main.c"},'
+        'tool_rounds=1,final_text=searched'
+    )
+    s = ctx.spawn(rows=32)
+    s.submit("search the source")
+    s.wait_text("searched")
+    s.wait_turn_done()
+
+    headers = ('\u25c6  find "*.c" in src', '\u25c6  grep "needle" in src/main.c')
+    for header in headers:
+        assert header in s.text(), s.text()
+        assert search_header_colours(s, header) == (253, 180, 245, 81)
+    assert ctx.mock.tool_results() == ["src/main.c\n",
+                                       "src/main.c:1: needle in source\n"]
+
+    s.settings_toggle("Verbose tool output")
+    for header in headers:
+        assert header in s.text(), s.text()
+        assert search_header_colours(s, header) == (253, 180, 245, 81)
+
+
+def test_search_headers_name_the_default_root(ctx):
+    ctx.write_file("notes.txt", "needle at root\n")
+    ctx.scenario(
+        'tool=find:{"name":"*.txt"},'
+        'tool=grep:{"pattern":"needle","path":""},'
+        'tool_rounds=1,final_text=searched'
+    )
+    s = ctx.spawn(rows=32)
+    s.submit("search the project")
+    s.wait_text("searched")
+    s.wait_turn_done()
+
+    text = s.text()
+    assert '\u25c6  find "*.txt" in .' in text, text
+    assert '\u25c6  grep "needle" in .' in text, text
+
+
+def test_search_headers_use_the_light_theme_colours(ctx):
+    ctx.write_config('theme = "light"\n')
+    ctx.write_file("src/main.c", "needle\n")
+    ctx.scenario(
+        'tool=find:{"name":"*.c","path":"src"},'
+        'tool=grep:{"pattern":"needle","path":"src"},'
+        'tool_rounds=1,final_text=searched'
+    )
+    s = ctx.spawn(rows=32)
+    s.submit("search the source")
+    s.wait_text("searched")
+    s.wait_turn_done()
+
+    for header in ('\u25c6  find "*.c" in src', '\u25c6  grep "needle" in src'):
+        assert search_header_colours(s, header) == (236, 58, 241, 24)
+
+
+def test_search_headers_keep_quotes_without_colour(ctx):
+    ctx.write_file("my source/my notes.txt", "needle in source\n")
+    ctx.scenario(
+        'tool=find:{"name":"my *.txt","path":"my source"},'
+        'tool=grep:{"pattern":"needle in source","path":"my source"},'
+        'tool_rounds=1,final_text=searched'
+    )
+    s = ctx.spawn(rows=32, NO_COLOR="1")
+    s.submit("search the source")
+    s.wait_text("searched")
+    s.wait_turn_done()
+
+    for header in ('\u25c6  find "my *.txt" in my source',
+                   '\u25c6  grep "needle in source" in my source'):
+        assert header in s.text(), s.text()
+        row = s.screen.find_row(header)
+        assert all(s.screen.attr_at(row, col).fg is None
+                   for col in range(s.term.cols))
+
+
+def test_search_headers_keep_the_root_when_the_query_is_clipped(ctx):
+    query = "x" * 135
+    ctx.write_file("src/main.c", "source\n")
+    ctx.scenario(f'tool=find:{json.dumps({"name": query, "path": "src"})},'
+                 'final_text=searched')
+    s = ctx.spawn(cols=180, rows=32)
+    s.submit("search the source")
+    s.wait_text("searched")
+    s.wait_turn_done()
+
+    assert f'\u25c6  find "{query[:120]} ..." in src' in s.text(), s.text()
+    click(s, "\u25be show in full")
+    s.wait_text("\u25b4 show less")
+    assert f'\u25c6  find "{query}" in src' in s.text(), s.text()
+
+
+def test_search_headers_offer_a_clipped_root_in_full(ctx):
+    root = "search-root-" + "x" * 120
+    ctx.write_file(f"{root}/notes.txt", "needle\n")
+    ctx.scenario(f'tool=grep:{json.dumps({"pattern": "needle", "path": root})},'
+                 'final_text=searched')
+    s = ctx.spawn(cols=180, rows=32)
+    s.submit("search the directory")
+    s.wait_text("searched")
+    s.wait_turn_done()
+
+    assert f'\u25c6  grep "needle" in {root[:120]} ...' in s.text(), s.text()
+    click(s, "\u25be show in full")
+    s.wait_text("\u25b4 show less")
+    assert f'\u25c6  grep "needle" in {root}' in s.text(), s.text()
+
+
 def test_find_respects_ignore_files_and_the_ignored_files_setting(ctx):
     """Tool walks and the @ picker share the Ignored files preference."""
     ctx.write_file(".gitignore", "__pycache__/\n*.log\n")

@@ -161,7 +161,7 @@ def test_a_search_reads_as_what_it_looked_for(ctx):
     s.wait_turn_done()
 
     text = s.text()
-    assert "\u25c6  grep alpha" in text, text
+    assert '\u25c6  grep "alpha" in src' in text, text
     assert "{" not in text, text
     assert "src/one.c:1: int alpha(void);" in text, text
 

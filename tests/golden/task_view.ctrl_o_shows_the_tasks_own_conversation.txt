@@ -9,7 +9,7 @@
 |▌ find the cat
 |▌
 |
-|  ◆  grep alpha
+|  ◆  grep "alpha" in .
 |  └─ 2 matches
 |     notes.txt:1: alpha is a letter
 |     src/one.c:1: int alpha(void);

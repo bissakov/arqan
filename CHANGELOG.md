@@ -57,6 +57,10 @@
 
 ### Fixed
 
+- `find` and `grep` headings quote the glob or pattern and show the search
+  path, including `.` when no path is given. The pattern and path use
+  different theme colours.
+
 - Empty `grep` results show only `0 matches`, without a second `no matches`
   line. The model still receives the full tool result.
 

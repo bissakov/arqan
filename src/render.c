@@ -66,6 +66,14 @@ static void write_clipped(Str s, size_t max, Sink sink) {
     if (head.n < s.n) sink(STR(" ..."));
 }
 
+static void write_search_pattern(Str s) {
+    tui_write_styled(s, TUI_MONO);
+}
+
+static void write_search_path(Str s) {
+    tui_write_styled(s, TUI_HEADING);
+}
+
 
 static void block_begin(u32 id, b8 expanded) {
     tui_pin(id);
@@ -324,6 +332,8 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
                     ? json_str(j, STR("query"))
                     : (Str){0};
     Str target = query.n ? query : path.n ? path : cmd;
+    b8 search =
+        query.n && (str_eq(name, STR("find")) || str_eq(name, STR("grep")));
 
     char job_buf[40];
     if (str_eq(name, STR("job"))) {
@@ -391,9 +401,14 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
 
     tui_block();
     tui_write_tool(STR("\u25c6  "));
-    tui_write_tool(name);
+    if (search)
+        tui_write_text(name);
+    else
+        tui_write_tool(name);
+    Sink target_sink = search ? write_search_pattern : tui_write_tool;
     if (target.n) {
         tui_write_tool(STR(" "));
+        if (search) target_sink(STR("\""));
         size_t bytes = target_cmd ? R_CMD_BYTES : R_TARGET_BYTES;
         g_render.block.head_more = target.n > bytes;
         Str shown = clip(target, bytes);
@@ -402,9 +417,16 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
             tui_write_source(shown);
             add_line_syntax(&syntax, syntax_source, 0, shown, at);
         } else {
-            tui_write_tool(shown);
+            target_sink(shown);
         }
-        if (shown.n < target.n) tui_write_tool(STR(" ..."));
+        if (shown.n < target.n) target_sink(STR(" ..."));
+        if (search) target_sink(STR("\""));
+    }
+    if (search) {
+        Str root = path.n ? path : STR(".");
+        tui_write_dim(STR(" in "));
+        g_render.block.head_more |= root.n > R_TARGET_BYTES;
+        write_clipped(root, R_TARGET_BYTES, write_search_path);
     }
     if (str_eq(name, STR("read")) || str_eq(name, STR("page_fetch")))
         write_read_range(j);
