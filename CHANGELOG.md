@@ -29,6 +29,9 @@
 
 ### Changed
 
+- Unexpected cache miss warnings no longer call the miss a bug or link to
+  the project's issue tracker.
+
 - The preparing-tool-call spinner shows how many bytes of tool arguments
   have arrived. The count updates while the provider streams, without
   restarting the timers.

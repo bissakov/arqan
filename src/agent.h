@@ -142,7 +142,6 @@ typedef bool b8;
 #define AGENT_CREDENTIALS_NAME STR("credentials.toml")
 
 #define AGENT_PROJECT_DIR       STR("." AGENT_NAME)
-#define AGENT_ISSUES_URL        "github.com/bissakov/" AGENT_NAME "/issues"
 #define AGENT_MAX_PROMPT_FILE   (1u << 16)
 #define AGENT_MAX_AGENTS_FILES  8
 #define AGENT_MAX_SESSIONS      64
