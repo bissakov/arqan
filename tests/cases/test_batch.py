@@ -95,6 +95,19 @@ def test_batch_grep_empty_result_is_summarised_once(ctx):
     assert out["steps"][0]["result"] == "no matches\n", out
 
 
+def test_batch_search_header_names_a_missing_root(ctx):
+    s = run_batch(ctx, [step("find", name="*", path=".tools"),
+                        step("grep", pattern="needle")])
+
+    text = s.text()
+    assert '\u2502  \u25c6  find "*" in .tools' in text, text
+    assert "error: .tools does not exist" in text, text
+    out = result(ctx)
+    assert out["status"] == "stopped", out
+    assert out["attempted"] == 1 and out["skipped"] == 1, out
+    assert out["steps"][0]["result"] == "ERROR: .tools does not exist", out
+
+
 def test_batch_children_have_a_rail_and_regular_tools_do_not(ctx):
     ctx.write_file("first.txt", "first output\n")
     ctx.write_file("second.txt", "second output\n")
