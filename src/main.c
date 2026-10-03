@@ -363,9 +363,9 @@ static b8 cache_guard_observe(CacheGuard *g, size_t prompt_tokens,
     b8 stop = mode == CACHE_GUARD_STOP && !g_turn.one_shot;
     n = snprintf(row, sizeof row,
                  "[unexpected cache miss: %.*s expected, %.*s read, %.*s "
-                 "rewritten\n%sthis is a bug: %s]\n",
+                 "rewritten%s]\n",
                  (i32)e.n, e.p, (i32)r.n, r.p, (i32)w.n, w.p,
-                 stop ? "stopped. " : "", AGENT_ISSUES_URL);
+                 stop ? "\nstopped." : "");
     if (n > 0 && !quiet) say_cache("cache", (Str){row, (size_t)n}, true);
     return stop;
 }

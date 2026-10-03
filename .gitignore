@@ -3,6 +3,7 @@ bin/
 dist/
 docs/
 .pi/
+.tools/clang-format-22.1.8/
 __pycache__/
 bench-baseline.json
 bench-*.json

@@ -83,7 +83,7 @@ VENDOR_CFLAGS ?= -std=c17 -Os -fno-strict-aliasing -pipe -flto=auto -w \
 
 PYTHON  ?= python3
 
-CLANG_FORMAT ?= clang-format
+CLANG_FORMAT ?= $(or $(wildcard .tools/clang-format-22.1.8/bin/clang-format),clang-format)
 CLANG_FORMAT_VERSION := 22
 FMT_SRC := $(wildcard src/*.c src/*.h highlight/*.c highlight/*.h \
                       tests/unit/*.c tests/unit/*.h tests/fuzz/*.c)

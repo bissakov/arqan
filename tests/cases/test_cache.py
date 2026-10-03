@@ -334,8 +334,8 @@ def test_a_breakpoint_parks_below_the_elision_boundary(ctx):
 
 
 def test_an_unexplained_miss_stops_the_tool_loop(ctx):
-    """Nothing declared a rewrite, so the rebuild is a defect: say where to
-    report it and stop rather than pay for it every round."""
+    """An unexplained miss reports the counts without blaming the agent,
+    and stops rather than paying for a rebuild every round."""
     ctx.scenario("text=hi,final_text=hi,usage=1000/10,cache_read=1000")
     s = ctx.spawn()
     s.submit("one")
@@ -349,7 +349,10 @@ def test_an_unexplained_miss_stops_the_tool_loop(ctx):
     s.wait_text("unexpected cache miss")
     s.wait_turn_done()
 
-    assert "arqan/issues" in s.text(), s.text()
+    assert "1,000 expected, 0 read, 1,000 rewritten" in s.text(), s.text()
+    assert "stopped." in s.text(), s.text()
+    assert "this is a bug" not in s.text(), s.text()
+    assert "arqan/issues" not in s.text(), s.text()
     assert len(ctx.mock.requests) - sent == 1, (
         "the loop kept asking after the miss")
     assert "done" not in s.text(), s.text()
@@ -415,14 +418,16 @@ def missed(ctx, s):
 
 
 def test_warn_reports_the_miss_without_stopping(ctx):
-    """A session with no time to investigate still wants to be told: the row
-    is the same one, minus the word that stopped the turn."""
+    """Warn reports the counts without blaming the agent or stopping."""
     s = ctx.spawn(ARQAN_CACHE_GUARD="warn")
     sent = missed(ctx, s)
     s.wait_text("unexpected cache miss")
     s.wait_text("done")
     s.wait_turn_done()
 
+    assert "1,000 expected, 0 read, 1,000 rewritten" in s.text(), s.text()
+    assert "this is a bug" not in s.text(), s.text()
+    assert "arqan/issues" not in s.text(), s.text()
     assert "stopped." not in s.text(), s.text()
     assert len(ctx.mock.requests) - sent > 1, (
         "the loop stopped at the miss")
