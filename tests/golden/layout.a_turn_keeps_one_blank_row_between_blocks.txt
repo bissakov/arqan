@@ -11,7 +11,7 @@
 |  └─ 1 line · <t>
 |     written down
 |
-|  ◆  find notes
+|  ◆  find "notes" in .
 |  └─ no files · <t>
 |
 |  that is all
