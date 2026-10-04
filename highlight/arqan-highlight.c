@@ -14,7 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define YHL_LANG_COUNT 12u
+#define YHL_LANG_COUNT 13u
 #define YHL_WORK_MAX   (8u << 20)
 
 typedef const TSLanguage *(*LanguageFn)(void);
@@ -31,6 +31,7 @@ const TSLanguage *tree_sitter_bash(void);
 const TSLanguage *tree_sitter_json(void);
 const TSLanguage *tree_sitter_toml(void);
 const TSLanguage *tree_sitter_yaml(void);
+const TSLanguage *tree_sitter_c_sharp(void);
 
 typedef struct {
     const char *name;
@@ -57,6 +58,7 @@ static Language languages[YHL_LANG_COUNT] = {
     {"json", "json", ".json", tree_sitter_json, NULL, 0},
     {"toml", "toml", ".toml cargo.lock", tree_sitter_toml, NULL, 0},
     {"yaml", "yaml yml", ".yaml .yml", tree_sitter_yaml, NULL, 0},
+    {"csharp", "csharp cs c#", ".cs .csx", tree_sitter_c_sharp, NULL, 0},
 };
 
 typedef struct {

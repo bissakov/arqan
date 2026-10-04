@@ -696,10 +696,10 @@ static size_t grep_batch(Str result, char *out, size_t cap) {
 
 static b8 source_filename(Str path) {
     static const char *const suffix[] = {
-        ".c",    ".h",      ".cc",   ".cpp",  ".cxx",  ".hh",  ".hpp",
-        ".hxx",  ".rs",     ".go",   ".py",   ".pyw",  ".js",  ".jsx",
-        ".mjs",  ".cjs",    ".ts",   ".mts",  ".cts",  ".tsx", ".sh",
-        ".bash", ".bashrc", ".json", ".toml", ".yaml", ".yml",
+        ".c",    ".h",    ".cc",  ".cpp", ".cxx", ".hh",   ".hpp",    ".hxx",
+        ".rs",   ".go",   ".py",  ".pyw", ".js",  ".jsx",  ".mjs",    ".cjs",
+        ".ts",   ".mts",  ".cts", ".tsx", ".sh",  ".bash", ".bashrc", ".json",
+        ".toml", ".yaml", ".yml", ".cs",  ".csx",
     };
     if (path.n >= STR("Cargo.lock").n
         && !memcmp(path.p + path.n - STR("Cargo.lock").n, STR("Cargo.lock").p,

@@ -52,7 +52,7 @@ chmod 700 "$WORK/tree-sitter"
 
 # Generate every parser at ABI 15. C++ is pinned to an already generated ABI
 # 15 commit because its grammar imports C as a JavaScript module.
-for role in c rust go python javascript bash json toml yaml; do
+for role in c rust go python javascript bash json toml yaml csharp; do
     (cd "$WORK/src/$role" && "$WORK/tree-sitter" generate --abi=15 \
         --js-runtime native)
 done
@@ -103,8 +103,10 @@ copy_language json json .
 copy_language toml toml .
 copy_language yaml yaml .
 cp -a "$WORK/src/yaml/src/schema.core.c" "$OUT/grammars/yaml/schema.core.c"
+copy_language csharp csharp .
 
-for role in c cpp rust go python javascript typescript bash json toml yaml; do
+for role in c cpp rust go python javascript typescript bash json toml yaml \
+    csharp; do
     cp -a "$WORK/src/$role/LICENSE" "$OUT/licenses/$role.txt"
 done
 
