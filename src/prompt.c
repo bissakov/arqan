@@ -15,6 +15,12 @@ static const char PROMPT_BUILTIN[] =
     "Guidelines:\n"
     "- Carry a task through to the end: keep going until it is done or "
     "blocked on something only the user can resolve\n"
+    "- Stop and report instead of trying again when the same approach has "
+    "failed three times, when the work has grown well beyond what the user "
+    "asked, or when you are no longer sure the current path reaches the "
+    "goal. The report says what is done and verified, what is done but not "
+    "verified, what failed and why, and the decision the user needs to "
+    "make.{stop_guidance}\n"
     "- Make the change that was asked for; do not refactor, reformat or "
     "rename beyond it, and do not undo changes you did not make\n"
     "- Do not commit, push, reset, or delete files or branches unless the "
@@ -68,18 +74,26 @@ static const char PROMPT_COMPACT_BUILTIN[] =
     "\n"
     "## Goal\n"
     "[What is the user trying to accomplish? Can be multiple items if the "
-    "session covers different tasks. End with the user's latest request, "
-    "quoted exactly.]\n"
+    "session covers different tasks.]\n"
     "\n"
     "## Constraints & Preferences\n"
     "- [Any constraints, preferences, or requirements the user stated]\n"
     "\n"
     "## Progress\n"
-    "### Done\n"
-    "- [x] [Completed tasks and changes, naming the files changed]\n"
+    "### Done and verified\n"
+    "- [x] [Completed changes, naming the files changed and the build or "
+    "test that passed after the change]\n"
+    "\n"
+    "### Done, not verified\n"
+    "- [x] [Completed changes that no build or test has confirmed since, "
+    "naming the files changed]\n"
     "\n"
     "### In Progress\n"
     "- [ ] [Current work, and exactly where it stopped]\n"
+    "\n"
+    "### Failed attempts\n"
+    "- [What was tried, how it failed with the exact error, and how many "
+    "times]\n"
     "\n"
     "### Blocked\n"
     "- [Issues preventing progress, with the exact error text]\n"
@@ -95,10 +109,19 @@ static const char PROMPT_COMPACT_BUILTIN[] =
     "\n"
     "Always write the Goal and Constraints & Preferences sections. When the "
     "user stated no constraints, write \"None stated.\" under Constraints & "
-    "Preferences. Every other section and subsection is optional: write one "
+    "Preferences. Write Failed attempts whenever the conversation shows a "
+    "failure, and carry forward the failed attempts an earlier checkpoint "
+    "records. Every other section and subsection is optional: write one "
     "only when this session has something to record under it, and otherwise "
     "leave it out entirely, heading included. Never write an optional "
     "heading with a placeholder, \"(none)\" or \"n/a\" under it.\n"
+    "\n"
+    "Record what the conversation shows, not what was intended. Do not call "
+    "work done unless the conversation shows it working.\n"
+    "\n"
+    "The harness adds the user's requests, in their own words, and the facts "
+    "of the run after your summary. Do not quote the requests or write a "
+    "User requests or Run section yourself.\n"
     "\n"
     "If the conversation starts with an earlier context checkpoint, merge "
     "it into this one: carry forward what still holds, and do not describe "
@@ -294,6 +317,11 @@ static b8 prompt_offers(const ToolRegistry *tools, Str name, AgentMode mode) {
     return id != TOOL_NONE && tools_available(tools, id, mode);
 }
 
+static void prompt_stop(Buf *b, const ToolRegistry *tools, AgentMode mode) {
+    if (mode == MODE_BUILD && prompt_offers(tools, STR("ask_user"), mode))
+        buf_puts(b, STR(" Put that decision to the user with ask_user."));
+}
+
 static void prompt_tool_guidance(Buf *b, const ToolRegistry *tools,
                                  AgentMode mode) {
     if (!tools) return;
@@ -408,6 +436,8 @@ static void prompt_expand(Buf *b, Str tmpl, const ToolRegistry *tools,
             buf_puts(b, cwd);
         else if (str_eq(name, STR("ask_user_guidance")))
             prompt_ask_user(b, tools, mode);
+        else if (str_eq(name, STR("stop_guidance")))
+            prompt_stop(b, tools, mode);
         else if (str_eq(name, STR("todo_guidance")))
             prompt_todo(b, tools, mode);
         else if (str_eq(name, STR("tool_guidance")))

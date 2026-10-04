@@ -892,7 +892,7 @@ static void render_tool_result_nested(Str name, Str args, Str result,
         && render_batch_result(args, result, scratch, id, expanded, ms))
         return;
     block_begin(id, expanded);
-    result = todo_note_strip(result);
+    result = todo_note_strip(progress_note_strip(result));
     b8 dim_edge = nested || str_eq(name, STR("batch"));
     if (str_eq(name, STR("batch")) && str_starts(result, STR("batch ")))
         tui_write_dim(STR("\u2502\n"));
@@ -1141,7 +1141,7 @@ Str render_result_text(Str name, Str args, Str result, Arena *scratch,
                        size_t *shown, YhlResult *syntax) {
     if (shown) *shown = R_RESULT_LINES;
     if (syntax) syntax->n = 0;
-    result = todo_note_strip(result);
+    result = todo_note_strip(progress_note_strip(result));
     if (str_starts(result, STR("ERROR: "))) return str_drop(result, 7);
     if (str_eq(name, STR("batch")) && scratch && str_starts(result, STR("{")))
         return render_batch_text(args, result, false, scratch);

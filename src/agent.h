@@ -1502,6 +1502,48 @@ void todo_telemetry(TelEvent *e);
  * conversation change. Borrows `scratch` and restores it. */
 void todo_sync(const Conv *c, Arena *scratch);
 
+/* ---- run ledger ----------------------------------------------------------
+ * A run is the work since the user's last message. The ledger counts its
+ * tool calls, failures, compactions and the failing bash commands, and
+ * reports them to the model in a note appended to a tool result and in the
+ * sections a checkpoint carries that the model does not write. Nothing here
+ * goes into the system prompt, so the prompt cache stays valid.
+ */
+#define AGENT_PROGRESS_CALLS            40
+#define AGENT_PROGRESS_REPEAT_FAILS     3
+#define AGENT_PROGRESS_FAIL_SLOTS       16
+#define AGENT_PROGRESS_CMD_SHOWN        60
+#define AGENT_PROGRESS_NOTE_BYTES       400
+#define AGENT_CHECKPOINT_REQUESTS_BYTES 8192
+
+/* INVARIANT: every turn calls this when the user's message is added, and it
+ * assigns the whole ledger, so a new field resets with the run. */
+void progress_run_begin(i64 sent_at);
+/* Counts one tool call. A call failed when `ok` is false or its command
+ * exited nonzero; a failed bash call also counts its command in a fixed
+ * table. Borrows `scratch` and restores it. */
+void progress_record(Str tool, Str args, b8 ok, i32 exit_code, Arena *scratch);
+void progress_todo_done_count(size_t done, size_t total);
+void progress_compacted(void);
+/* Appends one bracketed note when one is due: every AGENT_PROGRESS_CALLS
+ * calls, on the first result after a compaction, and each time one command
+ * has failed another AGENT_PROGRESS_REPEAT_FAILS times. INVARIANT: append it
+ * after todo_note_stale, so the transcript strips this note first. */
+void progress_note(Buf *out);
+Str progress_note_strip(Str result);
+void progress_telemetry(TelEvent *e);
+/* The run line a checkpoint carries, naming its place in the chain. */
+void progress_line(Buf *out, u32 compaction);
+/* Reads back the quoted requests under the last User requests heading of an
+ * earlier checkpoint. Returns how many there are and fills at most `cap`. */
+size_t progress_requests_parse(Str checkpoint, Str *out, size_t cap,
+                               size_t *dropped);
+/* Appends the User requests and Run sections: the requests the earlier
+ * checkpoint `prior` carried, then `fresh` quoted, newest kept whole within
+ * AGENT_CHECKPOINT_REQUESTS_BYTES. */
+b8 progress_checkpoint(Buf *b, Str prior, const Str *fresh, size_t n_fresh,
+                       Arena *scratch);
+
 /* ---- sessions ------------------------------------------------------------
  * The conversation as it happened, one JSON object per line under
  * $XDG_DATA_HOME/arqan/sessions/<cwd>/<timestamp>.jsonl, keyed by the
