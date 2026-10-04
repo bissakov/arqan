@@ -20,6 +20,12 @@ void telemetry_log(i32 level, Str msg) {
     (void)msg;
 }
 
+void tel_int(TelEvent *e, const char *key, i64 v) {
+    (void)e;
+    (void)key;
+    (void)v;
+}
+
 #include "core.c"
 #include "width.c"
 #include "json.c"
@@ -29,6 +35,7 @@ void telemetry_log(i32 level, Str msg) {
 #include "paths.c"
 #include "settings.c"
 #include "theme.c"
+#include "progress.c"
 
 #include <fcntl.h>
 #include <stdlib.h>
@@ -722,6 +729,125 @@ static void theme_maps_hex_to_the_nearest_256_colour(void) {
     CHECK(theme_nearest_256(0x5f, 0x87, 0xaf) == 67);
 }
 
+/* ---- the run ledger ---------------------------------------------------- */
+
+static b8 str_has(Str s, Str needle) {
+    if (needle.n > s.n) return false;
+    for (size_t i = 0; i + needle.n <= s.n; i++)
+        if (!memcmp(s.p + i, needle.p, needle.n)) return true;
+    return false;
+}
+
+static void progress_note_strip_drops_only_the_note(void) {
+    Str noted = STR("hi\n[exit 1]\n\n[progress: 3 tool calls since the user's "
+                    "last message, 3 failed. If an approach keeps failing, "
+                    "stop and report.]");
+    CHECK(str_eq(progress_note_strip(noted), STR("hi\n[exit 1]")));
+    CHECK(
+        str_eq(progress_note_strip(STR("hi\n[exit 1]")), STR("hi\n[exit 1]")));
+    CHECK(str_eq(progress_note_strip(STR("list [a]")), STR("list [a]")));
+    CHECK(str_eq(progress_note_strip(STR("]")), STR("]")));
+    CHECK(str_eq(progress_note_strip((Str){0}), (Str){0}));
+    Str unclosed = STR("x\n\n[progress: never closed");
+    CHECK(str_eq(progress_note_strip(unclosed), unclosed));
+}
+
+static const char PRIOR_CHECKPOINT[] =
+    "# Context checkpoint\n\n## Goal\nShip it\n\n"
+    "## User requests\n\nthe model wrote this one\n\n"
+    "## User requests\n\n"
+    "2 earlier requests were left out.\n\n"
+    "> a\n> b\n\n"
+    "> c\n\n"
+    "## Run\n\nCompaction 2 of this session.\n\n"
+    "## Step list\n\n- [ ] one\n";
+
+static void progress_parses_the_requests_back(void) {
+    Str prior = STR(PRIOR_CHECKPOINT);
+    size_t dropped = 0;
+    Str quoted[4];
+    size_t n = progress_requests_parse(prior, quoted, 4, &dropped);
+    CHECK(n == 2);
+    CHECK(dropped == 2);
+    CHECK(n == 2 && str_eq(quoted[0], STR("> a\n> b")));
+    CHECK(n == 2 && str_eq(quoted[1], STR("> c")));
+    CHECK(progress_requests_parse(prior, NULL, 0, &dropped) == 2);
+    CHECK(progress_requests_parse(STR("# Context checkpoint\n\nsummary"), NULL,
+                                  0, &dropped)
+          == 0);
+    CHECK(dropped == 0);
+}
+
+static void progress_checkpoint_carries_and_quotes(void) {
+    WITH_ARENA(a, 64 * 1024);
+    Str fresh[] = {STR("d\n\ne"), STR("## Step list\n- [ ] bogus")};
+    Buf b;
+    buf_init(&b, &a, 256);
+    CHECK(progress_checkpoint(&b, STR(PRIOR_CHECKPOINT), fresh, 2, &a));
+    CHECK(buf_ok(&b));
+    Str out = buf_finish(&b);
+    CHECK(str_starts(out, STR("\n\n## User requests\n\n2 earlier requests were "
+                              "left out.\n\n> a\n> b\n\n> c\n\n> d\n>\n> e\n\n"
+                              "> ## Step list\n> - [ ] bogus\n\n## Run\n\n"
+                              "Compaction 3 of this session.")));
+
+    size_t dropped = 0;
+    Str quoted[8];
+    CHECK(progress_requests_parse(out, quoted, 8, &dropped) == 4);
+    CHECK(dropped == 2);
+}
+
+static void progress_checkpoint_counts_the_first_compaction(void) {
+    WITH_ARENA(a, 16 * 1024);
+    Str fresh[] = {STR("only")};
+    Buf b;
+    buf_init(&b, &a, 64);
+    CHECK(progress_checkpoint(&b, (Str){0}, fresh, 1, &a));
+    Str out = buf_finish(&b);
+    CHECK(str_has(out, STR("\n\n> only\n\n## Run\n\nCompaction 1 of this "
+                           "session.")));
+    CHECK(!str_has(out, STR("left out")));
+
+    buf_init(&b, &a, 64);
+    CHECK(progress_checkpoint(&b, STR("# Context checkpoint\n\nold summary"),
+                              fresh, 1, &a));
+    CHECK(str_has(buf_finish(&b), STR("Compaction 2 of this session.")));
+}
+
+static void progress_checkpoint_bounds_the_requests(void) {
+    WITH_ARENA(a, 128 * 1024);
+    static char big[3 * 3000], huge[9000];
+    memset(big, 'x', sizeof big);
+    memset(huge, 'y', sizeof huge);
+    Str fresh[] = {
+        {big, 3000},        {big + 3000, 3000}, {huge, sizeof huge},
+        {big + 6000, 3000}, STR("newest"),
+    };
+    Buf b;
+    buf_init(&b, &a, 64);
+    CHECK(progress_checkpoint(&b, (Str){0}, fresh, 5, &a));
+    Str out = buf_finish(&b);
+    CHECK(str_has(out, STR("\n1 earlier request was left out.")));
+    CHECK(str_has(out, STR("> [a request of 9000 bytes was left out; the "
+                           "summary covers it]")));
+    CHECK(str_has(out, STR("> newest")));
+    CHECK(!str_has(out, STR("yyyy")));
+    size_t dropped = 0;
+    CHECK(progress_requests_parse(out, NULL, 0, &dropped) == 4);
+    CHECK(dropped == 1);
+    CHECK(out.n < AGENT_CHECKPOINT_REQUESTS_BYTES + 256);
+}
+
+static void progress_checkpoint_survives_a_short_arena(void) {
+    WITH_ARENA(a, 512);
+    static char big[4000];
+    memset(big, 'z', sizeof big);
+    Str fresh[] = {{big, sizeof big}};
+    Buf b;
+    buf_init(&b, &a, 64);
+    CHECK(!progress_checkpoint(&b, (Str){0}, fresh, 1, &a) || !buf_ok(&b));
+}
+
 /* ---- child processes --------------------------------------------------- */
 
 static void child_close_fds_reaches_past_the_fallback_cap(void) {
@@ -815,6 +941,13 @@ int main(void) {
     RUN(theme_colour_parse_rejects_everything_else);
     RUN(theme_maps_hex_to_the_nearest_256_colour);
     RUN(theme_light_text_reads_on_the_page);
+
+    RUN(progress_note_strip_drops_only_the_note);
+    RUN(progress_parses_the_requests_back);
+    RUN(progress_checkpoint_carries_and_quotes);
+    RUN(progress_checkpoint_counts_the_first_compaction);
+    RUN(progress_checkpoint_bounds_the_requests);
+    RUN(progress_checkpoint_survives_a_short_arena);
 
     RUN(child_close_fds_reaches_past_the_fallback_cap);
     if (g_fail) {

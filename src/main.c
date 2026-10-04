@@ -28,6 +28,7 @@
 #include "batch.c"
 #include "mcp.c"
 #include "todo.c"
+#include "progress.c"
 #include "prompt.c"
 #include "provider.c"
 #include "subagent.c"
@@ -1712,6 +1713,10 @@ static ToolCallResult run_regular_tool(Agent *ag, size_t call, size_t tool,
                       ? conv->media->n - run.media_off
                       : 0;
     todo_note_stale(name, &out);
+    progress_record(name, args, run.ok, run.execution.exit_code, ag->scratch);
+    const TodoList *todos = todo_current();
+    progress_todo_done_count(todo_done(todos), todos->n);
+    progress_note(&out);
     run.text = buf_ok(&out) ? buf_finish(&out) : STR("ERROR: out of memory");
     if (!buf_ok(&out)) run.ok = false;
     run.ms = elapsed_ms(started);
@@ -5220,21 +5225,36 @@ static CompactOutcome compact_summarize(Agent *ag, size_t upto, Str *out,
                                                     : COMPACT_SUM_OK;
 
     if (outcome == COMPACT_SUM_OK) {
+        const Conv *conv = ag->conv;
+        Str prior = {0};
+        size_t n_fresh = 0;
+        Str *fresh = arena_new(ag->scratch, Str, upto);
+        for (size_t i = 1; fresh && i < upto && i < conv->n; i++) {
+            if (conv->role[i] != M_USER || conv_is_shell(conv, i)) continue;
+            if (str_starts(conv->text[i], STR("# Context checkpoint")))
+                prior = conv->text[i];
+            else
+                fresh[n_fresh++] = conv->text[i];
+        }
         Buf b;
         const TodoList *todos = todo_current();
         buf_init(&b, ag->scratch,
-                 summary.n + 256 + todos->n * (AGENT_MAX_TODO_TEXT + 24));
+                 summary.n + 1024 + AGENT_CHECKPOINT_REQUESTS_BYTES
+                     + todos->n * (AGENT_MAX_TODO_TEXT + 24));
         buf_puts(&b, STR("# Context checkpoint\n\nThe conversation before this "
                          "point was compacted into the summary below. Continue "
                          "the work from it.\n\n"));
         buf_puts(&b, summary);
+        b8 sections =
+            fresh
+            && progress_checkpoint(&b, prior, fresh, n_fresh, ag->scratch);
         if (todos->n) {
             buf_puts(&b, STR("\n\n## Step list\n\nThe todo call that carried "
                              "this list was compacted away. Send the whole "
                              "list again with the next update.\n\n"));
             todo_write_md(&b, todos);
         }
-        *out = buf_ok(&b) ? buf_finish(&b) : (Str){0};
+        *out = sections && buf_ok(&b) ? buf_finish(&b) : (Str){0};
         if (!out->n) outcome = COMPACT_SUM_NOMEM;
     }
     persist->off = mark;
@@ -5286,6 +5306,7 @@ static void compact_session(Agent *ag) {
             tui_notice(STR("out of memory keeping the summary"));
             return;
         }
+        progress_compacted();
         session_begin(ag->sess);
         tui_clear();
         tview_paint(ag, 0, true);
@@ -5317,6 +5338,7 @@ static void compact_session(Agent *ag) {
         say_conv_full();
         return;
     }
+    progress_compacted();
     conv_set_checkpoint(conv, conv->n - 1);
     render_user_message(conv, conv->n - 1);
     if (!save_session(ag)) {
@@ -5364,6 +5386,7 @@ static b8 compact_auto(Agent *ag, size_t keep, b8 *interrupted) {
                            "continues whole"));
         return false;
     }
+    progress_compacted();
     cache_guard_cause(&g_cache, CACHE_CAUSE_COMPACT, 0);
 
     char title[AGENT_MAX_TITLE + 1];
@@ -5637,6 +5660,7 @@ static b8 agent_turn(Agent *ag, Str text) {
     ag->compact_seen = false;
     ag->compact_short = false;
     todo_turn_begin();
+    progress_run_begin((i64)sent_at);
     if (ag->echo) {
         tui_scroll_to_bottom();
         render_user_message(conv, conv->n - 1);
@@ -5803,6 +5827,7 @@ static b8 agent_turn(Agent *ag, Str text) {
     tel_int(&te, "persist_used", (i64)arena_used(ag->persist));
     tel_int(&te, "scratch_used", (i64)arena_used(ag->scratch));
     todo_telemetry(&te);
+    progress_telemetry(&te);
     tel_send(&te);
 
     if (!ag->handoff.n && !tui_queued_pending()) {

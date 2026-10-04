@@ -46,6 +46,32 @@ def test_global_system_md_replaces_the_prompt(ctx):
     assert "expert coding assistant" not in content, content
 
 
+def test_builtin_prompt_says_when_to_stop_and_report(ctx):
+    """Carrying a task through has a limit, and the prompt names it."""
+    ctx.scenario("text=ok")
+    s = ctx.spawn(ARQAN_SYSTEM_PROMPT=None)
+    content = system_message(ctx, s)
+
+    carry = content.index("- Carry a task through to the end")
+    stop = content.index("- Stop and report instead of trying again when the "
+                         "same approach has failed three times")
+    assert carry < stop, content
+    assert "what is done and verified, what is done but not verified" \
+        in content, content
+    assert "Put that decision to the user with ask_user." in content, content
+
+
+def test_the_stop_rule_names_ask_user_only_when_it_is_offered(ctx):
+    """A one-shot run has no picker, so the rule ends without naming one."""
+    ctx.scenario("text=ok")
+    out = ctx.run_cli("-p", "hello", ARQAN_SYSTEM_PROMPT=None)
+    assert out.returncode == 0, out
+    content = ctx.mock.requests[-1]["messages"][0]["content"]
+
+    assert "the decision the user needs to make.\n" in content, content
+    assert "to the user with ask_user" not in content, content
+
+
 def test_builtin_prompt_guides_readable_sequential_batches(ctx):
     ctx.scenario("text=ok")
     s = ctx.spawn(ARQAN_SYSTEM_PROMPT=None)

@@ -31,7 +31,23 @@
   `c#`, and `.cs` and `.csx` files in read results, grep results and patch
   previews.
 
+- Long runs report their own progress to the model. Every 40 tool calls,
+  after a compaction, and when the same `bash` command fails three times, a
+  short note on a tool result tells the model how long the run has taken,
+  how many calls failed, how many steps are done, and which command keeps
+  failing. The note is not shown in the transcript.
+
 ### Changed
+
+- A context checkpoint keeps the user's requests word for word, in a
+  `User requests` section the model does not write, and carries them
+  forward through later compactions. A `Run` line counts the compactions.
+  The summary now separates verified work from unverified work and records
+  failed attempts.
+
+- The system prompt tells the model to stop and report when the same
+  approach has failed three times, when the work has grown well beyond the
+  request, or when it is no longer sure of the path.
 
 - Unexpected cache miss warnings no longer call the miss a bug or link to
   the project's issue tracker.
