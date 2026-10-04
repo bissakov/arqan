@@ -27,6 +27,10 @@
   the two light themes, all text has a contrast of at least 5:1 against the
   page.
 
+- C# syntax highlighting. It covers code fences marked `csharp`, `cs` or
+  `c#`, and `.cs` and `.csx` files in read results, grep results and patch
+  previews.
+
 ### Changed
 
 - Unexpected cache miss warnings no longer call the miss a bug or link to

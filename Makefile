@@ -70,9 +70,10 @@ UNIT_SRC := tests/unit/main.c
 UNIT_BIN := $(BINDIR)/arqan-unit
 HL_BIN  := $(BINDIR)/arqan-highlight
 HL_OWN  := $(BUILDDIR)/highlight/arqan-highlight.o $(BUILDDIR)/highlight/queries.o
-HL_LANG := c cpp rust go python javascript typescript tsx bash json toml yaml
+HL_LANG := c cpp rust go python javascript typescript tsx bash json toml yaml \
+           csharp
 HL_PARSE := $(addprefix $(BUILDDIR)/highlight/,$(addsuffix -parser.o,$(HL_LANG)))
-HL_SCAN_LANG := cpp rust python javascript typescript tsx bash toml yaml
+HL_SCAN_LANG := cpp rust python javascript typescript tsx bash toml yaml csharp
 HL_SCAN := $(addprefix $(BUILDDIR)/highlight/,$(addsuffix -scanner.o,$(HL_SCAN_LANG)))
 HL_OBJ  := $(HL_OWN) $(BUILDDIR)/highlight/tree-sitter.o $(HL_PARSE) $(HL_SCAN)
 HL_CPPFLAGS := -Isrc -Ihighlight -Ivendor/tree-sitter/include \

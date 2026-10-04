@@ -87,7 +87,7 @@ def test_helper_diagnostics_are_stable(ctx):
     assert listed.returncode == 0
     assert listed.stdout.splitlines() == [
         "c", "cpp", "rust", "go", "python", "javascript", "typescript",
-        "tsx", "bash", "json", "toml", "yaml",
+        "tsx", "bash", "json", "toml", "yaml", "csharp",
     ]
 
 
@@ -131,6 +131,7 @@ def test_every_bundled_language_has_a_capture(ctx):
         b"json": b'{"n": 1, "ok": true}\n',
         b"toml": b"n = 1 # c\n",
         b"yaml": b"ok: true # c\n",
+        b"csharp": b"class C { int n = 1; } // c\n",
     }
     proc = helper()
     try:
@@ -158,6 +159,52 @@ def test_helper_request_local_fallbacks_keep_it_alive(ctx):
     finally:
         proc.terminate()
         proc.wait(timeout=2)
+
+
+def test_csharp_resolves_by_alias_and_extension(ctx):
+    """C# answers to its fence names and to the .cs and .csx extensions."""
+    source = b'class C { string s = "x"; } // c\n'
+    quote = source.index(b'"')
+    hints = [
+        (1, b"csharp"), (1, b"cs"), (1, b"c#"), (1, b"C#"),
+        (2, b"Program.cs"), (2, b"src/App/Main.CS"), (2, b"script.csx"),
+    ]
+    proc = helper()
+    try:
+        for request_id, (hint_kind, hint) in enumerate(hints, 1):
+            status, runs = request(proc, request_id, hint_kind, hint, source)
+            assert status == OK and runs, (hint, status)
+            assert any(a <= quote < b and kind == 2 for a, b, kind in runs)
+    finally:
+        proc.terminate()
+        proc.wait(timeout=2)
+
+
+def test_csharp_fence_gains_syntax_colours(ctx):
+    """A closed C# fence colours keywords, strings and comments."""
+    ctx.scenario(
+        "text=```csharp\n//+note\npublic+class+Greeter+{+string+s+=+\"hi\";+}\n```"
+    )
+    s = ctx.spawn()
+    s.submit("show C#")
+    s.wait_turn_done()
+    assert cell(s, "public class").bg == CODE_BG
+    assert cell(s, "public class").fg == PURPLE
+    assert cell(s, '"hi"').fg == GREEN
+    assert cell(s, "// note").fg == MUTED
+
+
+def test_typed_csharp_grep_colours_match_text(ctx):
+    """A grep limited to *.cs colours its fragments as C#."""
+    ctx.write_file("one.cs", "class Answer { int n = 42; }\n")
+    args = json.dumps({"pattern": "Answer", "glob": "*.cs"})
+    ctx.scenario(f"tool=grep:{args},final_text=done")
+    s = ctx.spawn()
+    s.submit("find it")
+    s.wait_turn_done()
+    assert cell(s, "one.cs:1:").fg == SUBTLE
+    assert cell(s, "class Answer").fg == PURPLE
+    assert cell(s, "= 42", 2).fg == YELLOW
 
 
 def test_cargo_lock_is_toml_by_name(ctx):

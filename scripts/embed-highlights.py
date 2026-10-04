@@ -11,7 +11,7 @@ from pathlib import Path
 
 LANGUAGES = (
     "c", "cpp", "rust", "go", "python", "javascript", "typescript",
-    "tsx", "bash", "json", "toml", "yaml",
+    "tsx", "bash", "json", "toml", "yaml", "csharp",
 )
 INHERITS = re.compile(r"^;\s*inherits\s*:\s*(.+?)\s*$", re.MULTILINE)
 # The TypeScript repository ships only its additions; consumers combine them
