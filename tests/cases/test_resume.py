@@ -706,3 +706,38 @@ def test_a_torn_last_line_does_not_swallow_the_next_message(ctx):
     assert lines[1] == '{"role":"assistant","content":"half a li', lines
     kept = [json.loads(l) for l in lines[2:]]
     assert [l["content"] for l in kept] == ["keep going", "after the cut"], kept
+
+
+def test_a_session_with_retired_tool_calls_still_resumes(ctx):
+    """grep and find are gone, but a session that called them replays: the
+    transcript shows the calls, and the provider sees the rounds."""
+    record(ctx, "seed", "seeded")
+    d = sessions_dir(ctx)
+    old = next(d.iterdir())
+    old.write_text("\n".join([
+        '{"type":"session","title":""}',
+        '{"role":"user","content":"look for alpha"}',
+        '{"role":"assistant","id":"c1","name":"grep",'
+        '"content":"{\\"pattern\\":\\"alpha\\",\\"path\\":\\"src\\"}"}',
+        '{"role":"tool","id":"c1","content":"src/one.c:1: int alpha(void);\\n"}',
+        '{"role":"assistant","id":"c2","name":"find","content":"{\\"name\\":\\"*.c\\"}"}',
+        '{"role":"tool","id":"c2","content":"src/one.c\\n"}',
+        '{"role":"assistant","content":"found it in one.c"}',
+    ]) + "\n")
+
+    ctx.scenario("final_text=next+answer")
+    s = ctx.spawn()
+    s.submit("/resume")
+    s.wait_status("pick a session")
+    s.key("enter")
+    s.wait_text("found it in one.c")
+    text = s.text()
+    assert 'grep "alpha" in src' in text, text
+    assert 'find "*.c" in .' in text, text
+
+    s.submit("and beta?")
+    s.wait_text("next answer")
+    s.wait_turn_done()
+    roles = [m["role"] for m in ctx.mock.requests[-1]["messages"]]
+    assert roles[:2] == ["system", "user"] and roles[-1] == "user", roles
+    assert "tool" in roles, roles
