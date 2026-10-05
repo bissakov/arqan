@@ -33,7 +33,7 @@ def run_web_tool(ctx, name, args, tmp):
 
 
 def tmpdir(ctx):
-    # outside the workspace: grep and find would otherwise walk their own spill
+    # outside the workspace, so a command listing the tree never sees its own spill
     d = ctx.tmp / "spill"
     d.mkdir(exist_ok=True)
     return d
@@ -98,45 +98,6 @@ def test_repeating_a_call_reuses_its_own_file(ctx):
     second = run_tool(ctx, "bash", args, tmp=tmp)
     assert spill_path(first)[0] == spill_path(second)[0]
     assert len(list(tmp.iterdir())) == 1, list(tmp.iterdir())
-
-
-def test_a_capped_grep_spills_every_match_it_found(ctx):
-    """The page shows five matches; the file holds all fifty, unclipped."""
-    tmp = tmpdir(ctx)
-    ctx.write_file("many.txt", "".join(f"hit {i}\n" for i in range(50)))
-    result = run_tool(ctx, "grep", {"pattern": "hit", "limit": 5}, tmp=tmp)
-    assert "[5 of 50 matches shown; continue with offset=6]" in result, result
-
-    path, _ = spill_path(result)
-    lines = (tmp / path.rsplit("/", 1)[1]).read_text().splitlines()
-    assert path.startswith(str(tmp) + "/arqan-grep-"), path
-    assert len(lines) == 50, lines[:5]
-    assert lines[0] == "many.txt:1: hit 0", lines[0]
-    assert lines[-1] == "many.txt:50: hit 49", lines[-1]
-
-
-def test_a_complete_search_says_nothing_about_a_file(ctx):
-    """Every match is in the answer, so a file behind it is only noise."""
-    tmp = tmpdir(ctx)
-    ctx.write_file("few.txt", "hit one\nhit two\n")
-    result = run_tool(ctx, "grep", {"pattern": "hit"}, tmp=tmp)
-    assert "full output" not in result, result
-    assert list(tmp.iterdir()) == [], list(tmp.iterdir())
-
-
-def test_a_capped_find_spills_every_path_it_walked(ctx):
-    """find pages the same way and leaves the same kind of file."""
-    tmp = tmpdir(ctx)
-    for i in range(50):
-        ctx.write_file(f"tree/f{i:03d}.txt", "x")
-    result = run_tool(ctx, "find", {"name": "*.txt", "limit": 5}, tmp=tmp)
-    assert "[5 of 50 files shown; continue with offset=6]" in result, result
-
-    path, _ = spill_path(result)
-    assert path.startswith(str(tmp) + "/arqan-find-"), path
-    lines = (tmp / path.rsplit("/", 1)[1]).read_text().splitlines()
-    assert len(lines) == 50, lines[:5]
-    assert all(l.startswith("tree/f") for l in lines), lines[:5]
 
 
 def test_a_paged_fetch_spills_the_whole_extracted_text(ctx):

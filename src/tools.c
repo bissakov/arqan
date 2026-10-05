@@ -1,10 +1,8 @@
 #include "agent.h"
 
 #include <ctype.h>
-#include <dirent.h>
 #include <stdarg.h>
 #include <errno.h>
-#include <fnmatch.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -105,20 +103,6 @@ static b8 arg_wait_ms(const JVal *j, size_t dflt, size_t max, size_t *out,
     }
     *out = v->u.n > (f64)max ? max : (size_t)v->u.n;
     return true;
-}
-
-
-static b8 arg_page_limit(const JVal *j, size_t dflt, size_t max, size_t *out,
-                         char *err, size_t err_cap) {
-    const JVal *limit = json_get(j, STR("limit"));
-    const JVal *old = json_get(j, STR("max_results"));
-    if (limit && limit->type != J_NULL && old && old->type != J_NULL) {
-        snprintf(err, err_cap, "use limit instead of max_results, not both");
-        return false;
-    }
-    return arg_count(
-        j, limit && limit->type != J_NULL ? STR("limit") : STR("max_results"),
-        dflt, max, out, err, err_cap);
 }
 
 /* ---- read ----
@@ -949,6 +933,181 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit,
     return buf_ok(out) && out->n <= AGENT_TOOL_RESULT_BYTES;
 }
 
+/* ---- read-only shell commands ----
+ * A command is read-only when every segment of its pipeline starts with a
+ * program from the list and nothing in it redirects, substitutes, groups or
+ * backgrounds. Such a command runs without approval and is the only kind plan
+ * mode and a subagent may run.
+ * NOTE: this is a first-word check, not a sandbox. Path arguments are not
+ * inspected, so a read-only command can read outside the project, and awk
+ * and sed scripts are not parsed for writes.
+ * TODO: before the next release, reject absolute and parent paths or run the
+ * command in a sandbox, and parse sed and awk scripts.
+ */
+static const char *const k_read_only_programs[] = {
+    "[",    "awk",      "basename", "cat",  "cd",   "column", "cut",
+    "date", "diff",     "dirname",  "du",   "echo", "file",   "find",
+    "grep", "head",     "jq",       "ls",   "nl",   "od",     "printf",
+    "pwd",  "readlink", "realpath", "rg",   "sed",  "seq",    "sha256sum",
+    "sort", "stat",     "strings",  "tac",  "tail", "test",   "tr",
+    "tree", "true",     "type",     "uniq", "wc",   "which",  "xxd",
+};
+static const char *const k_read_only_git[] = {
+    "blame",    "describe",  "diff",     "grep", "log",
+    "ls-files", "rev-parse", "shortlog", "show", "status",
+};
+static const char *const k_find_writes[] = {
+    "-delete", "-exec",    "-execdir", "-ok",  "-okdir",
+    "-fprint", "-fprint0", "-fprintf", "-fls",
+};
+static const char *const k_harmless_redirects[] = {
+    "2>&1", "2>/dev/null", ">/dev/null", "1>/dev/null", "&>/dev/null",
+};
+
+#define SHELL_SEGMENT_WORDS 64
+#define LIST_N(a)           (sizeof(a) / sizeof *(a))
+
+static Str shell_unquoted(Str w) {
+    if (w.n >= 2 && (w.p[0] == '\'' || w.p[0] == '"') && w.p[w.n - 1] == w.p[0])
+        return (Str){w.p + 1, w.n - 2};
+    return w;
+}
+
+static b8 word_is(Str w, const char *z) {
+    return str_eq(shell_unquoted(w), str_c(z));
+}
+
+static b8 word_in(Str w, const char *const *list, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        if (word_is(w, list[i])) return true;
+    return false;
+}
+
+static b8 word_is_assignment(Str w) {
+    if (!w.n || !(isalpha((unsigned char)w.p[0]) || w.p[0] == '_'))
+        return false;
+    size_t i = 1;
+    while (i < w.n && (isalnum((unsigned char)w.p[i]) || w.p[i] == '_')) i++;
+    return i < w.n && w.p[i] == '=';
+}
+
+static b8 shell_git_read_only(const Str *w, size_t n) {
+    size_t k = 0;
+    while (k < n) {
+        if (word_is(w[k], "-C") && k + 1 < n)
+            k += 2;
+        else if (word_is(w[k], "--no-pager") || word_is(w[k], "-P"))
+            k++;
+        else
+            break;
+    }
+    if (k >= n || !word_in(w[k], k_read_only_git, LIST_N(k_read_only_git)))
+        return false;
+    for (size_t a = k + 1; a < n; a++)
+        if (str_starts(shell_unquoted(w[a]), STR("--output"))) return false;
+    return true;
+}
+
+static b8 shell_segment_read_only(const Str *w, size_t n) {
+    size_t k = 0;
+    while (k < n && word_is_assignment(w[k])) k++;
+    if (k + 2 < n && word_is(w[k], "timeout")) k += 2;
+    if (k >= n) return false;
+    Str prog = w[k];
+    const Str *arg = w + k + 1;
+    size_t args = n - k - 1;
+    if (word_is(prog, "git")) return shell_git_read_only(arg, args);
+    if (!word_in(prog, k_read_only_programs, LIST_N(k_read_only_programs)))
+        return false;
+    for (size_t a = 0; a < args; a++) {
+        Str v = shell_unquoted(arg[a]);
+        b8 option = v.n > 1 && v.p[0] == '-';
+        b8 long_option = option && v.p[1] == '-';
+        if (word_is(prog, "sed") && option
+            && (long_option ? str_starts(v, STR("--in-place"))
+                            : memchr(v.p, 'i', v.n) != NULL))
+            return false;
+        if (word_is(prog, "find")
+            && word_in(arg[a], k_find_writes, LIST_N(k_find_writes)))
+            return false;
+        if (word_is(prog, "sort")
+            && (str_eq(v, STR("-o")) || str_starts(v, STR("--output"))))
+            return false;
+        if (word_is(prog, "rg") && str_starts(v, STR("--pre"))) return false;
+    }
+    return true;
+}
+
+static b8 shell_read_only(Str cmd) {
+    Str word[SHELL_SEGMENT_WORDS];
+    size_t n = 0, start = SIZE_MAX;
+    b8 any = false;
+    char quote = 0;
+    for (size_t i = 0; i <= cmd.n; i++) {
+        char c = i < cmd.n ? cmd.p[i] : '\n';
+        if (quote) {
+            if (c == quote) {
+                quote = 0;
+            } else if (quote == '"') {
+                if (c == '\\')
+                    i++;
+                else if (c == '`'
+                         || (c == '$' && i + 1 < cmd.n && cmd.p[i + 1] == '('))
+                    return false;
+            }
+            continue;
+        }
+        b8 chain = c == '&' && i + 1 < cmd.n && cmd.p[i + 1] == '&';
+        b8 separator = c == '\n' || c == ';' || c == '|' || chain;
+        if (separator || c == ' ' || c == '\t') {
+            if (start != SIZE_MAX) {
+                if (n == SHELL_SEGMENT_WORDS) return false;
+                word[n++] = (Str){cmd.p + start, i - start};
+                start = SIZE_MAX;
+            }
+            if (!separator) continue;
+            if (chain || (c == '|' && i + 1 < cmd.n && cmd.p[i + 1] == '|'))
+                i++;
+            if (n) {
+                if (!shell_segment_read_only(word, n)) return false;
+                any = true;
+                n = 0;
+            }
+            continue;
+        }
+        if (c == '`' || c == '(' || c == ')' || c == '{' || c == '}'
+            || c == '<')
+            return false;
+        if (c == '$' && i + 1 < cmd.n && cmd.p[i + 1] == '(') return false;
+        if (c == '>' || c == '&') {
+            size_t from = start == SIZE_MAX ? i : start;
+            size_t end = from;
+            while (end < cmd.n && !strchr(" \t\n;|", cmd.p[end])) end++;
+            Str redirect = {cmd.p + from, end - from};
+            if (!word_in(redirect, k_harmless_redirects,
+                         LIST_N(k_harmless_redirects)))
+                return false;
+            i = end - 1;
+            start = SIZE_MAX;
+            continue;
+        }
+        if (start == SIZE_MAX) start = i;
+        if (c == '\\')
+            i++;
+        else if (c == '\'' || c == '"')
+            quote = c;
+    }
+    return !quote && !n && start == SIZE_MAX && any;
+}
+
+static b8 bash_args_read_only(Str args, Arena *scratch) {
+    size_t mark = scratch->off;
+    JVal *j = json_parse(scratch, args);
+    b8 read_only = j && shell_read_only(json_str(j, STR("command")));
+    scratch->off = mark;
+    return read_only;
+}
+
 static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err,
                     size_t err_cap) {
     JVal *j = tool_args(args, scratch, err, err_cap);
@@ -1759,363 +1918,6 @@ static b8 tool_patch(Str args, Arena *scratch, Buf *out, char *err,
     return true;
 }
 
-/* ---- grep and find ----
- * One walk serves both, in name order so a search is reproducible and capped
- * so a wide pattern costs a page rather than the repo. The match is a literal
- * substring rather than a regex, since bash still has the shell for the rest.
- */
-typedef struct {
-    Buf *out;
-    Arena *names;
-    Arena *file;
-    Str pattern;
-    const char *glob;
-    size_t max;
-    size_t offset;
-    size_t found;
-    size_t shown;
-    size_t skipped;
-    b8 out_limited;
-    b8 ignore_case;
-    b8 single;
-    AgentIgnore ignore;
-    char path[AGENT_MAX_PATH];
-    size_t path_n;
-    Spill spill;
-} Walk;
-
-
-static b8 walk_has_room(const Walk *w, size_t n) {
-    const size_t reserve =
-        w->spill.fd >= 0 ? 128 + AGENT_SPILL_NOTE_BYTES : 128;
-    if (w->out->n > AGENT_TOOL_RESULT_BYTES - reserve) return false;
-    return n <= AGENT_TOOL_RESULT_BYTES - reserve - w->out->n;
-}
-
-static b8 mem_eq_ci(const char *a, const char *b, size_t n) {
-    for (size_t i = 0; i < n; i++)
-        if (tolower((unsigned char)a[i]) != tolower((unsigned char)b[i]))
-            return false;
-    return true;
-}
-
-static b8 line_matches(Str line, Str pat, b8 ignore_case) {
-    if (line.n < pat.n) return false;
-    for (size_t i = 0; i + pat.n <= line.n; i++) {
-        if (ignore_case ? mem_eq_ci(line.p + i, pat.p, pat.n)
-                        : !memcmp(line.p + i, pat.p, pat.n))
-            return true;
-    }
-    return false;
-}
-
-
-static const char *walk_shown(const Walk *w) {
-    return w->path[0] == '.' && w->path[1] == '/' ? w->path + 2 : w->path;
-}
-
-
-static b8 name_matches(const Walk *w, const char *base) {
-    if (!w->glob) return true;
-    if (!strchr(w->glob, '/')) return fnmatch(w->glob, base, 0) == 0;
-    return fnmatch(w->glob, walk_shown(w), FNM_PATHNAME) == 0;
-}
-
-static void walk_grep_file(Walk *w) {
-    arena_reset(w->file);
-    Str body;
-    if (file_read(w->file, w->path, AGENT_MAX_GREP_FILE, 0, &body, NULL)
-        != FILE_OK)
-        return;
-
-    Str head = str_take(body, 4096);
-    if (head.n && memchr(head.p, '\0', head.n)) return;
-
-    size_t off = 0, ln = 0;
-    Str line;
-    while (str_line(body, &off, &line)) {
-        ln++;
-        if (!line_matches(line, w->pattern, w->ignore_case)) continue;
-        w->found++;
-
-        spill_putf(&w->spill, "%s:%zu: ", walk_shown(w), ln);
-        spill_put(&w->spill, line.p, line.n);
-        spill_put(&w->spill, "\n", 1);
-        if (w->found < w->offset) continue;
-        if (w->out_limited) {
-            w->skipped++;
-            continue;
-        }
-        if (w->shown >= w->max) {
-            w->skipped++;
-            continue;
-        }
-        Str trimmed = str_trim(line);
-        Str clipped = str_clip_utf8(trimmed, AGENT_GREP_LINE);
-        size_t need = strlen(walk_shown(w)) + 24 + clipped.n + 5;
-        if (!walk_has_room(w, need)) {
-            w->skipped++;
-            w->out_limited = true;
-            continue;
-        }
-        w->shown++;
-        buf_putf(w->out, "%s:%zu: ", walk_shown(w), ln);
-        buf_puts(w->out, clipped);
-        if (clipped.n < trimmed.n) buf_puts(w->out, STR(" ..."));
-        buf_putc(w->out, '\n');
-    }
-}
-
-static void walk_file(Walk *w, const char *base) {
-    if (!name_matches(w, base)) return;
-    if (w->pattern.n) {
-        walk_grep_file(w);
-        return;
-    }
-    w->found++;
-    spill_putf(&w->spill, "%s\n", walk_shown(w));
-    if (w->found < w->offset) return;
-    if (w->out_limited) {
-        w->skipped++;
-        return;
-    }
-    if (w->shown >= w->max) {
-        w->skipped++;
-        return;
-    }
-    if (!walk_has_room(w, strlen(walk_shown(w)) + 1)) {
-        w->skipped++;
-        w->out_limited = true;
-        return;
-    }
-    w->shown++;
-    buf_putf(w->out, "%s\n", walk_shown(w));
-}
-
-static b8 walk_enter(Walk *w, const char *name, size_t n) {
-    if (w->path_n + n + 2 >= sizeof w->path) return false;
-    w->path[w->path_n] = '/';
-    memcpy(w->path + w->path_n + 1, name, n);
-    w->path_n += n + 1;
-    w->path[w->path_n] = '\0';
-    return true;
-}
-
-static b8 walk_dir(Walk *w, i32 depth) {
-    if (depth > AGENT_WALK_DEPTH) return true;
-    DIR *d = opendir(w->path);
-    if (!d) return true;
-
-    size_t mark = w->names->off;
-    Str *ent = arena_new(w->names, Str, AGENT_WALK_ENTRIES);
-    size_t n = 0;
-    struct dirent *de;
-    while (ent && n < AGENT_WALK_ENTRIES && (de = readdir(d))) {
-        if (de->d_name[0] == '.') continue;
-        Str name = str_dup(w->names, str_c(de->d_name));
-        if (!name.p) break;
-        ent[n++] = name;
-    }
-    closedir(d);
-
-
-    for (size_t i = 1; i < n; i++) {
-        Str key = ent[i];
-        size_t k = i;
-        while (k && strcmp(ent[k - 1].p, key.p) > 0) {
-            ent[k] = ent[k - 1];
-            k--;
-        }
-        ent[k] = key;
-    }
-
-    b8 room = true;
-    size_t base_n = w->path_n;
-    for (size_t i = 0; i < n && room; i++) {
-        if (!walk_enter(w, ent[i].p, ent[i].n)) continue;
-        struct stat st;
-        if (lstat(w->path, &st) == 0) {
-            if (S_ISDIR(st.st_mode)) {
-                const char *shown = walk_shown(w);
-                if (agent_ignore_show()
-                    || !agent_ignore_match(&w->ignore, shown, strlen(shown),
-                                           true)) {
-                    AgentIgnoreMark mark = agent_ignore_mark(&w->ignore);
-                    size_t shown_n = strlen(shown);
-                    w->path[w->path_n] = '/';
-                    w->path[w->path_n + 1] = '\0';
-                    agent_ignore_push(&w->ignore, w->path, w->path_n + 1,
-                                      shown_n + 1);
-                    w->path[w->path_n] = '\0';
-                    room = walk_dir(w, depth + 1);
-                    agent_ignore_restore(&w->ignore, mark);
-                }
-            } else if (S_ISREG(st.st_mode)) {
-                const char *shown = walk_shown(w);
-                if (agent_ignore_show()
-                    || !agent_ignore_match(&w->ignore, shown, strlen(shown),
-                                           false))
-                    walk_file(w, ent[i].p);
-            }
-        }
-        w->path_n = base_n;
-        w->path[base_n] = '\0';
-    }
-    w->names->off = mark;
-    return room;
-}
-
-static b8 walk_start(Walk *w, Str root, char *err, size_t err_cap) {
-    char rel[AGENT_MAX_PATH];
-    if (!root.n) root = STR(".");
-    if (!arg_cstr(root, rel, sizeof rel, "path", err, err_cap)) return false;
-    i32 len = snprintf(w->path, sizeof w->path, "%s", rel);
-    if (len < 0 || (size_t)len >= sizeof w->path) {
-        snprintf(err, err_cap, "path too long");
-        return false;
-    }
-    while (len > 1 && w->path[len - 1] == '/') w->path[--len] = '\0';
-    while (len > 2 && w->path[0] == '.' && w->path[1] == '/') {
-        memmove(w->path, w->path + 2, (size_t)len - 1);
-        len -= 2;
-    }
-    w->path_n = (size_t)len;
-    struct stat st;
-    if (stat(w->path, &st) != 0) {
-        snprintf(err, err_cap, "%s does not exist", rel);
-        return false;
-    }
-
-    if (!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode)) {
-        snprintf(err, err_cap, "%s is not a file or a directory", rel);
-        return false;
-    }
-    w->single = !S_ISDIR(st.st_mode);
-    return true;
-}
-
-static void walk_ignore_build(Walk *w) {
-    if (w->path[0] == '/') {
-        agent_ignore_build(&w->ignore, (Str){w->path, w->path_n});
-        return;
-    }
-    char dir[AGENT_MAX_PATH];
-    size_t n = 0;
-    if (w->single) {
-        const char *slash = strrchr(w->path, '/');
-        if (slash) n = (size_t)(slash - w->path) + 1;
-    } else if (strcmp(w->path, ".") != 0) {
-        n = w->path_n;
-        if (n + 1 >= sizeof dir) {
-            agent_ignore_build(&w->ignore, (Str){w->path, w->path_n});
-            return;
-        }
-        memcpy(dir, w->path, n);
-        dir[n++] = '/';
-    }
-    if (w->single && n) memcpy(dir, w->path, n);
-    dir[n] = '\0';
-    agent_ignore_build(&w->ignore, (Str){dir, n});
-}
-
-static b8 walk_run(Str args, Arena *scratch, Buf *out, b8 grep, char *err,
-                   size_t err_cap) {
-    JVal *j = tool_args(args, scratch, err, err_cap);
-    if (!j) return false;
-
-    static Walk w;
-    w = (Walk){0};
-    w.spill.fd = -1;
-    w.out = out;
-    w.pattern = grep ? json_str(j, STR("pattern")) : (Str){0};
-    if (grep && !w.pattern.n) {
-        snprintf(err, err_cap, "missing pattern");
-        return false;
-    }
-    w.ignore_case = json_bool(j, STR("ignore_case"));
-
-    char glob[AGENT_MAX_PATH];
-    Str g = json_str(j, grep ? STR("glob") : STR("name"));
-    if (g.n) {
-        if (!arg_cstr(g, glob, sizeof glob, "glob", err, err_cap)) return false;
-        w.glob = glob;
-    } else if (!grep) {
-        snprintf(err, err_cap, "missing name");
-        return false;
-    }
-
-    if (!arg_page_limit(j, grep ? AGENT_GREP_RESULTS : AGENT_FIND_RESULTS,
-                        grep ? AGENT_GREP_RESULTS : AGENT_FIND_RESULTS, &w.max,
-                        err, err_cap))
-        return false;
-    if (!arg_count(j, STR("offset"), 1, 1u << 30, &w.offset, err, err_cap))
-        return false;
-    if (!walk_start(&w, json_str(j, STR("path")), err, err_cap)) return false;
-    walk_ignore_build(&w);
-
-    void *mem =
-        arena_alloc(scratch, AGENT_WALK_BYTES + AGENT_MAX_GREP_FILE + 1, 16);
-    if (!mem) {
-        snprintf(err, err_cap, "out of memory");
-        return false;
-    }
-    Arena names, file;
-    arena_init(&names, mem, AGENT_WALK_BYTES);
-    arena_init(&file, (char *)mem + AGENT_WALK_BYTES, AGENT_MAX_GREP_FILE + 1);
-    w.names = &names;
-    w.file = &file;
-
-    spill_open(&w.spill, grep ? "grep" : "find", "txt", args);
-    b8 room = true;
-    const char *root_shown = walk_shown(&w);
-    b8 root_ignored = !agent_ignore_show() && strcmp(w.path, ".") != 0
-                      && agent_ignore_match(&w.ignore, root_shown,
-                                            strlen(root_shown), !w.single);
-    if (root_ignored) {
-        room = true;
-    } else if (w.single) {
-        const char *slash = strrchr(w.path, '/');
-        walk_file(&w, slash ? slash + 1 : w.path);
-    } else {
-        room = walk_dir(&w, 0);
-    }
-    if (!w.found) {
-        buf_putf(out, "no %s\n", grep ? "matches" : "files");
-    } else if (!w.shown) {
-        buf_putf(out,
-                 "[%zu%s %s; offset %zu is past the last, use a "
-                 "smaller one]\n",
-                 w.found, room ? "" : "+", grep ? "matches" : "files",
-                 w.offset);
-    } else if (w.skipped || !room || w.out_limited) {
-        buf_putf(out, "[%zu of %zu%s %s shown; continue with offset=%zu]\n",
-                 w.shown, w.found, room ? "" : "+", grep ? "matches" : "files",
-                 w.offset + w.shown);
-    } else if (w.offset > 1) {
-        buf_putf(out, "[%zu of %zu %s shown]\n", w.shown, w.found,
-                 grep ? "matches" : "files");
-    }
-
-    spill_finish(&w.spill, out, w.skipped > 0 || !room || w.out_limited);
-    if (!buf_ok(out) || out->n > AGENT_TOOL_RESULT_BYTES) {
-        snprintf(err, err_cap, "result does not fit in the %u byte limit",
-                 (unsigned)AGENT_TOOL_RESULT_BYTES);
-        return false;
-    }
-    return true;
-}
-
-static b8 tool_grep(Str args, Arena *scratch, Buf *out, char *err,
-                    size_t err_cap) {
-    return walk_run(args, scratch, out, true, err, err_cap);
-}
-
-static b8 tool_find(Str args, Arena *scratch, Buf *out, char *err,
-                    size_t err_cap) {
-    return walk_run(args, scratch, out, false, err, err_cap);
-}
-
-
 static b8 tool_agent_only(Str args, Arena *scratch, Buf *out, char *err,
                           size_t err_cap) {
     (void)args;
@@ -2209,13 +2011,25 @@ static b8 tools_path_inside(Str path) {
 static b8 tool_reads_paths(const ToolRegistry *r, size_t id) {
     if (!r->run || id >= r->n || r->source[id] != TOOL_SRC_BUILTIN)
         return false;
-    ToolRun run = r->run[id];
-    return run == tool_read || run == tool_grep || run == tool_find;
+    return r->run[id] == tool_read;
+}
+
+static b8 tool_is_bash(const ToolRegistry *r, size_t id) {
+    return r->run && id < r->n && r->source[id] == TOOL_SRC_BUILTIN
+           && r->run[id] == tool_bash;
+}
+
+static b8 bash_restricted(ToolAudience audience) {
+    return audience == TOOL_FOR_SUB || g_tools.policy.mode == MODE_PLAN;
 }
 
 ToolApprovalClass tools_call_approval(const ToolRegistry *r, size_t id,
                                       Str args, Arena *scratch) {
     ToolApprovalClass fixed = tools_approval_class(r, id);
+    if (tool_is_bash(r, id)
+        && (g_tools.policy.mode == MODE_PLAN
+            || bash_args_read_only(args, scratch)))
+        return TOOL_APPROVAL_NONE;
     if (fixed != TOOL_APPROVAL_NONE || !tool_reads_paths(r, id)) return fixed;
     size_t mark = scratch->off;
     JVal *j = json_parse(scratch, args);
@@ -2431,33 +2245,6 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         "\"limit\":{\"type\":\"integer\",\"description\":\"at most 2000 lines\"}},"
         "\"required\":[\"path\"]}",
         tool_read);
-    ADD("grep",
-        "Search file contents for a literal string, recursively. "
-        "Returns up to 100 matches; narrow with a path or glob, and use "
-        "offset to page through the rest. A path outside the project needs "
-        "the user's approval.",
-        "Search file contents", READS, TOOL_APPROVAL_NONE,
-        "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},"
-        "\"path\":{\"type\":\"string\",\"description\":\"file or dir, default .\"},"
-        "\"glob\":{\"type\":\"string\",\"description\":\"e.g. *.c\"},"
-        "\"ignore_case\":{\"type\":\"boolean\"},"
-        "\"offset\":{\"type\":\"integer\",\"description\":\"first match to show, 1-based\"},"
-        "\"limit\":{\"type\":\"integer\",\"description\":\"at most 100 matches\"}},"
-        "\"required\":[\"pattern\"]}",
-        tool_grep);
-    ADD("find",
-        "List files whose name matches a glob, recursively. "
-        "Returns up to 200 paths; narrow with a path, and use offset to "
-        "page through the rest. A path outside the project needs the "
-        "user's approval.",
-        "List files by name", READS, TOOL_APPROVAL_NONE,
-        "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\","
-        "\"description\":\"glob; matched on the path when it has a /\"},"
-        "\"path\":{\"type\":\"string\",\"description\":\"file or dir, default .\"},"
-        "\"offset\":{\"type\":\"integer\",\"description\":\"first result to show, 1-based\"},"
-        "\"limit\":{\"type\":\"integer\",\"description\":\"at most 200 paths\"}},"
-        "\"required\":[\"name\"]}",
-        tool_find);
     ADD("internet_search",
         "Search the public web through DuckDuckGo. "
         "Returns up to ten titles, links, and snippets. Searches are paced; "
@@ -2490,6 +2277,10 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
             "Give a description of what the command does in a few words, "
             "such as \"find callers of walk_run\"; the user reads it before "
             "the command. "
+            "A command made only of reading programs, such as rg, grep, "
+            "cat, sed -n, ls, wc, find and git log, with no redirection, "
+            "substitution or inline script, runs without asking the user "
+            "and is the only kind allowed in plan mode. "
             "Use offset and limit to page output, "
             "and prefer head, tail, sed -n or grep to target the lines you "
             "need. Commands run without a terminal, so "
@@ -2504,7 +2295,7 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         r->schema[r->n] = (Str){bash_schema, (size_t)schema_n};
         r->batch_schema[r->n] = r->schema[r->n];
         r->run[r->n] = tool_bash;
-        r->modes[r->n] = TOOL_IN_BUILD;
+        r->modes[r->n] = READS;
         r->approval[r->n] = TOOL_APPROVAL_BASH;
         r->source[r->n] = TOOL_SRC_BUILTIN;
         r->ext[r->n] = 0;
@@ -2538,7 +2329,7 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         "reported as still running, and waiting again is the right move. Keep "
         "polling rather than leaving a job unattended. Job ids last for this "
         "session only.",
-        "Follow a background command", TOOL_IN_BUILD, TOOL_APPROVAL_NONE,
+        "Follow a background command", BOTH, TOOL_APPROVAL_NONE,
         "{\"type\":\"object\",\"properties\":{"
         "\"id\":{\"type\":\"integer\",\"description\":\"the job to act on; omit to list\"},"
         "\"action\":{\"type\":\"string\",\"enum\":[\"list\",\"poll\",\"wait\",\"kill\"],"
@@ -2689,6 +2480,17 @@ b8 tools_run_report(const ToolRegistry *r, size_t id, Str args,
     if (!tools_available_to(r, id, g_tools.policy.mode, audience)) {
         snprintf(err, err_cap, "%.*s is not available in plan mode",
                  (int)r->name[id].n, r->name[id].p);
+        return false;
+    }
+    if (tool_is_bash(r, id) && bash_restricted(audience)
+        && !bash_args_read_only(args, scratch)) {
+        snprintf(err, err_cap,
+                 "%s runs read-only commands only: every command in the "
+                 "pipeline must be a reading program such as rg, grep, cat, "
+                 "sed -n, ls, wc or git log, with no redirection, "
+                 "substitution or inline script",
+                 audience == TOOL_FOR_SUB ? "bash for a subagent"
+                                          : "bash in plan mode");
         return false;
     }
     ToolApprovalClass approval = tools_call_approval(r, id, args, scratch);

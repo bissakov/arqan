@@ -7,9 +7,9 @@
 |
 |
 |    search:  · Space or Left/Right changes the selected row · Esc closes
+|    [x] Subagents            Offer the task tool, which delegates a
+|                             read-only investigation
 |    [x] read                 Read a page of a file
-|    [x] grep                 Search file contents
-|    [x] find                 List files by name
 |    [x] internet_search      Search the public web
 |    [x] page_fetch           Fetch a public web page
 |    [x] bash                 Run a shell command

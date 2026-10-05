@@ -140,9 +140,9 @@ static const char PROMPT_SUB_BUILTIN[] =
     "will act on, and you report what you found.\n"
     "\n"
     "You read, search and fetch. You cannot change anything: no file is "
-    "written, no command is run, and no question reaches the user, because "
-    "no tool for any of that is available to you here. You cannot delegate "
-    "either; the investigation is yours.\n"
+    "written, only read-only shell commands run, and no question reaches "
+    "the user, because no tool for any of that is available to you here. "
+    "You cannot delegate either; the investigation is yours.\n"
     "\n"
     "Available tools:\n"
     "{tools}\n"
@@ -325,25 +325,16 @@ static void prompt_stop(Buf *b, const ToolRegistry *tools, AgentMode mode) {
 static void prompt_tool_guidance(Buf *b, const ToolRegistry *tools,
                                  AgentMode mode) {
     if (!tools) return;
-    const Str lookers[] = {STR("read"), STR("grep"), STR("find")};
-    Str offered[3];
-    size_t n_offered = 0;
-    for (size_t i = 0; i < 3; i++)
-        if (prompt_offers(tools, lookers[i], mode))
-            offered[n_offered++] = lookers[i];
+    b8 read = prompt_offers(tools, STR("read"), mode);
     b8 bash = prompt_offers(tools, STR("bash"), mode);
     b8 patch = prompt_offers(tools, STR("patch"), mode);
     b8 write = prompt_offers(tools, STR("write"), mode);
 
-    if (bash && n_offered) {
-        buf_puts(b, STR("- Use "));
-        for (size_t i = 0; i < n_offered; i++) {
-            if (i) buf_puts(b, i + 1 == n_offered ? STR(" and ") : STR(", "));
-            buf_puts(b, offered[i]);
-        }
-        buf_puts(b, STR(" to look at files, and keep bash for what they "
-                        "cannot do\n"));
-    }
+    if (bash && read)
+        buf_puts(b, STR("- Use read to look at a file and bash with rg, ls "
+                        "or find to search; a pipeline of reading programs "
+                        "runs without asking the user, so prefer it to an "
+                        "inline script\n"));
     if (bash)
         buf_puts(b, STR("- After changing code, run the project's build or "
                         "tests when you can find them, and say so when you "
@@ -361,14 +352,14 @@ static void prompt_tool_guidance(Buf *b, const ToolRegistry *tools,
     if (patch && write)
         buf_puts(b, STR("- Use write only to create a file or replace one "
                         "whole\n"));
-    if ((patch || write) && prompt_offers(tools, STR("read"), mode))
+    if ((patch || write) && read)
         buf_puts(b, STR("- Read a file before you change it\n"));
-    if (n_offered)
-        buf_puts(b, STR("- Reading, searching or listing a path outside the "
-                        "project needs the user's approval, so stay inside "
-                        "it unless the task needs more\n"));
+    if (read)
+        buf_puts(b, STR("- Reading a path outside the project needs the "
+                        "user's approval, so stay inside it unless the task "
+                        "needs more\n"));
 
-    b8 approvals = n_offered > 0;
+    b8 approvals = read;
     for (size_t i = 0; !approvals && i < tools->n; i++)
         approvals = tools_available(tools, i, mode)
                     && tools_approval_class(tools, i) != TOOL_APPROVAL_NONE;

@@ -60,15 +60,8 @@ typedef bool b8;
 
 #define AGENT_SHELL_OUT_BYTES \
     (AGENT_TOOL_RESULT_BYTES - 256u - AGENT_SPILL_NOTE_BYTES)
-#define AGENT_GREP_RESULTS        100
-#define AGENT_FIND_RESULTS        200
-#define AGENT_GREP_LINE           200
-#define AGENT_WALK_DEPTH          32
-#define AGENT_WALK_ENTRIES        4096
-#define AGENT_WALK_BYTES          (4u << 20)
 #define AGENT_IGNORE_PATTERNS     512
 #define AGENT_IGNORE_BYTES        (1u << 14)
-#define AGENT_MAX_GREP_FILE       (1u << 20)
 #define AGENT_MAX_PATCH_FILES     32
 #define AGENT_MAX_PATCH_HUNKS     512
 #define AGENT_MAX_PATCH_NOTES     4
@@ -1116,7 +1109,6 @@ typedef struct {
 
 void spill_open(Spill *s, const char *tool, const char *ext, Str key);
 void spill_put(Spill *s, const char *p, size_t n);
-void spill_putf(Spill *s, const char *fmt, ...);
 void spill_finish(Spill *s, Buf *out, b8 keep);
 i32 spill_release(Spill *s, char *path, size_t path_cap, size_t *written);
 

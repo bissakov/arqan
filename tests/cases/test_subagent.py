@@ -15,7 +15,7 @@ import re
 import signal
 import time
 
-READ_ONLY = ["find", "grep", "internet_search", "page_fetch", "read"]
+READ_ONLY = ["bash", "internet_search", "page_fetch", "read"]
 
 # Long enough that a loaded machine still finishes the delegate's rounds,
 # short enough that a case which never finishes fails rather than hangs.
@@ -143,7 +143,7 @@ def test_the_transcript_keeps_one_call_and_one_result(ctx):
     a transcript, they are one tool call that took a while."""
     a_small_tree(ctx)
     ctx.scenario(collect(ctx))
-    s = spawn(ctx, sub='tool=grep:{"pattern":"alpha"},final_text=one+hit')
+    s = spawn(ctx, sub='tool=read:{"path":"notes.txt"},final_text=one+hit')
     s.submit("delegate it")
     s.wait_text("done")
     s.wait_turn_done()
@@ -181,13 +181,34 @@ def test_a_disabled_tool_is_gone_from_the_subagent_too(ctx):
     """One registry: what /tools and disable_tools turn off is off for the
     delegate as well, not merely hidden from the parent."""
     ctx.scenario(delegate(ctx))
-    s = spawn(ctx, args=["--disable-tools", "grep"])
+    s = spawn(ctx, args=["--disable-tools", "page_fetch"])
     s.submit("delegate it")
     s.wait_turn_done()
 
     names = tool_names(sub_requests(ctx)[0])
-    assert "grep" not in names, names
+    assert "page_fetch" not in names, names
     assert "read" in names, names
+
+
+def test_the_subagent_runs_read_only_shell_commands_only(ctx):
+    """A pipeline of reading programs runs in the worker; anything that could
+    write is refused there, without a question the delegate cannot ask.
+    NOTE: the scenario is the model name, which is capped at 128 bytes."""
+    a_small_tree(ctx)
+    ctx.scenario(collect(ctx))
+    s = spawn(ctx, sub='tool=bash:{"command":"grep -c alpha notes.txt","description":"x"},'
+                       'tool=bash:{"command":"touch s","description":"x"}',
+              ARQAN_PERMISSIONS="ask")
+    s.submit("delegate it")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    results = [m["content"] for r in sub_requests(ctx)
+               for m in r.get("messages", []) if m.get("role") == "tool"]
+    assert any(r.startswith("1\n") for r in results), results
+    assert any("bash for a subagent runs read-only commands only" in r
+               for r in results), results
+    assert not (ctx.work / "s").exists()
 
 
 def test_plan_mode_keeps_the_task_tool_and_the_same_audience(ctx):
@@ -277,7 +298,7 @@ def test_a_poll_after_it_finishes_carries_the_report_and_the_cost(ctx):
     """The report is the tool result, with one line naming what it cost."""
     a_small_tree(ctx)
     ctx.scenario(collect(ctx))
-    s = spawn(ctx, sub='tool=grep:{"pattern":"alpha"},tool_rounds=1,'
+    s = spawn(ctx, sub='tool=read:{"path":"notes.txt"},tool_rounds=1,'
                        'final_text=found+it')
     s.submit("delegate it")
     s.wait_text("done")
@@ -294,7 +315,7 @@ def test_the_delegate_keeps_one_conversation_across_polls(ctx):
     delegate's later requests carry the rounds already behind them."""
     a_small_tree(ctx)
     ctx.scenario(collect(ctx))
-    s = spawn(ctx, sub='tool=grep:{"pattern":"alpha"},tool_rounds=2,'
+    s = spawn(ctx, sub='tool=read:{"path":"notes.txt"},tool_rounds=2,'
                        'final_text=found+it')
     s.submit("delegate it")
     s.wait_text("done")
@@ -518,7 +539,7 @@ def test_drop_stops_the_worker(ctx):
         'tool=task:{"prompt":"find the cat","label":"cats"}'
         ',tool=task:{"id":1,"action":"drop"},final_text=done'
     )
-    s = spawn(ctx, sub='tool=grep:{"pattern":"alpha"},tool_rounds=8,'
+    s = spawn(ctx, sub='tool=read:{"path":"notes.txt"},tool_rounds=8,'
                        'final_text=found+it')
     s.submit("delegate it")
     s.wait_text("done")
@@ -538,7 +559,7 @@ def test_a_dropped_task_cannot_be_polled_again(ctx):
         ',tool=task:{"id":1,"action":"drop"}'
         ',tool=task:{"id":1},final_text=done'
     )
-    s = spawn(ctx, sub='tool=grep:{"pattern":"alpha"},tool_rounds=8,'
+    s = spawn(ctx, sub='tool=read:{"path":"notes.txt"},tool_rounds=8,'
                        'final_text=found+it')
     s.submit("delegate it")
     s.wait_text("done")
@@ -553,7 +574,7 @@ def test_killing_the_parent_stops_the_worker(ctx):
     with it rather than leaving it running against the endpoint."""
     a_small_tree(ctx)
     ctx.scenario(delegate(ctx))
-    s = spawn(ctx, sub='tool=grep:{"pattern":"alpha"},tool_rounds=40,'
+    s = spawn(ctx, sub='tool=read:{"path":"notes.txt"},tool_rounds=40,'
                        'first_delay=0.2,final_text=found+it')
     s.submit("delegate it")
     s.wait_for(lambda _: len(sub_requests(ctx)) >= 2, "the delegate at work")
@@ -585,7 +606,7 @@ def test_without_a_worker_a_long_task_still_parks_and_continues(ctx):
         'tool=task:{"prompt":"find the cat","label":"cats"}'
         ',tool=task:{"id":1},final_text=done'
     )
-    s = spawn(ctx, sub='tool=grep:{"pattern":"alpha"},tool_rounds=3,'
+    s = spawn(ctx, sub='tool=read:{"path":"notes.txt"},tool_rounds=3,'
                        'final_text=found+it',
               ARQAN_TEST_NO_TASK_WORKER="1",
               ARQAN_SUBAGENT_SLICE_MS="1")
@@ -620,7 +641,7 @@ def test_clear_drops_a_running_task(ctx):
     ctx.scenario(
         'tool=task:{"prompt":"find the cat","label":"cats"},final_text=done'
     )
-    s = spawn(ctx, sub='tool=grep:{"pattern":"alpha"},tool_rounds=3,'
+    s = spawn(ctx, sub='tool=read:{"path":"notes.txt"},tool_rounds=3,'
                        'final_text=found+it')
     s.submit("delegate it")
     s.wait_text("done")

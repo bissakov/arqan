@@ -25,7 +25,7 @@ def test_the_tools_are_rows_of_the_settings_screen(ctx):
     s.open_settings().settings_select("write")   # the last row: all eight show
     text = s.text()
     for name in (
-        "read", "grep", "find", "internet_search", "page_fetch", "bash", "batch", "patch", "write"
+        "read", "internet_search", "page_fetch", "bash", "batch", "patch", "write"
     ):
         assert f"[x] {name}" in text, text
     assert "submit_plan" not in text and "ask_user" not in text, text
@@ -106,8 +106,8 @@ def test_the_flag_disables_a_list(ctx):
 
     names = tool_names(ctx.mock.requests[-1])
     assert names == [
-        "ask_user", "batch", "find", "grep", "internet_search", "job", "page_fetch",
-        "read", "task", "todo"
+        "ask_user", "batch", "internet_search", "job", "page_fetch", "read",
+        "task", "todo"
     ], names
 
 
@@ -126,11 +126,11 @@ def test_the_flag_keeps_them_out_of_the_prompt(ctx):
 def test_the_guidelines_name_only_the_tools_offered(ctx):
     """A guideline about a disabled tool would send the model after it.
 
-    read, grep and find ask before they leave the project, so they go too
-    for the approval guideline to have no tool left to describe."""
+    read asks before it leaves the project, so it goes too for the approval
+    guideline to have no tool left to describe."""
     ctx.scenario("text=fine")
     s = ctx.spawn(
-        args=["--disable-tools", "bash,patch,write,read,grep,find"],
+        args=["--disable-tools", "bash,patch,write,read"],
         ARQAN_SYSTEM_PROMPT=None,
     )
     s.submit("say something")
@@ -142,7 +142,7 @@ def test_the_guidelines_name_only_the_tools_offered(ctx):
     listing = [line for line in guidelines.splitlines() if line.startswith("- ")]
     for line in listing:
         if any(line.startswith(f"- {name}: ") for name in (
-            "read", "grep", "find", "internet_search", "page_fetch", "job",
+            "read", "internet_search", "page_fetch", "job",
             "todo", "ask_user", "task",
         )):
             continue
