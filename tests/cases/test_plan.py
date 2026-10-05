@@ -59,7 +59,7 @@ def test_plan_mode_withholds_the_writing_tools(ctx):
     assert "submit_plan" in names and "ask_user" in names, names
 
 
-ASK_BEFORE_PLAN = 'with the options "No, write the plan"'
+ASK_BEFORE_PLAN = 'with the options "No, the agent writes the plan"'
 
 
 def test_plan_prompt_asks_for_additions_before_the_plan(ctx):
@@ -72,7 +72,21 @@ def test_plan_prompt_asks_for_additions_before_the_plan(ctx):
 
     system = ctx.mock.requests[-1]["messages"][0]["content"]
     assert ASK_BEFORE_PLAN in system, system
-    assert "Yes, I'll say it in my next message" in system, system
+    assert "Yes, the user will add it in their next message" in system, system
+    assert "I'll" not in system, system
+
+
+def test_ask_user_asks_for_the_third_person(ctx):
+    """The user picks the options, so "I" and "you" in them are ambiguous."""
+    ctx.scenario("text=ok")
+    s = ctx.spawn()
+    to_plan(s)
+    s.submit("plan it")
+    s.wait_turn_done()
+
+    tools = ctx.mock.requests[-1]["tools"]
+    desc = next(t["function"]["description"] for t in tools if t["function"]["name"] == "ask_user")
+    assert "third person" in desc, desc
 
 
 def test_one_shot_plan_prompt_does_not_ask(ctx):
