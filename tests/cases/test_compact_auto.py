@@ -149,7 +149,9 @@ def test_a_turn_of_tool_rounds_compacts_without_a_second_user_turn(ctx):
     no turns to count. The rounds that fit the budget are kept whole and
     everything before them is summarized, mid-turn."""
     configure(ctx, compact_model="small", small_model="mock:text=summary")
-    ctx.scenario('tool=bash:{"command":"seq 1 1500"},tool_rounds=9,' + FULL)
+    # TODO: placeholder description; write a real one
+    ctx.scenario('tool=bash:{"command":"seq 1 1500","description":"qzx"},'
+                 'tool_rounds=9,' + FULL)
     s = spawn(ctx, ARQAN_PERMISSIONS="free")
 
     s.submit("go")
@@ -350,7 +352,8 @@ def test_compaction_is_attempted_once_per_turn(ctx):
     configure(ctx)
     s = three_turns(ctx, ARQAN_PERMISSIONS="free")
 
-    ctx.scenario('tool=bash:{"command":"true"},tool_rounds=2,'
+    # TODO: placeholder description; write a real one
+    ctx.scenario('tool=bash:{"command":"true","description":"qzx"},tool_rounds=2,'
                  f"text=summary,final_text=done,{FULL}")
     sent = len(ctx.mock.requests)
     s.submit("three")

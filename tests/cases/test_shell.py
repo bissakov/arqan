@@ -252,7 +252,9 @@ def test_a_background_process_does_not_hold_a_user_run(ctx):
 
 def test_a_background_process_does_not_hold_a_bash_call(ctx):
     """The call answers when its shell exits, well before the deadline."""
-    ctx.scenario("tool=bash:" + json.dumps({"command": "sleep 30 & echo started"})
+    # TODO: placeholder description; write a real one
+    ctx.scenario("tool=bash:" + json.dumps({"command": "sleep 30 & echo started",
+                                            "description": "qzx"})
                  + ",final_text=done")
     s = ctx.spawn(ARQAN_SHELL_TIMEOUT_MS="20000")
     started = time.monotonic()
@@ -272,7 +274,9 @@ def test_a_command_inherits_no_open_files(ctx):
     open to list them."""
     if not Path("/proc/self/fd").exists():
         return
-    ctx.scenario('tool=bash:{"command":"ls /proc/self/fd"},final_text=listed')
+    # TODO: placeholder description; write a real one
+    ctx.scenario('tool=bash:{"command":"ls /proc/self/fd","description":"qzx"},'
+                 'final_text=listed')
     s = ctx.spawn()
     s.submit("list them")
     s.wait_text("listed")

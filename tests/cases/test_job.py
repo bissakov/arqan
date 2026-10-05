@@ -12,12 +12,14 @@ import time
 from pathlib import Path
 
 
+# TODO: placeholder description in both helpers; write real ones per case
 def bash(command: str) -> str:
-    return "bash:" + json.dumps({"command": command})
+    return "bash:" + json.dumps({"command": command, "description": "qzx"})
 
 
 def bash_for(command: str, timeout_ms: int) -> str:
-    return "bash:" + json.dumps({"command": command, "timeout_ms": timeout_ms})
+    return "bash:" + json.dumps({"command": command, "description": "qzx",
+                                 "timeout_ms": timeout_ms})
 
 
 def job(**args) -> str:

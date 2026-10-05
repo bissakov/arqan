@@ -200,7 +200,8 @@ def bench_hostile_tool_arguments(b):
     for label, name, args in (
         ("path too long", "read", json.dumps({"path": "d/" * 3000 + "f.txt"})),
         ("command too long", "bash",
-         json.dumps({"command": "echo " + "x" * 70000})),
+         # TODO: placeholder description; write a real one
+         json.dumps({"command": "echo " + "x" * 70000, "description": "qzx"})),
         ("deeply nested arguments", "read", deep),
         ("arguments are not an object", "read", '"just a string"'),
         ("unknown tool", "nosuchtool", "{}"),

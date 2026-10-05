@@ -12,8 +12,9 @@ import signal
 
 from .test_compact_auto import FULL, configure, spawn
 
-TRUE = json.dumps({"command": "true"})
-FALSE = json.dumps({"command": "false"})
+# TODO: placeholder descriptions; write real ones per case
+TRUE = json.dumps({"command": "true", "description": "qzx"})
+FALSE = json.dumps({"command": "false", "description": "qzx"})
 
 
 def run_results(ctx):
@@ -90,8 +91,10 @@ def test_the_note_stays_off_the_screen(ctx):
 
 def test_the_note_stays_off_the_screen_in_a_batch(ctx):
     """A batch child is a tool call too, and its result renders the same way."""
+    # TODO: placeholder description; write a real one
     batch = "batch:" + json.dumps(
-        {"steps": [{"tool": "bash", "args": {"command": "false"}}]})
+        {"steps": [{"tool": "bash",
+                    "args": {"command": "false", "description": "qzx"}}]})
     ctx.scenario(f"tool={batch},tool_rounds=3,final_text=done")
     s = ctx.spawn()
     s.submit("make it pass")
@@ -111,7 +114,9 @@ def test_a_compaction_is_reported_on_the_next_result(ctx):
     """The summary replaced what the model remembers, so the next result
     says that it did."""
     configure(ctx, compact_model="small", small_model="mock:text=summary")
-    ctx.scenario('tool=bash:{"command":"seq 1 300"},tool_rounds=9,' + FULL)
+    # TODO: placeholder description; write a real one
+    ctx.scenario('tool=bash:{"command":"seq 1 300","description":"qzx"},'
+                 'tool_rounds=9,' + FULL)
     s = spawn(ctx)
 
     def reported(request):

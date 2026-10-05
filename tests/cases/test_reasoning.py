@@ -144,9 +144,10 @@ def test_a_reasoning_delta_larger_than_the_line_buffer_arrives(ctx):
 
 def test_reasoning_is_dimmer_than_tool_output(ctx):
     """Reasoning keeps the dim grey so it stands apart from tool output."""
+    # TODO: placeholder description; write a real one
     ctx.scenario(
         'reasoning=weighing+options,'
-        'tool=bash:{"command":"echo toolword"},final_text=done'
+        'tool=bash:{"command":"echo toolword","description":"qzx"},final_text=done'
     )
     s = ctx.spawn()
     s.submit("go")

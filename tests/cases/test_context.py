@@ -176,7 +176,8 @@ def test_the_field_follows_the_wire_when_old_results_are_elided(ctx):
     state = ctx.state_file()
     state.parent.mkdir(parents=True, exist_ok=True)
     state.write_text("provider = work\n")
-    args = json.dumps({"command": "seq 1 800"})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": "seq 1 800", "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},tool_rounds=1,text=ok,final_text=ok")
     # A window the run fills: the boundary only advances under pressure.
     s = ctx.spawn(ARQAN_PERMISSIONS="free", ARQAN_MODEL="alpha",

@@ -534,7 +534,8 @@ def test_source_bearing_tool_calls_are_highlighted(ctx):
     assert cell(s, "def answer", 4).fg == BLUE
 
     command = "if true; then echo 'yes'; fi"
-    args = json.dumps({"command": command})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": command, "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},final_text=ran")
     s2 = ctx.spawn()
     s2.submit("run it")
@@ -566,7 +567,8 @@ def test_untyped_grep_and_shell_like_source_stay_plain(ctx):
     s.wait_turn_done()
     assert cell(s, "int answer").fg == SUBTLE
 
-    args = json.dumps({"command": "printf 'int answer = 42;\\n'"})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": "printf 'int answer = 42;\\n'", "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},final_text=done")
     s2 = ctx.spawn()
     s2.submit("run it")

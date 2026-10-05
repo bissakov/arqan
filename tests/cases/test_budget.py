@@ -70,20 +70,24 @@ def test_read_refuses_a_nonsense_offset(ctx):
 
 def test_bash_pages_a_flood_by_output_byte_range(ctx):
     """A shell flood is a bounded page that names the next byte range."""
-    result = run_tool(ctx, "bash", {"command": "seq 1 200000", "limit": 100})
+    # TODO: placeholder description; write a real one
+    result = run_tool(ctx, "bash", {"command": "seq 1 200000", "description": "qzx",
+                                    "limit": 100})
     assert result.startswith("1\n2\n3\n"), result[:80]
     assert "[read 100 of " in result, result[-160:]
     assert "continue with offset=101]" in result, result[-160:]
     assert result.rstrip().endswith("[exit 0]"), result[-80:]
 
-    page = run_tool(ctx, "bash", {"command": "printf abcdef", "offset": 4, "limit": 2})
+    page = run_tool(ctx, "bash", {"command": "printf abcdef", "description": "qzx",
+                                  "offset": 4, "limit": 2})
     assert page.startswith("de[read 2 of 6 output bytes; continue with offset=6]"), page
     assert page.rstrip().endswith("[exit 0]"), page
 
 
 def test_short_command_output_is_untouched(ctx):
     """Nothing is said about a cap that did not bite."""
-    result = run_tool(ctx, "bash", {"command": "echo hello"})
+    # TODO: placeholder description; write a real one
+    result = run_tool(ctx, "bash", {"command": "echo hello", "description": "qzx"})
     assert result == "hello\n\n[exit 0]", repr(result)
 
 
@@ -116,8 +120,9 @@ def big_run(ctx, s, reply, lines=400):
     about the note has to use a call the model cannot simply make again.
     """
     ctx.write_file("big.txt", numbered(lines))
+    # TODO: placeholder description; write a real one
     ctx.scenario(
-        'tool=bash:{"command":"cat big.txt"},'
+        'tool=bash:{"command":"cat big.txt","description":"qzx"},'
         f'final_text={reply.replace(" ", "+")}'
     )
     s.submit("cat big.txt")
@@ -152,8 +157,10 @@ def test_an_old_tool_result_is_elided_on_the_wire(ctx):
 def test_a_small_result_is_never_elided(ctx):
     """Under the threshold, saying it was elided costs more than sending it."""
     ctx.write_file("big.txt", numbered(400))
-    ctx.scenario('tool=bash:{"command":"echo hello from disk"},'
-                 'tool=bash:{"command":"cat big.txt"},final_text=read+it')
+    # TODO: placeholder description; write a real one
+    ctx.scenario('tool=bash:{"command":"echo hello from disk","description":"qzx"},'
+                 'tool=bash:{"command":"cat big.txt","description":"qzx"},'
+                 'final_text=read+it')
     s = windowed(ctx)
     s.submit("run both")
     s.wait_text("read it")
@@ -195,7 +202,8 @@ def test_results_older_than_the_last_rounds_are_elided_inside_one_turn(ctx):
     block of four rounds at a time, so at nine rounds the first four are a
     line each and the five that follow are sent as they stand.
     """
-    args = json.dumps({"command": "seq 1 300"})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": "seq 1 300", "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},tool_rounds=9,text=ok,final_text=done")
     s = windowed(ctx, ARQAN_PERMISSIONS="free")
     s.submit("go")
@@ -225,7 +233,8 @@ def test_a_run_under_two_blocks_of_rounds_elides_nothing(ctx):
     throw the cache away each time. Under two blocks there is nothing old
     enough to be worth that.
     """
-    args = json.dumps({"command": "seq 1 300"})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": "seq 1 300", "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},tool_rounds=6,text=ok,final_text=done")
     s = windowed(ctx, ARQAN_PERMISSIONS="free")
     s.submit("go")

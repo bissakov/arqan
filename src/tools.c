@@ -953,6 +953,12 @@ static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err,
                     size_t err_cap) {
     JVal *j = tool_args(args, scratch, err, err_cap);
     if (!j) return false;
+    if (!str_trim(json_str(j, STR("description"))).n) {
+        snprintf(err, err_cap,
+                 "missing description: say what the command does in a few "
+                 "words");
+        return false;
+    }
     size_t offset, limit, timeout;
     if (!arg_count(j, STR("offset"), 1, 1u << 30, &offset, err, err_cap)
         || !arg_count(j, STR("limit"), AGENT_SHELL_OUT_BYTES,
@@ -2385,15 +2391,17 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
     _Static_assert(AGENT_MAX_TODOS == 20 && AGENT_MAX_TODO_TEXT == 100,
                    "the todo schema names maxItems 20 and 100 bytes");
 
-    char *bash_schema = arena_alloc(persist, 768, 1);
+    char *bash_schema = arena_alloc(persist, 1024, 1);
     if (!bash_schema) {
         r->name = NULL;
         return;
     }
     int schema_n = snprintf(
-        bash_schema, 768,
+        bash_schema, 1024,
         "{\"type\":\"object\",\"properties\":{"
         "\"command\":{\"type\":\"string\"},"
+        "\"description\":{\"type\":\"string\","
+        "\"description\":\"what the command does, in a few words\"},"
         "\"offset\":{\"type\":\"integer\",\"minimum\":1,"
         "\"description\":\"first output byte, 1-based\"},"
         "\"limit\":{\"type\":\"integer\",\"minimum\":1,"
@@ -2401,10 +2409,10 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         "\"timeout_ms\":{\"type\":\"integer\",\"minimum\":1,"
         "\"maximum\":%d,\"description\":\"turn deadline in milliseconds; "
         "at most %d\"}},"
-        "\"required\":[\"command\"]}",
+        "\"required\":[\"command\",\"description\"]}",
         AGENT_SHELL_OUT_BYTES, AGENT_SHELL_OUT_BYTES, shell_timeout_ms,
         shell_timeout_ms);
-    if (schema_n < 0 || (size_t)schema_n >= 768) {
+    if (schema_n < 0 || (size_t)schema_n >= 1024) {
         r->name = NULL;
         return;
     }
@@ -2479,6 +2487,9 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
             "of its stdout and stderr. Every call starts a new shell in the "
             "working directory, so a cd reaches only the rest of that one "
             "command and a cd into the working directory is redundant. "
+            "Give a description of what the command does in a few words, "
+            "such as \"find callers of walk_run\"; the user reads it before "
+            "the command. "
             "Use offset and limit to page output, "
             "and prefer head, tail, sed -n or grep to target the lines you "
             "need. Commands run without a terminal, so "

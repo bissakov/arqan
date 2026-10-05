@@ -62,7 +62,8 @@ def test_a_disabled_tool_is_not_sent(ctx):
 
 def test_a_disabled_tool_is_refused_when_called_anyway(ctx):
     """A schema offered before the toggle is still in the model's context."""
-    args = json.dumps({"command": "touch ran.txt"})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": "touch ran.txt", "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},final_text=understood")
     s = ctx.spawn()
     open_tools(s)

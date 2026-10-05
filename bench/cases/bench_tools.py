@@ -112,13 +112,17 @@ def bench_bash_output(b):
     """A command that prints megabytes must still hand back one bounded page."""
     s = b.spawn()
     lines = b.scale(200000, floor=20000)
+    # TODO: placeholder descriptions; write real ones
     out = measured_call(b, s, "seq to stdout", "bash",
-                        {"command": f"seq 1 {lines}"}, budget_ms=3000.0)
+                        {"command": f"seq 1 {lines}", "description": "qzx"},
+                        budget_ms=3000.0)
     b.check(len(out) < 32 * 1024, f"bash replayed {len(out)} bytes")
     measured_call(b, s, "output to stderr", "bash",
-                  {"command": f"seq 1 {lines} 1>&2"}, budget_ms=3000.0)
+                  {"command": f"seq 1 {lines} 1>&2", "description": "qzx"},
+                  budget_ms=3000.0)
     measured_call(b, s, "binary output", "bash",
-                  {"command": "head -c 200000 /dev/urandom"}, budget_ms=3000.0)
+                  {"command": "head -c 200000 /dev/urandom", "description": "qzx"},
+                  budget_ms=3000.0)
     b.alive(s)
 
 

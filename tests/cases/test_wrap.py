@@ -106,7 +106,8 @@ def test_the_composer_wraps_between_words_too(ctx):
 
 def test_a_tool_result_is_not_justified(ctx):
     """Widening the gaps of output a reader lines up would move its columns."""
-    args = json.dumps({"command": f"echo {' '.join(WORDS)}"})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": f"echo {' '.join(WORDS)}", "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},final_text=ran+it")
     s = ctx.spawn()
     s.submit("run echo")
@@ -125,7 +126,9 @@ def test_a_tool_result_is_not_justified(ctx):
 
 def test_a_wrapped_command_is_not_justified(ctx):
     """A command header long enough to wrap is code, not prose."""
-    args = json.dumps({"command": "echo " + " ".join(WORDS) + " #done"})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": "echo " + " ".join(WORDS) + " #done",
+                       "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},final_text=ran+it")
     s = ctx.spawn()
     s.submit("run echo")
