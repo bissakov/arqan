@@ -39,6 +39,10 @@
 
 ### Changed
 
+- `ask_user` questions and options are written in the third person, as in
+  "Should the agent keep the old API?", instead of "I" or "you". The user
+  picks an option, so first and second person were ambiguous.
+
 - A context checkpoint keeps the user's requests word for word, in a
   `User requests` section the model does not write, and carries them
   forward through later compactions. A `Run` line counts the compactions.

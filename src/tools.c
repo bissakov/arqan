@@ -2571,7 +2571,11 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         todo_run);
     ADD("ask_user",
         "Ask the user to choose between options. Mark the one you "
-        "recommend; they may also answer in their own words.",
+        "recommend; they may also answer in their own words. Write the "
+        "question and options in the third person, naming \"the agent\" "
+        "and \"the user\" (\"Should the agent keep the old API?\", "
+        "\"The user will explain\"), never \"I\", \"you\" or \"we\": the "
+        "user picks an option, so those words are ambiguous.",
         "Ask the user to choose", BOTH | TOOL_FIXED | TOOL_INTERACTIVE,
         TOOL_APPROVAL_NONE,
         "{\"type\":\"object\",\"properties\":{\"question\":{\"type\":\"string\"},\"options\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"label\":{\"type\":\"string\"},\"detail\":{\"type\":\"string\"},\"recommended\":{\"type\":\"boolean\"}},\"required\":[\"label\"]}}},\"required\":[\"question\",\"options\"]}",

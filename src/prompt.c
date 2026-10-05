@@ -285,11 +285,11 @@ static void prompt_ask_user(Buf *b, const ToolRegistry *tools, AgentMode mode) {
                         "- Once you know what the plan will say, and before "
                         "writing it, call ask_user once to ask whether the "
                         "user has anything to add, with the options \"No, "
-                        "write the plan\" (recommended) and \"Yes, I'll say "
-                        "it in my next message\". If they pick the second, "
-                        "end your turn with one short line and write nothing "
-                        "else. Ask again only if their answer changed the "
-                        "plan\n"));
+                        "the agent writes the plan\" (recommended) and "
+                        "\"Yes, the user will add it in their next "
+                        "message\". If they pick the second, end your turn "
+                        "with one short line and write nothing else. Ask "
+                        "again only if their answer changed the plan\n"));
         return;
     }
     buf_puts(b, STR("- Call ask_user instead of ending your turn with a "
