@@ -13,7 +13,9 @@ def test_oversized_bash_command_is_refused(ctx):
     # Truncating a shell line changes the program it describes: cut this one
     # short and the `touch` at the front is all that survives and runs.
     padded = "touch ran-truncated.txt # " + "x" * 70000
-    ctx.scenario(f"tool=bash:{json.dumps({'command': padded})},final_text=refused")
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": padded, "description": "qzx"})
+    ctx.scenario(f"tool=bash:{args},final_text=refused")
     s = ctx.spawn()
     s.submit("run something enormous")
     s.wait_text("refused")

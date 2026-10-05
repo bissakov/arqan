@@ -124,8 +124,9 @@ def test_patch_shows_the_diff_it_applies(ctx):
 
 
 def test_bash_result_is_summarised_by_its_exit_status(ctx):
-    """The command heads the call and its exit code heads the result."""
-    args = json.dumps({"command": "echo hi; exit 3"})
+    """The description heads the call and its exit code heads the result."""
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": "echo hi; exit 3", "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},final_text=it+failed")
     s = ctx.spawn()
     s.submit("run it")
@@ -133,7 +134,8 @@ def test_bash_result_is_summarised_by_its_exit_status(ctx):
     s.wait_turn_done()
 
     text = s.text()
-    assert "\u25c6  bash echo hi; exit 3" in text, text
+    assert "\u25c6  bash qzx" in text, text
+    assert "\u2502 echo hi; exit 3" in text, text
     assert "\u2514\u2500 exit 3" in text, text
     assert "   hi" in text, text
 
@@ -521,7 +523,8 @@ def test_bash_describes_the_directory_it_runs_in(ctx):
     Without the promise a model prefixes commands with a cd into the
     directory they already start in.
     """
-    ctx.scenario('tool=bash:{"command":"pwd"},final_text=done')
+    # TODO: placeholder description; write a real one
+    ctx.scenario('tool=bash:{"command":"pwd","description":"qzx"},final_text=done')
     s = ctx.spawn()
     s.submit("where am i?")
     s.wait_text("done")
@@ -535,6 +538,54 @@ def test_bash_describes_the_directory_it_runs_in(ctx):
 
     result = ctx.mock.tool_results()[-1]
     assert result.startswith(f"{ctx.work}\n"), result
+
+
+def test_bash_asks_for_a_description(ctx):
+    """The schema asks for a short description of what the command does."""
+    ctx.scenario("final_text=done")
+    s = ctx.spawn()
+    s.submit("hello")
+    s.wait_turn_done()
+
+    bash = next(tool for tool in ctx.mock.requests[0]["tools"]
+                if tool["function"]["name"] == "bash")
+    params = bash["function"]["parameters"]
+    assert params["properties"]["description"]["type"] == "string", params
+    assert params["required"] == ["command", "description"], params
+
+
+def test_bash_shows_the_description_above_the_command(ctx):
+    """The call header shows the description and the command sits below it."""
+    ctx.write_file("notes.txt", "one\ntwo\n")
+    args = json.dumps({"command": "wc -l notes.txt",
+                       "description": "count the lines in notes"})
+    ctx.scenario(f"tool=bash:{args},final_text=counted")
+    s = ctx.spawn()
+    s.submit("count them")
+    s.wait_text("counted")
+    s.wait_turn_done()
+
+    rows = s.text().splitlines()
+    head = [r for r in rows if "\u25c6  bash" in r]
+    assert len(head) == 1, rows
+    assert "count the lines in notes" in head[0], head
+    assert "wc -l" not in head[0], head
+    assert any("\u2502 wc -l notes.txt" in r for r in rows), rows
+    assert ctx.mock.tool_results()[-1].startswith("2 notes.txt"), \
+        ctx.mock.tool_results()
+
+
+def test_bash_without_a_description_is_refused(ctx):
+    """A call that omits the description runs nothing and says why."""
+    ctx.scenario('tool=bash:{"command":"touch ran.txt"},final_text=refused')
+    s = ctx.spawn()
+    s.submit("run it")
+    s.wait_text("refused")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert result.startswith("ERROR: missing description"), result
+    assert not (ctx.work / "ran.txt").exists()
 
 
 def test_bad_tool_json_reports_the_byte_and_input(ctx):
@@ -691,7 +742,8 @@ def test_patch_invalid_hunk_does_not_create_parent_directories(ctx):
 
 def test_bash_tool_runs_a_command(ctx):
     """The bash tool's stdout comes back as the tool result."""
-    args = json.dumps({"command": "echo tool-output-marker"})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": "echo tool-output-marker", "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},final_text=ran+it")
     s = ctx.spawn()
     s.submit("run echo")
@@ -702,7 +754,8 @@ def test_bash_tool_runs_a_command(ctx):
 
 
 def test_bash_empty_output_is_not_described_as_a_bad_offset(ctx):
-    args = json.dumps({"command": ":"})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": ":", "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},final_text=ran+it")
     s = ctx.spawn()
     s.submit("run it")
@@ -720,8 +773,10 @@ def test_bash_tool_cannot_reach_the_terminal(ctx):
     Otherwise a `sudo` password prompt lands in the frame the TUI owns and
     its read races the composer for keystrokes.
     """
+    # TODO: placeholder description; write a real one
     args = json.dumps(
-        {"command": "echo tty-marker > /dev/tty && echo TTY-WRITABLE || echo NO-TTY"}
+        {"command": "echo tty-marker > /dev/tty && echo TTY-WRITABLE || echo NO-TTY",
+         "description": "qzx"}
     )
     ctx.scenario(f"tool=bash:{args},final_text=no+terminal")
     s = ctx.spawn()
@@ -779,7 +834,8 @@ def test_parallel_tool_calls(ctx):
 def test_status_names_the_running_tool(ctx):
     """While a tool runs the spinner row says which one, and the status line
     keeps its colour rather than repeating the word."""
-    args = json.dumps({"command": "sleep 0.6; echo slept"})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": "sleep 0.6; echo slept", "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},final_text=finished")
     s = ctx.spawn()
     s.submit("run something slow")
@@ -836,7 +892,8 @@ def test_verbose_shows_every_line_of_a_result(ctx):
 def test_verbose_shows_a_long_command_whole(ctx):
     """A call header is clipped only while verbose is off."""
     marker = "x" * 1500
-    args = json.dumps({"command": f"echo {marker}"})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": f"echo {marker}", "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},final_text=ran")
     s = ctx.spawn()
     s.submit("run it")
@@ -854,7 +911,8 @@ def test_verbose_shows_a_long_command_whole(ctx):
 
 def test_a_command_is_shown_past_one_row_of_bytes(ctx):
     """A command the header once cut at 120 bytes is now shown whole."""
-    args = json.dumps({"command": "echo hi #" + "x" * 400})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": "echo hi #" + "x" * 400, "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},final_text=ran")
     s = ctx.spawn()
     s.submit("run it")
@@ -920,7 +978,8 @@ def test_clicking_a_truncated_block_expands_and_folds_it(ctx):
 
 def test_a_cut_command_header_offers_the_rest_in_one_click(ctx):
     """A one-line command too long even for the command width is reachable."""
-    args = json.dumps({"command": "echo hi #" + "x" * 1500})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": "echo hi #" + "x" * 1500, "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},final_text=ran")
     s = ctx.spawn()
     s.submit("run it")
@@ -1394,7 +1453,8 @@ def test_binary_tool_output_is_sent_as_valid_utf8(ctx):
     request carrying the tail of /dev/urandom. What the tool answers is
     replayed, so the sanitising belongs to the serialiser, not the tool.
     """
-    args = json.dumps({"command": "head -c 4096 /dev/urandom"})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": "head -c 4096 /dev/urandom", "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},final_text=handled")
     s = ctx.spawn()
     s.submit("dump some bytes")

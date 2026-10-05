@@ -70,7 +70,8 @@ def test_settings_opens_while_a_turn_streams(ctx):
 def test_a_look_setting_applies_without_disturbing_the_reply(ctx):
     """Verbose tool output is a way of reading the transcript, not a request
     setting, so it changes mid-turn and the streamed reply survives it."""
-    ctx.scenario('tool=bash:{"command":"echo hi"},hold_final,'
+    # TODO: placeholder description; write a real one
+    ctx.scenario('tool=bash:{"command":"echo hi","description":"qzx"},hold_final,'
                  'final_text=finished')
     s = ctx.spawn()
     s.submit("run it")
@@ -167,7 +168,8 @@ def test_a_message_submitted_mid_turn_runs_after_the_reply(ctx):
 def test_a_queued_message_joins_the_turn_after_its_tool(ctx):
     """Tool calls receive their results before queued steering reaches the
     provider, preserving the tool-call sequence on the wire."""
-    ctx.scenario('tool=bash:{"command":"sleep 1; echo finished"},'
+    # TODO: placeholder description; write a real one
+    ctx.scenario('tool=bash:{"command":"sleep 1; echo finished","description":"qzx"},'
                  'final_text=steered')
     s = ctx.spawn()
     s.submit("start the work")
@@ -417,16 +419,17 @@ def test_the_window_keeps_the_full_tool_result(ctx):
 
 
 def test_the_window_keeps_the_tool_input_header_line(ctx):
-    """A long tool input opens as the complete input, including the command
-    line that the folded transcript summarizes in its header."""
+    """A long tool input opens as the complete input, including the first
+    command line."""
     command = "printf first\\n\n" + "\n".join(
         f"# input {i:02d}" for i in range(20))
-    ctx.scenario("tool=bash:" + json.dumps({"command": command})
+    # TODO: placeholder description; write a real one
+    ctx.scenario("tool=bash:" + json.dumps({"command": command, "description": "qzx"})
                  + ",hold_final,final_text=done")
     s = ctx.spawn()
     s.submit("run a long command")
-    s.wait_text("\u25be 12 more lines")
-    click_tail(s, "\u25be 12 more lines")
+    s.wait_text("\u25be 13 more lines")
+    click_tail(s, "\u25be 13 more lines")
     s.key("home").sync()
     assert "printf first" in s.text(), s.text()
 
@@ -531,7 +534,8 @@ def test_a_question_the_turn_asks_takes_the_window(ctx):
     """The window is a way of reading, not a keyboard the agent can be stuck
     behind: an approval the next round needs closes it and is asked at once."""
     command = "for i in $(seq 0 39); do printf 'shell %04d\\n' \"$i\"; done"
-    ctx.scenario("tool=bash:" + json.dumps({"command": command})
+    # TODO: placeholder description; write a real one
+    ctx.scenario("tool=bash:" + json.dumps({"command": command, "description": "qzx"})
                  + ",tool_rounds=2,hold_round=2,final_text=done")
     s = ctx.spawn(ARQAN_PERMISSIONS="ask")
     s.submit("run it")

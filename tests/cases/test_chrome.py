@@ -76,8 +76,10 @@ def test_transcript_roles_are_styled(ctx):
 
 def test_tool_output_is_brighter_than_its_gutter(ctx):
     """Tool output reads in the content grey; the gutter stays dim."""
+    # TODO: placeholder description; write a real one
     ctx.scenario(
-        'tool=bash:{"command":"echo first\\necho second"},final_text=done'
+        'tool=bash:{"command":"echo first\\necho second","description":"qzx"},'
+        'final_text=done'
     )
     s = ctx.spawn()
     s.submit("run it")

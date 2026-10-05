@@ -83,7 +83,8 @@ def test_the_boundary_holds_across_rounds(ctx):
     buy back four rounds of elision. Under no pressure it must not move at
     all: every request is the previous one with more on the end.
     """
-    args = json.dumps({"command": "echo hello"})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": "echo hello", "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},tool_rounds=12,text=ok,final_text=done")
     s = ctx.spawn()
     s.submit("go")
@@ -105,7 +106,9 @@ def test_the_valve_fires_once_and_then_holds(ctx):
     """
     s = windowed(ctx)
     ctx.write_file("big.txt", numbered(400))
-    ctx.scenario('tool=bash:{"command":"cat big.txt"},final_text=read')
+    # TODO: placeholder description; write a real one
+    ctx.scenario('tool=bash:{"command":"cat big.txt","description":"qzx"},'
+                 'final_text=read')
     s.submit("cat big.txt")
     s.wait_text("read")
     s.wait_turn_done()
@@ -151,7 +154,9 @@ def test_arguments_are_stubbed_below_the_boundary(ctx):
     s = windowed(ctx)
     padding = "x" * 4000
     command = f"echo head-of-the-command # {padding}"
-    ctx.scenario(f'tool=bash:{{"command":"{command}"}},final_text=ran')
+    # TODO: placeholder description; write a real one
+    ctx.scenario(f'tool=bash:{{"command":"{command}","description":"qzx"}},'
+                 'final_text=ran')
     s.submit("run it")
     s.wait_text("ran")
     s.wait_turn_done()
@@ -264,7 +269,9 @@ def test_a_failed_call_leaves_the_wire_on_both_sides(ctx):
     # advances when there is something to gain by moving it.
     bogus = "not a diff at all " * 250
     ctx.scenario(f'tool=patch:{{"patch":"{bogus}"}},'
-                 'tool=bash:{"command":"echo still here"},final_text=tried')
+                 # TODO: placeholder description; write a real one
+                 'tool=bash:{"command":"echo still here","description":"qzx"},'
+                 'final_text=tried')
     s.submit("try both")
     s.wait_text("tried")
     s.wait_turn_done()
@@ -313,7 +320,9 @@ def test_a_breakpoint_parks_below_the_elision_boundary(ctx):
     byte-identical, so a breakpoint left there keeps it readable and the
     rewrite covers only the tail."""
     ctx.write_file("big.txt", numbered(400))
-    ctx.scenario('tool=bash:{"command":"cat big.txt"},final_text=read')
+    # TODO: placeholder description; write a real one
+    ctx.scenario('tool=bash:{"command":"cat big.txt","description":"qzx"},'
+                 'final_text=read')
     s = windowed(ctx, ARQAN_API="anthropic")
     s.submit("cat big.txt")
     s.wait_text("read")
@@ -341,7 +350,8 @@ def test_an_unexplained_miss_stops_the_tool_loop(ctx):
     s.submit("one")
     s.wait_turn_done()
 
-    args = json.dumps({"command": "echo x"})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": "echo x", "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},tool_rounds=5,text=ok,final_text=done,"
                  "usage=1000/10,cache_read=0")
     sent = len(ctx.mock.requests)
@@ -393,7 +403,8 @@ def test_a_server_answering_from_an_older_prefix_is_not_a_defect(ctx):
     s.submit("two")
     s.wait_turn_done()
 
-    args = json.dumps({"command": "echo x"})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": "echo x", "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},tool_rounds=2,text=ok,final_text=done,"
                  "usage=3000/10,cache_read=1000")
     s.submit("three")
@@ -409,7 +420,8 @@ def missed(ctx, s):
     s.submit("one")
     s.wait_turn_done()
 
-    args = json.dumps({"command": "echo x"})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": "echo x", "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},tool_rounds=2,text=ok,final_text=done,"
                  "usage=1000/10,cache_read=0")
     sent = len(ctx.mock.requests)
@@ -471,7 +483,8 @@ def test_every_openai_request_carries_one_cache_key(ctx):
     machine that never saw the first, which is the miss the key exists to
     stop. Tool rounds are part of the same session and share it.
     """
-    args = json.dumps({"command": "echo hello"})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": "echo hello", "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},tool_rounds=2,text=ok,final_text=first")
     s = ctx.spawn()
     s.submit("go")

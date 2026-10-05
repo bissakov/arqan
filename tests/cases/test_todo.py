@@ -417,7 +417,8 @@ def test_eliding_never_takes_the_live_list_off_the_wire(ctx):
     ]
     args = json.dumps({"items": items})
     assert len(args) > 512, "the case needs a list over AGENT_ELIDE_BYTES"
-    bash = json.dumps({"command": "seq 1 300"})
+    # TODO: placeholder description; write a real one
+    bash = json.dumps({"command": "seq 1 300", "description": "qzx"})
 
     # The list is written once, then left behind: the boundary reaches back
     # two user turns, so the turns of ordinary work after it are what put the
@@ -546,7 +547,8 @@ def test_a_list_left_behind_asks_for_an_update(ctx):
     results answering other tools with a step still in progress, the next
     result carries the ask back.
     """
-    bash = json.dumps({"command": "true"})
+    # TODO: placeholder description; write a real one
+    bash = json.dumps({"command": "true", "description": "qzx"})
     ctx.scenario(
         todo(
             ("read the decoder", "done"),
@@ -576,7 +578,8 @@ def test_a_list_left_behind_asks_for_an_update(ctx):
 
 def test_the_ask_names_the_list_with_no_step_in_progress(ctx):
     """A list nobody advanced states its counts and asks for the next step."""
-    bash = json.dumps({"command": "true"})
+    # TODO: placeholder description; write a real one
+    bash = json.dumps({"command": "true", "description": "qzx"})
     ctx.scenario(
         todo(
             ("read the decoder", "pending"),
@@ -601,7 +604,8 @@ def test_the_ask_names_the_list_with_no_step_in_progress(ctx):
 
 def test_a_finished_list_is_left_alone(ctx):
     """Nothing is left to update, so the results stay the tool's own."""
-    bash = json.dumps({"command": "true"})
+    # TODO: placeholder description; write a real one
+    bash = json.dumps({"command": "true", "description": "qzx"})
     ctx.scenario(todo(("read the decoder", "done"), final="planned"))
     s = ctx.spawn()
     s.submit("do the long thing")
@@ -625,7 +629,8 @@ def test_the_ask_stays_out_of_the_transcript(ctx):
     status, which put the ask where the exit code belongs and pushed the
     exit code into the output.
     """
-    bash = json.dumps({"command": "echo hi"})
+    # TODO: placeholder description; write a real one
+    bash = json.dumps({"command": "echo hi", "description": "qzx"})
     ctx.scenario(todo(("wire the parser", "in_progress"), final="planned"))
     s = ctx.spawn()
     s.submit("do the long thing")
@@ -646,7 +651,8 @@ def test_the_ask_stays_out_of_the_transcript(ctx):
 
 def test_an_update_restarts_the_count(ctx):
     """A model that keeps the list current is never interrupted about it."""
-    bash = json.dumps({"command": "true"})
+    # TODO: placeholder description; write a real one
+    bash = json.dumps({"command": "true", "description": "qzx"})
     ctx.scenario(
         todo(
             ("read the decoder", "in_progress"),
@@ -687,7 +693,8 @@ def test_an_update_restarts_the_count(ctx):
 
 def edits(rounds, reads=True):
     """A turn that keeps editing, with a read alongside each edit."""
-    bash = json.dumps({"command": "true"})
+    # TODO: placeholder description; write a real one
+    bash = json.dumps({"command": "true", "description": "qzx"})
     write = json.dumps({"path": "worked.txt", "content": "changed"})
     calls = f"tool=bash:{bash}," if reads else ""
     return f"{calls}tool=write:{write},tool_rounds={rounds}"
@@ -721,7 +728,8 @@ def test_a_turn_that_never_opened_a_list_is_asked_for_one(ctx):
 
 def test_a_long_turn_that_changes_nothing_is_left_alone(ctx):
     """Reading around a codebase is one answer, however many calls it takes."""
-    bash = json.dumps({"command": "true"})
+    # TODO: placeholder description; write a real one
+    bash = json.dumps({"command": "true", "description": "qzx"})
     ctx.scenario(f"tool=bash:{bash},tool_rounds=20,final_text=done")
     s = ctx.spawn()
     s.submit("explain how the parser works")

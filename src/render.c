@@ -355,6 +355,14 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
     }
     size_t cmd_off = 0;
     b8 target_cmd = !path.n && cmd.n;
+    Str shell_desc = str_eq(name, STR("bash"))
+                         ? str_trim(json_str(j, STR("description")))
+                         : (Str){0};
+    if (target_cmd && shell_desc.n) {
+        size_t desc_off = 0;
+        str_line(shell_desc, &desc_off, &target);
+        target_cmd = false;
+    }
 
     char task_buf[48];
     Str task_prompt = {0};
@@ -413,7 +421,7 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
         g_render.block.head_more = target.n > bytes;
         Str shown = clip(target, bytes);
         size_t at = tui_transcript_pos();
-        if (source_code && cmd.n) {
+        if (source_code && target_cmd) {
             tui_write_source(shown);
             add_line_syntax(&syntax, syntax_source, 0, shown, at);
         } else {
@@ -421,6 +429,13 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
         }
         if (shown.n < target.n) target_sink(STR(" ..."));
         if (search) target_sink(STR("\""));
+    }
+    if (shell_desc.n) {
+        size_t line_off = 0;
+        Str line;
+        for (size_t i = 0; i < R_ARG_LINES && str_line(cmd, &line_off, &line);
+             i++)
+            g_render.block.head_more |= line.n > R_CMD_BYTES;
     }
     if (search) {
         Str root = path.n ? path : STR(".");
@@ -1120,7 +1135,9 @@ Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
         body = patch;
         if (syntax) batched_syntax(patch, false, (Str){0}, scratch, syntax);
     } else if (cmd.n) {
-        if (shown) *shown = R_ARG_LINES + 1;
+        b8 described = str_eq(name, STR("bash"))
+                       && str_trim(json_str(j, STR("description"))).n;
+        if (shown) *shown = described ? R_ARG_LINES : R_ARG_LINES + 1;
         body = cmd;
         if (syntax && str_eq(name, STR("bash")))
             highlight_request(YHL_HINT_MARKDOWN_ALIAS, STR("bash"), cmd,

@@ -120,7 +120,9 @@ def test_telemetry_off_stops_the_recording(ctx):
 
 
 def test_telemetry_distinguishes_nonzero_shell_result(ctx):
-    ctx.scenario('tool=bash:{"command":"sh -c \'exit 7\'"},final_text=done')
+    # TODO: placeholder description; write a real one
+    ctx.scenario('tool=bash:{"command":"sh -c \'exit 7\'","description":"qzx"},'
+                 'final_text=done')
     s = ctx.spawn()
     s.settings_toggle("Telemetry")
     s.submit("run it")

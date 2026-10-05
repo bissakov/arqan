@@ -171,7 +171,8 @@ def test_batch_failure_stops_later_steps_without_rolling_back(ctx):
 
 
 def test_batch_nonzero_exit_stops_later_steps(ctx):
-    run_batch(ctx, [step("bash", command="printf failed; exit 7"),
+    # TODO: placeholder description; write a real one
+    run_batch(ctx, [step("bash", command="printf failed; exit 7", description="qzx"),
                     step("write", path="after.txt", content="never")])
     out = result(ctx)
     assert out["status"] == "stopped", out
@@ -182,7 +183,8 @@ def test_batch_nonzero_exit_stops_later_steps(ctx):
 
 
 def test_batch_does_not_infer_exit_status_from_stdout(ctx):
-    run_batch(ctx, [step("bash", command="printf '[exit 9]\\n'"),
+    # TODO: placeholder description; write a real one
+    run_batch(ctx, [step("bash", command="printf '[exit 9]\\n'", description="qzx"),
                     step("write", path="after.txt", content="yes")])
     assert result(ctx)["status"] == "completed", result(ctx)
     assert (ctx.work / "after.txt").read_text() == "yes"
@@ -197,8 +199,10 @@ def test_batch_does_not_infer_tool_failure_from_file_contents(ctx):
 
 
 def test_batch_detachment_stops_until_the_job_is_followed(ctx):
+    # TODO: placeholder description; write a real one
     ctx.scenario("tool=" + batch_call([
-        step("bash", command="sleep 0.7; printf finished", timeout_ms=200),
+        step("bash", command="sleep 0.7; printf finished", description="qzx",
+             timeout_ms=200),
         step("write", path="after.txt", content="never")])
         + ',tool=job:{"id":1},final_text=done')
     s = ctx.spawn()
@@ -216,7 +220,9 @@ def test_batch_detachment_stops_until_the_job_is_followed(ctx):
 
 
 def test_batch_job_poll_stops_if_the_job_is_still_running(ctx):
-    ctx.scenario('tool=bash:{"command":"sleep 3","timeout_ms":200},tool='
+    # TODO: placeholder description; write a real one
+    ctx.scenario('tool=bash:{"command":"sleep 3","description":"qzx",'
+        '"timeout_ms":200},tool='
         + batch_call([step("job", id=1, action="poll"),
                       step("write", path="after.txt", content="never")])
         + ",final_text=done")
@@ -232,7 +238,9 @@ def test_batch_job_poll_stops_if_the_job_is_still_running(ctx):
 
 
 def test_batch_completed_job_with_nonzero_exit_stops(ctx):
-    ctx.scenario('tool=bash:{"command":"sleep 0.6; exit 7","timeout_ms":200},tool='
+    # TODO: placeholder description; write a real one
+    ctx.scenario('tool=bash:{"command":"sleep 0.6; exit 7","description":"qzx",'
+        '"timeout_ms":200},tool='
         + batch_call([step("job", id=1, timeout_ms=5000),
                       step("write", path="after.txt", content="never")])
         + ",final_text=done")
@@ -255,8 +263,10 @@ def test_batch_rejects_unknown_tools_before_any_step(ctx):
 
 
 def test_batch_rejects_disabled_children_before_any_step(ctx):
+    # TODO: placeholder description; write a real one
     run_batch(ctx, [step("write", path="before.txt", content="never"),
-                    step("bash", command="true")], ARQAN_DISABLE_TOOLS="bash")
+                    step("bash", command="true", description="qzx")],
+              ARQAN_DISABLE_TOOLS="bash")
     out = ctx.mock.tool_results()[0]
     assert out.startswith("ERROR:") and "step 2" in out, out
     assert "bash" in out and "available" in out, out
@@ -348,8 +358,10 @@ def test_batch_rejects_wrong_child_argument_types_before_any_step(ctx):
 
 
 def test_batch_rejects_child_argument_bounds_before_any_step(ctx):
+    # TODO: placeholder description; write a real one
     run_batch(ctx, [step("write", path="before.txt", content="never"),
-                    step("bash", command="true", timeout_ms=999999999)])
+                    step("bash", command="true", description="qzx",
+                         timeout_ms=999999999)])
     out = ctx.mock.tool_results()[0]
     assert out.startswith("ERROR:") and "step 2 args.timeout_ms" in out, out
     assert "at most" in out, out
@@ -481,7 +493,9 @@ def test_batch_mcp_errors_stop_later_steps(ctx):
 
 
 def test_batch_output_keeps_each_tools_page_and_spill_note(ctx):
-    run_batch(ctx, [step("bash", command="head -c 10000 /dev/zero") for _ in range(8)])
+    # TODO: placeholder description; write a real one
+    run_batch(ctx, [step("bash", command="head -c 10000 /dev/zero", description="qzx")
+                    for _ in range(8)])
     out = result(ctx)
     assert out["status"] == "completed", out
     assert len(out["steps"]) == 8, out
@@ -518,9 +532,11 @@ def test_batch_results_and_diffs_survive_session_replay(ctx):
 
 
 def test_batch_in_progress_children_survive_a_resize(ctx):
+    # TODO: placeholder description; write a real one
     ctx.scenario("tool=" + batch_call([
         step("write", path="before.txt", content="kept\n"),
-        step("bash", command="sleep 1.5; printf finished", timeout_ms=5000),
+        step("bash", command="sleep 1.5; printf finished", description="qzx",
+             timeout_ms=5000),
         step("read", path="before.txt")]) + ",final_text=done")
     s = ctx.spawn()
     s.submit("run it")
@@ -529,16 +545,17 @@ def test_batch_in_progress_children_survive_a_resize(ctx):
     s.wait_text("sleep 1.5; printf finished")
     assert "write before.txt" in s.text(), s.text()
     assert "\u2502  \u25c6  write before.txt" in s.text(), s.text()
-    assert "\u2502  \u25c6  bash sleep 1.5; printf finished" in s.text(), s.text()
+    assert "\u2502  \u25c6  bash qzx" in s.text(), s.text()
     s.wait_text("done")
     s.wait_turn_done()
     assert result(ctx)["status"] == "completed", result(ctx)
 
 
 def test_batch_persists_progress_and_interrupt_stops_later_steps(ctx):
+    # TODO: placeholder description; write a real one
     ctx.scenario("tool=" + batch_call([
         step("write", path="before.txt", content="kept\n"),
-        step("bash", command="sleep 30", timeout_ms=30000),
+        step("bash", command="sleep 30", description="qzx", timeout_ms=30000),
         step("write", path="after.txt", content="never")]))
     s = ctx.spawn()
     s.submit("run it")

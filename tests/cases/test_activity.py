@@ -81,8 +81,10 @@ def test_spinner_leaves_the_composer_where_it_was(ctx):
 
 def test_spinner_names_a_running_tool(ctx):
     """A tool call is a long operation of its own and says which one runs."""
+    # TODO: placeholder description; write a real one
     ctx.scenario(
-        'tool=bash:{"command":"sleep 2; echo slept"},final_text=that+took+a+while'
+        'tool=bash:{"command":"sleep 2; echo slept","description":"qzx"},'
+        'final_text=that+took+a+while'
     )
     s = ctx.spawn()
     s.submit("run something slow")
@@ -170,8 +172,9 @@ def test_the_time_survives_a_resume(ctx):
 def test_the_spinner_carries_the_turn_total_too(ctx):
     """A tool three seconds into a turn says how long it has run and how long
     the turn has."""
+    # TODO: placeholder description; write a real one
     ctx.scenario(
-        'first_delay=1.5,tool=bash:{"command":"sleep 3; echo slept"},'
+        'first_delay=1.5,tool=bash:{"command":"sleep 3; echo slept","description":"qzx"},'
         "final_text=finally"
     )
     s = ctx.spawn(ARQAN_TEST_FREEZE_ACTIVITY_CLOCK=None)
@@ -235,7 +238,8 @@ def test_tool_payload_counts_anthropic_argument_chunks(ctx):
 
 
 def test_tool_payload_clears_between_provider_responses(ctx):
-    args = json.dumps({"command": "sleep 1; echo waited"})
+    # TODO: placeholder description; write a real one
+    args = json.dumps({"command": "sleep 1; echo waited", "description": "qzx"})
     ctx.scenario(Scenario(
         tools=[("bash", args)], tool_rounds=2,
         hold_tool_args=True, final_text="finished",

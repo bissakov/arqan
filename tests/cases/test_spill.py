@@ -48,7 +48,9 @@ def spill_path(result):
 def test_a_paged_command_names_the_file_holding_the_rest(ctx):
     """The page is bounded; the whole run is on disk under $TMPDIR."""
     tmp = tmpdir(ctx)
-    result = run_tool(ctx, "bash", {"command": "seq 1 200000", "limit": 100}, tmp=tmp)
+    # TODO: placeholder description; write a real one
+    result = run_tool(ctx, "bash", {"command": "seq 1 200000", "description": "qzx",
+                                    "limit": 100}, tmp=tmp)
 
     assert len(result.encode()) <= 8192, len(result.encode())
     assert "continue with offset=101]" in result, result[-300:]
@@ -70,7 +72,9 @@ def test_a_paged_command_names_the_file_holding_the_rest(ctx):
 def test_the_spill_is_readable_only_by_its_owner(ctx):
     """The file carries command output into a shared directory: mode 0600."""
     tmp = tmpdir(ctx)
-    result = run_tool(ctx, "bash", {"command": "seq 1 50000", "limit": 64}, tmp=tmp)
+    # TODO: placeholder description; write a real one
+    result = run_tool(ctx, "bash", {"command": "seq 1 50000", "description": "qzx",
+                                    "limit": 64}, tmp=tmp)
     path, _ = spill_path(result)
     assert (tmp / path.rsplit("/", 1)[1]).stat().st_mode & 0o777 == 0o600
 
@@ -78,7 +82,9 @@ def test_the_spill_is_readable_only_by_its_owner(ctx):
 def test_output_that_fits_leaves_nothing_behind(ctx):
     """Nothing was dropped, so there is no file to name and none to keep."""
     tmp = tmpdir(ctx)
-    result = run_tool(ctx, "bash", {"command": "echo hello"}, tmp=tmp)
+    # TODO: placeholder description; write a real one
+    result = run_tool(ctx, "bash", {"command": "echo hello", "description": "qzx"},
+                      tmp=tmp)
     assert result == "hello\n\n[exit 0]", repr(result)
     assert list(tmp.iterdir()) == [], list(tmp.iterdir())
 
@@ -86,8 +92,10 @@ def test_output_that_fits_leaves_nothing_behind(ctx):
 def test_repeating_a_call_reuses_its_own_file(ctx):
     """The name hashes the call, so a rerun overwrites rather than piles up."""
     tmp = tmpdir(ctx)
-    first = run_tool(ctx, "bash", {"command": "seq 1 100000", "limit": 32}, tmp=tmp)
-    second = run_tool(ctx, "bash", {"command": "seq 1 100000", "limit": 32}, tmp=tmp)
+    # TODO: placeholder description; write a real one
+    args = {"command": "seq 1 100000", "description": "qzx", "limit": 32}
+    first = run_tool(ctx, "bash", args, tmp=tmp)
+    second = run_tool(ctx, "bash", args, tmp=tmp)
     assert spill_path(first)[0] == spill_path(second)[0]
     assert len(list(tmp.iterdir())) == 1, list(tmp.iterdir())
 

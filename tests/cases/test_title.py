@@ -170,7 +170,8 @@ def test_a_tool_first_turn_is_named_before_its_tools_run(ctx):
     # next line of transcript, so it is not something to wait on.
     gate = ctx.work / "gate"
     command = f"while [ ! -e {gate} ]; do sleep 0.02; done; echo slept"
-    ctx.scenario(f'tool=bash:{json.dumps({"command": command})},'
+    # TODO: placeholder description; write a real one
+    ctx.scenario(f'tool=bash:{json.dumps({"command": command, "description": "qzx"})},'
                  'final_text=all+done')
     s = ctx.spawn(ARQAN_SMALL_MODEL=SMALL_NAMES_IT)
     s.submit("remember the cat")
@@ -197,7 +198,9 @@ def test_an_interrupt_during_naming_ends_the_turn(ctx):
     The naming happens mid-turn now, so an interrupt it swallowed would leave
     the work running with nothing on screen to say the key did anything.
     """
-    ctx.scenario('tool=bash:{"command":"echo slept"},final_text=all+done')
+    # TODO: placeholder description; write a real one
+    ctx.scenario('tool=bash:{"command":"echo slept","description":"qzx"},'
+                 'final_text=all+done')
     s = ctx.spawn(ARQAN_SMALL_MODEL="mock:hold,text=Slow+name")
     s.submit("remember the cat")
     s.wait_activity("naming")
