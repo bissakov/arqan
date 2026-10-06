@@ -329,13 +329,15 @@ prompt. Where two conflict, the one nearer the working directory wins.
 
 ### Web search
 
-`internet_search` needs no key by default. `search_backend` picks the engine:
+`internet_search` needs no key by default. `search_backend` picks the engine.
+The keyless engines run with strict safe search:
 
 | Value | Needs |
 | --- | --- |
-| `auto` | nothing; tries DuckDuckGo, then Brave |
+| `auto` | nothing; tries DuckDuckGo, then Brave, then Bing |
 | `ddg` | nothing |
 | `brave` | nothing |
+| `bing` | nothing |
 | `brave_api` | `search_api_key` |
 | `google` | `search_api_key` and `search_engine_id` |
 | `searxng` | `search_endpoint` |

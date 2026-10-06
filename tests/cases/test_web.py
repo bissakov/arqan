@@ -91,6 +91,18 @@ def test_web_search_round_trips_normalized_results(ctx):
     assert "◆  internet_search " + query in s.text(), s.text()
 
 
+def test_web_search_collapses_query_whitespace(ctx):
+    """Runs of whitespace and surrounding blanks leave the query before it is sent."""
+    _, result = run_web(ctx, "internet_search", {"query": "  spaced \t\n  out  "})
+    assert result.startswith("External search results (untrusted): 2"), result
+    assert ctx.mock.web_calls[-1]["query"]["q"] == ["spaced out"], ctx.mock.web_calls
+
+    ctx.mock.reset()
+    _, blank = run_web(ctx, "internet_search", {"query": " \n\t "})
+    assert blank == "ERROR: query is empty", blank
+    assert not ctx.mock.web_calls, ctx.mock.web_calls
+
+
 def test_web_search_limit_and_empty_page(ctx):
     """A requested limit is honored and an explicit empty layout is legitimate."""
     _, one = run_web(ctx, "internet_search", {"query": "ordinary", "limit": 1})
@@ -135,7 +147,8 @@ def test_web_search_pauses_only_when_every_endpoint_refuses(ctx):
     """Both endpoints blocking is a refusal that reports the first status."""
     _, result = run_web_fallback(ctx, {"query": "status403"})
     assert result.startswith("ERROR: ") and "HTTP 403" in result, result
-    assert "paused" in result and "do not retry" in result, result
+    assert "paused for 2 minutes" in result and "do not retry" in result, result
+    assert "one hour" not in result, result
     assert len(ctx.mock.web_request_times) == 2, ctx.mock.web_request_times
 
 
@@ -145,7 +158,7 @@ def test_web_search_names_every_endpoint_it_tried(ctx):
     assert result.startswith("ERROR: "), result
     assert "lite" in result and "HTTP 202" in result, result
     assert "html" in result and "layout was not recognized" in result, result
-    assert "paused" in result and "do not retry" in result, result
+    assert "paused for 2 minutes" in result and "do not retry" in result, result
     assert len(ctx.mock.web_request_times) == 2, ctx.mock.web_request_times
 
 
@@ -162,6 +175,60 @@ def test_web_search_reads_the_brave_layout(ctx):
     assert "example.com ›" not in result, result
     # A block with no title is not a result.
     assert "ads.example" not in result, result
+
+
+def test_web_search_reads_the_bing_layout(ctx):
+    """Only b_algo blocks count, and the redirect links decode to their targets."""
+    _, result = run_web_backend(
+        ctx, "bing", {"query": "ordinary"},
+        ARQAN_SEARCH_ENDPOINT=f"{ctx.mock.origin}/web/bing",
+    )
+    assert result.startswith("External search results (untrusted): 2"), result
+    assert "First & best" in result and "snippet for ordinary." in result, result
+    assert "https://example.com/first?a=1&b=two" in result, result
+    assert "http://example.org/two" in result and "Second result Ω" in result, result
+    assert "second snippet" in result, result
+    assert "bing.com/ck" not in result, result
+    for junk in ("Sponsored", "ads.example", "Deep link", "example.com/deep",
+                 "Relative", "Garbled", "related", "Related"):
+        assert junk not in result, (junk, result)
+    assert ctx.mock.web_calls[-1]["query"]["adlt"] == ["strict"], ctx.mock.web_calls
+
+
+def test_web_search_keyless_rows_ask_for_safe_search(ctx):
+    """Every keyless engine carries its strict safe-search parameter."""
+    _, result = run_web_backend(
+        ctx, "brave", {"query": "ordinary"},
+        ARQAN_SEARCH_ENDPOINT=f"{ctx.mock.origin}/web/brave",
+    )
+    assert result.startswith("External search results (untrusted): 2"), result
+    assert ctx.mock.web_calls[-1]["query"]["safesearch"] == ["strict"]
+
+
+def test_web_search_auto_chain_ends_with_bing(ctx):
+    """When the three earlier engines refuse, Bing answers last."""
+    args = json.dumps({"query": "status403"})
+    ctx.scenario(f"tool=internet_search:{args},final_text=done")
+    env = {
+        "ARQAN_TEST_WEB_ALLOW_PRIVATE": "1",
+        "ARQAN_TEST_WEB_SEARCH_INTERVAL_MS": "0",
+        "ARQAN_TEST_WEB_SEARCH_URL": f"{ctx.mock.origin}/web/search?q=",
+        "ARQAN_TEST_WEB_SEARCH_FALLBACK_URL": f"{ctx.mock.origin}/web/search-html?q=",
+        "ARQAN_TEST_WEB_SEARCH_BRAVE_URL": f"{ctx.mock.origin}/web/search?q=",
+        "ARQAN_TEST_WEB_SEARCH_BING_URL": f"{ctx.mock.origin}/web/bing/search?q=",
+    }
+    s = ctx.spawn(rows=40, **env)
+    s.submit("search")
+    s.wait_text("done")
+    s.wait_turn_done()
+    paths = [call["path"] for call in ctx.mock.web_calls]
+    assert paths == ["/web/search", "/web/search-html", "/web/search",
+                     "/web/bing/search"], paths
+    result = ctx.mock.tool_results()[-1]
+    assert result.startswith("ERROR: "), result
+    assert result.count("paused for 2 minutes") == 4, result
+    assert "lite" in result and "html" in result and "brave" in result, result
+    assert "bing" in result and "do not retry" in result, result
 
 
 def test_web_search_reads_keyed_json_engines(ctx):
@@ -217,6 +284,22 @@ def test_web_search_keeps_the_key_out_of_a_failure(ctx):
     )
     assert result.startswith("ERROR: ") and "google" in result, result
     assert "secret-key" not in result and "cx-1234" not in result, result
+
+
+def test_web_errors_hide_transport_detail(ctx):
+    """A failed connection reports a fixed reason, not curl's text or the host."""
+    dead = "http://127.0.0.1:1"
+    _, search = run_web_backend(
+        ctx, "brave", {"query": "ordinary"},
+        ARQAN_SEARCH_ENDPOINT=dead,
+    )
+    assert search.startswith("ERROR: ") and "brave" in search, search
+    assert "could not connect" in search, search
+    assert "127.0.0.1" not in search and "curl" not in search.lower(), search
+
+    ctx.mock.reset()
+    _, page = run_web(ctx, "page_fetch", {"url": f"{dead}/page"})
+    assert page == "ERROR: could not connect", page
 
 
 def test_web_search_reports_a_changed_json_engine(ctx):
@@ -309,7 +392,38 @@ def test_web_search_quarantines_after_a_refusal(ctx):
     assert len(ctx.mock.web_request_times) == 1, ctx.mock.web_request_times
     results = ctx.mock.tool_results()
     assert "HTTP 202" in results[-2] and "do not retry" in results[-2], results
-    assert "paused" in results[-1] and "do not retry" in results[-1], results
+    assert "paused for 2 minutes" in results[-2], results
+    assert "paused for another 2 minutes" in results[-1], results
+    assert "do not retry" in results[-1], results
+
+
+def test_web_search_pause_grows_until_a_success_resets_it(ctx):
+    """The second refusal in a row pauses longer; one answer restarts the ladder.
+
+    The test knob shortens the real pause to nothing so the next call reaches
+    the engine again; the reported pause still follows the ladder.
+    """
+    ctx.scenario(
+        "tool=internet_search:" + json.dumps({"query": "status429"})
+        + ",tool=internet_search:" + json.dumps({"query": "status429"})
+        + ",tool=internet_search:" + json.dumps({"query": "ordinary"})
+        + ",tool=internet_search:" + json.dumps({"query": "status429"})
+        + ",final_text=done"
+    )
+    env = dict(web_env(ctx))
+    env["ARQAN_TEST_WEB_SEARCH_INTERVAL_MS"] = "0"
+    env["ARQAN_TEST_WEB_SEARCH_PAUSE_MS"] = "0"
+    s = ctx.spawn(rows=40, **env)
+    s.submit("search four times")
+    s.wait_text("done")
+    s.wait_turn_done()
+    results = ctx.mock.tool_results()
+    assert len(results) == 4, results
+    assert "paused for 2 minutes" in results[0], results
+    assert "paused for 10 minutes" in results[1], results
+    assert results[2].startswith("External search results (untrusted): 2"), results
+    assert "paused for 2 minutes" in results[3], results
+    assert len(ctx.mock.web_request_times) == 4, ctx.mock.web_request_times
 
 
 def test_web_fetch_extracts_html_and_resolves_links(ctx):
