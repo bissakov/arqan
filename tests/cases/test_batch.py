@@ -343,6 +343,23 @@ def test_batch_rejects_child_argument_bounds_before_any_step(ctx):
     assert not (ctx.work / "before.txt").exists()
 
 
+def test_batch_checks_integer_child_arguments_before_any_step(ctx):
+    """A fraction is not an integer on either side of zero; 2.0 is one."""
+    ctx.write_file("notes.txt", "one\ntwo\nthree\n")
+    for value in (2.5, -2.5, 1e300):
+        run_batch(ctx, [step("write", path="before.txt", content="never"),
+                        step("read", path="notes.txt", limit=value)])
+        out = ctx.mock.tool_results()[-1]
+        if value == 1e300:
+            assert "must be an integer" not in out, out
+            continue
+        assert out.startswith("ERROR:"), out
+        assert "step 2 args.limit must be an integer, not a number" in out, out
+        assert not (ctx.work / "before.txt").exists()
+    run_batch(ctx, [step("read", path="notes.txt", offset=2.0, limit=1)])
+    assert "two" in result(ctx, -1)["steps"][0]["result"], ctx.mock.tool_results()
+
+
 def test_batch_schema_discriminates_child_tools_and_arguments(ctx):
     ctx.scenario("text=ok")
     s = ctx.spawn()
