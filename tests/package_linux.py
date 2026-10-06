@@ -21,8 +21,8 @@ from pathlib import Path, PurePosixPath
 ROOT = Path(__file__).resolve().parent.parent
 HEADER = ROOT / "src/agent.h"
 LICENSES = {
-    "bash.txt", "c.txt", "cpp.txt", "go.txt", "javascript.txt", "json.txt",
-    "python.txt", "rust.txt", "toml.txt", "tree-sitter.txt",
+    "bash.txt", "c.txt", "cpp.txt", "csharp.txt", "go.txt", "javascript.txt",
+    "json.txt", "python.txt", "rust.txt", "toml.txt", "tree-sitter.txt",
     "typescript.txt", "yaml.txt",
 }
 

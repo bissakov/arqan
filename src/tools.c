@@ -14,7 +14,6 @@
 #include <fcntl.h>
 #include <signal.h>
 #if defined(__linux__)
-#include <linux/landlock.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 #endif
@@ -435,49 +434,77 @@ static void shell_kill(pid_t pid, b8 reaped, i32 sig) {
  * A read-only command runs under Landlock on Linux: every filesystem write
  * the kernel's ABI knows is denied, with `/dev/null` the one writable path.
  * A kernel or libc without Landlock leaves the command unsandboxed and the
- * classifier as the only guard. Runs in the child, so no arena and no log. */
+ * classifier as the only guard. Runs in the child, so no arena and no log.
+ *
+ * NOTE: the Landlock ABI is declared here instead of taken from
+ * <linux/landlock.h>. The release image, Debian 11, has neither that header
+ * nor the syscall numbers in its libc. The kernel keeps this ABI stable. */
+#if defined(__linux__) && !defined(SYS_landlock_create_ruleset)           \
+    && ((defined(__x86_64__) && !defined(__ILP32__)) || defined(__i386__) \
+        || defined(__aarch64__) || defined(__arm__) || defined(__riscv))
+#define SYS_landlock_create_ruleset 444
+#define SYS_landlock_add_rule       445
+#define SYS_landlock_restrict_self  446
+#endif
+
 #if defined(__linux__) && defined(SYS_landlock_create_ruleset)
+#define LL_CREATE_RULESET_VERSION 1U
+#define LL_RULE_PATH_BENEATH      1
+#define LL_FS_EXECUTE             (1ULL << 0)
+#define LL_FS_WRITE_FILE          (1ULL << 1)
+#define LL_FS_READ_FILE           (1ULL << 2)
+#define LL_FS_READ_DIR            (1ULL << 3)
+#define LL_FS_REMOVE_DIR          (1ULL << 4)
+#define LL_FS_REMOVE_FILE         (1ULL << 5)
+#define LL_FS_MAKE_CHAR           (1ULL << 6)
+#define LL_FS_MAKE_DIR            (1ULL << 7)
+#define LL_FS_MAKE_REG            (1ULL << 8)
+#define LL_FS_MAKE_SOCK           (1ULL << 9)
+#define LL_FS_MAKE_FIFO           (1ULL << 10)
+#define LL_FS_MAKE_BLOCK          (1ULL << 11)
+#define LL_FS_MAKE_SYM            (1ULL << 12)
+#define LL_FS_REFER               (1ULL << 13)
+#define LL_FS_TRUNCATE            (1ULL << 14)
+#define LL_FS_IOCTL_DEV           (1ULL << 15)
+
+typedef struct {
+    u64 handled_access_fs;
+} LandlockRulesetAttr;
+
+typedef struct __attribute__((packed)) {
+    u64 allowed_access;
+    i32 parent_fd;
+} LandlockPathBeneathAttr;
+
 static b8 landlock_allow(i32 ruleset, const char *path, u64 access) {
     i32 fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return false;
-    struct landlock_path_beneath_attr rule = {.allowed_access = access,
-                                              .parent_fd = fd};
-    long rc = syscall(SYS_landlock_add_rule, ruleset,
-                      LANDLOCK_RULE_PATH_BENEATH, &rule, 0);
+    LandlockPathBeneathAttr rule = {.allowed_access = access, .parent_fd = fd};
+    long rc =
+        syscall(SYS_landlock_add_rule, ruleset, LL_RULE_PATH_BENEATH, &rule, 0);
     close(fd);
     return rc == 0;
 }
 
 static void shell_child_landlock(void) {
     long abi = syscall(SYS_landlock_create_ruleset, NULL, 0,
-                       LANDLOCK_CREATE_RULESET_VERSION);
+                       LL_CREATE_RULESET_VERSION);
     if (abi < 1) return;
-    u64 handled = LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE
-                  | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR
-                  | LANDLOCK_ACCESS_FS_REMOVE_DIR
-                  | LANDLOCK_ACCESS_FS_REMOVE_FILE
-                  | LANDLOCK_ACCESS_FS_MAKE_CHAR | LANDLOCK_ACCESS_FS_MAKE_DIR
-                  | LANDLOCK_ACCESS_FS_MAKE_REG | LANDLOCK_ACCESS_FS_MAKE_SOCK
-                  | LANDLOCK_ACCESS_FS_MAKE_FIFO | LANDLOCK_ACCESS_FS_MAKE_BLOCK
-                  | LANDLOCK_ACCESS_FS_MAKE_SYM;
-#ifdef LANDLOCK_ACCESS_FS_REFER
-    if (abi >= 2) handled |= LANDLOCK_ACCESS_FS_REFER;
-#endif
-#ifdef LANDLOCK_ACCESS_FS_TRUNCATE
-    if (abi >= 3) handled |= LANDLOCK_ACCESS_FS_TRUNCATE;
-#endif
-#ifdef LANDLOCK_ACCESS_FS_IOCTL_DEV
-    if (abi >= 5) handled |= LANDLOCK_ACCESS_FS_IOCTL_DEV;
-#endif
-    struct landlock_ruleset_attr attr = {.handled_access_fs = handled};
+    u64 handled = LL_FS_EXECUTE | LL_FS_WRITE_FILE | LL_FS_READ_FILE
+                  | LL_FS_READ_DIR | LL_FS_REMOVE_DIR | LL_FS_REMOVE_FILE
+                  | LL_FS_MAKE_CHAR | LL_FS_MAKE_DIR | LL_FS_MAKE_REG
+                  | LL_FS_MAKE_SOCK | LL_FS_MAKE_FIFO | LL_FS_MAKE_BLOCK
+                  | LL_FS_MAKE_SYM;
+    if (abi >= 2) handled |= LL_FS_REFER;
+    if (abi >= 3) handled |= LL_FS_TRUNCATE;
+    if (abi >= 5) handled |= LL_FS_IOCTL_DEV;
+    LandlockRulesetAttr attr = {.handled_access_fs = handled};
     i32 ruleset =
         (i32)syscall(SYS_landlock_create_ruleset, &attr, sizeof attr, 0);
     if (ruleset < 0) return;
     if (landlock_allow(ruleset, "/",
-                       LANDLOCK_ACCESS_FS_READ_FILE
-                           | LANDLOCK_ACCESS_FS_READ_DIR
-                           | LANDLOCK_ACCESS_FS_EXECUTE)
-        && landlock_allow(ruleset, "/dev/null", LANDLOCK_ACCESS_FS_WRITE_FILE)
+                       LL_FS_READ_FILE | LL_FS_READ_DIR | LL_FS_EXECUTE)
+        && landlock_allow(ruleset, "/dev/null", LL_FS_WRITE_FILE)
         && prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0)
         syscall(SYS_landlock_restrict_self, ruleset, 0);
     close(ruleset);

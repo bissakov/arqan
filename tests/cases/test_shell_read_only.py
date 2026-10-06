@@ -10,6 +10,7 @@ does, and on Linux a read-only command runs under Landlock with writes denied.
 import json
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -229,3 +230,27 @@ def test_a_read_only_command_cannot_write_under_the_sandbox(ctx):
         os.listdir(ctx.work)
     assert "[exit 0]" in results[1], results[1]
     assert "init" in results[2] and "[exit 0]" in results[2], results[2]
+
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def test_the_sandbox_builds_without_landlock_headers(ctx):
+    """The release image, Debian 11, has no <linux/landlock.h> and a libc
+    without the Landlock syscall numbers; the source must build there."""
+    with tempfile.TemporaryDirectory() as fake:
+        (Path(fake) / "linux").mkdir()
+        (Path(fake) / "sys").mkdir()
+        (Path(fake) / "linux" / "landlock.h").write_text(
+            "#error the Landlock header is not installed\n")
+        (Path(fake) / "sys" / "syscall.h").write_text(
+            "#include_next <sys/syscall.h>\n"
+            "#undef SYS_landlock_create_ruleset\n"
+            "#undef SYS_landlock_add_rule\n"
+            "#undef SYS_landlock_restrict_self\n")
+        build = subprocess.run(
+            [os.environ.get("CC", "cc"), "-std=c17", "-fsyntax-only",
+             "-Wall", "-Wextra", "-Wpedantic", "-Wconversion", "-Werror",
+             "-DAGENT_CURL_DLOPEN=1", "-isystem", fake, "src/main.c"],
+            cwd=ROOT, capture_output=True, text=True, timeout=60)
+    assert build.returncode == 0, build.stderr

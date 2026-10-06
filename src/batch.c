@@ -27,13 +27,18 @@ static const char *schema_type(const JVal *value) {
     return "valid JSON";
 }
 
+static b8 number_is_integer(f64 n) {
+    if (!isfinite(n)) return false;
+    if (n >= 0x1p52 || n <= -0x1p52) return true;
+    return (f64)(i64)n == n;
+}
+
 static b8 schema_is_type(const JVal *value, Str type) {
     if (str_eq(type, STR("null"))) return value->type == J_NULL;
     if (str_eq(type, STR("boolean"))) return value->type == J_BOOL;
     if (str_eq(type, STR("number"))) return value->type == J_NUM;
     if (str_eq(type, STR("integer")))
-        return value->type == J_NUM && isfinite(value->u.n)
-               && floor(value->u.n) == value->u.n;
+        return value->type == J_NUM && number_is_integer(value->u.n);
     if (str_eq(type, STR("string"))) return value->type == J_STR;
     if (str_eq(type, STR("array"))) return value->type == J_ARR;
     if (str_eq(type, STR("object"))) return value->type == J_OBJ;
