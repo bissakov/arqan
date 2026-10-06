@@ -134,7 +134,7 @@ def test_bash_result_is_summarised_by_its_exit_status(ctx):
     s.wait_turn_done()
 
     text = s.text()
-    assert "\u25c6  bash qzx" in text, text
+    assert "\u25c6  bash \u00b7 qzx" in text, text
     assert "\u2502 echo hi; exit 3" in text, text
     assert "\u2514\u2500 exit 3" in text, text
     assert "   hi" in text, text
@@ -573,6 +573,31 @@ def test_bash_shows_the_description_above_the_command(ctx):
     assert any("\u2502 wc -l notes.txt" in r for r in rows), rows
     assert ctx.mock.tool_results()[-1].startswith("2 notes.txt"), \
         ctx.mock.tool_results()
+
+
+def test_bash_description_is_set_apart_from_the_tool_name(ctx):
+    """A dim dot splits the tool name from the description in accent colour."""
+    args = json.dumps({"command": "true",
+                       "description": "check the exit status"})
+    ctx.scenario(f"tool=bash:{args},final_text=checked")
+    s = ctx.spawn()
+    s.submit("check it")
+    s.wait_text("checked")
+    s.wait_turn_done()
+
+    head = "\u25c6  bash \u00b7 check the exit status"
+    row = s.screen.find_row(head)
+    assert row >= 0, s.text()
+    col = s.screen.row_text(row).index(head)
+
+    def fg(offset):
+        return s.screen.attr_at(row, col + offset).fg
+
+    assert fg(len("\u25c6  ")) == 221                 # S_YELLOW, tool name
+    assert fg(len("\u25c6  bash ")) == 245            # S_MUTED, separator
+    assert fg(len("\u25c6  bash \u00b7 ")) == 81      # S_ACCENT, description
+    assert fg(len(head) - 1) == 81
+    assert s.screen.attr_at(row, col + len(head) - 1).bold
 
 
 def test_bash_without_a_description_is_refused(ctx):

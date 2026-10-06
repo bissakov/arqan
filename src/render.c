@@ -74,6 +74,10 @@ static void write_search_path(Str s) {
     tui_write_styled(s, TUI_HEADING);
 }
 
+static void write_shell_description(Str s) {
+    tui_write_styled(s, TUI_HEADING);
+}
+
 
 static void block_begin(u32 id, b8 expanded) {
     tui_pin(id);
@@ -413,9 +417,14 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
         tui_write_text(name);
     else
         tui_write_tool(name);
-    Sink target_sink = search ? write_search_pattern : tui_write_tool;
+    Sink target_sink = search         ? write_search_pattern
+                       : shell_desc.n ? write_shell_description
+                                      : tui_write_tool;
     if (target.n) {
-        tui_write_tool(STR(" "));
+        if (shell_desc.n)
+            tui_write_dim(STR(" \u00b7 "));
+        else
+            tui_write_tool(STR(" "));
         if (search) target_sink(STR("\""));
         size_t bytes = target_cmd ? R_CMD_BYTES : R_TARGET_BYTES;
         g_render.block.head_more = target.n > bytes;
