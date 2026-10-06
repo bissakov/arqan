@@ -9,6 +9,7 @@ does, and on Linux a read-only command runs under Landlock with writes denied.
 
 import json
 import os
+import shlex
 import subprocess
 import tempfile
 from pathlib import Path
@@ -249,8 +250,8 @@ def test_the_sandbox_builds_without_landlock_headers(ctx):
             "#undef SYS_landlock_add_rule\n"
             "#undef SYS_landlock_restrict_self\n")
         build = subprocess.run(
-            [os.environ.get("CC", "cc"), "-std=c17", "-fsyntax-only",
-             "-Wall", "-Wextra", "-Wpedantic", "-Wconversion", "-Werror",
-             "-DAGENT_CURL_DLOPEN=1", "-isystem", fake, "src/main.c"],
+            [*shlex.split(os.environ.get("CC") or "cc"), "-std=c17",
+             "-fsyntax-only", "-Wall", "-Wextra", "-Wpedantic", "-Wconversion",
+             "-Werror", "-DAGENT_CURL_DLOPEN=1", "-isystem", fake, "src/main.c"],
             cwd=ROOT, capture_output=True, text=True, timeout=60)
     assert build.returncode == 0, build.stderr
