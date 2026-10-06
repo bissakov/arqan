@@ -197,6 +197,25 @@ def test_a_writing_shell_command_in_plan_mode_is_refused_without_asking(ctx):
     assert not (ctx.work / "out.txt").exists(), "plan mode wrote a file"
 
 
+def test_a_read_only_command_on_an_outside_path_asks_in_plan_mode(ctx):
+    """Reading outside the project is the user's call, in plan mode as in
+    build mode: the command is neither run unasked nor refused."""
+    ctx.scenario('tool=bash:{"command":"cat /etc/hostname",'
+                 '"description":"read the host name"},final_text=understood')
+    s = ctx.spawn(ARQAN_PERMISSIONS="ask")
+    to_plan(s)
+    s.submit("read it")
+    s.wait_status("allow read outside the project?")
+    s.key("esc")
+    s.wait_text("understood")
+    s.wait_turn_done()
+
+    assert "allow bash?" not in s.text(), s.text()
+    result = ctx.mock.tool_results()[-1]
+    assert result.startswith("DENIED:"), result
+    assert "read-only commands only" not in result, result
+
+
 def test_the_plan_is_rendered_with_its_options(ctx):
     """submit_plan shows the plan as Markdown and asks how to continue."""
     ctx.scenario(submit_plan(ctx))

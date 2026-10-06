@@ -4,6 +4,10 @@
 
 ### Added
 
+- On Linux, a read-only shell command runs under Landlock with every
+  filesystem write denied; `/dev/null` is the one writable path. A kernel
+  without Landlock runs the command as before.
+
 - The `batch` tool runs up to eight known tool calls in order. Each step keeps
   its normal display and approval. A batch stops on an error, denied approval,
   nonzero command exit, or a still-running job, and reports the steps it skipped.
@@ -43,6 +47,14 @@
 
 ### Changed
 
+- The read-only shell check is tighter. A leading `VAR=value` word, a sed
+  script that writes or runs a command, an awk script with `>`, `|`, `@` or
+  `system`, and the writing or running options of `sort`, `xxd`, `tree`,
+  `file`, `date`, `rg` and `git`, including abbreviated long options, now
+  ask like any other command. A read-only command that names a path
+  outside the project (absolute, `~` or `..`) or a variable asks
+  `allow read outside the project?` like `read` does, in plan mode too.
+
 - DuckDuckGo and Brave searches ask for strict safe search.
 
 - A search engine that refuses or challenges a request is paused for two
@@ -63,7 +75,7 @@
   only such commands; anything else is refused with an error, and the
   user is not asked. Plan mode also offers `job` to follow a command that
   outran its deadline. The check is a first-word allowlist that fails
-  closed; it does not inspect path arguments yet.
+  closed.
 
 - `ask_user` questions and options are written in the third person, as in
   "Should the agent keep the old API?", instead of "I" or "you". The user

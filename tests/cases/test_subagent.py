@@ -762,6 +762,21 @@ def test_a_subagent_may_not_read_outside_the_project_unasked(ctx):
     assert "outside body" not in results[0], results
 
 
+def test_a_subagent_shell_command_on_an_outside_path_is_refused(ctx):
+    """A read-only command that names a path outside the project asks like
+    `read` does, and the delegate has nobody to ask."""
+    ctx.scenario(collect(ctx))
+    s = spawn(ctx, sub='tool=bash:{"command":"cat /etc/hostname","description":"x"},'
+                       'final_text=read+it',
+              ARQAN_PERMISSIONS="ask")
+    s.submit("delegate it")
+    s.wait_text("done", timeout=WAIT / 1000)
+    s.wait_turn_done()
+    results = sub_tool_results(ctx)
+    assert results, sub_requests(ctx)
+    assert "outside the project, and a subagent cannot ask" in results[0], results
+
+
 def test_a_subagent_reads_outside_the_project_under_free(ctx):
     ctx.scenario(collect(ctx))
     s = spawn(ctx, sub=outside_read(ctx), ARQAN_PERMISSIONS="free")
