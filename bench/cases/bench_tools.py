@@ -42,36 +42,47 @@ def measured_call(b, s, label: str, name: str, args: dict,
 
 
 @needs("proc")
-def bench_grep_a_tree(b):
-    """grep walks a source tree and bounds what it reports."""
+def bench_bash_grep_a_tree(b):
+    """grep through bash walks a source tree, and bash bounds what it reports."""
     shape = source_tree(b.ctx.work / "repo", dirs=b.scale(30, floor=4),
                         files_per_dir=b.scale(10, floor=2),
                         lines=b.scale(120, floor=40), needle=NEEDLE)
     b.row("tree", units=shape["files"], unit="file",
           note=f"{shape['hits']} planted matches")
     s = b.spawn()
-    out = measured_call(b, s, "grep everything", "grep",
-                        {"pattern": NEEDLE}, budget_ms=1500.0)
+    out = measured_call(b, s, "grep everything", "bash",
+                        {"command": f"grep -rn {NEEDLE} repo",
+                         "description": "search the tree for the needle"},
+                        budget_ms=1500.0)
     b.check(len(out) < 200 * 1024, f"grep replayed {len(out)} bytes")
-    b.check("more" in out.lower() or shape["hits"] < 100 or "\n" in out,
+    b.check("continue with offset" in out or shape["hits"] < 100,
             "grep said nothing about what it omitted")
-    measured_call(b, s, "grep by glob", "grep",
-                  {"pattern": NEEDLE, "glob": "*.h"}, budget_ms=1500.0)
-    measured_call(b, s, "grep a miss", "grep",
-                  {"pattern": "zzz-no-such-token"}, budget_ms=1500.0)
+    measured_call(b, s, "grep by glob", "bash",
+                  {"command": f"grep -rn --include='*.h' {NEEDLE} repo",
+                   "description": "search the headers for the needle"},
+                  budget_ms=1500.0)
+    measured_call(b, s, "grep a miss", "bash",
+                  {"command": "grep -rn zzz-no-such-token repo",
+                   "description": "search the tree for a missing token"},
+                  budget_ms=1500.0)
     b.alive(s)
 
 
 @needs("proc")
-def bench_find_a_tree(b):
-    """find matches names over the same walk, with no file reads at all."""
+def bench_bash_find_a_tree(b):
+    """find through bash matches names over the same walk, reading no files."""
     shape = source_tree(b.ctx.work / "repo", dirs=b.scale(30, floor=4),
                         files_per_dir=b.scale(10, floor=2), lines=10)
     b.row("tree", units=shape["files"], unit="file")
     s = b.spawn()
-    measured_call(b, s, "find by extension", "find", {"name": "*.c"},
-                  budget_ms=800.0)
-    measured_call(b, s, "find by path glob", "find", {"name": "repo/**/mod00*"},
+    out = measured_call(b, s, "find by extension", "bash",
+                        {"command": "find repo -name '*.c'",
+                         "description": "list the C files"},
+                        budget_ms=800.0)
+    b.check("mod000.c" in out, f"find listed no C files: {out[:80]}")
+    measured_call(b, s, "find by path glob", "bash",
+                  {"command": "find repo -path '*/mod00*'",
+                   "description": "list the first modules of each package"},
                   budget_ms=800.0)
     b.alive(s)
 
