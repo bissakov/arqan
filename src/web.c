@@ -139,7 +139,36 @@ static i32 web_request(const char *url, const char *operation, Buf *body,
         .on_idle = g_web_hooks.idle,
         .idle_ud = g_web_hooks.idle_ud,
     };
-    return http_url_get(req);
+    i32 rc = http_url_get(req);
+    if (rc > 0)
+        agent_log(AGENT_LOG_DEBUG, "%s: %s: %s", operation, url,
+                  req->failure[0] ? req->failure : "no detail");
+    return rc;
+}
+
+static void web_failure_text(const HttpUrlReq *req, char *err, size_t err_cap) {
+    const char *text = "the web request failed";
+    switch (req->kind) {
+        case HTTP_FAIL_DNS: text = "could not resolve the host"; break;
+        case HTTP_FAIL_CONNECT: text = "could not connect"; break;
+        case HTTP_FAIL_TLS: text = "TLS handshake failed"; break;
+        case HTTP_FAIL_TIMEOUT: text = "timed out"; break;
+        case HTTP_FAIL_TOO_LARGE:
+            snprintf(err, err_cap, "response exceeds %u bytes",
+                     (unsigned)req->max_bytes);
+            return;
+        case HTTP_FAIL_NOT_PUBLIC:
+            text = "destination resolved to a non-public address";
+            break;
+        case HTTP_FAIL_REDIRECT:
+            text = "redirect URL is malformed, unsupported, or contains "
+                   "credentials";
+            break;
+        case HTTP_FAIL_INTERRUPTED: text = "interrupted"; break;
+        case HTTP_FAIL_NONE:
+        case HTTP_FAIL_OTHER: break;
+    }
+    snprintf(err, err_cap, "%s", text);
 }
 
 static b8 tag_is(AgentHtmlNode *node, const char *name) {
@@ -637,8 +666,7 @@ b8 page_fetch_run(Str args, Arena *scratch, Buf *out, char *err,
         if (rc < 0)
             snprintf(err, err_cap, "HTTP status %lld", (long long)-rc);
         else
-            snprintf(err, err_cap, "%s",
-                     req.failure[0] ? req.failure : "web request failed");
+            web_failure_text(&req, err, err_cap);
         return false;
     }
     Str raw = buf_finish(&source);
@@ -728,6 +756,39 @@ static Str percent_decode(Str s, Arena *scratch, b8 *ok) {
     return (Str){p, n};
 }
 
+static i32 base64url_digit(char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '-') return 62;
+    if (c == '_') return 63;
+    return -1;
+}
+
+static Str base64url_decode(Str s, Arena *scratch, b8 *ok) {
+    *ok = false;
+    while (s.n && s.p[s.n - 1] == '=') s.n--;
+    if (s.n % 4 == 1) return (Str){0};
+    char *p = arena_new(scratch, char, s.n / 4 * 3 + 3);
+    if (!p) return (Str){0};
+    size_t n = 0;
+    u32 acc = 0;
+    u32 bits = 0;
+    for (size_t i = 0; i < s.n; i++) {
+        i32 d = base64url_digit(s.p[i]);
+        if (d < 0) return (Str){0};
+        acc = (acc << 6) | (u32)d;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            p[n++] = (char)((acc >> bits) & 0xFFu);
+        }
+    }
+    p[n] = '\0';
+    *ok = memchr(p, '\0', n) == NULL;
+    return (Str){p, n};
+}
+
 static Str result_url(Str href, Arena *scratch, b8 *ok) {
     *ok = false;
     const char *q = memchr(href.p, '?', href.n);
@@ -742,8 +803,14 @@ static Str result_url(Str href, Arena *scratch, b8 *ok) {
                 size_t val = ++off;
                 while (off < href.n && href.p[off] != '&') off++;
                 Str raw = {href.p + val, off - val};
-                if (str_eq(key, STR("uddg"))) {
-                    Str decoded = percent_decode(raw, scratch, ok);
+                b8 ddg = str_eq(key, STR("uddg"));
+                b8 bing = str_eq(key, STR("u")) && raw.n > 2 && raw.p[0] == 'a'
+                          && raw.p[1] == '1';
+                if (ddg || bing) {
+                    Str decoded =
+                        ddg ? percent_decode(raw, scratch, ok)
+                            : base64url_decode((Str){raw.p + 2, raw.n - 2},
+                                               scratch, ok);
                     if (*ok && decoded.n < AGENT_WEB_URL_BYTES
                         && http_url_ok(decoded.p))
                         return decoded;
@@ -825,7 +892,8 @@ static Str search_text(SearchCtx *s, AgentHtmlNode *node, size_t max) {
 static b8 search_enter(AgentHtmlNode *node, void *ud) {
     SearchCtx *s = (SearchCtx *)ud;
     const SearchLayout *lay = s->layout;
-    if (class_has(node, "challenge-form") || class_has(node, "anomaly-modal"))
+    if (class_has(node, "challenge-form") || class_has(node, "anomaly-modal")
+        || class_has(node, "captcha-wrap"))
         s->challenge = true;
     if (class_has(node, "no-results")) s->explicit_empty = true;
     if (tag_is(node, "h2")) s->heading++;
@@ -877,6 +945,21 @@ static void search_compact(SearchCtx *s) {
     s->current = SIZE_MAX;
 }
 
+static void query_collapse_spaces(char *q) {
+    size_t n = 0;
+    b8 space = false;
+    for (size_t i = 0; q[i]; i++) {
+        if (isspace((u8)q[i])) {
+            space = n > 0;
+            continue;
+        }
+        if (space) q[n++] = ' ';
+        space = false;
+        q[n++] = q[i];
+    }
+    q[n] = '\0';
+}
+
 static b8 encode_query(Str query, Buf *url) {
     static const char hex[] = "0123456789ABCDEF";
     for (size_t i = 0; i < query.n; i++) {
@@ -896,6 +979,7 @@ typedef enum {
     ENGINE_DDG_LITE,
     ENGINE_DDG_HTML,
     ENGINE_BRAVE,
+    ENGINE_BING,
     ENGINE_BRAVE_API,
     ENGINE_GOOGLE,
     ENGINE_SEARXNG,
@@ -924,7 +1008,7 @@ typedef struct {
 static const SearchEngineSpec k_engine[ENGINE_N] = {
     [ENGINE_DDG_LITE] = {"lite",
                          "https://lite.duckduckgo.com",
-                         "/lite/?q=",
+                         "/lite/?kp=1&q=",
                          NULL,
                          0,
                          false,
@@ -936,7 +1020,7 @@ static const SearchEngineSpec k_engine[ENGINE_N] = {
                          {0}},
     [ENGINE_DDG_HTML] = {"html",
                          "https://html.duckduckgo.com",
-                         "/html/?q=",
+                         "/html/?kp=1&q=",
                          NULL,
                          0,
                          false,
@@ -948,7 +1032,7 @@ static const SearchEngineSpec k_engine[ENGINE_N] = {
                          {0}},
     [ENGINE_BRAVE] = {"brave",
                       "https://search.brave.com",
-                      "/search?q=",
+                      "/search?safesearch=strict&q=",
                       NULL,
                       0,
                       false,
@@ -958,6 +1042,15 @@ static const SearchEngineSpec k_engine[ENGINE_N] = {
                        {"generic-snippet", "snippet-description"},
                        false},
                       {0}},
+    [ENGINE_BING] =
+        {"bing",
+         "https://www.bing.com",
+         "/search?adlt=strict&q=",
+         NULL,
+         0,
+         false,
+         {"b_algo", {NULL, NULL}, NULL, {"b_caption", "b_lineclamp2"}, true},
+         {0}},
     [ENGINE_BRAVE_API] = {"brave_api",
                           "https://api.search.brave.com",
                           "/res/v1/web/search?count=10&q=",
@@ -990,23 +1083,56 @@ static struct {
     Str endpoint, api_key, engine_id;
     f64 started[ENGINE_N];
     f64 paused[ENGINE_N];
-} g_search = {{ENGINE_DDG_LITE, ENGINE_DDG_HTML, ENGINE_BRAVE, 0, 0, 0},
-              3,
-              {0},
-              {0},
-              {0},
-              {0},
-              {0}};
+    u8 strikes[ENGINE_N];
+} g_search = {
+    {ENGINE_DDG_LITE, ENGINE_DDG_HTML, ENGINE_BRAVE, ENGINE_BING, 0, 0, 0},
+    4,
+    {0},
+    {0},
+    {0},
+    {0},
+    {0},
+    {0}};
+
+static i32 search_pause_ms(u8 strikes) {
+    if (strikes == 0) return AGENT_WEB_SEARCH_PAUSE_FIRST_MS;
+    if (strikes == 1) return AGENT_WEB_SEARCH_PAUSE_SECOND_MS;
+    return AGENT_WEB_SEARCH_PAUSE_MS;
+}
+
+static f64 search_pause_clock_seconds(i32 pause_ms) {
+#ifdef AGENT_TESTING
+    const char *value = getenv(AGENT_ENV_PREFIX "TEST_WEB_SEARCH_PAUSE_MS");
+    if (value && *value) {
+        b8 ok = false;
+        i64 ms = str_int(str_c(value), &ok);
+        if (ok && ms >= 0 && ms <= pause_ms) return (f64)ms / 1000.0;
+    }
+#endif
+    return (f64)pause_ms / 1000.0;
+}
+
+static void search_pause_text(f64 seconds, char *buf, size_t cap) {
+    i64 minutes = (i64)((seconds + 59.0) / 60.0);
+    if (minutes < 1) minutes = 1;
+    if (minutes == 1)
+        snprintf(buf, cap, "one minute");
+    else if (minutes == 60)
+        snprintf(buf, cap, "one hour");
+    else
+        snprintf(buf, cap, "%lld minutes", (long long)minutes);
+}
 
 static b8 search_admit(SearchEngine e, const char *label, char *err,
                        size_t err_cap) {
     f64 now = agent_now_seconds();
     if (g_search.paused[e] > now) {
-        i64 seconds = (i64)(g_search.paused[e] - now) + 1;
+        char left[32];
+        search_pause_text(g_search.paused[e] - now, left, sizeof left);
         snprintf(err, err_cap,
-                 "the %s search endpoint is paused for %llds "
+                 "the %s search endpoint is paused for another %s "
                  "after a challenge or refusal",
-                 label, (long long)seconds);
+                 label, left);
         return false;
     }
     if (g_search.started[e] > 0) {
@@ -1020,9 +1146,12 @@ static b8 search_admit(SearchEngine e, const char *label, char *err,
     return true;
 }
 
-static void search_pause(SearchEngine e) {
-    f64 until = agent_now_seconds() + (f64)AGENT_WEB_SEARCH_PAUSE_MS / 1000.0;
+static f64 search_pause(SearchEngine e) {
+    i32 pause_ms = search_pause_ms(g_search.strikes[e]);
+    if (g_search.strikes[e] < 2) g_search.strikes[e]++;
+    f64 until = agent_now_seconds() + search_pause_clock_seconds(pause_ms);
     if (until > g_search.paused[e]) g_search.paused[e] = until;
+    return (f64)pause_ms / 1000.0;
 }
 
 
@@ -1040,7 +1169,8 @@ static size_t search_chain_for(Str name, SearchEngine out[ENGINE_N]) {
     out[0] = ENGINE_DDG_LITE;
     out[1] = ENGINE_DDG_HTML;
     out[2] = ENGINE_BRAVE;
-    return 3;
+    out[3] = ENGINE_BING;
+    return 4;
 }
 
 #ifdef AGENT_TESTING
@@ -1050,6 +1180,7 @@ static const char *search_test_prefix(size_t slot) {
         AGENT_ENV_PREFIX "TEST_WEB_SEARCH_URL",
         AGENT_ENV_PREFIX "TEST_WEB_SEARCH_FALLBACK_URL",
         AGENT_ENV_PREFIX "TEST_WEB_SEARCH_BRAVE_URL",
+        AGENT_ENV_PREFIX "TEST_WEB_SEARCH_BING_URL",
     };
     if (slot >= sizeof env / sizeof env[0]) return NULL;
     const char *value = getenv(env[slot]);
@@ -1219,20 +1350,24 @@ static SearchOutcome search_backend_run(SearchEngine engine, size_t slot,
     i32 rc = web_request(request_url.p, "internet_search", &source,
                          search_header(spec, scratch), &req);
     if (req.status == 202 || req.status == 403 || req.status == 429) {
+        char pause[32];
+        search_pause_text(search_pause(engine), pause, sizeof pause);
         snprintf(err, err_cap,
-                 "the %s search endpoint refused the request with HTTP %lld",
-                 spec->label, (long long)req.status);
-        search_pause(engine);
+                 "the %s search endpoint refused the request with HTTP %lld "
+                 "and is paused for %s",
+                 spec->label, (long long)req.status, pause);
         return SEARCH_BLOCKED;
     }
     if (rc != 0) {
         if (rc < 0)
             snprintf(err, err_cap, "the %s search endpoint returned HTTP %lld",
                      spec->label, (long long)-rc);
-        else if ((spec->needs & NEED_KEY) || !req.failure[0])
-            snprintf(err, err_cap, "the %s search request failed", spec->label);
-        else
-            snprintf(err, err_cap, "%s", req.failure);
+        else {
+            char why[128];
+            web_failure_text(&req, why, sizeof why);
+            snprintf(err, err_cap, "the %s search request failed: %s",
+                     spec->label, why);
+        }
         return SEARCH_UNKNOWN;
     }
     Str raw = buf_finish(&source);
@@ -1252,10 +1387,12 @@ static SearchOutcome search_backend_run(SearchEngine engine, size_t slot,
     agent_html_destroy(doc);
     search_compact(found);
     if (found->challenge || contains_ci(raw, "verify you are human")) {
+        char pause[32];
+        search_pause_text(search_pause(engine), pause, sizeof pause);
         snprintf(err, err_cap,
-                 "the %s search endpoint returned a challenge page",
-                 spec->label);
-        search_pause(engine);
+                 "the %s search endpoint returned a challenge page "
+                 "and is paused for %s",
+                 spec->label, pause);
         return SEARCH_BLOCKED;
     }
     if (found->oom) {
@@ -1280,12 +1417,17 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out, char *err,
     if (!web_arg_cstr(json_str(j, STR("query")), query, sizeof query, "query",
                       err, err_cap))
         return false;
+    query_collapse_spaces(query);
+    if (!query[0]) {
+        snprintf(err, err_cap, "query is empty");
+        return false;
+    }
     size_t limit;
     if (!web_arg_count(j, STR("limit"), 8, 10, &limit, err, err_cap))
         return false;
 
     SearchCtx found = {.scratch = scratch, .current = SIZE_MAX};
-    char attempts[512] = {0};
+    char attempts[768] = {0};
     size_t attempts_n = 0;
     b8 blocked = false;
     b8 answered = false;
@@ -1300,6 +1442,7 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out, char *err,
             continue;
         }
         found = attempt;
+        g_search.strikes[g_search.chain[i]] = 0;
         answered = true;
     }
     if (!answered) {
@@ -1307,9 +1450,7 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out, char *err,
             search_attempts_add(attempts, sizeof attempts, &attempts_n,
                                 "no search endpoint is configured");
         if (blocked) {
-            snprintf(err, err_cap,
-                     "%s; each refusing endpoint is paused for "
-                     "one hour; do not retry",
+            snprintf(err, err_cap, "%s; do not retry a paused endpoint",
                      attempts);
         } else {
             snprintf(err, err_cap, "%s", attempts);

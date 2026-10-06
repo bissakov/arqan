@@ -71,8 +71,8 @@ static const ConfSpec k_conf[CONF_N] = {
                             24 * 60 * 60 * 1000, 0, true},
 
     [CONF_SEARCH_BACKEND] = {"search_backend", "auto",
-                             "auto,ddg,brave,brave_api,google,searxng", CV_ENUM,
-                             0, 0, 0, true},
+                             "auto,ddg,brave,bing,brave_api,google,searxng",
+                             CV_ENUM, 0, 0, 0, true},
     [CONF_SEARCH_ENDPOINT] = {"search_endpoint", "", NULL, CV_STR, 0, 0,
                               AGENT_MAX_URL, false},
     [CONF_SEARCH_API_KEY] = {"search_api_key", "", NULL, CV_STR, 0, 0,

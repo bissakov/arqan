@@ -14,7 +14,7 @@
 |  └─ one hit · <t>                                                             ┃
 |                                                                               ┃
 |     [task 1 on mock:tool=read:{"path":"notes.txt"},final_text=one+hit: 2      ┃
-|  rounds, 1 tool call, 1650 prompt and 6 completion tokens]                    ┃
+|  rounds, 1 tool call, 1640 prompt and 6 completion tokens]                    ┃
 |                                                                               ┃
 |  done                                                                         ┃
 |

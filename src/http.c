@@ -638,35 +638,65 @@ static b8 http_url_input_ok(const char *url, char *err, size_t err_cap) {
     return ok;
 }
 
+static HttpFailure url_failure_kind(CURLcode rc) {
+    switch (rc) {
+        case CURLE_COULDNT_RESOLVE_HOST:
+        case CURLE_COULDNT_RESOLVE_PROXY: return HTTP_FAIL_DNS;
+        case CURLE_COULDNT_CONNECT: return HTTP_FAIL_CONNECT;
+        case CURLE_SSL_CONNECT_ERROR:
+        case CURLE_SSL_CERTPROBLEM:
+        case CURLE_SSL_CIPHER:
+        case CURLE_SSL_CACERT_BADFILE:
+        case CURLE_SSL_ISSUER_ERROR:
+        case CURLE_SSL_PINNEDPUBKEYNOTMATCH:
+        case CURLE_SSL_INVALIDCERTSTATUS:
+        case CURLE_PEER_FAILED_VERIFICATION: return HTTP_FAIL_TLS;
+        case CURLE_OPERATION_TIMEDOUT: return HTTP_FAIL_TIMEOUT;
+        default: return HTTP_FAIL_OTHER;
+    }
+}
+
 i32 http_url_get(HttpUrlReq *r) {
     if (!r || !r->out) return 1;
     r->effective_url[0] = '\0';
     r->content_type[0] = '\0';
     r->failure[0] = '\0';
+    r->kind = HTTP_FAIL_NONE;
     r->status = 0;
-    if (!curl_load(r->failure, sizeof r->failure)) return 1;
-    if (!http_url_input_ok(r->url, r->failure, sizeof r->failure)) return 2;
+    if (!curl_load(r->failure, sizeof r->failure)) {
+        r->kind = HTTP_FAIL_OTHER;
+        return 1;
+    }
+    if (!http_url_input_ok(r->url, r->failure, sizeof r->failure)) {
+        r->kind = HTTP_FAIL_OTHER;
+        return 2;
+    }
 
     CURL *curl = curl_easy_init();
     if (!curl) {
         snprintf(r->failure, sizeof r->failure, "curl init failed");
+        r->kind = HTTP_FAIL_OTHER;
         return 1;
     }
     CURLM *multi = curl_multi_init();
     if (!multi) {
         curl_easy_cleanup(curl);
         snprintf(r->failure, sizeof r->failure, "curl multi init failed");
+        r->kind = HTTP_FAIL_OTHER;
         return 1;
     }
 
     UrlCtx ctx = {r->out, r->max_bytes, false, false};
     char curl_err[CURL_ERROR_SIZE] = {0};
     struct curl_slist *hdrs = NULL;
-    hdrs = curl_slist_append(
-        hdrs, "Accept: text/html, application/xhtml+xml, "
-              "text/plain, application/json, application/xml;q=0.9, "
-              "text/*;q=0.8, */*;q=0.1");
+    hdrs = curl_slist_append(hdrs, "Accept: text/html,application/xhtml+xml,"
+                                   "application/xml;q=0.9,*/*;q=0.8");
     hdrs = curl_slist_append(hdrs, "Accept-Language: en-US,en;q=0.9");
+    hdrs = curl_slist_append(hdrs, "Upgrade-Insecure-Requests: 1");
+    hdrs = curl_slist_append(hdrs, "Sec-Fetch-Dest: document");
+    hdrs = curl_slist_append(hdrs, "Sec-Fetch-Mode: navigate");
+    hdrs = curl_slist_append(hdrs, "Sec-Fetch-Site: none");
+    hdrs = curl_slist_append(hdrs, "Sec-Fetch-User: ?1");
     for (size_t i = 0; i < sizeof r->header / sizeof r->header[0]; i++)
         if (r->header[i]) hdrs = curl_slist_append(hdrs, r->header[i]);
     curl_easy_setopt(curl, CURLOPT_URL, r->url);
@@ -762,6 +792,7 @@ i32 http_url_get(HttpUrlReq *r) {
 
     if (interrupted) {
         snprintf(r->failure, sizeof r->failure, "interrupted");
+        r->kind = HTTP_FAIL_INTERRUPTED;
         r->out->n = 0;
         return 3;
     }
@@ -769,26 +800,32 @@ i32 http_url_get(HttpUrlReq *r) {
         snprintf(r->failure, sizeof r->failure,
                  "decompressed response exceeds %u bytes",
                  (unsigned)r->max_bytes);
+        r->kind = HTTP_FAIL_TOO_LARGE;
         r->out->n = 0;
         return 2;
     }
     if (!buf_ok(r->out)) {
         snprintf(r->failure, sizeof r->failure,
                  "response does not fit in memory");
+        r->kind = HTTP_FAIL_TOO_LARGE;
         r->out->n = 0;
         return 2;
     }
     if (rc != CURLE_OK) {
-        if (ctx.blocked)
+        r->kind = url_failure_kind(rc);
+        if (ctx.blocked) {
+            r->kind = HTTP_FAIL_NOT_PUBLIC;
             snprintf(r->failure, sizeof r->failure,
                      "destination resolved to a non-public address");
-        else if (rc == CURLE_URL_MALFORMAT && !r->effective_url[0])
+        } else if (rc == CURLE_URL_MALFORMAT && !r->effective_url[0]) {
+            r->kind = HTTP_FAIL_REDIRECT;
             snprintf(
                 r->failure, sizeof r->failure,
                 "redirect URL is malformed, unsupported, or contains credentials");
-        else
+        } else {
             snprintf(r->failure, sizeof r->failure, "%s",
                      curl_err[0] ? curl_err : curl_easy_strerror(rc));
+        }
         r->out->n = 0;
         return 2;
     }

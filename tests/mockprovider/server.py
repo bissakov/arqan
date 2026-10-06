@@ -26,6 +26,7 @@ Standalone:
 from __future__ import annotations
 
 import argparse
+import base64
 import gzip
 import json
 import socket
@@ -688,6 +689,46 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
         </body></html>""".encode()
         self._body(200, "text/html; charset=utf-8", html)
 
+    def _web_search_bing(self):
+        """Bing's layout: redirect links carry the target base64url-encoded."""
+        query = parse_qs(urlsplit(self.path).query).get("q", [""])[0]
+        if query == "status403":
+            self._body(403, "text/html", b"<html><body>refused</body></html>")
+            return
+
+        def ck(url):
+            token = base64.urlsafe_b64encode(url.encode()).decode().rstrip("=")
+            return f"https://www.bing.com/ck/a?!&amp;&amp;p=abc&amp;u=a1{token}&amp;ntb=1"
+
+        html = f"""<!doctype html><html><body><ol id="b_results">
+          <li class="b_ad"><ul><li>
+            <h2><a href="{ck('https://ads.example/promo')}">Sponsored promo</a></h2>
+            <div class="b_caption"><p>buy things</p></div>
+          </li></ul></li>
+          <li class="b_algo b_vtl_deeplinks">
+            <div class="b_tpcn"><a class="tilk" href="{ck('https://example.com/first?a=1&b=two')}">
+              <div class="tptt">example.com</div></a></div>
+            <h2><a href="{ck('https://example.com/first?a=1&b=two')}">First &amp; best</a></h2>
+            <div class="b_caption hasdl"><p class="b_lineclamp2">A <b>nested</b> snippet for {query}.</p></div>
+            <ul class="b_vList"><li><a href="{ck('https://example.com/deep')}">Deep link</a></li></ul>
+          </li>
+          <li class="b_algo">
+            <h2><a href="{ck('http://example.org/two')}">Second result &#937;</a></h2>
+            <div class="b_caption"><p class="b_lineclamp2">second snippet</p></div>
+          </li>
+          <li class="b_algo">
+            <h2><a href="{ck('/images/search?q=relative')}">Relative</a></h2>
+          </li>
+          <li class="b_algo">
+            <h2><a href="https://www.bing.com/ck/a?u=a1!!bad&amp;ntb=1">Garbled</a></h2>
+          </li>
+          <div class="b_rs"><h2>Related searches</h2><ul class="b_vList">
+            <li><a href="{ck('/search?q=related+query')}"><div class="b_suggestionText">related query</div></a></li>
+            <li><a href="https://related.example/">External related</a></li>
+          </ul></div>
+        </ol></body></html>""".encode()
+        self._body(200, "text/html; charset=utf-8", html)
+
     def _web_search_api(self, array, wrapper, fields):
         """One keyed engine's JSON answer, in that engine's field names."""
         query = parse_qs(urlsplit(self.path).query).get("q", [""])[0]
@@ -806,6 +847,8 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             self._web_search_html()
         elif path == "/web/brave/search":
             self._web_search_brave()
+        elif path == "/web/bing/search":
+            self._web_search_bing()
         elif path == "/web/searxng/search":
             self._web_search_api("results", None, ("title", "url", "content"))
         elif path == "/web/braveapi/res/v1/web/search":

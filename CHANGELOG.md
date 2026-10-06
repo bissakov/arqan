@@ -37,7 +37,24 @@
   how many calls failed, how many steps are done, and which command keeps
   failing. The note is not shown in the transcript.
 
+- Bing joins the keyless web search chain, after DuckDuckGo and Brave, with
+  strict safe search. Only its organic result blocks are read; ads and
+  related searches are skipped. `search_backend = bing` selects it alone.
+
 ### Changed
+
+- DuckDuckGo and Brave searches ask for strict safe search.
+
+- A search engine that refuses or challenges a request is paused for two
+  minutes, then ten minutes, then one hour on repeated refusals. A search
+  that succeeds resets the ladder. The pause used to be one hour at once.
+
+- Web tool errors no longer carry transport detail. A failed connection,
+  lookup, TLS handshake or timeout is reported in fixed words; the raw
+  reason goes to the debug log only.
+
+- Web requests send the request headers a current Firefox sends, and search
+  queries have runs of whitespace collapsed before they are sent.
 
 - A shell command made only of reading programs, such as `rg`, `grep`,
   `cat`, `sed -n`, `ls`, `wc`, `find` and `git log`, with no redirection,

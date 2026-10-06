@@ -191,16 +191,18 @@ typedef bool b8;
 #define AGENT_MCP_VERSION_BYTES     32
 #define AGENT_MCP_HTTP_BYTES        AGENT_MCP_LARGE_MSG_BYTES
 
-#define AGENT_MAX_CONTEXT_WINDOW     ((size_t)1 << 31)
-#define AGENT_WEB_BODY_BYTES         (2u << 20)
-#define AGENT_WEB_URL_BYTES          4096
-#define AGENT_WEB_QUERY_BYTES        1025
-#define AGENT_WEB_TYPE_BYTES         128
-#define AGENT_WEB_SEARCH_INTERVAL_MS 10000
-#define AGENT_WEB_SEARCH_PAUSE_MS    3600000
+#define AGENT_MAX_CONTEXT_WINDOW         ((size_t)1 << 31)
+#define AGENT_WEB_BODY_BYTES             (2u << 20)
+#define AGENT_WEB_URL_BYTES              4096
+#define AGENT_WEB_QUERY_BYTES            1025
+#define AGENT_WEB_TYPE_BYTES             128
+#define AGENT_WEB_SEARCH_INTERVAL_MS     10000
+#define AGENT_WEB_SEARCH_PAUSE_MS        3600000
+#define AGENT_WEB_SEARCH_PAUSE_FIRST_MS  120000
+#define AGENT_WEB_SEARCH_PAUSE_SECOND_MS 600000
 
 #define AGENT_WEB_USER_AGENT \
-    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+    "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0"
 #define AGENT_STATUS_FIELDS 11
 
 // ---- arenas -------------------------------------------------------------
@@ -1035,6 +1037,19 @@ i32 http_post(const HttpReq *r);
 i32 http_get(const char *base_url, const char *path, const char *api_key,
              ApiKind api, Buf *out, char *fail_out, size_t fail_cap);
 
+typedef enum {
+    HTTP_FAIL_NONE,
+    HTTP_FAIL_DNS,
+    HTTP_FAIL_CONNECT,
+    HTTP_FAIL_TLS,
+    HTTP_FAIL_TIMEOUT,
+    HTTP_FAIL_TOO_LARGE,
+    HTTP_FAIL_NOT_PUBLIC,
+    HTTP_FAIL_REDIRECT,
+    HTTP_FAIL_INTERRUPTED,
+    HTTP_FAIL_OTHER,
+} HttpFailure;
+
 typedef struct {
     const char *url;
     const char *operation;
@@ -1053,6 +1068,7 @@ typedef struct {
     char effective_url[AGENT_WEB_URL_BYTES];
     char content_type[AGENT_WEB_TYPE_BYTES];
     char failure[256];
+    HttpFailure kind;
     i64 status;
 } HttpUrlReq;
 
