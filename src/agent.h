@@ -23,7 +23,7 @@ typedef float f32;
 typedef double f64;
 typedef bool b8;
 
-#define AGENT_VERSION "0.9.1"
+#define AGENT_VERSION "0.10.0"
 #ifndef AGENT_BUILD_REV
 #define AGENT_BUILD_REV ""
 #endif
