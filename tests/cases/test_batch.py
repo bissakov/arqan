@@ -531,7 +531,7 @@ def test_batch_in_progress_children_survive_a_resize(ctx):
     s.wait_text("sleep 1.5; printf finished")
     assert "write before.txt" in s.text(), s.text()
     assert "\u2502  \u25c6  write before.txt" in s.text(), s.text()
-    assert "\u2502  \u25c6  bash qzx" in s.text(), s.text()
+    assert "\u2502  \u25c6  bash \u00b7 qzx" in s.text(), s.text()
     s.wait_text("done")
     s.wait_turn_done()
     assert result(ctx)["status"] == "completed", result(ctx)

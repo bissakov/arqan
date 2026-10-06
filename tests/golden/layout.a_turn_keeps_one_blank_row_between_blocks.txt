@@ -11,7 +11,7 @@
 |  └─ 1 line · <t>
 |     written down
 |
-|  ◆  bash list the notes
+|  ◆  bash · list the notes
 |  │ ls notes.txt
 |  └─ exit 0 · <t>
 |     notes.txt
