@@ -132,13 +132,21 @@ repo_in sign
 
 # repo-add embeds the detached package signatures written above, so the pacman
 # database is built between the two metadata phases.
+# NOTE: the glob sorts 0.10.0 before 0.9.1, and repo-add keeps the last
+# version it adds unless told not to downgrade.
 docker run --rm --platform linux/amd64 \
     --user "$uid:$gid" \
     -e HOME=/tmp/arqan-home \
     -v "$archdir:/work" \
     -w /work \
     "$ARCH_IMAGE" \
-    sh -ec "repo-add --quiet $PROGRAM.db.tar.gz *.pkg.tar.zst" >/dev/null
+    sh -ec "repo-add --quiet --prevent-downgrade $PROGRAM.db.tar.gz *.pkg.tar.zst" >/dev/null
+
+newest=$(find "$archdir" -name '*.pkg.tar.zst' -exec basename {} \; | sort -V | tail -n 1)
+newest=${newest%-"$PKG_ARCH".pkg.tar.zst}
+listed=$(tar -tzf "$archdir/$PROGRAM.db.tar.gz" | sed -n 's|/$||p')
+[ "$listed" = "$newest" ] ||
+    fail "the pacman database lists '$listed', not $newest"
 
 repo_in index
 
