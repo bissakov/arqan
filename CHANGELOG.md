@@ -2,24 +2,27 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-06
+
 ### Added
 
 - On Linux, a read-only shell command runs under Landlock with every
   filesystem write denied; `/dev/null` is the one writable path. A kernel
-  without Landlock runs the command as before.
+  without Landlock runs the command as before. ([`44356c1`])
 
 - The `batch` tool runs up to eight known tool calls in order. Each step keeps
   its normal display and approval. A batch stops on an error, denied approval,
   nonzero command exit, or a still-running job, and reports the steps it skipped.
   Child arguments use the selected tool's schema, and completed steps are saved
-  while a later step runs.
+  while a later step runs. ([`1d36c11`])
 
 - User turns show a dim `Sent at HH:mm` line above the message block. The
   time is saved with the session and shown in local time on replay.
+  ([`8ea58b0`])
 
 - Development builds show the commit they came from, as in `0.9.1+g1a2b3c4`,
   with `-dirty` when tracked files have uncommitted changes. Release packages
-  show the plain version.
+  show the plain version. ([`781516a`])
 
 - Colour themes. The `theme` setting picks one, and `/theme` switches themes
   while arqan runs and remembers the choice. Five themes are built in: `dark`
@@ -29,21 +32,22 @@
   The light and Kanagawa themes paint the whole screen, so they read the same
   on a dark or a light terminal, and they set the cursor colour to match. In
   the two light themes, all text has a contrast of at least 5:1 against the
-  page.
+  page. ([`150cb1e`])
 
 - C# syntax highlighting. It covers code fences marked `csharp`, `cs` or
   `c#`, and `.cs` and `.csx` files in read results, grep results and patch
-  previews.
+  previews. ([`3b3e294`])
 
 - Long runs report their own progress to the model. Every 40 tool calls,
   after a compaction, and when the same `bash` command fails three times, a
   short note on a tool result tells the model how long the run has taken,
   how many calls failed, how many steps are done, and which command keeps
-  failing. The note is not shown in the transcript.
+  failing. The note is not shown in the transcript. ([`727b98a`])
 
 - Bing joins the keyless web search chain, after DuckDuckGo and Brave, with
   strict safe search. Only its organic result blocks are read; ads and
   related searches are skipped. `search_backend = bing` selects it alone.
+  ([`d87d7ee`])
 
 ### Changed
 
@@ -54,19 +58,21 @@
   ask like any other command. A read-only command that names a path
   outside the project (absolute, `~` or `..`) or a variable asks
   `allow read outside the project?` like `read` does, in plan mode too.
+  ([`44356c1`])
 
-- DuckDuckGo and Brave searches ask for strict safe search.
+- DuckDuckGo and Brave searches ask for strict safe search. ([`d87d7ee`])
 
 - A search engine that refuses or challenges a request is paused for two
   minutes, then ten minutes, then one hour on repeated refusals. A search
   that succeeds resets the ladder. The pause used to be one hour at once.
+  ([`d87d7ee`])
 
 - Web tool errors no longer carry transport detail. A failed connection,
   lookup, TLS handshake or timeout is reported in fixed words; the raw
-  reason goes to the debug log only.
+  reason goes to the debug log only. ([`d87d7ee`])
 
 - Web requests send the request headers a current Firefox sends, and search
-  queries have runs of whitespace collapsed before they are sent.
+  queries have runs of whitespace collapsed before they are sent. ([`d87d7ee`])
 
 - A shell command made only of reading programs, such as `rg`, `grep`,
   `cat`, `sed -n`, `ls`, `wc`, `find` and `git log`, with no redirection,
@@ -75,47 +81,53 @@
   only such commands; anything else is refused with an error, and the
   user is not asked. Plan mode also offers `job` to follow a command that
   outran its deadline. The check is a first-word allowlist that fails
-  closed.
+  closed. ([`6814dd8`])
+
+- A `bash` call needs a `description` that says in a few words what the
+  command does. A call without one runs nothing and returns an error. The
+  transcript shows the description in the accent colour after the tool
+  name and a dim dot, with the command below it. ([`32d7a46`])
 
 - `ask_user` questions and options are written in the third person, as in
   "Should the agent keep the old API?", instead of "I" or "you". The user
-  picks an option, so first and second person were ambiguous.
+  picks an option, so first and second person were ambiguous. ([`b0b18cc`])
 
 - A context checkpoint keeps the user's requests word for word, in a
   `User requests` section the model does not write, and carries them
   forward through later compactions. A `Run` line counts the compactions.
   The summary now separates verified work from unverified work and records
-  failed attempts.
+  failed attempts. ([`727b98a`])
 
 - The system prompt tells the model to stop and report when the same
   approach has failed three times, when the work has grown well beyond the
-  request, or when it is no longer sure of the path.
+  request, or when it is no longer sure of the path. ([`727b98a`])
 
 - Unexpected cache miss warnings no longer call the miss a bug or link to
-  the project's issue tracker.
+  the project's issue tracker. ([`84d0f35`])
 
 - The preparing-tool-call spinner shows how many bytes of tool arguments
   have arrived. The count updates while the provider streams, without
-  restarting the timers.
+  restarting the timers. ([`dbe434f`])
 
 - Batch children are indented inside a dim left rail. The rail continues
   through blank lines and wrapped output, and the batch summary closes it.
+  ([`a48cd71`])
 
 - File editing tools create missing parent directories for new files. Patches
   accept repeated update headers for one file and `@@ literal line` anchors
-  to narrow the search for matching context.
+  to narrow the search for matching context. ([`1d36c11`])
 
 - Tool output, tool arguments and block quotes use a brighter grey and are
   easier to read. Reasoning, gutters, separators and timings keep the dim
   grey, so reasoning stays easy to tell apart from the reply. Emphasis and
-  strikeout text no longer turn grey.
+  strikeout text no longer turn grey. ([`6ff44ee`])
 
 - With no model set, arqan now uses `gpt-5.6-sol` for the OpenAI API and
   `claude-opus-5` for the Anthropic API, instead of `gpt-4o-mini` and
-  `claude-sonnet-4-5`.
+  `claude-sonnet-4-5`. ([`a99b29a`])
 
 - The syntax highlighter binary is about 5 MB smaller: 8 MB instead of 13 MB.
-  Highlighting takes up to about 10% longer.
+  Highlighting takes up to about 10% longer. ([`9516d3c`])
 
 ### Removed
 
@@ -124,41 +136,56 @@
   shell namesake, so the two definitions cost tokens on every request for
   little use. Use `bash` with `rg`, `grep` or `find`; a read-only pipeline
   needs no approval. `read` stays: it pages, reads images, and asks before
-  it leaves the project.
+  it leaves the project. ([`6814dd8`])
 
 ### Fixed
 
-- `find` and `grep` headings quote the glob or pattern and show the search
-  path, including `.` when no path is given. The pattern and path use
-  different theme colours.
-
-- Empty `grep` results show only `0 matches`, without a second `no matches`
-  line. The model still receives the full tool result.
-
 - Saved code gets syntax highlighting when the last session resumes at
   startup. Before, it stayed plain until the transcript was rebuilt.
+  ([`0917297`])
 
 - Patch previews and expansion windows highlight code in both patch formats.
   Each file uses its own language, including patches that change several files.
+  ([`0917297`])
 
 - Patches match whole lines, never a suffix inside another line. Context
   errors show the text near a known mismatch instead of the end of the file.
+  ([`1d36c11`])
 
 - A question from `ask_user` that wraps now reads in one colour. Its first
   row took the grey of the gutter, while the rows after it used the text
-  colour.
+  colour. ([`2bfe54d`])
 
 - Text copied with the mouse no longer carries the layout. The left margin
   and the prompt marker stay behind, rows the screen wrapped join back into
-  one line, and the extra spaces of justified text are dropped.
+  one line, and the extra spaces of justified text are dropped. ([`14d73bc`])
 
 - Deeply nested code no longer stalls the screen while it is highlighted.
   The highlighter gives up after 200 ms and shows the code plain. Before,
   such a block held the screen for about a second and counted as a failure.
+  ([`3729795`])
 
 - A language whose highlighter keeps failing loses its colours alone. Before,
   three failures in a row turned off highlighting for every language until
-  restart.
+  restart. ([`3729795`])
+
+- Todo items read in the text colour whatever their status. Before, some
+  were drawn in the dim grey. ([`8d923ee`])
+
+- `job` calls no longer show their raw JSON arguments. ([`fe94d53`])
+
+- An `ask_user` question shows again when the transcript is redrawn, and
+  long questions and answers are kept whole instead of cut short.
+  ([`fe94d53`])
+
+- A session lock file is removed when the session ends, on exit and on
+  `/clear`. A lock file left behind by a killed process no longer marks
+  its session as live elsewhere; it is removed when sessions are listed.
+  ([`840cf20`])
+
+- `--help` names every project config file that applies:
+  `.arqan/config.toml` in the working directory or any directory above
+  it, with the nearest one winning. ([`a99b29a`])
 
 ## [0.9.1] - 2026-09-24
 
@@ -722,7 +749,8 @@
 - Portable Linux x86_64 archive, installer, checksum, and draft release
   automation.
 
-[Unreleased]: https://github.com/bissakov/arqan/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/bissakov/arqan/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/bissakov/arqan/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/bissakov/arqan/compare/v0.8.0...v0.9.1
 [0.8.0]: https://github.com/bissakov/arqan/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/bissakov/arqan/compare/v0.6.0...v0.7.0
@@ -733,6 +761,30 @@
 [0.2.0]: https://github.com/bissakov/arqan/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bissakov/arqan/releases/tag/v0.1.0
 
+[`44356c1`]: https://github.com/bissakov/arqan/commit/44356c1166bf7f64903f12d2ab89483dd3871c00
+[`1d36c11`]: https://github.com/bissakov/arqan/commit/1d36c1144a49d152993d3cba0d90c005638d117d
+[`8ea58b0`]: https://github.com/bissakov/arqan/commit/8ea58b0e512b4e2d7a3ef35d254e3646112a4de0
+[`781516a`]: https://github.com/bissakov/arqan/commit/781516a71de7e2cecadc655f1876d12c39686aaf
+[`150cb1e`]: https://github.com/bissakov/arqan/commit/150cb1e78e70c24812611c9e9b50b891ae038697
+[`3b3e294`]: https://github.com/bissakov/arqan/commit/3b3e29499dca7b238389d94619a8fbdad631c48e
+[`727b98a`]: https://github.com/bissakov/arqan/commit/727b98aad390d61c98d1ddc85bd2a630c535a4db
+[`d87d7ee`]: https://github.com/bissakov/arqan/commit/d87d7ee6b876921efa907adfe3b1fdde146c42a9
+[`6814dd8`]: https://github.com/bissakov/arqan/commit/6814dd85272adde3866d0048ab920000a0fb3a33
+[`32d7a46`]: https://github.com/bissakov/arqan/commit/32d7a4681e06d547fc39af317cbc98525bd340a4
+[`b0b18cc`]: https://github.com/bissakov/arqan/commit/b0b18cc325301a937dd23a0ef6e66f23fb1e6c1c
+[`84d0f35`]: https://github.com/bissakov/arqan/commit/84d0f3579b4743f788a4eefdf07ab9e409d05418
+[`dbe434f`]: https://github.com/bissakov/arqan/commit/dbe434f0df3b56f68fb33e1378501149d7cc5439
+[`a48cd71`]: https://github.com/bissakov/arqan/commit/a48cd71306373b647f551436c60c64af587ab185
+[`6ff44ee`]: https://github.com/bissakov/arqan/commit/6ff44eef5bd71b92411161eea87c1662f2783e77
+[`a99b29a`]: https://github.com/bissakov/arqan/commit/a99b29a8236621222827ae46e76f0af58d76e5de
+[`9516d3c`]: https://github.com/bissakov/arqan/commit/9516d3c1022d8c7cb10f05cb720e87e89363ed85
+[`0917297`]: https://github.com/bissakov/arqan/commit/09172972c8c70b286775e66610466758172f0027
+[`2bfe54d`]: https://github.com/bissakov/arqan/commit/2bfe54d3eda4022d4707de87020c8ce2f6b97488
+[`14d73bc`]: https://github.com/bissakov/arqan/commit/14d73bcfdceeed171cf35fb46f447d811fa0366e
+[`3729795`]: https://github.com/bissakov/arqan/commit/3729795441e9480289b4fad1441505e777d7b824
+[`8d923ee`]: https://github.com/bissakov/arqan/commit/8d923eed5070d1747eb5bc39cd151c5ccad8581c
+[`fe94d53`]: https://github.com/bissakov/arqan/commit/fe94d53ac2c74529fd999c0a8633d7959ce95012
+[`840cf20`]: https://github.com/bissakov/arqan/commit/840cf2048cf7e8c55b6c311ee621641fdeede6ac
 [`c8e2184`]: https://github.com/bissakov/arqan/commit/c8e21848d9ac96ba3c5789b5f32829d96a177667
 [`1b5a667`]: https://github.com/bissakov/arqan/commit/1b5a66778c895a3d1999fc67b876e02a938634ac
 [`5dc3e0f`]: https://github.com/bissakov/arqan/commit/5dc3e0fc5016089544cd14e4e021da7aa5db032d
