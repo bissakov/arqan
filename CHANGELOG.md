@@ -35,8 +35,8 @@
   page. ([`150cb1e`])
 
 - C# syntax highlighting. It covers code fences marked `csharp`, `cs` or
-  `c#`, and `.cs` and `.csx` files in read results, grep results and patch
-  previews. ([`3b3e294`])
+  `c#`, and `.cs` and `.csx` files in read results and patch previews.
+  ([`3b3e294`])
 
 - Long runs report their own progress to the model. Every 40 tool calls,
   after a compaction, and when the same `bash` command fails three times, a
