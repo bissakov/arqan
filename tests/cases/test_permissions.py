@@ -193,21 +193,6 @@ def test_yes_and_remember_allows_later_outside_reads(ctx):
     assert "second body" in ctx.mock.tool_results()[-1]
 
 
-def test_grep_and_find_outside_the_project_ask(ctx):
-    p = outside_file(ctx)
-    for name, args in (("grep", {"pattern": "outside", "path": str(p.parent)}),
-                       ("find", {"name": "*.txt", "path": str(p.parent)})):
-        ctx.scenario(f"tool={name}:{json.dumps(args)},final_text=answered")
-        s = ctx.spawn(ARQAN_PERMISSIONS="ask")
-        s.submit("look")
-        s.wait_status(OUTSIDE_PROMPT)
-        s.key("esc")
-        s.wait_text("answered")
-        s.wait_turn_done()
-        assert ctx.mock.tool_results()[-1].startswith("DENIED:"), name
-        s.close()
-
-
 def test_reads_inside_the_project_do_not_ask(ctx):
     """A relative path, a missing one, and a link that stays inside all
     resolve under the working directory."""
@@ -217,8 +202,6 @@ def test_reads_inside_the_project_do_not_ask(ctx):
         read_call("src/inside.txt")
         + "," + read_call(ctx.work / "link.txt")
         + "," + read_call("src/missing/deeper.txt")
-        + ',tool=grep:{"pattern":"inside"}'
-        + ',tool=find:{"name":"*.txt","path":"src"}'
         + ",final_text=done")
     s = ctx.spawn(ARQAN_PERMISSIONS="ask")
     s.submit("read")
@@ -247,9 +230,8 @@ def test_a_spill_file_named_by_a_result_is_readable_without_asking(ctx):
     """The agent wrote it, and the result told the model to read it."""
     tmp = ctx.tmp / "spill"
     tmp.mkdir()
-    ctx.scenario('tool=find:{"name":"*.txt","limit":1},final_text=listed')
-    for i in range(30):
-        ctx.write_file(f"f{i:02}.txt", "x\n")
+    ctx.scenario('tool=bash:{"command":"seq 1 100000","description":"count",'
+                 '"limit":32},final_text=listed')
     s = ctx.spawn(ARQAN_PERMISSIONS="ask", TMPDIR=str(tmp))
     s.submit("list")
     s.wait_text("listed")
@@ -260,7 +242,7 @@ def test_a_spill_file_named_by_a_result_is_readable_without_asking(ctx):
     s.submit("read the rest")
     s.wait_text("read back")
     s.wait_turn_done()
-    assert "f29.txt" in ctx.mock.tool_results()[-1], ctx.mock.tool_results()
+    assert "\n1000\n" in ctx.mock.tool_results()[-1], ctx.mock.tool_results()[-1][:200]
 
 
 def test_free_reads_outside_without_asking(ctx):

@@ -22,5 +22,5 @@
 |  › Message arqan...
 |
 |
-|  ● pick an answer · mock-model · plan · local · ~/work · 1k · free
+|  ● pick an answer · mock-model · plan · local · ~/work · 2k · free
 --- cursor row=21 col=5 visible=yes ---

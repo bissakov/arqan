@@ -83,31 +83,6 @@ def test_batch_write_creates_directories_then_reads(ctx):
     assert (ctx.work / "nested/new.txt").read_text() == "hello\n"
 
 
-def test_batch_grep_empty_result_is_summarised_once(ctx):
-    ctx.write_file("notes.txt", "alpha\n")
-    s = run_batch(ctx, [step("grep", pattern="absent", path="notes.txt")])
-
-    text = s.text()
-    assert text.count("\u2514\u2500 0 matches") == 1, text
-    assert "no matches" not in text, text
-    out = result(ctx)
-    assert out["status"] == "completed", out
-    assert out["steps"][0]["result"] == "no matches\n", out
-
-
-def test_batch_search_header_names_a_missing_root(ctx):
-    s = run_batch(ctx, [step("find", name="*", path=".tools"),
-                        step("grep", pattern="needle")])
-
-    text = s.text()
-    assert '\u2502  \u25c6  find "*" in .tools' in text, text
-    assert "error: .tools does not exist" in text, text
-    out = result(ctx)
-    assert out["status"] == "stopped", out
-    assert out["attempted"] == 1 and out["skipped"] == 1, out
-    assert out["steps"][0]["result"] == "ERROR: .tools does not exist", out
-
-
 def test_batch_children_have_a_rail_and_regular_tools_do_not(ctx):
     ctx.write_file("first.txt", "first output\n")
     ctx.write_file("second.txt", "second output\n")
@@ -399,7 +374,7 @@ def test_batch_anthropic_schema_discriminates_children(ctx):
     assert "read" in names and "write" in names and "batch" not in names
 
 
-def test_batch_plan_schema_excludes_build_tools(ctx):
+def test_batch_plan_schema_excludes_writing_tools(ctx):
     ctx.scenario("text=ok")
     s = ctx.spawn(ARQAN_MODE="plan")
     s.submit("show tools")
@@ -409,8 +384,19 @@ def test_batch_plan_schema_excludes_build_tools(ctx):
     schema = batch_schema(ctx)
     choices = schema["properties"]["steps"]["items"]["oneOf"]
     names = {choice["properties"]["tool"]["const"] for choice in choices}
-    assert "read" in names
-    assert "write" not in names and "bash" not in names
+    assert "read" in names and "bash" in names
+    assert "write" not in names and "patch" not in names
+
+
+def test_batch_in_plan_mode_refuses_a_writing_shell_step(ctx):
+    run_batch(ctx, [step("bash", command="ls", description="list"),
+                    step("bash", command="touch after.txt", description="touch")],
+              ARQAN_MODE="plan")
+    out = result(ctx)
+    assert out["status"] == "stopped", out
+    assert out["attempted"] == 2 and out["skipped"] == 0, out
+    assert "bash in plan mode runs read-only commands only" in out["steps"][1]["result"], out
+    assert not (ctx.work / "after.txt").exists()
 
 
 def test_batch_asks_for_each_guarded_child(ctx):

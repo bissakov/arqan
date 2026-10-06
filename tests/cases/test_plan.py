@@ -46,7 +46,7 @@ def test_shift_tab_keeps_the_draft(ctx):
 
 
 def test_plan_mode_withholds_the_writing_tools(ctx):
-    """The provider is offered reads, never bash, write, or patch."""
+    """The provider is offered reads and the shell, never write or patch."""
     ctx.scenario("text=here+is+what+I+see")
     s = ctx.spawn()
     to_plan(s)
@@ -54,8 +54,8 @@ def test_plan_mode_withholds_the_writing_tools(ctx):
     s.wait_turn_done()
 
     names = tool_names(ctx.mock.requests[-1])
-    assert "read" in names, names
-    assert "bash" not in names and "write" not in names and "patch" not in names, names
+    assert "read" in names and "bash" in names and "job" in names, names
+    assert "write" not in names and "patch" not in names, names
     assert "submit_plan" in names and "ask_user" in names, names
 
 
@@ -161,6 +161,39 @@ def test_a_write_in_plan_mode_is_refused(ctx):
     s.wait_turn_done()
 
     assert "write is not available in plan mode" in s.text(), s.text()
+    assert not (ctx.work / "out.txt").exists(), "plan mode wrote a file"
+
+
+def test_a_read_only_shell_command_runs_in_plan_mode_without_asking(ctx):
+    """Plan mode reads the repository, and the shell is how it searches."""
+    ctx.write_file("notes.txt", "alpha is a letter\n")
+    ctx.scenario('tool=bash:{"command":"grep -rn alpha . | sort",'
+                 '"description":"find alpha"},final_text=understood')
+    s = ctx.spawn(ARQAN_PERMISSIONS="ask")
+    to_plan(s)
+    s.submit("search")
+    s.wait_text("understood")
+    s.wait_turn_done()
+
+    assert "allow bash?" not in s.text(), s.text()
+    assert "notes.txt:1:alpha is a letter" in ctx.mock.tool_results()[-1], \
+        ctx.mock.tool_results()
+
+
+def test_a_writing_shell_command_in_plan_mode_is_refused_without_asking(ctx):
+    """A command that could change something is an error for the model, not
+    a question for the user: plan mode never asks for a write."""
+    ctx.scenario('tool=bash:{"command":"echo nope > out.txt",'
+                 '"description":"write a file"},final_text=understood')
+    s = ctx.spawn(ARQAN_PERMISSIONS="ask")
+    to_plan(s)
+    s.submit("write a file")
+    s.wait_text("understood")
+    s.wait_turn_done()
+
+    assert "allow bash?" not in s.text(), s.text()
+    result = ctx.mock.tool_results()[-1]
+    assert result.startswith("ERROR: bash in plan mode runs read-only commands only"), result
     assert not (ctx.work / "out.txt").exists(), "plan mode wrote a file"
 
 

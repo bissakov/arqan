@@ -39,6 +39,15 @@
 
 ### Changed
 
+- A shell command made only of reading programs, such as `rg`, `grep`,
+  `cat`, `sed -n`, `ls`, `wc`, `find` and `git log`, with no redirection,
+  substitution, grouping or inline script, runs without asking under
+  `permissions = "ask"`. Plan mode and subagents now offer `bash` and run
+  only such commands; anything else is refused with an error, and the
+  user is not asked. Plan mode also offers `job` to follow a command that
+  outran its deadline. The check is a first-word allowlist that fails
+  closed; it does not inspect path arguments yet.
+
 - `ask_user` questions and options are written in the third person, as in
   "Should the agent keep the old API?", instead of "I" or "you". The user
   picks an option, so first and second person were ambiguous.
@@ -78,6 +87,15 @@
 
 - The syntax highlighter binary is about 5 MB smaller: 8 MB instead of 13 MB.
   Highlighting takes up to about 10% longer.
+
+### Removed
+
+- The `grep` and `find` tools. The model reached for shell `grep` fourteen
+  times for every call of the tool, and `find` was used no more than its
+  shell namesake, so the two definitions cost tokens on every request for
+  little use. Use `bash` with `rg`, `grep` or `find`; a read-only pipeline
+  needs no approval. `read` stays: it pages, reads images, and asks before
+  it leaves the project.
 
 ### Fixed
 

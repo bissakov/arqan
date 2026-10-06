@@ -2,7 +2,6 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -96,17 +95,6 @@ void spill_put(Spill *s, const char *p, size_t n) {
     if (s->buf_n + n > sizeof s->buf && !spill_flush(s)) return;
     memcpy(s->buf + s->buf_n, p, n);
     s->buf_n += n;
-}
-
-void spill_putf(Spill *s, const char *fmt, ...) {
-    if (s->fd < 0) return;
-    char line[512];
-    va_list ap;
-    va_start(ap, fmt);
-    i32 n = vsnprintf(line, sizeof line, fmt, ap);
-    va_end(ap);
-    if (n < 0) return;
-    spill_put(s, line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
 }
 
 

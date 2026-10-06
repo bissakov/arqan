@@ -37,7 +37,7 @@ def test_request_shape(ctx):
     assert req["messages"][1]["content"] == "what is 2+2?"
     names = sorted(t["function"]["name"] for t in req["tools"])
     assert names == [
-        "ask_user", "bash", "batch", "find", "grep", "internet_search", "job",
+        "ask_user", "bash", "batch", "internet_search", "job",
         "page_fetch", "patch", "read", "task", "todo", "write"
     ], names
 

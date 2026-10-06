@@ -39,7 +39,7 @@ def test_a_turn_keeps_one_blank_row_between_blocks(ctx):
     ctx.scenario(
         "reasoning=let+me+look,"
         'tool=read:{"path":"notes.txt"},'
-        'tool=find:{"name":"notes"},'
+        'tool=bash:{"command":"ls notes.txt","description":"list the notes"},'
         "final_text=that+is+all"
     )
     s = ctx.spawn()

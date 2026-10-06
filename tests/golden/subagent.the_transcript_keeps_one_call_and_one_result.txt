@@ -13,8 +13,8 @@
 |  │ {"id": 1, "wait_ms": 30000}                                                ┃
 |  └─ one hit · <t>                                                             ┃
 |                                                                               ┃
-|     [task 1 on mock:tool=grep:{"pattern":"alpha"},final_text=one+hit: 2       ┃
-|  rounds, 1 tool call, 1295 prompt and 5 completion tokens]                    ┃
+|     [task 1 on mock:tool=read:{"path":"notes.txt"},final_text=one+hit: 2      ┃
+|  rounds, 1 tool call, 1650 prompt and 6 completion tokens]                    ┃
 |                                                                               ┃
 |  done                                                                         ┃
 |
@@ -22,5 +22,5 @@
 |  › Message arqan...
 |
 |
-|  ● ready · mock-model · build · local · ~/work · ~217 · free
+|  ● ready · mock-model · build · local · ~/work · ~218 · free
 --- cursor row=21 col=5 visible=yes ---

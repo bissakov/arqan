@@ -13,7 +13,8 @@ def timestamp_rows(s):
 
 
 def test_timestamp_is_dim_and_outside_the_user_block(ctx):
-    ctx.scenario('tool=find:{"name":"notes"},final_text=answered')
+    ctx.scenario('tool=bash:{"command":"ls","description":"list files"},'
+                 'final_text=answered')
     s = ctx.spawn()
     s.submit("my question")
     s.wait_text("answered")

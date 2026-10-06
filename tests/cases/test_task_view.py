@@ -100,7 +100,7 @@ def test_ctrl_o_shows_the_tasks_own_conversation(ctx):
     parent's transcript ever carried."""
     a_small_tree(ctx)
     ctx.scenario(collect() + ",final_text=done")
-    s = spawn(ctx, sub='tool=grep:{"pattern":"alpha"},tool_rounds=1,'
+    s = spawn(ctx, sub='tool=read:{"path":"notes.txt"},tool_rounds=1,'
                        'final_text=found+it')
     s.submit("delegate it")
     s.wait_text("done")
@@ -113,7 +113,7 @@ def test_ctrl_o_shows_the_tasks_own_conversation(ctx):
 def test_ctrl_o_returns_and_the_parent_transcript_is_whole(ctx):
     a_small_tree(ctx)
     ctx.scenario(delegate())
-    s = spawn(ctx, sub='tool=grep:{"pattern":"alpha"},final_text=found+it')
+    s = spawn(ctx, sub='tool=read:{"path":"notes.txt"},final_text=found+it')
     s.submit("delegate it")
     s.wait_text("done")
     s.wait_turn_done()
@@ -249,13 +249,13 @@ def test_the_view_fills_in_while_the_delegate_is_still_working(ctx):
     round, the first round's tool block is already on screen."""
     a_small_tree(ctx)
     ctx.scenario(collect() + ",final_text=done")
-    s = spawn(ctx, sub='tool=grep:{"pattern":"alpha"},hold_round=2,'
+    s = spawn(ctx, sub='tool=read:{"path":"notes.txt"},hold_round=2,'
                        'final_text=found+it')
     s.submit("delegate it")
     s.wait_for(lambda _: len(ctx.mock.requests) >= 3, "the delegate's round")
     s.key("ctrl-o").sync()
 
-    s.wait_text('grep "alpha" in .')
+    s.wait_text("read notes.txt")
     text = s.text()
     assert "in progress" in text, text
     assert "found it" not in text, text
@@ -271,7 +271,7 @@ def test_a_reflow_rebuilds_the_task_view_rather_than_blanking_it(ctx):
     while the task is showing would wipe the screen and write nothing back."""
     a_small_tree(ctx)
     ctx.scenario(delegate())
-    s = spawn(ctx, sub='tool=grep:{"pattern":"alpha"},final_text=found+it')
+    s = spawn(ctx, sub='tool=read:{"path":"notes.txt"},final_text=found+it')
     s.submit("delegate it")
     s.wait_text("done")
     s.wait_turn_done()
@@ -286,11 +286,12 @@ def test_a_reflow_rebuilds_the_task_view_rather_than_blanking_it(ctx):
 
 def test_clicking_a_truncated_block_expands_it_inside_the_task_view(ctx):
     """Blocks are numbered by the conversation showing, so the click that
-    reaches the delegate's grep must not land on a block of the parent."""
+    reaches the delegate's search must not land on a block of the parent."""
     for i in range(30):
         ctx.write_file(f"src/f{i:02}.c", "int alpha(void);\n")
     ctx.scenario(delegate())
-    s = spawn(ctx, sub='tool=grep:{"pattern":"alpha"},final_text=found+it')
+    s = spawn(ctx, sub='tool=bash:{"command":"grep -rn alpha src | sort",'
+                       '"description":"find alpha"},final_text=found+it')
     s.submit("delegate it")
     s.wait_text("done")
     s.wait_turn_done()

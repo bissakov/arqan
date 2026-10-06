@@ -194,19 +194,6 @@ def test_csharp_fence_gains_syntax_colours(ctx):
     assert cell(s, "// note").fg == MUTED
 
 
-def test_typed_csharp_grep_colours_match_text(ctx):
-    """A grep limited to *.cs colours its fragments as C#."""
-    ctx.write_file("one.cs", "class Answer { int n = 42; }\n")
-    args = json.dumps({"pattern": "Answer", "glob": "*.cs"})
-    ctx.scenario(f"tool=grep:{args},final_text=done")
-    s = ctx.spawn()
-    s.submit("find it")
-    s.wait_turn_done()
-    assert cell(s, "one.cs:1:").fg == SUBTLE
-    assert cell(s, "class Answer").fg == PURPLE
-    assert cell(s, "= 42", 2).fg == YELLOW
-
-
 def test_cargo_lock_is_toml_by_name(ctx):
     """Cargo.lock has no TOML extension and still resolves to TOML."""
     source = b'name = "arqan" # c\n'
@@ -544,29 +531,8 @@ def test_source_bearing_tool_calls_are_highlighted(ctx):
     assert cell(s2, "'yes'").fg == GREEN
 
 
-def test_typed_grep_colours_only_match_text(ctx):
-    """A single-extension grep colours fragments but leaves prefixes muted."""
-    ctx.write_file("one.c", "int answer = 42;\n")
-    args = json.dumps({"pattern": "answer", "glob": "*.c"})
-    ctx.scenario(f"tool=grep:{args},final_text=done")
-    s = ctx.spawn()
-    s.submit("find it")
-    s.wait_turn_done()
-    assert cell(s, "one.c:1:").fg == SUBTLE
-    assert cell(s, "int answer").fg == CYAN
-    assert cell(s, "int answer", 4).fg == TEXT
-    assert cell(s, "= 42", 2).fg == YELLOW
-
-
-def test_untyped_grep_and_shell_like_source_stay_plain(ctx):
-    """Unreliable search context and arbitrary shell output are never guessed."""
-    ctx.write_file("one.c", "int answer = 42;\n")
-    ctx.scenario('tool=grep:{"pattern":"answer"},final_text=done')
-    s = ctx.spawn()
-    s.submit("find it")
-    s.wait_turn_done()
-    assert cell(s, "int answer").fg == SUBTLE
-
+def test_shell_like_source_stays_plain(ctx):
+    """Arbitrary shell output is never guessed at."""
     # TODO: placeholder description; write a real one
     args = json.dumps({"command": "printf 'int answer = 42;\\n'", "description": "qzx"})
     ctx.scenario(f"tool=bash:{args},final_text=done")
@@ -752,23 +718,6 @@ def test_window_over_plain_output_stays_plain(ctx):
     click_tail(s, "\u25be 28 more lines")
     s.wait_text("line 0012 of output")
     assert window_cell(s, "line 0012 of output").fg == TEXT
-
-
-def test_window_over_a_grep_result_colours_only_match_text(ctx):
-    """Batched fragments land back on the lines they were cut from: the
-    window colours the code and leaves each file and line prefix alone."""
-    body = "\n".join(f"int v{i:04d} = {i};" for i in range(20))
-    ctx.write_file("one.c", body)
-    args = json.dumps({"pattern": "int", "glob": "*.c"})
-    ctx.scenario(f"tool=grep:{args},hold_final,final_text=done")
-    s = ctx.spawn()
-    s.submit("find them")
-    s.wait_text("\u25be 8 more lines")
-    click_tail(s, "\u25be 8 more lines")
-    s.wait_text("one.c:13:")
-    assert window_cell(s, "one.c:13:").fg == TEXT
-    assert window_cell(s, "int v0012").fg == CYAN
-    assert window_cell(s, "= 12", 2).fg == YELLOW
 
 
 def test_window_over_an_envelope_patch_uses_each_files_language(ctx):
