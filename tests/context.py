@@ -119,6 +119,9 @@ class Ctx:
         self.mock = MockProvider().start()
         self.sessions: list[Session] = []
         self.helpers: list[subprocess.Popen] = []
+        # Added to every environment this context builds; bench/ sets
+        # ARQAN_DUMPABLE here so it can read the process's /proc entries.
+        self.extra_env: dict[str, str] = {}
         self._checked: list[str] = []
         self.quiet = QUIET
 
@@ -204,6 +207,7 @@ class Ctx:
             "ARQAN_PERMISSIONS": "free",
             "ARQAN_TEST_FREEZE_ACTIVITY_CLOCK": "1",
         }
+        env.update(self.extra_env)
         for k, v in overrides.items():
             if v is None:
                 env.pop(k, None)

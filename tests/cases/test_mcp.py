@@ -229,6 +229,32 @@ def test_mcp_env_and_cwd_reach_the_child(ctx):
     assert methods[-1] == "tools/call", methods
 
 
+def test_mcp_server_gets_no_api_key_unless_named(ctx):
+    """The server starts from the environment without the keys; an env entry
+    that names one on purpose still passes it."""
+    report = ctx.tmp / "env.json"
+    entry = {
+        "command": sys.executable,
+        "args": [SERVER, "--report-env", str(report)],
+        "env": {"PICKED_KEY": "$ARQAN_API_KEY"},
+    }
+    p = ctx.xdg / "arqan" / "mcp.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"servers": {"demo": entry}}))
+    ctx.scenario("text=zebra")
+    s = ctx.spawn(ARQAN_MCP="on", ARQAN_SEARCH_API_KEY="search-key")
+    s.submit("hello")
+    s.wait_text("zebra")
+    s.wait_turn_done()
+
+    seen = json.loads(report.read_text())
+    assert "ARQAN_API_KEY" not in seen, seen
+    assert "ARQAN_SEARCH_API_KEY" not in seen, seen
+    assert seen.get("PICKED_KEY") == "test-key", seen
+    assert "HOME" in seen and "PATH" in seen, seen
+    assert seen.get("ARQAN_MODEL") == "mock-model", seen
+
+
 def test_mcp_call_is_refused_when_the_server_dies(ctx):
     """A server that exits during a call fails the call and stays down."""
     write_mcp(ctx, mode="die-on-call")

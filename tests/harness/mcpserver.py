@@ -532,6 +532,11 @@ def main():
         default=None,
         help="write what each inherited descriptor points at, then serve",
     )
+    ap.add_argument(
+        "--report-env",
+        default=None,
+        help="write the environment as a JSON object, then serve",
+    )
     ap.add_argument("--http", action="store_true", help="serve over HTTP")
     ap.add_argument("--sse", action="store_true", help="answer with SSE")
     ap.add_argument("--session", action="store_true", help="use a session id")
@@ -559,6 +564,10 @@ def main():
                 pass
         with open(opts.report_fds, "w") as f:
             json.dump(seen, f)
+
+    if opts.report_env:
+        with open(opts.report_env, "w") as f:
+            json.dump(dict(os.environ), f)
 
     if opts.mode == "crash":
         sys.exit(3)

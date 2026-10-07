@@ -313,6 +313,97 @@ void child_close_fds(i32 keep_from) {
     for (i32 fd = keep_from; fd < (i32)max; fd++) close(fd);
 }
 
+/* ---- child environments ----
+ * What a child process starts from: the agent's own environment less the API
+ * keys. A sandboxed read-only command also gets git settings that keep a
+ * repository's config from starting the fsmonitor hook or gpg, and that stop
+ * git taking optional locks. Each kind is built on first use from pointers
+ * into `environ`, so it costs nothing until a child starts.
+ * NOTE: nothing calls setenv or putenv, so the strings `environ` points at
+ * stay put. Git before 2.31 reads only GIT_CONFIG_PARAMETERS; later ones read
+ * both, and the values agree.
+ */
+
+extern char **environ;
+
+#define CHILD_ENV_MAX 512
+
+static const char *const k_child_env_secrets[] = {
+    AGENT_ENV_PREFIX "API_KEY",
+    AGENT_ENV_PREFIX "SEARCH_API_KEY",
+};
+static const char *const k_child_env_git_names[] = {
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_OPTIONAL_LOCKS",
+};
+static const char *const k_child_env_git_prefixes[] = {
+    "GIT_CONFIG_KEY_",
+    "GIT_CONFIG_VALUE_",
+};
+static const char *const k_child_env_git[] = {
+    "GIT_CONFIG_COUNT=2",
+    "GIT_CONFIG_KEY_0=core.fsmonitor",
+    "GIT_CONFIG_VALUE_0=false",
+    "GIT_CONFIG_KEY_1=log.showSignature",
+    "GIT_CONFIG_VALUE_1=false",
+    "GIT_CONFIG_PARAMETERS='core.fsmonitor=false' 'log.showSignature=false'",
+    "GIT_OPTIONAL_LOCKS=0",
+};
+
+#define LIST_LEN(a)     (sizeof(a) / sizeof *(a))
+#define CHILD_ENV_GIT_N LIST_LEN(k_child_env_git)
+
+static struct {
+    b8 built[2];
+    char *plain[CHILD_ENV_MAX + 1];
+    char *read_only[CHILD_ENV_MAX + CHILD_ENV_GIT_N + 1];
+} g_child_env;
+
+static b8 env_entry_named(const char *entry, const char *name) {
+    size_t n = strlen(name);
+    return strncmp(entry, name, n) == 0 && entry[n] == '=';
+}
+
+static b8 child_env_keeps(const char *entry, ChildEnv kind) {
+    for (size_t i = 0; i < LIST_LEN(k_child_env_secrets); i++)
+        if (env_entry_named(entry, k_child_env_secrets[i])) return false;
+    if (kind != CHILD_ENV_READ_ONLY) return true;
+    for (size_t i = 0; i < LIST_LEN(k_child_env_git_names); i++)
+        if (env_entry_named(entry, k_child_env_git_names[i])) return false;
+    for (size_t i = 0; i < LIST_LEN(k_child_env_git_prefixes); i++) {
+        const char *prefix = k_child_env_git_prefixes[i];
+        if (strncmp(entry, prefix, strlen(prefix)) == 0) return false;
+    }
+    return true;
+}
+
+char **child_env(ChildEnv kind) {
+    b8 read_only = kind == CHILD_ENV_READ_ONLY;
+    char **envp = read_only ? g_child_env.read_only : g_child_env.plain;
+    if (g_child_env.built[read_only]) return envp;
+    size_t n = 0, left_out = 0;
+    for (size_t i = 0; environ && environ[i]; i++) {
+        if (!child_env_keeps(environ[i], kind)) continue;
+        if (n == CHILD_ENV_MAX) {
+            left_out++;
+            continue;
+        }
+        envp[n++] = environ[i];
+    }
+    if (read_only)
+        for (size_t i = 0; i < CHILD_ENV_GIT_N; i++)
+            envp[n++] = (char *)(uintptr_t)k_child_env_git[i];
+    envp[n] = NULL;
+    if (left_out)
+        agent_log(AGENT_LOG_WARN,
+                  "child processes get the first %d environment variables; "
+                  "%zu more are left out",
+                  CHILD_ENV_MAX, left_out);
+    g_child_env.built[read_only] = true;
+    return envp;
+}
+
 void sha256(const void *p, size_t n, u8 out[SHA256_BYTES]) {
     u32 h[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
                 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};

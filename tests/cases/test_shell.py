@@ -284,3 +284,36 @@ def test_a_command_inherits_no_open_files(ctx):
     result = ctx.mock.tool_results()[-1]
     fds = [line for line in result.splitlines() if line.isdigit()]
     assert sorted(fds, key=int) == ["0", "1", "2", "3"], result
+
+
+def test_a_command_gets_no_api_key(ctx):
+    """Neither its environment nor the agent's own /proc entry gives a
+    command the keys."""
+    ctx.scenario("tool=bash:" + json.dumps({"command": "env | grep -c API_KEY",
+                                            "description": "count keys"})
+                 + ",tool=bash:" + json.dumps(
+                     {"command": "env cat /proc/$PPID/environ",
+                      "description": "read parent"})
+                 + ",final_text=done")
+    s = ctx.spawn(ARQAN_SEARCH_API_KEY="search-key")
+    s.submit("look for keys")
+    s.wait_text("done")
+    s.wait_turn_done()
+    results = ctx.mock.tool_results()
+    assert results[0].startswith("0\n"), results[0]
+    assert "test-key" not in results[1], results[1]
+    assert "search-key" not in results[1], results[1]
+    assert "Permission denied" in results[1], results[1]
+
+
+def test_a_user_run_gets_no_api_key(ctx):
+    ctx.scenario("text=noted")
+    s = ctx.spawn()
+    s.submit("!env | grep -c API_KEY")
+    s.wait_text("\u2514\u2500 exit")
+    s.submit("what did that print?")
+    s.wait_text("noted")
+    s.wait_turn_done()
+    messages = ctx.mock.requests[-1]["messages"]
+    assert messages[1]["content"] == "!env | grep -c API_KEY\n0\n\n[exit 1]", \
+        messages[1]["content"]

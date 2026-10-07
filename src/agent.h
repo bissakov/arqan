@@ -255,6 +255,12 @@ void sha256(const void *p, size_t n, u8 out[SHA256_BYTES]);
 
 b8 pipe_cloexec(i32 fds[2]);
 void child_close_fds(i32 keep_from);
+
+typedef enum { CHILD_ENV_PLAIN, CHILD_ENV_READ_ONLY } ChildEnv;
+/* INVARIANT: call in the parent before fork; the child sets `environ` to the
+ * result or passes it to execve. */
+char **child_env(ChildEnv kind);
+
 /* INVARIANT: `out` holds 2n + 1 bytes: 2n hex digits and a NUL. */
 void hex_encode(const u8 *p, size_t n, char *out);
 
@@ -1306,6 +1312,13 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out, char *err,
                        size_t err_cap);
 b8 page_fetch_run(Str args, Arena *scratch, Buf *out, char *err,
                   size_t err_cap);
+
+typedef enum {
+    SHELL_WRITES,
+    SHELL_READS_OUTSIDE,
+    SHELL_READS_INSIDE
+} ShellClass;
+ShellClass shell_classify(Str cmd, b8 contained);
 b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap);
 void shell_set_idle(void (*fn)(void *ud), void *ud);
 void shell_set_interrupt_flag(volatile sig_atomic_t *flag);

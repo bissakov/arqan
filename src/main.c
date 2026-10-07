@@ -24,6 +24,7 @@
 #include "config.c"
 #include "cli.c"
 #include "ignore.c"
+#include "classify.c"
 #include "tools.c"
 #include "batch.c"
 #include "mcp.c"
@@ -6132,6 +6133,14 @@ static void restart_agent(char **argv) {
 i32 main(i32 argc, char **argv) {
 #ifdef PR_SET_THP_DISABLE
     (void)prctl(PR_SET_THP_DISABLE, 1L, 0L, 0L, 0L);
+#endif
+#ifdef PR_SET_DUMPABLE
+    /* NOTE: not dumpable hides /proc/<pid>/environ and mem from same-user
+     * children. AGENT_ENV_PREFIX "DUMPABLE=1" keeps smaps_rollup readable
+     * for tests/cases/test_footprint.py and bench/. */
+    const char *dumpable = getenv(AGENT_ENV_PREFIX "DUMPABLE");
+    if (!dumpable || strcmp(dumpable, "1") != 0)
+        (void)prctl(PR_SET_DUMPABLE, 0L, 0L, 0L, 0L);
 #endif
     CliOpts opts;
     switch (cli_parse(argc, argv, &opts)) {

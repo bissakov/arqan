@@ -81,6 +81,7 @@ static ClipStatus clip_exec(const char *const *argv, Str type, char *out,
     *n = 0;
     i32 fds[2];
     if (!pipe_cloexec(fds)) return CLIP_FAILED;
+    char **envp = child_env(CHILD_ENV_PLAIN);
     pid_t pid = fork();
     if (pid < 0) {
         close(fds[0]);
@@ -96,6 +97,7 @@ static ClipStatus clip_exec(const char *const *argv, Str type, char *out,
         if (null_rd > STDERR_FILENO) close(null_rd);
         if (null_wr > STDERR_FILENO) close(null_wr);
         child_close_fds(3);
+        environ = envp;
         execvp(args[0], (char *const *)(uintptr_t)args);
         _exit(127);
     }

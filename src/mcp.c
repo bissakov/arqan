@@ -911,11 +911,12 @@ static void mcp_close(McpServer *s) {
 }
 
 static char **mcp_child_env(McpServer *s) {
-    if (!s->env_n) return environ;
+    char **base = child_env(CHILD_ENV_PLAIN);
+    if (!s->env_n) return base;
     size_t have = 0;
-    while (have < MCP_MAX_ENVP && environ[have]) have++;
+    while (have < MCP_MAX_ENVP && base[have]) have++;
     char **envp = arena_new(g_mcp.persist, char *, have + s->env_n + 1);
-    if (!envp) return environ;
+    if (!envp) return base;
     size_t n = 0;
     for (size_t i = 0; i < have; i++) {
         b8 replaced = false;
@@ -923,9 +924,9 @@ static char **mcp_child_env(McpServer *s) {
             const char *ours = s->env_store + s->env_at[k];
             const char *eq = strchr(ours, '=');
             size_t len = eq ? (size_t)(eq - ours) + 1 : strlen(ours);
-            replaced = !strncmp(environ[i], ours, len);
+            replaced = !strncmp(base[i], ours, len);
         }
-        if (!replaced) envp[n++] = environ[i];
+        if (!replaced) envp[n++] = base[i];
     }
     for (size_t k = 0; k < s->env_n; k++)
         envp[n++] = s->env_store + s->env_at[k];

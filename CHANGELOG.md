@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### Changed
+
+- On Linux 6.7 and later, a read-only shell command now runs with TCP denied,
+  and from 6.12 it cannot signal processes outside its sandbox. A command
+  judged inside the project reads only the project, its git directories, the
+  system directories, the `PATH` directories and your git config. A command
+  you let read outside the project still reads anywhere. A tool installed
+  elsewhere, such as a version manager shim under your home directory, now
+  fails with permission denied.
+
+- Read-only `git` commands no longer start the fsmonitor hook or gpg that a
+  repository's config names. A textconv or filter driver still runs, inside
+  the sandbox. Without Landlock, `git diff`, `show`, `log`, `blame`, `status`,
+  `describe` and `grep` ask before they run, and plan mode and subagents can
+  no longer run them. `git ls-files`, `rev-parse` and `shortlog` still run
+  without asking.
+
+### Security
+
+- Shell commands, MCP servers, `notify_command`, `key_command`, the clipboard
+  helpers and the highlighter no longer get `ARQAN_API_KEY` or
+  `ARQAN_SEARCH_API_KEY` in their environment. An MCP `env` entry that names
+  one on purpose still passes it.
+
+- arqan makes itself not dumpable, so a child process cannot read its
+  environment or memory through `/proc`. It also writes no core dumps.
+  `ARQAN_DUMPABLE=1` turns this off for profiling.
+
 ## [0.10.0] - 2026-10-06
 
 ### Added
