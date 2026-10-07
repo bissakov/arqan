@@ -43,6 +43,14 @@
 
 ### Fixed
 
+- While a picker is open, such as an `ask_user` question, a mouse drag
+  selects and copies text again.
+
+- An `ask_user` question shows once, in the transcript, instead of again
+  above the options, where a long or multi-line question was joined and cut
+  off. When the options would cover the question, they shrink and scroll to
+  make room for it.
+
 - The JSON reader no longer accepts an object or array that is missing its
   closing bracket or ends in some other character. A tool call with such
   arguments now gets an error instead of running. An Anthropic tool call

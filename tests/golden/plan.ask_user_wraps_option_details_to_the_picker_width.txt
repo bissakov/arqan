@@ -8,7 +8,7 @@
 |  ◆  ask
 |  │ Which storage?
 |
-|    Which storage?
+|
 |    Tab adds your own words to an answer
 |  › sqlite            keeps local state beside
 |                      the project and supports

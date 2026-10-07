@@ -1,6 +1,7 @@
 """Plan mode: a read-only agent that ends on a plan the user approves."""
 
 import json
+import re
 import time
 
 PLAN = "## Steps\n\n1. Read the file\n2. Change the line"
@@ -491,7 +492,7 @@ def test_ask_user_wraps_option_values_to_the_picker_width(ctx):
 
 
 def test_ask_user_keeps_the_question_above_a_tall_picker(ctx):
-    """The question stays in an overlay when the options cover its transcript."""
+    """The options make room for the question block instead of covering it."""
     question = "Which deployment target should this plan use?"
     options = [
         {"label": f"target-{i}", "detail": f"deployment option {i}"}
@@ -507,7 +508,7 @@ def test_ask_user_keeps_the_question_above_a_tall_picker(ctx):
     question_rows = [i for i, row in enumerate(rows) if question in row]
     assert len(question_rows) == 1, "\n".join(rows)
     row = question_rows[0]
-    assert s.screen.attr_at(row, 2).fg == 221, "the question is a notice"
+    assert "\u2502" in rows[row], "the question is the transcript block"
     assert row < next(i for i, text in enumerate(rows) if "target-" in text), rows
 
 
@@ -550,8 +551,48 @@ def test_ask_user_wraps_a_long_question_over_several_rows(ctx):
     head = next(i for i, row in enumerate(rows) if "Should the migration" in row)
     tail = next(i for i, row in enumerate(rows) if "first deployment runs?" in row)
     assert tail > head, "\n".join(rows)
-    assert s.screen.attr_at(tail, 4).fg == 221, "the whole question is a notice"
+    assert "\u2502" in rows[head], "the question is the transcript block"
+    assert sum("Should the migration" in row for row in rows) == 1, rows
     assert head < next(i for i, r in enumerate(rows) if "target-" in r), rows
+
+
+def test_ask_user_shows_a_multi_line_question_once_and_whole(ctx):
+    """A question with a list keeps its lines in the transcript, not in the
+    picker, where they would be joined and cut."""
+    question = ("The agent found these problems:\n1. leftover test output\n"
+                "2. loose config files\n3. mixed tool folders\n"
+                "Which should the agent fix?")
+    ctx.scenario(ask(question, [{"label": "all"}, {"label": "1 only"}]))
+    s = ctx.spawn(cols=80, rows=24)
+    to_plan(s)
+    s.submit("plan the cleanup")
+    s.wait_status("pick an answer")
+
+    rows = s.screen.lines()
+    options = next(i for i, row in enumerate(rows) if "1 only" in row)
+    for line in question.split("\n"):
+        found = [i for i, row in enumerate(rows) if line in row]
+        assert len(found) == 1, (line, "\n".join(rows))
+        assert "\u2502" in rows[found[0]], (line, rows[found[0]])
+        assert found[0] < options, "\n".join(rows)
+
+
+def test_ask_user_question_is_selectable(ctx):
+    """A drag over the question copies it while the picker waits."""
+    ctx.scenario(ask("Which storage?", [{"label": "sqlite"}]))
+    s = ctx.spawn()
+    to_plan(s)
+    s.submit("plan the storage")
+    s.wait_status("pick an answer")
+
+    row = s.screen.find_row("\u2502 Which storage?")
+    assert row >= 0, s.text()
+    col = s.screen.row_text(row).index("Which") + 1
+    s.mouse("down", row + 1, col)
+    s.mouse("drag", row + 1, col + len("Which") - 1)
+    s.mouse("up", row + 1, col + len("Which") - 1).sync()
+    assert s.screen.clipboard == "Which", repr(s.screen.clipboard)
+    assert s.status_kind() == "pick an answer", s.status_line()
 
 
 def test_ask_user_takes_an_answer_of_its_own(ctx):
@@ -793,11 +834,11 @@ def test_ask_user_lifts_the_transcript_out_from_under_the_picker(ctx):
 
     rows = s.screen.lines()
     asked = [i for i, row in enumerate(rows) if "Which storage?" in row]
-    assert len(asked) == 2, "\n".join(rows)   # the ask block and the notice
-    block, notice = asked
+    assert len(asked) == 1, "\n".join(rows)
+    block = asked[0]
     assert "\u2502" in rows[block], rows[block]
     assert "ask" in rows[block - 1], rows[block - 1]
-    assert notice < next(i for i, row in enumerate(rows) if "sqlite" in row)
+    assert block < next(i for i, row in enumerate(rows) if "sqlite" in row)
     assert any("report line 19" in row for row in rows[:block]), "\n".join(rows)
 
     s.key("enter")
@@ -825,6 +866,42 @@ def test_a_command_picker_leaves_the_transcript_where_it_was(ctx):
     s.key("esc")
     s.wait_status("ready")
     assert any("report line 19" in row for row in s.screen.lines())
+
+
+def test_ask_user_transcript_scrolls_while_the_picker_waits(ctx):
+    """The wheel and Page Up reach earlier output without closing the
+    question."""
+    s = ctx.spawn(cols=80, rows=24)
+    to_plan(s)
+    report_turn(ctx, s, lines=60)
+    ctx.scenario(ask("Which storage?", [{"label": "sqlite"}]) + ",final_text=noted")
+    s.submit("plan the storage")
+    s.wait_status("pick an answer")
+    def report_lines():
+        return [int(m.group(1)) for row in s.screen.lines()
+                for m in [re.search(r"report line (\d+)\b", row)] if m]
+
+    assert 0 not in report_lines(), s.text()
+
+    for _ in range(30):
+        s.mouse("wheel-up", 5, 5)
+    s.sync()
+    assert 0 in report_lines(), s.text()
+    assert s.status_kind() == "pick an answer", s.status_line()
+
+    def first_report_line():
+        shown = report_lines()
+        return min(shown) if shown else 60
+
+    s.key("end").sync()
+    bottom = first_report_line()
+    assert bottom > 0, s.text()
+    s.key("pageup").sync()
+    assert first_report_line() < bottom, s.text()
+
+    s.key("enter")
+    s.wait_turn_done()
+    assert ctx.mock.tool_results() == ["sqlite"], ctx.mock.tool_results()
 
 
 def test_ask_user_question_keeps_one_colour_when_it_wraps(ctx):

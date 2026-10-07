@@ -2052,7 +2052,7 @@ void tui_keep_visible(size_t off);
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t start, size_t *out);
 
-b8 tui_pick_timed(Str title, Str notice, const TuiCmd *items, size_t n,
+b8 tui_pick_timed(Str title, const TuiCmd *items, size_t n,
                   TuiPickAnchor anchor, size_t start, i32 timeout_ms,
                   size_t *out, b8 *expired, b8 *amended);
 

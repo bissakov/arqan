@@ -693,9 +693,8 @@ static Str ask_user_answer(Agent *ag, Str args) {
     char typed[512];
     for (;;) {
         tui_keep_visible(at);
-        if (!tui_pick_timed(STR("pick an answer"), question, items, n + 1,
-                            TUI_PICK_FIRST, start, wait_ms, &pick, &expired,
-                            &amended))
+        if (!tui_pick_timed(STR("pick an answer"), items, n + 1, TUI_PICK_FIRST,
+                            start, wait_ms, &pick, &expired, &amended))
             return (Str){0};
         if (!amended || pick >= n) break;
 
