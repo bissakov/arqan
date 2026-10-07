@@ -4,6 +4,7 @@ import signal
 
 
 RETRY = {"ARQAN_RETRIES": 3, "ARQAN_RETRY_DELAY_MS": 10}
+STALL = {"ARQAN_STREAM_TIMEOUT_MS": 300}
 
 
 def test_transient_failure_is_retried(ctx):
@@ -159,3 +160,39 @@ def test_retry_wait_is_interruptible(ctx):
     s.wait_text("[interrupted]")
     s.wait_turn_done()
     assert len(ctx.mock.requests) == 1, ctx.mock.requests
+
+
+def test_stalled_stream_before_output_is_retried(ctx):
+    """A stream that goes quiet before the reply starts is a failed request."""
+    ctx.scenario("stall_times=1,text=awake+again")
+    s = ctx.spawn(cols=140, **RETRY, **STALL)
+    s.submit("say hi")
+    s.wait_text("awake again")
+    s.wait_turn_done()
+    text = s.text()
+    assert "the provider sent nothing for 300 ms; retrying in 10ms" in text, text
+    assert len(ctx.mock.requests) == 2, ctx.mock.requests
+
+
+def test_stalled_stream_after_output_is_not_retried(ctx):
+    """A stream that goes quiet part way ends the turn and keeps the text."""
+    ctx.scenario("text=one+two+three+four+five,chunk=1,hold_after=2")
+    s = ctx.spawn(cols=140, **RETRY, **STALL)
+    s.submit("say hi")
+    s.wait_text("[provider error: the provider sent nothing for 300 ms]")
+    s.wait_turn_done()
+    ctx.mock.release()
+    text = s.text()
+    assert "one two" in text, text
+    assert "retrying in" not in text, text
+    assert len(ctx.mock.requests) == 1, ctx.mock.requests
+
+
+def test_stream_timeout_zero_waits_out_a_quiet_stream(ctx):
+    """With the timeout off, a quiet spell is not a failure of its own."""
+    ctx.scenario("stall_times=1,stall=0.6,text=late")
+    s = ctx.spawn(cols=140, ARQAN_STREAM_TIMEOUT_MS=0, **RETRY)
+    s.submit("say hi")
+    s.wait_text("late")
+    s.wait_turn_done()
+    assert "sent nothing" not in s.text(), s.text()

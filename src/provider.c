@@ -135,7 +135,7 @@ size_t conv_add_call(Conv *c, Arena *scratch, Str id, Str name, Str args) {
     Str trimmed = str_trim(args);
     if (trimmed.n) {
         size_t mark = scratch->off;
-        const JVal *v = json_parse(scratch, trimmed);
+        const JVal *v = json_parse_strict(scratch, trimmed);
         c->args_object[i] = v && v->type == J_OBJ;
         scratch->off = mark;
     }
@@ -1636,6 +1636,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         .idle_fd = p->on_idle ? p->idle_fd : -1,
         .on_idle = p->on_idle,
         .idle_ud = saved_ud,
+        .stream_timeout_ms = p->cfg->stream_timeout_ms,
         .fail_out = NULL,
         .fail_cap = 0,
     };

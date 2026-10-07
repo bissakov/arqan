@@ -234,6 +234,12 @@ static void json_rejects_malformed(void) {
         "1e+",
         "{\"v\":--1}",
         "[1.2.3]",
+        "[1",
+        "{\"a\":1",
+        "{\"a\":[1}",
+        "[{\"a\":1 x]",
+        "{\"a\":{\"b\":1}",
+        "[[1] 2]",
     };
     for (size_t i = 0; i < sizeof bad / sizeof *bad; i++) {
         arena_reset(&a);
@@ -281,6 +287,14 @@ static void json_tolerates_trailing_commas(void) {
     WITH_ARENA(a, 8192);
     CHECK(json_parse(&a, STR("[1,]")) != NULL);
     CHECK(json_parse(&a, STR("{\"a\":1,}")) != NULL);
+}
+
+static void json_strict_refuses_trailing_commas(void) {
+    WITH_ARENA(a, 8192);
+    CHECK(json_parse_strict(&a, STR("[1,]")) == NULL);
+    CHECK(json_parse_strict(&a, STR("{\"a\":1,}")) == NULL);
+    CHECK(json_parse_strict(&a, STR("{\"a\":[1,2,],\"b\":1}")) == NULL);
+    CHECK(json_parse_strict(&a, STR("{\"a\":[1,2],\"b\":{}}")) != NULL);
 }
 
 static void json_survives_a_short_arena(void) {
@@ -915,6 +929,7 @@ int main(void) {
     RUN(json_rejects_malformed);
     RUN(json_accepts_wellformed);
     RUN(json_tolerates_trailing_commas);
+    RUN(json_strict_refuses_trailing_commas);
     RUN(json_survives_a_short_arena);
     RUN(json_reads_missing_members_as_absent);
     RUN(json_decodes_escapes);
