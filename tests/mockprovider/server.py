@@ -85,6 +85,10 @@ class Scenario:
         # that many content deltas have been sent.
         self.fail_times: int = int(kw.get("fail_times", 0))
         self.empty_times: int = int(kw.get("empty_times", 0))
+        # The first `blank_times` requests stream their reasoning and then a
+        # reply with no text, the way a model that answered in its thinking
+        # does.
+        self.blank_times: int = int(kw.get("blank_times", 0))
         self.stream_error_times: int = int(kw.get("stream_error_times", 0))
         self.fail_mode: str = kw.get("fail_mode", "status")
         self.fail_status: int = int(kw.get("fail_status", 503))
@@ -219,6 +223,11 @@ class Scenario:
         if self.final_text is not None:
             return self.final_text
         return lorem.text(max(6, self.words // 2), 1, self.seed + 1)
+
+    def reply_text(self, request_number: int, tool_replies: int) -> str:
+        if request_number <= self.blank_times:
+            return ""
+        return self.body_text() if tool_replies == 0 else self.follow_up_text()
 
 
 def _truthy(v) -> bool:
@@ -470,7 +479,7 @@ class _AnthropicHandlerMixin:
                 self._gate()
             stop = "tool_use"
         else:
-            text = scenario.body_text() if tool_replies == 0 else scenario.follow_up_text()
+            text = scenario.reply_text(len(self.server.requests), tool_replies)
             completion_chars = len(text)
             deltas = [{"type": "text_delta", "text": piece}
                       for piece in chunks(text, scenario.chunk)]
@@ -539,7 +548,7 @@ class _AnthropicHandlerMixin:
                 completion_chars += len(args)
             stop = "tool_use"
         else:
-            text = scenario.body_text() if tool_replies == 0 else scenario.follow_up_text()
+            text = scenario.reply_text(len(self.server.requests), tool_replies)
             content.append({"type": "text", "text": text})
             completion_chars = len(text)
             stop = "end_turn"
@@ -1135,7 +1144,7 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
                 self._gate()
             finish = "tool_calls"
         else:
-            text = scenario.body_text() if tool_replies == 0 else scenario.follow_up_text()
+            text = scenario.reply_text(len(self.server.requests), tool_replies)
             sent = 0
             finish = "stop"
             for piece in chunks(text, scenario.chunk):
@@ -1202,7 +1211,7 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             completion_chars = sum(len(a) for _, a in scenario.tools)
             finish = "tool_calls"
         else:
-            text = scenario.body_text() if tool_replies == 0 else scenario.follow_up_text()
+            text = scenario.reply_text(len(self.server.requests), tool_replies)
             message["content"] = text
             completion_chars = len(text)
             finish = "stop"

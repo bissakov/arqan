@@ -1,0 +1,26 @@
+--- screen 80x24 ---
+|
+|  Sent at <clk>
+|▌
+|▌ what is messy?
+|▌
+|
+|  listing the items
+|
+|  [note to the model: Your last reply had no text, so the user saw nothing.
+|  The user never sees your reasoning. Write your reply now.]
+|
+|  listing the items
+|
+|  the items themselves
+|
+|
+|
+|
+|
+|
+|  › Message arqan...
+|
+|
+|  ● ready · mock-model · build · local · ~/work · ~88 · free
+--- cursor row=21 col=5 visible=yes ---

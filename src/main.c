@@ -693,9 +693,8 @@ static Str ask_user_answer(Agent *ag, Str args) {
     char typed[512];
     for (;;) {
         tui_keep_visible(at);
-        if (!tui_pick_timed(STR("pick an answer"), question, items, n + 1,
-                            TUI_PICK_FIRST, start, wait_ms, &pick, &expired,
-                            &amended))
+        if (!tui_pick_timed(STR("pick an answer"), items, n + 1, TUI_PICK_FIRST,
+                            start, wait_ms, &pick, &expired, &amended))
             return (Str){0};
         if (!amended || pick >= n) break;
 
@@ -2091,6 +2090,8 @@ static void render_conv(const Conv *c, const Config *cfg, b8 show_instructions,
                     render_tool_result(STR("shell"), (Str){0}, c->shell_out[i],
                                        scratch, (u32)(i + 1), c->expanded[i],
                                        c->ms[i]);
+                } else if (conv_is_note(c, i)) {
+                    render_note(c->text[i]);
                 } else {
                     render_user_message(c, i);
                 }
@@ -2690,7 +2691,9 @@ static void rewind_conversation(Agent *ag) {
     arena_reset(scratch);
     size_t count = 0;
     for (size_t i = 0; i < conv->n; i++)
-        if (conv->role[i] == M_USER && !conv_is_shell(conv, i)) count++;
+        if (conv->role[i] == M_USER && !conv_is_shell(conv, i)
+            && !conv_is_note(conv, i))
+            count++;
     if (!count) {
         tui_notice(STR("no message to go back to"));
         return;
@@ -2705,7 +2708,9 @@ static void rewind_conversation(Agent *ag) {
     }
     size_t n = 0;
     for (size_t i = 0; i < conv->n; i++) {
-        if (conv->role[i] != M_USER || conv_is_shell(conv, i)) continue;
+        if (conv->role[i] != M_USER || conv_is_shell(conv, i)
+            || conv_is_note(conv, i))
+            continue;
         if (skip) {
             skip--;
             continue;
@@ -5261,7 +5266,9 @@ static CompactOutcome compact_summarize(Agent *ag, size_t upto, Str *out,
         size_t n_fresh = 0;
         Str *fresh = arena_new(ag->scratch, Str, upto);
         for (size_t i = 1; fresh && i < upto && i < conv->n; i++) {
-            if (conv->role[i] != M_USER || conv_is_shell(conv, i)) continue;
+            if (conv->role[i] != M_USER || conv_is_shell(conv, i)
+                || conv_is_note(conv, i))
+                continue;
             if (str_starts(conv->text[i], STR("# Context checkpoint")))
                 prior = conv->text[i];
             else
@@ -5638,6 +5645,17 @@ static Str last_reply(const Conv *conv) {
     return (Str){0};
 }
 
+static const char REPLY_NOTE[] =
+    "Your last reply had no text, so the user saw nothing. The user never "
+    "sees your reasoning. Write your reply now.";
+
+static b8 reply_is_blank(const Conv *conv) {
+    if (!conv->n) return false;
+    size_t i = conv->n - 1;
+    return conv->role[i] == M_ASSISTANT && !conv_is_call(conv, i)
+           && !str_trim(conv->text[i]).n;
+}
+
 
 static void announce_interrupt(void) {
     if (g_turn.one_shot)
@@ -5717,6 +5735,7 @@ static b8 agent_turn(Agent *ag, Str text) {
     i32 rounds = 0;
 
     b8 ok = false;
+    b8 asked_for_reply = false;
     NotifyKind ending = NOTIFY_TURN_FAILED;
     Str ending_text = {0};
     char ending_buf[256] = {0};
@@ -5802,6 +5821,13 @@ static b8 agent_turn(Agent *ag, Str text) {
             break;
         }
         if (rc == 0) {
+            if (!asked_for_reply && reply_is_blank(conv)
+                && conv_add_note(conv, STR(REPLY_NOTE)) != CONV_NONE) {
+                asked_for_reply = true;
+                if (!g_turn.one_shot) render_note(conv->text[conv->n - 1]);
+                save_session(ag);
+                continue;
+            }
             tui_set_status("ready");
             ok = true;
             ending = NOTIFY_TURN_DONE;

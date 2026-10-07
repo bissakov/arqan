@@ -2545,7 +2545,10 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         "question and options in the third person, naming \"the agent\" "
         "and \"the user\" (\"Should the agent keep the old API?\", "
         "\"The user will explain\"), never \"I\", \"you\" or \"we\": the "
-        "user picks an option, so those words are ambiguous.",
+        "user picks an option, so those words are ambiguous. The user sees "
+        "your replies and this question, never your reasoning: write what "
+        "the question refers to, such as findings, a list or a draft, in a "
+        "reply before the call or in the question.",
         "Ask the user to choose", BOTH | TOOL_FIXED | TOOL_INTERACTIVE,
         TOOL_APPROVAL_NONE,
         "{\"type\":\"object\",\"properties\":{\"question\":{\"type\":\"string\"},\"options\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"label\":{\"type\":\"string\"},\"detail\":{\"type\":\"string\"},\"recommended\":{\"type\":\"boolean\"}},\"required\":[\"label\"]}}},\"required\":[\"question\",\"options\"]}",

@@ -166,6 +166,13 @@ b8 conv_is_shell(const Conv *c, size_t i) {
     return i < c->n && c->role[i] == M_USER
            && str_eq(c->tool_name[i], STR("shell"));
 }
+size_t conv_add_note(Conv *c, Str text) {
+    return conv_push(c, M_USER, text, (Str){0}, STR("note"), false);
+}
+b8 conv_is_note(const Conv *c, size_t i) {
+    return i < c->n && c->role[i] == M_USER
+           && str_eq(c->tool_name[i], STR("note"));
+}
 
 b8 conv_is_call(const Conv *c, size_t i) {
     return i < c->n && c->role[i] == M_ASSISTANT && c->has_tool_call[i]

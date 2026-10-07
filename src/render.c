@@ -549,6 +549,13 @@ void render_question(Str question) {
     }
 }
 
+void render_note(Str note) {
+    tui_block();
+    tui_write_dim(STR("[note to the model: "));
+    tui_write_dim(note);
+    tui_write_dim(STR("]\n"));
+}
+
 void render_task_header(u32 id, Str label, Str model, Str provider, b8 small,
                         b8 live) {
     char row[256];

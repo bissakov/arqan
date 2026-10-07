@@ -12,24 +12,24 @@
 #include <termios.h>
 #include <unistd.h>
 
-#define TUI_TRANSCRIPT_CAP   (8u << 20)
-#define TUI_MAX_ROWS         4096
-#define TUI_BODY_GUTTER      2
-#define TUI_MIN_COLS         40
-#define TUI_MIN_ROWS         12
-#define TUI_OUT_CAP          (1u << 16)
-#define TUI_SEL_ROWS         512
-#define TUI_SEL_ROW_BYTES    2048
-#define TUI_SEL_BYTES        (1u << 16)
-#define TUI_SEL_PAD          '\x1f'
-#define TUI_VIEW_BYTES       AGENT_RESP_BUF
-#define TUI_VIEW_RUNS        YHL_RUN_MAX
-#define TUI_POPUP_ROWS       8
-#define TUI_PICK_NOTICE_ROWS 4
-#define TUI_PICK_SEARCH_MIN  10
-#define TUI_PATH_ENTS        256
-#define TUI_PATH_SLOT        512
-#define TUI_PATH_DEPTH       12
+#define TUI_TRANSCRIPT_CAP  (8u << 20)
+#define TUI_MAX_ROWS        4096
+#define TUI_BODY_GUTTER     2
+#define TUI_MIN_COLS        40
+#define TUI_MIN_ROWS        12
+#define TUI_OUT_CAP         (1u << 16)
+#define TUI_SEL_ROWS        512
+#define TUI_SEL_ROW_BYTES   2048
+#define TUI_SEL_BYTES       (1u << 16)
+#define TUI_SEL_PAD         '\x1f'
+#define TUI_VIEW_BYTES      AGENT_RESP_BUF
+#define TUI_VIEW_RUNS       YHL_RUN_MAX
+#define TUI_POPUP_ROWS      8
+#define TUI_PICK_MIN_ROWS   4
+#define TUI_PICK_SEARCH_MIN 10
+#define TUI_PATH_ENTS       256
+#define TUI_PATH_SLOT       512
+#define TUI_PATH_DEPTH      12
 
 _Static_assert(TUI_STATUS_N == AGENT_STATUS_FIELDS,
                "status preference mask must cover every field");
@@ -196,8 +196,6 @@ typedef struct {
     char notice[160];
     size_t notice_n;
 
-    char pick_notice[512];
-    size_t pick_notice_n;
     b8 picking;
     size_t keep_off;
     Str setup_hint;
@@ -1975,43 +1973,6 @@ static void update_notice_row(size_t screen_row, Str text, size_t screen_col,
     style_reset();
 }
 
-static size_t notice_text_cols(size_t body_cols) {
-    return body_cols > 2 ? body_cols - 2 : body_cols;
-}
-
-static size_t notice_visual_rows(Str text, size_t body_cols, size_t cap) {
-    size_t cols = notice_text_cols(body_cols);
-    size_t rows = 0;
-    for (size_t start = 0; rows < cap;) {
-        Row r = row_break(text, start, cols, 0);
-        rows++;
-        if (r.hard && r.end >= text.n) break;
-        start = r.next;
-    }
-    return rows;
-}
-
-static void update_notice_rows(size_t screen_row, Str text, size_t rows,
-                               size_t screen_col, size_t screen_cols,
-                               size_t body_cols, b8 force) {
-    size_t cols = notice_text_cols(body_cols);
-    size_t painted = 0;
-    for (size_t start = 0; painted < rows;) {
-        Row r = row_break(text, start, cols, 0);
-        Str line = {text.p + start, r.end - start};
-        update_notice_row(screen_row + painted, line, screen_col, screen_cols,
-                          body_cols, force);
-        painted++;
-        if (r.hard && r.end >= text.n) break;
-        start = r.next;
-    }
-    while (painted < rows) {
-        update_notice_row(screen_row + painted, (Str){0}, screen_col,
-                          screen_cols, body_cols, force);
-        painted++;
-    }
-}
-
 static void view_ckpt_record(size_t row, size_t off) {
     if (row % g_view.ckpt_step || row / g_view.ckpt_step != g_view.ckpt_n)
         return;
@@ -2791,6 +2752,19 @@ static void find_goto(size_t off);
 static void find_close(void);
 static size_t rows_below(size_t off);
 
+static size_t popup_rows_beside(size_t popup_rows, size_t room,
+                                size_t body_cols) {
+    size_t floor =
+        popup_rows < TUI_PICK_MIN_ROWS ? popup_rows : TUI_PICK_MIN_ROWS;
+    (void)wrap_scan(body_cols);
+    size_t need = rows_below(g_tui.keep_off);
+    size_t free = room > popup_rows ? room - popup_rows : 0;
+    if (need <= free) return popup_rows;
+    size_t give = need - free;
+    size_t spare = popup_rows - floor;
+    return popup_rows - (give < spare ? give : spare);
+}
+
 static void scroll_rewrap(void) {
     size_t cols = tui_body_cols();
     if (!cols || cols == g_tui.scroll_cols) return;
@@ -2903,34 +2877,22 @@ static void repaint(void) {
         popup_cap = overlay_cap * 2 / 3;
     size_t popup_rows = popup_visual_rows(body_cols, popup_cap);
     size_t notice_rows = g_tui.notice_n ? 1 : 0;
-
-    size_t pick_notice_cap = overlay_cap / 3;
-    if (pick_notice_cap > TUI_PICK_NOTICE_ROWS)
-        pick_notice_cap = TUI_PICK_NOTICE_ROWS;
-    if (pick_notice_cap < 1) pick_notice_cap = 1;
-    size_t pick_notice_rows =
-        g_tui.pick_notice_n
-            ? notice_visual_rows((Str){g_tui.pick_notice, g_tui.pick_notice_n},
-                                 body_cols, pick_notice_cap)
-            : 0;
     size_t find_rows = g_tui.find_open ? 1 : 0;
     size_t activity_rows = g_tui.activity_n ? 2 : 0;
 
-    if (popup_rows && pick_notice_rows && overlay_cap < 2) pick_notice_rows = 0;
-    if (pick_notice_rows > overlay_cap) pick_notice_rows = overlay_cap;
-    if (popup_rows + pick_notice_rows > overlay_cap)
-        popup_rows = overlay_cap - pick_notice_rows;
-    if (pick_notice_rows + notice_rows + popup_rows > overlay_cap)
-        notice_rows = overlay_cap - pick_notice_rows - popup_rows;
-    if (find_rows + pick_notice_rows + notice_rows + popup_rows > overlay_cap)
-        find_rows = overlay_cap - pick_notice_rows - notice_rows - popup_rows;
-    if (activity_rows + find_rows + pick_notice_rows + notice_rows + popup_rows
-        > overlay_cap)
-        activity_rows = overlay_cap - find_rows - pick_notice_rows - notice_rows
-                        - popup_rows;
+    if (popup_rows > overlay_cap) popup_rows = overlay_cap;
+    if (notice_rows + popup_rows > overlay_cap)
+        notice_rows = overlay_cap - popup_rows;
+    if (find_rows + notice_rows + popup_rows > overlay_cap)
+        find_rows = overlay_cap - notice_rows - popup_rows;
+    if (activity_rows + find_rows + notice_rows + popup_rows > overlay_cap)
+        activity_rows = overlay_cap - find_rows - notice_rows - popup_rows;
+    if (g_tui.picking && g_tui.keep_off != SIZE_MAX)
+        popup_rows = popup_rows_beside(
+            popup_rows, body_rows - activity_rows - find_rows - notice_rows,
+            body_cols);
 
-    size_t overlay_rows =
-        find_rows + pick_notice_rows + notice_rows + popup_rows;
+    size_t overlay_rows = find_rows + notice_rows + popup_rows;
     size_t transcript_rows = body_rows - overlay_rows - activity_rows;
 
     size_t all_rows = wrap_scan(body_cols);
@@ -2986,16 +2948,12 @@ static void repaint(void) {
     size_t overlay_top = transcript_rows + activity_rows + body_gap + 1;
     if (find_rows)
         update_find_row(overlay_top, body_col, cols, body_cols, force);
-    if (pick_notice_rows)
-        update_notice_rows(overlay_top + find_rows,
-                           (Str){g_tui.pick_notice, g_tui.pick_notice_n},
-                           pick_notice_rows, body_col, cols, body_cols, force);
     if (notice_rows)
-        update_notice_row(overlay_top + find_rows + pick_notice_rows,
+        update_notice_row(overlay_top + find_rows,
                           (Str){g_tui.notice, g_tui.notice_n}, body_col, cols,
                           body_cols, force);
-    paint_completions(overlay_top + find_rows + pick_notice_rows + notice_rows,
-                      popup_rows, body_col, cols, body_cols, force);
+    paint_completions(overlay_top + find_rows + notice_rows, popup_rows,
+                      body_col, cols, body_cols, force);
 
     size_t input_first = g_tui.input_top;
     size_t input_max_top =
@@ -5098,7 +5056,7 @@ static void pick_close(void);
 static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
                     size_t n, size_t search_n, TuiPickAnchor anchor,
                     size_t start, PickKind kind, const TuiSettings *set,
-                    const TuiPickAction *act, Str notice, b8 modal) {
+                    const TuiPickAction *act, b8 modal) {
     size_t keep_off = g_tui.keep_off;
     g_tui.keep_off = SIZE_MAX;
     if (!g_tui.fullscreen || !items || !n) return false;
@@ -5129,11 +5087,6 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
     g_pick.saved_notice_n = g_tui.notice_n;
     memcpy(g_pick.saved_status, g_tui.status, sizeof g_pick.saved_status);
     memcpy(g_pick.saved_notice, g_tui.notice, sizeof g_pick.saved_notice);
-    size_t notice_n = notice.n < sizeof g_tui.pick_notice
-                          ? notice.n
-                          : sizeof g_tui.pick_notice;
-    if (notice_n) memcpy(g_tui.pick_notice, notice.p, notice_n);
-    g_tui.pick_notice_n = notice_n;
     g_tui.keep_off = keep_off;
 
     b8 settings = kind == PICK_SETTINGS;
@@ -5293,7 +5246,15 @@ static b8 pick_amend(const TuiSettings *set) {
     X(KEY_RIGHT, "Right", "Act on the settings row forwards",   \
       if (settings) return pick_act(set, 1);)                   \
     X(KEY_LEFT, "Left", "Act on the settings row backwards",    \
-      if (settings) return pick_act(set, -1);)
+      if (settings) return pick_act(set, -1);)                  \
+    X(KEY_MOUSE_DOWN, "Click", "Start a selection",             \
+      sel_begin(g_mouse.row, g_mouse.col);                      \
+      keep_sel = true;)                                         \
+    X(KEY_MOUSE_DRAG, "Drag", "Extend the selection",           \
+      sel_extend(g_mouse.row, g_mouse.col);                     \
+      keep_sel = true;)                                         \
+    X(KEY_MOUSE_UP, "", "", sel_finish(); keep_sel = true;)     \
+    X(KEY_MOUSE_MOVE, "", "", keep_sel = true;)
 
 static const KeyRow k_pick_rows[] = {PICK_KEYS(KEY_DOC)};
 static const KeyRow k_pick_escape_rows[] = {PICK_ESCAPE_KEYS(KEY_DOC)};
@@ -5315,13 +5276,16 @@ static b8 pick_feed(i32 c) {
     }
     if (c == 0x1b) {
         i32 key = read_escape();
+        b8 keep_sel = false;
         switch (key) {
             PICK_ESCAPE_KEYS(KEY_CASE)
             default: scroll_key(key); break;
         }
+        if (!keep_sel) sel_clear();
         repaint();
         return true;
     }
+    sel_clear();
     switch (c) {
         PICK_KEYS(KEY_CASE)
         default: return pick_typed(c);
@@ -5343,7 +5307,6 @@ static void pick_close(void) {
     g_tui.comp_dismissed = g_pick.saved_dismissed;
     memcpy(g_tui.notice, g_pick.saved_notice, sizeof g_tui.notice);
     g_tui.notice_n = g_pick.saved_notice_n;
-    g_tui.pick_notice_n = 0;
     g_tui.keep_off = SIZE_MAX;
     g_pick.active = false;
     g_pick.modal = false;
@@ -5382,10 +5345,10 @@ static b8 pick_impl(Str title, const TuiCmd *items, const TuiMark *marks,
                     size_t n, size_t search_n, TuiPickAnchor anchor,
                     size_t start, PickKind kind, size_t *out,
                     const TuiSettings *set, const TuiPickAction *act,
-                    Str notice, i32 timeout_ms, b8 amendable) {
+                    i32 timeout_ms, b8 amendable) {
     if (!out) return false;
     if (!pick_open(title, items, marks, n, search_n, anchor, start, kind, set,
-                   act, notice, true))
+                   act, true))
         return false;
 
     g_pick.amendable = amendable;
@@ -5402,16 +5365,16 @@ static b8 pick_impl(Str title, const TuiCmd *items, const TuiMark *marks,
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t start, size_t *out) {
     return pick_impl(title, items, NULL, n, n, anchor, start, PICK_CHOOSE, out,
-                     NULL, NULL, (Str){0}, 0, false);
+                     NULL, NULL, 0, false);
 }
 
-b8 tui_pick_timed(Str title, Str notice, const TuiCmd *items, size_t n,
+b8 tui_pick_timed(Str title, const TuiCmd *items, size_t n,
                   TuiPickAnchor anchor, size_t start, i32 timeout_ms,
                   size_t *out, b8 *expired, b8 *amended) {
     if (expired) *expired = false;
     if (amended) *amended = false;
     b8 ok = pick_impl(title, items, NULL, n, n, anchor, start, PICK_CHOOSE, out,
-                      NULL, NULL, notice, timeout_ms, amended != NULL);
+                      NULL, NULL, timeout_ms, amended != NULL);
     if (ok && expired) *expired = g_pick.expired;
     if (ok && amended) *amended = g_pick.amended;
     return ok;
@@ -5421,7 +5384,7 @@ b8 tui_pick_action(Str title, size_t n, size_t search_n, TuiPickAnchor anchor,
                    size_t start, const TuiPickAction *act, size_t *out) {
     if (!act || !act->rows || !act->bindings || !act->n_bindings) return false;
     return pick_impl(title, act->rows, NULL, n, search_n, anchor, start,
-                     PICK_CHOOSE, out, NULL, act, (Str){0}, 0, false);
+                     PICK_CHOOSE, out, NULL, act, 0, false);
 }
 
 void tui_settings(Str title, const TuiSettings *set) {
@@ -5430,7 +5393,7 @@ void tui_settings(Str title, const TuiSettings *set) {
     if (!n) return;
     size_t out = 0;
     (void)pick_impl(title, set->rows, set->marks, n, n, TUI_PICK_FIRST, 0,
-                    PICK_SETTINGS, &out, set, NULL, (Str){0}, 0, false);
+                    PICK_SETTINGS, &out, set, NULL, 0, false);
 }
 
 b8 tui_settings_open(Str title, const TuiSettings *set) {
@@ -5438,7 +5401,7 @@ b8 tui_settings_open(Str title, const TuiSettings *set) {
     size_t n = set->build(set->ud);
     if (!n) return false;
     return pick_open(title, set->rows, set->marks, n, n, TUI_PICK_FIRST, 0,
-                     PICK_SETTINGS, set, NULL, (Str){0}, false);
+                     PICK_SETTINGS, set, NULL, false);
 }
 
 void tui_info(Str title, const TuiCmd *rows, size_t n) {
@@ -5456,13 +5419,13 @@ void tui_info(Str title, const TuiCmd *rows, size_t n) {
     }
     size_t row = 0;
     (void)pick_impl(title, rows, NULL, n, n, TUI_PICK_FIRST, 0, PICK_INFO, &row,
-                    NULL, NULL, (Str){0}, 0, false);
+                    NULL, NULL, 0, false);
 }
 
 b8 tui_info_open(Str title, const TuiCmd *rows, size_t n) {
     if (!rows || !n) return false;
     return pick_open(title, rows, NULL, n, n, TUI_PICK_FIRST, 0, PICK_INFO,
-                     NULL, NULL, (Str){0}, false);
+                     NULL, NULL, false);
 }
 
 typedef struct {

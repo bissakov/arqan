@@ -1468,6 +1468,8 @@ size_t conv_add_call(Conv *c, Arena *scratch, Str id, Str name, Str args);
 size_t conv_add_tool(Conv *c, Str tool_call_id, Str text);
 size_t conv_add_shell(Conv *c, Str cmd, Str out);
 b8 conv_is_shell(const Conv *c, size_t i);
+size_t conv_add_note(Conv *c, Str text);
+b8 conv_is_note(const Conv *c, size_t i);
 b8 conv_is_call(const Conv *c, size_t i);
 size_t conv_room(const Conv *c);
 b8 conv_clone_head(Conv *dst, const Conv *src, size_t keep, Arena *a,
@@ -2050,7 +2052,7 @@ void tui_keep_visible(size_t off);
 b8 tui_pick(Str title, const TuiCmd *items, size_t n, TuiPickAnchor anchor,
             size_t start, size_t *out);
 
-b8 tui_pick_timed(Str title, Str notice, const TuiCmd *items, size_t n,
+b8 tui_pick_timed(Str title, const TuiCmd *items, size_t n,
                   TuiPickAnchor anchor, size_t start, i32 timeout_ms,
                   size_t *out, b8 *expired, b8 *amended);
 
@@ -2254,6 +2256,7 @@ void render_batch_child_result(Str name, Str args, Str result, Arena *scratch,
 
 void render_plan(Str plan);
 void render_question(Str question);
+void render_note(Str note);
 void render_task_header(u32 id, Str label, Str model, Str provider, b8 small,
                         b8 live);
 Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
