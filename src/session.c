@@ -987,7 +987,11 @@ static b8 export_markdown(FILE *f, const Conv *c) {
                         || !export_tool_section(f, "Shell output", (Str){0},
                                                 STR("text"), c->shell_out[i]))
                         return false;
-                } else if (!export_text_section(f, "User", c->text[i])) {
+                } else if (!export_text_section(f,
+                                                conv_is_note(c, i)
+                                                    ? "Note to the model"
+                                                    : "User",
+                                                c->text[i])) {
                     return false;
                 }
                 break;
@@ -1383,8 +1387,9 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
         size_t slot;
         if (str_eq(role, STR("user"))) {
             Str out = sess_field(persist, v, STR("output"));
-            slot = str_eq(tool, STR("shell")) ? conv_add_shell(c, text, out)
-                                              : conv_add(c, M_USER, text);
+            slot = str_eq(tool, STR("shell"))  ? conv_add_shell(c, text, out)
+                   : str_eq(tool, STR("note")) ? conv_add_note(c, text)
+                                               : conv_add(c, M_USER, text);
         } else if (str_eq(role, STR("tool"))) {
             slot = conv_add_tool(c, call_id, text);
         } else if (tool.n) {

@@ -46,6 +46,17 @@ def test_global_system_md_replaces_the_prompt(ctx):
     assert "expert coding assistant" not in content, content
 
 
+def test_builtin_prompt_says_the_reasoning_is_not_shown(ctx):
+    """A list or answer written only in the reasoning never reaches the user."""
+    ctx.scenario("text=ok")
+    s = ctx.spawn(ARQAN_SYSTEM_PROMPT=None)
+    content = system_message(ctx, s)
+
+    assert "The user sees your replies and tool calls, never your " \
+        "reasoning" in content, content
+    assert "the user cannot see your reasoning" in content, content
+
+
 def test_builtin_prompt_says_when_to_stop_and_report(ctx):
     """Carrying a task through has a limit, and the prompt names it."""
     ctx.scenario("text=ok")

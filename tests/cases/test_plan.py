@@ -74,6 +74,9 @@ def test_plan_prompt_asks_for_additions_before_the_plan(ctx):
     assert ASK_BEFORE_PLAN in system, system
     assert "Yes, the user will add it in their next message" in system, system
     assert "I'll" not in system, system
+    assert "The user sees your replies and tool calls, never your " \
+        "reasoning" in system, system
+    assert "the user cannot see your reasoning" in system, system
 
 
 def test_ask_user_asks_for_the_third_person(ctx):
@@ -87,6 +90,7 @@ def test_ask_user_asks_for_the_third_person(ctx):
     tools = ctx.mock.requests[-1]["tools"]
     desc = next(t["function"]["description"] for t in tools if t["function"]["name"] == "ask_user")
     assert "third person" in desc, desc
+    assert "never your reasoning" in desc, desc
 
 
 def test_one_shot_plan_prompt_does_not_ask(ctx):

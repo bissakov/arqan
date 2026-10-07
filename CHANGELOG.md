@@ -19,6 +19,13 @@
 
 ### Changed
 
+- When a reply ends with reasoning but no text, the agent now asks the model
+  once more for the reply, with a note that the user cannot see its
+  reasoning. The note shows in the transcript as `[note to the model: ...]`.
+  The system prompt and the `ask_user` description also say that the user
+  never sees the reasoning, so a question must not refer to a list or draft
+  written only there.
+
 - On Linux 6.7 and later, a read-only shell command now runs with TCP denied,
   and from 6.12 it cannot signal processes outside its sandbox. A command
   judged inside the project reads only the project, its git directories, the
