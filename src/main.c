@@ -13,6 +13,7 @@
 #include "spill.c"
 #include "media.c"
 #include "clipboard.c"
+#include "editor.c"
 #include "settings.c"
 #include "theme.c"
 #include "telemetry.c"
@@ -3247,6 +3248,27 @@ static void export_session(const Conv *conv, Str requested) {
     notice_fmt("exported session to %s", path);
 }
 
+static void edit_draft(Arena *scratch) {
+    if (!tui_is_fullscreen()) {
+        tui_notice(STR("the editor needs the full-screen terminal UI"));
+        return;
+    }
+    size_t mark = scratch->off;
+    char err[256];
+    Str saved;
+    EditorResult r = editor_edit(tui_input(), tui_input_cursor(), scratch,
+                                 &saved, err, sizeof err);
+    if (r == EDITOR_FAILED) tui_notice(str_c(err));
+    if (r == EDITOR_TOO_BIG || (r == EDITOR_SAVED && !tui_load_input(saved))) {
+        char limit[32];
+        spill_size_text(limit, sizeof limit, AGENT_LINE_BUF);
+        notice_fmt("the saved text does not fit the composer's %s; the draft "
+                   "is unchanged",
+                   limit);
+    }
+    scratch->off = mark;
+}
+
 
 static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out);
 
@@ -6444,6 +6466,10 @@ i32 main(i32 argc, char **argv) {
         }
         if (!strcmp(line, "/copy")) {
             copy_last_reply(&conv);
+            continue;
+        }
+        if (!strcmp(line, "/editor")) {
+            edit_draft(&scratch);
             continue;
         }
         if (!strncmp(line, "/attach", 7) && (ln == 7 || line[7] == ' ')) {

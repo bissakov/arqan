@@ -61,6 +61,7 @@ typedef struct {
     b8 raw;
     b8 tty;
     b8 fullscreen;
+    b8 suspended;
     b8 editing;
     b8 busy;
     b8 input_eof;
@@ -2802,7 +2803,7 @@ static void scroll_rewrap(void) {
 }
 
 static void repaint(void) {
-    if (!g_tui.fullscreen || g_paint.batch) return;
+    if (!g_tui.fullscreen || g_tui.suspended || g_paint.batch) return;
     scroll_rewrap();
     reflow_check();
     g_tui.last_paint = agent_now_seconds();
@@ -3183,6 +3184,37 @@ static void tui_log_sink(i32 level, Str msg, void *ud) {
 
 static void keys_selfcheck(void);
 
+static b8 term_raw(void) {
+    struct termios raw = g_tui.original_termios;
+    raw.c_lflag &= (tcflag_t) ~(tcflag_t)(ECHO | ICANON | IEXTEN);
+    raw.c_iflag &=
+        (tcflag_t) ~(tcflag_t)(IXON | IXOFF | ICRNL | INLCR | ISTRIP);
+    raw.c_oflag |= (OPOST | ONLCR);
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
+    return tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == 0;
+}
+
+static void term_enter(void) {
+    struct sigaction sa = {0};
+    sa.sa_handler = on_winch;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    (void)sigaction(SIGWINCH, &sa, &g_tui.original_winch);
+    put_str("\033[?1049h\033[?7l\033[?25l\033[?1003h\033[?1006h\033[?2004h");
+    cursor_tint();
+}
+
+static void term_leave(void) {
+    if (g_tui.color && *theme_page()) put_str(S_RESET);
+    if (g_tui.cursor_tinted) put_str("\033]112\a");
+    g_tui.cursor_tinted = false;
+    put_str("\033[?2004l\033[?1006l\033[?1003l\033[?25h\033[?7h\033[?1049l");
+    flush_out();
+    (void)tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_tui.original_termios);
+    (void)sigaction(SIGWINCH, &g_tui.original_winch, NULL);
+}
+
 void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
                size_t tool_count, b8 show_ignored, b8 justify,
                u64 status_fields, AgentMode mode, b8 plain) {
@@ -3233,32 +3265,33 @@ void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
         g_tui.raw = true;
         return;
     }
-    struct termios raw = g_tui.original_termios;
-    raw.c_lflag &= (tcflag_t) ~(tcflag_t)(ECHO | ICANON | IEXTEN);
-    raw.c_iflag &=
-        (tcflag_t) ~(tcflag_t)(IXON | IXOFF | ICRNL | INLCR | ISTRIP);
-    raw.c_oflag |= (OPOST | ONLCR);
-    raw.c_cc[VMIN] = 1;
-    raw.c_cc[VTIME] = 0;
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0) {
+    if (!term_raw()) {
         g_tui.tty = false;
         g_tui.raw = true;
         return;
     }
-
-    struct sigaction sa = {0};
-    sa.sa_handler = on_winch;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    (void)sigaction(SIGWINCH, &sa, &g_tui.original_winch);
 
     g_tui.raw = true;
     g_tui.fullscreen = true;
     agent_log_set_sink(tui_log_sink, NULL);
     g_tui.editing = true;
 
-    put_str("\033[?1049h\033[?7l\033[?25l\033[?1003h\033[?1006h\033[?2004h");
-    cursor_tint();
+    term_enter();
+    repaint();
+}
+
+void tui_suspend(void) {
+    if (!g_tui.fullscreen || g_tui.suspended) return;
+    term_leave();
+    g_tui.suspended = true;
+}
+
+void tui_resume(void) {
+    if (!g_tui.suspended) return;
+    g_tui.suspended = false;
+    (void)term_raw();
+    term_enter();
+    g_tui.frame_valid = false;
     repaint();
 }
 
@@ -3271,17 +3304,9 @@ void tui_stop(void) {
     if (!g_tui.raw) return;
     g_view.active = false;
     agent_log_set_sink(NULL, NULL);
-    if (g_tui.fullscreen) {
-        if (g_tui.color && *theme_page()) put_str(S_RESET);
-        if (g_tui.cursor_tinted) put_str("\033]112\a");
-        g_tui.cursor_tinted = false;
-        put_str("\033[?2004l\033[?1006l\033[?1003l\033[?25h\033[?7h"
-                "\033[?1049l");
-        flush_out();
-        (void)tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_tui.original_termios);
-        (void)sigaction(SIGWINCH, &g_tui.original_winch, NULL);
-    }
+    if (g_tui.fullscreen && !g_tui.suspended) term_leave();
     g_tui.fullscreen = false;
+    g_tui.suspended = false;
     g_tui.editing = false;
     g_tui.raw = false;
 }
@@ -4776,7 +4801,7 @@ void tui_set_history(History *h) {
 
 static void composer_load(char *buf, size_t *n, size_t *cur, Str s) {
     size_t take = s.n < AGENT_LINE_BUF - 1 ? s.n : AGENT_LINE_BUF - 1;
-    if (take) memcpy(buf, s.p, take);
+    if (take) memmove(buf, s.p, take);
     buf[take] = '\0';
     *n = take;
     *cur = take;
@@ -5757,7 +5782,8 @@ typedef enum {
     ED_EXPAND,
     ED_MODE,
     ED_ATTACH,
-    ED_TASK
+    ED_TASK,
+    ED_EDITOR
 } EdAction;
 
 
@@ -5775,21 +5801,27 @@ static u32 zone_at_cell(i32 mouse_row, i32 mouse_col) {
     return zone_at_off(row < TUI_SEL_ROWS ? g_tui.row_src[row] : SIZE_MAX);
 }
 
-static void paste_byte(i32 c) {
-    b8 was_cr = g_tui.paste_cr;
-    g_tui.paste_cr = c == '\r';
-    if (c == '\n' && was_cr) return;
+#define PASTE_RUN_MAX 4
 
-    char run[4];
+static size_t paste_run(i32 c, b8 *after_cr, char run[PASTE_RUN_MAX]) {
+    b8 was_cr = *after_cr;
+    *after_cr = c == '\r';
+    if (c == '\n' && was_cr) return 0;
+
     size_t run_n = 0;
     if (c == '\r' || c == '\n')
         run[run_n++] = '\n';
     else if (c == '\t')
-        while (run_n < sizeof run) run[run_n++] = ' ';
+        while (run_n < PASTE_RUN_MAX) run[run_n++] = ' ';
     else if ((c >= 0x20 && c < 0x7f) || c >= 0x80)
         run[run_n++] = (char)c;
-    else
-        return;
+    return run_n;
+}
+
+static void paste_byte(i32 c) {
+    char run[PASTE_RUN_MAX];
+    size_t run_n = paste_run(c, &g_tui.paste_cr, run);
+    if (!run_n) return;
 
     char *buf = g_bulk.input;
     size_t n = g_tui.input_n, cur = g_tui.input_cur;
@@ -5801,6 +5833,30 @@ static void paste_byte(i32 c) {
     buf[n] = '\0';
     g_tui.input_n = n;
     g_tui.input_cur = cur;
+}
+
+b8 tui_load_input(Str s) {
+    if (!g_tui.fullscreen) return false;
+    char run[PASTE_RUN_MAX];
+    b8 after_cr = false;
+    size_t need = 0;
+    for (size_t i = 0; i < s.n; i++)
+        need += paste_run((u8)s.p[i], &after_cr, run);
+    if (need >= sizeof g_bulk.input) return false;
+
+    size_t n = 0;
+    after_cr = false;
+    for (size_t i = 0; i < s.n; i++) {
+        size_t run_n = paste_run((u8)s.p[i], &after_cr, run);
+        memcpy(g_bulk.input + n, run, run_n);
+        n += run_n;
+    }
+    tui_set_input((Str){g_bulk.input, n});
+    return true;
+}
+
+size_t tui_input_cursor(void) {
+    return g_tui.fullscreen ? g_tui.input_cur : 0;
 }
 
 /* ---- the search box ------------------------------------------------------
@@ -6090,6 +6146,8 @@ static void ed_end(Ed *e) {
       e->action = ED_ATTACH;)                                              \
     X(0x0f, "Ctrl-O", "Switch between this conversation and the task's",   \
       e->action = ED_TASK;)                                                \
+    X(0x07, "Ctrl-G", "Edit the message in vi, vim or nvim",               \
+      e->action = ED_EDITOR;)                                              \
     X(0x0c, "Ctrl-L", "Repaint the screen", g_tui.frame_valid = false;)
 
 #define COMPOSER_ESCAPE_KEYS(X)                                              \
@@ -6427,6 +6485,9 @@ static void poll_input(void) {
             busy_attach();
         else if (action == ED_TASK)
             busy_task();
+        else if (action == ED_EDITOR)
+            tui_notice(STR("the editor opens between turns; Esc interrupts "
+                           "this one"));
         dirty = true;
     }
     if (dirty) repaint();
@@ -6483,7 +6544,8 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
             return false;
         }
         if (action == ED_REWIND || action == ED_EXPAND || action == ED_MODE
-            || action == ED_ATTACH || action == ED_TASK) {
+            || action == ED_ATTACH || action == ED_TASK
+            || action == ED_EDITOR) {
             char cmd[AGENT_MAX_PATH + 16];
             size_t n;
             if (action == ED_ATTACH)
@@ -6496,6 +6558,8 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
                     len = snprintf(cmd, sizeof cmd, "/mode");
                 else if (action == ED_TASK)
                     len = snprintf(cmd, sizeof cmd, "/task");
+                else if (action == ED_EDITOR)
+                    len = snprintf(cmd, sizeof cmd, "/editor");
                 else
                     len =
                         snprintf(cmd, sizeof cmd, "/expand %u", g_tui.click_id);

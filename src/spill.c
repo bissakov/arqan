@@ -10,7 +10,7 @@
 #include <sys/stat.h>
 
 
-static Str spill_dir(void) {
+Str spill_dir(void) {
     const char *tmp = getenv("TMPDIR");
     if (!tmp || tmp[0] != '/') tmp = "/tmp";
     Str s = str_c(tmp);
