@@ -1143,6 +1143,8 @@ i32 spill_release(Spill *s, char *path, size_t path_cap, size_t *written);
 
 void spill_size_text(char *z, size_t cap, size_t n);
 b8 spill_path_ours(const char *resolved);
+/* TMPDIR when it is absolute, else /tmp, with no trailing slash. */
+Str spill_dir(void);
 
 
 typedef b8 (*ToolRun)(Str args_json, Arena *scratch, Buf *out, char *err,
@@ -1407,6 +1409,25 @@ MediaSet *tools_set_media(MediaSet *m);
  * the UI, so it is safe to call from inside input handling.
  */
 b8 clipboard_image(Arena *scratch, Str *out, char *err, size_t err_cap);
+
+/* ---- editor --------------------------------------------------------------
+ * `text` edited in vi, vim or nvim, with the cursor placed at byte `cursor`.
+ * VISUAL, then EDITOR, is used when its first word names one of them;
+ * otherwise the first of nvim, vim and vi on PATH runs. The terminal is
+ * handed over with tui_suspend and taken back with tui_resume. EDITOR_SAVED
+ * puts the saved text, one trailing newline dropped, in `out` in `scratch`.
+ * EDITOR_UNCHANGED means the file holds what it was given. EDITOR_TOO_BIG
+ * means the file is over AGENT_LINE_BUF. EDITOR_FAILED fills `err`. Only
+ * EDITOR_SAVED should change the draft.
+ */
+typedef enum {
+    EDITOR_SAVED,
+    EDITOR_UNCHANGED,
+    EDITOR_TOO_BIG,
+    EDITOR_FAILED
+} EditorResult;
+EditorResult editor_edit(Str text, size_t cursor, Arena *scratch, Str *out,
+                         char *err, size_t err_cap);
 
 
 typedef enum { M_SYSTEM = 0, M_USER, M_ASSISTANT, M_TOOL } MRole;
@@ -2180,6 +2201,15 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n);
 
 void tui_set_input(Str s);
 Str tui_input(void);
+/* The draft replaced by `s`, cleaned the way a paste is: CRLF to LF, a tab to
+ * spaces, control bytes dropped. False, and the draft untouched, when the
+ * result does not fit the composer. */
+b8 tui_load_input(Str s);
+size_t tui_input_cursor(void);
+/* The terminal handed to a child that draws on it, and taken back. Nothing
+ * paints in between. */
+void tui_suspend(void);
+void tui_resume(void);
 void tui_set_busy(b8 busy);
 b8 tui_busy(void);
 b8 tui_queued_pending(void);

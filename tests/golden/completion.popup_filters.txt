@@ -15,8 +15,8 @@
 |
 |
 |
-|
-|  › /exit    Quit arqan
+|  › /editor  Write the message in your editor (Ctrl-G)
+|    /exit    Quit arqan
 |    /export  Export this session as Markdown
 |
 |  › /e

@@ -50,7 +50,7 @@ def test_popup_closes_on_space(ctx):
 def test_tab_accepts_selection(ctx):
     """Tab completes the highlighted entry and dismisses the popup."""
     s = ctx.spawn()
-    s.type("/e").sync()
+    s.type("/ex").sync()
     s.key("tab").sync()
     assert s.composer_text() == "/exit", s.composer_lines()
     assert "Quit arqan" not in s.text(), "popup should be gone after accepting"
@@ -68,7 +68,7 @@ def test_enter_submits_the_highlighted_entry(ctx):
     """Enter runs whatever the popup highlights, not what was typed."""
     s = ctx.spawn()
     s.type("/").sync()
-    s.key(*(["down"] * 21)).sync()        # highlight '/exit', one from the end
+    s.key(*(["down"] * 22)).sync()        # highlight '/exit', one from the end
     s.key("enter")
     assert s.wait_exit() == 0, "Enter should have run the highlighted entry"
 
@@ -115,7 +115,7 @@ def test_ctrl_n_p_move_the_selection(ctx):
     """Ctrl-N / Ctrl-P cycle the popup the same way as the arrows."""
     s = ctx.spawn()
     s.type("/").sync()
-    s.key(*(["ctrl-n"] * 23)).sync()  # one per command: wraps to the first
+    s.key(*(["ctrl-n"] * 24)).sync()  # one per command: wraps to the first
     s.key("tab").sync()
     assert s.composer_text() == "/clear", s.composer_lines()
 

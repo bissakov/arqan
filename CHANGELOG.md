@@ -4,6 +4,13 @@
 
 ### Added
 
+- Ctrl-G opens the message you are writing in vi, vim or nvim. Save and quit
+  to put the text back in the composer; nothing is sent until you press
+  Enter. Quitting without saving, or `:cq`, keeps the draft as it was.
+  `VISUAL` or `EDITOR` is used when it names one of the three; otherwise the
+  first of `nvim`, `vim` and `vi` on `PATH` runs. Ctrl-G works only between
+  turns.
+
 - A streamed reply that sends nothing for five minutes now fails with
   `the provider sent nothing for 300 s`. When no reply text has arrived, the
   request is retried like a dropped connection; otherwise the turn ends and
