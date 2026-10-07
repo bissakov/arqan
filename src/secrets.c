@@ -204,6 +204,7 @@ static b8 secret_exec(const SecretCmd *c, Str input, char *out, size_t out_cap,
         snprintf(err, err_cap, "pipe failed");
         return false;
     }
+    char **envp = child_env(CHILD_ENV_PLAIN);
     pid_t pid = fork();
     if (pid < 0) {
         close(out_fds[0]);
@@ -228,6 +229,7 @@ static b8 secret_exec(const SecretCmd *c, Str input, char *out, size_t out_cap,
         if (null_rd > STDERR_FILENO) close(null_rd);
         if (null_wr > STDERR_FILENO) close(null_wr);
         child_close_fds(3);
+        environ = envp;
         execvp(c->argv[0], (char *const *)(uintptr_t)c->argv);
         _exit(127);
     }

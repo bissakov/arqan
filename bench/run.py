@@ -164,6 +164,7 @@ def main(argv=None) -> int:
             run.end(result)
             continue
         ctx = Ctx(f"bench.{name}", keep=args.keep)
+        ctx.extra_env["ARQAN_DUMPABLE"] = "1"
         bench = Bench(name, ctx, run, result, opts)
         started = time.monotonic()
         failed = False

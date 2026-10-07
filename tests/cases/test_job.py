@@ -286,7 +286,9 @@ def test_a_drainer_holds_only_its_pipe_and_log(ctx):
     if not Path("/proc/self/fd").exists():
         return
     ctx.scenario("tool=" + bash("sleep 5") + ",final_text=detached")
-    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="200")
+    # The drainer is a fork, not dumpable either; the switch lets /proc show it.
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="200",
+                  ARQAN_DUMPABLE="1")
     s.submit("run something slow")
     s.wait_text("detached")
     s.wait_turn_done()

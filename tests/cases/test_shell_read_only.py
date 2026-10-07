@@ -4,15 +4,19 @@ The classifier is a first-word check over each segment of the pipeline that
 fails closed on redirection, substitution, grouping, heredocs and background
 jobs. Anything it does not pass is an ordinary bash call and asks as before.
 A read-only command that names a path outside the project asks like `read`
-does, and on Linux a read-only command runs under Landlock with writes denied.
+does, and on Linux a read-only command runs under Landlock with writes and TCP
+denied and reads limited to the project and the system directories.
 """
 
+import ctypes
 import json
 import os
 import shlex
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 def bash(command: str, description: str = "look") -> str:
@@ -203,6 +207,32 @@ def landlock_available() -> bool:
     return lsm.exists() and "landlock" in lsm.read_text()
 
 
+def landlock_abi() -> int:
+    """The kernel's Landlock ABI version, or 0 without Landlock."""
+    if not sys.platform.startswith("linux"):
+        return 0
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.syscall.restype = ctypes.c_long
+    abi = libc.syscall(ctypes.c_long(444), None, ctypes.c_size_t(0),
+                       ctypes.c_uint32(1))
+    return max(0, abi)
+
+
+def git(ctx, *args, cwd=None):
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
+                    "-c", "init.defaultBranch=main", *args],
+                   cwd=cwd or ctx.work, check=True, capture_output=True,
+                   env={**os.environ, "HOME": str(ctx.home),
+                        "XDG_CONFIG_HOME": str(ctx.xdg)})
+
+
+def a_committed_tree(ctx, at=None):
+    at = at or ctx.work
+    git(ctx, "init", "-q", cwd=at)
+    git(ctx, "add", ".", cwd=at)
+    git(ctx, "commit", "-q", "-m", "init", cwd=at)
+
+
 def test_a_read_only_command_cannot_write_under_the_sandbox(ctx):
     """The classifier lets `sort` through; Landlock stops its temporary file.
     Git's opportunistic index refresh must tolerate the same denial."""
@@ -231,6 +261,179 @@ def test_a_read_only_command_cannot_write_under_the_sandbox(ctx):
         os.listdir(ctx.work)
     assert "[exit 0]" in results[1], results[1]
     assert "init" in results[2] and "[exit 0]" in results[2], results[2]
+
+
+def test_a_link_out_of_the_project_is_not_followed_under_the_sandbox(ctx):
+    """The words name a file inside, so nothing asks; the read itself is what
+    leaves the project, and the sandbox refuses it."""
+    if not landlock_available():
+        return
+    (ctx.home / "secret").write_text("outside body\n")
+    os.symlink(ctx.home / "secret", ctx.work / "link")
+    ctx.scenario(bash("cat link") + ",final_text=done")
+    s = ctx.spawn(ARQAN_PERMISSIONS="ask")
+    s.submit("read the link")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    assert "allow" not in s.text(), s.text()
+    result = ctx.mock.tool_results()[0]
+    assert "Permission denied" in result, result
+    assert "outside body" not in result, result
+
+
+def test_a_git_driver_runs_inside_the_sandbox(ctx):
+    """The repository's own config names a textconv driver. It runs, but it
+    cannot write, read outside the project, or open a TCP connection."""
+    if not landlock_available():
+        return
+    a_small_tree(ctx)
+    a_committed_tree(ctx)
+    (ctx.home / "secret").write_text("outside body\n")
+    url = urlparse(ctx.mock.base_url)
+    probe = ctx.work / ".git" / "probe"
+    probe.write_text(f"""#!/bin/sh
+echo probe-ran
+if echo leaked > '{ctx.work}/leaked.txt'; then echo write-ok; else echo write-denied; fi
+if cat '{ctx.home}/secret' >/dev/null; then echo read-ok; else echo read-denied; fi
+python3 -c '
+import socket
+try:
+    socket.create_connection(("{url.hostname}", {url.port}), 2).close()
+    print("tcp-ok")
+except OSError as e:
+    print("tcp-denied", e.errno)
+'
+cat "$1"
+""")
+    os.chmod(probe, 0o755)
+    ctx.write_file(".gitattributes", "*.txt diff=probe\n")
+    ctx.write_file("fresh.txt", "fresh body\n")
+    git(ctx, "config", "diff.probe.textconv", str(probe))
+    git(ctx, "add", "-N", "fresh.txt")
+    ctx.scenario(bash("git diff") + ",final_text=done")
+    s = ctx.spawn(ARQAN_PERMISSIONS="ask")
+    s.submit("show the diff")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    assert "allow" not in s.text(), s.text()
+    result = ctx.mock.tool_results()[0]
+    assert "probe-ran" in result, result
+    assert "write-denied" in result and "write-ok" not in result, result
+    assert not (ctx.work / "leaked.txt").exists()
+    assert "read-denied" in result and "read-ok" not in result, result
+    if landlock_abi() >= 4:
+        assert "tcp-denied" in result and "tcp-ok" not in result, result
+
+
+def test_git_status_does_not_run_the_repository_fsmonitor(ctx):
+    if not landlock_available():
+        return
+    a_small_tree(ctx)
+    a_committed_tree(ctx)
+    monitor = ctx.work / ".git" / "monitor"
+    monitor.write_text("#!/bin/sh\necho fsmonitor-ran >&2\nexit 1\n")
+    os.chmod(monitor, 0o755)
+    git(ctx, "config", "core.fsmonitor", str(monitor))
+    ctx.scenario(bash("git status --short") + ",final_text=done")
+    s = ctx.spawn(ARQAN_PERMISSIONS="ask")
+    s.submit("status")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    assert "allow" not in s.text(), s.text()
+    result = ctx.mock.tool_results()[0]
+    assert "[exit 0]" in result, result
+    assert "fsmonitor-ran" not in result, result
+
+
+GIT_READS = [
+    "git status --short",
+    "git log --oneline -1",
+    "git rev-parse --show-toplevel",
+]
+
+
+def git_reads_work_from(ctx, cwd: Path):
+    ctx.scenario(",".join(bash(c) for c in GIT_READS) + ",final_text=done")
+    s = ctx.spawn(cwd=str(cwd), ARQAN_PERMISSIONS="ask")
+    s.submit("look at the repository")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    assert "allow" not in s.text(), s.text()
+    results = ctx.mock.tool_results()
+    assert len(results) == len(GIT_READS), results
+    for r in results:
+        assert "[exit 0]" in r, results
+    assert "init" in results[1], results[1]
+
+
+def test_git_works_from_a_subdirectory_of_the_repository(ctx):
+    a_small_tree(ctx)
+    a_committed_tree(ctx)
+    git_reads_work_from(ctx, ctx.work / "src")
+
+
+def test_git_works_from_a_linked_worktree(ctx):
+    a_small_tree(ctx)
+    a_committed_tree(ctx)
+    git(ctx, "worktree", "add", "-q", str(ctx.home / "linked"))
+    git_reads_work_from(ctx, ctx.home / "linked")
+
+
+def test_git_works_where_dot_git_is_a_file(ctx):
+    """A submodule checkout: `.git` is a file naming the git directory by a
+    relative path."""
+    checkout = ctx.home / "module"
+    checkout.mkdir()
+    (checkout / "notes.txt").write_text("alpha\n")
+    git(ctx, "init", "-q", "--separate-git-dir", str(ctx.home / "module.git"),
+        cwd=checkout)
+    (checkout / ".git").write_text("gitdir: ../module.git\n")
+    git(ctx, "add", ".", cwd=checkout)
+    git(ctx, "commit", "-q", "-m", "init", cwd=checkout)
+    git_reads_work_from(ctx, checkout)
+
+
+DRIVER_GIT = [
+    "git diff",
+    "git show",
+    "git log -p -1",
+    "git blame notes.txt",
+    "git status",
+    "git describe --always",
+    "git grep alpha",
+]
+PLAIN_GIT = [
+    "git ls-files",
+    "git rev-parse HEAD",
+    "git shortlog -s HEAD",
+]
+
+
+def test_without_landlock_git_that_can_run_a_driver_asks(ctx):
+    a_small_tree(ctx)
+    a_committed_tree(ctx)
+    ctx.scenario(",".join(bash(c, f"plain {i:02d}") for i, c in enumerate(PLAIN_GIT))
+                 + "," + ",".join(bash(c, f"call {i:02d}")
+                                  for i, c in enumerate(DRIVER_GIT))
+                 + ",final_text=done")
+    s = ctx.spawn(ARQAN_PERMISSIONS="ask", ARQAN_TEST_NO_LANDLOCK="1")
+    s.submit("look at the repository")
+    for i, _ in enumerate(DRIVER_GIT):
+        s.wait_text(f"call {i:02d}")
+        s.wait_status("allow bash?")
+        s.key("esc")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    results = ctx.mock.tool_results()
+    assert len(results) == len(PLAIN_GIT) + len(DRIVER_GIT), results
+    plain = results[:len(PLAIN_GIT)]
+    assert all("[exit 0]" in r for r in plain), plain
+    assert all(r.startswith("DENIED:") for r in results[len(PLAIN_GIT):]), results
 
 
 ROOT = Path(__file__).resolve().parent.parent.parent

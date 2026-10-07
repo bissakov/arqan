@@ -131,6 +131,11 @@ command, writes or patches a file, calls an MCP tool, or reads outside the
 project. You can approve one call or the whole class until arqan exits. With
 `permissions = "free"` it never asks. Change it in `/settings`.
 
+A shell command made only of reading programs runs without asking. On Linux it
+runs under Landlock with writes and the network denied, and reads only the
+project and the system directories. No child process gets your API keys. Set
+`ARQAN_DUMPABLE=1` to allow core dumps and debugger attach.
+
 ### Commands
 
 | Command | Does |

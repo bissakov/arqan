@@ -12,6 +12,10 @@ from pathlib import Path
 
 from tests.context import BIN
 
+# arqan makes itself not dumpable, which leaves its /proc entries readable
+# only by root; this switch keeps them readable for the measurement.
+DUMPABLE = {"ARQAN_DUMPABLE": "1"}
+
 
 def unmeasurable() -> bool:
     """Whether this build or platform cannot answer the question.
@@ -59,7 +63,7 @@ def test_idle_footprint_excludes_bulk_buffers(ctx):
     if unmeasurable():
         return
     ctx.scenario("text=ok")
-    s = ctx.spawn()
+    s = ctx.spawn(**DUMPABLE)
     s.settle()
 
     kb = private_dirty_kb(s.proc.pid)
@@ -81,7 +85,7 @@ def test_libcurl_is_absent_until_the_first_request(ctx):
     if not opens_libcurl_on_demand():
         return   # linked build: libcurl is inside the binary, never mapped
     ctx.scenario("text=ok")
-    s = ctx.spawn()
+    s = ctx.spawn(**DUMPABLE)
     s.settle()
 
     assert not maps_libcurl(s.proc.pid), "libcurl mapped before any request"
@@ -97,7 +101,7 @@ def test_footprint_tracks_use_not_capacity(ctx):
     if unmeasurable():
         return
     ctx.scenario("words=200,chunk=8")
-    s = ctx.spawn()
+    s = ctx.spawn(**DUMPABLE)
     s.settle()
     before = private_dirty_kb(s.proc.pid)
 

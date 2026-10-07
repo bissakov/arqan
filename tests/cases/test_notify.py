@@ -127,3 +127,24 @@ def test_the_hook_runs_with_the_turn_on_its_stdin(ctx):
     assert payload["kind"] == "turn-done", payload
     assert "all done here" in payload["text"], payload
     assert payload["cwd"] == str(ctx.work), payload
+
+
+def test_the_hook_gets_no_api_key(ctx):
+    out = ctx.work / "hook.env"
+    script = ctx.work / "hook.sh"
+    script.write_text(f'#!/bin/sh\nenv > "{out}.part" && mv "{out}.part" "{out}"\n')
+    os.chmod(script, 0o755)
+
+    ctx.scenario("text=all+done+here")
+    s = ctx.spawn(ARQAN_NOTIFY_MIN_MS="0", ARQAN_NOTIFY_COMMAND=str(script))
+    s.submit("do the thing")
+    s.wait_text("all done here")
+    s.wait_turn_done()
+
+    deadline = time.time() + 10.0
+    while time.time() < deadline and not out.exists():
+        time.sleep(0.05)
+    assert out.exists(), "the hook never ran"
+    names = [line.split("=", 1)[0] for line in out.read_text().splitlines()]
+    assert "HOME" in names, names
+    assert "ARQAN_API_KEY" not in names, names

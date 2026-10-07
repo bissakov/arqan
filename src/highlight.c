@@ -154,6 +154,7 @@ static b8 highlight_start(void) {
         g_hl.disabled = true;
         return false;
     }
+    char **envp = child_env(CHILD_ENV_PLAIN);
     pid_t pid = fork();
     if (pid < 0) {
         close(to_child[0]);
@@ -170,6 +171,7 @@ static b8 highlight_start(void) {
             _exit(126);
         if (devnull >= 0) dup2(devnull, STDERR_FILENO);
         child_close_fds(3);
+        environ = envp;
         if (g_hl.path_only)
             execl(g_hl.path, g_hl.path, (char *)NULL);
         else
