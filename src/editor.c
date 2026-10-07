@@ -134,7 +134,7 @@ static i32 editor_run(const EditorCmd *cmd, Str text, size_t cursor,
     i32 code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     if (code == EDITOR_NO_EXEC) {
         snprintf(err, err_cap,
-                 "no vi, vim or nvim found on PATH; the draft is unchanged");
+                 "no supported editor found on PATH; the draft is unchanged");
         return -1;
     }
     if (code != 0) {

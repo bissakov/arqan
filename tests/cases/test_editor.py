@@ -176,13 +176,13 @@ def test_extra_words_in_editor_reach_vim(ctx):
 
 
 def test_no_vim_on_path_says_so(ctx):
-    """Without vi, vim or nvim the draft stays and the notice names them."""
+    """Without a supported editor the draft stays and the notice says so."""
     empty = ctx.tmp / "no-editors"
     empty.mkdir()
     s = ctx.spawn(PATH=str(empty), EDITOR=None, VISUAL=None)
     s.type("keep me").sync()
     s.key("ctrl-g")
-    s.wait_text("no vi, vim or nvim")
+    s.wait_text("no supported editor found on PATH")
     assert s.composer_text() == "keep me", s.composer_text()
 
 
@@ -198,5 +198,40 @@ def test_ctrl_g_waits_for_the_turn(ctx):
     s.wait_text("the editor opens between turns")
     assert runs(ctx) == [], runs(ctx)
     assert s.composer_text() == "later", s.composer_text()
+    ctx.mock.release()
+    s.wait_turn_done()
+
+
+def test_editor_is_in_the_command_list(ctx):
+    """The popup offers /editor and names its key."""
+    s = ctx.spawn()
+    s.type("/edi").sync()
+    text = s.text()
+    assert "/editor" in text, text
+    assert "Write the message in your editor (Ctrl-G)" in text, text
+
+
+def test_the_editor_command_opens_vim(ctx):
+    """/editor runs the same editor; the command itself is not the draft."""
+    bin_dir = editors(ctx, "vim")
+    s = spawn(ctx, bin_dir, "write:from the command", EDITOR=bin_dir / "vim")
+    s.submit("/editor")
+    s.wait_for(lambda t: s.composer_text() == "from the command", "the saved text")
+    [run] = runs(ctx)
+    assert run["before"] == "", run
+    assert ctx.mock.requests == [], "the editor never sends the message"
+
+
+def test_the_editor_command_waits_for_the_turn(ctx):
+    """Typed during a turn, /editor waits like the other commands."""
+    bin_dir = editors(ctx, "vim")
+    ctx.scenario("hold,text=done")
+    s = spawn(ctx, bin_dir, "write:nope", EDITOR=bin_dir / "vim")
+    s.submit("go on")
+    s.wait_activity("thinking")
+    s.type("/editor").sync()
+    s.key("enter")
+    s.wait_text("/editor waits until the turn ends")
+    assert runs(ctx) == [], runs(ctx)
     ctx.mock.release()
     s.wait_turn_done()

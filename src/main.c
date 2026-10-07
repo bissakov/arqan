@@ -116,6 +116,8 @@ static size_t commands_init(b8 images, b8 subagents, b8 mcp) {
         g_commands.v[n++] = (TuiCmd){
             STR("/attach"),
             STR("Attach an image to the next message, by path or from the clipboard (Ctrl-V)")};
+    g_commands.v[n++] = (TuiCmd){
+        STR("/editor"), STR("Write the message in your editor (Ctrl-G)")};
     g_commands.v[n++] =
         (TuiCmd){STR("/find"), STR("Search the transcript (Ctrl-R)")};
     g_commands.v[n++] =

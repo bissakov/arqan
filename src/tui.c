@@ -6146,7 +6146,7 @@ static void ed_end(Ed *e) {
       e->action = ED_ATTACH;)                                              \
     X(0x0f, "Ctrl-O", "Switch between this conversation and the task's",   \
       e->action = ED_TASK;)                                                \
-    X(0x07, "Ctrl-G", "Edit the message in vi, vim or nvim",               \
+    X(0x07, "Ctrl-G", "Edit the message in your editor",                   \
       e->action = ED_EDITOR;)                                              \
     X(0x0c, "Ctrl-L", "Repaint the screen", g_tui.frame_valid = false;)
 
