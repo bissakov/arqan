@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- A streamed reply that sends nothing for five minutes now fails with
+  `the provider sent nothing for 300 s`. When no reply text has arrived, the
+  request is retried like a dropped connection; otherwise the turn ends and
+  keeps what arrived. `stream_timeout_ms` sets the limit, and `0` turns it
+  off. Provider connections also send TCP keepalives.
+
 ### Changed
 
 - On Linux 6.7 and later, a read-only shell command now runs with TCP denied,
@@ -18,6 +26,14 @@
   `describe` and `grep` ask before they run, and plan mode and subagents can
   no longer run them. `git ls-files`, `rev-parse` and `shortlog` still run
   without asking.
+
+### Fixed
+
+- The JSON reader no longer accepts an object or array that is missing its
+  closing bracket or ends in some other character. A tool call with such
+  arguments now gets an error instead of running. An Anthropic tool call
+  whose arguments have a trailing comma is sent back as `invalid_arguments`,
+  so the next request is still valid JSON.
 
 ### Security
 

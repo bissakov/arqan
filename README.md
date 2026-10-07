@@ -260,8 +260,9 @@ or widens what the model may do. These settings are refused in a project file:
 
 `base_url`, `api`, `api_key`, `permissions`, `telemetry`, `notify_command`,
 `search_endpoint`, `search_api_key`, `search_engine_id`, `small_provider`,
-`ask_timeout_ms`, `shell_timeout_ms`, `images`, `cache_guard`,
-`subagent_tasks`, `subagent_slice_ms`, `mcp`, `mcp_timeout_ms`.
+`stream_timeout_ms`, `ask_timeout_ms`, `shell_timeout_ms`, `images`,
+`cache_guard`, `subagent_tasks`, `subagent_slice_ms`, `mcp`,
+`mcp_timeout_ms`.
 
 A refused line is reported and dropped. A provider defined in a project file
 gets no API key and may not redefine a provider you configured. arqan also
@@ -285,6 +286,7 @@ that others can write to.
 | `disable_tools` | | Comma-separated tools the model may not call |
 | `retries` | `4` | Retries for a failed request |
 | `retry_delay_ms` | `2000` | Delay before the first retry; it doubles each time |
+| `stream_timeout_ms` | `300000` | How long a streamed reply may send nothing before it fails; `0` for no limit |
 | `shell_timeout_ms` | `120000` | Longest wait for a shell command |
 | `ask_timeout_ms` | `180000` | How long a question with a recommended answer waits for you |
 | `small_model` | | Cheaper model for titles, and optionally compaction and subagents |

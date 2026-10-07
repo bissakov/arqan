@@ -1151,6 +1151,7 @@ static b8 task_send_record(Agent *ag, i32 fd, const Config *cfg, Str sys,
              (i32)ag->permission_grants);
     buf_putf(&b, ",\"max_tokens\":%d,\"retries\":%d,\"retry_delay_ms\":%d",
              cfg->max_tokens, cfg->retries, cfg->retry_delay_ms);
+    buf_putf(&b, ",\"stream_timeout_ms\":%d", cfg->stream_timeout_ms);
     buf_putf(&b, ",\"stream\":%s,\"small\":%s}\n",
              cfg->stream ? "true" : "false", small ? "true" : "false");
     Str line = buf_finish(&b);
@@ -2342,6 +2343,11 @@ static Str help_build(Agent *ag) {
              cfg->compact_at, cfg->compact_small ? "small" : "main");
     buf_putf(&b, "- retries after an empty response: %d\n", cfg->retries);
     buf_putf(&b, "- initial retry delay: %d ms\n", cfg->retry_delay_ms);
+    if (cfg->stream_timeout_ms > 0)
+        buf_putf(&b, "- stream timeout: %d ms without data\n",
+                 cfg->stream_timeout_ms);
+    else
+        buf_puts(&b, STR("- stream timeout: off\n"));
     buf_putf(&b, "- reasoning effort: %.*s\n",
              (i32)(cfg->reasoning_effort.n ? cfg->reasoning_effort.n : 3u),
              cfg->reasoning_effort.n ? cfg->reasoning_effort.p : "off");
@@ -6035,6 +6041,8 @@ static i32 task_worker_main(const CliOpts *opts) {
     cfg.max_tokens = rec_int(j, "max_tokens", cfg.max_tokens);
     cfg.retries = rec_int(j, "retries", cfg.retries);
     cfg.retry_delay_ms = rec_int(j, "retry_delay_ms", cfg.retry_delay_ms);
+    cfg.stream_timeout_ms =
+        rec_int(j, "stream_timeout_ms", cfg.stream_timeout_ms);
     cfg.mode = (AgentMode)rec_int(j, "mode", (i32)cfg.mode);
     cfg.stream = json_bool(j, STR("stream"));
     PermissionPolicy permissions =

@@ -197,10 +197,11 @@ static JVal *parse_array(JParser *p) {
         if (peekc(p) == ',') {
             p->pos++;
             skipws(p);
+            if (p->strict && peekc(p) == ']') return NULL;
         } else
             break;
     }
-    getc_(p);
+    if (getc_(p) != ']') return NULL;
     JVal *arr = jnew(p, J_ARR);
     if (!arr) return NULL;
     arr->u.arr.items = NULL;
@@ -248,10 +249,11 @@ static JVal *parse_object(JParser *p) {
         if (peekc(p) == ',') {
             p->pos++;
             skipws(p);
+            if (p->strict && peekc(p) == '}') return NULL;
         } else
             break;
     }
-    getc_(p);
+    if (getc_(p) != '}') return NULL;
     return obj;
 }
 
@@ -286,8 +288,8 @@ static JVal *parse_value(JParser *p) {
     return NULL;
 }
 
-static JVal *json_parse_impl(Arena *a, Str s, size_t *bad) {
-    JParser p = {a, s.p, 0, s.n, 0, false};
+static JVal *json_parse_impl(Arena *a, Str s, size_t *bad, b8 strict) {
+    JParser p = {a, s.p, 0, s.n, 0, false, strict};
     if (!s.p || s.n == 0) {
         if (bad) *bad = 0;
         return NULL;
@@ -302,12 +304,16 @@ static JVal *json_parse_impl(Arena *a, Str s, size_t *bad) {
 }
 
 JVal *json_parse(Arena *a, Str s) {
-    return json_parse_impl(a, s, NULL);
+    return json_parse_impl(a, s, NULL, false);
+}
+
+JVal *json_parse_strict(Arena *a, Str s) {
+    return json_parse_impl(a, s, NULL, true);
 }
 
 JVal *json_parse_error(Arena *a, Str s, char *err, size_t err_cap) {
     size_t bad = 0;
-    JVal *v = json_parse_impl(a, s, &bad);
+    JVal *v = json_parse_impl(a, s, &bad, false);
     if (v || !err || !err_cap) return v;
     if (!s.p || !s.n) {
         snprintf(err, err_cap, "bad args json: input is empty");

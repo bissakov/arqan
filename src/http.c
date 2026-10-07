@@ -86,7 +86,9 @@ typedef struct {
     size_t lines;
     size_t polls;
     f64 last_write;
+    f64 last_byte;
     f64 stall;
+    b8 stalled;
 
     i64 status;
     size_t err_n;
@@ -140,6 +142,7 @@ static size_t write_cb(char *p, size_t sz, size_t n, void *ud) {
     if (c->last_write > 0 && now - c->last_write > c->stall)
         c->stall = now - c->last_write;
     c->last_write = now;
+    c->last_byte = now;
     if (status_is_error(c->status)) {
         err_body_put(c, p, total);
         return total;
@@ -268,6 +271,7 @@ static i64 status_line_code(Str line) {
 static size_t status_header_cb(char *p, size_t sz, size_t n, void *ud) {
     Ctx *c = (Ctx *)ud;
     size_t total = sz * n;
+    c->last_byte = agent_now_seconds();
     Str line = {p, total};
     if (str_starts(line, STR("HTTP/"))) {
         c->status = status_line_code(line);
@@ -883,6 +887,9 @@ i32 http_post(const HttpReq *r) {
 
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPIDLE, 60L);
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPINTVL, 30L);
     http_apply_ca(curl);
 
     CURLM *multi = curl_multi_init();
@@ -894,6 +901,10 @@ i32 http_post(const HttpReq *r) {
     }
     curl_multi_add_handle(multi, curl);
 
+    f64 quiet_limit = stream && r->stream_timeout_ms > 0
+                          ? (f64)r->stream_timeout_ms / 1000.0
+                          : 0.0;
+    ctx.last_byte = agent_now_seconds();
     CURLcode rc = CURLE_OK;
     b8 interrupted = false;
     i32 running = 1;
@@ -919,9 +930,15 @@ i32 http_post(const HttpReq *r) {
             interrupted = true;
             break;
         }
+        if (running && quiet_limit > 0.0
+            && agent_now_seconds() - ctx.last_byte > quiet_limit) {
+            ctx.stalled = true;
+            rc = CURLE_OPERATION_TIMEDOUT;
+            break;
+        }
     }
 
-    if (!interrupted && !ctx.aborted && rc == CURLE_OK) {
+    if (!interrupted && !ctx.aborted && !ctx.stalled && rc == CURLE_OK) {
         CURLMsg *msg;
         i32 left = 0;
         while ((msg = curl_multi_info_read(multi, &left)))
@@ -961,6 +978,19 @@ i32 http_post(const HttpReq *r) {
         if (r->fail_out && r->fail_cap)
             snprintf(r->fail_out, r->fail_cap,
                      "an event did not fit in memory");
+        return 2;
+    }
+    if (ctx.stalled) {
+        i32 ms = r->stream_timeout_ms;
+        agent_log(AGENT_LOG_ERROR, "the stream sent nothing for %d ms", ms);
+        if (r->fail_out && r->fail_cap) {
+            if (ms % 1000)
+                snprintf(r->fail_out, r->fail_cap,
+                         "the provider sent nothing for %d ms", ms);
+            else
+                snprintf(r->fail_out, r->fail_cap,
+                         "the provider sent nothing for %d s", ms / 1000);
+        }
         return 2;
     }
     if (rc != CURLE_OK) {

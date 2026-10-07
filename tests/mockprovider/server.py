@@ -89,6 +89,10 @@ class Scenario:
         self.fail_mode: str = kw.get("fail_mode", "status")
         self.fail_status: int = int(kw.get("fail_status", 503))
         self.abort_after: int = int(kw.get("abort_after", 0))
+        # The first `stall_times` streams send their headers and first frame,
+        # then go quiet for `stall` seconds and close without finishing.
+        self.stall_times: int = int(kw.get("stall_times", 0))
+        self.stall: float = float(kw.get("stall", 2.0))
         # tools: "read:{...}" entries, repeatable via `|`
         self.tools: list[tuple[str, str]] = kw.get("tools", [])
         self.tool_rounds: int = int(kw.get("tool_rounds", 1))
@@ -1034,6 +1038,10 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             )
 
         if not self._sse(frame({"role": "assistant", "content": ""})):
+            return
+
+        if len(srv.requests) <= scenario.stall_times:
+            time.sleep(scenario.stall)
             return
 
         if len(srv.requests) <= scenario.stream_error_times:

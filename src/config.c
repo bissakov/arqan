@@ -45,6 +45,10 @@ static const ConfSpec k_conf[CONF_N] = {
     [CONF_RETRY_DELAY_MS] = {"retry_delay_ms", CONF_TEXT(AGENT_RETRY_DELAY_MS),
                              NULL, CV_NUM, 0, AGENT_MAX_RETRY_DELAY_MS, 0,
                              true},
+    [CONF_STREAM_TIMEOUT_MS] = {"stream_timeout_ms",
+                                CONF_TEXT(AGENT_STREAM_TIMEOUT_MS), NULL,
+                                CV_NUM, 0, AGENT_MAX_STREAM_TIMEOUT_MS, 0,
+                                false},
     [CONF_DISABLE_TOOLS] = {"disable_tools", "", NULL, CV_STR, 0, 0,
                             AGENT_MAX_TOOL_LIST, true},
     [CONF_VERBOSE_TOOLS] = {"verbose_tools", "false", NULL, CV_BOOL, 0, 0, 0,
@@ -497,6 +501,7 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
     c->max_messages = (size_t)conf_num(conf, CONF_MAX_MESSAGES);
     c->retries = (i32)conf_num(conf, CONF_RETRIES);
     c->retry_delay_ms = (i32)conf_num(conf, CONF_RETRY_DELAY_MS);
+    c->stream_timeout_ms = (i32)conf_num(conf, CONF_STREAM_TIMEOUT_MS);
     c->auto_title = conf_bool(conf, CONF_AUTO_TITLE);
     c->ask_timeout_ms = (i32)conf_num(conf, CONF_ASK_TIMEOUT_MS);
     c->shell_timeout_ms = (i32)conf_num(conf, CONF_SHELL_TIMEOUT_MS);

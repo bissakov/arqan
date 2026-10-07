@@ -84,11 +84,13 @@ typedef bool b8;
 #define AGENT_COMPACT_HEAD_PCT   50
 #define AGENT_COMPACT_AT         85
 
-#define AGENT_RETRIES            4
-#define AGENT_RETRY_DELAY_MS     2000
-#define AGENT_MAX_RETRY_DELAY_MS 30000
-#define AGENT_MAX_PROVIDER_MSG   200
-#define AGENT_MAX_ERROR_BODY     2048
+#define AGENT_RETRIES               4
+#define AGENT_RETRY_DELAY_MS        2000
+#define AGENT_MAX_RETRY_DELAY_MS    30000
+#define AGENT_STREAM_TIMEOUT_MS     300000
+#define AGENT_MAX_STREAM_TIMEOUT_MS 3600000
+#define AGENT_MAX_PROVIDER_MSG      200
+#define AGENT_MAX_ERROR_BODY        2048
 
 #define AGENT_ASK_TIMEOUT_MS 180000
 
@@ -389,9 +391,11 @@ typedef struct {
     size_t pos, len;
     i32 depth;
     b8 oom;
+    b8 strict;
 } JParser;
 
 JVal *json_parse(Arena *a, Str s);
+JVal *json_parse_strict(Arena *a, Str s);
 JVal *json_parse_error(Arena *a, Str s, char *err, size_t err_cap);
 void json_write(Buf *b, const JVal *v);
 const JVal *json_get(const JVal *obj, Str key);
@@ -724,6 +728,7 @@ typedef enum {
     CONF_PERMISSIONS,
     CONF_RETRIES,
     CONF_RETRY_DELAY_MS,
+    CONF_STREAM_TIMEOUT_MS,
     CONF_DISABLE_TOOLS,
     CONF_VERBOSE_TOOLS,
     CONF_RAW_MARKDOWN,
@@ -886,6 +891,7 @@ typedef struct {
 
     i32 retries;
     i32 retry_delay_ms;
+    i32 stream_timeout_ms;
     Str disable_tools;
 
     b8 auto_title;
@@ -1031,6 +1037,7 @@ typedef struct {
     i32 idle_fd;
     void (*on_idle)(void *ud);
     void *idle_ud;
+    i32 stream_timeout_ms;
 
     char *fail_out;
     size_t fail_cap;
