@@ -25,6 +25,14 @@
   keeps what arrived. `stream_timeout_ms` sets the limit, and `0` turns it
   off. Provider connections also send TCP keepalives.
 
+- Syntax highlighting for config and build files: INI, Java properties,
+  `.gitattributes`, pip requirements, XML, Dockerfile, CMake, Nix, HCL and
+  Terraform, and Makefiles. More files also reach the grammars already
+  bundled: JSONC and `flake.lock` as JSON; `uv.lock`, `poetry.lock` and
+  `Pipfile` as TOML; `.clang-format` as YAML; `.zshrc`, `.envrc`, `.env` and
+  `PKGBUILD` as shell; and Bazel `.bzl` files as Python. The
+  `arqan-highlight` helper grows by about 600 KB.
+
 ### Changed
 
 - Write and patch calls now show their whole content in the transcript

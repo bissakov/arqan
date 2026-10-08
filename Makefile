@@ -71,9 +71,11 @@ UNIT_BIN := $(BINDIR)/arqan-unit
 HL_BIN  := $(BINDIR)/arqan-highlight
 HL_OWN  := $(BUILDDIR)/highlight/arqan-highlight.o $(BUILDDIR)/highlight/queries.o
 HL_LANG := c cpp rust go python javascript typescript tsx bash json toml yaml \
-           csharp
+           csharp ini properties gitattributes requirements xml dockerfile \
+           cmake nix hcl make
 HL_PARSE := $(addprefix $(BUILDDIR)/highlight/,$(addsuffix -parser.o,$(HL_LANG)))
-HL_SCAN_LANG := cpp rust python javascript typescript tsx bash toml yaml csharp
+HL_SCAN_LANG := cpp rust python javascript typescript tsx bash toml yaml csharp \
+                properties xml dockerfile cmake nix hcl
 HL_SCAN := $(addprefix $(BUILDDIR)/highlight/,$(addsuffix -scanner.o,$(HL_SCAN_LANG)))
 HL_OBJ  := $(HL_OWN) $(BUILDDIR)/highlight/tree-sitter.o $(HL_PARSE) $(HL_SCAN)
 HL_CPPFLAGS := -Isrc -Ihighlight -Ivendor/tree-sitter/include \
@@ -163,6 +165,7 @@ define HL_SCANNER_RULE
 $$(BUILDDIR)/highlight/$(1)-scanner.o: vendor/tree-sitter/grammars/$(1)/scanner.c \
                                $$(wildcard vendor/tree-sitter/include/tree_sitter/*.h) \
                                $$(wildcard vendor/tree-sitter/common/*.h) \
+                               $$(wildcard vendor/tree-sitter/grammars/$(1)/*.h) \
                                $$(wildcard vendor/tree-sitter/grammars/$(1)/schema.*.c)
 	@mkdir -p $$(BUILDDIR)/highlight
 	$$(CC) $$(VENDOR_CFLAGS) $$(HL_CPPFLAGS) -c $$< -o $$@

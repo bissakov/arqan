@@ -87,7 +87,9 @@ def test_helper_diagnostics_are_stable(ctx):
     assert listed.returncode == 0
     assert listed.stdout.splitlines() == [
         "c", "cpp", "rust", "go", "python", "javascript", "typescript",
-        "tsx", "bash", "json", "toml", "yaml", "csharp",
+        "tsx", "bash", "json", "toml", "yaml", "csharp", "ini", "properties",
+        "gitattributes", "requirements", "xml", "dockerfile", "cmake", "nix",
+        "hcl", "make",
     ]
 
 
@@ -132,6 +134,16 @@ def test_every_bundled_language_has_a_capture(ctx):
         b"toml": b"n = 1 # c\n",
         b"yaml": b"ok: true # c\n",
         b"csharp": b"class C { int n = 1; } // c\n",
+        b"ini": b"; c\n[core]\nname = 1\n",
+        b"properties": b"# c\nkey = value\n",
+        b"gitattributes": b"# c\n*.c text eol=lf\n",
+        b"requirements": b"# c\nrequests>=2.0\n",
+        b"xml": b'<a href="x"><!-- c --></a>\n',
+        b"dockerfile": b"# c\nFROM alpine:3\nRUN echo 1\n",
+        b"cmake": b"# c\nset(N 1)\n",
+        b"nix": b'{ n = 1; s = "x"; } # c\n',
+        b"hcl": b'resource "a" "b" { n = 1 } # c\n',
+        b"make": b"# c\nall: main.o\n\tcc -o all main.o\n",
     }
     proc = helper()
     try:
@@ -208,6 +220,80 @@ def test_cargo_lock_is_toml_by_name(ctx):
             assert any(a <= quote < b and kind == 2 for a, b, kind in runs)
         status, runs = request(proc, 9, 2, b"other.lock", source)
         assert status == UNKNOWN and runs == []
+    finally:
+        proc.terminate()
+        proc.wait(timeout=2)
+
+
+CONFIG_SAMPLES = {
+    b"ini": b"; c\n[core]\nname = 1\n",
+    b"properties": b"# c\nkey = value\n",
+    b"gitattributes": b"# c\n*.c text eol=lf\n",
+    b"requirements": b"# c\nrequests>=2.0\n",
+    b"xml": b'<a href="x"><!-- c --></a>\n',
+    b"dockerfile": b"# c\nFROM alpine:3\nRUN echo 1\n",
+    b"cmake": b"# c\nset(N 1)\n",
+    b"nix": b'{ n = 1; s = "x"; } # c\n',
+    b"hcl": b'resource "a" "b" { n = 1 } # c\n',
+    b"make": b"# c\nall: main.o\n\tcc -o all main.o\n",
+    b"json": b'// c\n{"n": 1}\n',
+    b"toml": b'n = "x" # c\n',
+    b"yaml": b"ok: true # c\n",
+    b"bash": b"export N=1 # c\n",
+    b"python": b'load("x") # c\n',
+}
+
+
+def test_config_files_resolve_by_name_and_extension(ctx):
+    """Config files reach the grammar their format needs."""
+    hints = [
+        (b"ini", 2, b"setup.cfg"), (b"ini", 2, b".editorconfig"),
+        (b"ini", 2, b"home/.gitconfig"), (b"ini", 2, b".gitmodules"),
+        (b"ini", 2, b"app.service"), (b"ini", 2, b"tox.ini"),
+        (b"ini", 1, b"dosini"),
+        (b"properties", 2, b"app.properties"),
+        (b"gitattributes", 2, b".gitattributes"),
+        (b"requirements", 2, b"requirements.txt"),
+        (b"requirements", 2, b"requirements-dev.txt"),
+        (b"requirements", 2, b"constraints.txt"),
+        (b"xml", 2, b"pom.xml"), (b"xml", 2, b"App.csproj"),
+        (b"xml", 2, b"Info.plist"), (b"xml", 2, b"icon.svg"),
+        (b"dockerfile", 2, b"Dockerfile"), (b"dockerfile", 2, b"Containerfile"),
+        (b"dockerfile", 2, b"app.dockerfile"), (b"dockerfile", 1, b"docker"),
+        (b"cmake", 2, b"CMakeLists.txt"), (b"cmake", 2, b"cmake/deps.cmake"),
+        (b"nix", 2, b"flake.nix"),
+        (b"hcl", 2, b"main.tf"), (b"hcl", 2, b"prod.tfvars"),
+        (b"hcl", 2, b"job.hcl"), (b"hcl", 1, b"terraform"), (b"hcl", 1, b"tf"),
+        (b"make", 2, b"Makefile"), (b"make", 2, b"GNUmakefile"),
+        (b"make", 2, b"rules.mk"), (b"make", 1, b"makefile"),
+        (b"json", 2, b"settings.jsonc"), (b"json", 2, b"flake.lock"),
+        (b"json", 2, b"a.code-workspace"), (b"json", 1, b"jsonc"),
+        (b"toml", 2, b"uv.lock"), (b"toml", 2, b"poetry.lock"),
+        (b"toml", 2, b"Pipfile"),
+        (b"yaml", 2, b".clang-format"), (b"yaml", 2, b".clang-tidy"),
+        (b"bash", 2, b".zshrc"), (b"bash", 2, b".envrc"),
+        (b"bash", 2, b".env"), (b"bash", 2, b"PKGBUILD"),
+        (b"python", 2, b"defs.bzl"), (b"python", 2, b"BUILD.bazel"),
+    ]
+    proc = helper()
+    try:
+        request_id = 0
+        expected = {}
+        for name, source in CONFIG_SAMPLES.items():
+            request_id += 1
+            status, runs = request(proc, request_id, 1, name, source)
+            assert status == OK and runs, (name, status)
+            expected[name] = runs
+        for name, kind, hint in hints:
+            request_id += 1
+            status, runs = request(
+                proc, request_id, kind, hint, CONFIG_SAMPLES[name]
+            )
+            assert status == OK and runs == expected[name], (hint, status, runs)
+        for hint in (b"nginx.conf", b"build", b"requirements.in"):
+            request_id += 1
+            status, runs = request(proc, request_id, 2, hint, b"x = 1\n")
+            assert status == UNKNOWN and runs == [], hint
     finally:
         proc.terminate()
         proc.wait(timeout=2)

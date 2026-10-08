@@ -14,7 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define YHL_LANG_COUNT 13u
+#define YHL_LANG_COUNT 23u
 #define YHL_WORK_MAX   (8u << 20)
 
 typedef const TSLanguage *(*LanguageFn)(void);
@@ -32,6 +32,16 @@ const TSLanguage *tree_sitter_json(void);
 const TSLanguage *tree_sitter_toml(void);
 const TSLanguage *tree_sitter_yaml(void);
 const TSLanguage *tree_sitter_c_sharp(void);
+const TSLanguage *tree_sitter_ini(void);
+const TSLanguage *tree_sitter_properties(void);
+const TSLanguage *tree_sitter_gitattributes(void);
+const TSLanguage *tree_sitter_requirements(void);
+const TSLanguage *tree_sitter_xml(void);
+const TSLanguage *tree_sitter_dockerfile(void);
+const TSLanguage *tree_sitter_cmake(void);
+const TSLanguage *tree_sitter_nix(void);
+const TSLanguage *tree_sitter_hcl(void);
+const TSLanguage *tree_sitter_make(void);
 
 typedef struct {
     const char *name;
@@ -48,17 +58,49 @@ static Language languages[YHL_LANG_COUNT] = {
      0},
     {"rust", "rust rs", ".rs", tree_sitter_rust, NULL, 0},
     {"go", "go golang", ".go", tree_sitter_go, NULL, 0},
-    {"python", "python py", ".py .pyw", tree_sitter_python, NULL, 0},
+    {"python", "python py", ".py .pyw .bzl .bazel", tree_sitter_python, NULL,
+     0},
     {"javascript", "javascript js jsx node", ".js .jsx .mjs .cjs",
      tree_sitter_javascript, NULL, 0},
     {"typescript", "typescript ts", ".ts .mts .cts", tree_sitter_typescript,
      NULL, 0},
     {"tsx", "tsx", ".tsx", tree_sitter_tsx, NULL, 0},
-    {"bash", "bash sh shell", ".sh .bash .bashrc", tree_sitter_bash, NULL, 0},
-    {"json", "json", ".json", tree_sitter_json, NULL, 0},
-    {"toml", "toml", ".toml cargo.lock", tree_sitter_toml, NULL, 0},
-    {"yaml", "yaml yml", ".yaml .yml", tree_sitter_yaml, NULL, 0},
+    {"bash", "bash sh shell",
+     ".sh .bash .bashrc .bash_profile .profile .zsh .zshrc .zprofile .envrc "
+     ".env pkgbuild",
+     tree_sitter_bash, NULL, 0},
+    {"json", "json jsonc",
+     ".json .jsonc .code-workspace .babelrc .geojson .webmanifest flake.lock "
+     "composer.lock",
+     tree_sitter_json, NULL, 0},
+    {"toml", "toml", ".toml cargo.lock poetry.lock uv.lock pipfile",
+     tree_sitter_toml, NULL, 0},
+    {"yaml", "yaml yml", ".yaml .yml .clang-format .clang-tidy",
+     tree_sitter_yaml, NULL, 0},
     {"csharp", "csharp cs c#", ".cs .csx", tree_sitter_c_sharp, NULL, 0},
+    {"ini", "ini dosini",
+     ".ini .cfg .gitconfig .gitmodules .editorconfig .desktop .service "
+     ".socket .timer .mount .path .target .flake8 .pylintrc",
+     tree_sitter_ini, NULL, 0},
+    {"properties", "properties jproperties", ".properties",
+     tree_sitter_properties, NULL, 0},
+    {"gitattributes", "gitattributes", ".gitattributes",
+     tree_sitter_gitattributes, NULL, 0},
+    {"requirements", "requirements pip-requirements",
+     "requirements.txt requirements-dev.txt constraints.txt",
+     tree_sitter_requirements, NULL, 0},
+    {"xml", "xml svg xsd xsl xslt plist",
+     ".xml .xsd .xsl .xslt .svg .plist .csproj .fsproj .vbproj .props "
+     ".targets .resx .xaml",
+     tree_sitter_xml, NULL, 0},
+    {"dockerfile", "dockerfile docker containerfile",
+     "dockerfile containerfile .dockerfile", tree_sitter_dockerfile, NULL, 0},
+    {"cmake", "cmake", "cmakelists.txt .cmake", tree_sitter_cmake, NULL, 0},
+    {"nix", "nix", ".nix", tree_sitter_nix, NULL, 0},
+    {"hcl", "hcl terraform tf", ".hcl .tf .tfvars .nomad", tree_sitter_hcl,
+     NULL, 0},
+    {"make", "make makefile mk", "makefile gnumakefile .mk .mak",
+     tree_sitter_make, NULL, 0},
 };
 
 typedef struct {
