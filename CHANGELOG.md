@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-08
+
 ### Added
 
 - Ctrl-G opens the message you are writing in vi, vim or nvim. Save and quit
@@ -9,7 +11,7 @@
   Enter. Quitting without saving, or `:cq`, keeps the draft as it was.
   `VISUAL` or `EDITOR` is used when it names one of the three; otherwise the
   first of `nvim`, `vim` and `vi` on `PATH` runs. Ctrl-G works only between
-  turns.
+  turns. ([`f30e299`])
 
 - PNG images now show in the transcript in kitty and Ghostty, both images you
   attach and images the model reads with `read` or gets from an MCP tool. They
@@ -17,13 +19,13 @@
   width and at most half the screen height. A drawn attachment replaces its
   `[Image #n]` caption line, since the message already names it. Other
   terminals, tmux, Zellij, GNU screen and other image formats keep the
-  caption alone.
+  caption alone. ([`ae49fcb`])
 
 - A streamed reply that sends nothing for five minutes now fails with
   `the provider sent nothing for 300 s`. When no reply text has arrived, the
   request is retried like a dropped connection; otherwise the turn ends and
   keeps what arrived. `stream_timeout_ms` sets the limit, and `0` turns it
-  off. Provider connections also send TCP keepalives.
+  off. Provider connections also send TCP keepalives. ([`5d87e91`])
 
 - Syntax highlighting for config and build files: INI, Java properties,
   `.gitattributes`, pip requirements, XML, Dockerfile, CMake, Nix, HCL and
@@ -31,20 +33,20 @@
   bundled: JSONC and `flake.lock` as JSON; `uv.lock`, `poetry.lock` and
   `Pipfile` as TOML; `.clang-format` as YAML; `.zshrc`, `.envrc`, `.env` and
   `PKGBUILD` as shell; and Bazel `.bzl` files as Python. The
-  `arqan-highlight` helper grows by about 600 KB.
+  `arqan-highlight` helper grows by about 600 KB. ([`3fd3fac`])
 
 ### Changed
 
 - Write and patch calls now show their whole content in the transcript
   instead of a preview, with no line limit and no clipped long lines, so you
-  can check a change in full, including before you approve it.
+  can check a change in full, including before you approve it. ([`0ce81a5`])
 
 - When a reply ends with reasoning but no text, the agent now asks the model
   once more for the reply, with a note that the user cannot see its
   reasoning. The note shows in the transcript as `[note to the model: ...]`.
   The system prompt and the `ask_user` description also say that the user
   never sees the reasoning, so a question must not refer to a list or draft
-  written only there.
+  written only there. ([`765512d`])
 
 - On Linux 6.7 and later, a read-only shell command now runs with TCP denied,
   and from 6.12 it cannot signal processes outside its sandbox. A command
@@ -52,14 +54,14 @@
   system directories, the `PATH` directories and your git config. A command
   you let read outside the project still reads anywhere. A tool installed
   elsewhere, such as a version manager shim under your home directory, now
-  fails with permission denied.
+  fails with permission denied. ([`769b0b7`])
 
 - Read-only `git` commands no longer start the fsmonitor hook or gpg that a
   repository's config names. A textconv or filter driver still runs, inside
   the sandbox. Without Landlock, `git diff`, `show`, `log`, `blame`, `status`,
   `describe` and `grep` ask before they run, and plan mode and subagents can
   no longer run them. `git ls-files`, `rev-parse` and `shortlog` still run
-  without asking.
+  without asking. ([`769b0b7`])
 
 ### Fixed
 
@@ -69,36 +71,37 @@
   tmux, arqan now copies with `tmux load-buffer -w -`, which also works with
   tmux's default `set-clipboard external`. The `set-clipboard on` notice
   shows only when tmux refuses that command, as tmux before 3.2 does.
+  ([`e11c847`])
 
 - Notifications reach the terminal when arqan runs over ssh from inside
   tmux. ssh does not pass on `TMUX`, so arqan sent a bare OSC 9 and tmux
   dropped it. arqan now also uses tmux passthrough when `TERM` starts with
-  `tmux`. tmux still needs `allow-passthrough`.
+  `tmux`. tmux still needs `allow-passthrough`. ([`750047b`])
 
 - While a picker is open, such as an `ask_user` question, a mouse drag
-  selects and copies text again.
+  selects and copies text again. ([`765512d`])
 
 - An `ask_user` question shows once, in the transcript, instead of again
   above the options, where a long or multi-line question was joined and cut
   off. When the options would cover the question, they shrink and scroll to
-  make room for it.
+  make room for it. ([`765512d`])
 
 - The JSON reader no longer accepts an object or array that is missing its
   closing bracket or ends in some other character. A tool call with such
   arguments now gets an error instead of running. An Anthropic tool call
   whose arguments have a trailing comma is sent back as `invalid_arguments`,
-  so the next request is still valid JSON.
+  so the next request is still valid JSON. ([`5d87e91`])
 
 ### Security
 
 - Shell commands, MCP servers, `notify_command`, `key_command`, the clipboard
   helpers and the highlighter no longer get `ARQAN_API_KEY` or
   `ARQAN_SEARCH_API_KEY` in their environment. An MCP `env` entry that names
-  one on purpose still passes it.
+  one on purpose still passes it. ([`769b0b7`])
 
 - arqan makes itself not dumpable, so a child process cannot read its
   environment or memory through `/proc`. It also writes no core dumps.
-  `ARQAN_DUMPABLE=1` turns this off for profiling.
+  `ARQAN_DUMPABLE=1` turns this off for profiling. ([`769b0b7`])
 
 ## [0.10.0] - 2026-10-06
 
@@ -847,7 +850,8 @@
 - Portable Linux x86_64 archive, installer, checksum, and draft release
   automation.
 
-[Unreleased]: https://github.com/bissakov/arqan/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/bissakov/arqan/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/bissakov/arqan/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/bissakov/arqan/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/bissakov/arqan/compare/v0.8.0...v0.9.1
 [0.8.0]: https://github.com/bissakov/arqan/compare/v0.7.0...v0.8.0
@@ -859,6 +863,15 @@
 [0.2.0]: https://github.com/bissakov/arqan/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bissakov/arqan/releases/tag/v0.1.0
 
+[`f30e299`]: https://github.com/bissakov/arqan/commit/f30e2998679f07559ffb5854ebdfbdb221ced59f
+[`ae49fcb`]: https://github.com/bissakov/arqan/commit/ae49fcbdda4e73b37a27c85b7421b0e325b225d8
+[`5d87e91`]: https://github.com/bissakov/arqan/commit/5d87e91188175710cf1f30f17157e9d396007eae
+[`3fd3fac`]: https://github.com/bissakov/arqan/commit/3fd3fac3a8cd1d2278fa571880723363cb51e745
+[`0ce81a5`]: https://github.com/bissakov/arqan/commit/0ce81a5b30cb26549da47d26deaec99eea600dfc
+[`765512d`]: https://github.com/bissakov/arqan/commit/765512d777efce97b573d1eece52451dc6e2dc35
+[`769b0b7`]: https://github.com/bissakov/arqan/commit/769b0b720ff23bea8ce2c2d06d8b214351b4090e
+[`e11c847`]: https://github.com/bissakov/arqan/commit/e11c84748fe6ad33b7abb9c61284229600d7ad40
+[`750047b`]: https://github.com/bissakov/arqan/commit/750047b9272f3dd9cfad382a0e3f604ea35aa915
 [`44356c1`]: https://github.com/bissakov/arqan/commit/44356c1166bf7f64903f12d2ab89483dd3871c00
 [`1d36c11`]: https://github.com/bissakov/arqan/commit/1d36c1144a49d152993d3cba0d90c005638d117d
 [`8ea58b0`]: https://github.com/bissakov/arqan/commit/8ea58b0e512b4e2d7a3ef35d254e3646112a4de0
