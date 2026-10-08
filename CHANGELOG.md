@@ -10,6 +10,28 @@
   types and function calls get colours; ShaderLab words such as `Pass` stay
   plain.
 
+### Changed
+
+- What the model reads no longer names settings or parts of arqan it cannot
+  see. The prompt and tool descriptions say a call may need the user's
+  approval, instead of saying it always does; with `permissions = free`,
+  nothing waits. Errors say a feature is not available in this session
+  instead of naming `images` or `shell_timeout_ms`, and an approved plan no
+  longer mentions Build mode.
+- The tool descriptions match what this session can do. `read` describes
+  images only when images are on, and never to a subagent, which gets none.
+  `bash` describes the read-only sandbox only when Landlock is running, and
+  the network only on kernels that block it. It says other commands run
+  without those limits. With `shell_timeout_ms = 0`, it offers no
+  `timeout_ms` and no jobs. The `task` description now says the subagent can
+  run read-only commands.
+
+### Fixed
+
+- A call refused in a non-interactive run in Ask mode is saved as needing
+  approval, not as refused by the user. A resumed session no longer tells the
+  model that the user said no.
+
 ## [0.11.0] - 2026-10-08
 
 ### Added

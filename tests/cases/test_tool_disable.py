@@ -162,7 +162,7 @@ def test_the_guidelines_say_outside_reads_need_approval(ctx):
 
     system = ctx.mock.requests[-1]["messages"][0]["content"]
     guidelines = system[system.index("Guidelines:"):]
-    assert "outside the project needs the user's approval" in guidelines, \
+    assert "outside the project may need the user's approval" in guidelines, \
         guidelines
 
 

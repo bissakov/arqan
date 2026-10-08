@@ -2290,7 +2290,7 @@ static void mcp_put_image(Buf *out, const McpServer *s, const JVal *block,
                           Arena *scratch) {
     char why[160] = {0};
     if (!g_mcp.media) {
-        snprintf(why, sizeof why, "images are off");
+        snprintf(why, sizeof why, "images are not available in this session");
     } else if (g_mcp.call_images >= AGENT_MAX_MEDIA_PER_TURN) {
         snprintf(why, sizeof why, "a result carries at most %d images",
                  AGENT_MAX_MEDIA_PER_TURN);

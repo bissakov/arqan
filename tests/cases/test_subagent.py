@@ -165,6 +165,29 @@ def test_the_subagent_is_offered_the_read_only_tools_only(ctx):
     assert names == READ_ONLY, names
 
 
+def test_the_task_and_read_descriptions_match_what_the_delegate_can_do(ctx):
+    """The delegate runs read-only commands and gets no images, and both
+    the parent's task description and the delegate's read say so."""
+    ctx.scenario(delegate(ctx))
+    s = spawn(ctx)
+    s.submit("delegate it")
+    s.wait_turn_done()
+
+    task = task_description(parent_requests(ctx)[0])
+    assert "can run only read-only commands" in task, task
+    assert "cannot run commands" not in task, task
+
+    sub = sub_requests(ctx)[0]
+    reads = [t.get("function", t) for t in sub["tools"]
+             if t.get("function", t).get("name") == "read"]
+    assert len(reads) == 1, sub["tools"]
+    assert "image" not in reads[0]["description"].lower(), reads[0]
+    system = sub["messages"][0]["content"]
+    listed = next(line for line in system.splitlines()
+                  if line.startswith("- read: "))
+    assert "image" not in listed.lower(), listed
+
+
 def test_the_parent_still_carries_its_own_tools(ctx):
     """The audience narrows the sub request, not the one that made it."""
     ctx.scenario(delegate(ctx))

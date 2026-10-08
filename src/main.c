@@ -837,8 +837,8 @@ static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
     }
     if (pick == 0) {
         agent_set_mode(ag, MODE_BUILD);
-        *result = STR("The user approved the plan. You are in Build mode "
-                      "now: carry it out.");
+        *result = STR("The user approved the plan. You can now edit files "
+                      "and run commands: carry it out.");
         return TURN_CONTINUE;
     }
     ag->handoff = plan;
@@ -1710,8 +1710,11 @@ static ToolCallResult run_regular_tool(Agent *ag, size_t call, size_t tool,
                         err, sizeof err, TOOL_FOR_MAIN);
         out.n = 0;
         buf_putf(&out,
-                 "DENIED: the user did not approve this %.*s call. "
-                 "Do not retry it blindly.",
+                 g_turn.one_shot
+                     ? "DENIED: this %.*s call needs the user's approval, "
+                       "and this run cannot ask for it. Do not retry it."
+                     : "DENIED: the user did not approve this %.*s call. "
+                       "Do not retry it blindly.",
                  (i32)cls.n, cls.p);
         run.text =
             buf_ok(&out) ? buf_finish(&out) : STR("ERROR: out of memory");
@@ -1923,9 +1926,9 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
                              (i32)name.n, name.p);
             else if (!(ag->tools->modes[tool] & mode))
                 n = snprintf(msg, sizeof msg,
-                             "ERROR: %.*s is not available in %s mode",
+                             "ERROR: %.*s is not available %s plan mode",
                              (i32)name.n, name.p,
-                             ag->cfg->mode == MODE_PLAN ? "plan" : "build");
+                             ag->cfg->mode == MODE_PLAN ? "in" : "outside");
             else
                 n = snprintf(msg, sizeof msg,
                              "ERROR: %.*s is not available in this "
@@ -6270,6 +6273,8 @@ i32 main(i32 argc, char **argv) {
     mcp_init(&tools, &persist, &scratch, cfg.mcp, cfg.mcp_timeout_ms,
              cfg.disable_tools);
     arena_reset(&scratch);
+    b8 images = cfg.images && media_init(&g_media, &persist, AGENT_MAX_MEDIA);
+    tools_set_images(&tools, images);
 
     char tools_err[128] = {0};
     if (cfg.disable_tools.n
@@ -6314,7 +6319,7 @@ i32 main(i32 argc, char **argv) {
         return 1;
     }
 
-    if (cfg.images && media_init(&g_media, &persist, AGENT_MAX_MEDIA)) {
+    if (images) {
         conv_set_media(&conv, &g_media);
         mcp_set_media(&g_media);
     }

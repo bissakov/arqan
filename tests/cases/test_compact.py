@@ -86,6 +86,9 @@ def test_compact_keeps_the_newest_work_where_a_window_sizes_it(ctx):
         "system", "user", "assistant", "user"
     ], summarize
     assert summarize[1]["content"] == "one", summarize[1]
+    assert "harness" not in summarize[0]["content"], summarize[0]
+    assert "the facts of the run are added after your summary" \
+        in summarize[0]["content"], summarize[0]
 
     ctx.scenario("text=carrying+on")
     s.submit("what next?")

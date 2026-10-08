@@ -69,7 +69,8 @@ def test_mcp_image_off_keeps_plain_tool_result(ctx):
     _, body = run_image(ctx, ARQAN_IMAGES="off")
     assert openai_images(body) == []
     assert body["messages"][-1]["role"] == "tool"
-    assert "images are off" in body["messages"][-1]["content"]
+    assert "images are not available in this session" \
+        in body["messages"][-1]["content"]
 
 
 def test_mcp_image_large_reply_uses_overflow(ctx):

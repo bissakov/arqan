@@ -125,9 +125,9 @@ static const char PROMPT_COMPACT_BUILTIN[] =
     "Record what the conversation shows, not what was intended. Do not call "
     "work done unless the conversation shows it working.\n"
     "\n"
-    "The harness adds the user's requests, in their own words, and the facts "
-    "of the run after your summary. Do not quote the requests or write a "
-    "User requests or Run section yourself.\n"
+    "The user's requests, in their own words, and the facts of the run are "
+    "added after your summary. Do not quote the requests or write a User "
+    "requests or Run section yourself.\n"
     "\n"
     "If the conversation starts with an earlier context checkpoint, merge "
     "it into this one: carry forward what still holds, and do not describe "
@@ -272,8 +272,9 @@ static void prompt_tools(Buf *b, const ToolRegistry *tools, AgentMode mode,
     if (!tools) return;
     for (size_t i = 0; i < tools->n; i++) {
         if (!tools_available_to(tools, i, mode, audience)) continue;
+        Str desc = tools_desc_for(tools, i, audience);
         buf_putf(b, "- %.*s: %.*s\n", (int)tools->name[i].n, tools->name[i].p,
-                 (int)tools->desc[i].n, tools->desc[i].p);
+                 (int)desc.n, desc.p);
     }
 }
 
@@ -343,8 +344,8 @@ static void prompt_tool_guidance(Buf *b, const ToolRegistry *tools,
     if (bash && read)
         buf_puts(b, STR("- Use read to look at a file and bash with rg, ls "
                         "or find to search; a pipeline of reading programs "
-                        "runs without asking the user, so prefer it to an "
-                        "inline script\n"));
+                        "never needs approval, so prefer it to an inline "
+                        "script\n"));
     if (bash)
         buf_puts(b, STR("- After changing code, run the project's build or "
                         "tests when you can find them, and say so when you "
@@ -365,7 +366,7 @@ static void prompt_tool_guidance(Buf *b, const ToolRegistry *tools,
     if ((patch || write) && read)
         buf_puts(b, STR("- Read a file before you change it\n"));
     if (read)
-        buf_puts(b, STR("- Reading a path outside the project needs the "
+        buf_puts(b, STR("- Reading a path outside the project may need the "
                         "user's approval, so stay inside it unless the task "
                         "needs more\n"));
 
@@ -374,9 +375,9 @@ static void prompt_tool_guidance(Buf *b, const ToolRegistry *tools,
         approvals = tools_available(tools, i, mode)
                     && tools_approval_class(tools, i) != TOOL_APPROVAL_NONE;
     if (approvals)
-        buf_puts(b, STR("- Some calls wait for the user's approval, so make "
-                        "the call instead of asking permission in prose; if "
-                        "the user denies one, do not retry it unchanged\n"));
+        buf_puts(b, STR("- Some calls may wait for the user's approval, so "
+                        "make the call instead of asking permission in prose; "
+                        "if the user denies one, do not retry it unchanged\n"));
 }
 
 static void prompt_batch(Buf *b, const ToolRegistry *tools, AgentMode mode,
@@ -387,7 +388,7 @@ static void prompt_batch(Buf *b, const ToolRegistry *tools, AgentMode mode,
     buf_puts(
         b,
         STR("- Use batch for ordered tool calls whose arguments are already known; "
-            "each step keeps its normal rendering and tool permissions\n"));
+            "each step runs under the same rules as a call on its own\n"));
     if (mode == MODE_BUILD && prompt_offers(tools, STR("read"), mode)
         && (prompt_offers(tools, STR("patch"), mode)
             || prompt_offers(tools, STR("write"), mode)))

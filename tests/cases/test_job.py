@@ -251,7 +251,25 @@ def test_no_deadline_means_no_per_call_deadline(ctx):
 
     out = results(ctx)[0]
     assert out.startswith("ERROR:"), out
-    assert "shell_timeout_ms is 0" in out, out
+    assert "timeout_ms is unavailable in this session: every command is " \
+        "waited out" in out, out
+    assert "shell_timeout_ms" not in out, out
+
+
+def test_no_deadline_leaves_jobs_out_of_the_bash_description(ctx):
+    """With nothing ever detached, bash offers no timeout_ms and no jobs."""
+    ctx.scenario("final_text=done")
+    s = ctx.spawn(ARQAN_SHELL_TIMEOUT_MS="0")
+    s.submit("hello")
+    s.wait_turn_done()
+
+    bash = next(t["function"] for t in ctx.mock.requests[0]["tools"]
+                if t["function"]["name"] == "bash")
+    assert "timeout_ms" not in bash["parameters"]["properties"], bash
+    assert "timeout_ms" not in bash["description"], bash["description"]
+    assert " job" not in bash["description"], bash["description"]
+    assert "every command is waited out" in bash["description"], \
+        bash["description"]
 
 
 def test_a_deadline_past_the_cache_window_is_refused(ctx):

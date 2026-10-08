@@ -164,8 +164,8 @@ static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err,
         MediaSet *m = g_read_media.destination;
         if (!m || !m->arena) {
             snprintf(err, err_cap,
-                     "cannot read image: images are off or this conversation "
-                     "does not support images");
+                     "cannot read image: images are not available in this "
+                     "session");
             return false;
         }
         size_t mark = m->arena->off;
@@ -1281,8 +1281,8 @@ static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err,
     const JVal *want = json_get(j, STR("timeout_ms"));
     if (g_tools.shell.timeout_ms <= 0 && want && want->type != J_NULL) {
         snprintf(err, err_cap,
-                 "timeout_ms is unavailable: shell_timeout_ms "
-                 "is 0, so every command is waited out");
+                 "timeout_ms is unavailable in this session: every command "
+                 "is waited out");
         return false;
     }
     if (!arg_wait_ms(j, (size_t)g_tools.shell.timeout_ms,
@@ -2257,6 +2257,7 @@ b8 tools_add_mcp(ToolRegistry *r, Str name, Str desc, Str brief, Str schema,
     if (!name.n || !schema.n) return false;
     r->name[r->n] = name;
     r->desc[r->n] = desc;
+    r->desc_sub[r->n] = desc;
     r->brief[r->n] = brief;
     r->schema[r->n] = schema;
     r->batch_schema[r->n] = schema;
@@ -2289,6 +2290,7 @@ size_t tools_remove_mcp(ToolRegistry *r, u16 server) {
         if (out != i) {
             r->name[out] = r->name[i];
             r->desc[out] = r->desc[i];
+            r->desc_sub[out] = r->desc_sub[i];
             r->brief[out] = r->brief[i];
             r->schema[out] = r->schema[i];
             r->batch_schema[out] = r->batch_schema[i];
@@ -2312,7 +2314,8 @@ static struct {
 #define TASK_DESC_HEAD                                                   \
     "Delegate an investigation to a subagent that only reads, "          \
     "searches and fetches: it has the read-only tools of this session, " \
-    "and cannot run commands, change files or ask the user anything. "   \
+    "can run only read-only commands, and cannot change files or ask "   \
+    "the user anything. "                                                \
     "Give it a self-contained prompt; it answers once, with findings "   \
     "and file paths. It runs in the background: the call answers at "    \
     "once with an id, you carry on with other work, and task(id=N) "     \
@@ -2321,10 +2324,70 @@ static struct {
     "every task before your final answer. "
 #define TASK_DESC_TAIL ", and task ids last for this conversation only."
 
+#define READ_DESC_TEXT                                                \
+    "Read a page of a text file: up to 2000 lines or 8KB, "           \
+    "whichever is less. Use offset and limit to page through a long " \
+    "file one range at a time rather than reading it whole. "
+#define READ_DESC_IMAGES                                               \
+    "PNG, JPEG, GIF and WebP files return their whole image content. " \
+    "Offset and limit apply only to text; they do not crop or page images. "
+#define READ_DESC_OUTSIDE \
+    "A path outside the project may need the user's approval."
+
+static Str bash_description(Arena *persist, i32 shell_timeout_ms) {
+    i32 abi = sandbox_abi();
+    Buf b;
+    buf_init(&b, persist, 2048);
+    buf_puts(&b,
+             STR("Run a shell command; returns one page of up to 8KB of its "
+                 "stdout and stderr. Every call starts a new shell in the "
+                 "working directory, so a cd reaches only the rest of that "
+                 "one command and a cd into the working directory is "
+                 "redundant. Give a description of what the command does in "
+                 "a few words, such as \"find callers of walk_run\"; the user "
+                 "reads it before the command. A command made only of "
+                 "reading programs, such as rg, grep, cat, sed -n, ls, wc, "
+                 "find and git log, with no redirection, substitution or "
+                 "inline script, is read-only: it never needs approval and "
+                 "is the only kind allowed in plan mode. "));
+    if (abi >= 1)
+        buf_putf(&b,
+                 "A read-only command runs with filesystem writes%s denied, "
+                 "and reads only the project and the system directories, so "
+                 "a sort that spills to a temporary file fails with "
+                 "permission denied. A path outside the project (absolute, "
+                 "~ or ..) or a variable lets it read anywhere, and may need "
+                 "approval like read. Any other command runs without these "
+                 "limits and may need the user's approval. ",
+                 abi >= 4 ? " and the network" : "");
+    else
+        buf_puts(&b, STR("A path outside the project (absolute, ~ or ..) or "
+                         "a variable may need approval like read. Any other "
+                         "command may need the user's approval. "));
+    buf_puts(&b, STR("Use offset and limit to page output, and prefer head, "
+                     "tail, sed -n or grep to target the lines you need. "
+                     "Commands run without a terminal, so anything that "
+                     "prompts for input, sudo included, fails rather than "
+                     "waits. "));
+    if (shell_timeout_ms > 0)
+        buf_puts(&b, STR("A command still running after the deadline is not "
+                         "killed: it carries on as a job the result names, "
+                         "and the job tool waits for the rest. Set timeout_ms "
+                         "to what this command is worth waiting for: a build "
+                         "you expect to take minutes should become a job in "
+                         "seconds, while a test you expect to finish should "
+                         "be waited out."));
+    else
+        buf_puts(&b, STR("There is no time limit: every command is waited "
+                         "out."));
+    return buf_ok(&b) ? buf_finish(&b) : (Str){0};
+}
+
 void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
                 i32 shell_timeout_ms, b8 subagents, i32 subagent_tasks) {
     r->name = arena_new(persist, Str, AGENT_MAX_TOOLS);
     r->desc = arena_new(persist, Str, AGENT_MAX_TOOLS);
+    r->desc_sub = arena_new(persist, Str, AGENT_MAX_TOOLS);
     r->brief = arena_new(persist, Str, AGENT_MAX_TOOLS);
     r->schema = arena_new(persist, Str, AGENT_MAX_TOOLS);
     r->batch_schema = arena_new(persist, Str, AGENT_MAX_TOOLS);
@@ -2339,9 +2402,9 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
     g_tools.policy.root =
         realpath(".", root) ? str_dup(persist, str_c(root)) : (Str){0};
     g_sandbox.persist = persist;
-    if (!r->name || !r->desc || !r->brief || !r->schema || !r->batch_schema
-        || !r->run || !r->modes || !r->approval || !r->source || !r->ext
-        || !r->off) {
+    if (!r->name || !r->desc || !r->desc_sub || !r->brief || !r->schema
+        || !r->batch_schema || !r->run || !r->modes || !r->approval
+        || !r->source || !r->ext || !r->off) {
         r->name = NULL;
         return;
     }
@@ -2350,6 +2413,7 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         if (r->n >= AGENT_MAX_TOOLS) break; \
         r->name[r->n] = STR(nm);            \
         r->desc[r->n] = STR(dsc);           \
+        r->desc_sub[r->n] = STR(dsc);       \
         r->brief[r->n] = STR(brf);          \
         r->schema[r->n] = STR(sch);         \
         r->batch_schema[r->n] = STR(sch);   \
@@ -2373,41 +2437,39 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         r->name = NULL;
         return;
     }
-    int schema_n = snprintf(
-        bash_schema, 1024,
-        "{\"type\":\"object\",\"properties\":{"
-        "\"command\":{\"type\":\"string\"},"
-        "\"description\":{\"type\":\"string\","
-        "\"description\":\"what the command does, in a few words\"},"
-        "\"offset\":{\"type\":\"integer\",\"minimum\":1,"
-        "\"description\":\"first output byte, 1-based\"},"
-        "\"limit\":{\"type\":\"integer\",\"minimum\":1,"
-        "\"maximum\":%u,\"description\":\"at most %u bytes\"},"
-        "\"timeout_ms\":{\"type\":\"integer\",\"minimum\":1,"
-        "\"maximum\":%d,\"description\":\"turn deadline in milliseconds; "
-        "at most %d\"}},"
-        "\"required\":[\"command\",\"description\"]}",
-        AGENT_SHELL_OUT_BYTES, AGENT_SHELL_OUT_BYTES, shell_timeout_ms,
-        shell_timeout_ms);
-    if (schema_n < 0 || (size_t)schema_n >= 1024) {
+    char timeout_schema[256] = "";
+    if (shell_timeout_ms > 0)
+        snprintf(timeout_schema, sizeof timeout_schema,
+                 ",\"timeout_ms\":{\"type\":\"integer\",\"minimum\":1,"
+                 "\"maximum\":%d,\"description\":\"how long to wait before "
+                 "the command becomes a job, in milliseconds; at most %d\"}",
+                 shell_timeout_ms, shell_timeout_ms);
+    int schema_n =
+        snprintf(bash_schema, 1024,
+                 "{\"type\":\"object\",\"properties\":{"
+                 "\"command\":{\"type\":\"string\"},"
+                 "\"description\":{\"type\":\"string\","
+                 "\"description\":\"what the command does, in a few words\"},"
+                 "\"offset\":{\"type\":\"integer\",\"minimum\":1,"
+                 "\"description\":\"first output byte, 1-based\"},"
+                 "\"limit\":{\"type\":\"integer\",\"minimum\":1,"
+                 "\"maximum\":%u,\"description\":\"at most %u bytes\"}%s},"
+                 "\"required\":[\"command\",\"description\"]}",
+                 AGENT_SHELL_OUT_BYTES, AGENT_SHELL_OUT_BYTES, timeout_schema);
+    Str bash_desc = bash_description(persist, shell_timeout_ms);
+    if (schema_n < 0 || (size_t)schema_n >= 1024 || !bash_desc.n) {
         r->name = NULL;
         return;
     }
 
-    ADD("read",
-        "Read a page of a text file: up to 2000 lines or 8KB, "
-        "whichever is less. Use offset and limit to page through a long "
-        "file one range at a time rather than reading it whole. "
-        "With images enabled, PNG, JPEG, GIF and WebP files return their "
-        "whole image content. Offset and limit apply only to text; they "
-        "do not crop or page images. A path outside the project needs the "
-        "user's approval.",
+    ADD("read", READ_DESC_TEXT READ_DESC_IMAGES READ_DESC_OUTSIDE,
         "Read a page of a file", READS, TOOL_APPROVAL_NONE,
         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},"
         "\"offset\":{\"type\":\"integer\",\"description\":\"first line, 1-based\"},"
         "\"limit\":{\"type\":\"integer\",\"description\":\"at most 2000 lines\"}},"
         "\"required\":[\"path\"]}",
         tool_read);
+    if (r->n) r->desc_sub[r->n - 1] = STR(READ_DESC_TEXT READ_DESC_OUTSIDE);
     ADD("internet_search",
         "Search the public web. "
         "Returns up to ten titles, links, and snippets. Searches are paced; "
@@ -2432,33 +2494,8 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         page_fetch_run);
     if (r->n < AGENT_MAX_TOOLS) {
         r->name[r->n] = STR("bash");
-        r->desc[r->n] = STR(
-            "Run a shell command; returns one page of up to 8KB "
-            "of its stdout and stderr. Every call starts a new shell in the "
-            "working directory, so a cd reaches only the rest of that one "
-            "command and a cd into the working directory is redundant. "
-            "Give a description of what the command does in a few words, "
-            "such as \"find callers of walk_run\"; the user reads it before "
-            "the command. "
-            "A command made only of reading programs, such as rg, grep, "
-            "cat, sed -n, ls, wc, find and git log, with no redirection, "
-            "substitution or inline script, runs without asking the user "
-            "and is the only kind allowed in plan mode. On Linux it runs "
-            "with filesystem writes and the network denied, and reads only "
-            "the project and the system directories, so a sort that spills "
-            "to a temporary file fails with permission denied. A path "
-            "outside the project (absolute, ~ or ..) or a variable makes it "
-            "ask like read does, and once allowed it can read anywhere. "
-            "Use offset and limit to page output, "
-            "and prefer head, tail, sed -n or grep to target the lines you "
-            "need. Commands run without a terminal, so "
-            "anything that prompts for input, sudo included, fails rather "
-            "than waits. A command still running after the deadline is not "
-            "killed: it carries on as a job the result names, and the job "
-            "tool waits for the rest. Set timeout_ms to what this command is "
-            "worth waiting for: a build you expect to take minutes should "
-            "become a job in seconds, while a test you expect to finish "
-            "should be waited out.");
+        r->desc[r->n] = bash_desc;
+        r->desc_sub[r->n] = bash_desc;
         r->brief[r->n] = STR("Run a shell command");
         r->schema[r->n] = (Str){bash_schema, (size_t)schema_n};
         r->batch_schema[r->n] = r->schema[r->n];
@@ -2472,12 +2509,13 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
     }
     ADD("batch",
         "Run 1 through 8 existing tool calls in order when their arguments "
-        "are already known. Each step uses its normal permissions and availability "
-        "checks, and is shown separately with its normal rendering. "
+        "are already known. Each step runs under the same rules as a call "
+        "on its own. "
         "Stops on a tool error, denied permission, nonzero command exit, or a "
         "command or job still running. Earlier steps are not rolled back. "
         "Returns structured results for attempted steps and the skipped count; "
-        "each child keeps its normal output limit and spill note. Follow a "
+        "each result keeps its own size limit and its note naming the full "
+        "output file. Follow a "
         "reported job before submitting only the remaining steps. No nested "
         "batches, todo, task, ask_user or submit_plan. No variables, conditions "
         "or output interpolation. Do not batch a read with an edit that depends "
@@ -2589,6 +2627,15 @@ void tools_set_subagents(ToolRegistry *r, b8 on) {
     if (id != TOOL_NONE) r->off[id] = !on;
 }
 
+void tools_set_images(ToolRegistry *r, b8 on) {
+    size_t id = tools_find(r, STR("read"));
+    if (id != TOOL_NONE && !on) r->desc[id] = r->desc_sub[id];
+}
+
+Str tools_desc_for(const ToolRegistry *r, size_t id, ToolAudience audience) {
+    return audience == TOOL_FOR_SUB ? r->desc_sub[id] : r->desc[id];
+}
+
 void tools_set_task_limit(ToolRegistry *r, i32 tasks) {
     size_t id = tools_find(r, STR("task"));
     if (id == TOOL_NONE || tasks < 1) return;
@@ -2600,7 +2647,8 @@ void tools_set_task_limit(ToolRegistry *r, i32 tasks) {
                                                  "time" TASK_DESC_TAIL)
                        : snprintf(text, cap, "%sUp to %d tasks run together%s",
                                   TASK_DESC_HEAD, tasks, TASK_DESC_TAIL);
-    if (n > 0 && (size_t)n < cap) r->desc[id] = (Str){text, (size_t)n};
+    if (n > 0 && (size_t)n < cap)
+        r->desc[id] = r->desc_sub[id] = (Str){text, (size_t)n};
 }
 
 size_t tools_find(const ToolRegistry *r, Str name) {
@@ -2706,7 +2754,7 @@ void tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api,
                 buf_putf(b, "{\"name\":");
                 buf_json_str(b, r->name[i]);
                 buf_putf(b, ",\"description\":");
-                buf_json_str(b, r->desc[i]);
+                buf_json_str(b, tools_desc_for(r, i, audience));
                 buf_puts(b, STR(",\"input_schema\":"));
                 if (str_eq(r->name[i], STR("batch")))
                     batch_write_schema(b, r, g_tools.policy.mode, audience);
@@ -2718,7 +2766,7 @@ void tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api,
             buf_putf(b, "{\"type\":\"function\",\"function\":{\"name\":");
             buf_json_str(b, r->name[i]);
             buf_putf(b, ",\"description\":");
-            buf_json_str(b, r->desc[i]);
+            buf_json_str(b, tools_desc_for(r, i, audience));
             buf_puts(b, STR(",\"parameters\":"));
             if (str_eq(r->name[i], STR("batch")))
                 batch_write_schema(b, r, g_tools.policy.mode, audience);
@@ -2740,7 +2788,8 @@ size_t tools_schema_bytes(const ToolRegistry *r, ToolAudience audience) {
             str_eq(r->name[i], STR("batch"))
                 ? batch_schema_bytes(r, g_tools.policy.mode, audience)
                 : r->schema[i].n;
-        total += r->name[i].n + r->desc[i].n + schema + PER_TOOL;
+        total +=
+            r->name[i].n + tools_desc_for(r, i, audience).n + schema + PER_TOOL;
     }
     return total;
 }
