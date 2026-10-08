@@ -2800,12 +2800,17 @@ static void copy_last_reply(const Conv *conv) {
     for (size_t i = conv->n; i-- > 0;) {
         if (conv->role[i] != M_ASSISTANT || conv_is_call(conv, i)) continue;
         if (!conv->text[i].n) continue;
-        if (!tui_copy(conv->text[i]))
-            tui_notice(STR("that response is too large to copy"));
-        else
-            tui_notice(tui_clipboard_via_tmux()
-                           ? AGENT_TMUX_COPY_NOTICE
-                           : STR("copied the last response"));
+        switch (tui_copy(conv->text[i])) {
+            case TUI_COPY_TOO_LARGE:
+                tui_notice(STR("that response is too large to copy"));
+                break;
+            case TUI_COPY_DONE:
+                tui_notice(STR("copied the last response"));
+                break;
+            case TUI_COPY_TMUX_UNCONFIRMED:
+                tui_notice(AGENT_TMUX_COPY_NOTICE);
+                break;
+        }
         return;
     }
     tui_notice(STR("no response to copy"));

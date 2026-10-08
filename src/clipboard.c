@@ -47,14 +47,14 @@ typedef enum {
 } ClipStatus;
 
 
-static i32 clip_wait(i32 fd, f64 deadline) {
+static i32 clip_wait(i32 fd, i16 events, f64 deadline) {
     for (;;) {
         f64 left = deadline - agent_now_seconds();
         if (left <= 0) return 0;
         i32 ms = (i32)(left * 1000.0);
         if (ms > CLIP_POLL_MS) ms = CLIP_POLL_MS;
         if (ms < 1) ms = 1;
-        struct pollfd pfd = {fd, POLLIN, 0};
+        struct pollfd pfd = {fd, events, 0};
         i32 rc = poll(&pfd, 1, ms);
         if (rc < 0) {
             if (errno == EINTR) continue;
@@ -107,7 +107,7 @@ static ClipStatus clip_exec(const char *const *argv, Str type, char *out,
         agent_now_seconds() + (f64)AGENT_CLIPBOARD_TIMEOUT_MS / 1000.0;
     b8 ok = true, timed_out = false, over = false;
     while (ok) {
-        i32 rc = clip_wait(fds[0], deadline);
+        i32 rc = clip_wait(fds[0], POLLIN, deadline);
         if (rc == 0) {
             timed_out = true;
             ok = false;
@@ -217,4 +217,85 @@ b8 clipboard_image(Arena *scratch, Str *out, char *err, size_t err_cap) {
                  "wl-paste, xclip or pngpaste");
     }
     return false;
+}
+
+/* ---- writing through tmux ------------------------------------------------ */
+
+static const char *const k_tmux_load[] = {"tmux", "load-buffer", "-w", "-",
+                                          NULL};
+
+static b8 clip_feed(i32 fd, Str text, f64 deadline) {
+    i32 flags = fcntl(fd, F_GETFL);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) return false;
+    size_t off = 0;
+    while (off < text.n) {
+        if (clip_wait(fd, POLLOUT, deadline) <= 0) return false;
+        ssize_t w = write(fd, text.p + off, text.n - off);
+        if (w > 0) {
+            off += (size_t)w;
+            continue;
+        }
+        if (w < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+        return false;
+    }
+    return true;
+}
+
+static b8 clip_drain(i32 fd, f64 deadline) {
+    char sink[256];
+    for (;;) {
+        if (clip_wait(fd, POLLIN, deadline) <= 0) return false;
+        ssize_t got = read(fd, sink, sizeof sink);
+        if (got == 0) return true;
+        if (got < 0 && errno != EINTR) return false;
+    }
+}
+
+b8 clipboard_tmux_write(Str text) {
+    i32 in_fds[2], out_fds[2];
+    if (!pipe_cloexec(in_fds)) return false;
+    if (!pipe_cloexec(out_fds)) {
+        close(in_fds[0]);
+        close(in_fds[1]);
+        return false;
+    }
+    char **envp = child_env(CHILD_ENV_PLAIN);
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(in_fds[0]);
+        close(in_fds[1]);
+        close(out_fds[0]);
+        close(out_fds[1]);
+        return false;
+    }
+    if (pid == 0) {
+        i32 null_wr = open("/dev/null", O_WRONLY);
+        dup2(in_fds[0], STDIN_FILENO);
+        dup2(out_fds[1], STDOUT_FILENO);
+        if (null_wr >= 0) dup2(null_wr, STDERR_FILENO);
+        if (null_wr > STDERR_FILENO) close(null_wr);
+        child_close_fds(3);
+        environ = envp;
+        execvp(k_tmux_load[0], (char *const *)(uintptr_t)k_tmux_load);
+        _exit(127);
+    }
+    close(in_fds[0]);
+    close(out_fds[1]);
+
+    f64 deadline =
+        agent_now_seconds() + (f64)AGENT_CLIPBOARD_TIMEOUT_MS / 1000.0;
+    struct sigaction oldpipe, ignore = {0};
+    ignore.sa_handler = SIG_IGN;
+    sigemptyset(&ignore.sa_mask);
+    b8 have_old = sigaction(SIGPIPE, &ignore, &oldpipe) == 0;
+    b8 fed = clip_feed(in_fds[1], text, deadline);
+    close(in_fds[1]);
+    if (have_old) sigaction(SIGPIPE, &oldpipe, NULL);
+
+    b8 ended = fed && clip_drain(out_fds[0], deadline);
+    close(out_fds[0]);
+    if (!ended) kill(pid, SIGKILL);
+    i32 status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    return ended && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }

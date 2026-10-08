@@ -1407,8 +1407,14 @@ MediaSet *tools_set_media(MediaSet *m);
  * to media_add, which refuses a format or a size the same way it would from
  * a file. Blocks for at most AGENT_CLIPBOARD_TIMEOUT_MS and does not pump
  * the UI, so it is safe to call from inside input handling.
+ *
+ * clipboard_tmux_write hands text to `tmux load-buffer -w -`, which fills a
+ * tmux buffer and sets the outer terminal's clipboard whatever
+ * `set-clipboard` says. False when tmux is missing, refuses the command
+ * (older than 3.2) or misses the same deadline.
  */
 b8 clipboard_image(Arena *scratch, Str *out, char *err, size_t err_cap);
+b8 clipboard_tmux_write(Str text);
 
 /* ---- editor --------------------------------------------------------------
  * `text` edited in vi, vim or nvim, with the cursor placed at byte `cursor`.
@@ -2124,9 +2130,13 @@ void tui_set_status_visible(TuiStatusItem item, b8 visible);
     STR("no provider yet: type /provider, then \"+ add a provider\"")
 #define NO_MODEL_HINT STR("no model yet: type /model and pick one")
 void tui_set_setup_hint(Str hint);
-b8 tui_copy(Str text);
 
-b8 tui_clipboard_via_tmux(void);
+typedef enum {
+    TUI_COPY_TOO_LARGE = 0,
+    TUI_COPY_DONE,
+    TUI_COPY_TMUX_UNCONFIRMED,
+} TuiCopyResult;
+TuiCopyResult tui_copy(Str text);
 #define AGENT_TMUX_COPY_NOTICE \
     STR("copied; tmux needs `set -s set-clipboard on` to pass it on")
 void tui_desktop_notify(Str text);
