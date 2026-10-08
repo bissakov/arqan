@@ -2167,6 +2167,13 @@ void tui_tool_nest_begin(void);
 void tui_tool_nest_end(void);
 void tui_write(Str s);
 
+/* A PNG drawn in the transcript on its own rows, through the kitty graphics
+ * protocol. False, with nothing written, when the terminal is not known to
+ * draw images, the transcript is detached, or `png` is not a PNG. The bytes
+ * are sent to the terminal before this returns and are not kept. */
+b8 tui_image(Str png, u32 w, u32 h);
+b8 tui_images_shown(void);
+
 void tui_write_text(Str s);
 
 void tui_write_source(Str s);

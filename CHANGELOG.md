@@ -11,6 +11,14 @@
   first of `nvim`, `vim` and `vi` on `PATH` runs. Ctrl-G works only between
   turns.
 
+- PNG images now show in the transcript in kitty and Ghostty, both images you
+  attach and images the model reads with `read` or gets from an MCP tool. They
+  are drawn with the kitty graphics protocol, scaled to fit the transcript
+  width and at most half the screen height. A drawn attachment replaces its
+  `[Image #n]` caption line, since the message already names it. Other
+  terminals, tmux, Zellij, GNU screen and other image formats keep the
+  caption alone.
+
 - A streamed reply that sends nothing for five minutes now fails with
   `the provider sent nothing for 300 s`. When no reply text has arrived, the
   request is retried like a dropped connection; otherwise the turn ends and

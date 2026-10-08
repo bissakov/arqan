@@ -608,6 +608,19 @@ static void say_conv_full(void) {
     tui_write(STR("[conversation is full: /clear to start a new one]\n"));
 }
 
+static void render_result_media(const Conv *c, size_t slot) {
+    if (!c->media || !c->media_n[slot] || !tui_images_shown()) return;
+    for (size_t k = 0; k < c->media_n[slot]; k++) {
+        size_t id = (size_t)c->media_off[slot] + k;
+        if (id >= c->media->n) break;
+        if (!media_live(c->media, id)
+            || !str_eq(c->media->mime[id], STR("image/png")))
+            continue;
+        tui_block();
+        tui_image(c->media->bytes[id], c->media->w[id], c->media->h[id]);
+    }
+}
+
 static b8 add_result_media(Agent *ag, size_t call, Str name, Str result, u32 ms,
                            size_t media_off, size_t media_n) {
     Conv *conv = ag->conv;
@@ -620,9 +633,11 @@ static b8 add_result_media(Agent *ag, size_t call, Str name, Str result, u32 ms,
     conv_attach_media(conv, slot, media_off, media_n);
     if (g_turn.one_shot)
         one_shot_diag("tool result", name, result);
-    else
+    else {
         render_tool_result(name, conv->text[call], result, ag->scratch,
                            (u32)(slot + 1), conv->expanded[slot], ms);
+        render_result_media(conv, slot);
+    }
     save_session(ag);
     return true;
 }
@@ -1851,9 +1866,11 @@ static TurnAction batch_answer(Agent *ag, size_t call, Str args) {
     if (!stored) shown = ag->conv->text[slot];
     if (g_turn.one_shot)
         one_shot_diag("tool result", STR("batch"), shown);
-    else
+    else {
         render_tool_result(STR("batch"), (Str){0}, shown, ag->scratch,
                            (u32)(slot + 1), ag->conv->expanded[slot], ms);
+        render_result_media(ag->conv, slot);
+    }
     save_tool_progress(ag, slot);
     TelEvent e;
     tel_open(&e, "batch");
@@ -2022,6 +2039,9 @@ static void render_user_media(const Conv *c, size_t i) {
     for (size_t k = 0; k < c->media_n[i]; k++) {
         size_t id = (size_t)c->media_off[i] + k;
         if (id >= c->media->n) break;
+        if (media_live(c->media, id)
+            && tui_image(c->media->bytes[id], c->media->w[id], c->media->h[id]))
+            continue;
         char what[64];
         media_describe(what, sizeof what, c->media, id);
         char row[192];
@@ -2102,6 +2122,7 @@ static void render_conv(const Conv *c, const Config *cfg, b8 show_instructions,
                 Str args = call == CONV_NONE ? (Str){0} : c->text[call];
                 render_tool_result(name, args, c->text[i], scratch,
                                    (u32)(i + 1), c->expanded[i], c->ms[i]);
+                render_result_media(c, i);
             } break;
             case M_ASSISTANT:
                 if (conv_is_call(c, i)) {

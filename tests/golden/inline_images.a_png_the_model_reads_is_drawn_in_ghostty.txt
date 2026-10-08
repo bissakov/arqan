@@ -1,0 +1,26 @@
+--- screen 80x24 ---
+|
+|  Sent at <clk>
+|▌
+|▌ look at it
+|▌
+|
+|  ◆  read chart.png
+|  └─ 1 line · <t>
+|     [Image #1] png 200x100 - 59 KB
+|
+|  􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮
+|  􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮
+|  􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮
+|  􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮
+|  􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮􎻮
+|
+|  inspected
+|
+|
+|
+|  › Message arqan...
+|
+|
+|  ● ready · mock-model · build · local · ~/work · ~20k · free
+--- cursor row=21 col=5 visible=yes ---
