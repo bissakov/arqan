@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Approximate syntax highlighting for Unity shaders. `.shader`, `.cginc`,
+  `.hlsl` and `.compute` files, and code fences marked `hlsl` or `shaderlab`,
+  use the C highlighter. Strings, comments, numbers, preprocessor lines, HLSL
+  types and function calls get colours; ShaderLab words such as `Pass` stay
+  plain.
+
 ## [0.11.0] - 2026-10-08
 
 ### Added

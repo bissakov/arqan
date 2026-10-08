@@ -53,7 +53,8 @@ typedef struct {
 } Language;
 
 static Language languages[YHL_LANG_COUNT] = {
-    {"c", "c", ".c .h", tree_sitter_c, NULL, 0},
+    {"c", "c hlsl shaderlab", ".c .h .shader .cginc .hlsl .compute",
+     tree_sitter_c, NULL, 0},
     {"cpp", "cpp c++ cxx", ".cc .cpp .cxx .hh .hpp .hxx", tree_sitter_cpp, NULL,
      0},
     {"rust", "rust rs", ".rs", tree_sitter_rust, NULL, 0},
