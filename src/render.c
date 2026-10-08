@@ -15,6 +15,7 @@ enum {
 typedef struct {
     u32 zone;
     b8 expanded;
+    b8 full;
     b8 head_more;
 } RenderBlock;
 /* INVARIANT: block_begin and block_end assign this whole, so a field added
@@ -36,7 +37,11 @@ b8 render_verbose(void) {
 }
 
 static b8 uncapped(void) {
-    return g_render.verbose || g_render.block.expanded;
+    return g_render.verbose || g_render.block.expanded || g_render.block.full;
+}
+
+static b8 render_in_full(Str name) {
+    return str_eq(name, STR("write")) || str_eq(name, STR("patch"));
 }
 
 static size_t line_cap(size_t max) {
@@ -137,7 +142,7 @@ static void write_tail(Str gutter, size_t rest, size_t shown, size_t max,
     if (rest) {
         len = snprintf(buf, sizeof buf, "\u25be %zu more line%s\n", rest,
                        rest == 1 ? "" : "s");
-    } else if (g_render.verbose) {
+    } else if (g_render.verbose || g_render.block.full) {
         return;
     } else if (g_render.block.expanded) {
         if (shown <= max && !g_render.block.head_more) return;
@@ -295,6 +300,7 @@ static void render_todo_call(Str args, Arena *scratch, const Conv *c,
 void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
                       const Conv *c, size_t slot) {
     block_begin(id, expanded);
+    g_render.block.full = render_in_full(name);
     size_t mark = scratch->off;
     if (str_eq(name, STR("todo"))) {
         render_todo_call(args, scratch, c, slot);
@@ -941,6 +947,7 @@ static void render_tool_result_nested(Str name, Str args, Str result,
         block_end();
         return;
     }
+    g_render.block.full = render_in_full(name);
 
     if (str_eq(name, STR("ask")) || str_eq(name, STR("ask_user"))) {
         render_ask_result(args, result, scratch, ms);
@@ -1125,7 +1132,8 @@ static Str render_batch_text(Str args, Str result, b8 input, Arena *scratch) {
 
 Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
                      YhlResult *syntax) {
-    if (shown) *shown = R_ARG_LINES;
+    b8 full = render_in_full(name);
+    if (shown) *shown = full ? SIZE_MAX : R_ARG_LINES;
     if (syntax) syntax->n = 0;
     if (!scratch) return args;
     if (str_eq(name, STR("batch")))
@@ -1147,7 +1155,7 @@ Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
         if (syntax && path.n && content.n)
             highlight_request(YHL_HINT_PATH, path, content, syntax);
     } else if (patch.n) {
-        if (shown) *shown = R_ARG_LINES * 2;
+        if (shown && !full) *shown = R_ARG_LINES * 2;
         body = patch;
         if (syntax) batched_syntax(patch, false, (Str){0}, scratch, syntax);
     } else if (cmd.n) {
@@ -1172,7 +1180,8 @@ Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
 
 Str render_result_text(Str name, Str args, Str result, Arena *scratch,
                        size_t *shown, YhlResult *syntax) {
-    if (shown) *shown = R_RESULT_LINES;
+    b8 full = render_in_full(name);
+    if (shown) *shown = full ? SIZE_MAX : R_RESULT_LINES;
     if (syntax) syntax->n = 0;
     result = todo_note_strip(progress_note_strip(result));
     if (str_starts(result, STR("ERROR: "))) return str_drop(result, 7);
@@ -1196,7 +1205,7 @@ Str render_result_text(Str name, Str args, Str result, Arena *scratch,
         }
         return result;
     }
-    if (shown) *shown = R_RESULT_LINES + 1;
+    if (shown && !full) *shown = R_RESULT_LINES + 1;
     return body;
 }
 

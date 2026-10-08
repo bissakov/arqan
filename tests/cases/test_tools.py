@@ -71,21 +71,27 @@ def test_tool_call_without_an_id_still_runs(ctx):
     assert messages[3]["tool_call_id"] == ""
 
 
-def test_write_tool_previews_the_content(ctx):
-    """A write shows the path and the head of what it writes, not JSON."""
-    body = "".join(f"line {i}\n" for i in range(12))
+def test_write_tool_shows_the_whole_content(ctx):
+    """A write shows the path and every line it writes, unclipped, not JSON."""
+    wide = "w" * 230 + " end of the wide line"
+    body = "".join(f"line {i}\n" for i in range(12)) + wide + "\n"
     args = json.dumps({"path": "long.txt", "content": body})
     ctx.scenario(f"tool=write:{args},final_text=written")
-    s = ctx.spawn()
+    s = ctx.spawn(cols=300, rows=40)
     s.submit("write a file")
     s.wait_text("written")
     s.wait_turn_done()
 
     text = s.text()
+    rows = [row.rstrip() for row in text.splitlines()]
     assert "\u25c6  write long.txt" in text, text
-    assert "\u2502 line 0" in text, text
-    assert "\u2502 \u25be 4 more lines" in text, text
-    assert "line 8" not in text, text
+    for i in range(12):
+        assert any(row.endswith(f"\u2502 line {i}") for row in rows), text
+    assert "\u2502 " + wide in text, text
+    assert " ..." not in text, text
+    assert "more lines" not in text, text
+    assert "show less" not in text, text
+    assert "show in full" not in text, text
     assert "\u2514\u2500 wrote" in text, text
 
 
@@ -121,6 +127,37 @@ def test_patch_shows_the_diff_it_applies(ctx):
     assert s.screen.attr_at(new_row, new_col).fg == 114
     assert s.screen.attr_at(old_row, old_col + 1).fg == 253
     assert s.screen.attr_at(new_row, new_col + 1).fg == 253
+
+
+def test_patch_shows_the_whole_diff(ctx):
+    """A patch longer than the preview shows every line, unclipped."""
+    wide = "w" * 230 + " end of the wide line"
+    ctx.write_file("many.txt", "".join(f"keep {i:02d}\n" for i in range(18)))
+    diff = (
+        "--- a/many.txt\n+++ b/many.txt\n@@ -1,18 +1,18 @@\n"
+        + "".join(f" keep {i:02d}\n" for i in range(17))
+        + "-keep 17\n+" + wide + "\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="patched"))
+    s = ctx.spawn(cols=300, rows=45)
+    s.submit("patch it")
+    s.wait_text("patched")
+    s.wait_turn_done()
+
+    text = s.text()
+    assert "\u25c6  patch many.txt" in text, text
+    assert "\u2502 --- a/many.txt" in text, text
+    assert "\u2502 +++ b/many.txt" in text, text
+    assert "\u2502 @@ -1,18 +1,18 @@" in text, text
+    for i in range(17):
+        assert f"\u2502  keep {i:02d}" in text, text
+    assert "\u2502 -keep 17" in text, text
+    assert "\u2502 +" + wide in text, text
+    assert " ..." not in text, text
+    assert "more lines" not in text, text
+    assert "show less" not in text, text
+    assert "show in full" not in text, text
+    assert (ctx.work / "many.txt").read_text().endswith(wide + "\n")
 
 
 def test_bash_result_is_summarised_by_its_exit_status(ctx):
@@ -1024,20 +1061,24 @@ def test_a_cut_command_header_offers_the_rest_in_one_click(ctx):
 
 def test_expanding_one_block_leaves_the_other_truncated(ctx):
     """Expansion is per block: the call's preview is not the result's."""
-    body = "".join(f"line {i}\n" for i in range(12))
-    args = json.dumps({"path": "long.txt", "content": body})
-    ctx.scenario(f"tool=write:{args},final_text=written")
-    s = ctx.spawn()
-    s.submit("write a file")
-    s.wait_text("written")
+    command = "\n".join(
+        f"printf 'row %02d\\n' {2 * i} {2 * i + 1}" for i in range(11)
+    )
+    args = json.dumps({"command": command, "description": "print the rows"})
+    ctx.scenario(f"tool=bash:{args},final_text=printed")
+    s = ctx.spawn(rows=40)
+    s.submit("print some rows")
+    s.wait_text("printed")
     s.wait_turn_done()
-    assert "\u2502 \u25be 4 more lines" in s.text(), s.text()
+    assert "\u2502 \u25be 3 more lines" in s.text(), s.text()
+    assert "\u25be 10 more lines" in s.text(), s.text()
 
-    click(s, "\u2502 \u25be 4 more lines")
-    s.wait_text("line 11")
+    click(s, "\u2502 \u25be 3 more lines")
+    s.wait_text("printf 'row %02d\\n' 20 21")
     text = s.text()
-    assert "more lines" not in text, text
-    assert "\u2514\u2500 wrote" in text, text
+    assert "\u2502 \u25b4 show less" in text, text
+    assert "\u25be 10 more lines" in text, text
+    assert "row 21" not in text, text
 
 
 def test_dragging_over_the_tail_selects_instead_of_expanding(ctx):
