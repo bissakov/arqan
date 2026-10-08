@@ -638,8 +638,9 @@ def test_batch_output_window_shows_text_not_encoded_json(ctx):
 
 
 def test_batch_input_window_shows_content_not_encoded_json(ctx):
-    body = "\n".join(f"line {i:04d} of input" for i in range(40))
-    ctx.scenario("tool=" + batch_call([step("write", path="big.txt", content=body)])
+    command = "\n".join(f": line {i:04d} of input" for i in range(40))
+    ctx.scenario("tool=" + batch_call([step("bash", command=command,
+                                            description="skip the input lines")])
                  + ",hold_final,final_text=done")
     s = ctx.spawn()
     s.submit("write it")
@@ -651,6 +652,17 @@ def test_batch_input_window_shows_content_not_encoded_json(ctx):
     s.wait_text("batch input")
     s.wait_text("line 0010 of input")
     assert '"steps"' not in s.text(), s.text()
+
+
+def test_batch_write_child_shows_the_whole_content(ctx):
+    body = "".join(f"line {i:02d} of input\n" for i in range(12))
+    s = run_batch(ctx, [step("write", path="long.txt", content=body)], rows=40)
+    text = s.text()
+    for i in range(12):
+        assert f"line {i:02d} of input" in text, text
+    assert "more lines" not in text, text
+    assert "show less" not in text, text
+    assert (ctx.work / "long.txt").read_text() == body
 
 
 def test_batch_image_results_survive_session_replay(ctx):

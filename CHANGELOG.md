@@ -27,6 +27,10 @@
 
 ### Changed
 
+- Write and patch calls now show their whole content in the transcript
+  instead of a preview, with no line limit and no clipped long lines, so you
+  can check a change in full, including before you approve it.
+
 - When a reply ends with reasoning but no text, the agent now asks the model
   once more for the reply, with a note that the user cannot see its
   reasoning. The note shows in the transcript as `[note to the model: ...]`.

@@ -720,9 +720,9 @@ def test_window_over_plain_output_stays_plain(ctx):
     assert window_cell(s, "line 0012 of output").fg == TEXT
 
 
-def test_window_over_an_envelope_patch_uses_each_files_language(ctx):
-    """The full patch window maps each file's syntax back to its own lines."""
-    body = "\n".join(f"int v{i:04d} = {i};" for i in range(18)) + "\n"
+def test_envelope_patch_uses_each_files_language(ctx):
+    """A patch over two files maps each file's syntax back to its own lines."""
+    body = "\n".join(f"int v{i:04d} = {i};" for i in range(4)) + "\n"
     ctx.write_file("big.c", body)
     diff = (
         "*** Begin Patch\n*** Update File: big.c\n@@\n"
@@ -731,20 +731,18 @@ def test_window_over_an_envelope_patch_uses_each_files_language(ctx):
         "+def answer(): return 'yes'\n*** End Patch\n"
     )
     args = json.dumps({"patch": diff})
-    ctx.scenario(f"tool=patch:{args},hold_final,final_text=done")
+    ctx.scenario(f"tool=patch:{args},final_text=done")
     s = ctx.spawn()
     s.submit("patch both")
-    s.wait_text("\u25be 9 more lines")
     s.wait_text("big.c +1 -0")
-    s.wait_activity("thinking")
-    click_tail(s, "\u25be 9 more lines")
-    s.key("home").sync()
-    assert window_cell(s, "int v0000").fg == CYAN
-    s.key("end").sync()
-    assert window_cell(s, "int extra").fg == CYAN
-    assert window_cell(s, "= 42", 2).fg == YELLOW
-    assert window_cell(s, "def answer").fg == PURPLE
-    assert window_cell(s, "'yes'").fg == GREEN
+    s.wait_text("done")
+    s.wait_turn_done()
+    assert "more lines" not in s.text(), s.text()
+    assert cell(s, "int v0000").fg == CYAN, s.text()
+    assert cell(s, "int extra").fg == CYAN
+    assert cell(s, "= 42", 2).fg == YELLOW
+    assert cell(s, "def answer").fg == PURPLE
+    assert cell(s, "'yes'").fg == GREEN
 
 
 def test_window_over_a_shell_run_highlights_the_command_only(ctx):
