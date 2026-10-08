@@ -404,6 +404,12 @@ set -g allow-passthrough all   # allow notifications from any pane (tmux 3.4+;
 tmux adds it on its own only when `TERM` matches `xterm*`. For another
 terminal, add `set -as terminal-features ',<term>:clipboard'`.
 
+When you ssh to another host from a tmux pane, `TMUX` does not reach that
+host, so arqan there finds tmux from `TERM` instead. This needs `TERM` to
+start with `tmux`, as it does with `set -g default-terminal tmux-256color`.
+With a `screen*` value, or when `TERM` is changed on the way, tmux drops the
+notifications. tmux inside tmux is not supported.
+
 arqan cannot confirm that a copy worked. Under tmux it tells you which option
 must be on.
 

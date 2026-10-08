@@ -6,6 +6,12 @@ import time
 
 from tests.mockprovider import Scenario
 
+TMUX_WRAPPED = b"\x1bPtmux;\x1b\x1b]9;arqan: "
+
+
+def bare_osc9_written(raw: bytes) -> bool:
+    return b"\x1b]9;" in raw.replace(b"\x1b\x1b]9;", b"")
+
 
 def test_a_finished_turn_notifies_over_osc9(ctx):
     """The terminal is handed the notification; arqan links no OS API."""
@@ -18,6 +24,43 @@ def test_a_finished_turn_notifies_over_osc9(ctx):
     said = s.screen.notifications[-1]
     assert said.startswith("arqan: "), said
     assert "all done here" in said, said
+    assert TMUX_WRAPPED not in bytes(s.raw), bytes(s.raw)[-400:]
+
+
+def test_under_tmux_the_notification_goes_through_passthrough(ctx):
+    """tmux drops a bare OSC 9; only its passthrough wrapper gets out."""
+    ctx.scenario("text=all+done+here")
+    s = ctx.spawn(ARQAN_NOTIFY_MIN_MS="0", TMUX="/tmp/tmux-1000/default,1,0")
+    s.submit("do the thing")
+    s.wait_text("all done here")
+    s.wait_turn_done()
+    raw = bytes(s.raw)
+    assert TMUX_WRAPPED in raw, raw[-400:]
+    assert not bare_osc9_written(raw), raw[-400:]
+
+
+def test_over_ssh_from_tmux_term_still_names_tmux(ctx):
+    """ssh drops $TMUX but carries TERM, so a remote session wraps as well."""
+    ctx.scenario("text=all+done+here")
+    s = ctx.spawn(ARQAN_NOTIFY_MIN_MS="0", TERM="tmux-256color", TMUX=None)
+    s.submit("do the thing")
+    s.wait_text("all done here")
+    s.wait_turn_done()
+    raw = bytes(s.raw)
+    assert TMUX_WRAPPED in raw, raw[-400:]
+    assert not bare_osc9_written(raw), raw[-400:]
+
+
+def test_term_screen_alone_is_not_taken_for_tmux(ctx):
+    """GNU screen sets TERM=screen too and would print the wrapper as text."""
+    ctx.scenario("text=all+done+here")
+    s = ctx.spawn(ARQAN_NOTIFY_MIN_MS="0", TERM="screen-256color", TMUX=None)
+    s.submit("do the thing")
+    s.wait_text("all done here")
+    s.wait_turn_done()
+    raw = bytes(s.raw)
+    assert TMUX_WRAPPED not in raw, raw[-400:]
+    assert s.screen.notifications, "no OSC 9 was written"
 
 
 def test_a_short_turn_passes_in_silence(ctx):

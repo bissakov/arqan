@@ -3620,7 +3620,10 @@ void tui_desktop_notify(Str text) {
     n += text.n;
     seq[n++] = '\a';
     Str s = {seq, n};
-    if (getenv("TMUX"))
+    /* NOTE: TERM covers ssh from inside tmux, which drops $TMUX. screen* is
+     * left out: GNU screen sets it too and would print the wrapper. */
+    const char *term = getenv("TERM");
+    if (getenv("TMUX") || (term && !strncmp(term, "tmux", 4)))
         put_passthrough(s);
     else
         put_raw(s.p, s.n);
