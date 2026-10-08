@@ -62,6 +62,11 @@
   tmux's default `set-clipboard external`. The `set-clipboard on` notice
   shows only when tmux refuses that command, as tmux before 3.2 does.
 
+- Notifications reach the terminal when arqan runs over ssh from inside
+  tmux. ssh does not pass on `TMUX`, so arqan sent a bare OSC 9 and tmux
+  dropped it. arqan now also uses tmux passthrough when `TERM` starts with
+  `tmux`. tmux still needs `allow-passthrough`.
+
 - While a picker is open, such as an `ask_user` question, a mouse drag
   selects and copies text again.
 
