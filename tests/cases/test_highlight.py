@@ -225,6 +225,59 @@ def test_cargo_lock_is_toml_by_name(ctx):
         proc.wait(timeout=2)
 
 
+UNITY_SHADER = b'''Shader "Custom/Toon"
+{
+    Properties { _MainTex ("Texture", 2D) = "white" {} }
+    SubShader
+    {
+        Pass
+        {
+            HLSLPROGRAM
+            #pragma vertex vert
+            struct v2f { float4 vertex : SV_POSITION; };
+            // tint
+            half4 frag (v2f i) : SV_Target
+            {
+                return tex2D(_MainTex, i.uv) * 0.5;
+            }
+            ENDHLSL
+        }
+    }
+}
+'''
+
+
+def test_unity_shaders_highlight_with_the_c_grammar(ctx):
+    """Unity shader files and fences get approximate colours from C."""
+    def kind_at(runs, needle):
+        at = UNITY_SHADER.index(needle)
+        return next((k for a, b, k in runs if a <= at < b), 0)
+
+    hints = [
+        (2, b"Assets/Shaders/Toon.shader"), (2, b"Lighting.cginc"),
+        (2, b"Common.hlsl"), (2, b"Blur.compute"), (2, b"Toon.SHADER"),
+        (1, b"hlsl"), (1, b"shaderlab"),
+    ]
+    proc = helper()
+    try:
+        status, expected = request(proc, 1, 1, b"c", UNITY_SHADER)
+        assert status == OK
+        assert kind_at(expected, b'"Custom/Toon"') == 2
+        assert kind_at(expected, b"// tint") == 1
+        assert kind_at(expected, b"0.5") == 3
+        assert kind_at(expected, b"#pragma") == 4
+        assert kind_at(expected, b"return") == 4
+        assert kind_at(expected, b"float4") == 5
+        assert kind_at(expected, b"tex2D") == 6
+        for request_id, (hint_kind, hint) in enumerate(hints, 2):
+            status, runs = request(proc, request_id, hint_kind, hint,
+                                   UNITY_SHADER)
+            assert status == OK and runs == expected, (hint, status)
+    finally:
+        proc.terminate()
+        proc.wait(timeout=2)
+
+
 CONFIG_SAMPLES = {
     b"ini": b"; c\n[core]\nname = 1\n",
     b"properties": b"# c\nkey = value\n",
