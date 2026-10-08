@@ -36,6 +36,8 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
       - name: Build and test compatibility release
         run: scripts/release-linux.sh
+        env:
+          ARQAN_TEST_JOBS: 4
       - name: Retain release files
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:

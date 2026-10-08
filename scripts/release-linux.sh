@@ -49,6 +49,7 @@ release_in() {
         -e HOME=/tmp/arqan-home \
         -e SOURCE_DATE_EPOCH="$epoch" \
         -e BUILD_REV \
+        -e ARQAN_TEST_JOBS \
         -v "$ROOT:/work" \
         -w /work \
         "$IMAGE" \

@@ -25,6 +25,7 @@ docker run --rm --platform linux/amd64 \
     --user "$(id -u):$(id -g)" \
     -e HOME=/tmp/$PROGRAM-home \
     -e BUILD_REV \
+    -e ARQAN_TEST_JOBS \
     -v "$ROOT:/work" \
     -w /work \
     "$IMAGE" \
