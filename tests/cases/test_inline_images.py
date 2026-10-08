@@ -9,6 +9,8 @@ alone. The pty reports no pixel size, so a cell counts as 10 by 20 pixels.
 import base64
 import json
 import re
+import struct
+import zlib
 
 from .test_editor import editors, spawn as spawn_with_editor
 from .test_image import attach, png
@@ -22,6 +24,30 @@ NOT_PNG = [
     ("webp", b"RIFF" + bytes(4) + b"WEBPVP8X" + bytes(8)
      + b"\x03\x00\x00\x02\x00\x00"),
 ]
+
+
+def stored_png(w: int, h: int) -> bytes:
+    """A PNG whose bytes do not depend on the zlib build.
+
+    zlib and zlib-ng compress the same pixels to different bytes, and a golden
+    screen shows the file size and the context estimate drawn from it. Stored
+    deflate blocks are the same everywhere."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return (struct.pack(">I", len(data)) + body
+                + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
+
+    raw = b"".join(b"\x00" + b"\xff\x00\x00" * w for _ in range(h))
+    blocks = [raw[i:i + 0xFFFF] for i in range(0, len(raw), 0xFFFF)] or [b""]
+    deflate = b"\x78\x01" + b"".join(
+        bytes([i == len(blocks) - 1])
+        + struct.pack("<HH", len(b), len(b) ^ 0xFFFF) + b
+        for i, b in enumerate(blocks)
+    ) + struct.pack(">I", zlib.adler32(raw))
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", deflate)
+            + chunk(b"IEND", b""))
 
 
 def graphics(s) -> list[tuple[dict, bytes]]:
@@ -89,7 +115,7 @@ def test_an_attached_png_is_drawn_in_kitty(ctx):
 
     The drawn image takes the place of the caption: the message already names
     it, so a second `[Image #1]` line would only repeat it."""
-    data = png(200, 100)
+    data = stored_png(200, 100)
     s = send_attached(ctx, data, TERM="xterm-kitty")
     [(keys, body)] = transmitted(s)
     assert body == data
@@ -117,7 +143,7 @@ def test_a_jpeg_attachment_keeps_its_caption(ctx):
 
 def test_a_png_the_model_reads_is_drawn_in_ghostty(ctx):
     """A read that loads an image draws it below the result."""
-    data = png(200, 100)
+    data = stored_png(200, 100)
     s = read_file(ctx, "chart.png", data, TERM="xterm-ghostty")
     [(keys, body)] = transmitted(s)
     assert body == data
