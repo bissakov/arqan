@@ -30,23 +30,9 @@ jobs:
 
   build:
     needs: validate
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Check out tagged source
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-      - name: Build and test compatibility release
-        run: scripts/release-linux.sh
-      - name: Retain release files
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: arqan-${{ github.ref_name }}-linux-x86_64
-          path: |
-            dist/*.tar.gz
-            dist/*.deb
-            dist/*.rpm
-            dist/*.pkg.tar.zst
-            dist/SHA256SUMS
-          if-no-files-found: error
+    uses: ./.github/workflows/release-jobs.yml
+    with:
+      artifact: arqan-${{ github.ref_name }}-linux-x86_64
 
   draft-release:
     needs: build

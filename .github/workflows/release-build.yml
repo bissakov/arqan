@@ -1,0 +1,45 @@
+name: Release build
+
+# The tag workflow runs the release build too late: by then the change that
+# broke the Debian 11, EL9 or musl build, or the packages, is merged. This runs
+# the same jobs on every change, so the change that breaks them fails.
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: release-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.detect.outputs.code }}
+    steps:
+      - name: Check out source and history
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+      - name: Detect changes outside the docs
+        id: detect
+        uses: ./.github/actions/detect-changes
+
+  # Always called, so the required `release / packages` check always reports:
+  # it skips, which passes, for a docs-only change and fails when change
+  # detection did not succeed.
+  release:
+    needs: changes
+    if: always()
+    uses: ./.github/workflows/release-jobs.yml
+    with:
+      changes: >-
+        ${{ needs.changes.result != 'success' && 'unknown'
+        || needs.changes.outputs.code == 'true' && 'code'
+        || needs.changes.outputs.code == 'false' && 'docs'
+        || 'unknown' }}

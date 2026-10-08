@@ -1,0 +1,96 @@
+name: Release jobs
+
+# The stages of scripts/release-linux.sh as parallel jobs. The tag workflow
+# and the per-change Release build workflow both call this, so a change is
+# checked by the same steps that build its release.
+on:
+  workflow_call:
+    inputs:
+      changes:
+        description: code runs every job, docs skips them, anything else fails
+        type: string
+        required: false
+        default: code
+      artifact:
+        description: name to upload dist/ under; empty uploads nothing
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  # The same reason as in test.yml: three jobs per core on the four shared
+  # cores starve the suite into false failures.
+  ARQAN_TEST_JOBS: 4
+
+jobs:
+  build:
+    if: inputs.changes != 'docs'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        stage: [debian, el9, musl]
+    steps:
+      - name: Check change detection
+        if: inputs.changes != 'code'
+        run: |
+          echo "change detection failed" >&2
+          exit 1
+      - name: Check out source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: Build and test
+        run: scripts/release-linux.sh ${{ matrix.stage }}
+      # An artifact drops the executable bit, which packaging checks for.
+      - name: Pack the binaries
+        if: matrix.stage != 'debian'
+        run: tar -cf bin-${{ matrix.stage }}.tar bin/${{ matrix.stage }}/arqan bin/${{ matrix.stage }}/arqan-highlight
+      - name: Retain the binaries
+        if: matrix.stage != 'debian'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: bin-${{ matrix.stage }}
+          path: bin-${{ matrix.stage }}.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  # A job whose dependency failed reports as skipped, and a skipped required
+  # check passes. So this job runs whatever the builds did and fails itself.
+  packages:
+    needs: build
+    if: always() && inputs.changes != 'docs'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check the builds
+        if: needs.build.result != 'success'
+        run: |
+          echo "a build stage did not pass: ${{ needs.build.result }}" >&2
+          exit 1
+      - name: Check out source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: Download the binaries
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: bin-*
+          merge-multiple: true
+      - name: Unpack the binaries
+        run: |
+          tar -xf bin-el9.tar
+          tar -xf bin-musl.tar
+          rm bin-el9.tar bin-musl.tar
+      - name: Package and install
+        run: scripts/release-linux.sh package
+      - name: Retain release files
+        if: inputs.artifact != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ${{ inputs.artifact }}
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+            dist/*.pkg.tar.zst
+            dist/SHA256SUMS
+          if-no-files-found: error
