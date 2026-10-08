@@ -59,7 +59,8 @@ def test_read_images_anthropic_exact_content(ctx):
 def test_read_images_off_adds_no_media(ctx):
     _, body = read_formats(ctx, ARQAN_IMAGES="off")
     assert openai_images(body) == []
-    assert all("images are off" in result for result in ctx.mock.tool_results())
+    assert all("images are not available in this session" in result
+               for result in ctx.mock.tool_results())
 
 
 def test_read_images_plan_mode(ctx):
@@ -179,7 +180,8 @@ def test_read_image_subagent_stays_text_only(ctx):
     assert len(requests) == 2, requests
     result = requests[-1]["messages"][-1]
     assert result["role"] == "tool", result
-    assert "does not support images" in result["content"], result
+    assert "images are not available in this session" in result["content"], \
+        result
     assert all(openai_images(body) == [] for body in ctx.mock.requests)
     ctx.scenario('tool=read:{"path":"shot.png"},final_text=inspected')
     s.submit("read it yourself")

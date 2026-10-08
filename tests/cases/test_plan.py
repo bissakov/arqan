@@ -151,7 +151,7 @@ def test_build_mode_refuses_an_unavailable_plan_submission(ctx):
 
     assert "continue?" not in s.text(), s.text()
     assert ctx.mock.tool_results() == [
-        "ERROR: submit_plan is not available in build mode"
+        "ERROR: submit_plan is not available outside plan mode"
     ], ctx.mock.tool_results()
 
 
@@ -293,6 +293,9 @@ def test_yes_switches_to_build_and_continues(ctx):
     messages = ctx.mock.requests[-1]["messages"]
     assert messages[-1]["role"] == "tool", messages
     assert "approved the plan" in messages[-1]["content"], messages[-1]
+    assert "You can now edit files and run commands" \
+        in messages[-1]["content"], messages[-1]
+    assert "Build mode" not in messages[-1]["content"], messages[-1]
     assert "write" in tool_names(ctx.mock.requests[-1]), "build tools are back"
 
 

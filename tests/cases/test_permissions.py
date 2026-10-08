@@ -106,6 +106,19 @@ def test_one_shot_ask_denies_and_stops(ctx):
     assert len(ctx.mock.requests) == 1, ctx.mock.requests
 
 
+def test_one_shot_denial_does_not_claim_the_user_said_no(ctx):
+    """Nobody was asked, so a resumed session must not read as a refusal."""
+    ctx.scenario(write_call() + ",final_text=must+not+appear")
+    out = ctx.run_cli("-p", "write it", ARQAN_PERMISSIONS="ask")
+    assert out.returncode == 1, out
+
+    root = ctx.home / ".local" / "share" / "arqan" / "sessions"
+    saved = "".join(p.read_text() for p in root.rglob("*.jsonl"))
+    assert "this write call needs the user's approval, and this run cannot " \
+        "ask for it" in saved, saved
+    assert "the user did not approve" not in saved, saved
+
+
 def test_project_cannot_switch_permissions_to_free(ctx):
     """A cloned repository cannot disable approvals."""
     ctx.write_project_config("permissions = free\n")

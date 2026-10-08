@@ -3,6 +3,14 @@
 The fixture pins ARQAN_SYSTEM_PROMPT, so a case clears it to reach the files.
 """
 
+import json
+
+INTERNAL_WORDS = (
+    "Build mode", "build mode", "harness", "rendering", "spill note",
+    "turn deadline", "images enabled", "shell_timeout_ms",
+    "permissions are set",
+)
+
 
 def system_message(ctx, s, text="hello"):
     """Run one turn and return the system message the provider received."""
@@ -12,6 +20,17 @@ def system_message(ctx, s, text="hello"):
     msg = ctx.mock.requests[-1]["messages"][0]
     assert msg["role"] == "system"
     return msg["content"]
+
+
+def model_view(ctx, **env):
+    """The system message and the tools, by name, of one turn."""
+    ctx.scenario("text=ok")
+    s = ctx.spawn(ARQAN_SYSTEM_PROMPT=None, **env)
+    content = system_message(ctx, s)
+    s.close()
+    tools = {t["function"]["name"]: t["function"]
+             for t in ctx.mock.requests[-1]["tools"]}
+    return content, tools
 
 
 def write_global(ctx, text):
@@ -111,6 +130,73 @@ def test_disabled_editing_tools_have_no_shell_editing_guidance(ctx):
     content = system_message(ctx, s)
 
     assert "inline scripts or shell redirection" not in content, content
+
+
+def test_approval_wording_holds_under_both_permission_settings(ctx):
+    """Free never asks, so approval is only ever a possibility.
+
+    The model cannot see the setting, so the wording names none. The prompt
+    and tools stay the same under both settings, so switching keeps the
+    provider's prompt cache."""
+    seen = []
+    for policy in ("ask", "free"):
+        ctx.scenario("text=ok")
+        s = ctx.spawn(ARQAN_SYSTEM_PROMPT=None, ARQAN_PERMISSIONS=policy)
+        content = system_message(ctx, s)
+        s.close()
+        tools = {t["function"]["name"]: t["function"]["description"]
+                 for t in ctx.mock.requests[-1]["tools"]}
+        seen.append((content, tools))
+    assert seen[0] == seen[1]
+
+    content, tools = seen[0]
+    assert "- Some calls may wait for the user's approval" in content, content
+    assert "- Reading a path outside the project may need the user's " \
+        "approval" in content, content
+    assert tools["read"].endswith(
+        "A path outside the project may need the user's approval."), \
+        tools["read"]
+    bash = tools["bash"]
+    assert "runs without asking the user" not in bash, bash
+    assert "never needs approval and is the only kind allowed in plan " \
+        "mode" in bash, bash
+    assert "Any other command" in bash, bash
+    assert "may need the user's approval." in bash, bash
+    for text in (content, *tools.values()):
+        assert "needs the user's approval" not in text, text
+        assert "calls wait for" not in text, text
+        assert "permissions are set" not in text, text
+
+
+def test_model_facing_text_names_no_internals(ctx):
+    """The model has none of arqan's source, so internal words tell it nothing."""
+    content, tools = model_view(ctx)
+    text = content + json.dumps(tools)
+    for word in INTERNAL_WORDS:
+        assert word not in text, word
+
+    assert "- Use batch for ordered tool calls whose arguments are already " \
+        "known; each step runs under the same rules as a call on its own\n" \
+        in content, content
+    assert "a pipeline of reading programs never needs approval, so prefer " \
+        "it to an inline script" in content, content
+    batch = tools["batch"]["description"]
+    assert "Each step runs under the same rules as a call on its own" \
+        in batch, batch
+    assert "its note naming the full output file" in batch, batch
+    timeout = tools["bash"]["parameters"]["properties"]["timeout_ms"]
+    assert timeout["description"].startswith(
+        "how long to wait before the command becomes a job, in "
+        "milliseconds"), timeout
+
+
+def test_read_describes_images_only_when_they_are_on(ctx):
+    """With images off, read has no image behaviour to describe."""
+    _, on = model_view(ctx)
+    assert "PNG, JPEG, GIF and WebP files return their whole image " \
+        "content" in on["read"]["description"], on["read"]
+    _, off = model_view(ctx, ARQAN_IMAGES="off")
+    assert "image" not in off["read"]["description"].lower(), off["read"]
 
 
 def test_project_system_md_wins_over_the_global_one(ctx):

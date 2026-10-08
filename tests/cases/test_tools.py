@@ -1370,10 +1370,11 @@ def test_read_of_an_image_with_images_off_is_refused(ctx):
 
     results = ctx.mock.tool_results()
     assert results and results[0].startswith("ERROR:"), results
-    assert "images are off" in results[0], results[0]
+    assert "images are not available in this session" in results[0], \
+        results[0]
     assert "\ufffd" not in results[0], results[0]
     text = s.text()
-    assert "images are off" in text, text
+    assert "images are not available in this session" in text, text
 
 
 def test_read_of_a_binary_file_is_refused(ctx):

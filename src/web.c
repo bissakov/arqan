@@ -1448,7 +1448,7 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out, char *err,
     if (!answered) {
         if (!attempts_n)
             search_attempts_add(attempts, sizeof attempts, &attempts_n,
-                                "no search endpoint is configured");
+                                "web search is not available in this session");
         if (blocked) {
             snprintf(err, err_cap, "%s; do not retry a paused endpoint",
                      attempts);

@@ -224,6 +224,34 @@ def git_available() -> bool:
     return shutil.which("git") is not None
 
 
+def bash_description(ctx, **env) -> str:
+    ctx.scenario("final_text=done")
+    s = ctx.spawn(**env)
+    s.submit("hello")
+    s.wait_turn_done()
+    s.close()
+    return next(t["function"]["description"]
+                for t in ctx.mock.requests[-1]["tools"]
+                if t["function"]["name"] == "bash")
+
+
+def test_the_sandbox_is_described_only_when_it_runs(ctx):
+    """Without Landlock a read-only command runs unconfined, so bash claims
+    no sandbox; with it, the network is named only where the kernel
+    denies it."""
+    off = bash_description(ctx, ARQAN_TEST_NO_LANDLOCK="1")
+    assert "is read-only: it never needs approval" in off, off
+    assert "filesystem writes" not in off, off
+    assert "network" not in off, off
+    assert "On Linux" not in off, off
+    if not landlock_available():
+        return
+    on = bash_description(ctx)
+    assert "A read-only command runs with filesystem writes" in on, on
+    assert "On Linux" not in on, on
+    assert ("the network denied" in on) == (landlock_abi() >= 4), on
+
+
 def git(ctx, *args, cwd=None):
     subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
                     "-c", "init.defaultBranch=main", *args],
