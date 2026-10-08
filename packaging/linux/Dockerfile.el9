@@ -9,6 +9,6 @@ FROM almalinux:9@sha256:d2515c769e7b73f95c4fde38c0a505336ff38f14990c0b7253b77060
 # coreutils is left out on purpose: the base image ships coreutils-single,
 # which provides the same utilities and conflicts with the split package.
 RUN dnf -y install --setopt=install_weak_deps=False \
-      binutils ca-certificates diffutils file findutils gcc grep gzip \
+      binutils ca-certificates diffutils file findutils gcc git grep gzip \
       libcurl-devel make ncurses python3 sed tar util-linux \
  && dnf clean all

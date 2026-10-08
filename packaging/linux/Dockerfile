@@ -10,7 +10,7 @@ RUN sed -i -e '/^deb /d' -e 's/^# deb http:\/\/snapshot/deb http:\/\/snapshot/' 
  && echo 'Acquire::Check-Valid-Until "false";' >/etc/apt/apt.conf.d/99snapshot \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
-      binutils ca-certificates coreutils file findutils gcc grep gzip \
+      binutils ca-certificates coreutils file findutils gcc git grep gzip \
       cpio dpkg-dev libarchive-tools libc6-dev libcurl4 libcurl4-openssl-dev \
       make python3 rpm rpm2cpio sed tar zstd \
  && rm -rf /var/lib/apt/lists/*

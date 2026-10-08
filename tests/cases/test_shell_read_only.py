@@ -12,6 +12,7 @@ import ctypes
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -218,6 +219,11 @@ def landlock_abi() -> int:
     return max(0, abi)
 
 
+def git_available() -> bool:
+    """The pinned musl builder image has no git."""
+    return shutil.which("git") is not None
+
+
 def git(ctx, *args, cwd=None):
     subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
                     "-c", "init.defaultBranch=main", *args],
@@ -371,12 +377,16 @@ def git_reads_work_from(ctx, cwd: Path):
 
 
 def test_git_works_from_a_subdirectory_of_the_repository(ctx):
+    if not git_available():
+        return
     a_small_tree(ctx)
     a_committed_tree(ctx)
     git_reads_work_from(ctx, ctx.work / "src")
 
 
 def test_git_works_from_a_linked_worktree(ctx):
+    if not git_available():
+        return
     a_small_tree(ctx)
     a_committed_tree(ctx)
     git(ctx, "worktree", "add", "-q", str(ctx.home / "linked"))
@@ -386,6 +396,8 @@ def test_git_works_from_a_linked_worktree(ctx):
 def test_git_works_where_dot_git_is_a_file(ctx):
     """A submodule checkout: `.git` is a file naming the git directory by a
     relative path."""
+    if not git_available():
+        return
     checkout = ctx.home / "module"
     checkout.mkdir()
     (checkout / "notes.txt").write_text("alpha\n")
@@ -414,6 +426,8 @@ PLAIN_GIT = [
 
 
 def test_without_landlock_git_that_can_run_a_driver_asks(ctx):
+    if not git_available():
+        return
     a_small_tree(ctx)
     a_committed_tree(ctx)
     ctx.scenario(",".join(bash(c, f"plain {i:02d}") for i, c in enumerate(PLAIN_GIT))
