@@ -52,10 +52,13 @@ chmod 700 "$WORK/tree-sitter"
 
 # Generate every parser at ABI 15. C++ is pinned to an already generated ABI
 # 15 commit because its grammar imports C as a JavaScript module.
-for role in c rust go python javascript bash json toml yaml csharp; do
+for role in c rust go python javascript bash json toml yaml csharp ini \
+    properties gitattributes requirements dockerfile cmake nix hcl make; do
     (cd "$WORK/src/$role" && "$WORK/tree-sitter" generate --abi=15 \
         --js-runtime native)
 done
+(cd "$WORK/src/xml/xml" && "$WORK/tree-sitter" generate --abi=15 \
+    --js-runtime native)
 mkdir -p "$WORK/src/typescript/node_modules"
 ln -s "$WORK/src/typescript-base" \
     "$WORK/src/typescript/node_modules/tree-sitter-javascript"
@@ -79,15 +82,14 @@ cp -a "$WORK/src/runtime/LICENSE" "$OUT/licenses/tree-sitter.txt"
 cp -a "$WORK/src/typescript/common/scanner.h" "$OUT/common/scanner.h"
 
 copy_language() {
-    name=$1 role=$2 sub=$3
+    name=$1 role=$2 sub=$3 query=${4:-$WORK/src/$2/queries/highlights.scm}
     src="$WORK/src/$role"
     [ "$sub" = . ] || src="$src/$sub"
     mkdir -p "$OUT/grammars/$name"
     cp -a "$src/src/parser.c" "$OUT/grammars/$name/parser.c"
     [ ! -f "$src/src/scanner.c" ] || \
         cp -a "$src/src/scanner.c" "$OUT/grammars/$name/scanner.c"
-    cp -a "$WORK/src/$role/queries/highlights.scm" \
-        "$OUT/grammars/$name/highlights.scm"
+    cp -a "$query" "$OUT/grammars/$name/highlights.scm"
 }
 
 copy_language c c .
@@ -104,9 +106,32 @@ copy_language toml toml .
 copy_language yaml yaml .
 cp -a "$WORK/src/yaml/src/schema.core.c" "$OUT/grammars/yaml/schema.core.c"
 copy_language csharp csharp .
+copy_language ini ini .
+copy_language properties properties .
+copy_language gitattributes gitattributes .
+copy_language requirements requirements .
+copy_language xml xml xml "$WORK/src/xml/queries/xml/highlights.scm"
+copy_language dockerfile dockerfile .
+copy_language cmake cmake .
+copy_language nix nix .
+# NOTE: tree-sitter-hcl ships no highlight query; nvim-treesitter keeps one.
+copy_language hcl hcl . \
+    "$WORK/src/nvim-treesitter/runtime/queries/hcl/highlights.scm"
+copy_language make make .
+
+# NOTE: the XML scanner includes its own ../../common/scanner.h, which would
+# resolve to the TypeScript one under vendor/tree-sitter/common.
+cp -a "$WORK/src/xml/common/scanner.h" "$OUT/grammars/xml/common-scanner.h"
+sed -i 's|#include "../../common/scanner.h"|#include "common-scanner.h"|' \
+    "$OUT/grammars/xml/scanner.c"
+grep -q '#include "common-scanner.h"' "$OUT/grammars/xml/scanner.c" || {
+    echo "xml scanner: common header include not found" >&2
+    exit 1
+}
 
 for role in c cpp rust go python javascript typescript bash json toml yaml \
-    csharp; do
+    csharp ini properties gitattributes requirements xml dockerfile cmake nix \
+    hcl make nvim-treesitter; do
     cp -a "$WORK/src/$role/LICENSE" "$OUT/licenses/$role.txt"
 done
 
