@@ -1,8 +1,8 @@
 name: Release build
 
-# The tag workflow runs scripts/release-linux.sh too late: by then the change
-# that broke the Debian 11, EL9 or musl build, or the packages, is merged. This
-# runs the same script on every change, so the change that breaks it fails.
+# The tag workflow runs the release build too late: by then the change that
+# broke the Debian 11, EL9 or musl build, or the packages, is merged. This runs
+# the same jobs on every change, so the change that breaks them fails.
 on:
   pull_request:
   push:
@@ -17,9 +17,6 @@ permissions:
   contents: read
 
 jobs:
-  # A required check that never reports blocks the pull request forever, so
-  # this job always runs and the expensive one skips instead. GitHub reports a
-  # job skipped by `if:` as a success, which satisfies the required check.
   changes:
     runs-on: ubuntu-24.04
     outputs:
@@ -33,21 +30,16 @@ jobs:
         id: detect
         uses: ./.github/actions/detect-changes
 
-  packages:
+  # Always called, so the required `release / packages` check always reports:
+  # it skips, which passes, for a docs-only change and fails when change
+  # detection did not succeed.
+  release:
     needs: changes
-    if: always() && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false')
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Check change detection
-        if: needs.changes.result != 'success' || needs.changes.outputs.code != 'true'
-        run: |
-          echo "change detection failed" >&2
-          exit 1
-      - name: Check out source
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-      - name: Build, test and install the release packages
-        run: scripts/release-linux.sh
-        env:
-          # The same reason as in test.yml: three jobs per core on the four
-          # shared cores starve the suite into false failures.
-          ARQAN_TEST_JOBS: 4
+    if: always()
+    uses: ./.github/workflows/release-jobs.yml
+    with:
+      changes: >-
+        ${{ needs.changes.result != 'success' && 'unknown'
+        || needs.changes.outputs.code == 'true' && 'code'
+        || needs.changes.outputs.code == 'false' && 'docs'
+        || 'unknown' }}

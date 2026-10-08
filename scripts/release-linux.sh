@@ -1,4 +1,8 @@
 #!/bin/sh
+# Build, test and package the Linux release in Docker, then install the
+# packages on each target distribution. With no argument every stage runs in
+# order. CI runs the debian, el9 and musl stages as parallel jobs, then the
+# package stage with bin/el9 and bin/musl from the other two.
 set -eu
 
 PROGRAM=arqan
@@ -20,6 +24,16 @@ fail() {
     exit 1
 }
 
+stage=${1:-all}
+case $stage in
+    all|debian|el9|musl|package) ;;
+    *) fail "unknown stage '$stage'; use debian, el9, musl or package" ;;
+esac
+
+runs() {
+    [ "$stage" = all ] || [ "$stage" = "$1" ]
+}
+
 command -v docker >/dev/null 2>&1 || fail 'Docker is required'
 docker info >/dev/null 2>&1 || fail 'Docker daemon is unavailable'
 command -v git >/dev/null 2>&1 || fail 'git is required to derive the commit timestamp'
@@ -35,11 +49,13 @@ pkg=arqan-${version}-1-x86_64.pkg.tar.zst
 archive=arqan-${version}-linux-x86_64.tar.gz
 top=arqan-${version}-linux-x86_64
 
-rm -rf -- "$ROOT/dist"
 complete=false
 cleanup() {
-    if ! $complete; then rm -rf -- "$ROOT/dist"; fi
+    if runs package && ! $complete; then rm -rf -- "$ROOT/dist"; fi
 }
+if runs package; then
+    rm -rf -- "$ROOT/dist"
+fi
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
@@ -56,14 +72,25 @@ release_in() {
         sh -ec "$1"
 }
 
-docker build --platform linux/amd64 -f "$DOCKERFILE" -t "$IMAGE" "$ROOT/packaging/linux"
-release_in 'make clean && make test'
+if runs debian || runs package; then
+    docker build --platform linux/amd64 -f "$DOCKERFILE" -t "$IMAGE" "$ROOT/packaging/linux"
+fi
+if runs debian; then
+    release_in 'make clean && make test'
+fi
 # The deb comes from the Debian image, the rpm from the EL9 one and the
 # portable archive from the musl one. Build those two pairs between the runs:
 # `make clean` above would otherwise remove them, and packaging below requires
 # them.
-"$ROOT/scripts/build-el9.sh"
-"$ROOT/scripts/build-musl.sh"
+if runs el9; then
+    "$ROOT/scripts/build-el9.sh"
+fi
+if runs musl; then
+    "$ROOT/scripts/build-musl.sh"
+fi
+if ! runs package; then
+    exit 0
+fi
 release_in 'make package-linux && make test-package-linux'
 
 smoke_deb() {
