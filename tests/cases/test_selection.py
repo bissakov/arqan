@@ -1,5 +1,7 @@
 """Mouse selection: highlighting, OSC 52 copy and what invalidates a range."""
 
+from tests.cases.test_copy import fake_tmux, tmux_received
+
 
 def transcript_turn(ctx, s, text="alpha beta gamma delta"):
     ctx.scenario(f"text={text.replace(' ', '+')}")
@@ -71,14 +73,29 @@ def test_copy_shows_a_status_notice(ctx):
     assert "copied" in s.status_line(), s.status_line()
 
 
-def test_a_drag_under_tmux_says_what_carries_the_copy_once(ctx):
-    """tmux drops the sequence by default; the caveat is said on the first
-    drag and not on every one after it."""
-    s = ctx.spawn(TMUX="/tmp/tmux-1000/default,4242,0")
+def test_a_drag_under_tmux_hands_the_selection_to_tmux(ctx):
+    """Under tmux a drag copies through `tmux load-buffer -w -`, not an OSC
+    52 that tmux 3.7c can drop, and needs no caveat."""
+    s = ctx.spawn(**fake_tmux(ctx))
+    transcript_turn(ctx, s)
+    row = row_of(s, "alpha beta gamma delta")
+    drag(s, row, 3, 12)
+    assert tmux_received(ctx) == ("load-buffer\n-w\n-\n", "alpha beta")
+    assert "copied" in s.status_line(), s.status_line()
+    assert "set-clipboard on" not in s.text(), s.text()
+    assert s.screen.clipboard is None, repr(s.screen.clipboard)
+
+
+def test_a_drag_under_an_older_tmux_says_what_carries_the_copy_once(ctx):
+    """When tmux refuses `load-buffer -w`, the drag falls back to OSC 52,
+    which tmux drops by default; the caveat is said on the first drag and not
+    on every one after it."""
+    s = ctx.spawn(**fake_tmux(ctx, exit_code=1))
     transcript_turn(ctx, s)
     row = row_of(s, "alpha beta gamma delta")
     drag(s, row, 3, 12)
     s.wait_text("set-clipboard on")
+    assert s.screen.clipboard == "alpha beta", repr(s.screen.clipboard)
     s.key("esc")           # Esc retires the notice
     s.wait_gone("set-clipboard on")
     drag(s, row, 3, 12)

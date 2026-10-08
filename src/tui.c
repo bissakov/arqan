@@ -639,13 +639,22 @@ static void b64_put(const u8 *p, size_t n) {
     }
 }
 
-b8 tui_clipboard_via_tmux(void) {
-    return getenv("TMUX") != NULL;
+/* NOTE: tmux 3.7c drops an OSC 52 that reaches it before it has redrawn the
+ * pane after `\033[?2026l`, and every frame ends with one, so under tmux the
+ * copy goes through tmux itself and OSC 52 is only the fallback. */
+static TuiCopyResult copy_send(Str text) {
+    b8 via_tmux = getenv("TMUX") != NULL;
+    if (via_tmux && clipboard_tmux_write(text)) return TUI_COPY_DONE;
+    put_str("\033]52;c;");
+    b64_put((const u8 *)text.p, text.n);
+    put_str("\a");
+    flush_out();
+    return via_tmux ? TUI_COPY_TMUX_UNCONFIRMED : TUI_COPY_DONE;
 }
 
-static void copy_acknowledge(void) {
+static void copy_acknowledge(TuiCopyResult result) {
     g_tui.copy_notice = agent_now_seconds() + 2.0;
-    if (!tui_clipboard_via_tmux() || g_tui.tmux_copy_hinted) return;
+    if (result != TUI_COPY_TMUX_UNCONFIRMED || g_tui.tmux_copy_hinted) return;
     g_tui.tmux_copy_hinted = true;
     tui_notice(AGENT_TMUX_COPY_NOTICE);
 }
@@ -654,11 +663,7 @@ static void copy_acknowledge(void) {
 static void sel_copy(void) {
     size_t n = sel_extract(g_tui.sel_text, sizeof g_tui.sel_text);
     if (!n) return;
-    put_str("\033]52;c;");
-    b64_put((const u8 *)g_tui.sel_text, n);
-    put_str("\a");
-    flush_out();
-    copy_acknowledge();
+    copy_acknowledge(copy_send((Str){g_tui.sel_text, n}));
 }
 
 static void sel_clear(void) {
@@ -3567,15 +3572,12 @@ void tui_set_setup_hint(Str hint) {
     repaint();
 }
 
-b8 tui_copy(Str text) {
-    if (!text.n || text.n > TUI_SEL_BYTES) return false;
-    put_str("\033]52;c;");
-    b64_put((const u8 *)text.p, text.n);
-    put_str("\a");
-    flush_out();
+TuiCopyResult tui_copy(Str text) {
+    if (!text.n || text.n > TUI_SEL_BYTES) return TUI_COPY_TOO_LARGE;
+    TuiCopyResult result = copy_send(text);
     g_tui.copy_notice = agent_now_seconds() + 2.0;
     repaint();
-    return true;
+    return result;
 }
 
 void tui_set_context(size_t tokens, b8 known, b8 exact, size_t window) {

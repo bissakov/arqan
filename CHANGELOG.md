@@ -55,6 +55,13 @@
 
 ### Fixed
 
+- A copy inside tmux reaches the system clipboard. tmux 3.7c drops a copy
+  that arrives right after a screen update, so `/copy` and drag-select
+  often did not reach the clipboard even with `set-clipboard on`. Under
+  tmux, arqan now copies with `tmux load-buffer -w -`, which also works with
+  tmux's default `set-clipboard external`. The `set-clipboard on` notice
+  shows only when tmux refuses that command, as tmux before 3.2 does.
+
 - While a picker is open, such as an `ask_user` question, a mouse drag
   selects and copies text again.
 
