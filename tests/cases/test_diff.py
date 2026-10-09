@@ -3,6 +3,7 @@
 import json
 import subprocess
 
+from tests.cases.test_shell_read_only import git_available
 from tests.cases.test_tools import patch_call
 
 MUTED = 245
@@ -70,15 +71,25 @@ def write_turn(ctx, s, path="new.txt", body="hello\n"):
 
 def test_diff_with_nothing_written_says_so(ctx):
     """Before any write or patch there is nothing to diff."""
-    repo_with(ctx, {"diff.txt": "keep\n"})
     s = ctx.spawn()
     s.submit("/diff")
     s.wait_text("no files were written in this session")
 
 
+def test_diff_without_git_says_git_is_missing(ctx):
+    """With no git on PATH the notice names the missing program."""
+    s = ctx.spawn(PATH=str(ctx.home / "no-bin"))
+    write_turn(ctx, s)
+
+    s.submit("/diff")
+    s.wait_text("git is not installed")
+
+
 def test_diff_shows_a_patched_file_with_tinted_rows(ctx):
     """A patched, committed file shows as git's diff: removed rows on the
     delete tint, added rows on the add tint, headers muted."""
+    if not git_available():
+        return
     repo_with(ctx, {"diff.txt": "keep\nold one\nkeep\n"})
     s = ctx.spawn()
     patch_turn(ctx, s)
@@ -101,6 +112,8 @@ def test_diff_shows_a_patched_file_with_tinted_rows(ctx):
 
 def test_diff_shows_a_new_file_against_dev_null(ctx):
     """A file git does not track yet is diffed against /dev/null."""
+    if not git_available():
+        return
     repo_with(ctx, {"keep.txt": "keep\n"})
     s = ctx.spawn()
     write_turn(ctx, s)
@@ -114,6 +127,8 @@ def test_diff_shows_a_new_file_against_dev_null(ctx):
 
 def test_diff_outside_a_repository_carries_gits_message(ctx):
     """Without a repository the notice says what git said."""
+    if not git_available():
+        return
     s = ctx.spawn()
     write_turn(ctx, s)
 
@@ -124,6 +139,8 @@ def test_diff_outside_a_repository_carries_gits_message(ctx):
 def test_diff_survives_resume_and_resets_on_clear(ctx):
     """The touched list is saved with the session and comes back with it;
     /clear starts a fresh one."""
+    if not git_available():
+        return
     repo_with(ctx, {"keep.txt": "keep\n"})
     s = ctx.spawn()
     write_turn(ctx, s)
@@ -148,6 +165,8 @@ def test_diff_survives_resume_and_resets_on_clear(ctx):
 
 def test_diff_stays_off_the_wire(ctx):
     """/diff is for the user; the next request carries no diff text."""
+    if not git_available():
+        return
     repo_with(ctx, {"diff.txt": "keep\nold one\nkeep\n"})
     s = ctx.spawn()
     patch_turn(ctx, s)
