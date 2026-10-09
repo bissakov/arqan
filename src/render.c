@@ -8,6 +8,7 @@ enum {
     R_RESULT_LINES = 12,
     R_LINE_BYTES = 200,
     R_TARGET_BYTES = 120,
+    R_PAIR_LINES = 64,
 
     R_CMD_BYTES = 1024
 };
@@ -688,36 +689,186 @@ static size_t patch_batch(Str patch, char *out, size_t cap) {
     return n;
 }
 
+static u8 patch_marker(Str line, Str *fragment) {
+    return patch_fragment(line, fragment) ? (u8)line.p[0] : 0;
+}
+
+static size_t patch_file_count(Str patch) {
+    size_t off = 0, files = 0;
+    Str body, hint;
+    while (files < 2 && patch_section(patch, &off, &body, &hint)) files++;
+    return files;
+}
+
+static b8 git_preamble(Str patch, Str line, size_t off) {
+    if (!str_starts(line, STR("diff --git "))
+        && !str_starts(line, STR("index ")))
+        return false;
+    static const Str meta[] = {
+        {"index ", 6},   {"new file mode", 13}, {"deleted file mode", 17},
+        {"old mode", 8}, {"new mode", 8},       {"similarity ", 11},
+        {"rename ", 7}};
+    Str next;
+    for (size_t seen = 0; seen < 8 && str_line(patch, &off, &next); seen++) {
+        size_t peek = off;
+        Str hint;
+        if (str_starts(next, STR("--- ")))
+            return patch_file_header(patch, next, &peek, &hint);
+        b8 known = false;
+        for (size_t i = 0; !known && i < sizeof meta / sizeof *meta; i++)
+            known = str_starts(next, meta[i]);
+        if (!known) return false;
+    }
+    return false;
+}
+
+static b8 patch_next_row(Str patch, size_t *off, b8 several, Str *line,
+                         Str *file) {
+    while (str_line(patch, off, line)) {
+        *file = (Str){0};
+        size_t peek = *off;
+        Str hint;
+        if (patch_file_header(patch, *line, &peek, &hint)) {
+            if (str_starts(*line, STR("*** Add File: "))
+                || str_starts(*line, STR("*** Delete File: ")))
+                return true;
+            *off = peek;
+            if (!several) continue;
+            *file = hint;
+            return true;
+        }
+        Str bare = str_trim(*line);
+        if (str_eq(bare, STR("*** Begin Patch"))
+            || str_eq(bare, STR("*** End Patch"))
+            || git_preamble(patch, *line, *off))
+            continue;
+        return true;
+    }
+    return false;
+}
+
+typedef struct {
+    Str del[R_PAIR_LINES], add[R_PAIR_LINES];
+    size_t n, del_at, add_at;
+} PatchPairs;
+
+static void pair_block(Str patch, size_t off, PatchPairs *p) {
+    size_t del = 0, add = 0;
+    p->n = p->del_at = p->add_at = 0;
+    Str line, fragment;
+    while (str_line(patch, &off, &line)) {
+        u8 marker = patch_marker(line, &fragment);
+        if (marker == '-' && !add) {
+            if (del == R_PAIR_LINES) return;
+            p->del[del++] = fragment;
+        } else if (marker == '+') {
+            if (add == R_PAIR_LINES) return;
+            p->add[add++] = fragment;
+        } else {
+            break;
+        }
+    }
+    if (del == add) p->n = del;
+}
+
+static const Str *pair_partner(PatchPairs *p, u8 marker) {
+    if (marker == '-') return p->del_at < p->n ? &p->add[p->del_at++] : NULL;
+    return p->add_at < p->n ? &p->del[p->add_at++] : NULL;
+}
+
+static b8 word_byte(char c) {
+    unsigned char u = (unsigned char)c;
+    return u >= 0x80 || u == '_' || (u >= '0' && u <= '9')
+           || ((u | 0x20) >= 'a' && (u | 0x20) <= 'z');
+}
+
+static b8 inside_word(Str s, size_t at, size_t floor) {
+    return at > floor && at < s.n && word_byte(s.p[at - 1])
+           && word_byte(s.p[at]);
+}
+
+static b8 changed_span(Str line, Str other, size_t *a, size_t *b) {
+    size_t shorter = line.n < other.n ? line.n : other.n;
+    size_t pre = 0, suf = 0;
+    while (pre < shorter && line.p[pre] == other.p[pre]) pre++;
+    if (pre == line.n && pre == other.n) return false;
+    while (suf < shorter - pre
+           && line.p[line.n - 1 - suf] == other.p[other.n - 1 - suf])
+        suf++;
+    while (inside_word(line, pre, 0) || inside_word(other, pre, 0)) pre--;
+    while (suf
+           && (inside_word(line, line.n - suf, pre)
+               || inside_word(other, other.n - suf, pre)))
+        suf--;
+    size_t indent = 0;
+    while (indent < pre && (line.p[indent] == ' ' || line.p[indent] == '\t'))
+        indent++;
+    size_t kept = pre + suf - indent;
+    if (!kept || kept * 4 < shorter - indent) return false;
+    *a = pre;
+    *b = line.n - suf;
+    return true;
+}
+
+static void write_patch_line(Str patch, Str line, Str head, Str fragment_full,
+                             const Str *partner, const YhlResult *hl,
+                             Str gutter) {
+    Sink sign = tui_write_muted, body = tui_write_dim, side = tui_write_dim,
+         changed = tui_write_dim;
+    if (line.p[0] == '+') {
+        sign = tui_write_result;
+        body = side = tui_write_diff_add;
+        changed = tui_write_diff_add_changed;
+    } else if (line.p[0] == '-') {
+        sign = tui_write_error;
+        body = side = tui_write_diff_del;
+        changed = tui_write_diff_del_changed;
+    }
+    side(gutter);
+    if (head.n) sign((Str){head.p, 1});
+    Str fragment = str_drop(head, 1);
+    if (fragment.n) {
+        size_t at = tui_transcript_pos();
+        size_t a = fragment.n, b = fragment.n;
+        if (partner && changed_span(fragment_full, *partner, &a, &b)) {
+            if (a > fragment.n) a = fragment.n;
+            if (b > fragment.n) b = fragment.n;
+        }
+        body((Str){fragment.p, a});
+        changed((Str){fragment.p + a, b - a});
+        body(str_drop(fragment, b));
+        if (line.p[0] != ' ')
+            add_line_syntax(hl, patch, (size_t)(fragment_full.p - patch.p),
+                            fragment, at);
+    }
+    if (head.n < line.n) side(STR(" ..."));
+}
+
 static void write_patch_lines(Str patch, const YhlResult *hl, Str gutter,
                               size_t max) {
     size_t cap = line_cap(max);
+    b8 several = patch_file_count(patch) > 1;
+    PatchPairs pairs;
+    pairs.n = 0;
+    u8 prev = 0;
     size_t off = 0, shown = 0;
-    Str line;
-    while (shown < cap && str_line(patch, &off, &line)) {
+    Str line, file;
+    while (shown < cap && patch_next_row(patch, &off, several, &line, &file)) {
         Str head = clip(line, R_LINE_BYTES);
-        Str full_fragment;
-        if (patch_fragment(line, &full_fragment)) {
-            Sink marker = tui_write_muted, body = tui_write_source,
-                 side = tui_write_dim;
-            if (line.p[0] == '+') {
-                marker = tui_write_result;
-                body = tui_write_diff_add;
-                side = tui_write_diff_add;
-            } else if (line.p[0] == '-') {
-                marker = tui_write_error;
-                body = tui_write_diff_del;
-                side = tui_write_diff_del;
-            }
-            side(gutter);
-            if (head.n) marker((Str){head.p, 1});
-            Str fragment = str_drop(head, 1);
-            if (fragment.n) {
-                size_t at = tui_transcript_pos();
-                body(fragment);
-                add_line_syntax(hl, patch, (size_t)(full_fragment.p - patch.p),
-                                fragment, at);
-            }
-            if (head.n < line.n) side(STR(" ..."));
+        Str fragment_full = {0};
+        u8 marker = file.n ? 0 : patch_marker(line, &fragment_full);
+        if (marker == '-' && prev != '-')
+            pair_block(patch, (size_t)(line.p - patch.p), &pairs);
+        else if (marker != '-' && marker != '+')
+            pairs.n = 0;
+        if (file.n) {
+            tui_write_dim(gutter);
+            write_clipped(file, R_LINE_BYTES, write_search_path);
+        } else if (marker) {
+            const Str *partner =
+                marker == ' ' ? NULL : pair_partner(&pairs, marker);
+            write_patch_line(patch, line, head, fragment_full, partner, hl,
+                             gutter);
         } else if (str_starts(line, STR("+++ "))
                    || str_starts(line, STR("--- "))) {
             tui_write_dim(gutter);
@@ -731,9 +882,11 @@ static void write_patch_lines(Str patch, const YhlResult *hl, Str gutter,
         }
         tui_write(STR("\n"));
         shown++;
+        prev = marker;
     }
-    write_tail(gutter, str_lines(str_drop(patch, off)), shown, max,
-               tui_write_dim);
+    size_t rest = 0;
+    while (patch_next_row(patch, &off, several, &line, &file)) rest++;
+    write_tail(gutter, rest, shown, max, tui_write_dim);
     tui_syntax_commit();
 }
 

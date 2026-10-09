@@ -514,6 +514,8 @@ typedef enum {
     THEME_SYNTAX_BUILTIN,
     THEME_DIFF_ADD_BG,
     THEME_DIFF_DEL_BG,
+    THEME_DIFF_ADD_CHANGED_BG,
+    THEME_DIFF_DEL_CHANGED_BG,
     THEME_SLOT_N
 } ThemeSlot;
 
@@ -2232,6 +2234,8 @@ void tui_write_result(Str s);
 void tui_write_error(Str s);
 void tui_write_diff_add(Str s);
 void tui_write_diff_del(Str s);
+void tui_write_diff_add_changed(Str s);
+void tui_write_diff_del_changed(Str s);
 
 void tui_user_begin(Str timestamp);
 void tui_user_end(void);

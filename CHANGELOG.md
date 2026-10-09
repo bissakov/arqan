@@ -12,6 +12,13 @@
   `/diff`, added lines sit on a green background and removed lines on a red
   one, with the file headers muted. Two theme slots control the colours:
   `diff_add_bg` and `diff_del_bg`.
+- A `patch` call in the transcript reads more like a review. A one-file
+  patch drops its `---`/`+++` rows, git's `diff --git` and `index` lines,
+  and the `*** Begin Patch` envelope, since the call title already names the
+  file; a patch over several files gets one row per file. Unchanged lines are
+  muted. When removed lines are followed by the same number of added lines,
+  each pair marks the words that changed on a stronger background, set by
+  the theme slots `diff_add_changed_bg` and `diff_del_changed_bg`.
 - Approximate syntax highlighting for Unity shaders. `.shader`, `.cginc`,
   `.hlsl` and `.compute` files, and code fences marked `hlsl` or `shaderlab`,
   use the C highlighter. Strings, comments, numbers, preprocessor lines, HLSL
