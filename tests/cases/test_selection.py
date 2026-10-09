@@ -215,6 +215,19 @@ def test_composer_text_is_selectable(ctx):
     assert s.screen.clipboard == "copy", repr(s.screen.clipboard)
 
 
+def test_composer_text_after_the_cursor_is_selectable(ctx):
+    """Placing the terminal cursor does not cut the row the copy reads, so
+    text after the cursor copies like text before it."""
+    s = ctx.spawn()
+    s.type("copy this").sync()
+    s.key("home").sync()
+    row = row_of(s, "copy this")
+    start = 5 + len("copy ")
+    drag(s, row, start, start + len("this") - 1)
+    assert s.screen.clipboard == "this", repr(s.screen.clipboard)
+    assert "copied" in s.status_line(), s.status_line()
+
+
 def test_click_without_drag_copies_nothing(ctx):
     """A plain click drops the old range and copies nothing."""
     s = ctx.spawn()
