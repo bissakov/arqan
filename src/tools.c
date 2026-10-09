@@ -43,10 +43,23 @@ static b8 arg_cstr(Str s, char *z, size_t cap, const char *what, char *err,
     return true;
 }
 
+static void open_failed(const char *z, int e, char *err, size_t err_cap) {
+    char cwd[AGENT_MAX_PATH];
+    const char *why = e ? strerror(e) : "not found";
+    if (z[0] != '/' && getcwd(cwd, sizeof cwd))
+        snprintf(err, err_cap, "open %s failed: %s (relative to %s)", z, why,
+                 cwd);
+    else
+        snprintf(err, err_cap, "open %s failed: %s", z, why);
+}
+
 static b8 slurp(const char *z, Arena *scratch, Str *out, char *err,
                 size_t err_cap) {
     u64 size = 0;
-    switch (file_read(scratch, z, AGENT_MAX_FILE_BYTES, 0, out, &size)) {
+    errno = 0;
+    FileStatus status =
+        file_read(scratch, z, AGENT_MAX_FILE_BYTES, 0, out, &size);
+    switch (status) {
         case FILE_OK: return true;
         case FILE_TOO_LARGE:
             snprintf(err, err_cap, "%s is too large: %llu bytes, limit %u", z,
@@ -65,7 +78,7 @@ static b8 slurp(const char *z, Arena *scratch, Str *out, char *err,
         case FILE_NO_MEMORY:
             snprintf(err, err_cap, "out of memory reading %s", z);
             break;
-        case FILE_MISSING: snprintf(err, err_cap, "open %s failed", z); break;
+        case FILE_MISSING: open_failed(z, errno, err, err_cap); break;
         case FILE_UNREADABLE:
             snprintf(err, err_cap, "read %s failed", z);
             break;
@@ -1588,14 +1601,25 @@ typedef struct {
 } Patch;
 
 
+static b8 patch_path_exists(Str s) {
+    char z[AGENT_MAX_PATH], err[64];
+    struct stat st;
+    return arg_cstr(s, z, sizeof z, "path", err, sizeof err)
+           && stat(z, &st) == 0;
+}
+
 static Str patch_path(Str s) {
     const char *tab = (const char *)memchr(s.p, '\t', s.n);
     if (tab) s.n = (size_t)(tab - s.p);
     s = str_trim(s);
     if (str_eq(s, STR("/dev/null"))) return s;
-    if (str_starts(s, STR("a/")) || str_starts(s, STR("b/")))
-        s = str_drop(s, 2);
-    return s;
+    if (!str_starts(s, STR("a/")) && !str_starts(s, STR("b/"))) return s;
+
+    Str relative = str_drop(s, 2), absolute = str_drop(s, 1);
+    if (relative.n && relative.p[0] != '/' && !patch_path_exists(relative)
+        && patch_path_exists(absolute))
+        return absolute;
+    return relative;
 }
 
 static b8 patch_fail(Patch *p, const char *fmt, ...) {
