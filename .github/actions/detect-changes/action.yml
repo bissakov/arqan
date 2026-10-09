@@ -46,7 +46,7 @@ runs:
         # NOTE: no grep -q here. It exits on the first match, and the SIGPIPE
         # that gives printf would fail the pipeline under pipefail and read as
         # a docs-only change.
-        skip='(^|/)[^/]+\.md$|^docs/|^LICENSE$'
+        skip='(^|/)[^/]+\.md$|^LICENSE$'
         skip="$skip"'|^\.gitignore$|^\.ignore$|^\.git-blame-ignore-revs$'
         outside=$(printf '%s\n' "$files" |
           grep -vE "$skip" || true)

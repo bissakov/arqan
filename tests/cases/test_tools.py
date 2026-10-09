@@ -700,8 +700,7 @@ def test_reading_a_directory_points_to_directory_tools(ctx):
     s.wait_turn_done()
 
     result = ctx.mock.tool_results()[-1]
-    assert "is a directory; use find" in result, result
-    assert "bash with ls" in result, result
+    assert "is a directory; use bash with ls or find" in result, result
 
 
 def test_write_failure_includes_the_system_reason(ctx):

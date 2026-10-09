@@ -241,6 +241,8 @@ static b8 conv_todo_live(const Conv *c, size_t i) {
     return true;
 }
 
+/* NOTE: grep and find were removed in 0.10. A saved session may still hold
+ * their calls, so they render and elide like read. */
 static b8 tool_replayable(Str name) {
     return str_eq(name, STR("read")) || str_eq(name, STR("grep"))
            || str_eq(name, STR("find"));
