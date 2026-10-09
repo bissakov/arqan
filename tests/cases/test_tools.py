@@ -232,14 +232,17 @@ def test_patch_context_lines_are_dimmed(ctx):
 
 
 def test_patch_marks_the_changed_words_of_a_paired_line(ctx):
-    """A removed line and the line that replaces it mark only what differs."""
+    """A removed line and the line that replaces it mark only what differs.
+
+    44 columns is too narrow for two halves, so this covers the one-column
+    view; test_thin_patch_is_side_by_side_at_its_own_width covers the split."""
     ctx.write_file("word.txt", "call(alpha, beta);\n")
     diff = (
         "--- a/word.txt\n+++ b/word.txt\n@@ -1 +1 @@\n"
         "-call(alpha, beta);\n+call(alpha, gamma);\n"
     )
     ctx.scenario(patch_call(diff, final_text="patched"))
-    s = ctx.spawn()
+    s = ctx.spawn(cols=44)
     s.submit("patch it")
     s.wait_text("patched")
     s.wait_turn_done()
@@ -282,6 +285,169 @@ def test_patch_does_not_mark_words_without_a_clear_pair(ctx):
             assert s.screen.attr_at(row, i).bg == bg, (needle, i)
 
 
+SPLIT_DIFF = (
+    "--- a/side.txt\n+++ b/side.txt\n@@ -1,4 +1,5 @@\n"
+    " keep\n-call(alpha, beta);\n+call(alpha, gamma);\n keep\n"
+    "-gone\n+added one\n+added two\n"
+)
+
+
+WIDE_SPLIT_DIFF = (
+    "--- a/side.txt\n+++ b/side.txt\n@@ -1,2 +1,2 @@\n"
+    " keep\n-call(alpha, beta);\n+call(alpha, beta, " + "x" * 90 + ");\n"
+)
+
+
+def split_patch(ctx, cols, diff=SPLIT_DIFF):
+    """Run one patch over side.txt in a terminal `cols` wide."""
+    ctx.write_file("side.txt", "keep\ncall(alpha, beta);\nkeep\ngone\n")
+    ctx.scenario(patch_call(diff, final_text="patched"))
+    s = ctx.spawn(cols=cols, rows=40)
+    s.submit("patch it")
+    s.wait_text("patched")
+    s.wait_turn_done()
+    return s
+
+
+def test_thin_patch_is_side_by_side_at_its_own_width(ctx):
+    """Halves as wide as the widest line put old beside new on 80 columns."""
+    s = split_patch(ctx, 80)
+
+    row = s.screen.find_row("\u2502 -call(alpha, beta);")
+    text = s.screen.row_text(row)
+    assert "\u2502 +call(alpha, gamma);" in text, s.text()
+    old, new = text.index("-call"), text.index("+call")
+    sep = text.index("\u2502", old)
+    assert sep == old + 21, text
+    assert len(text.rstrip()) == new + 20, text
+    assert s.screen.attr_at(row, old).bg == 52
+    assert s.screen.attr_at(row, old).fg == 203
+    assert s.screen.attr_at(row, new).fg == 114
+    assert s.screen.attr_at(row, sep - 2).bg == 52
+    assert s.screen.attr_at(row, sep).bg is None
+    assert s.screen.attr_at(row, new).bg == 22
+    assert s.screen.attr_at(row, len(text.rstrip()) - 1).bg == 22
+    for i in range(text.index("beta"), text.index("beta") + 4):
+        assert s.screen.attr_at(row, i).bg == 88, i
+    for i in range(text.index("gamma"), text.index("gamma") + 5):
+        assert s.screen.attr_at(row, i).bg == 28, i
+
+    keep = s.screen.row_text(row - 1)
+    assert keep.count(" keep") == 2, s.text()
+    assert keep.index(" keep", keep.index("\u2502", 4) + 1) == new, s.text()
+    assert s.screen.attr_at(row - 1, keep.index("keep")).bg is None
+
+    gone = s.screen.find_row("\u2502 -gone")
+    assert "\u2502 +added one" in s.screen.row_text(gone), s.text()
+    two = s.screen.row_text(gone + 1)
+    assert two.index("+added two") == new, s.text()
+    assert two[: two.index("\u2502", 4)].strip() == "\u2502", two
+    assert s.screen.attr_at(gone + 1, old).bg is None
+    assert s.screen.attr_at(gone + 1, new).bg == 22
+
+
+def test_thin_patch_stays_unified_when_its_halves_do_not_fit(ctx):
+    """Too narrow for two copies of the widest line, the diff keeps one column."""
+    s = split_patch(ctx, 44)
+
+    row = s.screen.find_row("\u2502 -call(alpha, beta);")
+    assert row >= 0, s.text()
+    assert "+call" not in s.screen.row_text(row), s.text()
+    assert s.screen.row_text(row + 1).strip() == "\u2502 +call(alpha, gamma);"
+
+
+def test_wide_patch_stays_unified_below_160_columns(ctx):
+    """A line too wide for a half needs 160 columns before the diff splits."""
+    s = split_patch(ctx, 159, WIDE_SPLIT_DIFF)
+
+    row = s.screen.find_row("\u2502 -call(alpha, beta);")
+    assert row >= 0, s.text()
+    assert "+call" not in s.screen.row_text(row), s.text()
+    assert s.screen.row_text(row + 1).startswith("  \u2502 +call(alpha, beta, x")
+
+
+def test_patch_that_only_adds_stays_unified(ctx):
+    """With nothing removed, a left half would only be blank."""
+    diff = (
+        "--- a/side.txt\n+++ b/side.txt\n@@ -1,1 +1,3 @@\n"
+        " keep\n+added one\n+added two\n"
+    )
+    s = split_patch(ctx, 160, diff)
+
+    row = s.screen.find_row("\u2502 +added one")
+    assert row >= 0, s.text()
+    text = s.screen.row_text(row)
+    assert text.index("+added one") == 4, text
+    assert "\u2502" not in text[5:], text
+    assert s.screen.row_text(row - 1).count("keep") == 1, s.text()
+
+
+def test_patch_layout_follows_a_resize(ctx):
+    """Crossing 160 columns redraws the diff in the layout that now fits."""
+    s = split_patch(ctx, 159, WIDE_SPLIT_DIFF)
+    old = "\u2502 -call(alpha, beta);"
+    assert "+call" not in s.screen.row_text(s.screen.find_row(old)), s.text()
+
+    s.resize(160, 40)
+    s.wait_for(lambda t: t.cols == 160, "resize")
+    s.settle()
+    assert "+call" in s.screen.row_text(s.screen.find_row(old)), s.text()
+
+    s.resize(159, 40)
+    s.wait_for(lambda t: t.cols == 159, "resize")
+    s.settle()
+    assert "+call" not in s.screen.row_text(s.screen.find_row(old)), s.text()
+
+
+def split_column(s, first, col, stop):
+    """The text a side-by-side cell at `col` wraps from row `first` on."""
+    pieces = [s.screen.row_text(first)[col + 1:].rstrip()]
+    row = first + 1
+    while stop not in s.screen.row_text(row):
+        cont = s.screen.row_text(row)
+        assert cont[col] == " ", cont
+        assert s.screen.attr_at(row, col - 6).bg == 52
+        assert s.screen.attr_at(row, col).bg == 22
+        pieces.append(cont[col + 1:].rstrip())
+        row += 1
+    assert len(pieces) > 1, s.text()
+    return "".join(pieces)
+
+
+def test_side_by_side_patch_wraps_a_long_line_in_its_column(ctx):
+    """A line wider than its half continues on the next rows of that half."""
+    wide = "w" * 200 + " end of the wide line"
+    diff = (
+        "--- a/side.txt\n+++ b/side.txt\n@@ -1,4 +1,4 @@\n"
+        " keep\n-call(alpha, beta);\n+" + wide + "\n keep\n"
+    )
+    s = split_patch(ctx, 160, diff)
+
+    first = s.screen.find_row("\u2502 -call(alpha, beta);")
+    new = s.screen.row_text(first).index("+w")
+    assert split_column(s, first, new, "keep") == wide, s.text()
+    assert " ..." not in s.text(), s.text()
+
+
+def test_collapsed_side_by_side_patch_clips_a_long_line(ctx):
+    """A folded call keeps each pair to one row and marks what it cut."""
+    wide = "w" * 200 + " end of the wide line"
+    diff = (
+        "--- a/side.txt\n+++ b/side.txt\n@@ -1,2 +1,2 @@\n"
+        " missing\n-" + wide + "\n+short\n"
+    )
+    s = split_patch(ctx, 160, diff)
+
+    row = s.screen.find_row("\u2502 -www")
+    text = s.screen.row_text(row)
+    assert "\u2502 +short" in text, s.text()
+    left = text[: text.index("\u2502 +short")].rstrip()
+    assert left.endswith("w ..."), text
+    assert "end of the wide line" not in s.text(), s.text()
+    assert s.screen.row_text(row + 1).strip().startswith("\u2514\u2500"), s.text()
+    assert ctx.work.joinpath("side.txt").read_text().startswith("keep\n")
+
+
 def test_patch_shows_the_whole_diff(ctx):
     """A patch longer than the preview shows every line, unclipped."""
     wide = "w" * 230 + " end of the wide line"
@@ -305,7 +471,9 @@ def test_patch_shows_the_whole_diff(ctx):
     for i in range(17):
         assert f"\u2502  keep {i:02d}" in text, text
     assert "\u2502 -keep 17" in text, text
-    assert "\u2502 +" + wide in text, text
+    first = s.screen.find_row("\u2502 -keep 17")
+    new = s.screen.row_text(first).index("+w")
+    assert split_column(s, first, new, "\u2514\u2500") == wide, s.text()
     assert " ..." not in text, text
     assert "more lines" not in text, text
     assert "show less" not in text, text

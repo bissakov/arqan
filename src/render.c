@@ -9,6 +9,8 @@ enum {
     R_LINE_BYTES = 200,
     R_TARGET_BYTES = 120,
     R_PAIR_LINES = 64,
+    /* NOTE: a 160-column terminal less its two body gutters. */
+    R_SPLIT_COLS = 156,
 
     R_CMD_BYTES = 1024
 };
@@ -844,8 +846,23 @@ static void write_patch_line(Str patch, Str line, Str head, Str fragment_full,
     if (head.n < line.n) side(STR(" ..."));
 }
 
-static void write_patch_lines(Str patch, const YhlResult *hl, Str gutter,
-                              size_t max) {
+static void write_patch_meta(Str line, Str file, Str gutter) {
+    Str head = clip(line, R_LINE_BYTES);
+    tui_write_dim(gutter);
+    if (file.n) {
+        write_clipped(file, R_LINE_BYTES, write_search_path);
+    } else if (str_starts(line, STR("+++ ")) || str_starts(line, STR("--- "))) {
+        tui_write_dim((Str){head.p, 4});
+        tui_write_styled(str_drop(head, 4), TUI_HEADING);
+        if (head.n < line.n) tui_write_source(STR(" ..."));
+    } else {
+        tui_write_muted(head);
+        if (head.n < line.n) tui_write_source(STR(" ..."));
+    }
+}
+
+static void write_patch_unified(Str patch, const YhlResult *hl, Str gutter,
+                                size_t max) {
     size_t cap = line_cap(max);
     b8 several = patch_file_count(patch) > 1;
     PatchPairs pairs;
@@ -861,24 +878,13 @@ static void write_patch_lines(Str patch, const YhlResult *hl, Str gutter,
             pair_block(patch, (size_t)(line.p - patch.p), &pairs);
         else if (marker != '-' && marker != '+')
             pairs.n = 0;
-        if (file.n) {
-            tui_write_dim(gutter);
-            write_clipped(file, R_LINE_BYTES, write_search_path);
-        } else if (marker) {
+        if (marker) {
             const Str *partner =
                 marker == ' ' ? NULL : pair_partner(&pairs, marker);
             write_patch_line(patch, line, head, fragment_full, partner, hl,
                              gutter);
-        } else if (str_starts(line, STR("+++ "))
-                   || str_starts(line, STR("--- "))) {
-            tui_write_dim(gutter);
-            tui_write_dim((Str){head.p, 4});
-            tui_write_styled(str_drop(head, 4), TUI_HEADING);
-            if (head.n < line.n) tui_write_source(STR(" ..."));
         } else {
-            tui_write_dim(gutter);
-            tui_write_muted(head);
-            if (head.n < line.n) tui_write_source(STR(" ..."));
+            write_patch_meta(line, file, gutter);
         }
         tui_write(STR("\n"));
         shown++;
@@ -888,6 +894,234 @@ static void write_patch_lines(Str patch, const YhlResult *hl, Str gutter,
     while (patch_next_row(patch, &off, several, &line, &file)) rest++;
     write_tail(gutter, rest, shown, max, tui_write_dim);
     tui_syntax_commit();
+}
+
+typedef struct {
+    Str text;
+    size_t at, changed_a, changed_b;
+    u8 marker;
+    b8 started;
+} SplitCell;
+
+static SplitCell split_cell(u8 marker, Str fragment, const Str *partner) {
+    SplitCell c = {.text = fragment, .marker = marker};
+    c.changed_a = c.changed_b = fragment.n;
+    if (partner
+        && !changed_span(fragment, *partner, &c.changed_a, &c.changed_b))
+        c.changed_a = c.changed_b = fragment.n;
+    return c;
+}
+
+static b8 split_cell_done(const SplitCell *c) {
+    return !c->marker || (c->started && c->at >= c->text.n);
+}
+
+static size_t cell_fit(Str s, size_t cells, size_t *used) {
+    size_t i = 0, w = 0;
+    while (i < s.n) {
+        unsigned char c = (unsigned char)s.p[i];
+        if (c == '\t') {
+            if (w + 4 > cells) break;
+            w += 4;
+            i++;
+            continue;
+        }
+        if (c < 0x20) {
+            i++;
+            continue;
+        }
+        size_t run = i;
+        while (run < s.n && (unsigned char)s.p[run] >= 0x20) run++;
+        size_t run_cells = 0;
+        i += tui_text_fit((Str){s.p + i, run - i}, cells - w, &run_cells);
+        w += run_cells;
+        if (i < run) break;
+    }
+    *used = w;
+    return i;
+}
+
+static void write_spaces(size_t n, Sink sink) {
+    static const char spaces[] = "                                ";
+    while (n) {
+        size_t take = n < sizeof spaces - 1 ? n : sizeof spaces - 1;
+        sink((Str){spaces, take});
+        n -= take;
+    }
+}
+
+static void write_split_cell(SplitCell *c, size_t width, Str patch,
+                             const YhlResult *hl, b8 last) {
+    if (!c->marker) {
+        if (!last) write_spaces(width, tui_write_dim);
+        return;
+    }
+    Sink sign = tui_write_muted, body = tui_write_dim, changed = tui_write_dim;
+    if (c->marker == '+') {
+        sign = tui_write_diff_add_sign;
+        body = tui_write_diff_add;
+        changed = tui_write_diff_add_changed;
+    } else if (c->marker == '-') {
+        sign = tui_write_diff_del_sign;
+        body = tui_write_diff_del;
+        changed = tui_write_diff_del_changed;
+    }
+    if (c->started)
+        body(STR(" "));
+    else
+        sign((Str){(const char *)&c->marker, 1});
+    c->started = true;
+    size_t room = width - 1, used = 0;
+    Str rest = str_drop(c->text, c->at);
+    size_t take = cell_fit(rest, room, &used);
+    b8 cut = take < rest.n && !uncapped() && room > 4;
+    if (cut) take = cell_fit(rest, room - 4, &used);
+    size_t from = c->at, to = c->at + take;
+    size_t a = c->changed_a < from ? from
+               : c->changed_a > to ? to
+                                   : c->changed_a;
+    size_t b = c->changed_b < a ? a : c->changed_b > to ? to : c->changed_b;
+    size_t at = tui_transcript_pos();
+    body((Str){c->text.p + from, a - from});
+    changed((Str){c->text.p + a, b - a});
+    body((Str){c->text.p + b, to - b});
+    if (c->marker != ' ' && take)
+        add_line_syntax(hl, patch, (size_t)(c->text.p - patch.p) + from,
+                        (Str){c->text.p + from, take}, at);
+    c->at = cut ? c->text.n : to;
+    if (cut) {
+        body(STR(" ..."));
+        used += 4;
+    }
+    if (!take && c->at < c->text.n) c->at = c->text.n;
+    if (!last || c->marker != ' ')
+        write_spaces(room > used ? room - used : 0, body);
+}
+
+typedef struct {
+    Str patch, gutter;
+    const YhlResult *hl;
+    size_t left, right, cap, shown;
+} SplitView;
+
+static void write_split_row(SplitView *v, SplitCell *left, SplitCell *right) {
+    do {
+        tui_write_dim(v->gutter);
+        write_split_cell(left, v->left, v->patch, v->hl, false);
+        tui_write_dim(STR(" \u2502 "));
+        write_split_cell(right, v->right, v->patch, v->hl, true);
+        tui_write(STR("\n"));
+        v->shown++;
+    } while (!(split_cell_done(left) && split_cell_done(right)));
+}
+
+static size_t patch_run(Str patch, size_t *off, u8 marker, size_t *start) {
+    size_t n = 0;
+    *start = *off;
+    Str line, fragment;
+    for (size_t peek = *off; str_line(patch, &peek, &line)
+                             && patch_marker(line, &fragment) == marker;
+         *off = peek)
+        n++;
+    return n;
+}
+
+static size_t write_split_block(SplitView *v, size_t *off) {
+    size_t del_at, add_at;
+    size_t dels = patch_run(v->patch, off, '-', &del_at);
+    size_t adds = patch_run(v->patch, off, '+', &add_at);
+    b8 paired = dels == adds && dels <= R_PAIR_LINES;
+    size_t rows = dels > adds ? dels : adds, consumed = 0;
+    for (size_t i = 0; i < rows && v->shown < v->cap; i++) {
+        Str line, del = {0}, add = {0};
+        u8 del_marker = 0, add_marker = 0;
+        if (i < dels && str_line(v->patch, &del_at, &line))
+            del_marker = patch_marker(line, &del);
+        if (i < adds && str_line(v->patch, &add_at, &line))
+            add_marker = patch_marker(line, &add);
+        SplitCell left = split_cell(del_marker, del, paired ? &add : NULL);
+        SplitCell right = split_cell(add_marker, add, paired ? &del : NULL);
+        write_split_row(v, &left, &right);
+        consumed += (size_t)(del_marker != 0) + (size_t)(add_marker != 0);
+    }
+    return consumed;
+}
+
+static void write_patch_split(Str patch, const YhlResult *hl, Str gutter,
+                              size_t max, size_t left, size_t right) {
+    SplitView v = {.patch = patch,
+                   .gutter = gutter,
+                   .hl = hl,
+                   .left = left,
+                   .right = right,
+                   .cap = line_cap(max)};
+    b8 several = patch_file_count(patch) > 1;
+    size_t total = 0, consumed = 0, off = 0;
+    Str line, file;
+    while (patch_next_row(patch, &off, several, &line, &file)) total++;
+    off = 0;
+    while (v.shown < v.cap
+           && patch_next_row(patch, &off, several, &line, &file)) {
+        Str fragment;
+        u8 marker = file.n ? 0 : patch_marker(line, &fragment);
+        if (marker == '-' || marker == '+') {
+            off = (size_t)(line.p - patch.p);
+            consumed += write_split_block(&v, &off);
+            continue;
+        }
+        if (marker == ' ') {
+            SplitCell left = split_cell(' ', fragment, NULL);
+            SplitCell right = left;
+            write_split_row(&v, &left, &right);
+        } else {
+            write_patch_meta(line, file, gutter);
+            tui_write(STR("\n"));
+            v.shown++;
+        }
+        consumed++;
+    }
+    write_tail(gutter, total > consumed ? total - consumed : 0, v.shown, max,
+               tui_write_dim);
+    tui_syntax_commit();
+}
+
+static b8 split_widths(Str patch, Str gutter, size_t *left, size_t *right) {
+    if (!tui_body_cols()) return false;
+    tui_width_fitted();
+    size_t frame = tui_text_cells(gutter) + 3, cols = tui_row_cols();
+    if (cols <= frame) return false;
+    b8 several = patch_file_count(patch) > 1;
+    b8 dels = false, adds = false;
+    size_t widest = 0, off = 0;
+    Str line, file, fragment;
+    while (patch_next_row(patch, &off, several, &line, &file)) {
+        u8 marker = file.n ? 0 : patch_marker(line, &fragment);
+        if (!marker) continue;
+        if (marker == '-') dels = true;
+        if (marker == '+') adds = true;
+        size_t cells = 0;
+        cell_fit(fragment, SIZE_MAX, &cells);
+        if (cells > widest) widest = cells;
+    }
+    if (!dels || !adds) return false;
+    size_t inner = cols - frame;
+    if (widest + 1 <= inner / 2) {
+        *left = *right = widest + 1;
+        return true;
+    }
+    if (tui_body_cols() < R_SPLIT_COLS) return false;
+    *left = inner / 2;
+    *right = inner - inner / 2;
+    return true;
+}
+
+static void write_patch_lines(Str patch, const YhlResult *hl, Str gutter,
+                              size_t max) {
+    size_t left, right;
+    if (split_widths(patch, gutter, &left, &right))
+        write_patch_split(patch, hl, gutter, max, left, right);
+    else
+        write_patch_unified(patch, hl, gutter, max);
 }
 
 void render_diff_syntax(Str diff, Arena *scratch, YhlResult *out) {

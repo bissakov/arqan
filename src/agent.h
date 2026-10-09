@@ -2236,6 +2236,8 @@ void tui_write_diff_add(Str s);
 void tui_write_diff_del(Str s);
 void tui_write_diff_add_changed(Str s);
 void tui_write_diff_del_changed(Str s);
+void tui_write_diff_add_sign(Str s);
+void tui_write_diff_del_sign(Str s);
 
 void tui_user_begin(Str timestamp);
 void tui_user_end(void);
@@ -2243,6 +2245,8 @@ void tui_user_end(void);
 void tui_write_styled(Str s, TuiStyle style);
 
 size_t tui_body_cols(void);
+
+size_t tui_row_cols(void);
 
 size_t tui_text_cells(Str s);
 
