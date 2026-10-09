@@ -1,10 +1,9 @@
 name: Benchmarks
 
+# Pull requests only, as in test.yml. Drift measures main against the newest
+# release every week.
 on:
   pull_request:
-  push:
-    branches:
-      - main
 
 concurrency:
   group: bench-${{ github.ref }}

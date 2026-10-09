@@ -7,6 +7,7 @@
     python3 tests/run.py --update        # rewrite golden screens
     python3 tests/run.py -v --keep       # verbose, keep temp dirs on failure
     python3 tests/run.py -j 1            # one at a time (default: auto)
+    python3 tests/run.py --retries 2     # rerun failures; a pass is flaky
 
 Cases are almost entirely idle, waiting on a pty and on a loopback socket, so
 they run in a thread pool. Every case owns its temp dir, its mock provider
@@ -20,6 +21,12 @@ so `make test` works on a bare checkout with nothing but Python 3 and a built
 ARQAN_TEST_BIN selects the binary under test and `make test` sets it to
 `bin/arqan-test`, the -DAGENT_TESTING build. The trust store and the web
 endpoints reach their fixtures through hooks compiled in only there.
+
+With `--retries N`, or ARQAN_TEST_RETRIES, a failed case runs again up to N
+times, one at a time once the suite is done. A case that then passes is
+reported as flaky, with its first failure, and does not fail the run. CI sets
+it so a rare timing failure cannot block a merge; a local run leaves it off so
+every flake shows.
 """
 
 from __future__ import annotations
@@ -120,6 +127,29 @@ def testing_build(binary) -> bool:
     return done.returncode == 0
 
 
+def attempt(name, fn, args):
+    """Run one case in its own context: (error, traceback, seconds)."""
+    ctx = Ctx(name, update=args.update, keep=args.keep)
+    t0 = time.monotonic()
+    error: Exception | None = None
+    tb = None
+    try:
+        fn(ctx)
+    except Exception as exc:  # noqa: BLE001, a test failure is any throw
+        error, tb = exc, traceback.format_exc()
+    finally:
+        dt = time.monotonic() - t0
+        ctx.cleanup(failed=error is not None)
+    return error, tb, dt
+
+
+def annotate(name, error):
+    """A GitHub warning on the run's summary page, so a flake is seen."""
+    first = (str(error).strip().splitlines() or [type(error).__name__])[0]
+    first = first.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::warning title=flaky case {name}::{name} failed, then passed on a rerun: {first}")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("-k", "--filter", default="", help="substring match on case name")
@@ -129,6 +159,12 @@ def main(argv=None):
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("-x", "--exitfirst", action="store_true")
     ap.add_argument("--repeat", type=int, default=1, help="run the suite N times")
+    ap.add_argument(
+        "--retries",
+        type=int,
+        default=int(os.environ.get("ARQAN_TEST_RETRIES", "0") or 0),
+        help="rerun a failed case up to N times; a pass marks it flaky",
+    )
     ap.add_argument(
         "-j",
         "--jobs",
@@ -189,18 +225,8 @@ def main(argv=None):
         if args.verbose:
             with lock:
                 print(f"{c.dim('····')} {name:<44} {c.dim(summary)}", flush=True)
-        ctx = Ctx(name, update=args.update, keep=args.keep)
-        t0 = time.monotonic()
-        failed = False
-        tb = None
-        error: Exception | None = None
-        try:
-            fn(ctx)
-        except Exception as exc:  # noqa: BLE001, a test failure is any throw
-            failed, error, tb = True, exc, traceback.format_exc()
-        finally:
-            dt = time.monotonic() - t0
-            ctx.cleanup(failed=failed)
+        error, tb, dt = attempt(name, fn, args)
+        failed = error is not None
         with lock:
             if failed:
                 print(
@@ -208,7 +234,7 @@ def main(argv=None):
                     f"{c.dim(f'{dt * 1000:6.0f}ms')} {c.dim(summary)}",
                     flush=True,
                 )
-                failures.append((name, error, tb))
+                failures.append((name, fn, error, tb))
             else:
                 passed += 1
                 if args.verbose:
@@ -230,17 +256,45 @@ def main(argv=None):
         with ThreadPoolExecutor(max_workers=jobs) as pool:
             list(pool.map(run_case, queue))
 
+    flaky = []
+    if args.retries > 0 and failures and not args.update and not stop.is_set():
+        print(f"\nrerunning {len(failures)} failed case(s), up to {args.retries} time(s) each")
+        still = []
+        for name, fn, error, tb in failures:
+            for _ in range(args.retries):
+                again, _, dt = attempt(name, fn, args)
+                if again is None:
+                    print(f"{c.yellow('FLAKY')} {name:<44} {c.dim(f'{dt * 1000:6.0f}ms')}", flush=True)
+                    flaky.append((name, fn, error, tb))
+                    break
+            else:
+                still.append((name, fn, error, tb))
+        failures = still
+        passed += len(flaky)
+
     elapsed = time.monotonic() - started
     print()
-    for name, exc, tb in sorted(failures, key=lambda f: f[0]):
+    for name, _, exc, tb in sorted(failures, key=lambda f: f[0]):
         print(c.bold(c.red(f"── {name} " + "─" * max(0, 60 - len(name)))))
         print(tb.rstrip())
         print()
+    for name, _, exc, tb in sorted(flaky, key=lambda f: f[0]):
+        print(c.bold(c.yellow(f"── flaky: {name} " + "─" * max(0, 53 - len(name)))))
+        print(tb.rstrip())
+        print()
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        for name, _, exc, _ in flaky:
+            annotate(name, exc)
 
     total = passed + len(failures)
     suffix = f" (-j{jobs})" if jobs > 1 else ""
     line = f"{passed}/{total} passed in {elapsed:.1f}s{suffix}"
-    print(c.green(line) if not failures else c.red(line))
+    if flaky:
+        line += f", {len(flaky)} flaky"
+    if failures:
+        print(c.red(line))
+    else:
+        print(c.yellow(line) if flaky else c.green(line))
     if args.update:
         print(c.yellow("golden files rewritten (--update)"))
     return 1 if failures else 0

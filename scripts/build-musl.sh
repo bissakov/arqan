@@ -52,6 +52,8 @@ docker run --rm --platform linux/amd64 \
     -e HOME=/tmp/$PROGRAM-home \
     -e BUILD_REV \
     -e ARQAN_TEST_JOBS \
+    -e ARQAN_TEST_RETRIES \
+    -e GITHUB_ACTIONS \
     -v "$ROOT:/work" \
     -w /work \
     "$IMAGE" \
