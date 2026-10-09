@@ -893,7 +893,9 @@ enum {
     ROW_MONO,
     ROW_MARKER,
     ROW_STRIKE,
-    ROW_IMAGE
+    ROW_IMAGE,
+    ROW_DIFF_ADD_SIGN,
+    ROW_DIFF_DEL_SIGN
 };
 
 static b8 kind_is_block(u8 kind) {
@@ -957,6 +959,14 @@ static void put_kind_style(u8 kind) {
         case ROW_DIFF_DEL_CHANGED:
             bg = diff_bg(kind);
             fg = THEME_TEXT;
+            break;
+        case ROW_DIFF_ADD_SIGN:
+            bg = THEME_DIFF_ADD_BG;
+            fg = THEME_SUCCESS;
+            break;
+        case ROW_DIFF_DEL_SIGN:
+            bg = THEME_DIFF_DEL_BG;
+            fg = THEME_ERROR;
             break;
         case ROW_BOLD:
             attr = S_BOLD;
@@ -3634,6 +3644,12 @@ size_t tui_body_cols(void) {
     return cols - gutter * 2;
 }
 
+size_t tui_row_cols(void) {
+    size_t cols = tui_body_cols();
+    size_t nest = g_tui.nest_open ? TUI_NEST_CELLS : 0;
+    return cols > nest ? cols - nest : 0;
+}
+
 i32 tui_input_fd(void) {
     return g_tui.fullscreen && !g_tui.input_eof ? STDIN_FILENO : -1;
 }
@@ -4502,6 +4518,12 @@ void tui_write_diff_add_changed(Str s) {
 }
 void tui_write_diff_del_changed(Str s) {
     write_span(s, ROW_DIFF_DEL_CHANGED);
+}
+void tui_write_diff_add_sign(Str s) {
+    write_span(s, ROW_DIFF_ADD_SIGN);
+}
+void tui_write_diff_del_sign(Str s) {
+    write_span(s, ROW_DIFF_DEL_SIGN);
 }
 
 b8 tui_highlight_enabled(void) {

@@ -19,6 +19,14 @@
   muted. When removed lines are followed by the same number of added lines,
   each pair marks the words that changed on a stronger background, set by
   the theme slots `diff_add_changed_bg` and `diff_del_changed_bg`.
+- A `patch` call shows its diff side by side when it fits. Removed lines sit
+  on the left and the lines that replace them on the right, and unchanged
+  lines show on both sides. Each half is as wide as the longest line, so a
+  thin diff splits even on an 80-column terminal. A diff too wide for that
+  splits from 160 columns, with long lines wrapping inside their half.
+  Otherwise, and for a patch that only adds or only removes lines, the
+  one-column view stays. A resize redraws the diff in the layout that now
+  fits.
 - Approximate syntax highlighting for Unity shaders. `.shader`, `.cginc`,
   `.hlsl` and `.compute` files, and code fences marked `hlsl` or `shaderlab`,
   use the C highlighter. Strings, comments, numbers, preprocessor lines, HLSL
