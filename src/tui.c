@@ -278,6 +278,8 @@ typedef struct {
     size_t ckpt_off[TUI_CKPTS];
     size_t ckpt_n;
     size_t ckpt_step;
+    size_t diff_a[2], diff_b[2];
+    size_t diff_n;
     size_t top_row, left_col, right_col, bottom_row;
     b8 paint;
 } View;
@@ -882,6 +884,8 @@ enum {
     ROW_ZONE,
     ROW_ZONE_HOVER,
     ROW_SOURCE,
+    ROW_DIFF_ADD,
+    ROW_DIFF_DEL,
     ROW_BOLD,
     ROW_EMPH,
     ROW_MONO,
@@ -894,6 +898,13 @@ static b8 kind_is_block(u8 kind) {
     return kind && kind < ROW_BOLD;
 }
 
+static b8 kind_is_diff(u8 kind) {
+    return kind == ROW_DIFF_ADD || kind == ROW_DIFF_DEL;
+}
+
+static ThemeSlot diff_bg(u8 kind) {
+    return kind == ROW_DIFF_ADD ? THEME_DIFF_ADD_BG : THEME_DIFF_DEL_BG;
+}
 
 static void put_kind_style(u8 kind) {
     ThemeSlot bg = THEME_SLOT_N, fg;
@@ -927,6 +938,11 @@ static void put_kind_style(u8 kind) {
             break;
         case ROW_QUOTE: fg = THEME_SUBTLE; break;
         case ROW_SOURCE: fg = THEME_TEXT; break;
+        case ROW_DIFF_ADD:
+        case ROW_DIFF_DEL:
+            bg = diff_bg(kind);
+            fg = THEME_TEXT;
+            break;
         case ROW_BOLD:
             attr = S_BOLD;
             fg = THEME_TEXT;
@@ -1668,6 +1684,8 @@ static void run_style(void *ud) {
     put_kind_style(r->kind ? r->kind : r->base);
 
     if (r->user) style(user_bg(r->base));
+    if (kind_is_diff(r->base) && !kind_is_diff(r->kind))
+        style(theme_sgr(diff_bg(r->base)));
     if (r->syntax) style(syntax_style(r->syntax));
 }
 
@@ -1741,10 +1759,13 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
     put_reset();
     put_str("\033[2K");
 
-    if (kind == ROW_COMPOSER || user || kind == ROW_CODE) {
-        style(user ? user_bg(kind)
-                   : theme_sgr(kind == ROW_CODE ? THEME_CODE_BG
-                                                : THEME_PANEL_BG));
+    if (kind == ROW_COMPOSER || user || kind == ROW_CODE
+        || kind_is_diff(kind)) {
+        style(
+            user ? user_bg(kind)
+            : kind_is_diff(kind)
+                ? theme_sgr(diff_bg(kind))
+                : theme_sgr(kind == ROW_CODE ? THEME_CODE_BG : THEME_PANEL_BG));
         pad_row(0, screen_cols);
         if (user) paint_user_rule(screen_row, screen_col);
         cup(screen_row, screen_col);
@@ -2303,11 +2324,74 @@ static u64 hash_view_syn(u64 h, size_t off, size_t n) {
 }
 
 
+enum {
+    VIEW_LINE_PLAIN = 0,
+    VIEW_LINE_ADD,
+    VIEW_LINE_DEL,
+    VIEW_LINE_META,
+    VIEW_LINE_FILE
+};
+
+static b8 view_in_diff(size_t off) {
+    for (size_t i = 0; i < g_view.diff_n; i++)
+        if (off >= g_view.diff_a[i] && off < g_view.diff_b[i]) return true;
+    return false;
+}
+
+static size_t view_line_start(Str all, size_t off) {
+    while (off > 0 && all.p[off - 1] != '\n') off--;
+    return off;
+}
+
+static u8 view_line_kind(Str all, size_t line_off, size_t *head) {
+    *head = 0;
+    if (!view_in_diff(line_off)) return VIEW_LINE_PLAIN;
+    Str line = str_drop(all, line_off);
+    const char *nl = memchr(line.p, '\n', line.n);
+    if (nl) line.n = (size_t)(nl - line.p);
+    static const Str file_heads[] = {{"+++ ", 4}, {"diff --git ", 11}};
+    for (size_t i = 0; i < sizeof file_heads / sizeof *file_heads; i++) {
+        if (str_starts(line, file_heads[i])) {
+            *head = file_heads[i].n;
+            return VIEW_LINE_FILE;
+        }
+    }
+    static const Str meta_heads[] = {{"--- ", 4},
+                                     {"@@", 2},
+                                     {"index ", 6},
+                                     {"new file mode", 13},
+                                     {"deleted file mode", 17},
+                                     {"similarity ", 11},
+                                     {"rename ", 7},
+                                     {"old mode", 8},
+                                     {"new mode", 8},
+                                     {"Binary files", 12}};
+    for (size_t i = 0; i < sizeof meta_heads / sizeof *meta_heads; i++)
+        if (str_starts(line, meta_heads[i])) return VIEW_LINE_META;
+    if (line.n && line.p[0] == '+') return VIEW_LINE_ADD;
+    if (line.n && line.p[0] == '-') return VIEW_LINE_DEL;
+    return VIEW_LINE_PLAIN;
+}
+
+static ThemeSlot view_line_bg(u8 line) {
+    return line == VIEW_LINE_ADD   ? THEME_DIFF_ADD_BG
+           : line == VIEW_LINE_DEL ? THEME_DIFF_DEL_BG
+                                   : THEME_POPUP_BG;
+}
+
+static ThemeSlot view_line_fg(u8 line) {
+    return line == VIEW_LINE_META   ? THEME_MUTED
+           : line == VIEW_LINE_FILE ? THEME_ACCENT
+                                    : THEME_TEXT;
+}
+
 static void paint_view_body_row(size_t screen_row, size_t col, size_t width,
                                 size_t screen_cols, Str text, size_t off,
-                                b8 force) {
+                                u8 line, size_t head, b8 force) {
     u64 hash = row_hash(text, STR("view"), ROW_POPUP);
     hash = hash_add(hash, &g_view.top, sizeof g_view.top);
+    hash = hash_add(hash, &line, sizeof line);
+    hash = hash_add(hash, &head, sizeof head);
     if (text.n) hash = hash_view_syn(hash, off, text.n);
     size_t c0, c1;
     sel_row_range(screen_row, &c0, &c1);
@@ -2322,24 +2406,35 @@ static void paint_view_body_row(size_t screen_row, size_t col, size_t width,
     style(theme_sgr(THEME_POPUP_BG));
     style(theme_sgr(THEME_ACCENT));
     put_text("│", sizeof "│" - 1);
-    style(theme_sgr(THEME_POPUP_BG));
-    style(theme_sgr(THEME_TEXT));
+    const char *bg = theme_sgr(view_line_bg(line));
+    const char *fg = theme_sgr(view_line_fg(line));
+    style(bg);
+    style(fg);
     size_t inner = width > 2 ? width - 2 : 0;
     size_t used = 0;
-    if (inner && !g_view.syn_n) put_safe_clipped(text, inner, &used);
-    for (size_t i = 0; inner && g_view.syn_n && i < text.n && used < inner;) {
+    if (head > text.n) head = text.n;
+    if (inner && head) {
+        style(theme_sgr(THEME_MUTED));
+        put_safe_clipped((Str){text.p, head}, inner, &used);
+        style(bg);
+        style(fg);
+    }
+    b8 runs = g_view.syn_n && line != VIEW_LINE_META && line != VIEW_LINE_FILE;
+    if (inner && !runs)
+        put_safe_clipped(str_drop(text, head), inner - used, &used);
+    for (size_t i = head; inner && runs && i < text.n && used < inner;) {
         size_t end = 0;
         u8 kind = view_syn_run(off + i, off + text.n, &end);
         size_t take = end - (off + i);
-        style(theme_sgr(THEME_POPUP_BG));
-        style(kind ? syntax_style(kind) : theme_sgr(THEME_TEXT));
+        style(bg);
+        style(kind ? syntax_style(kind) : fg);
         if (put_safe_clipped((Str){text.p + i, take}, inner - used, &used)
             < take)
             break;
         i += take;
     }
-    style(theme_sgr(THEME_POPUP_BG));
-    style(theme_sgr(THEME_TEXT));
+    style(bg);
+    style(fg);
     while (used < inner) {
         put_text(" ", 1);
         used++;
@@ -2395,16 +2490,28 @@ static void paint_view(size_t cols, b8 force) {
     paint_view_header(top + 1, left, width, cols, force);
     Str all = {g_bulk.view, g_view.text_n};
     size_t off = view_seek_row(g_view.top, inner_cols);
+    size_t head = 0;
+    u8 line_kind = g_view.diff_n
+                       ? view_line_kind(all, view_line_start(all, off), &head)
+                       : VIEW_LINE_PLAIN;
+    b8 at_line_start = off == 0 || all.p[off - 1] == '\n';
     for (size_t r = 0; r < body_rows; r++) {
         Str line = {0};
         size_t line_off = off;
+        size_t row_head = 0;
         if (g_view.top + r < total) {
+            if (g_view.diff_n && at_line_start)
+                line_kind = view_line_kind(all, off, &head);
+            row_head = at_line_start ? head : 0;
             Row br = row_break(all, off, inner_cols, 0);
             line = (Str){all.p + off, br.end - off};
             off = br.next;
+            at_line_start = br.hard;
         }
         paint_view_body_row(top + 2 + r, left, width, cols, line, line_off,
-                            force);
+                            g_view.top + r < total ? line_kind
+                                                   : VIEW_LINE_PLAIN,
+                            row_head, force);
     }
     paint_view_border(top + height - 1, left, width, cols, STR("└"), STR("─"),
                       STR("┘"), force);
@@ -4369,6 +4476,12 @@ void tui_write_result(Str s) {
 void tui_write_error(Str s) {
     write_span(s, ROW_ERROR);
 }
+void tui_write_diff_add(Str s) {
+    write_span(s, ROW_DIFF_ADD);
+}
+void tui_write_diff_del(Str s) {
+    write_span(s, ROW_DIFF_DEL);
+}
 
 b8 tui_highlight_enabled(void) {
     return g_tui.fullscreen && g_tui.color;
@@ -5843,6 +5956,7 @@ b8 tui_view_open(Str title, const TuiViewPart *parts, size_t n, size_t start) {
         Str text = parts[p].text;
         if (!text.n) continue;
         if (nonempty) g_bulk.view[out++] = '\n';
+        size_t part_start = out;
         ViewRuns runs = {0};
         if (parts[p].syntax) {
             runs.run = parts[p].syntax->run;
@@ -5859,6 +5973,11 @@ b8 tui_view_open(Str title, const TuiViewPart *parts, size_t n, size_t start) {
             }
         }
         view_syn_step(&runs, text.n, out, true);
+        if (parts[p].diff && g_view.diff_n < 2) {
+            g_view.diff_a[g_view.diff_n] = part_start;
+            g_view.diff_b[g_view.diff_n] = out;
+            g_view.diff_n++;
+        }
         nonempty++;
     }
     g_view.active = true;

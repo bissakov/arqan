@@ -25,6 +25,10 @@ b8 conv_init(Conv *c, Arena *persist, size_t cap) {
     c->media_off = arena_new(persist, u32, cap);
     c->media_n = arena_new(persist, u16, cap);
     c->media = NULL;
+    c->touched = arena_new(persist, Str, AGENT_MAX_TOUCHED);
+    c->touched_n = 0;
+    c->touched_cap = AGENT_MAX_TOUCHED;
+    c->touched_overflow = false;
     c->elide_start = 0;
     c->checkpoint = 0;
     c->n = 0;
@@ -32,10 +36,25 @@ b8 conv_init(Conv *c, Arena *persist, size_t cap) {
     if (!c->role || !c->text || !c->anthropic_thinking || !c->tool_name
         || !c->tool_call_id || !c->shell_out || !c->has_tool_call
         || !c->expanded || !c->args_object || !c->ms || !c->sent_at
-        || !c->media_off || !c->media_n) {
+        || !c->media_off || !c->media_n || !c->touched) {
         c->cap = 0;
+        c->touched_cap = 0;
         return false;
     }
+    return true;
+}
+
+b8 conv_touch(Conv *c, Arena *persist, Str path) {
+    if (!path.n) return false;
+    for (size_t i = 0; i < c->touched_n; i++)
+        if (str_eq(c->touched[i], path)) return true;
+    if (c->touched_n >= c->touched_cap) {
+        c->touched_overflow = true;
+        return false;
+    }
+    Str copy = str_dup(persist, path);
+    if (!copy.p) return false;
+    c->touched[c->touched_n++] = copy;
     return true;
 }
 
@@ -61,10 +80,13 @@ static size_t conv_media_end(const Conv *c, size_t i) {
 void conv_truncate(Conv *c, size_t keep) {
     if (keep > c->n) return;
     c->n = keep;
-    if (keep < 2)
+    if (keep < 2) {
         c->elide_start = 0;
-    else if (c->elide_start > keep)
+        c->touched_n = 0;
+        c->touched_overflow = false;
+    } else if (c->elide_start > keep) {
         c->elide_start = keep;
+    }
     if (c->checkpoint >= keep) c->checkpoint = 0;
     if (!c->media) return;
     size_t live = 0;
@@ -95,6 +117,11 @@ b8 conv_clone_head(Conv *dst, const Conv *src, size_t keep, Arena *a,
     memcpy(dst->media_off, src->media_off, n * sizeof *dst->media_off);
     memcpy(dst->media_n, src->media_n, n * sizeof *dst->media_n);
     dst->media = src->media;
+    size_t touched =
+        src->touched_n < dst->touched_cap ? src->touched_n : dst->touched_cap;
+    memcpy(dst->touched, src->touched, touched * sizeof *dst->touched);
+    dst->touched_n = touched;
+    dst->touched_overflow = src->touched_overflow || touched < src->touched_n;
     dst->elide_start = src->elide_start > n ? n : src->elide_start;
     dst->checkpoint = src->checkpoint < n ? src->checkpoint : 0;
     dst->n = n;

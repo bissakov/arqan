@@ -136,6 +136,8 @@ function: thousands of call sites, unreviewable, and it lands on the paths
 - `media.c`: images attached to a turn.
 - `clipboard.c`: clipboard images via `wl-paste`, `xclip` or `pngpaste`, and
   text copied into the tmux buffer, under a deadline and with no shell.
+- `diff.c`: the `/diff` command: `git diff` over the files `write` and
+  `patch` touched this session, run without a shell and under a deadline.
 - `editor.c`: the composer draft, edited in vi, vim or nvim.
 - `provider.c`: OpenAI and Anthropic requests and responses.
 - `subagent.c`, `tasklog.c`: the read-only delegate behind the `task` tool,
