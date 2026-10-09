@@ -198,11 +198,11 @@ def test_failed_patch_is_collapsed(ctx):
 
     text = s.text()
     assert "\u25c6  patch many.txt" in text, text
-    assert "\u2502  miss 12" in text, text
-    for i in range(13, 17):
+    assert "\u2502  miss 04" in text, text
+    for i in range(5, 17):
         assert f"\u2502  miss {i:02d}" not in text, text
     assert "\u2502 +fresh" not in text, text
-    assert "\u2502 \u25be 6 more lines" in text, text
+    assert "\u2502 \u25be 14 more lines" in text, text
     assert text.count("more lines") == 1, text
     assert "\u25c6  patch good.txt" in text, text
     for i in range(17):
@@ -250,9 +250,9 @@ def test_denied_patch_is_collapsed(ctx):
     s.wait_text("understood")
     s.wait_turn_done()
     text = s.text()
-    assert "\u2502  miss 12" in text, text
-    assert "\u2502  miss 16" not in text, text
-    assert "\u2502 \u25be 6 more lines" in text, text
+    assert "\u2502  miss 04" in text, text
+    assert "\u2502  miss 05" not in text, text
+    assert "\u2502 \u25be 14 more lines" in text, text
     assert ctx.mock.tool_results()[0].startswith("DENIED: "), ctx.mock.tool_results()
     assert "fresh" not in (ctx.work / "many.txt").read_text()
 
@@ -265,9 +265,9 @@ def test_collapsed_failed_patch_expands(ctx):
     s.submit("patch it")
     s.wait_text("patched")
     s.wait_turn_done()
-    assert "\u2502 \u25be 6 more lines" in s.text(), s.text()
+    assert "\u2502 \u25be 14 more lines" in s.text(), s.text()
 
-    click(s, "\u2502 \u25be 6 more lines")
+    click(s, "\u2502 \u25be 14 more lines")
     s.wait_text("\u25b4 show less")
     text = s.text()
     for i in range(17):

@@ -164,9 +164,9 @@ def test_batch_failed_patch_is_collapsed(ctx):
 
     text = s.text()
     assert "patch many.txt" in text, text
-    assert "\u2502  miss 12" in text, text
-    assert "\u2502  miss 16" not in text, text
-    assert "\u2502 \u25be 6 more lines" in text, text
+    assert "\u2502  miss 04" in text, text
+    assert "\u2502  miss 05" not in text, text
+    assert "\u2502 \u25be 14 more lines" in text, text
 
 
 def test_batch_nonzero_exit_stops_later_steps(ctx):

@@ -712,9 +712,9 @@ def test_a_resumed_failed_patch_is_collapsed(ctx):
     s.key("enter")
     s.wait_text("all done")
     text = s.text()
-    assert "\u2502  miss 12" in text, text
-    assert "\u2502  miss 16" not in text, text
-    assert "\u2502 \u25be 6 more lines" in text, text
+    assert "\u2502  miss 04" in text, text
+    assert "\u2502  miss 05" not in text, text
+    assert "\u2502 \u25be 14 more lines" in text, text
     assert text.count("more lines") == 1, text
     for i in range(17):
         assert f"\u2502  kept {i:02d}" in text, text

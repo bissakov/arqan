@@ -479,7 +479,7 @@ static void render_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
             write_lines(content, STR("\u2502 "), R_ARG_LINES, R_LINE_BYTES,
                         tui_write_muted);
     } else if (patch.n) {
-        write_patch_lines(patch, &syntax, STR("\u2502 "), R_ARG_LINES * 2);
+        write_patch_lines(patch, &syntax, STR("\u2502 "), R_ARG_LINES);
     } else if (cmd.n) {
         if (source_code)
             write_syntax_lines(str_drop(cmd, cmd_off), syntax_source, false,
@@ -1197,7 +1197,6 @@ Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
         if (syntax && path.n && content.n)
             highlight_request(YHL_HINT_PATH, path, content, syntax);
     } else if (patch.n) {
-        if (shown && !full) *shown = R_ARG_LINES * 2;
         body = patch;
         if (syntax) batched_syntax(patch, false, (Str){0}, scratch, syntax);
     } else if (cmd.n) {
