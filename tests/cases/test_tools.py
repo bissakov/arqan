@@ -168,6 +168,115 @@ def test_patch_shows_the_whole_diff(ctx):
     assert (ctx.work / "many.txt").read_text().endswith(wide + "\n")
 
 
+def missing_context_diff(path="many.txt"):
+    """A 22-line diff whose context is not in `path`, so it cannot apply."""
+    return (
+        f"--- a/{path}\n+++ b/{path}\n@@ -1,18 +1,18 @@\n"
+        + "".join(f" miss {i:02d}\n" for i in range(17))
+        + "-miss 17\n+fresh\n"
+    )
+
+
+def test_failed_patch_is_collapsed(ctx):
+    """A patch that did not apply folds to the preview; one that did stays whole."""
+    ctx.write_file("many.txt", "".join(f"keep {i:02d}\n" for i in range(18)))
+    ctx.write_file("good.txt", "".join(f"good {i:02d}\n" for i in range(18)))
+    good = (
+        "--- a/good.txt\n+++ b/good.txt\n@@ -1,18 +1,18 @@\n"
+        + "".join(f" good {i:02d}\n" for i in range(17))
+        + "-good 17\n+better 17\n"
+    )
+    ctx.scenario(
+        "tool=patch:" + json.dumps({"patch": missing_context_diff()})
+        + ",tool=patch:" + json.dumps({"patch": good})
+        + ",final_text=patched"
+    )
+    s = ctx.spawn(cols=200, rows=80)
+    s.submit("patch them")
+    s.wait_text("patched")
+    s.wait_turn_done()
+
+    text = s.text()
+    assert "\u25c6  patch many.txt" in text, text
+    assert "\u2502  miss 12" in text, text
+    for i in range(13, 17):
+        assert f"\u2502  miss {i:02d}" not in text, text
+    assert "\u2502 +fresh" not in text, text
+    assert "\u2502 \u25be 6 more lines" in text, text
+    assert text.count("more lines") == 1, text
+    assert "\u25c6  patch good.txt" in text, text
+    for i in range(17):
+        assert f"\u2502  good {i:02d}" in text, text
+    assert "\u2502 +better 17" in text, text
+    assert (ctx.work / "many.txt").read_text().startswith("keep 00\n")
+    assert (ctx.work / "good.txt").read_text().endswith("better 17\n")
+
+
+def test_failed_write_is_collapsed(ctx):
+    """A write that could not be stored folds to the preview."""
+    body = "".join(f"row {i:02d}\n" for i in range(12))
+    args = json.dumps({"path": "rows.txt", "content": body})
+    ctx.scenario(f"tool=write:{args},final_text=not+written")
+    s = ctx.spawn(ARQAN_TEST_ATOMIC_FAIL="flush", rows=40)
+    s.submit("write the rows")
+    s.wait_text("not written")
+    s.wait_turn_done()
+
+    text = s.text()
+    assert "\u25c6  write rows.txt" in text, text
+    assert "\u2502 row 07" in text, text
+    assert "\u2502 row 08" not in text, text
+    assert "\u2502 \u25be 4 more lines" in text, text
+    assert not (ctx.work / "rows.txt").exists()
+
+
+def test_denied_patch_is_collapsed(ctx):
+    """The prompt shows the whole diff; once refused, the call folds."""
+    ctx.write_file("many.txt", "".join(f"miss {i:02d}\n" for i in range(18)))
+    ctx.scenario(
+        "tool=patch:" + json.dumps({"patch": missing_context_diff()})
+        + ",final_text=understood"
+    )
+    s = ctx.spawn(ARQAN_PERMISSIONS="ask", cols=200, rows=60)
+    s.submit("patch it")
+    s.wait_status("allow patch?")
+    text = s.text()
+    assert "\u2502  miss 16" in text, text
+    assert "\u2502 +fresh" in text, text
+    assert "more lines" not in text, text
+
+    s.key("down", "down").sync()
+    s.key("enter")
+    s.wait_text("understood")
+    s.wait_turn_done()
+    text = s.text()
+    assert "\u2502  miss 12" in text, text
+    assert "\u2502  miss 16" not in text, text
+    assert "\u2502 \u25be 6 more lines" in text, text
+    assert ctx.mock.tool_results()[0].startswith("DENIED: "), ctx.mock.tool_results()
+    assert "fresh" not in (ctx.work / "many.txt").read_text()
+
+
+def test_collapsed_failed_patch_expands(ctx):
+    """The folded call opens in full on a click, like any capped block."""
+    ctx.write_file("many.txt", "".join(f"keep {i:02d}\n" for i in range(18)))
+    ctx.scenario(patch_call(missing_context_diff(), final_text="patched"))
+    s = ctx.spawn(cols=200, rows=60)
+    s.submit("patch it")
+    s.wait_text("patched")
+    s.wait_turn_done()
+    assert "\u2502 \u25be 6 more lines" in s.text(), s.text()
+
+    click(s, "\u2502 \u25be 6 more lines")
+    s.wait_text("\u25b4 show less")
+    text = s.text()
+    for i in range(17):
+        assert f"\u2502  miss {i:02d}" in text, text
+    assert "\u2502 -miss 17" in text, text
+    assert "\u2502 +fresh" in text, text
+    assert "more lines" not in text, text
+
+
 def test_bash_result_is_summarised_by_its_exit_status(ctx):
     """The description heads the call and its exit code heads the result."""
     # TODO: placeholder description; write a real one

@@ -682,6 +682,45 @@ def test_one_call_answered_twice_replays_as_one_result(ctx):
     assert "interrupted" not in json.dumps(messages), messages
 
 
+def test_a_resumed_failed_patch_is_collapsed(ctx):
+    """A patch that did not apply replays folded; one that did replays whole."""
+    failed = (
+        "--- a/many.txt\n+++ b/many.txt\n@@ -1,18 +1,18 @@\n"
+        + "".join(f" miss {i:02d}\n" for i in range(17))
+        + "-miss 17\n+fresh\n"
+    )
+    applied = failed.replace("miss", "kept").replace("fresh", "fine")
+    plant_session(ctx, "".join(
+        json.dumps(m) + "\n" for m in [
+            {"role": "user", "content": "patch it"},
+            {"role": "assistant", "calls": True, "content": ""},
+            {"role": "assistant", "id": "", "name": "patch",
+             "content": json.dumps({"patch": failed})},
+            {"role": "tool", "id": "",
+             "content": "ERROR: hunk 1 context not found in many.txt"},
+            {"role": "assistant", "calls": True, "content": ""},
+            {"role": "assistant", "id": "", "name": "patch",
+             "content": json.dumps({"patch": applied})},
+            {"role": "tool", "id": "", "content": "patched many.txt"},
+            {"role": "assistant", "content": "all done"},
+        ]
+    ))
+
+    s = ctx.spawn(cols=200, rows=80)
+    s.submit("/resume")
+    s.wait_status("pick a session")
+    s.key("enter")
+    s.wait_text("all done")
+    text = s.text()
+    assert "\u2502  miss 12" in text, text
+    assert "\u2502  miss 16" not in text, text
+    assert "\u2502 \u25be 6 more lines" in text, text
+    assert text.count("more lines") == 1, text
+    for i in range(17):
+        assert f"\u2502  kept {i:02d}" in text, text
+    assert "\u2502 +fine" in text, text
+
+
 def test_a_torn_last_line_does_not_swallow_the_next_message(ctx):
     """A save cut mid-line is closed before the next append, not run onto."""
     path = plant_session(

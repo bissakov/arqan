@@ -1780,7 +1780,8 @@ static b8 batch_publish(Agent *ag, size_t slot, Buf *doc, Buf *staged,
     return true;
 }
 
-static TurnAction batch_answer(Agent *ag, size_t call, Str args) {
+static TurnAction batch_answer(Agent *ag, size_t call, Str args,
+                               b8 *unapplied) {
     ToolBatch batch;
     char err[AGENT_TOOL_ERR] = {0};
     if (g_turn.one_shot)
@@ -1883,6 +1884,9 @@ static TurnAction batch_answer(Agent *ag, size_t call, Str args) {
         render_result_media(ag->conv, slot);
     }
     save_tool_progress(ag, slot);
+    for (size_t i = 0; i < batch.attempted; i++)
+        if (render_unapplied(batch.steps[i].name, batch.steps[i].result))
+            *unapplied = true;
     TelEvent e;
     tel_open(&e, "batch");
     tel_int(&e, "steps", (i64)batch.n);
@@ -1893,7 +1897,18 @@ static TurnAction batch_answer(Agent *ag, size_t call, Str args) {
     return ag->permission_blocked_one_shot ? TURN_DENIED : TURN_CONTINUE;
 }
 
-static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
+static void collapse_unapplied(Agent *ag) {
+    if (g_turn.one_shot || !tui_is_fullscreen() || tui_transcript_detached())
+        return;
+    md_end();
+    md_set_muted(false);
+    g_turn.replying = false;
+    g_turn.reasoning = false;
+    tview_paint(ag, 0, true);
+}
+
+static TurnAction run_round_calls(Agent *ag, size_t first, size_t last,
+                                  b8 *unapplied) {
     Conv *conv = ag->conv;
     ag->permission_blocked_one_shot = false;
 
@@ -1988,7 +2003,7 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
             continue;
         }
         if (str_eq(name, STR("batch"))) {
-            TurnAction act = batch_answer(ag, i, args);
+            TurnAction act = batch_answer(ag, i, args, unapplied);
             if (act != TURN_CONTINUE) return act;
             continue;
         }
@@ -2004,9 +2019,20 @@ static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
             if (conv->media) conv->media->n = run.media_off;
             return TURN_FULL;
         }
+        if (render_unapplied(name, kept)) *unapplied = true;
         if (ag->permission_blocked_one_shot) return TURN_DENIED;
     }
     return pending;
+}
+
+/* NOTE: the repaint waits for the round's last result. The transcript
+ * rebuilds from Conv, which already holds every call of the round, so a
+ * repaint before a later call runs would draw that call twice. */
+static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
+    b8 unapplied = false;
+    TurnAction act = run_round_calls(ag, first, last, &unapplied);
+    if (unapplied) collapse_unapplied(ag);
+    return act;
 }
 
 
@@ -5035,8 +5061,11 @@ static b8 open_block_view(Agent *ag, size_t i) {
         len = snprintf(name_buf, 32, "shell run");
     } else if (c->role[i] == M_ASSISTANT && conv_is_call(c, i)) {
         Str name = c->tool_name[i];
-        parts[part_n].text = render_call_text(name, c->text[i], ag->scratch,
-                                              &shown[part_n], syntax);
+        size_t result = conv_result_slot(c, i);
+        b8 unapplied =
+            result != CONV_NONE && render_unapplied(name, c->text[result]);
+        parts[part_n].text = render_call_text(
+            name, c->text[i], ag->scratch, &shown[part_n], syntax, unapplied);
         parts[part_n].syntax = syntax;
         part_n++;
         len = snprintf(name_buf, sizeof name_buf, "%.*s input", (i32)name.n,

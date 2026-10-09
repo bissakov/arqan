@@ -33,6 +33,8 @@
   without those limits. With `shell_timeout_ms = 0`, it offers no
   `timeout_ms` and no jobs. The `task` description now says the subagent can
   run read-only commands.
+- Failed or denied `write` and `patch` calls collapse to a short preview;
+  click to see the rest.
 
 ### Fixed
 

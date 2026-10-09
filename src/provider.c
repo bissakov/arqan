@@ -184,6 +184,16 @@ size_t conv_add_tool(Conv *c, Str tool_call_id, Str text) {
         }
     return conv_push(c, M_TOOL, text, tool_call_id, (Str){0}, false);
 }
+size_t conv_result_slot(const Conv *c, size_t call) {
+    if (!conv_is_call(c, call)) return CONV_NONE;
+    Str id = c->tool_call_id[call];
+    for (size_t i = call + 1; i < c->n && !conv_round_start(c, i); i++) {
+        if (!str_eq(c->tool_call_id[i], id)) continue;
+        if (c->role[i] == M_TOOL) return i;
+        if (conv_is_call(c, i)) return CONV_NONE;
+    }
+    return CONV_NONE;
+}
 size_t conv_add_shell(Conv *c, Str cmd, Str out) {
     size_t i = conv_push(c, M_USER, cmd, (Str){0}, STR("shell"), false);
     if (i != CONV_NONE) c->shell_out[i] = out;

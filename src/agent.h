@@ -1491,6 +1491,11 @@ void conv_truncate(Conv *c, size_t keep);
 size_t conv_add_assistant_calls(Conv *c, Str content);
 size_t conv_add_call(Conv *c, Arena *scratch, Str id, Str name, Str args);
 size_t conv_add_tool(Conv *c, Str tool_call_id, Str text);
+/* The result slot of the call at `call`, or CONV_NONE before it has one.
+ * INVARIANT: pairs calls and results as call_slot in main.c does: a result
+ * belongs to the nearest earlier call with its id, which matters for empty
+ * ids. */
+size_t conv_result_slot(const Conv *c, size_t call);
 size_t conv_add_shell(Conv *c, Str cmd, Str out);
 b8 conv_is_shell(const Conv *c, size_t i);
 size_t conv_add_note(Conv *c, Str text);
@@ -2295,6 +2300,9 @@ b8 md_muted(void);
 
 void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
                       const Conv *c, size_t slot);
+/* True for a write or patch call whose result says it failed or was denied:
+ * such a call draws the capped preview instead of the whole content. */
+b8 render_unapplied(Str name, Str result);
 void render_batch_child_call(Str name, Str args, Arena *scratch, u32 id,
                              b8 expanded, const Conv *c, size_t slot);
 
@@ -2311,7 +2319,7 @@ void render_note(Str note);
 void render_task_header(u32 id, Str label, Str model, Str provider, b8 small,
                         b8 live);
 Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
-                     YhlResult *syntax);
+                     YhlResult *syntax, b8 unapplied);
 Str render_result_text(Str name, Str args, Str result, Arena *scratch,
                        size_t *shown, YhlResult *syntax);
 Str render_shell_text(Str cmd, size_t *shown, YhlResult *syntax);

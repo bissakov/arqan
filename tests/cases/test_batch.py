@@ -145,6 +145,30 @@ def test_batch_failure_stops_later_steps_without_rolling_back(ctx):
     assert not (ctx.work / "after.txt").exists()
 
 
+def test_batch_failed_patch_is_collapsed(ctx):
+    """A patch step that did not apply folds once the batch ends."""
+    ctx.write_file("many.txt", "".join(f"keep {i:02d}\n" for i in range(18)))
+    patch = (
+        "--- a/many.txt\n+++ b/many.txt\n@@ -1,18 +1,18 @@\n"
+        + "".join(f" miss {i:02d}\n" for i in range(17))
+        + "-miss 17\n+fresh\n"
+    )
+    ctx.scenario("tool=" + batch_call([
+        step("read", path="many.txt"),
+        step("patch", patch=patch)]) + ",final_text=done")
+    s = ctx.spawn(cols=200, rows=80)
+    s.submit("run the batch")
+    s.wait_text("done")
+    s.wait_turn_done()
+    assert result(ctx)["steps"][1]["status"] == "error", result(ctx)
+
+    text = s.text()
+    assert "patch many.txt" in text, text
+    assert "\u2502  miss 12" in text, text
+    assert "\u2502  miss 16" not in text, text
+    assert "\u2502 \u25be 6 more lines" in text, text
+
+
 def test_batch_nonzero_exit_stops_later_steps(ctx):
     # TODO: placeholder description; write a real one
     run_batch(ctx, [step("bash", command="printf failed; exit 7", description="qzx"),
