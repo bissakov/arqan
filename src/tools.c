@@ -69,8 +69,8 @@ static b8 slurp(const char *z, Arena *scratch, Str *out, char *err,
             struct stat st;
             if (stat(z, &st) == 0 && S_ISDIR(st.st_mode))
                 snprintf(err, err_cap,
-                         "%s is a directory; use find to "
-                         "list files or bash with ls for directory details",
+                         "%s is a directory; use bash with ls or find to "
+                         "list it",
                          z);
             else
                 snprintf(err, err_cap, "%s is not a regular file", z);

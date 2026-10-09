@@ -336,6 +336,8 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
     Str patch = json_str(j, STR("patch"));
     char patch_buf[R_TARGET_BYTES + 32];
     if (patch.n) path = patch_target(patch, patch_buf, sizeof patch_buf);
+    /* NOTE: grep and find were removed in 0.10. A saved session may still
+     * hold their calls, so they render and elide like read. */
     Str query = str_eq(name, STR("grep"))   ? json_str(j, STR("pattern"))
                 : str_eq(name, STR("find")) ? json_str(j, STR("name"))
                 : str_eq(name, STR("internet_search"))

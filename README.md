@@ -158,6 +158,7 @@ project and the system directories. No child process gets your API keys. Set
 | `/mcp` | List, approve, reject, restart or disable MCP servers |
 | `/settings` (`/config`) | Change settings |
 | `/statusline` | Choose what the status line shows |
+| `/theme` | Choose the colour theme |
 | `/keys` | Show the keyboard shortcuts |
 | `/help` | Ask the model how to use arqan |
 | `/about` | Version and contributors |
@@ -319,6 +320,7 @@ that others can write to.
 | `show_ignored` | `false` | Offer files that `.gitignore` and `.ignore` exclude |
 | `show_instructions` | `false` | Show the system prompt and `AGENTS.md` in the transcript |
 | `status_fields` | `2047` | Status line fields, as a bit mask; set it with `/statusline` |
+| `theme` | `dark` | `dark`, `light`, `kanagawa-wave`, `kanagawa-dragon`, `kanagawa-lotus`, or a theme in `themes/<name>.toml` under the config directory |
 
 ### System prompt and AGENTS.md
 
@@ -372,8 +374,7 @@ directory or in a project `.arqan` directory:
 
 `command` starts a local server; `url` connects over HTTP. A server from a
 project file does not start until you approve it with `/mcp approve <name>`.
-The file is read again before each turn. See [docs/mcp.md](docs/mcp.md) for
-the details.
+The file is read again before each turn.
 
 ### Notifications
 

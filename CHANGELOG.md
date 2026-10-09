@@ -28,6 +28,8 @@
 
 ### Fixed
 
+- When `read` is given a directory, the error now points at `bash` with `ls`
+  or `find`. It named the `find` tool, which no longer exists.
 - A call refused in a non-interactive run in Ask mode is saved as needing
   approval, not as refused by the user. A resumed session no longer tells the
   model that the user said no.
