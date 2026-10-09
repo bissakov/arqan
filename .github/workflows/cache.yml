@@ -1,0 +1,62 @@
+name: Compiler cache
+
+# Tests, Benchmarks and Release build run on pull requests only: main is
+# protected, a pull request must be up to date with it, and the squash merge
+# lands the tree those checks already passed. A cache saved by a pull request
+# is scoped to it, though, and only main's reach the next one. This keeps them
+# warm by building what the other workflows build, and runs no tests, so it
+# has nothing to flake.
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: cache-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  warm:
+    runs-on: ubuntu-24.04
+    env:
+      CC: ccache cc
+    steps:
+      - name: Check out source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              libcurl4-openssl-dev ccache
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ccache
+          key: ccache-main-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-test-${{ runner.os }}-
+            ccache-bench-${{ runner.os }}-
+      # The objects scripts/bench-guard.sh builds for both of its trees.
+      - name: Build as Benchmarks does
+        run: |
+          ccache -M 500M -z
+          make -j"$(nproc)" all
+      # The objects test.yml builds. The flags differ, so this is a clean build.
+      - name: Build as Tests does
+        run: |
+          make clean
+          make -j"$(nproc)" all bin/arqan-test EXTRA_CFLAGS=-Werror
+          ccache -s
+      - name: Save the cache for Tests
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ccache
+          key: ccache-test-${{ runner.os }}-${{ github.sha }}
+      - name: Save the cache for Benchmarks
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ccache
+          key: ccache-bench-${{ runner.os }}-${{ github.sha }}

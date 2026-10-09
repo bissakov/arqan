@@ -1,10 +1,9 @@
 name: Tests
 
+# Pull requests only: main takes a squash of a pull request that was up to
+# date with it, so its tree has already passed. cache.yml keeps ccache warm.
 on:
   pull_request:
-  push:
-    branches:
-      - main
 
 concurrency:
   group: test-${{ github.ref }}
@@ -86,3 +85,8 @@ jobs:
           # windows, so the usual three-per-core oversubscription starves
           # children long enough for a stall to read as a settled screen.
           ARQAN_TEST_JOBS: 4
+          # A failed case reruns alone, up to twice, after the suite. One that
+          # then passes is a flake: the run passes and a warning names it, so
+          # it is still fixed, but it no longer blocks a merge. A local run
+          # leaves this unset and fails on the first failure.
+          ARQAN_TEST_RETRIES: 2

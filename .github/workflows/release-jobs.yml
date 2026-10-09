@@ -24,6 +24,9 @@ env:
   # The same reason as in test.yml: three jobs per core on the four shared
   # cores starve the suite into false failures.
   ARQAN_TEST_JOBS: 4
+  # The same as in test.yml: a case that fails and then passes alone is a
+  # flake, reported as a warning rather than failing the change.
+  ARQAN_TEST_RETRIES: 2
 
 jobs:
   build:

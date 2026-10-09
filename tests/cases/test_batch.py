@@ -652,8 +652,7 @@ def test_batch_output_window_shows_text_not_encoded_json(ctx):
     s = ctx.spawn()
     s.submit("read it")
     tail = "\u25be 28 more lines"
-    s.wait_text(tail)
-    s.settle()
+    s.wait_text("batch completed").settle()
     row = s.screen.find_row(tail) + 1
     s.mouse("down", row, 9).mouse("up", row, 9).sync()
     s.wait_text("batch output")
@@ -669,8 +668,7 @@ def test_batch_input_window_shows_content_not_encoded_json(ctx):
     s = ctx.spawn()
     s.submit("write it")
     tail = "\u25be 32 more lines"
-    s.wait_text(tail)
-    s.settle()
+    s.wait_text("batch completed").settle()
     row = s.screen.find_row(tail) + 1
     s.mouse("down", row, 9).mouse("up", row, 9).sync()
     s.wait_text("batch input")

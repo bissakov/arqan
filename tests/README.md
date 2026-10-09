@@ -18,6 +18,7 @@ make test-asan                  # ASan + UBSan suite
 make test-fil                   # Fil-C memory-safety suite
 make test T="-v -x"             # verbose; stop on failure
 make test T="--repeat 5"        # check a suspected flake
+make test T="--retries 2"       # rerun failures alone; a pass is flaky
 make test T="-j 1"              # serial debugging
 ```
 
@@ -26,6 +27,14 @@ Options `T` cannot express go to the script directly:
 ```sh
 ARQAN_TEST_BIN=bin/arqan-test python3 tests/run.py --repeat 5 -k composer
 ```
+
+CI sets `ARQAN_TEST_RETRIES=2`. After the suite, each failed case runs again
+alone, up to twice. A case that then passes is reported as `FLAKY` with its
+first failure, and as a warning on the run's summary page, and the run
+passes. A case that fails every time still fails the run. A local run leaves
+retries off, so every flake shows. A flaky case is still a bug: reproduce it
+with `--repeat` and fix the race, and never answer a flake with a longer wait
+or a weaker assertion.
 
 The sanitizer build is a separate tree: `make test-asan` compiles into
 `build/asan/` and `bin/asan/` and never touches `bin/arqan`, so a plain `make`

@@ -2,12 +2,10 @@ name: Release build
 
 # The tag workflow runs the release build too late: by then the change that
 # broke the Debian 11, EL9 or musl build, or the packages, is merged. This runs
-# the same jobs on every change, so the change that breaks them fails.
+# the same jobs on every pull request, so the change that breaks them fails.
+# Not on main, as in test.yml.
 on:
   pull_request:
-  push:
-    branches:
-      - main
 
 concurrency:
   group: release-build-${{ github.ref }}

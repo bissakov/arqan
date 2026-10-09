@@ -66,6 +66,8 @@ release_in() {
         -e SOURCE_DATE_EPOCH="$epoch" \
         -e BUILD_REV \
         -e ARQAN_TEST_JOBS \
+        -e ARQAN_TEST_RETRIES \
+        -e GITHUB_ACTIONS \
         -v "$ROOT:/work" \
         -w /work \
         "$IMAGE" \
