@@ -297,6 +297,36 @@ def test_patch_rewrites_a_line_in_place(ctx):
     assert ctx.mock.tool_results()[-1].strip() == "edit.txt +1 -1"
 
 
+def test_patch_git_prefix_on_an_absolute_path_finds_the_file(ctx):
+    """`a/home/u/f` is how git writes /home/u/f; it must not turn relative."""
+    path = ctx.write_file("abs.txt", "alpha\nBETA\ngamma\n")
+    bare = str(path.resolve()).lstrip("/")
+    diff = (
+        f"--- a/{bare}\n+++ b/{bare}\n@@ -1,3 +1,3 @@\n"
+        " alpha\n-BETA\n+beta\n gamma\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="edited"))
+    s = ctx.spawn()
+    s.submit("fix the case")
+    s.wait_text("edited")
+    s.wait_turn_done()
+    result = ctx.mock.tool_results()[-1]
+    assert not result.startswith("ERROR:"), result
+    assert path.read_text() == "alpha\nbeta\ngamma\n"
+
+
+def test_patch_missing_file_names_the_reason_and_directory(ctx):
+    diff = "--- a/nowhere.txt\n+++ b/nowhere.txt\n@@\n-old\n+new\n"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+    result = ctx.mock.tool_results()[-1]
+    assert "open nowhere.txt failed: No such file or directory" in result, result
+    assert f"relative to {ctx.work.resolve()}" in result, result
+    assert not (ctx.work / "nowhere.txt").exists()
+
+
 def test_patch_preserves_an_existing_files_mode(ctx):
     path = ctx.write_file("script.sh", "old\n")
     path.chmod(0o751)
