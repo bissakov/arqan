@@ -963,6 +963,36 @@ static void conv_clone_carries_the_touched_list(void) {
     CHECK(!copy.touched_overflow);
 }
 
+static void conv_result_slot_pairs_like_call_slot(void) {
+    WITH_ARENA(a, 1 << 20);
+    Conv c;
+    CHECK(conv_init(&c, &a, 16));
+    CHECK(conv_add(&c, M_SYSTEM, STR("sys")) == 0);
+    CHECK(conv_add(&c, M_USER, STR("hi")) == 1);
+    CHECK(conv_add_assistant_calls(&c, (Str){0}) == 2);
+    CHECK(conv_add_call(&c, &a, (Str){0}, STR("patch"), STR("{}")) == 3);
+    CHECK(conv_add_call(&c, &a, (Str){0}, STR("write"), STR("{}")) == 4);
+    CHECK(conv_add_call(&c, &a, STR("b"), STR("read"), STR("{}")) == 5);
+    CHECK(conv_result_slot(&c, 3) == CONV_NONE);
+    CHECK(conv_result_slot(&c, 4) == CONV_NONE);
+    CHECK(conv_add_tool(&c, (Str){0}, STR("ERROR: one")) == 6);
+    CHECK(conv_add_tool(&c, STR("b"), STR("read it")) == 7);
+    CHECK(conv_result_slot(&c, 3) == CONV_NONE);
+    CHECK(conv_result_slot(&c, 4) == 6);
+    CHECK(conv_result_slot(&c, 5) == 7);
+    CHECK(conv_result_slot(&c, 6) == CONV_NONE);
+
+    CHECK(conv_add_assistant_calls(&c, (Str){0}) == 8);
+    CHECK(conv_add_call(&c, &a, STR("c"), STR("patch"), STR("{}")) == 9);
+    CHECK(conv_add(&c, M_USER, STR("stop")) == 10);
+    CHECK(conv_add_tool(&c, STR("c"), STR("late")) == 11);
+    CHECK(conv_result_slot(&c, 9) == CONV_NONE);
+
+    CHECK(conv_add_assistant_calls(&c, (Str){0}) == 12);
+    CHECK(conv_add_call(&c, &a, STR("d"), STR("patch"), STR("{}")) == 13);
+    CHECK(conv_result_slot(&c, 13) == CONV_NONE);
+}
+
 /* ---- child processes --------------------------------------------------- */
 
 static void child_close_fds_reaches_past_the_fallback_cap(void) {
@@ -1067,6 +1097,7 @@ int main(void) {
 
     RUN(conv_touch_keeps_a_bounded_unique_list);
     RUN(conv_clone_carries_the_touched_list);
+    RUN(conv_result_slot_pairs_like_call_slot);
 
     RUN(child_close_fds_reaches_past_the_fallback_cap);
     if (g_fail) {

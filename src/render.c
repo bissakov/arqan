@@ -44,6 +44,13 @@ static b8 render_in_full(Str name) {
     return str_eq(name, STR("write")) || str_eq(name, STR("patch"));
 }
 
+b8 render_unapplied(Str name, Str result) {
+    if (!render_in_full(name)) return false;
+    result = todo_note_strip(progress_note_strip(result));
+    return str_starts(result, STR("ERROR: "))
+           || str_starts(result, STR("DENIED: "));
+}
+
 static size_t line_cap(size_t max) {
     return uncapped() ? (size_t)-1 : max;
 }
@@ -297,10 +304,10 @@ static void render_todo_call(Str args, Arena *scratch, const Conv *c,
     }
 }
 
-void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
-                      const Conv *c, size_t slot) {
+static void render_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
+                        const Conv *c, size_t slot, b8 unapplied) {
     block_begin(id, expanded);
-    g_render.block.full = render_in_full(name);
+    g_render.block.full = render_in_full(name) && !unapplied;
     size_t mark = scratch->off;
     if (str_eq(name, STR("todo"))) {
         render_todo_call(args, scratch, c, slot);
@@ -472,7 +479,7 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
             write_lines(content, STR("\u2502 "), R_ARG_LINES, R_LINE_BYTES,
                         tui_write_muted);
     } else if (patch.n) {
-        write_patch_lines(patch, &syntax, STR("\u2502 "), R_ARG_LINES * 2);
+        write_patch_lines(patch, &syntax, STR("\u2502 "), R_ARG_LINES);
     } else if (cmd.n) {
         if (source_code)
             write_syntax_lines(str_drop(cmd, cmd_off), syntax_source, false,
@@ -496,6 +503,18 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
     block_end();
 }
 
+
+void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
+                      const Conv *c, size_t slot) {
+    b8 unapplied = false;
+    if (c && slot != CONV_NONE && render_in_full(name)
+        && str_eq(c->tool_name[slot], name)) {
+        size_t result = conv_result_slot(c, slot);
+        unapplied =
+            result != CONV_NONE && render_unapplied(name, c->text[result]);
+    }
+    render_call(name, args, scratch, id, expanded, c, slot, unapplied);
+}
 
 void render_batch_child_call(Str name, Str args, Arena *scratch, u32 id,
                              b8 expanded, const Conv *c, size_t slot) {
@@ -910,8 +929,10 @@ static b8 render_batch_result(Str args, Str result, Arena *scratch, u32 id,
             buf_puts(&child, STR("{}"));
         if (!buf_ok(&child)) break;
         Str child_args = buf_finish(&child);
-        render_batch_child_call(name, child_args, scratch, id, expanded, NULL,
-                                CONV_NONE);
+        tui_tool_nest_begin();
+        render_call(name, child_args, scratch, id, expanded, NULL, CONV_NONE,
+                    render_unapplied(name, json_str(row, STR("result"))));
+        tui_tool_nest_end();
         if (str_eq(json_str(row, STR("status")), STR("running"))) continue;
         const JVal *duration = json_get(row, STR("ms"));
         u32 child_ms = duration && duration->type == J_NUM && duration->u.n >= 0
@@ -1139,10 +1160,11 @@ static Str render_batch_text(Str args, Str result, b8 input, Arena *scratch) {
             buf_puts(&out, path);
         }
         buf_putc(&out, '\n');
+        Str row_result = json_str(row, STR("result"));
         Str body = input
-                       ? render_call_text(name, child_args, scratch, NULL, NULL)
-                       : render_result_text(name, child_args,
-                                            json_str(row, STR("result")),
+                       ? render_call_text(name, child_args, scratch, NULL, NULL,
+                                          render_unapplied(name, row_result))
+                       : render_result_text(name, child_args, row_result,
                                             scratch, NULL, NULL);
         buf_puts(&out, body);
         if (body.n && body.p[body.n - 1] != '\n') buf_putc(&out, '\n');
@@ -1151,8 +1173,8 @@ static Str render_batch_text(Str args, Str result, b8 input, Arena *scratch) {
 }
 
 Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
-                     YhlResult *syntax) {
-    b8 full = render_in_full(name);
+                     YhlResult *syntax, b8 unapplied) {
+    b8 full = render_in_full(name) && !unapplied;
     if (shown) *shown = full ? SIZE_MAX : R_ARG_LINES;
     if (syntax) syntax->n = 0;
     if (!scratch) return args;
@@ -1175,7 +1197,6 @@ Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
         if (syntax && path.n && content.n)
             highlight_request(YHL_HINT_PATH, path, content, syntax);
     } else if (patch.n) {
-        if (shown && !full) *shown = R_ARG_LINES * 2;
         body = patch;
         if (syntax) batched_syntax(patch, false, (Str){0}, scratch, syntax);
     } else if (cmd.n) {
