@@ -154,6 +154,7 @@ project and the system directories. No child process gets your API keys. Set
 | `/copy` | Copy the last reply to the clipboard |
 | `/find` (`/search`) | Search the transcript (Ctrl-R) |
 | `/todo` | Show the model's step list |
+| `/diff` | Show what this session changed, as `git diff` |
 | `/task` | Show what the subagent is doing (Ctrl-O) |
 | `/mcp` | List, approve, reject, restart or disable MCP servers |
 | `/settings` (`/config`) | Change settings |

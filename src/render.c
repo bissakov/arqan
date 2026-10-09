@@ -675,34 +675,52 @@ static void write_patch_lines(Str patch, const YhlResult *hl, Str gutter,
     size_t off = 0, shown = 0;
     Str line;
     while (shown < cap && str_line(patch, &off, &line)) {
-        tui_write_dim(gutter);
         Str head = clip(line, R_LINE_BYTES);
         Str full_fragment;
         if (patch_fragment(line, &full_fragment)) {
-            Sink marker = line.p[0] == '+'   ? tui_write_result
-                          : line.p[0] == '-' ? tui_write_error
-                                             : tui_write_muted;
+            Sink marker = tui_write_muted, body = tui_write_source,
+                 side = tui_write_dim;
+            if (line.p[0] == '+') {
+                marker = tui_write_result;
+                body = tui_write_diff_add;
+                side = tui_write_diff_add;
+            } else if (line.p[0] == '-') {
+                marker = tui_write_error;
+                body = tui_write_diff_del;
+                side = tui_write_diff_del;
+            }
+            side(gutter);
             if (head.n) marker((Str){head.p, 1});
             Str fragment = str_drop(head, 1);
             if (fragment.n) {
                 size_t at = tui_transcript_pos();
-                tui_write_source(fragment);
+                body(fragment);
                 add_line_syntax(hl, patch, (size_t)(full_fragment.p - patch.p),
                                 fragment, at);
             }
+            if (head.n < line.n) side(STR(" ..."));
         } else if (str_starts(line, STR("+++ "))
                    || str_starts(line, STR("--- "))) {
-            tui_write_tool(head);
+            tui_write_dim(gutter);
+            tui_write_dim((Str){head.p, 4});
+            tui_write_styled(str_drop(head, 4), TUI_HEADING);
+            if (head.n < line.n) tui_write_source(STR(" ..."));
         } else {
+            tui_write_dim(gutter);
             tui_write_muted(head);
+            if (head.n < line.n) tui_write_source(STR(" ..."));
         }
-        if (head.n < line.n) tui_write_source(STR(" ..."));
         tui_write(STR("\n"));
         shown++;
     }
     write_tail(gutter, str_lines(str_drop(patch, off)), shown, max,
                tui_write_dim);
     tui_syntax_commit();
+}
+
+void render_diff_syntax(Str diff, Arena *scratch, YhlResult *out) {
+    out->n = 0;
+    batched_syntax(diff, false, (Str){0}, scratch, out);
 }
 
 static b8 grep_fragment(Str line, Str *prefix, Str *fragment) {

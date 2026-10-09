@@ -123,10 +123,18 @@ def test_patch_shows_the_diff_it_applies(ctx):
     old_col = s.screen.row_text(old_row).index("-old one")
     new_row = s.screen.find_row("\u2502 +new one")
     new_col = s.screen.row_text(new_row).index("+new one")
+    head_row = s.screen.find_row("\u2502 --- a/diff.txt")
+    head_col = s.screen.row_text(head_row).index("--- a/diff.txt")
     assert s.screen.attr_at(old_row, old_col).fg == 203
     assert s.screen.attr_at(new_row, new_col).fg == 114
     assert s.screen.attr_at(old_row, old_col + 1).fg == 253
     assert s.screen.attr_at(new_row, new_col + 1).fg == 253
+    assert s.screen.attr_at(old_row, old_col).bg == 52
+    assert s.screen.attr_at(old_row, old_col + 1).bg == 52
+    assert s.screen.attr_at(new_row, new_col).bg == 22
+    assert s.screen.attr_at(new_row, new_col + 1).bg == 22
+    assert s.screen.attr_at(head_row, head_col).fg == 245
+    assert s.screen.attr_at(head_row, head_col + 4).fg == 81
 
 
 def test_patch_shows_the_whole_diff(ctx):

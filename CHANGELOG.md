@@ -4,6 +4,14 @@
 
 ### Added
 
+- `/diff` shows what this session changed, as `git diff`, in a window. It
+  covers every file `write` and `patch` touched since the conversation
+  started, including files git does not track yet, and the list survives
+  `/resume`, `/rewind`, `/fork` and `/compact`. The model does not see it.
+- Diff rows are tinted. In a `patch` call, in its expanded window and in
+  `/diff`, added lines sit on a green background and removed lines on a red
+  one, with the file headers muted. Two theme slots control the colours:
+  `diff_add_bg` and `diff_del_bg`.
 - Approximate syntax highlighting for Unity shaders. `.shader`, `.cginc`,
   `.hlsl` and `.compute` files, and code fences marked `hlsl` or `shaderlab`,
   use the C highlighter. Strings, comments, numbers, preprocessor lines, HLSL

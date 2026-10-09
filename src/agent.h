@@ -65,6 +65,7 @@ typedef bool b8;
 #define AGENT_MAX_PATCH_FILES     32
 #define AGENT_MAX_PATCH_HUNKS     512
 #define AGENT_MAX_PATCH_NOTES     4
+#define AGENT_MAX_TOUCHED         256
 #define AGENT_PATCH_CONTEXT_LINES 5
 #define AGENT_TOOL_ERR            1024
 
@@ -157,6 +158,7 @@ typedef bool b8;
 #define AGENT_MAX_SECRET_CMD         512
 #define AGENT_SECRET_TIMEOUT_MS      15000
 #define AGENT_CLIPBOARD_TIMEOUT_MS   3000
+#define AGENT_DIFF_TIMEOUT_MS        10000
 #define AGENT_MAX_REASONING_LIST     1024
 #define AGENT_MAX_NOTIFY_TEXT        128
 #define AGENT_MAX_NOTIFY_CMD         512
@@ -510,6 +512,8 @@ typedef enum {
     THEME_SYNTAX_TYPE,
     THEME_SYNTAX_FUNCTION,
     THEME_SYNTAX_BUILTIN,
+    THEME_DIFF_ADD_BG,
+    THEME_DIFF_DEL_BG,
     THEME_SLOT_N
 } ThemeSlot;
 
@@ -1335,6 +1339,9 @@ ShellClass shell_classify(Str cmd, b8 contained);
 b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap);
 void shell_set_idle(void (*fn)(void *ud), void *ud);
 void shell_set_interrupt_flag(volatile sig_atomic_t *flag);
+/* Called with the path of every file `write` and `patch` create, replace or
+ * delete, after the change reaches disk. */
+void tools_set_touch(void (*fn)(void *ud, Str path), void *ud);
 
 void shell_set_timeout(i32 ms);
 void jobs_stop(void);
@@ -1461,6 +1468,9 @@ typedef struct {
     u32 *media_off;
     u16 *media_n;
     MediaSet *media;
+    Str *touched;
+    size_t touched_n, touched_cap;
+    b8 touched_overflow;
     size_t elide_start;
     size_t checkpoint;
     size_t n, cap;
@@ -1468,6 +1478,11 @@ typedef struct {
 
 b8 conv_init(Conv *c, Arena *persist, size_t cap);
 size_t conv_add(Conv *c, MRole role, Str text);
+/* Records a file the session wrote. True when `path` is stored or already
+ * there; false, with `touched_overflow` set, when the list is full. The list
+ * survives rewind, fork and compaction, since the files on disk stay changed,
+ * and resets with the conversation when fewer than two slots are kept. */
+b8 conv_touch(Conv *c, Arena *persist, Str path);
 
 void conv_set_media(Conv *c, MediaSet *m);
 void conv_attach_media(Conv *c, size_t i, size_t off, size_t n);
@@ -1501,6 +1516,17 @@ b8 conv_round_start(const Conv *c, size_t i);
 
 b8 conv_compact_head(Conv *c, size_t keep, Str checkpoint);
 void conv_set_checkpoint(Conv *c, size_t i);
+
+/* ---- /diff ---------------------------------------------------------------
+ * The unified diff git reports for the files in `Conv.touched`: tracked files
+ * through `git diff`, and the rest against /dev/null. The text lands in
+ * `scratch`, bounded by AGENT_RESP_BUF. False with `err` filled in when
+ * nothing was written, git is missing or fails, the deadline passes, or the
+ * diff is too large. The idle hook runs while git works so the screen stays
+ * responsive. */
+b8 diff_capture(const Conv *c, Arena *scratch, Str *out, char *err,
+                size_t err_cap);
+void diff_set_idle(void (*fn)(void *ud), void *ud);
 
 /* ---- todo list -----------------------------------------------------------
  * The step list the model keeps for work that spans several rounds. The tool
@@ -1645,6 +1671,7 @@ typedef struct {
     b8 cleared;
     size_t written;
     size_t elide_written;
+    size_t touched_written;
 } Session;
 
 typedef struct {
@@ -2098,6 +2125,7 @@ b8 tui_info_open(Str title, const TuiCmd *rows, size_t n);
 typedef struct {
     Str text;
     const YhlResult *syntax;
+    b8 diff;
 } TuiViewPart;
 b8 tui_view_open(Str title, const TuiViewPart *parts, size_t n, size_t start);
 size_t tui_key_rows(TuiCmd *rows, size_t max);
@@ -2197,6 +2225,8 @@ void tui_write_reason(Str s);
 void tui_write_tool(Str s);
 void tui_write_result(Str s);
 void tui_write_error(Str s);
+void tui_write_diff_add(Str s);
+void tui_write_diff_del(Str s);
 
 void tui_user_begin(Str timestamp);
 void tui_user_end(void);
@@ -2285,6 +2315,8 @@ Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
 Str render_result_text(Str name, Str args, Str result, Arena *scratch,
                        size_t *shown, YhlResult *syntax);
 Str render_shell_text(Str cmd, size_t *shown, YhlResult *syntax);
+/* Syntax runs for a unified diff, file by file, keyed by the +++ path. */
+void render_diff_syntax(Str diff, Arena *scratch, YhlResult *out);
 
 void render_set_verbose(b8 on);
 b8 render_verbose(void);

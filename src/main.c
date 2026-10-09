@@ -13,6 +13,7 @@
 #include "spill.c"
 #include "media.c"
 #include "clipboard.c"
+#include "diff.c"
 #include "editor.c"
 #include "settings.c"
 #include "theme.c"
@@ -104,6 +105,8 @@ static size_t commands_init(b8 images, b8 subagents, b8 mcp) {
         (TuiCmd){STR("/copy"), STR("Copy the last response to the clipboard")};
     g_commands.v[n++] =
         (TuiCmd){STR("/todo"), STR("Show the step list for the work in hand")};
+    g_commands.v[n++] = (TuiCmd){
+        STR("/diff"), STR("Show what this session changed, as git diff")};
     if (mcp)
         g_commands.v[n++] = (TuiCmd){
             STR("/mcp"), STR("MCP servers: list, approve, reject, restart, "
@@ -484,6 +487,11 @@ static b8 save_tool_progress(Agent *ag, size_t slot) {
     char err[256] = {0};
     b8 ok = session_update_tool(ag->sess, ag->conv, slot, err, sizeof err);
     return save_session_result(ag, ok, err);
+}
+
+static void touch_path(void *ud, Str path) {
+    Agent *ag = ud;
+    conv_touch(ag->conv, ag->persist, path);
 }
 
 #define READ_ONLY_NOTICE STR("read-only, /fork to continue in a copy")
@@ -5049,6 +5057,8 @@ static b8 open_block_view(Agent *ag, size_t i) {
     }
     Str title = {name_buf,
                  len > 0 && (size_t)len < sizeof name_buf ? (size_t)len : 0};
+    parts[0].diff = c->role[i] == M_ASSISTANT && conv_is_call(c, i)
+                    && str_eq(c->tool_name[i], STR("patch"));
     size_t start = 0, lines = 0;
     for (size_t p = 0; p < part_n; p++) {
         if (!parts[p].text.n) continue;
@@ -5061,6 +5071,50 @@ static b8 open_block_view(Agent *ag, size_t i) {
     b8 opened = lines && tui_view_open(title, parts, part_n, start);
     ag->scratch->off = scratch_mark;
     return opened;
+}
+
+static void diff_command(Agent *ag) {
+    const Conv *conv = ag->conv;
+    if (!conv->touched_n) {
+        tui_notice(STR("no files were written in this session"));
+        return;
+    }
+    size_t mark = ag->scratch->off;
+    Str diff;
+    char err[256] = {0};
+    b8 was_busy = tui_busy();
+    tui_set_busy(true);
+    b8 captured = diff_capture(conv, ag->scratch, &diff, err, sizeof err);
+    tui_set_busy(was_busy);
+    if (!captured) {
+        tui_notice(str_c(err));
+    } else if (!str_trim(diff).n) {
+        notice_fmt("no uncommitted changes in the %zu file%s written this "
+                   "session",
+                   conv->touched_n, conv->touched_n == 1 ? "" : "s");
+    } else {
+        Buf shown;
+        buf_init(&shown, ag->scratch, diff.n + 128);
+        if (conv->touched_overflow)
+            buf_putf(&shown,
+                     "more than %u files were written; only the first %u are "
+                     "shown\n\n",
+                     AGENT_MAX_TOUCHED, AGENT_MAX_TOUCHED);
+        buf_puts(&shown, diff);
+        YhlResult *syntax =
+            arena_alloc(ag->scratch, sizeof *syntax, alignof(YhlResult));
+        if (buf_ok(&shown) && syntax) {
+            Str text = buf_finish(&shown);
+            render_diff_syntax(text, ag->scratch, syntax);
+            TuiViewPart part = {text, syntax, true};
+            if (!tui_view_open(STR("diff"), &part, 1, 0))
+                tui_notice(
+                    STR("the terminal is too small for the diff window"));
+        } else {
+            tui_notice(STR("out of memory showing the diff"));
+        }
+    }
+    ag->scratch->off = mark;
 }
 
 static b8 on_busy_command(Str line, void *ud) {
@@ -5099,6 +5153,9 @@ static b8 on_busy_command(Str line, void *ud) {
         ran = tui_info_open(STR("keyboard shortcuts"), g_keys, keys_rows());
     else if (str_eq(name, STR("/task"))) {
         task_view_toggle(ag);
+        ran = true;
+    } else if (str_eq(name, STR("/diff"))) {
+        diff_command(ag);
         ran = true;
     } else if (str_eq(name, STR("/copy"))) {
         copy_last_reply(ag->conv);
@@ -6374,6 +6431,7 @@ i32 main(i32 argc, char **argv) {
     shell_set_idle(on_idle, NULL);
     shell_set_interrupt_flag(&g_got_sigint);
     shell_set_timeout(cfg.shell_timeout_ms);
+    diff_set_idle(on_idle, NULL);
 
     mcp_set_idle(on_idle, NULL, tui_input_fd());
     mcp_set_interrupt_flag(&g_got_sigint);
@@ -6404,6 +6462,7 @@ i32 main(i32 argc, char **argv) {
         .show_instructions = prefs.show_instructions,
     };
     tui_set_busy_command(on_busy_command, &agent);
+    tools_set_touch(touch_path, &agent);
     tui_set_reflow(reflow_transcript, &agent);
     g_task.ag = &agent;
     g_task.focus = AGENT_MAX_TASKS;
@@ -6565,6 +6624,10 @@ i32 main(i32 argc, char **argv) {
         }
         if (!strcmp(line, "/todo")) {
             show_todo();
+            continue;
+        }
+        if (!strcmp(line, "/diff")) {
+            diff_command(&agent);
             continue;
         }
         if (!strncmp(line, "/mcp", 4) && (ln == 4 || line[4] == ' ')) {

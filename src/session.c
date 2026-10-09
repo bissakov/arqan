@@ -378,6 +378,7 @@ b8 session_begin(Session *s) {
     sess_lock_release(s);
     s->written = 0;
     s->elide_written = 0;
+    s->touched_written = 0;
     s->save_blocked = false;
     s->sync_dir = false;
     s->resumed = false;
@@ -628,6 +629,14 @@ static void sess_out_metadata(SessOut *o, Str title) {
     sess_out_puts(o, STR("}\n"));
 }
 
+static void sess_out_touched(SessOut *o, const Conv *c, size_t from) {
+    for (size_t i = from; i < c->touched_n; i++) {
+        sess_out_puts(o, STR("{\"type\":\"touched\",\"path\":"));
+        sess_out_json(o, c->touched[i]);
+        sess_out_puts(o, STR("}\n"));
+    }
+}
+
 static b8 sess_put_media(SessOut *o, Str dir, const Conv *c, size_t i,
                          char *err, size_t err_cap) {
     if (!c->media || !c->media_n[i]) return true;
@@ -680,8 +689,9 @@ b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
         s->sync_dir = false;
     }
     b8 elide_moved = c->elide_start != s->elide_written;
-    if (s->written >= c->n && !elide_moved) return true;
-    b8 pending = elide_moved;
+    b8 touched_moved = s->touched_written < c->touched_n;
+    if (s->written >= c->n && !elide_moved && !touched_moved) return true;
+    b8 pending = elide_moved || touched_moved;
     for (size_t i = s->written; i < c->n && !pending; i++)
         if (c->role[i] != M_SYSTEM) pending = true;
     if (!pending) {
@@ -781,6 +791,7 @@ b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
         sess_out_json(&out, c->text[i]);
         sess_out_puts(&out, STR("}\n"));
     }
+    if (serialized) sess_out_touched(&out, c, s->touched_written);
     b8 ok = serialized && sess_out_flush(&out) && fsync(fd) == 0;
     i32 saved = out.error ? out.error : ok ? 0 : errno;
     if (!ok) {
@@ -804,6 +815,7 @@ b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
         saved = errno;
         s->written = c->n;
         s->elide_written = c->elide_start;
+        s->touched_written = c->touched_n;
         if (created) s->sync_dir = true;
         snprintf(err, err_cap, "could not close session file: %s",
                  strerror(saved));
@@ -811,6 +823,7 @@ b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
     }
     s->written = c->n;
     s->elide_written = c->elide_start;
+    s->touched_written = c->touched_n;
     if (created) {
         s->sync_dir = true;
         if (!sess_sync_dir(dir, err, err_cap)) { return false; }
@@ -863,6 +876,7 @@ b8 session_update_tool(Session *s, const Conv *c, size_t slot, char *err,
         sess_out_puts(&out, STR(",\"content\":"));
         sess_out_json(&out, c->text[slot]);
         sess_out_puts(&out, STR("}\n"));
+        sess_out_touched(&out, c, s->touched_written);
     }
     b8 ok = serialized && sess_out_flush(&out) && fsync(fd) == 0;
     i32 saved = out.error ? out.error : ok ? 0 : errno;
@@ -884,8 +898,10 @@ b8 session_update_tool(Session *s, const Conv *c, size_t slot, char *err,
     if (close(fd) != 0) {
         snprintf(err, err_cap, "could not close session file: %s",
                  strerror(errno));
+        s->touched_written = c->touched_n;
         return false;
     }
+    s->touched_written = c->touched_n;
     return true;
 }
 
@@ -1323,6 +1339,7 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
     else
         telemetry_bind(s->path);
     s->written = c->n;
+    s->touched_written = c->touched_n;
     if (s->cleared && !s->read_only) session_set_cleared(s, false);
 
     {
@@ -1352,6 +1369,8 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
                 const JVal *at = json_get(v, STR("start"));
                 if (at && at->type == J_NUM && at->u.n > 0)
                     elide = (size_t)at->u.n;
+            } else if (str_eq(type, STR("touched"))) {
+                conv_touch(c, persist, json_str(v, STR("path")));
             } else if (str_eq(type, STR("tool_update"))) {
                 Str id = json_str(v, STR("id"));
                 size_t slot = CONV_NONE;
@@ -1422,6 +1441,7 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
     c->elide_start = elide < c->n ? elide : 0;
     s->written = c->n;
     s->elide_written = c->elide_start;
+    s->touched_written = c->touched_n;
     if (!sess_answer_pending(c)) ok = false;
     return ok;
 }

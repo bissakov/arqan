@@ -106,7 +106,11 @@ enum {
     X(SYNTAX_FUNCTION, "syntax_function", FG, 0, TI(75), TI(25), TH(0x7E9CD8), \
       TH(0x8BA4B0), TH(0x496392))                                              \
     X(SYNTAX_BUILTIN, "syntax_builtin", FG, 0, TI(180), TI(58), TH(0xFFA066),  \
-      TH(0xB6927B), TH(0x975100))
+      TH(0xB6927B), TH(0x975100))                                              \
+    X(DIFF_ADD_BG, "diff_add_bg", BG, 0, TI(22), TI(194), TH(0x2B3328),        \
+      TH(0x2B3328), TH(0xB7D0AE))                                              \
+    X(DIFF_DEL_BG, "diff_del_bg", BG, 0, TI(52), TI(224), TH(0x43242B),        \
+      TH(0x43242B), TH(0xD9A594))
 
 typedef struct {
     const char *name;

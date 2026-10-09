@@ -293,6 +293,8 @@ class Ctx:
 
     @staticmethod
     def _mask_elapsed(m: re.Match) -> str:
+        if m.end() == len(m.string) or m.string[m.end()] == "\n":
+            return "\u00b7 <t>"
         return ("\u00b7 <t>" + " " * (len(m.group(0)) - 5))[: len(m.group(0))]
 
     def check_text(self, actual: str, name: str | None = None):

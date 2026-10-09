@@ -26,6 +26,58 @@ void tel_int(TelEvent *e, const char *key, i64 v) {
     (void)v;
 }
 
+void tel_open(TelEvent *e, const char *ev) {
+    (void)e;
+    (void)ev;
+}
+
+void tel_bool(TelEvent *e, const char *key, b8 v) {
+    (void)e;
+    (void)key;
+    (void)v;
+}
+
+void tel_str(TelEvent *e, const char *key, Str v) {
+    (void)e;
+    (void)key;
+    (void)v;
+}
+
+void tel_shape(TelEvent *e, const char *key, Str text) {
+    (void)e;
+    (void)key;
+    (void)text;
+}
+
+void tel_send(TelEvent *e) {
+    (void)e;
+}
+
+void tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api,
+                         ToolAudience audience) {
+    (void)b;
+    (void)r;
+    (void)api;
+    (void)audience;
+}
+
+i32 http_post(const HttpReq *r) {
+    (void)r;
+    return -1;
+}
+
+i32 http_get(const char *base_url, const char *path, const char *api_key,
+             ApiKind api, Buf *out, char *fail_out, size_t fail_cap) {
+    (void)base_url;
+    (void)path;
+    (void)api_key;
+    (void)api;
+    (void)out;
+    (void)fail_out;
+    (void)fail_cap;
+    return -1;
+}
+
 #include "core.c"
 #include "width.c"
 #include "json.c"
@@ -36,6 +88,7 @@ void tel_int(TelEvent *e, const char *key, i64 v) {
 #include "settings.c"
 #include "theme.c"
 #include "progress.c"
+#include "provider.c"
 
 #include <fcntl.h>
 #include <stdlib.h>
@@ -862,6 +915,54 @@ static void progress_checkpoint_survives_a_short_arena(void) {
     CHECK(!progress_checkpoint(&b, (Str){0}, fresh, 1, &a) || !buf_ok(&b));
 }
 
+/* ---- conversation ------------------------------------------------------- */
+
+static void conv_touch_keeps_a_bounded_unique_list(void) {
+    WITH_ARENA(a, 1 << 20);
+    Conv c;
+    CHECK(conv_init(&c, &a, 8));
+    CHECK(!conv_touch(&c, &a, (Str){0}));
+    CHECK(c.touched_n == 0);
+    CHECK(conv_touch(&c, &a, STR("a.txt")));
+    CHECK(conv_touch(&c, &a, STR("a.txt")));
+    CHECK(c.touched_n == 1);
+    char name[32];
+    for (size_t i = 1; i < AGENT_MAX_TOUCHED; i++) {
+        i32 n = snprintf(name, sizeof name, "f%zu", i);
+        CHECK(conv_touch(&c, &a, (Str){name, (size_t)n}));
+    }
+    CHECK(c.touched_n == AGENT_MAX_TOUCHED);
+    CHECK(!c.touched_overflow);
+    CHECK(!conv_touch(&c, &a, STR("one-too-many")));
+    CHECK(c.touched_overflow);
+    CHECK(c.touched_n == AGENT_MAX_TOUCHED);
+    CHECK(conv_touch(&c, &a, STR("a.txt")));
+
+    CHECK(conv_add(&c, M_SYSTEM, STR("sys")) == 0);
+    CHECK(conv_add(&c, M_USER, STR("hi")) == 1);
+    CHECK(conv_add(&c, M_ASSISTANT, STR("yo")) == 2);
+    conv_truncate(&c, 2);
+    CHECK(c.touched_n == AGENT_MAX_TOUCHED);
+    CHECK(c.touched_overflow);
+    conv_truncate(&c, 1);
+    CHECK(c.touched_n == 0);
+    CHECK(!c.touched_overflow);
+}
+
+static void conv_clone_carries_the_touched_list(void) {
+    WITH_ARENA(a, 1 << 20);
+    Conv c, copy;
+    CHECK(conv_init(&c, &a, 8));
+    CHECK(conv_add(&c, M_SYSTEM, STR("sys")) == 0);
+    CHECK(conv_add(&c, M_USER, STR("hi")) == 1);
+    CHECK(conv_touch(&c, &a, STR("a.txt")));
+    CHECK(conv_touch(&c, &a, STR("b.txt")));
+    CHECK(conv_clone_head(&copy, &c, 2, &a, 2));
+    CHECK(copy.touched_n == 2);
+    CHECK(str_eq(copy.touched[1], STR("b.txt")));
+    CHECK(!copy.touched_overflow);
+}
+
 /* ---- child processes --------------------------------------------------- */
 
 static void child_close_fds_reaches_past_the_fallback_cap(void) {
@@ -963,6 +1064,9 @@ int main(void) {
     RUN(progress_checkpoint_counts_the_first_compaction);
     RUN(progress_checkpoint_bounds_the_requests);
     RUN(progress_checkpoint_survives_a_short_arena);
+
+    RUN(conv_touch_keeps_a_bounded_unique_list);
+    RUN(conv_clone_carries_the_touched_list);
 
     RUN(child_close_fds_reaches_past_the_fallback_cap);
     if (g_fail) {

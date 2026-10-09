@@ -18,6 +18,7 @@
 #include <sys/syscall.h>
 #endif
 
+static void tools_touch(Str path);
 
 static JVal *tool_args(Str args, Arena *scratch, char *err, size_t err_cap) {
     return json_parse_error(scratch, args, err, err_cap);
@@ -305,6 +306,7 @@ static b8 tool_write(Str args, Arena *scratch, Buf *out, char *err,
     }
     tool_write_directories(out, created);
     buf_putf(out, "wrote %zu bytes to %s", content.n, z);
+    tools_touch(str_c(z));
     return true;
 }
 
@@ -371,6 +373,11 @@ typedef struct {
 } ToolsPolicy;
 
 typedef struct {
+    void (*fn)(void *ud, Str path);
+    void *ud;
+} ToolsTouch;
+
+typedef struct {
     Job jobs[AGENT_MAX_JOBS];
     u32 seq;
 } JobTable;
@@ -378,6 +385,7 @@ typedef struct {
 typedef struct {
     ShellHost shell;
     ToolsPolicy policy;
+    ToolsTouch touch;
     JobTable job;
     ToolExecution execution;
 } ToolsState;
@@ -392,6 +400,15 @@ static ToolsState g_tools = {
 void shell_set_idle(void (*fn)(void *ud), void *ud) {
     g_tools.shell.idle = fn;
     g_tools.shell.idle_ud = ud;
+}
+
+void tools_set_touch(void (*fn)(void *ud, Str path), void *ud) {
+    g_tools.touch.fn = fn;
+    g_tools.touch.ud = ud;
+}
+
+static void tools_touch(Str path) {
+    if (g_tools.touch.fn) g_tools.touch.fn(g_tools.touch.ud, path);
 }
 
 void shell_set_interrupt_flag(volatile sig_atomic_t *flag) {
@@ -2038,6 +2055,7 @@ static b8 patch_write(Patch *p, const PatchFile *f, Buf *out) {
     if (!file_write_atomic_str(f->path, patch_body(f), 0666, true))
         return patch_fail(p, "write %s failed: %s", f->path, strerror(errno));
     tool_write_directories(out, created);
+    tools_touch(str_c(f->path));
     return true;
 }
 
@@ -2086,6 +2104,7 @@ static b8 tool_patch(Str args, Arena *scratch, Buf *out, char *err,
             if (unlink(f->path) != 0)
                 return patch_fail(&p, "delete %s failed: %s", f->path,
                                   strerror(errno));
+            tools_touch(str_c(f->path));
             buf_putf(out, "%s deleted\n", f->path);
         } else {
             if (!patch_write(&p, f, out)) return false;
