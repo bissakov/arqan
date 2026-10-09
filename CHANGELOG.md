@@ -31,6 +31,9 @@
 - A call refused in a non-interactive run in Ask mode is saved as needing
   approval, not as refused by the user. A resumed session no longer tells the
   model that the user said no.
+- Dragging over a draft in the composer copies the text after the cursor.
+  Before, text to the right of the cursor on its row was left out, so a drag
+  over only that text copied nothing and showed no notice.
 
 ## [0.11.0] - 2026-10-08
 

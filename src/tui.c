@@ -432,10 +432,14 @@ static void screen_size(size_t *rows, size_t *cols) {
     if (*cols < 8) *cols = 8;
 }
 
-static void cup(size_t row, size_t col) {
+static void cursor_move(size_t row, size_t col) {
     char seq[48];
     i32 n = snprintf(seq, sizeof seq, "\033[%zu;%zuH", row, col);
     if (n > 0) put_raw(seq, (size_t)n);
+}
+
+static void cup(size_t row, size_t col) {
+    cursor_move(row, col);
     snap_seek(row, col);
 }
 
@@ -3277,7 +3281,7 @@ static void repaint(void) {
                                        ? gutter + find_row_caret(body_cols) + 1
                                        : gutter + cursor_col + 1;
         if (screen_cursor_col > cols) screen_cursor_col = cols;
-        cup(screen_cursor_row, screen_cursor_col);
+        cursor_move(screen_cursor_row, screen_cursor_col);
         put_str("\033[?25h");
     }
     g_tui.painted_rows = rows;
