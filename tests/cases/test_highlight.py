@@ -877,7 +877,7 @@ def test_envelope_patch_uses_each_files_language(ctx):
     s.wait_text("done")
     s.wait_turn_done()
     assert "more lines" not in s.text(), s.text()
-    assert cell(s, "int v0000").fg == CYAN, s.text()
+    assert cell(s, "int v0000").fg == 245, s.text()
     assert cell(s, "int extra").fg == CYAN
     assert cell(s, "= 42", 2).fg == YELLOW
     assert cell(s, "def answer").fg == PURPLE

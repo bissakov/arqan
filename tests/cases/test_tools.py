@@ -103,7 +103,7 @@ def patch_call(diff, **kw):
 
 
 def test_patch_shows_the_diff_it_applies(ctx):
-    """A patch call reads as the diff it carries, coloured by its markers."""
+    """A patch call reads as its hunks, coloured by their markers."""
     ctx.write_file("diff.txt", "keep\nold one\nkeep\n")
     diff = (
         "--- a/diff.txt\n+++ b/diff.txt\n@@ -1,3 +1,3 @@\n"
@@ -123,18 +123,163 @@ def test_patch_shows_the_diff_it_applies(ctx):
     old_col = s.screen.row_text(old_row).index("-old one")
     new_row = s.screen.find_row("\u2502 +new one")
     new_col = s.screen.row_text(new_row).index("+new one")
-    head_row = s.screen.find_row("\u2502 --- a/diff.txt")
-    head_col = s.screen.row_text(head_row).index("--- a/diff.txt")
     assert s.screen.attr_at(old_row, old_col).fg == 203
     assert s.screen.attr_at(new_row, new_col).fg == 114
     assert s.screen.attr_at(old_row, old_col + 1).fg == 253
     assert s.screen.attr_at(new_row, new_col + 1).fg == 253
     assert s.screen.attr_at(old_row, old_col).bg == 52
-    assert s.screen.attr_at(old_row, old_col + 1).bg == 52
+    assert s.screen.attr_at(old_row, old_col + 4).bg == 52
     assert s.screen.attr_at(new_row, new_col).bg == 22
-    assert s.screen.attr_at(new_row, new_col + 1).bg == 22
-    assert s.screen.attr_at(head_row, head_col).fg == 245
-    assert s.screen.attr_at(head_row, head_col + 4).fg == 81
+    assert s.screen.attr_at(new_row, new_col + 4).bg == 22
+
+
+def test_patch_of_one_file_drops_its_file_header(ctx):
+    """The call title names the file, so its ---/+++ rows are not repeated."""
+    ctx.write_file("diff.txt", "keep\nold one\nkeep\n")
+    diff = (
+        "--- a/diff.txt\n+++ b/diff.txt\n@@ -1,3 +1,3 @@\n"
+        " keep\n-old one\n+new one\n keep\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="patched"))
+    s = ctx.spawn()
+    s.submit("patch it")
+    s.wait_text("patched")
+    s.wait_turn_done()
+
+    text = s.text()
+    assert "\u25c6  patch diff.txt" in text, text
+    assert "--- a/diff.txt" not in text, text
+    assert "+++ b/diff.txt" not in text, text
+    head_row = s.screen.find_row("\u2502 @@ -1,3 +1,3 @@")
+    assert s.screen.find_row("\u25c6  patch diff.txt") == head_row - 1
+
+
+def test_patch_of_one_file_drops_git_and_envelope_headers(ctx):
+    """git's preamble and the envelope's own lines fold away for one file."""
+    ctx.write_file("one.txt", "keep\nold\n")
+    ctx.write_file("two.txt", "keep\nold\n")
+    git = (
+        "diff --git a/one.txt b/one.txt\nindex 1111111..2222222 100644\n"
+        "--- a/one.txt\n+++ b/one.txt\n@@ -1,2 +1,2 @@\n keep\n-old\n+new\n"
+    )
+    envelope = (
+        "*** Begin Patch\n*** Update File: two.txt\n@@\n"
+        " keep\n-old\n+new\n*** End Patch\n"
+    )
+    ctx.scenario(
+        "tool=patch:" + json.dumps({"patch": git})
+        + ",tool=patch:" + json.dumps({"patch": envelope})
+        + ",final_text=patched"
+    )
+    s = ctx.spawn(rows=40)
+    s.submit("patch them")
+    s.wait_text("patched")
+    s.wait_turn_done()
+
+    text = s.text()
+    assert "\u25c6  patch one.txt" in text, text
+    assert "\u25c6  patch two.txt" in text, text
+    for gone in ("diff --git", "index 1111111", "--- a/one.txt",
+                 "+++ b/one.txt", "*** Begin Patch", "*** Update File",
+                 "*** End Patch"):
+        assert gone not in text, text
+    assert "\u2502 @@ -1,2 +1,2 @@" in text, text
+    assert "\u2502 @@" in text, text
+
+
+def test_patch_of_several_files_heads_each_file_once(ctx):
+    """Each file of a multi-file patch gets one row naming it."""
+    ctx.write_file("one.txt", "old\n")
+    ctx.write_file("two.txt", "old\n")
+    diff = (
+        "--- a/one.txt\n+++ b/one.txt\n@@ -1 +1 @@\n-old\n+new\n"
+        "--- a/two.txt\n+++ b/two.txt\n@@ -1 +1 @@\n-old\n+new\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="patched"))
+    s = ctx.spawn(rows=40)
+    s.submit("patch them")
+    s.wait_text("patched")
+    s.wait_turn_done()
+
+    text = s.text()
+    assert "\u25c6  patch one.txt +1 more" in text, text
+    assert "--- a/" not in text, text
+    assert "+++ b/" not in text, text
+    for name in ("one.txt", "two.txt"):
+        row = s.screen.find_row("\u2502 " + name)
+        col = s.screen.row_text(row).index(name)
+        assert s.screen.attr_at(row, col).fg == 81
+        assert s.screen.row_text(row + 1).strip() == "\u2502 @@ -1 +1 @@"
+
+
+def test_patch_context_lines_are_dimmed(ctx):
+    """Unchanged lines step back so the changed ones stand out."""
+    ctx.write_file("dim.txt", "keep\nold one\nkeep\n")
+    diff = (
+        "--- a/dim.txt\n+++ b/dim.txt\n@@ -1,3 +1,3 @@\n"
+        " keep\n-old one\n+new one\n keep\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="patched"))
+    s = ctx.spawn()
+    s.submit("patch it")
+    s.wait_text("patched")
+    s.wait_turn_done()
+
+    row = s.screen.find_row("\u2502  keep")
+    col = s.screen.row_text(row).index("keep")
+    assert s.screen.attr_at(row, col).fg == 245
+    assert s.screen.attr_at(row, col).bg is None
+
+
+def test_patch_marks_the_changed_words_of_a_paired_line(ctx):
+    """A removed line and the line that replaces it mark only what differs."""
+    ctx.write_file("word.txt", "call(alpha, beta);\n")
+    diff = (
+        "--- a/word.txt\n+++ b/word.txt\n@@ -1 +1 @@\n"
+        "-call(alpha, beta);\n+call(alpha, gamma);\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="patched"))
+    s = ctx.spawn()
+    s.submit("patch it")
+    s.wait_text("patched")
+    s.wait_turn_done()
+
+    old_row = s.screen.find_row("\u2502 -call(alpha, beta);")
+    old = s.screen.row_text(old_row)
+    new_row = s.screen.find_row("\u2502 +call(alpha, gamma);")
+    new = s.screen.row_text(new_row)
+    for i in range(old.index("beta"), old.index("beta") + 4):
+        assert s.screen.attr_at(old_row, i).bg == 88, i
+    for i in range(new.index("gamma"), new.index("gamma") + 5):
+        assert s.screen.attr_at(new_row, i).bg == 28, i
+    assert s.screen.attr_at(old_row, old.index("alpha")).bg == 52
+    assert s.screen.attr_at(old_row, old.index(");")).bg == 52
+    assert s.screen.attr_at(new_row, new.index("alpha")).bg == 22
+    assert s.screen.attr_at(new_row, new.index(");")).bg == 22
+    assert s.screen.attr_at(new_row, len(new.rstrip()) + 2).bg == 22
+
+
+def test_patch_does_not_mark_words_without_a_clear_pair(ctx):
+    """A rewritten line, or blocks of unequal length, keep the plain tint."""
+    ctx.write_file("pair.txt", "one two three\nkeep\nfirst\nsecond\n")
+    diff = (
+        "--- a/pair.txt\n+++ b/pair.txt\n@@ -1,4 +1,3 @@\n"
+        "-one two three\n+four five six\n keep\n"
+        "-first\n-second\n+first and second\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="patched"))
+    s = ctx.spawn()
+    s.submit("patch it")
+    s.wait_text("patched")
+    s.wait_turn_done()
+
+    for needle, bg in (("-one two three", 52), ("+four five six", 22),
+                       ("-first", 52), ("-second", 52),
+                       ("+first and second", 22)):
+        row = s.screen.find_row("\u2502 " + needle)
+        start = s.screen.row_text(row).index(needle)
+        for i in range(start, start + len(needle)):
+            assert s.screen.attr_at(row, i).bg == bg, (needle, i)
 
 
 def test_patch_shows_the_whole_diff(ctx):
@@ -154,8 +299,8 @@ def test_patch_shows_the_whole_diff(ctx):
 
     text = s.text()
     assert "\u25c6  patch many.txt" in text, text
-    assert "\u2502 --- a/many.txt" in text, text
-    assert "\u2502 +++ b/many.txt" in text, text
+    assert "--- a/many.txt" not in text, text
+    assert "+++ b/many.txt" not in text, text
     assert "\u2502 @@ -1,18 +1,18 @@" in text, text
     for i in range(17):
         assert f"\u2502  keep {i:02d}" in text, text
@@ -198,11 +343,11 @@ def test_failed_patch_is_collapsed(ctx):
 
     text = s.text()
     assert "\u25c6  patch many.txt" in text, text
-    assert "\u2502  miss 04" in text, text
-    for i in range(5, 17):
+    assert "\u2502  miss 06" in text, text
+    for i in range(7, 17):
         assert f"\u2502  miss {i:02d}" not in text, text
     assert "\u2502 +fresh" not in text, text
-    assert "\u2502 \u25be 14 more lines" in text, text
+    assert "\u2502 \u25be 12 more lines" in text, text
     assert text.count("more lines") == 1, text
     assert "\u25c6  patch good.txt" in text, text
     for i in range(17):
@@ -250,9 +395,9 @@ def test_denied_patch_is_collapsed(ctx):
     s.wait_text("understood")
     s.wait_turn_done()
     text = s.text()
-    assert "\u2502  miss 04" in text, text
-    assert "\u2502  miss 05" not in text, text
-    assert "\u2502 \u25be 14 more lines" in text, text
+    assert "\u2502  miss 06" in text, text
+    assert "\u2502  miss 07" not in text, text
+    assert "\u2502 \u25be 12 more lines" in text, text
     assert ctx.mock.tool_results()[0].startswith("DENIED: "), ctx.mock.tool_results()
     assert "fresh" not in (ctx.work / "many.txt").read_text()
 
@@ -265,9 +410,9 @@ def test_collapsed_failed_patch_expands(ctx):
     s.submit("patch it")
     s.wait_text("patched")
     s.wait_turn_done()
-    assert "\u2502 \u25be 14 more lines" in s.text(), s.text()
+    assert "\u2502 \u25be 12 more lines" in s.text(), s.text()
 
-    click(s, "\u2502 \u25be 14 more lines")
+    click(s, "\u2502 \u25be 12 more lines")
     s.wait_text("\u25b4 show less")
     text = s.text()
     for i in range(17):

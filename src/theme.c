@@ -110,7 +110,11 @@ enum {
     X(DIFF_ADD_BG, "diff_add_bg", BG, 0, TI(22), TI(194), TH(0x2B3328),        \
       TH(0x2B3328), TH(0xB7D0AE))                                              \
     X(DIFF_DEL_BG, "diff_del_bg", BG, 0, TI(52), TI(224), TH(0x43242B),        \
-      TH(0x43242B), TH(0xD9A594))
+      TH(0x43242B), TH(0xD9A594))                                              \
+    X(DIFF_ADD_CHANGED_BG, "diff_add_changed_bg", BG, 0, TI(28), TI(157),      \
+      TH(0x3E4B38), TH(0x3E4B38), TH(0xA5BE96))                                \
+    X(DIFF_DEL_CHANGED_BG, "diff_del_changed_bg", BG, 0, TI(88), TI(217),      \
+      TH(0x632B31), TH(0x632B31), TH(0xD58C84))
 
 typedef struct {
     const char *name;

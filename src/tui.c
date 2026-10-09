@@ -886,6 +886,8 @@ enum {
     ROW_SOURCE,
     ROW_DIFF_ADD,
     ROW_DIFF_DEL,
+    ROW_DIFF_ADD_CHANGED,
+    ROW_DIFF_DEL_CHANGED,
     ROW_BOLD,
     ROW_EMPH,
     ROW_MONO,
@@ -899,11 +901,22 @@ static b8 kind_is_block(u8 kind) {
 }
 
 static b8 kind_is_diff(u8 kind) {
-    return kind == ROW_DIFF_ADD || kind == ROW_DIFF_DEL;
+    return kind >= ROW_DIFF_ADD && kind <= ROW_DIFF_DEL_CHANGED;
+}
+
+static u8 diff_line_kind(u8 kind) {
+    return kind == ROW_DIFF_ADD_CHANGED   ? ROW_DIFF_ADD
+           : kind == ROW_DIFF_DEL_CHANGED ? ROW_DIFF_DEL
+                                          : kind;
 }
 
 static ThemeSlot diff_bg(u8 kind) {
-    return kind == ROW_DIFF_ADD ? THEME_DIFF_ADD_BG : THEME_DIFF_DEL_BG;
+    switch (kind) {
+        case ROW_DIFF_ADD: return THEME_DIFF_ADD_BG;
+        case ROW_DIFF_ADD_CHANGED: return THEME_DIFF_ADD_CHANGED_BG;
+        case ROW_DIFF_DEL_CHANGED: return THEME_DIFF_DEL_CHANGED_BG;
+        default: return THEME_DIFF_DEL_BG;
+    }
 }
 
 static void put_kind_style(u8 kind) {
@@ -940,6 +953,8 @@ static void put_kind_style(u8 kind) {
         case ROW_SOURCE: fg = THEME_TEXT; break;
         case ROW_DIFF_ADD:
         case ROW_DIFF_DEL:
+        case ROW_DIFF_ADD_CHANGED:
+        case ROW_DIFF_DEL_CHANGED:
             bg = diff_bg(kind);
             fg = THEME_TEXT;
             break;
@@ -1935,7 +1950,7 @@ static void update_text_rows(Str s, size_t base_off, size_t cols,
             if (kind == ROW_PLAIN) {
                 u8 sk = span_kind(base_off + start);
                 if (kind_is_block(sk))
-                    row_kind = sk;
+                    row_kind = diff_line_kind(sk);
                 else if (user_at_off(base_off + start))
                     row_kind = ROW_USER;
                 text_off = base_off + start;
@@ -4481,6 +4496,12 @@ void tui_write_diff_add(Str s) {
 }
 void tui_write_diff_del(Str s) {
     write_span(s, ROW_DIFF_DEL);
+}
+void tui_write_diff_add_changed(Str s) {
+    write_span(s, ROW_DIFF_ADD_CHANGED);
+}
+void tui_write_diff_del_changed(Str s) {
+    write_span(s, ROW_DIFF_DEL_CHANGED);
 }
 
 b8 tui_highlight_enabled(void) {
