@@ -1510,7 +1510,20 @@ static void batched_syntax(Str body, b8 grep, Str hint, Arena *scratch,
 }
 
 
-static Str render_batch_text(Str args, Str result, b8 input, Arena *scratch) {
+static void syntax_append(YhlResult *out, const YhlResult *add, size_t at,
+                          size_t limit) {
+    for (size_t k = 0; k < add->n && out->n < YHL_RUN_MAX; k++) {
+        size_t a = add->run[k].start;
+        size_t b = add->run[k].end < limit ? add->run[k].end : limit;
+        if (a >= b) continue;
+        if (at + b > UINT32_MAX) return;
+        out->run[out->n++] =
+            (YhlRun){(u32)(at + a), (u32)(at + b), add->run[k].semantic};
+    }
+}
+
+static Str render_batch_text(Str args, Str result, b8 input, Arena *scratch,
+                             YhlResult *syntax) {
     Str source = input ? args : result;
     const JVal *root = json_parse(scratch, source);
     const JVal *rows = json_get(root, STR("steps"));
@@ -1521,6 +1534,9 @@ static Str render_batch_text(Str args, Str result, b8 input, Arena *scratch) {
     for (size_t i = 0; i < rows->u.arr.n; i++)
         if (str_eq(json_str(&rows->u.arr.items[i], STR("tool")), STR("batch")))
             return source;
+    YhlResult *child_syntax =
+        syntax ? arena_alloc(scratch, sizeof *child_syntax, alignof(YhlResult))
+               : NULL;
     Buf out;
     buf_init(&out, scratch, 4096);
     for (size_t i = 0; i < rows->u.arr.n; i++) {
@@ -1536,7 +1552,10 @@ static Str render_batch_text(Str args, Str result, b8 input, Arena *scratch) {
             json_write(&encoded, child);
         else
             buf_puts(&encoded, STR("{}"));
-        if (!buf_ok(&encoded)) return STR("out of memory opening batch");
+        if (!buf_ok(&encoded)) {
+            if (syntax) syntax->n = 0;
+            return STR("out of memory opening batch");
+        }
         Str child_args = buf_finish(&encoded);
         if (out.n) buf_putc(&out, '\n');
         buf_putf(&out, "%zu. %.*s", i + 1, (i32)str_clip_utf8(name, 128).n,
@@ -1548,15 +1567,19 @@ static Str render_batch_text(Str args, Str result, b8 input, Arena *scratch) {
         }
         buf_putc(&out, '\n');
         Str row_result = json_str(row, STR("result"));
-        Str body = input
-                       ? render_call_text(name, child_args, scratch, NULL, NULL,
-                                          render_unapplied(name, row_result))
-                       : render_result_text(name, child_args, row_result,
-                                            scratch, NULL, NULL);
+        Str body = input ? render_call_text(name, child_args, scratch, NULL,
+                                            child_syntax,
+                                            render_unapplied(name, row_result))
+                         : render_result_text(name, child_args, row_result,
+                                              scratch, NULL, child_syntax);
+        if (child_syntax && buf_ok(&out))
+            syntax_append(syntax, child_syntax, out.n, body.n);
         buf_puts(&out, body);
         if (body.n && body.p[body.n - 1] != '\n') buf_putc(&out, '\n');
     }
-    return buf_ok(&out) ? buf_finish(&out) : STR("out of memory opening batch");
+    if (buf_ok(&out)) return buf_finish(&out);
+    if (syntax) syntax->n = 0;
+    return STR("out of memory opening batch");
 }
 
 Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
@@ -1566,7 +1589,7 @@ Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
     if (syntax) syntax->n = 0;
     if (!scratch) return args;
     if (str_eq(name, STR("batch")))
-        return render_batch_text(args, (Str){0}, true, scratch);
+        return render_batch_text(args, (Str){0}, true, scratch, syntax);
     JVal *j = json_parse(scratch, args);
     Str path = json_str(j, STR("path"));
     if (str_eq(name, STR("page_fetch"))) path = json_str(j, STR("url"));
@@ -1614,7 +1637,7 @@ Str render_result_text(Str name, Str args, Str result, Arena *scratch,
     result = todo_note_strip(progress_note_strip(result));
     if (str_starts(result, STR("ERROR: "))) return str_drop(result, 7);
     if (str_eq(name, STR("batch")) && scratch && str_starts(result, STR("{")))
-        return render_batch_text(args, result, false, scratch);
+        return render_batch_text(args, result, false, scratch, syntax);
     Str body = result, status = {0};
     b8 shell = str_eq(name, STR("bash")) || str_eq(name, STR("shell"));
     if (shell && split_status(result, &body, &status)) return body;

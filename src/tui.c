@@ -275,11 +275,15 @@ typedef struct {
     size_t top;
     size_t wrap_cols;
     size_t total_rows;
+    size_t total_lines;
     size_t ckpt_off[TUI_CKPTS];
+    size_t ckpt_line[TUI_CKPTS];
     size_t ckpt_n;
     size_t ckpt_step;
     size_t diff_a[2], diff_b[2];
     size_t diff_n;
+    size_t muted_a[2], muted_b[2];
+    size_t muted_n;
     size_t top_row, left_col, right_col, bottom_row;
     b8 paint;
 } View;
@@ -2177,18 +2181,21 @@ static void update_notice_row(size_t screen_row, Str text, size_t screen_col,
     style_reset();
 }
 
-static void view_ckpt_record(size_t row, size_t off) {
+static void view_ckpt_record(size_t row, size_t off, size_t line) {
     if (row % g_view.ckpt_step || row / g_view.ckpt_step != g_view.ckpt_n)
         return;
     if (g_view.ckpt_n == TUI_CKPTS) {
-        for (size_t i = 0; i * 2 < g_view.ckpt_n; i++)
+        for (size_t i = 0; i * 2 < g_view.ckpt_n; i++) {
             g_view.ckpt_off[i] = g_view.ckpt_off[i * 2];
+            g_view.ckpt_line[i] = g_view.ckpt_line[i * 2];
+        }
         g_view.ckpt_n = (g_view.ckpt_n + 1) / 2;
         g_view.ckpt_step *= 2;
         if (row % g_view.ckpt_step || row / g_view.ckpt_step != g_view.ckpt_n)
             return;
     }
-    g_view.ckpt_off[g_view.ckpt_n++] = off;
+    g_view.ckpt_off[g_view.ckpt_n] = off;
+    g_view.ckpt_line[g_view.ckpt_n++] = line;
 }
 
 
@@ -2197,16 +2204,18 @@ static void view_reindex(size_t cols) {
     g_view.wrap_cols = cols;
     g_view.ckpt_n = 0;
     g_view.ckpt_step = 64;
-    size_t row = 0, off = 0;
-    view_ckpt_record(row, off);
+    size_t row = 0, off = 0, line = 0;
+    view_ckpt_record(row, off, line);
     for (;;) {
         Row r = row_break(text, off, cols, 0);
         if (r.hard && r.end >= text.n) break;
         off = r.next;
         row++;
-        view_ckpt_record(row, off);
+        if (r.hard) line++;
+        view_ckpt_record(row, off, line);
     }
     g_view.total_rows = row + 1;
+    g_view.total_lines = line + 1;
 }
 
 static size_t view_line_row(size_t line, size_t cols) {
@@ -2222,88 +2231,85 @@ static size_t view_line_row(size_t line, size_t cols) {
     }
 }
 
-static size_t view_seek_row(size_t want, size_t cols) {
+static size_t view_seek_row(size_t want, size_t cols, size_t *line) {
     Str text = {g_bulk.view, g_view.text_n};
     size_t slot = want / g_view.ckpt_step;
     if (slot >= g_view.ckpt_n) slot = g_view.ckpt_n - 1;
     size_t row = slot * g_view.ckpt_step;
     size_t off = g_view.ckpt_off[slot];
+    size_t at_line = g_view.ckpt_line[slot];
     while (row < want) {
         Row r = row_break(text, off, cols, 0);
         if (r.hard && r.end >= text.n) break;
         off = r.next;
         row++;
+        if (r.hard) at_line++;
     }
+    *line = at_line;
     return off;
 }
 
-static void paint_view_border(size_t row, size_t col, size_t width,
-                              size_t screen_cols, Str left, Str fill, Str right,
-                              b8 force) {
-    u64 hash = row_hash(left, right, ROW_POPUP);
-    hash = hash_add(hash, &width, sizeof width);
-    hash = hash_add(hash, &g_view.top, sizeof g_view.top);
-    size_t c0, c1;
-    sel_row_range(row, &c0, &c1);
-    hash = hash_add(hash, &c0, sizeof c0);
-    hash = hash_add(hash, &c1, sizeof c1);
-    if (!row_changed(row, hash, force)) return;
+typedef struct {
+    Str text;
+    ThemeSlot fg;
+    b8 bold;
+} ViewSeg;
 
-    g_tui.bar_valid = false;
-    cup(row, 1);
-    put_reset();
-    put_str("\033[2K");
-    cup(row, col);
-    style(theme_sgr(THEME_POPUP_BG));
-    style(theme_sgr(THEME_MUTED));
-    put_text(left.p, left.n);
-    for (size_t i = 2; i < width; i++) put_text(fill.p, fill.n);
-    put_text(right.p, right.n);
-    style_reset();
-    paint_sel_tail(row, screen_cols);
-    style_reset();
+static size_t view_segs_cells(const ViewSeg *segs, size_t n) {
+    size_t cells = 0;
+    for (size_t i = 0; i < n; i++) cells += tui_text_cells(segs[i].text);
+    return cells;
 }
 
-static void paint_view_header(size_t row, size_t col, size_t width,
-                              size_t screen_cols, b8 force) {
-    Str title = {g_view.title, g_view.title_n};
-    u64 hash = row_hash(title, STR("[x]"), ROW_POPUP);
+static u64 view_segs_hash(u64 hash, const ViewSeg *segs, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        hash = hash_add(hash, segs[i].text.p, segs[i].text.n);
+        hash = hash_add(hash, &segs[i].fg, sizeof segs[i].fg);
+    }
+    return hash;
+}
+
+static void put_view_segs(const ViewSeg *segs, size_t n, size_t room,
+                          size_t *used) {
+    for (size_t i = 0; i < n && *used < room; i++) {
+        style_reset();
+        if (segs[i].bold) style(S_BOLD);
+        style(theme_sgr(segs[i].fg));
+        put_safe_clipped(segs[i].text, room - *used, used);
+    }
+}
+
+static void paint_view_rule(size_t row, size_t col, size_t width,
+                            size_t screen_cols, const ViewSeg *left,
+                            size_t left_n, const ViewSeg *right, size_t right_n,
+                            b8 force) {
+    u64 hash = row_hash(STR("view rule"), (Str){0}, ROW_POPUP);
+    hash = view_segs_hash(hash, left, left_n);
+    hash = hash_add(hash, "|", 1);
+    hash = view_segs_hash(hash, right, right_n);
     hash = hash_add(hash, &width, sizeof width);
     size_t c0, c1;
     sel_row_range(row, &c0, &c1);
     hash = hash_add(hash, &c0, sizeof c0);
     hash = hash_add(hash, &c1, sizeof c1);
     if (!row_changed(row, hash, force)) return;
+
     g_tui.bar_valid = false;
     cup(row, 1);
     put_reset();
     put_str("\033[2K");
     cup(row, col);
-    style(theme_sgr(THEME_POPUP_BG));
-    style(theme_sgr(THEME_ACCENT));
-    put_text("│", sizeof "│" - 1);
-    size_t inner = width > 2 ? width - 2 : 0;
+    size_t right_cells = view_segs_cells(right, right_n);
+    size_t left_room = width > right_cells ? width - right_cells : 0;
     size_t used = 0;
-    if (inner) put_safe_clipped(STR(" "), inner, &used);
-    style(theme_sgr(THEME_POPUP_BG));
-    style(S_BOLD);
-    style(theme_sgr(THEME_TEXT));
-    size_t title_room = inner > used + 5 ? inner - used - 5 : 0;
-    put_safe_clipped(title, title_room, &used);
-    style(theme_sgr(THEME_POPUP_BG));
-    style(theme_sgr(THEME_MUTED));
-    while (used + 4 < inner) {
-        put_text(" ", 1);
+    put_view_segs(left, left_n, left_room, &used);
+    style_reset();
+    style(theme_sgr(THEME_SUBTLE));
+    while (used < left_room) {
+        put_text("─", sizeof "─" - 1);
         used++;
     }
-    if (used < inner) put_safe_clipped(STR("[x]"), inner - used, &used);
-    while (used < inner) {
-        put_text(" ", 1);
-        used++;
-    }
-    style(theme_sgr(THEME_POPUP_BG));
-    style(theme_sgr(THEME_ACCENT));
-    put_text("│", sizeof "│" - 1);
+    put_view_segs(right, right_n, width, &used);
     style_reset();
     paint_sel_tail(row, screen_cols);
     style_reset();
@@ -2351,15 +2357,19 @@ static u64 hash_view_syn(u64 h, size_t off, size_t n) {
 
 enum {
     VIEW_LINE_PLAIN = 0,
+    VIEW_LINE_MUTED,
     VIEW_LINE_ADD,
     VIEW_LINE_DEL,
     VIEW_LINE_META,
     VIEW_LINE_FILE
 };
 
-static b8 view_in_diff(size_t off) {
-    for (size_t i = 0; i < g_view.diff_n; i++)
-        if (off >= g_view.diff_a[i] && off < g_view.diff_b[i]) return true;
+enum { VIEW_BAR_NONE = 0, VIEW_BAR_TRACK, VIEW_BAR_THUMB };
+
+static b8 view_in_ranges(size_t off, const size_t *a, const size_t *b,
+                         size_t n) {
+    for (size_t i = 0; i < n; i++)
+        if (off >= a[i] && off < b[i]) return true;
     return false;
 }
 
@@ -2370,7 +2380,12 @@ static size_t view_line_start(Str all, size_t off) {
 
 static u8 view_line_kind(Str all, size_t line_off, size_t *head) {
     *head = 0;
-    if (!view_in_diff(line_off)) return VIEW_LINE_PLAIN;
+    u8 plain =
+        view_in_ranges(line_off, g_view.muted_a, g_view.muted_b, g_view.muted_n)
+            ? VIEW_LINE_MUTED
+            : VIEW_LINE_PLAIN;
+    if (!view_in_ranges(line_off, g_view.diff_a, g_view.diff_b, g_view.diff_n))
+        return plain;
     Str line = str_drop(all, line_off);
     const char *nl = memchr(line.p, '\n', line.n);
     if (nl) line.n = (size_t)(nl - line.p);
@@ -2395,27 +2410,56 @@ static u8 view_line_kind(Str all, size_t line_off, size_t *head) {
         if (str_starts(line, meta_heads[i])) return VIEW_LINE_META;
     if (line.n && line.p[0] == '+') return VIEW_LINE_ADD;
     if (line.n && line.p[0] == '-') return VIEW_LINE_DEL;
-    return VIEW_LINE_PLAIN;
+    return plain;
 }
 
 static ThemeSlot view_line_bg(u8 line) {
     return line == VIEW_LINE_ADD   ? THEME_DIFF_ADD_BG
            : line == VIEW_LINE_DEL ? THEME_DIFF_DEL_BG
-                                   : THEME_POPUP_BG;
+                                   : THEME_PAGE_BG;
 }
 
 static ThemeSlot view_line_fg(u8 line) {
-    return line == VIEW_LINE_META   ? THEME_MUTED
-           : line == VIEW_LINE_FILE ? THEME_ACCENT
-                                    : THEME_TEXT;
+    return line == VIEW_LINE_META || line == VIEW_LINE_MUTED ? THEME_MUTED
+           : line == VIEW_LINE_FILE                          ? THEME_ACCENT
+                                                             : THEME_TEXT;
+}
+
+static b8 scroll_thumb(size_t first, size_t total, size_t visible,
+                       size_t *thumb_top, size_t *thumb_rows) {
+    *thumb_top = 0;
+    *thumb_rows = visible;
+    if (total <= visible) return false;
+    size_t rows = visible * visible / total;
+    if (rows < 1) rows = 1;
+    size_t travel = visible - rows;
+    size_t range = total - visible;
+    *thumb_top = range ? first * travel / range : 0;
+    *thumb_rows = rows;
+    return true;
+}
+
+static void paint_bar_cell(size_t row, size_t col, u8 bar) {
+    if (bar == VIEW_BAR_NONE) return;
+    cup(row, col);
+    style_reset();
+    if (bar == VIEW_BAR_THUMB) {
+        style(theme_sgr(THEME_ACCENT));
+        put_str("┃");
+    } else {
+        style(theme_sgr(THEME_MUTED));
+        put_str("│");
+    }
+    style_reset();
 }
 
 static void paint_view_body_row(size_t screen_row, size_t col, size_t width,
                                 size_t screen_cols, Str text, size_t off,
-                                u8 line, size_t head, b8 force) {
+                                u8 line, size_t head, u8 bar, b8 force) {
     u64 hash = row_hash(text, STR("view"), ROW_POPUP);
     hash = hash_add(hash, &g_view.top, sizeof g_view.top);
     hash = hash_add(hash, &line, sizeof line);
+    hash = hash_add(hash, &bar, sizeof bar);
     hash = hash_add(hash, &head, sizeof head);
     if (text.n) hash = hash_view_syn(hash, off, text.n);
     size_t c0, c1;
@@ -2428,14 +2472,11 @@ static void paint_view_body_row(size_t screen_row, size_t col, size_t width,
     put_reset();
     put_str("\033[2K");
     cup(screen_row, col);
-    style(theme_sgr(THEME_POPUP_BG));
-    style(theme_sgr(THEME_ACCENT));
-    put_text("│", sizeof "│" - 1);
     const char *bg = theme_sgr(view_line_bg(line));
     const char *fg = theme_sgr(view_line_fg(line));
     style(bg);
     style(fg);
-    size_t inner = width > 2 ? width - 2 : 0;
+    size_t inner = width;
     size_t used = 0;
     if (head > text.n) head = text.n;
     if (inner && head) {
@@ -2458,46 +2499,80 @@ static void paint_view_body_row(size_t screen_row, size_t col, size_t width,
             break;
         i += take;
     }
-    style(bg);
-    style(fg);
-    while (used < inner) {
-        put_text(" ", 1);
-        used++;
+    if (line == VIEW_LINE_ADD || line == VIEW_LINE_DEL) {
+        style(bg);
+        while (used < inner) {
+            put_text(" ", 1);
+            used++;
+        }
     }
-    style(theme_sgr(THEME_POPUP_BG));
-    style(theme_sgr(THEME_ACCENT));
-    put_text("│", sizeof "│" - 1);
     style_reset();
     paint_sel_tail(screen_row, screen_cols);
     style_reset();
+    paint_bar_cell(screen_row, screen_cols, bar);
 }
 
-static void view_layout(size_t rows, size_t cols) {
-    if (!g_view.active || rows < 7 || cols < 20) {
+static void view_layout(size_t rows, size_t body_col, size_t body_cols) {
+    if (!g_view.active || rows < 3 || body_cols < 10) {
         view_unlock();
         return;
     }
-    size_t width = cols * 4 / 5;
-    if (width < 20) width = 20;
-    if (width > cols - 2) width = cols - 2;
-    size_t height = rows * 2 / 3;
-    if (height < 7) height = 7;
-    if (height > rows - 2) height = rows - 2;
-    size_t left = (cols - width) / 2 + 1;
-    size_t top = (rows - height) / 2 + 1;
-    size_t inner_cols = width - 2;
-    size_t body_rows = height - 3;
-    if (g_view.wrap_cols != inner_cols) {
-        view_reindex(inner_cols);
-        g_view.top = view_line_row(g_view.start_line, inner_cols);
+    if (g_view.wrap_cols != body_cols) {
+        view_reindex(body_cols);
+        g_view.top = view_line_row(g_view.start_line, body_cols);
     }
     size_t total = g_view.total_rows;
+    size_t height = total + 2 < rows ? total + 2 : rows;
+    size_t body_rows = height - 2;
     size_t max_top = total > body_rows ? total - body_rows : 0;
     if (g_view.top > max_top) g_view.top = max_top;
-    g_view.top_row = top;
-    g_view.left_col = left;
-    g_view.right_col = left + width - 1;
-    g_view.bottom_row = top + height - 1;
+    g_view.top_row = rows - height + 1;
+    g_view.left_col = body_col;
+    g_view.right_col = body_col + body_cols - 1;
+    g_view.bottom_row = rows;
+}
+
+static void paint_view_header(size_t first_line, size_t last_line, size_t cols,
+                              b8 force) {
+    char where[96];
+    i32 n =
+        first_line == 0 && last_line + 1 >= g_view.total_lines
+            ? snprintf(where, sizeof where, " %zu line%s ", g_view.total_lines,
+                       g_view.total_lines == 1 ? "" : "s")
+            : snprintf(where, sizeof where, " lines %zu-%zu of %zu ",
+                       first_line + 1, last_line + 1, g_view.total_lines);
+    size_t where_n = n > 0 && (size_t)n < sizeof where ? (size_t)n : 0;
+    const ViewSeg left[] = {
+        {STR("── "), THEME_SUBTLE, false},
+        {{g_view.title, g_view.title_n}, THEME_TEXT, true},
+        {STR(" "), THEME_TEXT, false},
+    };
+    const ViewSeg right[] = {
+        {{where, where_n}, THEME_MUTED, false},
+        {STR("─ "), THEME_SUBTLE, false},
+        {STR("✕"), THEME_TEXT, false},
+    };
+    paint_view_rule(g_view.top_row, g_view.left_col,
+                    g_view.right_col - g_view.left_col + 1, cols, left,
+                    sizeof left / sizeof *left, right,
+                    sizeof right / sizeof *right, force);
+}
+
+static void paint_view_footer(size_t cols, b8 force) {
+    static const ViewSeg hints[] = {
+        {{"── ", sizeof "── " - 1}, THEME_SUBTLE, false},
+        {{"esc", 3}, THEME_TEXT, false},
+        {{" close  ", 8}, THEME_MUTED, false},
+        {{"↑↓ j k", sizeof "↑↓ j k" - 1}, THEME_TEXT, false},
+        {{" scroll  ", 9}, THEME_MUTED, false},
+        {{"space b", 7}, THEME_TEXT, false},
+        {{" page  ", 7}, THEME_MUTED, false},
+        {{"g G", 3}, THEME_TEXT, false},
+        {{" top, end ", 10}, THEME_MUTED, false},
+    };
+    paint_view_rule(g_view.bottom_row, g_view.left_col,
+                    g_view.right_col - g_view.left_col + 1, cols, hints,
+                    sizeof hints / sizeof *hints, NULL, 0, force);
 }
 
 static void paint_view(size_t cols, b8 force) {
@@ -2505,41 +2580,47 @@ static void paint_view(size_t cols, b8 force) {
     size_t top = g_view.top_row;
     size_t left = g_view.left_col;
     size_t width = g_view.right_col - g_view.left_col + 1;
-    size_t height = g_view.bottom_row - g_view.top_row + 1;
-    size_t inner_cols = width - 2;
-    size_t body_rows = height - 3;
+    size_t body_rows = g_view.bottom_row - g_view.top_row - 1;
     size_t total = g_view.total_rows;
     g_view.paint = true;
-    paint_view_border(top, left, width, cols, STR("┌"), STR("─"), STR("┐"),
-                      force);
-    paint_view_header(top + 1, left, width, cols, force);
     Str all = {g_bulk.view, g_view.text_n};
-    size_t off = view_seek_row(g_view.top, inner_cols);
+    size_t first_line = 0;
+    size_t off = view_seek_row(g_view.top, width, &first_line);
+    size_t line_no = first_line, last_line = first_line;
     size_t head = 0;
-    u8 line_kind = g_view.diff_n
-                       ? view_line_kind(all, view_line_start(all, off), &head)
-                       : VIEW_LINE_PLAIN;
+    b8 kinds = g_view.diff_n || g_view.muted_n;
+    u8 line_kind = kinds ? view_line_kind(all, view_line_start(all, off), &head)
+                         : VIEW_LINE_PLAIN;
     b8 at_line_start = off == 0 || all.p[off - 1] == '\n';
+    size_t thumb_top, thumb_rows;
+    b8 scrollable =
+        scroll_thumb(g_view.top, total, body_rows, &thumb_top, &thumb_rows);
     for (size_t r = 0; r < body_rows; r++) {
         Str line = {0};
         size_t line_off = off;
         size_t row_head = 0;
         if (g_view.top + r < total) {
-            if (g_view.diff_n && at_line_start)
+            if (kinds && at_line_start)
                 line_kind = view_line_kind(all, off, &head);
             row_head = at_line_start ? head : 0;
-            Row br = row_break(all, off, inner_cols, 0);
+            Row br = row_break(all, off, width, 0);
             line = (Str){all.p + off, br.end - off};
             off = br.next;
             at_line_start = br.hard;
+            last_line = line_no;
+            if (br.hard) line_no++;
         }
-        paint_view_body_row(top + 2 + r, left, width, cols, line, line_off,
+        u8 bar = !scrollable ? VIEW_BAR_NONE
+                 : r >= thumb_top && r < thumb_top + thumb_rows
+                     ? VIEW_BAR_THUMB
+                     : VIEW_BAR_TRACK;
+        paint_view_body_row(top + 1 + r, left, width, cols, line, line_off,
                             g_view.top + r < total ? line_kind
                                                    : VIEW_LINE_PLAIN,
-                            row_head, force);
+                            row_head, bar, force);
     }
-    paint_view_border(top + height - 1, left, width, cols, STR("└"), STR("─"),
-                      STR("┘"), force);
+    paint_view_header(first_line, last_line, cols, force);
+    paint_view_footer(cols, force);
     g_view.paint = false;
 }
 
@@ -2689,6 +2770,7 @@ static void update_activity_row(size_t screen_row, size_t screen_col,
     Str label = {g_tui.activity, g_tui.activity_n};
     b8 queued = g_tui.queued_n != 0;
     b8 stoppable = g_tui.busy && g_tui.interrupt != NULL;
+    b8 viewing = g_view.active;
 
     u64 hash = row_hash(secs, label, ROW_TOOL);
     hash = hash_add(hash, received.p, received.n);
@@ -2696,6 +2778,7 @@ static void update_activity_row(size_t screen_row, size_t screen_col,
     hash = hash_add(hash, &frame, sizeof frame);
     hash = hash_add(hash, &queued, sizeof queued);
     hash = hash_add(hash, &stoppable, sizeof stoppable);
+    hash = hash_add(hash, &viewing, sizeof viewing);
     size_t sel_c0, sel_c1;
     sel_row_range(screen_row, &sel_c0, &sel_c1);
     hash = hash_add(hash, &sel_c0, sizeof sel_c0);
@@ -2736,8 +2819,9 @@ static void update_activity_row(size_t screen_row, size_t screen_col,
     if (stoppable && used + 3 <= body_cols) {
         put_safe_clipped(STR(" \u00b7 "), body_cols - used, &used);
         if (used < body_cols)
-            put_safe_clipped(queued ? STR("esc to cancel message")
-                                    : STR("esc or ctrl-c to interrupt"),
+            put_safe_clipped(viewing ? STR("esc to close · ctrl-c to interrupt")
+                             : queued ? STR("esc to cancel message")
+                                      : STR("esc or ctrl-c to interrupt"),
                              body_cols - used, &used);
     }
     paint_sel_tail(screen_row, screen_cols);
@@ -2935,16 +3019,9 @@ static void paint_scrollbar(size_t first_row, size_t total_rows,
     g_tui.bar_visible = visible_rows;
     g_tui.bar_valid = true;
 
-    b8 scrollable = total_rows > visible_rows;
-    size_t thumb_rows = visible_rows;
-    size_t thumb_top = 0;
-    if (scrollable) {
-        thumb_rows = visible_rows * visible_rows / total_rows;
-        if (thumb_rows < 1) thumb_rows = 1;
-        size_t travel = visible_rows - thumb_rows;
-        size_t scroll_range = total_rows - visible_rows;
-        thumb_top = scroll_range ? first_row * travel / scroll_range : 0;
-    }
+    size_t thumb_top, thumb_rows;
+    b8 scrollable = scroll_thumb(first_row, total_rows, visible_rows,
+                                 &thumb_top, &thumb_rows);
     for (size_t i = 0; i < visible_rows; i++) {
         if (view_locks_row(i + 1)) continue;
         cup(i + 1, screen_col);
@@ -3111,7 +3188,6 @@ static void repaint(void) {
     screen_size(&rows, &cols);
     b8 force = !g_tui.frame_valid || g_tui.size_warning || g_winch
                || rows != g_tui.painted_rows || cols != g_tui.painted_cols;
-    view_layout(rows, cols);
     row_meta_reset();
     g_winch = 0;
     frame_begin();
@@ -3184,6 +3260,7 @@ static void repaint(void) {
 
     size_t overlay_rows = find_rows + notice_rows + popup_rows;
     size_t transcript_rows = body_rows - overlay_rows - activity_rows;
+    view_layout(transcript_rows, body_col, body_cols);
 
     size_t all_rows = wrap_scan(body_cols);
     size_t notice_lift = g_tui.picking || g_view.active ? 0 : notice_rows;
@@ -5397,8 +5474,8 @@ static void view_close(void) {
 }
 
 static size_t view_visible_rows(void) {
-    return g_view.bottom_row > g_view.top_row + 2
-               ? g_view.bottom_row - g_view.top_row - 2
+    return g_view.bottom_row > g_view.top_row + 1
+               ? g_view.bottom_row - g_view.top_row - 1
                : 1;
 }
 
@@ -5421,9 +5498,61 @@ static void view_move(i32 delta) {
 static b8 view_close_cell(i32 row, i32 col) {
     if (row < 1 || col < 1) return false;
     size_t r = (size_t)row, c = (size_t)col;
-    return r == g_view.top_row + 1 && c >= g_view.right_col - 4
-           && c < g_view.right_col;
+    return r == g_view.top_row && c + 2 >= g_view.right_col
+           && c <= g_view.right_col + 1;
 }
+
+static void view_end(void) {
+    size_t visible = view_visible_rows();
+    g_view.top = g_view.total_rows > visible ? g_view.total_rows - visible : 0;
+}
+
+static b8 view_hand_to_composer(i32 c) {
+    g_input.pushback = c;
+    g_input.pushed = true;
+    return false;
+}
+
+#define VIEW_KEYS(X)                                             \
+    X('q', "q", "Close the view", return false;)                 \
+    X(0x0d, "Enter", "Close the view", return false;)            \
+    X(0x0a, "", "", return false;)                               \
+    X(0x03, "", "", return false;)                               \
+    X('j', "j", "Down one row", view_move(1);)                   \
+    X('k', "k", "Up one row", view_move(-1);)                    \
+    X(' ', "Space", "Down a page", view_move((i32)page);)        \
+    X('b', "b", "Up a page", view_move(-(i32)page);)             \
+    X(0x04, "Ctrl-D", "Down half a page", view_move((i32)half);) \
+    X(0x15, "Ctrl-U", "Up half a page", view_move(-(i32)half);)  \
+    X('g', "g", "First row", g_view.top = 0;)                    \
+    X('G', "G", "Last row", view_end();)                         \
+    X(0x0c, "Ctrl-L", "Redraw the screen", g_tui.frame_valid = false;)
+
+#define VIEW_ESCAPE_KEYS(X)                                               \
+    X(KEY_NONE, "Esc", "Close the view", return false;)                   \
+    X(KEY_UP, "Up", "Up one row", view_move(-1);)                         \
+    X(KEY_DOWN, "Down", "Down one row", view_move(1);)                    \
+    X(KEY_PAGE_UP, "PgUp", "Up a page", view_move(-(i32)page);)           \
+    X(KEY_PAGE_DOWN, "PgDn", "Down a page", view_move((i32)page);)        \
+    X(KEY_WHEEL_UP, "", "", view_move(-3);)                               \
+    X(KEY_WHEEL_DOWN, "", "", view_move(3);)                              \
+    X(KEY_HOME, "Home", "First row", g_view.top = 0;)                     \
+    X(KEY_TOP, "", "", g_view.top = 0;)                                   \
+    X(KEY_END, "End", "Last row", view_end();)                            \
+    X(KEY_BOTTOM, "", "", view_end();)                                    \
+    X(KEY_MOUSE_DOWN, "Click", "Start a selection, or close on the X",    \
+      g_view.close_down = view_close_cell(g_mouse.row, g_mouse.col);      \
+      if (!g_view.close_down) sel_begin(g_mouse.row, g_mouse.col);)       \
+    X(KEY_MOUSE_DRAG, "Drag", "Extend the selection",                     \
+      g_view.close_down = false;                                          \
+      sel_extend(g_mouse.row, g_mouse.col);)                              \
+    X(KEY_MOUSE_UP, "", "",                                               \
+      b8 close =                                                          \
+          g_view.close_down && view_close_cell(g_mouse.row, g_mouse.col); \
+      g_view.close_down = false; sel_finish(); if (close) return false;)
+
+static const KeyRow k_view_rows[] = {VIEW_KEYS(KEY_DOC)};
+static const KeyRow k_view_escape_rows[] = {VIEW_ESCAPE_KEYS(KEY_DOC)};
 
 
 static b8 view_feed(i32 c) {
@@ -5433,49 +5562,21 @@ static b8 view_feed(i32 c) {
         return true;
     }
     if (c < 0) return false;
-    if (c == 0x03 || c == 0x04 || c == '\r' || c == '\n' || c == 'q')
-        return false;
-    if (c == 0x0c) {
-        g_tui.frame_valid = false;
-        repaint();
-        return true;
-    }
-    if (c != 0x1b) return true;
-
-    i32 key = read_escape();
     size_t page = view_visible_rows();
+    size_t half = page / 2 ? page / 2 : 1;
     if (page > 1) page--;
-    if (key == KEY_NONE) return false;
-    if (key == KEY_UP)
-        view_move(-1);
-    else if (key == KEY_DOWN)
-        view_move(1);
-    else if (key == KEY_PAGE_UP)
-        view_move(-(i32)page);
-    else if (key == KEY_PAGE_DOWN)
-        view_move((i32)page);
-    else if (key == KEY_WHEEL_UP)
-        view_move(-3);
-    else if (key == KEY_WHEEL_DOWN)
-        view_move(3);
-    else if (key == KEY_TOP || key == KEY_HOME)
-        g_view.top = 0;
-    else if (key == KEY_BOTTOM || key == KEY_END) {
-        size_t visible = view_visible_rows();
-        g_view.top =
-            g_view.total_rows > visible ? g_view.total_rows - visible : 0;
-    } else if (key == KEY_MOUSE_DOWN) {
-        g_view.close_down = view_close_cell(g_mouse.row, g_mouse.col);
-        if (!g_view.close_down) sel_begin(g_mouse.row, g_mouse.col);
-    } else if (key == KEY_MOUSE_DRAG) {
-        g_view.close_down = false;
-        sel_extend(g_mouse.row, g_mouse.col);
-    } else if (key == KEY_MOUSE_UP) {
-        b8 close =
-            g_view.close_down && view_close_cell(g_mouse.row, g_mouse.col);
-        g_view.close_down = false;
-        sel_finish();
-        if (close) return false;
+    if (c == 0x1b) {
+        switch (read_escape()) {
+            VIEW_ESCAPE_KEYS(KEY_CASE)
+            default: break;
+        }
+    } else {
+        switch (c) {
+            VIEW_KEYS(KEY_CASE)
+            default:
+                if (c >= 0x20 && c != 0x7f) return view_hand_to_composer(c);
+                break;
+        }
     }
     repaint();
     return true;
@@ -6021,8 +6122,14 @@ b8 tui_view_open(Str title, const TuiViewPart *parts, size_t n, size_t start) {
             g_view.diff_b[g_view.diff_n] = out;
             g_view.diff_n++;
         }
+        if (parts[p].muted && g_view.muted_n < 2) {
+            g_view.muted_a[g_view.muted_n] = part_start;
+            g_view.muted_b[g_view.muted_n] = out;
+            g_view.muted_n++;
+        }
         nonempty++;
     }
+    while (out && g_bulk.view[out - 1] == '\n') out--;
     g_view.active = true;
     g_view.start_line = start;
     g_view.text_n = out;
@@ -6733,7 +6840,9 @@ static EdAction editor_key(i32 c) {
     X("[transcript search]", k_find_rows)        \
     X("[transcript search]", k_find_escape_rows) \
     X("[lists and screens]", k_pick_rows)        \
-    X("[lists and screens]", k_pick_escape_rows)
+    X("[lists and screens]", k_pick_escape_rows) \
+    X("[text view]", k_view_rows)                \
+    X("[text view]", k_view_escape_rows)
 
 static const KeyContext k_key_contexts[] = {
 #define X(name, rows) {name, rows, sizeof rows / sizeof rows[0]},
@@ -6909,7 +7018,7 @@ static void poll_input(void) {
             }
             if (!view_feed(c)) view_close();
         }
-        if (g_view.active || !input_buffered()) {
+        if (g_view.active || !(g_input.pushed || input_buffered())) {
             if (g_winch != 0) repaint();
             return;
         }

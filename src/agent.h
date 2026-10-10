@@ -2133,6 +2133,7 @@ typedef struct {
     Str text;
     const YhlResult *syntax;
     b8 diff;
+    b8 muted;
 } TuiViewPart;
 b8 tui_view_open(Str title, const TuiViewPart *parts, size_t n, size_t start);
 size_t tui_key_rows(TuiCmd *rows, size_t max);
