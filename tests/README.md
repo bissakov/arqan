@@ -104,6 +104,7 @@ settled row rather than a half-written one.
 | `chunk=`, `delay=`, `first_delay=` | streaming cadence |
 | `tool=NAME:JSON`, `tool_rounds=`, `tool_ids=`, `final_text=` | tool-call rounds |
 | `reasoning=`, `reasoning_field=` | streamed reasoning trace |
+| `unsigned_thinking` | Anthropic thinking blocks with no signature |
 | `usage=P/C` | token counts |
 | `status=`, `fail_times=`, `fail_status=`, `fail_mode=` | failures and retries |
 | `abort_after=` | cut a streaming response short |

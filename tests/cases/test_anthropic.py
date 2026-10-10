@@ -201,6 +201,48 @@ def test_an_unstreamed_reply_is_read_the_same_way(ctx):
     assert thinking["signature"] == "sig_mock", thinking
 
 
+def assert_unsigned_thinking_is_not_replayed(ctx, s):
+    s.submit("think first")
+    s.wait_text("half a thought")
+    s.wait_text("done")
+    s.wait_turn_done()
+    assert any("kept it" in r for r in ctx.mock.tool_results()), ctx.mock.tool_results()
+    assistant = ctx.mock.requests[-1]["messages"][1]["content"]
+    assert [blk["type"] for blk in assistant] == ["tool_use"], json.dumps(assistant)
+
+    ctx.scenario("final_text=second+answer")
+    s.submit("second question")
+    s.wait_text("second answer")
+    s.wait_turn_done()
+    for message in ctx.mock.requests[-1]["messages"]:
+        content = message["content"]
+        if isinstance(content, list):
+            for blk in content:
+                assert blk["type"] != "thinking" or blk.get("signature"), blk
+
+
+def test_a_streamed_thinking_block_without_a_signature_is_not_replayed(ctx):
+    """The API refuses an unsigned block, so it would break every later turn."""
+    ctx.write_file("notes.txt", "kept it\n")
+    ctx.scenario(
+        'reasoning=half+a+thought,unsigned_thinking,'
+        'tool=read:{"path":"notes.txt"},final_text=done'
+    )
+    assert_unsigned_thinking_is_not_replayed(ctx, anth(ctx))
+
+
+def test_an_unstreamed_thinking_block_without_a_signature_is_not_replayed(ctx):
+    """The message document path drops the unsigned block the same way."""
+    ctx.write_file("notes.txt", "kept it\n")
+    ctx.scenario(
+        'reasoning=half+a+thought,unsigned_thinking,'
+        'tool=read:{"path":"notes.txt"},final_text=done'
+    )
+    s = anth(ctx)
+    s.settings_toggle("Stream replies")
+    assert_unsigned_thinking_is_not_replayed(ctx, s)
+
+
 def test_signed_thinking_survives_a_session_resume(ctx):
     """Resuming keeps both the visible summary and its opaque signature."""
     ctx.scenario("reasoning=remembering+why,text=first+answer")

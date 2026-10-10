@@ -108,6 +108,9 @@ class Scenario:
         self.reasoning: str | None = kw.get("reasoning")
         self.reasoning_summaries: list[str] = kw.get("reasoning_summaries", [])
         self.redacted: str | None = kw.get("redacted")
+        # A thinking block that ends with no signature, as a cut-off stream or
+        # a proxy that drops `signature_delta` delivers it.
+        self.unsigned_thinking: bool = _truthy(kw.get("unsigned_thinking", "0"))
         self.reasoning_field: str = kw.get("reasoning_field", "reasoning_content")
         self.final_text: str | None = kw.get("final_text")
         self.prompt_tokens = kw.get("prompt_tokens")
@@ -455,11 +458,13 @@ class _AnthropicHandlerMixin:
             for order, thought in enumerate(thoughts):
                 signature = (f"sig_mock_{order}"
                              if scenario.reasoning_summaries else "sig_mock")
+                signed = ([] if scenario.unsigned_thinking else
+                          [{"type": "signature_delta", "signature": signature}])
                 if not self._anth_block(
                     index, {"type": "thinking", "thinking": ""},
                     [{"type": "thinking_delta", "thinking": piece}
                      for piece in chunks(thought, scenario.chunk)]
-                    + [{"type": "signature_delta", "signature": signature}],
+                    + signed,
                     scenario,
                 ):
                     return
@@ -535,8 +540,10 @@ class _AnthropicHandlerMixin:
             for order, thought in enumerate(thoughts):
                 signature = (f"sig_mock_{order}"
                              if scenario.reasoning_summaries else "sig_mock")
-                content.append({"type": "thinking", "thinking": thought,
-                                "signature": signature})
+                block = {"type": "thinking", "thinking": thought}
+                if not scenario.unsigned_thinking:
+                    block["signature"] = signature
+                content.append(block)
         if emit_tools:
             for order, (name, args) in enumerate(scenario.tools):
                 try:

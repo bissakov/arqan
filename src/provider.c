@@ -843,6 +843,9 @@ typedef struct {
     b8 anth_thinking_open;
     b8 anth_thinking_closed;
     b8 anth_signature_open;
+    b8 anth_signed;
+    b8 anth_first_before_thinking;
+    size_t anth_thinking_start;
     b8 text_started;
     b8 reason_started;
     char reason_last;
@@ -1081,16 +1084,26 @@ static void anth_block_sep(StreamState *s) {
 
 static void anth_close_thinking(StreamState *s) {
     if (!s->anth_thinking_open) return;
-    if (!s->anth_thinking_closed) buf_putc(&s->anth_blocks, '"');
-    if (s->anth_signature_open) buf_putc(&s->anth_blocks, '"');
-    buf_putc(&s->anth_blocks, '}');
+    if (!s->anth_signed) {
+        s->anth_blocks.n = s->anth_thinking_start;
+        s->anth_first = s->anth_first_before_thinking;
+    } else {
+        if (!s->anth_thinking_closed) buf_putc(&s->anth_blocks, '"');
+        if (s->anth_signature_open) buf_putc(&s->anth_blocks, '"');
+        buf_putc(&s->anth_blocks, '}');
+    }
     s->anth_thinking_open = false;
     s->anth_thinking_closed = false;
     s->anth_signature_open = false;
+    s->anth_signed = false;
 }
 
+/* NOTE: The API refuses a thinking block without a signature, and replaying
+ * one fails every later request, so an unsigned block is never stored. */
 static void anth_open_thinking(Provider *p, StreamState *s, const JVal *blk) {
     anth_close_thinking(s);
+    s->anth_thinking_start = s->anth_blocks.n;
+    s->anth_first_before_thinking = s->anth_first;
     anth_block_sep(s);
     buf_puts(&s->anth_blocks, STR("{\"type\":\"thinking\",\"thinking\":\""));
     Str thought = json_str(blk, STR("thinking"));
@@ -1104,6 +1117,7 @@ static void anth_open_thinking(Provider *p, StreamState *s, const JVal *blk) {
         buf_puts(&s->anth_blocks, STR("\",\"signature\":\""));
         s->anth_thinking_closed = true;
         s->anth_signature_open = true;
+        s->anth_signed = true;
         buf_json_chars(&s->anth_blocks, signature);
     }
 }
@@ -1122,6 +1136,7 @@ static void anth_signature_delta(StreamState *s, Str signature) {
         s->anth_thinking_closed = true;
         s->anth_signature_open = true;
     }
+    if (signature.n) s->anth_signed = true;
     buf_json_chars(&s->anth_blocks, signature);
 }
 
@@ -1270,7 +1285,7 @@ static b8 read_message_anth(Provider *p, StreamState *s, Str raw,
             take_text(p, s, json_str(blk, STR("text")));
         } else if (str_eq(kind, STR("thinking"))) {
             take_reason_part(p, s, json_str(blk, STR("thinking")), true);
-            anth_save_block(s, blk);
+            if (json_str(blk, STR("signature")).n) anth_save_block(s, blk);
         } else if (str_eq(kind, STR("redacted_thinking"))) {
             anth_save_block(s, blk);
         } else if (str_eq(kind, STR("tool_use"))) {
@@ -1776,6 +1791,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         s->anth_thinking_open = false;
         s->anth_thinking_closed = false;
         s->anth_signature_open = false;
+        s->anth_signed = false;
         if (!p->cfg->stream) {
             whole.n = 0;
             whole.oom = false;
