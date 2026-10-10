@@ -6,6 +6,7 @@ the ones that would change what the agent is doing wait for the prompt.
 """
 
 import json
+import re
 import time
 
 PLAN = "## Steps\n\n1. Read the file\n2. Change the line"
@@ -293,35 +294,43 @@ def click_tail(s, needle="\u25be 28 more lines"):
     return s.mouse("up", row, 6).sync()
 
 
-def test_clicking_a_block_tail_mid_turn_opens_a_window_over_it(ctx):
+def view_rows(s):
+    """Rows between the view's title rule and its key hint rule."""
+    lines = s.screen.lines()
+    top = next(i for i, line in enumerate(lines)
+               if line.lstrip().startswith("── ") and "✕" in line)
+    bottom = next(i for i, line in enumerate(lines[top + 1:], top + 1)
+                  if "esc close" in line)
+    return range(top + 1, bottom)
+
+
+def test_clicking_a_block_tail_mid_turn_opens_a_view_over_it(ctx):
     """The transcript belongs to the turn while it streams, so the block's
-    own lines are shown over it rather than folded into it."""
+    own lines are shown in a view over it rather than folded into it."""
     s = folded_read(ctx)
     click_tail(s)
     # The window opens on the first line the block itself did not show.
     s.wait_text("line 0012 of output")
-    text = s.text()
-    # The block is still up there, unchanged, under a window that covers the
-    # transcript's last rows rather than rebuilding it.
-    assert "\u25c6  read big.txt" in text, text
-    assert "read output" in text, text
-    assert "[x]" in text, text
+    rows = view_rows(s)
+    assert "line 0012 of output" in s.screen.row_text(rows.start), s.text()
+    title = s.screen.row_text(rows.start - 1)
+    assert "read output" in title, title
+    assert re.search(r"lines 13-\d+ of 40", title), title
 
 
-def test_the_window_is_not_the_completion_picker(ctx):
-    """The text view is a centered rectangle of its own and does not reuse
-    the composer's command/picker rows."""
+def test_the_view_leaves_the_spinner_and_composer_in_place(ctx):
+    """The view takes the transcript's rows only. The spinner row under it
+    says what Esc does now, and the composer stays where it was."""
     s = folded_read(ctx)
     click_tail(s)
     s.wait_text("line 0012 of output")
-    lines = s.screen.lines()
-    top = next(i for i, line in enumerate(lines) if "┌" in line and "┐" in line)
-    bottom = next(i for i, line in enumerate(lines[top + 1:], top + 1)
-                  if "└" in line and "┘" in line)
-    left = lines[top].index("┌")
-    right = lines[top].index("┐")
-    assert top > 0 and bottom < s.screen.rows - 1, s.text()
-    assert left > 0 and right < s.screen.cols - 1, s.text()
+    rows = view_rows(s)
+    hint = s.screen.find_row("esc to close · ctrl-c to interrupt")
+    composer = s.screen.find_row("\u203a ")
+    assert rows.stop < hint < composer, s.text()
+    s.key("esc").sync()
+    s.wait_gone("esc to close")
+    assert "esc or ctrl-c to interrupt" in s.text(), s.text()
 
 
 def test_window_text_is_selectable_and_copyable(ctx):
@@ -377,15 +386,53 @@ def test_the_window_closes_and_leaves_the_block_folded(ctx):
 
 
 def test_the_visible_close_control_closes_the_window(ctx):
-    """The title bar has a clickable close affordance in addition to Esc."""
+    """The title rule has a clickable close control in addition to Esc."""
     s = folded_read(ctx)
     click_tail(s)
     s.wait_text("line 0012 of output")
-    row = s.screen.find_row("[x]") + 1
-    col = s.screen.row_text(row - 1).index("[x]") + 2
+    row = s.screen.find_row("✕") + 1
+    col = s.screen.row_text(row - 1).index("✕") + 1
     s.mouse("down", row, col)
     s.mouse("up", row, col).sync()
     s.wait_gone("line 0012 of output")
+
+
+def test_pager_keys_move_through_the_view(ctx):
+    """j and k move a row, g and G go to the ends, Space and b move a page,
+    Ctrl-D moves half a page."""
+    s = folded_read(ctx)
+    click_tail(s)
+    s.wait_text("line 0012 of output")
+
+    def first_row():
+        return s.screen.row_text(view_rows(s).start)
+
+    s.key("g").sync()
+    assert "line 0000 of output" in first_row(), s.text()
+    s.key("j").sync()
+    assert "line 0001 of output" in first_row(), s.text()
+    s.key("k").sync()
+    assert "line 0000 of output" in first_row(), s.text()
+    page = len(view_rows(s))
+    s.key("space").sync()
+    assert f"line {page - 1:04d} of output" in first_row(), s.text()
+    s.key("b").sync()
+    assert "line 0000 of output" in first_row(), s.text()
+    s.key("ctrl-d").sync()
+    assert f"line {page // 2:04d} of output" in first_row(), s.text()
+    s.key("G").sync()
+    assert "line 0039 of output" in s.screen.row_text(view_rows(s)[-1])
+
+
+def test_typing_closes_the_view_and_reaches_the_composer(ctx):
+    """A key the view does not use closes it and is typed into the
+    composer, so no keystroke is lost."""
+    s = folded_read(ctx)
+    click_tail(s)
+    s.wait_text("line 0012 of output")
+    s.type("hello").sync()
+    s.wait_gone("line 0012 of output")
+    assert s.composer_text() == "hello", s.text()
 
 
 def test_the_window_scrolls_through_the_whole_block(ctx):
@@ -450,17 +497,15 @@ def test_the_window_contains_a_shell_command_and_all_its_output(ctx):
 
 
 def test_the_window_reflows_on_a_narrow_terminal(ctx):
-    """The centered rectangle stays inset, wraps its text, and preserves its
-    scroll range after a resize."""
+    """The view wraps its text to the new width, keeps its title rule and
+    close control, and preserves its scroll range after a resize."""
     s = folded_read(ctx)
     click_tail(s)
     s.wait_text("line 0012 of output")
     s.resize(42, 16).sync()
-    lines = s.screen.lines()
-    top = next(i for i, line in enumerate(lines) if "┌" in line and "┐" in line)
-    left = lines[top].index("┌")
-    right = lines[top].index("┐")
-    assert top > 0 and left > 0 and right < s.screen.cols - 1, s.text()
+    rows = view_rows(s)
+    title = s.screen.row_text(rows.start - 1)
+    assert "read output" in title and title.rstrip().endswith("✕"), s.text()
     s.key("end").sync()
     assert "line 0039 of output" in s.text(), s.text()
 

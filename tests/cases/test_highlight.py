@@ -810,13 +810,14 @@ def test_failing_language_does_not_end_other_languages(ctx):
 
 
 def window_cell(s, needle: str, offset: int = 0):
-    """The attributes of a cell inside the expansion window alone, which the
-    transcript under it may hold a second copy of."""
+    """The attributes of a cell inside the text view alone, between its title
+    rule and its key hint rule."""
     lines = s.screen.lines()
-    top = next(i for i, line in enumerate(lines) if "┌" in line and "┐" in line)
+    top = next(i for i, line in enumerate(lines)
+               if line.lstrip().startswith("── ") and "✕" in line)
     bottom = next(i for i, line in enumerate(lines[top + 1:], top + 1)
-                  if "└" in line and "┘" in line)
-    for row in range(top + 2, bottom):
+                  if "esc close" in line)
+    for row in range(top + 1, bottom):
         text = s.screen.row_text(row)
         if needle in text:
             return s.screen.attr_at(row, text.index(needle) + offset)
@@ -886,7 +887,7 @@ def test_envelope_patch_uses_each_files_language(ctx):
 
 def test_window_over_a_shell_run_highlights_the_command_only(ctx):
     """The window holds a command and what it printed; only the command is
-    source."""
+    source, and the output is muted as it is in the transcript."""
     ctx.scenario("hold,text=done")
     s = ctx.spawn()
     command = "for i in $(seq 0 39); do printf 'shell %04d\\n' \"$i\"; done"
@@ -899,4 +900,25 @@ def test_window_over_a_shell_run_highlights_the_command_only(ctx):
     s.key("home").sync()
     assert window_cell(s, "for i in").fg == PURPLE
     assert window_cell(s, "'shell %04d\\n'").fg == GREEN
-    assert window_cell(s, "shell 0000").fg == TEXT
+    assert window_cell(s, "shell 0000").fg == MUTED
+
+
+def test_window_over_a_batch_keeps_each_steps_colours(ctx):
+    """A step inside a batch is highlighted in the window as it is in the
+    transcript, not shown as plain text."""
+    body = "\n".join(f"int v{i:04d} = {i};" for i in range(40))
+    ctx.write_file("big.c", body)
+    steps = {"steps": [{"tool": "read", "args": {"path": "big.c"}}]}
+    ctx.scenario("tool=batch:" + json.dumps(steps)
+                 + ",hold_final,final_text=done")
+    s = ctx.spawn()
+    s.submit("read it in a batch")
+    s.wait_text("\u25be 28 more lines")
+    # TODO: click the step's tail instead. Mid-turn, a click on a batch
+    # step's tail opens nothing yet, so the case names the block by number.
+    s.submit("/expand 5")
+    s.wait_text("esc close")
+    assert "batch output" in s.text(), s.text()
+    s.key("g").sync()
+    assert window_cell(s, "int v0001").fg == CYAN, s.text()
+    assert window_cell(s, "= 1;", 2).fg == YELLOW, s.text()

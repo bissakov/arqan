@@ -5057,6 +5057,7 @@ static b8 open_block_view(Agent *ag, size_t i) {
         parts[part_n].text =
             render_result_text(STR("shell"), (Str){0}, c->shell_out[i], NULL,
                                &shown[part_n], NULL);
+        parts[part_n].muted = true;
         part_n++;
         len = snprintf(name_buf, 32, "shell run");
     } else if (c->role[i] == M_ASSISTANT && conv_is_call(c, i)) {
@@ -5077,6 +5078,9 @@ static b8 open_block_view(Agent *ag, size_t i) {
         parts[part_n].text = render_result_text(
             name, args, c->text[i], ag->scratch, &shown[part_n], syntax);
         parts[part_n].syntax = syntax;
+        parts[part_n].muted = !str_eq(name, STR("read"))
+                              && !str_eq(name, STR("grep"))
+                              && !str_eq(name, STR("batch"));
         part_n++;
         len = snprintf(name_buf, sizeof name_buf, "%.*s output", (i32)name.n,
                        name.p);
@@ -5135,7 +5139,7 @@ static void diff_command(Agent *ag) {
         if (buf_ok(&shown) && syntax) {
             Str text = buf_finish(&shown);
             render_diff_syntax(text, ag->scratch, syntax);
-            TuiViewPart part = {text, syntax, true};
+            TuiViewPart part = {text, syntax, true, false};
             if (!tui_view_open(STR("diff"), &part, 1, 0))
                 tui_notice(
                     STR("the terminal is too small for the diff window"));

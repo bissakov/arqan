@@ -50,6 +50,15 @@
   run read-only commands.
 - Failed or denied `write` and `patch` calls collapse to a short preview;
   click to see the rest.
+- The window that opens when you click a folded block during a turn, and
+  the one `/diff` opens, is now a pager. It sits over the transcript above
+  the composer and grows up to its full height. A title rule names the block
+  and shows which lines are on screen, and a hint rule lists the keys. Text
+  has the colours it has in the transcript: output is muted, and the steps
+  of a `batch` are highlighted. `j`/`k`, Space/`b`, `g`/`G` and
+  Ctrl-D/Ctrl-U move through it, and `/keys` lists them. Any other key
+  closes it and goes to the composer. While it is open, the spinner row says
+  Esc closes it, not that Esc interrupts the turn.
 
 ### Fixed
 

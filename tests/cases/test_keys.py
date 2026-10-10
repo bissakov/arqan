@@ -86,12 +86,14 @@ def test_keys_page_lists_bindings_grouped_by_context(ctx):
     open_keys(s)
     bindings = parse_bindings(whole_page(s))
     assert set(bindings) == {
-        "composer", "line editing", "transcript search", "lists and screens"
+        "composer", "line editing", "transcript search", "lists and screens",
+        "text view",
     }, sorted(bindings)
     assert "Ctrl-R" in bindings["composer"], bindings["composer"]
     assert "Ctrl-G" in bindings["transcript search"], \
         bindings["transcript search"]
     assert "Ctrl-Y" in bindings["line editing"], bindings["line editing"]
+    assert "Ctrl-D" in bindings["text view"], bindings["text view"]
 
 
 def test_keys_page_headings_are_non_interactive_separators(ctx):

@@ -29,17 +29,17 @@ def repo_with(ctx, files: dict):
 
 
 def wait_window(s):
-    s.wait_for(lambda t: t.contains("┌") and t.contains("┐"),
-               "the window to open")
+    s.wait_text("esc close")
     s.settle()
 
 
 def window_rows(s):
-    """Rows between the window's top and bottom borders."""
+    """Rows between the view's title rule and its key hint rule."""
     lines = s.screen.lines()
-    top = next(i for i, line in enumerate(lines) if "┌" in line and "┐" in line)
+    top = next(i for i, line in enumerate(lines)
+               if line.lstrip().startswith("── ") and "✕" in line)
     bottom = next(i for i, line in enumerate(lines[top + 1:], top + 1)
-                  if "└" in line and "┘" in line)
+                  if "esc close" in line)
     return range(top + 1, bottom)
 
 
