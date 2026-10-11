@@ -648,7 +648,7 @@ static b8 anth_has_plain_block(const Conv *c, size_t i) {
     if (conv_slot_dropped(c, i, conv_elide_start(c))) return false;
     if (c->role[i] == M_TOOL || conv_is_call(c, i) || conv_is_shell(c, i))
         return true;
-    return c->text[i].n > 0;
+    return str_trim(c->text[i]).n > 0;
 }
 
 static b8 anth_has_block(const Conv *c, size_t i) {
@@ -734,6 +734,7 @@ static void anth_write_block(Buf *b, const Conv *c, size_t i, size_t recent,
         } else {
             write_tool_result(b, c, i, recent);
         }
+        if (conv_result_failed(c, i)) buf_puts(b, STR(",\"is_error\":true"));
         anth_write_cache(b, cache);
         buf_putc(b, '}');
         return;
@@ -839,6 +840,7 @@ typedef struct {
     i32 dropped;
     Buf text;
     Buf anth_blocks;
+    size_t anth_mark[AGENT_MAX_TOOL_CALLS];
     b8 anth_first;
     b8 anth_thinking_open;
     b8 anth_thinking_closed;
@@ -1063,20 +1065,6 @@ static void read_usage_anth(Provider *p, const JVal *owner) {
 }
 
 
-static void anth_open_tool(Provider *p, StreamState *s, const JVal *blk) {
-    i32 sl = slot(s, s->blocks++);
-    s->open_slot = sl;
-    if (sl < 0) return;
-    Str id = json_str(blk, STR("id"));
-    Str name = json_str(blk, STR("name"));
-    if (id.n) s->id[sl] = str_dup(s->scratch, id);
-    if (name.n) s->name[sl] = str_dup(s->scratch, name);
-    if (p->on_tool_call && s->name[sl].p)
-        p->on_tool_call(sl, s->id[sl], s->name[sl],
-                        (Str){s->args[sl].p, s->args[sl].n}, s->args_bytes,
-                        p->ud);
-}
-
 static void anth_block_sep(StreamState *s) {
     if (!s->anth_first) buf_putc(&s->anth_blocks, ',');
     s->anth_first = false;
@@ -1096,6 +1084,22 @@ static void anth_close_thinking(StreamState *s) {
     s->anth_thinking_closed = false;
     s->anth_signature_open = false;
     s->anth_signed = false;
+}
+
+static void anth_open_tool(Provider *p, StreamState *s, const JVal *blk) {
+    anth_close_thinking(s);
+    i32 sl = slot(s, s->blocks++);
+    s->open_slot = sl;
+    if (sl < 0) return;
+    s->anth_mark[sl] = s->anth_blocks.n;
+    Str id = json_str(blk, STR("id"));
+    Str name = json_str(blk, STR("name"));
+    if (id.n) s->id[sl] = str_dup(s->scratch, id);
+    if (name.n) s->name[sl] = str_dup(s->scratch, name);
+    if (p->on_tool_call && s->name[sl].p)
+        p->on_tool_call(sl, s->id[sl], s->name[sl],
+                        (Str){s->args[sl].p, s->args[sl].n}, s->args_bytes,
+                        p->ud);
 }
 
 /* NOTE: The API refuses a thinking block without a signature, and replaying
@@ -1146,6 +1150,67 @@ static void anth_save_block(StreamState *s, const JVal *blk) {
     json_write(&s->anth_blocks, blk);
 }
 
+static Str anth_thinking_piece(Arena *a, Str blocks, size_t from, size_t to,
+                               b8 *ok) {
+    if (from < to && blocks.p[from] == ',') from++;
+    if (from >= to) return (Str){0};
+    size_t n = to - from;
+    char *out = arena_alloc(a, n + 2, 1);
+    if (!out) {
+        *ok = false;
+        return (Str){0};
+    }
+    out[0] = '[';
+    memcpy(out + 1, blocks.p + from, n);
+    out[n + 1] = ']';
+    return (Str){out, n + 2};
+}
+
+/* INVARIANT: the API refuses a latest assistant message whose thinking
+ * blocks moved, and a reply can think between its tool calls. So the blocks
+ * before the first call go on the head slot, and those between two calls on
+ * the later call's slot, which conv_write_json_anthropic writes ahead of its
+ * tool_use. out holds calls + 1 entries: the head, then one per call. */
+static b8 anth_split_thinking(const Provider *p, const StreamState *s,
+                              Str blocks, Str *out, size_t calls) {
+    size_t *at = arena_new(p->scratch, size_t, calls + 2);
+    if (!at) return false;
+    size_t k = 0;
+    at[k++] = 1;
+    for (i32 i = 0; i < s->count; i++)
+        if (s->used[i] && s->name[i].p) at[k++] = s->anth_mark[i];
+    at[k] = blocks.n - 1;
+    b8 ok = true;
+    out[0] = anth_thinking_piece(p->persist, blocks, at[0], at[1], &ok);
+    for (size_t j = 1; j <= calls; j++) {
+        size_t from = at[j > 1 ? j - 1 : 1];
+        size_t to = j < calls ? at[j] : at[calls + 1];
+        out[j] = anth_thinking_piece(p->persist, blocks, from, to, &ok);
+    }
+    return ok;
+}
+
+static ProviderStop anth_stop_of(Str reason) {
+    if (str_eq(reason, STR("max_tokens"))) return PROVIDER_STOP_MAX_TOKENS;
+    if (str_eq(reason, STR("refusal"))) return PROVIDER_STOP_REFUSAL;
+    if (str_eq(reason, STR("model_context_window_exceeded")))
+        return PROVIDER_STOP_CONTEXT;
+    return PROVIDER_STOP_END;
+}
+
+const char *provider_stop_text(ProviderStop stop) {
+    switch (stop) {
+        case PROVIDER_STOP_MAX_TOKENS:
+            return "the reply stopped at the max_tokens limit";
+        case PROVIDER_STOP_REFUSAL: return "the model refused to continue";
+        case PROVIDER_STOP_CONTEXT:
+            return "the conversation is larger than the model's context "
+                   "window";
+        case PROVIDER_STOP_END: break;
+    }
+    return "the reply ended";
+}
+
 static void anth_event(Provider *p, StreamState *s, const JVal *ev) {
     Str type = json_str(ev, STR("type"));
     if (str_eq(type, STR("message_start"))) {
@@ -1154,6 +1219,8 @@ static void anth_event(Provider *p, StreamState *s, const JVal *ev) {
     }
     if (str_eq(type, STR("message_delta"))) {
         read_usage_anth(p, ev);
+        Str reason = json_str(json_get(ev, STR("delta")), STR("stop_reason"));
+        if (reason.n) p->stop = anth_stop_of(reason);
         return;
     }
     if (str_eq(type, STR("content_block_start"))) {
@@ -1273,6 +1340,7 @@ static b8 read_message_anth(Provider *p, StreamState *s, Str raw,
         return false;
     }
     read_usage_anth(p, doc);
+    p->stop = anth_stop_of(json_str(doc, STR("stop_reason")));
     const JVal *content = json_get(doc, STR("content"));
     if (!content || content->type != J_ARR) {
         snprintf(err, err_cap, "the reply carries no content");
@@ -1368,8 +1436,10 @@ size_t provider_models(const Config *cfg, Arena *scratch, Str *out, size_t max,
     Buf body;
     buf_init(&body, scratch, AGENT_MAX_MODEL_BYTES);
     char why[192] = {0};
-    i32 rc = http_get(cfg->base_url.p, "/models", cfg->api_key.p, cfg->api,
-                      &body, why, sizeof why);
+    const char *path =
+        cfg->api == API_ANTHROPIC ? "/models?limit=1000" : "/models";
+    i32 rc = http_get(cfg->base_url.p, path, cfg->api_key.p, cfg->api, &body,
+                      why, sizeof why);
     if (rc != 0) {
         if (why[0] >= 'A' && why[0] <= 'Z') why[0] = (char)(why[0] - 'A' + 'a');
         if (rc < 0) {
@@ -1419,7 +1489,8 @@ static b8 retryable(i32 rc) {
         case 500:
         case 502:
         case 503:
-        case 504: return true;
+        case 504:
+        case 529: return true;
         default: return false;
     }
 }
@@ -1644,6 +1715,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     p->cache_read_tokens = 0;
     p->total_tokens = 0;
     p->usage_valid = false;
+    p->stop = PROVIDER_STOP_END;
     p->status_msg[0] = '\0';
 
     StreamState *s = arena_new(scratch, StreamState, 1);
@@ -1727,8 +1799,8 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
                 read_completion(p, s, buf_finish(&whole), scratch, parse_err,
                                 sizeof parse_err);
         }
-        empty_reply =
-            rc == 0 && !parse_err[0] && !s->stream_error && response_empty(s);
+        empty_reply = rc == 0 && !parse_err[0] && !s->stream_error
+                      && response_empty(s) && p->stop == PROVIDER_STOP_END;
         b8 retry_candidate = empty_reply || s->stream_error || retryable(rc);
         if ((rc == 0 && !empty_reply && !s->stream_error) || !retry_candidate
             || attempt >= attempts || !output_untouched(s))
@@ -1803,6 +1875,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         p->cache_read_tokens = 0;
         p->total_tokens = 0;
         p->usage_valid = false;
+        p->stop = PROVIDER_STOP_END;
         attempt++;
     }
     p->ud = saved_ud;
@@ -1864,6 +1937,10 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
                  s->bad_events);
         return -1;
     }
+    if (response_empty(s) && p->stop != PROVIDER_STOP_END) {
+        snprintf(err, err_cap, "%s", provider_stop_text(p->stop));
+        return -1;
+    }
     if (response_empty(s)) {
         snprintf(err, err_cap, "the provider returned an empty response");
         return PROVIDER_EMPTY;
@@ -1882,19 +1959,22 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         snprintf(err, err_cap, "out of memory storing the reply");
         return -1;
     }
-    Str anth_dup = {0};
-    if (p->cfg->api == API_ANTHROPIC && anth_blocks.n > 2) {
-        anth_dup = str_dup(p->persist, anth_blocks);
-        if (!anth_dup.p) {
-            snprintf(err, err_cap, "out of memory storing Anthropic thinking");
-            return -1;
-        }
-    }
-
 
     i32 calls = 0;
     for (i32 i = 0; i < s->count; i++)
         if (s->used[i] && s->name[i].p) calls++;
+
+    Str *thinking = arena_new(scratch, Str, (size_t)calls + 1);
+    if (!thinking) {
+        snprintf(err, err_cap, "out of memory storing Anthropic thinking");
+        return -1;
+    }
+    for (i32 i = 0; i <= calls; i++) thinking[i] = (Str){0};
+    if (p->cfg->api == API_ANTHROPIC && anth_blocks.n > 2
+        && !anth_split_thinking(p, s, anth_blocks, thinking, (size_t)calls)) {
+        snprintf(err, err_cap, "out of memory storing Anthropic thinking");
+        return -1;
+    }
 
     size_t needed = calls ? (size_t)calls + 1 : 1;
     if (conv_room(p->conv) < needed) {
@@ -1905,12 +1985,12 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
 
     if (calls == 0) {
         size_t head = conv_add(p->conv, M_ASSISTANT, text_dup);
-        p->conv->anthropic_thinking[head] = anth_dup;
+        p->conv->anthropic_thinking[head] = thinking[0];
         return 0;
     }
 
     size_t head = conv_add_assistant_calls(p->conv, text_dup);
-    p->conv->anthropic_thinking[head] = anth_dup;
+    p->conv->anthropic_thinking[head] = thinking[0];
     i32 emitted = 0;
     for (i32 i = 0; i < s->count; i++) {
         if (!s->used[i] || !s->name[i].p) continue;
@@ -1921,8 +2001,10 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
             snprintf(err, err_cap, "out of memory storing a tool call");
             return -1;
         }
-        conv_add_call(p->conv, p->scratch, id, nm, ag);
         emitted++;
+        size_t at = conv_add_call(p->conv, p->scratch, id, nm, ag);
+        if (at != CONV_NONE)
+            p->conv->anthropic_thinking[at] = thinking[emitted];
     }
     return emitted;
 }

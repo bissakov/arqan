@@ -70,6 +70,16 @@
 - Dragging over a draft in the composer copies the text after the cursor.
   Before, text to the right of the cursor on its row was left out, so a drag
   over only that text copied nothing and showed no notice.
+- Anthropic: a reply that thinks between its tool calls no longer breaks the
+  session. Each thinking block goes back in the place it arrived, as the API
+  requires, including after `/resume`.
+- Anthropic: a reply that stops at `max_tokens`, is refused, or overflows the
+  context window now says so. A tool call cut off at `max_tokens` fails, and
+  the model is told why.
+- Anthropic: HTTP 529 (overloaded) is retried like other transient errors.
+- Anthropic: failed tool results carry `is_error`, and a reply of only
+  whitespace is no longer sent back, since the API refuses it.
+- Anthropic: `/model` lists every model. It showed only the first 20.
 
 ## [0.11.0] - 2026-10-08
 
