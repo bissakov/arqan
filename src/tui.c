@@ -1242,6 +1242,9 @@ static u32 zone_at_off(size_t off) {
  *
  * The bytes belong to the caller and may be gone by the next paint, so an
  * image is sent while it is being written into the transcript, never later.
+ *
+ * Inside tmux every command goes out through tmux passthrough, and only once
+ * tmux has said it can carry them.
  */
 #define TUI_IMAGE_RANGES   (AGENT_MAX_MEDIA * 2)
 #define TUI_IMAGE_SLOTS    (AGENT_MAX_MEDIA * 2)
@@ -1270,6 +1273,8 @@ _Static_assert(TUI_IMAGE_SLOTS < 256, "a slot fits the low byte of an id");
 typedef struct {
     b8 enabled;
     b8 lost;
+    b8 tmux;
+    b8 tmux_asked;
     u32 id_base;
     u64 build;
 
@@ -3600,6 +3605,7 @@ void tui_start(Str model, Str base_url, b8 missing_key, b8 setup,
     g_tui.raw = true;
     g_tui.fullscreen = true;
     g_img = (TuiImages){0};
+    g_img.tmux = getenv("TMUX") && !getenv("ZELLIJ") && !getenv("STY");
     g_img.enabled = image_terminal();
     g_img.id_base = ((u32)getpid() & 0xffffu) << 8;
     agent_log_set_sink(tui_log_sink, NULL);
@@ -3946,6 +3952,41 @@ static b8 image_terminal(void) {
     return getenv("KITTY_WINDOW_ID") != NULL;
 }
 
+static b8 tmux_has_feature(Str features, Str want) {
+    for (size_t at = 0; at <= features.n;) {
+        size_t end = at;
+        while (end < features.n && features.p[end] != ',') end++;
+        if (str_eq((Str){features.p + at, end - at}, want)) return true;
+        at = end + 1;
+    }
+    return false;
+}
+
+/* NOTE: tmux drops kitty graphics commands unless they come wrapped in its
+ * passthrough and `allow-passthrough` is on. Without the RGB feature it also
+ * maps a 24-bit color to the palette, which loses the image id that the
+ * placeholder color carries. */
+static b8 image_tmux_passes(void) {
+    char out[1024];
+    size_t n = 0;
+    if (!clipboard_tmux_query("#{client_termname}\n#{client_termtype}\n"
+                              "#{allow-passthrough}\n#{client_termfeatures}",
+                              out, sizeof out, &n))
+        return false;
+    Str reply = {out, n}, name, type, passthrough, features;
+    size_t off = 0;
+    if (!str_line(reply, &off, &name) || !str_line(reply, &off, &type)
+        || !str_line(reply, &off, &passthrough)
+        || !str_line(reply, &off, &features))
+        return false;
+    b8 passes =
+        str_eq(passthrough, STR("on")) || str_eq(passthrough, STR("all"));
+    b8 draws =
+        str_eq(name, STR("xterm-kitty")) || str_eq(name, STR("xterm-ghostty"))
+        || str_starts(type, STR("kitty")) || str_starts(type, STR("ghostty"));
+    return passes && draws && tmux_has_feature(features, STR("RGB"));
+}
+
 static void image_cell_pixels(size_t *w, size_t *h) {
     *w = TUI_IMAGE_CELL_W;
     *h = TUI_IMAGE_CELL_H;
@@ -3991,16 +4032,23 @@ static u64 image_key(Str png) {
     return hash_add(h, png.p + png.n - WINDOW, WINDOW);
 }
 
-static void put_command(const char *cmd, i32 n, size_t cap) {
-    if (n > 0 && (size_t)n < cap) put_raw(cmd, (size_t)n);
+static void image_command(const char *keys, i32 n, size_t cap, const u8 *data,
+                          size_t data_n) {
+    if (n <= 0 || (size_t)n >= cap) return;
+    put_str(g_img.tmux ? "\033Ptmux;\033\033_G" : "\033_G");
+    put_raw(keys, (size_t)n);
+    if (data) {
+        put_raw(";", 1);
+        b64_put(data, data_n);
+    }
+    put_str(g_img.tmux ? "\033\033\\\033\\" : "\033\\");
 }
 
 static void image_delete(size_t slot) {
     if (!g_img.live[slot]) return;
-    char cmd[48];
-    i32 n = snprintf(cmd, sizeof cmd, "\033_Ga=d,d=I,i=%u,q=2\033\\",
-                     image_id(slot));
-    put_command(cmd, n, sizeof cmd);
+    char keys[48];
+    i32 n = snprintf(keys, sizeof keys, "a=d,d=I,i=%u,q=2", image_id(slot));
+    image_command(keys, n, sizeof keys, NULL, 0);
     g_img.live[slot] = false;
 }
 
@@ -4012,18 +4060,12 @@ static size_t image_send(Str png, u64 key, size_t cols, size_t rows) {
         size_t take =
             png.n - at < TUI_IMAGE_CHUNK ? png.n - at : TUI_IMAGE_CHUNK;
         b8 more = at + take < png.n;
-        if (at == 0) {
-            char cmd[96];
-            i32 n = snprintf(cmd, sizeof cmd,
-                             "\033_Ga=T,U=1,f=100,i=%u,p=1,c=%zu,r=%zu,q=2,"
-                             "m=%d;",
-                             image_id(slot), cols, rows, more ? 1 : 0);
-            put_command(cmd, n, sizeof cmd);
-        } else {
-            put_str(more ? "\033_Gm=1;" : "\033_Gm=0;");
-        }
-        b64_put((const u8 *)png.p + at, take);
-        put_str("\033\\");
+        char keys[96];
+        i32 n = at ? snprintf(keys, sizeof keys, "m=%d", more ? 1 : 0)
+                   : snprintf(keys, sizeof keys,
+                              "a=T,U=1,f=100,i=%u,p=1,c=%zu,r=%zu,q=2,m=%d",
+                              image_id(slot), cols, rows, more ? 1 : 0);
+        image_command(keys, n, sizeof keys, (const u8 *)png.p + at, take);
     }
     flush_out();
     g_img.live[slot] = true;
@@ -4034,11 +4076,10 @@ static size_t image_send(Str png, u64 key, size_t cols, size_t rows) {
 }
 
 static void image_place(size_t slot, size_t cols, size_t rows) {
-    char cmd[80];
-    i32 n = snprintf(cmd, sizeof cmd,
-                     "\033_Ga=p,U=1,i=%u,p=1,c=%zu,r=%zu,q=2\033\\",
+    char keys[80];
+    i32 n = snprintf(keys, sizeof keys, "a=p,U=1,i=%u,p=1,c=%zu,r=%zu,q=2",
                      image_id(slot), cols, rows);
-    put_command(cmd, n, sizeof cmd);
+    image_command(keys, n, sizeof keys, NULL, 0);
     flush_out();
     g_img.cols[slot] = (u16)cols;
     g_img.rows[slot] = (u16)rows;
@@ -4074,7 +4115,12 @@ static void image_rows_put(size_t slot, size_t cols, size_t rows) {
 }
 
 b8 tui_images_shown(void) {
-    return g_img.enabled && g_tui.fullscreen && !g_tui.detached;
+    if (!g_tui.fullscreen || g_tui.detached) return false;
+    if (g_img.tmux && !g_img.tmux_asked) {
+        g_img.tmux_asked = true;
+        g_img.enabled = image_tmux_passes();
+    }
+    return g_img.enabled;
 }
 
 b8 tui_image(Str png, u32 w, u32 h) {

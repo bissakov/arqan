@@ -42,6 +42,10 @@
   use the C highlighter. Strings, comments, numbers, preprocessor lines, HLSL
   types and function calls get colours; ShaderLab words such as `Pass` stay
   plain.
+- PNG images now show in the transcript inside tmux when tmux runs in kitty
+  or Ghostty. tmux needs `allow-passthrough` set to `on` or `all`, and the
+  outer terminal needs 24-bit colour in tmux. arqan asks tmux once, when the
+  first image is drawn. Otherwise the caption line stays.
 
 ### Changed
 
@@ -74,6 +78,9 @@
 
 - When `read` is given a directory, the error now points at `bash` with `ls`
   or `find`. It named the `find` tool, which no longer exists.
+- A resumed or redrawn session shows each tool result, and any image it
+  loaded, under its own call. When the model made several calls at once, the
+  calls were listed first and all their results after them.
 - A call refused in a non-interactive run in Ask mode is saved as needing
   approval, not as refused by the user. A resumed session no longer tells the
   model that the user said no.

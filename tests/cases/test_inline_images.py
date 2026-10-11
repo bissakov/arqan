@@ -4,6 +4,9 @@ kitty and Ghostty get PNG images as Unicode placeholders: the image is sent
 once with `a=T,U=1` and drawn by U+10EEEE cells whose foreground color carries
 its id. Every other terminal, and every other format, keeps the text line
 alone. The pty reports no pixel size, so a cell counts as 10 by 20 pixels.
+
+Inside tmux the commands go out through its passthrough, once tmux says it
+allows passthrough, has 24-bit color and runs in kitty or Ghostty.
 """
 
 import base64
@@ -17,6 +20,9 @@ from .test_image import attach, png
 
 PLACEHOLDER = "\U0010EEEE"
 _APC = re.compile(rb"\x1b_G([^;\x1b]*)(?:;([^\x1b]*))?\x1b\\")
+_TMUX = re.compile(rb"\x1bPtmux;((?:[^\x1b]|\x1b\x1b)*)\x1b\\")
+TMUX = "/tmp/tmux-1000/default,4242,0"
+TMUX_GHOSTTY = "xterm-ghostty\nghostty 1.3.1\nall\n256,RGB,sync\n"
 
 NOT_PNG = [
     ("jpeg", bytes.fromhex("ffd8ffc00011080003000403012200021101031100ffd9")),
@@ -50,10 +56,18 @@ def stored_png(w: int, h: int) -> bytes:
             + chunk(b"IEND", b""))
 
 
-def graphics(s) -> list[tuple[dict, bytes]]:
-    """Each kitty graphics command the child wrote, as (keys, payload)."""
+def passed_through(s) -> bytes:
+    """What the child handed to tmux to pass on, unwrapped."""
+    return b"".join(m.group(1).replace(b"\x1b\x1b", b"\x1b")
+                    for m in _TMUX.finditer(bytes(s.raw)))
+
+
+def graphics(s, tmux: bool = False) -> list[tuple[dict, bytes]]:
+    """Each kitty graphics command the child wrote, as (keys, payload).
+
+    With `tmux`, the commands it wrote inside tmux passthrough."""
     out = []
-    for m in _APC.finditer(bytes(s.raw)):
+    for m in _APC.finditer(passed_through(s) if tmux else bytes(s.raw)):
         keys = {}
         for pair in m.group(1).split(b","):
             if b"=" in pair:
@@ -63,10 +77,10 @@ def graphics(s) -> list[tuple[dict, bytes]]:
     return out
 
 
-def transmitted(s) -> list[tuple[dict, bytes]]:
+def transmitted(s, tmux: bool = False) -> list[tuple[dict, bytes]]:
     """The images sent, as (keys of the first chunk, decoded bytes)."""
     images, current = [], None
-    for keys, payload in graphics(s):
+    for keys, payload in graphics(s, tmux):
         if keys.get("a") == "T":
             current = [keys, bytearray()]
             images.append(current)
@@ -85,6 +99,28 @@ def placements(s) -> list[dict]:
 def image_rows(s, cols: int) -> int:
     """Screen rows holding a run of `cols` placeholders."""
     return s.text().count(PLACEHOLDER * cols)
+
+
+def fake_tmux(ctx, reply: str, exit_code: int = 0) -> dict:
+    """Env that puts a stub `tmux` first on PATH and points TMUX at a server.
+
+    The stub appends its arguments to `tmux.args` under the work directory,
+    prints `reply` and exits with `exit_code`. It keeps a case from reaching
+    the developer's own tmux server."""
+    bindir = ctx.work / "tmuxbin"
+    bindir.mkdir(exist_ok=True)
+    (ctx.work / "tmux.reply").write_text(reply)
+    script = bindir / "tmux"
+    script.write_text(
+        "#!/bin/sh\n"
+        "PATH=/usr/bin:/bin\n"
+        f'printf "%s\\n" "$@" >> "{ctx.work}/tmux.args"\n'
+        f'cat "{ctx.work}/tmux.reply"\n'
+        f"exit {exit_code}\n"
+    )
+    script.chmod(0o755)
+    return {"TMUX": TMUX, "TERM": "tmux-256color", "KITTY_WINDOW_ID": "1",
+            "PATH": f"{bindir}:/usr/bin:/bin"}
 
 
 def send_attached(ctx, data: bytes, **env):
@@ -218,6 +254,70 @@ def test_exit_deletes_the_images_it_sent(ctx):
     assert any(k["d"] == "I" and k["i"] == keys["i"] for k in deletes), deletes
 
 
+def test_a_resumed_round_draws_each_image_under_its_call(ctx):
+    """Two reads in one round replay with each image below its own call,
+    though the session saves both calls before either result."""
+    (ctx.work / "one.png").write_bytes(png(200, 100))
+    (ctx.work / "two.png").write_bytes(png(300, 100))
+    ctx.scenario('tool=read:{"path":"one.png"},tool=read:{"path":"two.png"},'
+                 "final_text=seen+both")
+    s = ctx.spawn(rows=50, TERM="xterm-kitty")
+    s.submit("look at them")
+    s.wait_text("seen both")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+
+    s = ctx.spawn(rows=50, TERM="xterm-kitty")
+    s.submit("/resume")
+    s.wait_status("pick a session")
+    s.key("enter")
+    s.wait_text("seen both")
+    lines = s.text().splitlines()
+    one = next(i for i, line in enumerate(lines) if "read one.png" in line)
+    two = next(i for i, line in enumerate(lines) if "read two.png" in line)
+    narrow = [i for i, line in enumerate(lines)
+              if PLACEHOLDER * 20 in line and PLACEHOLDER * 21 not in line]
+    wide = [i for i, line in enumerate(lines) if PLACEHOLDER * 30 in line]
+    assert len(narrow) == 5 and len(wide) == 5, s.text()
+    assert one < narrow[0] and narrow[-1] < two < wide[0], s.text()
+
+
+# ---- tmux -----------------------------------------------------------------
+def test_tmux_passes_the_image_on_to_ghostty(ctx):
+    """Every graphics command is wrapped; none reaches tmux bare."""
+    data = stored_png(200, 100)
+    s = send_attached(ctx, data, **fake_tmux(ctx, TMUX_GHOSTTY))
+    assert graphics(s) == [], graphics(s)
+    [(keys, body)] = transmitted(s, tmux=True)
+    assert body == data
+    assert (keys["c"], keys["r"]) == ("20", "5"), keys
+    assert image_rows(s, 20) == 5, s.text()
+    assert "display-message" in (ctx.work / "tmux.args").read_text()
+    s.submit("/exit")
+    s.wait_exit()
+    assert graphics(s) == [], graphics(s)
+    deletes = [k for k, _ in graphics(s, tmux=True) if k.get("a") == "d"]
+    assert any(k["i"] == keys["i"] for k in deletes), deletes
+
+
+def test_tmux_knows_kitty_by_its_version_reply(ctx):
+    """The client TERM may be generic; tmux still learned what answered."""
+    reply = "xterm-256color\nkitty(0.42.1)\non\nRGB\n"
+    s = send_attached(ctx, png(200, 100), **fake_tmux(ctx, reply))
+    assert len(transmitted(s, tmux=True)) == 1, passed_through(s)
+
+
+def test_tmux_is_not_asked_until_there_is_an_image(ctx):
+    """Startup and plain turns run no tmux command."""
+    ctx.scenario("text=plain+answer")
+    s = ctx.spawn(**fake_tmux(ctx, TMUX_GHOSTTY))
+    s.submit("hello")
+    s.wait_text("plain answer")
+    s.wait_turn_done()
+    assert not (ctx.work / "tmux.args").exists()
+
+
 # ---- not drawn ------------------------------------------------------------
 def test_other_terminals_keep_the_text_line(ctx):
     """No protocol support assumed: no escape, no placeholder."""
@@ -227,12 +327,23 @@ def test_other_terminals_keep_the_text_line(ctx):
     assert "[Image #1] shot.png - png 200x100" in s.text(), s.text()
 
 
-def test_tmux_keeps_the_text_line(ctx):
-    """tmux drops the graphics commands, so nothing is drawn inside it."""
-    s = send_attached(ctx, png(200, 100), TERM="tmux-256color",
-                      KITTY_WINDOW_ID="1", TMUX="/tmp/tmux-1000/default,1,0")
-    assert graphics(s) == []
-    assert PLACEHOLDER not in s.text()
+def test_tmux_that_cannot_pass_images_keeps_the_text_line(ctx):
+    """Passthrough off, a client without images, no 24-bit color to carry
+    the image id, or a tmux that fails: nothing is drawn."""
+    cases = [
+        ("xterm-ghostty\nghostty 1.3.1\noff\nRGB\n", 0),
+        ("xterm-256color\nfoot(1.20.0)\nall\nRGB\n", 0),
+        ("xterm-ghostty\nghostty 1.3.1\nall\n256,sync\n", 0),
+        (TMUX_GHOSTTY, 1),
+    ]
+    for reply, code in cases:
+        s = send_attached(ctx, png(200, 100),
+                          **fake_tmux(ctx, reply, exit_code=code))
+        assert graphics(s) == [], reply
+        assert graphics(s, tmux=True) == [], reply
+        assert PLACEHOLDER not in s.text(), reply
+        assert "[Image #1] shot.png - png 200x100" in s.text(), s.text()
+        s.close()
 
 
 def test_formats_other_than_png_keep_the_text_line(ctx):

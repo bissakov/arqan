@@ -442,6 +442,33 @@ def test_tool_calls_survive_a_resume(ctx):
     ], roles
 
 
+def test_a_round_of_calls_replays_each_result_under_its_call(ctx):
+    """A round saves its calls first and their results after them; the
+    replay shows each result under its own call, as the live turn did."""
+    ctx.write_file("one.txt", "first body\n")
+    ctx.write_file("two.txt", "second body\n")
+    ctx.scenario('tool=read:{"path":"one.txt"},tool=read:{"path":"two.txt"},'
+                 "final_text=read+both")
+    s = ctx.spawn()
+    s.submit("read them")
+    s.wait_text("read both")
+    s.wait_turn_done()
+    live = s.text()
+    s.submit("/exit")
+    s.wait_exit()
+
+    s = ctx.spawn()
+    s.submit("/resume")
+    s.wait_status("pick a session")
+    s.key("enter")
+    s.wait_text("read both")
+    text = s.text()
+    order = ["read one.txt", "first body", "read two.txt", "second body"]
+    at = [text.find(part) for part in order]
+    assert -1 not in at and at == sorted(at), text
+    assert [live.find(p) for p in order] == sorted(live.find(p) for p in order)
+
+
 def test_sigint_cancels_the_picker(ctx):
     """Ctrl-C leaves the picker the way it abandons a draft at the prompt."""
     import signal

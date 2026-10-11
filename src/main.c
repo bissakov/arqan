@@ -2109,6 +2109,15 @@ static void render_user_message(const Conv *c, size_t i) {
     tui_user_end();
 }
 
+static void render_saved_result(const Conv *c, size_t call, size_t slot,
+                                Arena *scratch) {
+    Str name = call == CONV_NONE ? (Str){0} : c->tool_name[call];
+    Str args = call == CONV_NONE ? (Str){0} : c->text[call];
+    render_tool_result(name, args, c->text[slot], scratch, (u32)(slot + 1),
+                       c->expanded[slot], c->ms[slot]);
+    render_result_media(c, slot);
+}
+
 static void render_saved_thinking(Str raw, Arena *scratch) {
     if (!raw.n) return;
     size_t mark = scratch->off;
@@ -2135,6 +2144,8 @@ static void render_saved_thinking(Str raw, Arena *scratch) {
 static void render_conv(const Conv *c, const Config *cfg, b8 show_instructions,
                         Arena *scratch) {
     for (size_t i = 0; i < c->n; i++) {
+        size_t call = c->role[i] == M_TOOL ? call_slot(c, i) : CONV_NONE;
+        if (call != CONV_NONE && conv_result_slot(c, call) == i) continue;
         tui_pin((u32)(i + 1));
         switch (c->role[i]) {
             case M_SYSTEM:
@@ -2152,18 +2163,15 @@ static void render_conv(const Conv *c, const Config *cfg, b8 show_instructions,
                     render_user_message(c, i);
                 }
                 break;
-            case M_TOOL: {
-                size_t call = call_slot(c, i);
-                Str name = call == CONV_NONE ? (Str){0} : c->tool_name[call];
-                Str args = call == CONV_NONE ? (Str){0} : c->text[call];
-                render_tool_result(name, args, c->text[i], scratch,
-                                   (u32)(i + 1), c->expanded[i], c->ms[i]);
-                render_result_media(c, i);
-            } break;
+            case M_TOOL: render_saved_result(c, call, i, scratch); break;
             case M_ASSISTANT:
                 if (conv_is_call(c, i)) {
                     render_tool_call(c->tool_name[i], c->text[i], scratch,
                                      (u32)(i + 1), c->expanded[i], c, i);
+                    size_t result = conv_result_slot(c, i);
+                    if (result == CONV_NONE) break;
+                    tui_pin((u32)(result + 1));
+                    render_saved_result(c, i, result, scratch);
                 } else {
                     render_saved_thinking(c->anthropic_thinking[i], scratch);
                     if (c->text[i].n) {

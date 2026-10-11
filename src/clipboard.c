@@ -299,3 +299,8 @@ b8 clipboard_tmux_write(Str text) {
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
     return ended && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
+
+b8 clipboard_tmux_query(const char *format, char *out, size_t cap, size_t *n) {
+    const char *const argv[] = {"tmux", "display-message", "-p", format, NULL};
+    return clip_exec(argv, (Str){0}, out, cap, n) == CLIP_OK;
+}
