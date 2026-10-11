@@ -5768,6 +5768,27 @@ static const char REPLY_NOTE[] =
     "Your last reply had no text, so the user saw nothing. The user never "
     "sees your reasoning. Write your reply now.";
 
+static const char CUT_CALL_NOTE[] =
+    "Your last reply hit the max_tokens limit and was cut off, so its last "
+    "tool call arrived incomplete. Split the work into smaller tool calls.";
+
+static void announce_stop(const Config *cfg, ProviderStop stop) {
+    char line[192];
+    const char *why = provider_stop_text(stop);
+    if (stop == PROVIDER_STOP_MAX_TOKENS)
+        snprintf(line, sizeof line, "%s of %d", why, cfg->max_tokens);
+    else if (stop == PROVIDER_STOP_CONTEXT)
+        snprintf(line, sizeof line, "%s; /compact makes room", why);
+    else
+        snprintf(line, sizeof line, "%s", why);
+    if (g_turn.one_shot) {
+        one_shot_diag("stop", (Str){0}, str_c(line));
+        return;
+    }
+    tui_block();
+    tui_printf("[%s]\n", line);
+}
+
 static b8 reply_is_blank(const Conv *conv) {
     if (!conv->n) return false;
     size_t i = conv->n - 1;
@@ -5940,6 +5961,14 @@ static b8 agent_turn(Agent *ag, Str text) {
             break;
         }
         if (rc == 0) {
+            if (p.stop != PROVIDER_STOP_END) {
+                announce_stop(ag->cfg, p.stop);
+                tui_set_status("ready");
+                snprintf(ending_buf, sizeof ending_buf, "%s",
+                         provider_stop_text(p.stop));
+                ending_text = str_c(ending_buf);
+                break;
+            }
             if (!asked_for_reply && reply_is_blank(conv)
                 && conv_add_note(conv, STR(REPLY_NOTE)) != CONV_NONE) {
                 asked_for_reply = true;
@@ -5955,6 +5984,13 @@ static b8 agent_turn(Agent *ag, Str text) {
 
         size_t tail = conv->n;
         TurnAction act = run_tool_calls(ag, before, tail);
+        if (p.stop == PROVIDER_STOP_MAX_TOKENS) {
+            if (conv_add_note(conv, STR(CUT_CALL_NOTE)) != CONV_NONE
+                && !g_turn.one_shot)
+                render_note(conv->text[conv->n - 1]);
+        } else if (p.stop != PROVIDER_STOP_END) {
+            announce_stop(ag->cfg, p.stop);
+        }
 
         ctx_sync(&g_ctx, conv);
         todo_sync(conv, ag->scratch);

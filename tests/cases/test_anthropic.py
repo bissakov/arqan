@@ -366,3 +366,182 @@ def test_resumed_tool_arguments_keep_their_shape(ctx):
     assert [u["input"] for u in uses] == [
         {"invalid_arguments": bad}, {"path": "notes.txt"},
     ], uses
+
+
+RETRY = {"ARQAN_RETRIES": 3, "ARQAN_RETRY_DELAY_MS": 10}
+
+
+def test_an_overloaded_api_is_retried(ctx):
+    """529 is how that API says it is overloaded: weather, not an answer."""
+    ctx.scenario("fail_times=1,fail_status=529,text=fine+now")
+    s = anth(ctx, **RETRY)
+    s.submit("say hi")
+    s.wait_text("fine now")
+    s.wait_turn_done()
+    assert "HTTP 529: mock provider error" in s.text(), s.text()
+    assert len(ctx.mock.requests) == 2, ctx.mock.requests
+
+
+def test_a_reply_cut_off_at_max_tokens_says_so(ctx):
+    """A reply that ran out of tokens must not pass for a finished one."""
+    ctx.scenario("text=half+a+sentence,stop=max_tokens")
+    s = anth(ctx)
+    s.submit("say a lot")
+    s.wait_text("half a sentence")
+    s.wait_text("[the reply stopped at the max_tokens limit of 32768]")
+    s.wait_turn_done()
+    assert len(ctx.mock.requests) == 1, ctx.mock.requests
+
+
+def test_a_tool_call_cut_off_at_max_tokens_is_explained_to_the_model(ctx):
+    """The cut call fails, and the model hears why instead of guessing."""
+    ctx.write_file("notes.txt", "kept it\n")
+    ctx.scenario('tool=read:{"path":"notes.txt"},stop=max_tokens,'
+                 "final_text=smaller+now")
+    s = anth(ctx)
+    s.submit("read the notes")
+    s.wait_text("smaller now")
+    s.wait_turn_done()
+    assert "[note to the model: Your last reply hit the max_tokens" in s.text(), \
+        s.text()
+    answer = ctx.mock.requests[-1]["messages"][-1]["content"]
+    assert [b["type"] for b in answer] == ["tool_result", "text"], answer
+    assert answer[0].get("is_error") is True, answer
+    assert "max_tokens" in answer[1]["text"], answer
+
+
+def test_a_refusal_is_reported(ctx):
+    """What streamed before the refusal stays, and the stop is named."""
+    ctx.scenario("text=I+can+start+with,stop=refusal")
+    s = anth(ctx)
+    s.submit("do something")
+    s.wait_text("I can start with")
+    s.wait_text("[the model refused to continue]")
+    s.wait_turn_done()
+
+
+def test_an_empty_refusal_is_not_retried(ctx):
+    """A refusal is an answer: asking again gets the same one."""
+    ctx.scenario("text=,stop=refusal")
+    s = anth(ctx, **RETRY)
+    s.submit("do something")
+    s.wait_text("[provider error: the model refused to continue]")
+    s.wait_turn_done()
+    assert "retrying in" not in s.text(), s.text()
+    assert len(ctx.mock.requests) == 1, ctx.mock.requests
+
+
+def test_a_full_context_window_is_reported(ctx):
+    """The model stopped for room, and /compact is how to make some."""
+    ctx.scenario("text=partial,stop=model_context_window_exceeded")
+    s = anth(ctx)
+    s.submit("go on")
+    s.wait_text("partial")
+    s.wait_text("larger than the model's context window; /compact")
+    s.wait_turn_done()
+
+
+def test_failed_tool_results_are_flagged(ctx):
+    """is_error tells the model a call failed without reading the text."""
+    ctx.write_file("notes.txt", "kept it\n")
+    ctx.scenario('tool=read:{"path":"missing.txt"},'
+                 'tool=read:{"path":"notes.txt"},final_text=done')
+    s = anth(ctx)
+    s.submit("read both")
+    s.wait_text("done")
+    s.wait_turn_done()
+    results = ctx.mock.requests[-1]["messages"][2]["content"]
+    assert [b.get("is_error") for b in results] == [True, None], results
+
+
+def test_interleaved_thinking_returns_in_its_place(ctx):
+    """The API refuses a latest assistant message whose thinking moved, so a
+    block that came between two calls goes back between them, resumed or not."""
+    ctx.write_file("a.txt", "alpha\n")
+    ctx.write_file("b.txt", "beta\n")
+    ctx.scenario('reasoning=first+thought,interleaved,'
+                 'tool=read:{"path":"a.txt"},tool=read:{"path":"b.txt"},'
+                 "final_text=both+read")
+    s = anth(ctx)
+    s.submit("read both")
+    s.wait_text("both read")
+    s.wait_turn_done()
+
+    def assistant():
+        return ctx.mock.requests[-1]["messages"][1]["content"]
+
+    blocks = assistant()
+    assert [b["type"] for b in blocks] == [
+        "thinking", "tool_use", "thinking", "tool_use",
+    ], json.dumps(blocks)
+    assert blocks[2] == {
+        "type": "thinking",
+        "thinking": "before call 1",
+        "signature": "sig_call_1",
+    }, json.dumps(blocks)
+    assert blocks[3]["input"] == {"path": "b.txt"}, blocks
+
+    s.submit("/exit")
+    s.wait_exit()
+    again = anth(ctx)
+    again.submit("/resume")
+    again.wait_status("pick a session")
+    again.key("enter")
+    again.wait_text("both read")
+    ctx.scenario("final_text=second+answer")
+    again.submit("thanks")
+    again.wait_text("second answer")
+    again.wait_turn_done()
+    assert assistant() == blocks, json.dumps(assistant())
+
+
+def test_an_unstreamed_reply_keeps_its_thinking_in_place_and_its_stop(ctx):
+    """The message document path places thinking and reads stop_reason too."""
+    ctx.write_file("a.txt", "alpha\n")
+    ctx.write_file("b.txt", "beta\n")
+    ctx.scenario('reasoning=first+thought,interleaved,'
+                 'tool=read:{"path":"a.txt"},tool=read:{"path":"b.txt"},'
+                 "final_text=both+read")
+    s = anth(ctx)
+    s.settings_toggle("Stream replies")
+    s.submit("read both")
+    s.wait_text("both read")
+    s.wait_turn_done()
+    blocks = ctx.mock.requests[-1]["messages"][1]["content"]
+    assert [b["type"] for b in blocks] == [
+        "thinking", "tool_use", "thinking", "tool_use",
+    ], json.dumps(blocks)
+
+    ctx.scenario("text=half+a+sentence,stop=max_tokens")
+    s.submit("/exit")
+    s.wait_exit()
+    s = anth(ctx)
+    s.settings_toggle("Stream replies")
+    s.submit("say a lot")
+    s.wait_text("[the reply stopped at the max_tokens limit of 32768]")
+    s.wait_turn_done()
+
+
+def test_whitespace_only_text_is_not_sent(ctx):
+    """The API refuses a text block with nothing but spaces in it."""
+    ctx.scenario("text=+")
+    s = anth(ctx)
+    s.submit("say nothing")
+    s.wait_turn_done()
+    assert len(ctx.mock.requests) == 2, ctx.mock.requests
+    for message in ctx.mock.requests[-1]["messages"]:
+        for blk in message["content"]:
+            if blk["type"] == "text":
+                assert blk["text"].strip(), ctx.mock.requests[-1]["messages"]
+
+
+def test_the_model_list_asks_for_every_model(ctx):
+    """That API pages its list at 20, so a default request hides the rest."""
+    ctx.scenario("model_count=30")
+    s = anth(ctx)
+    s.submit("/model")
+    s.wait_status("pick a model")
+    s.wait_for(lambda t: ctx.mock.listings, "the model list to be fetched")
+    s.settle()
+    s.type("029").sync()
+    assert "model-029" in s.text(), s.text()

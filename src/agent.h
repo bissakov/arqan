@@ -1712,6 +1712,13 @@ b8 session_apply(Session *s, Str src, Str path, Str name, Conv *c,
 b8 session_set_title(Session *s, Str title);
 
 
+typedef enum {
+    PROVIDER_STOP_END = 0,
+    PROVIDER_STOP_MAX_TOKENS,
+    PROVIDER_STOP_REFUSAL,
+    PROVIDER_STOP_CONTEXT,
+} ProviderStop;
+
 typedef struct {
     const Config *cfg;
     const ToolRegistry *tools;
@@ -1740,12 +1747,14 @@ typedef struct {
     size_t cache_read_tokens;
     size_t total_tokens;
     b8 usage_valid;
+    ProviderStop stop;
     char status_msg[AGENT_MAX_PROVIDER_MSG + 1];
 } Provider;
 
 
 #define PROVIDER_EMPTY (-2)
 i32 provider_run(Provider *p, char *err, size_t err_cap);
+const char *provider_stop_text(ProviderStop stop);
 
 /* ---- subagents -----------------------------------------------------------
  * A nested agent the `task` tool answers with: its own conversation, its own

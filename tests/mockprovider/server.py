@@ -111,6 +111,13 @@ class Scenario:
         # A thinking block that ends with no signature, as a cut-off stream or
         # a proxy that drops `signature_delta` delivers it.
         self.unsigned_thinking: bool = _truthy(kw.get("unsigned_thinking", "0"))
+        # Anthropic thinks between the tool calls of one response: with
+        # interleaved=1 a signed thinking block precedes each call after the
+        # first, and the API refuses a reply that moves one.
+        self.interleaved: bool = _truthy(kw.get("interleaved", "0"))
+        # The stop_reason of the first Anthropic response before any tool
+        # result. Under "max_tokens" its last tool call is cut in half.
+        self.stop: str = kw.get("stop", "")
         self.reasoning_field: str = kw.get("reasoning_field", "reasoning_content")
         self.final_text: str | None = kw.get("final_text")
         self.prompt_tokens = kw.get("prompt_tokens")
@@ -472,6 +479,19 @@ class _AnthropicHandlerMixin:
 
         if emit_tools:
             for order, (name, args) in enumerate(scenario.tools):
+                if scenario.interleaved and order:
+                    if not self._anth_block(
+                        index, {"type": "thinking", "thinking": ""},
+                        [{"type": "thinking_delta",
+                          "thinking": f"before call {order}"},
+                         {"type": "signature_delta",
+                          "signature": f"sig_call_{order}"}],
+                        scenario,
+                    ):
+                        return
+                    index += 1
+                if _cut_here(scenario, tool_replies, order):
+                    args = args[: len(args) // 2]
                 head = {"type": "tool_use", "id": f"call_{order}",
                         "name": name, "input": {}}
                 deltas = [{"type": "input_json_delta", "partial_json": piece}
@@ -494,6 +514,8 @@ class _AnthropicHandlerMixin:
                 return
             stop = "end_turn"
 
+        if scenario.stop and tool_replies == 0:
+            stop = scenario.stop
         _, completion = self._anth_usage(scenario, messages, completion_chars)
         if not self._anth_sse(
             "message_delta",
@@ -546,6 +568,12 @@ class _AnthropicHandlerMixin:
                 content.append(block)
         if emit_tools:
             for order, (name, args) in enumerate(scenario.tools):
+                if scenario.interleaved and order:
+                    content.append({"type": "thinking",
+                                    "thinking": f"before call {order}",
+                                    "signature": f"sig_call_{order}"})
+                if _cut_here(scenario, tool_replies, order):
+                    args = args[: len(args) // 2]
                 try:
                     parsed = json.loads(args)
                 except json.JSONDecodeError:
@@ -560,6 +588,8 @@ class _AnthropicHandlerMixin:
             completion_chars = len(text)
             stop = "end_turn"
 
+        if scenario.stop and tool_replies == 0:
+            stop = scenario.stop
         prompt, completion = self._anth_usage(scenario, messages, completion_chars)
         payload = {
             "id": "msg_mock",
@@ -939,6 +969,9 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
                     {"error": {"message": scenario.error, "type": "mock_error"}},
                 )
                 return
+            if self.headers.get("anthropic-version"):
+                self._anth_models(scenario)
+                return
             self._json(
                 200,
                 {
@@ -983,6 +1016,21 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
         srv.auth.append(self.headers.get("Authorization"))
         srv.keys.append(self.headers.get("x-api-key"))
         srv.versions.append(self.headers.get("anthropic-version"))
+
+    def _anth_models(self, scenario):
+        """One page, as Anthropic answers: 20 entries unless `limit` asks for
+        more, and `has_more` when the list goes on."""
+        query = parse_qs(urlsplit(self.path).query)
+        limit = int(query.get("limit", ["20"])[0])
+        ids = scenario.model_ids()
+        page = ids[:limit]
+        self._json(200, {
+            "data": [dict(scenario.model_entry(m), type="model")
+                     for m in page],
+            "has_more": len(ids) > limit,
+            "first_id": page[0] if page else None,
+            "last_id": page[-1] if page else None,
+        })
 
     def _scenario_for(self, body):
         """The server's, unless the model name carries one of its own."""
@@ -1246,6 +1294,12 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             payload["usage"] = scenario._usage(messages, completion_chars)
         self._hold_first(scenario, emit_tools, tool_replies)
         self._json(200, payload)
+
+
+def _cut_here(scenario, tool_replies: int, order: int) -> bool:
+    """Whether `stop=max_tokens` ran out inside this tool call."""
+    return (scenario.stop == "max_tokens" and tool_replies == 0
+            and order == len(scenario.tools) - 1)
 
 
 def _anth_tool_replies(messages) -> int:

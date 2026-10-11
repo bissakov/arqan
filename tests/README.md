@@ -105,6 +105,8 @@ settled row rather than a half-written one.
 | `tool=NAME:JSON`, `tool_rounds=`, `tool_ids=`, `final_text=` | tool-call rounds |
 | `reasoning=`, `reasoning_field=` | streamed reasoning trace |
 | `unsigned_thinking` | Anthropic thinking blocks with no signature |
+| `interleaved` | Anthropic thinking blocks between tool calls |
+| `stop=` | Anthropic `stop_reason` of the first response |
 | `usage=P/C` | token counts |
 | `status=`, `fail_times=`, `fail_status=`, `fail_mode=` | failures and retries |
 | `abort_after=` | cut a streaming response short |
