@@ -1780,8 +1780,7 @@ static b8 batch_publish(Agent *ag, size_t slot, Buf *doc, Buf *staged,
     return true;
 }
 
-static TurnAction batch_answer(Agent *ag, size_t call, Str args,
-                               b8 *unapplied) {
+static TurnAction batch_answer(Agent *ag, size_t call, Str args, b8 *redraw) {
     ToolBatch batch;
     char err[AGENT_TOOL_ERR] = {0};
     if (g_turn.one_shot)
@@ -1886,7 +1885,7 @@ static TurnAction batch_answer(Agent *ag, size_t call, Str args,
     save_tool_progress(ag, slot);
     for (size_t i = 0; i < batch.attempted; i++)
         if (render_unapplied(batch.steps[i].name, batch.steps[i].result))
-            *unapplied = true;
+            *redraw = true;
     TelEvent e;
     tel_open(&e, "batch");
     tel_int(&e, "steps", (i64)batch.n);
@@ -1897,7 +1896,7 @@ static TurnAction batch_answer(Agent *ag, size_t call, Str args,
     return ag->permission_blocked_one_shot ? TURN_DENIED : TURN_CONTINUE;
 }
 
-static void collapse_unapplied(Agent *ag) {
+static void redraw_round(Agent *ag) {
     if (g_turn.one_shot || !tui_is_fullscreen() || tui_transcript_detached())
         return;
     md_end();
@@ -1908,7 +1907,7 @@ static void collapse_unapplied(Agent *ag) {
 }
 
 static TurnAction run_round_calls(Agent *ag, size_t first, size_t last,
-                                  b8 *unapplied) {
+                                  b8 *redraw) {
     Conv *conv = ag->conv;
     ag->permission_blocked_one_shot = false;
 
@@ -2003,7 +2002,7 @@ static TurnAction run_round_calls(Agent *ag, size_t first, size_t last,
             continue;
         }
         if (str_eq(name, STR("batch"))) {
-            TurnAction act = batch_answer(ag, i, args, unapplied);
+            TurnAction act = batch_answer(ag, i, args, redraw);
             if (act != TURN_CONTINUE) return act;
             continue;
         }
@@ -2019,7 +2018,7 @@ static TurnAction run_round_calls(Agent *ag, size_t first, size_t last,
             if (conv->media) conv->media->n = run.media_off;
             return TURN_FULL;
         }
-        if (render_unapplied(name, kept)) *unapplied = true;
+        if (render_call_changes(name, kept)) *redraw = true;
         if (ag->permission_blocked_one_shot) return TURN_DENIED;
     }
     return pending;
@@ -2029,9 +2028,9 @@ static TurnAction run_round_calls(Agent *ag, size_t first, size_t last,
  * rebuilds from Conv, which already holds every call of the round, so a
  * repaint before a later call runs would draw that call twice. */
 static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
-    b8 unapplied = false;
-    TurnAction act = run_round_calls(ag, first, last, &unapplied);
-    if (unapplied) collapse_unapplied(ag);
+    b8 redraw = false;
+    TurnAction act = run_round_calls(ag, first, last, &redraw);
+    if (redraw) redraw_round(ag);
     return act;
 }
 

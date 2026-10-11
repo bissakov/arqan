@@ -117,11 +117,11 @@ def test_patch_shows_the_diff_it_applies(ctx):
 
     text = s.text()
     assert "\u25c6  patch diff.txt" in text, text
-    assert "\u2502 -old one" in text, text
-    assert "\u2502 +new one" in text, text
-    old_row = s.screen.find_row("\u2502 -old one")
+    assert "\u2502 2 -old one" in text, text
+    assert "\u2502 2 +new one" in text, text
+    old_row = s.screen.find_row("\u2502 2 -old one")
     old_col = s.screen.row_text(old_row).index("-old one")
-    new_row = s.screen.find_row("\u2502 +new one")
+    new_row = s.screen.find_row("\u2502 2 +new one")
     new_col = s.screen.row_text(new_row).index("+new one")
     assert s.screen.attr_at(old_row, old_col).fg == 203
     assert s.screen.attr_at(new_row, new_col).fg == 114
@@ -150,7 +150,7 @@ def test_patch_of_one_file_drops_its_file_header(ctx):
     assert "\u25c6  patch diff.txt" in text, text
     assert "--- a/diff.txt" not in text, text
     assert "+++ b/diff.txt" not in text, text
-    head_row = s.screen.find_row("\u2502 @@ -1,3 +1,3 @@")
+    head_row = s.screen.find_row("\u2502   @@ -1,3 +1,3 @@")
     assert s.screen.find_row("\u25c6  patch diff.txt") == head_row - 1
 
 
@@ -183,8 +183,8 @@ def test_patch_of_one_file_drops_git_and_envelope_headers(ctx):
                  "+++ b/one.txt", "*** Begin Patch", "*** Update File",
                  "*** End Patch"):
         assert gone not in text, text
-    assert "\u2502 @@ -1,2 +1,2 @@" in text, text
-    assert "\u2502 @@" in text, text
+    assert "\u2502   @@ -1,2 +1,2 @@" in text, text
+    assert "\u2502   @@" in text, text
 
 
 def test_patch_of_several_files_heads_each_file_once(ctx):
@@ -209,7 +209,7 @@ def test_patch_of_several_files_heads_each_file_once(ctx):
         row = s.screen.find_row("\u2502 " + name)
         col = s.screen.row_text(row).index(name)
         assert s.screen.attr_at(row, col).fg == 81
-        assert s.screen.row_text(row + 1).strip() == "\u2502 @@ -1 +1 @@"
+        assert s.screen.row_text(row + 1).strip() == "\u2502   @@ -1 +1 @@"
 
 
 def test_patch_context_lines_are_dimmed(ctx):
@@ -225,7 +225,7 @@ def test_patch_context_lines_are_dimmed(ctx):
     s.wait_text("patched")
     s.wait_turn_done()
 
-    row = s.screen.find_row("\u2502  keep")
+    row = s.screen.find_row("\u2502 1  keep")
     col = s.screen.row_text(row).index("keep")
     assert s.screen.attr_at(row, col).fg == 245
     assert s.screen.attr_at(row, col).bg is None
@@ -247,9 +247,9 @@ def test_patch_marks_the_changed_words_of_a_paired_line(ctx):
     s.wait_text("patched")
     s.wait_turn_done()
 
-    old_row = s.screen.find_row("\u2502 -call(alpha, beta);")
+    old_row = s.screen.find_row("\u2502 1 -call(alpha, beta);")
     old = s.screen.row_text(old_row)
-    new_row = s.screen.find_row("\u2502 +call(alpha, gamma);")
+    new_row = s.screen.find_row("\u2502 1 +call(alpha, gamma);")
     new = s.screen.row_text(new_row)
     for i in range(old.index("beta"), old.index("beta") + 4):
         assert s.screen.attr_at(old_row, i).bg == 88, i
@@ -276,10 +276,11 @@ def test_patch_does_not_mark_words_without_a_clear_pair(ctx):
     s.wait_text("patched")
     s.wait_turn_done()
 
-    for needle, bg in (("-one two three", 52), ("+four five six", 22),
-                       ("-first", 52), ("-second", 52),
-                       ("+first and second", 22)):
-        row = s.screen.find_row("\u2502 " + needle)
+    for number, needle, bg in ((1, "-one two three", 52),
+                               (1, "+four five six", 22),
+                               (3, "-first", 52), (4, "-second", 52),
+                               (3, "+first and second", 22)):
+        row = s.screen.find_row(f"\u2502 {number} {needle}")
         start = s.screen.row_text(row).index(needle)
         for i in range(start, start + len(needle)):
             assert s.screen.attr_at(row, i).bg == bg, (needle, i)
@@ -311,17 +312,17 @@ def test_patch_drops_the_indent_its_hunk_shares(ctx):
     s = indent_patch(ctx, "deep.c", before, diff)
 
     rows = [s.screen.row_text(r).strip() for r in range(s.screen.rows)]
-    head = rows.index("\u2502 @@ -1,3 +1,5 @@ \u00b7 indent 8")
+    head = rows.index("\u2502   @@ -1,3 +1,5 @@ \u00b7 indent 8")
     assert rows[head + 1:head + 7] == [
-        "\u2502  if (ready) {",
-        '\u2502 -    start("first job");',
-        '\u2502 +    start("second job");',
-        "\u2502  }",
-        "\u2502 +",
-        "\u2502 +report();",
+        "\u2502 1  if (ready) {",
+        '\u2502 2 -    start("first job");',
+        '\u2502 2 +    start("second job");',
+        "\u2502 3  }",
+        "\u2502 4 +",
+        "\u2502 5 +report();",
     ], s.text()
 
-    old_row = s.screen.find_row('\u2502 -    start("first job");')
+    old_row = s.screen.find_row('\u2502 2 -    start("first job");')
     old = s.screen.row_text(old_row)
     new_row = old_row + 1
     new = s.screen.row_text(new_row)
@@ -345,11 +346,11 @@ def test_patch_keeps_a_change_of_indent_visible(ctx):
                      diff)
 
     rows = [s.screen.row_text(r).strip() for r in range(s.screen.rows)]
-    head = rows.index("\u2502 @@ -1,2 +1,2 @@ \u00b7 indent 4")
+    head = rows.index("\u2502   @@ -1,2 +1,2 @@ \u00b7 indent 4")
     assert rows[head + 1:head + 4] == [
-        "\u2502  keep_this_call();",
-        "\u2502 -move_this_call();",
-        "\u2502 +    move_this_call();",
+        "\u2502 1  keep_this_call();",
+        "\u2502 2 -move_this_call();",
+        "\u2502 2 +    move_this_call();",
     ], s.text()
 
 
@@ -367,11 +368,11 @@ def test_patch_keeps_indent_that_mixes_tabs_and_spaces(ctx):
     text = s.text()
     assert "indent" not in text, text
     rows = [s.screen.row_text(r).strip() for r in range(s.screen.rows)]
-    head = rows.index("\u2502 @@ -1,2 +1,2 @@")
+    head = rows.index("\u2502   @@ -1,2 +1,2 @@")
     assert rows[head + 1:head + 4] == [
-        "\u2502      keep_this_call();",
-        "\u2502 -    old_call_name();",
-        "\u2502 +    new_call_name();",
+        "\u2502 1      keep_this_call();",
+        "\u2502 2 -    old_call_name();",
+        "\u2502 2 +    new_call_name();",
     ], s.text()
 
 
@@ -388,7 +389,7 @@ def test_patch_without_shared_indent_has_no_indent_note(ctx):
 
     text = s.text()
     assert "indent" not in text, text
-    assert "\u2502 -    old_call_name();" in text, text
+    assert "\u2502 2 -    old_call_name();" in text, text
 
 
 def test_deep_patch_is_side_by_side_once_its_indent_is_dropped(ctx):
@@ -400,13 +401,158 @@ def test_deep_patch_is_side_by_side_once_its_indent_is_dropped(ctx):
     )
     s = indent_patch(ctx, "side.txt", f"{pad}call(alpha, beta);\n", diff, cols=80)
 
-    assert "\u2502 @@ -1 +1 @@ \u00b7 indent 24" in s.text(), s.text()
-    row = s.screen.find_row("\u2502 -call(alpha, beta);")
+    assert "\u2502   @@ -1 +1 @@ \u00b7 indent 24" in s.text(), s.text()
+    row = s.screen.find_row("\u2502 1 -call(alpha, beta);")
     assert row >= 0, s.text()
     text = s.screen.row_text(row)
-    assert "\u2502 +call(alpha, gamma);" in text, s.text()
+    assert "\u2502 1 +call(alpha, gamma);" in text, s.text()
     for i in range(text.index("gamma"), text.index("gamma") + 5):
         assert s.screen.attr_at(row, i).bg == 28, i
+
+
+NUMBERED = "".join(f"row {i:02d} of the numbered file\n" for i in range(1, 11))
+
+NUMBERED_DIFF = (
+    "--- a/numbered.txt\n+++ b/numbered.txt\n"
+    "@@ -7,3 +7,3 @@\n"
+    " row 07 of the numbered file\n"
+    "-row 08 of the numbered file\n"
+    "+row eight of the numbered file\n"
+    " row 09 of the numbered file\n"
+    "@@ -1,3 +1,4 @@\n"
+    " row 01 of the numbered file\n"
+    "+row 1.5 of the numbered file\n"
+    " row 02 of the numbered file\n"
+    " row 03 of the numbered file\n"
+)
+
+
+def test_patch_result_names_the_line_each_hunk_starts_at(ctx):
+    """Hunks are listed in patch order, at the lines they hold once all land."""
+    s = indent_patch(ctx, "numbered.txt", NUMBERED, NUMBERED_DIFF)
+
+    result = ctx.mock.tool_results()[-1].strip()
+    assert result == "numbered.txt +2 -1 at lines 8, 1", result
+    assert "\u2514\u2500 numbered.txt +2 -1 at lines 8, 1" in s.text(), s.text()
+
+
+def test_applied_patch_numbers_each_line(ctx):
+    """Removed lines carry their old number; kept and added lines their new one."""
+    s = indent_patch(ctx, "numbered.txt", NUMBERED, NUMBERED_DIFF)
+
+    rows = [s.screen.row_text(r).strip() for r in range(s.screen.rows)]
+    first = rows.index("\u2502    @@ -7,3 +7,3 @@")
+    assert rows[first:first + 10] == [
+        "\u2502    @@ -7,3 +7,3 @@",
+        "\u2502  8  row 07 of the numbered file",
+        "\u2502  8 -row 08 of the numbered file",
+        "\u2502  9 +row eight of the numbered file",
+        "\u2502 10  row 09 of the numbered file",
+        "\u2502    @@ -1,3 +1,4 @@",
+        "\u2502  1  row 01 of the numbered file",
+        "\u2502  2 +row 1.5 of the numbered file",
+        "\u2502  3  row 02 of the numbered file",
+        "\u2502  4  row 03 of the numbered file",
+    ], s.text()
+    assert rows[first + 10].startswith(
+        "\u2514\u2500 numbered.txt +2 -1 at lines 8, 1"), s.text()
+
+    row = s.screen.find_row("\u2502  8 -row 08")
+    text = s.screen.row_text(row)
+    number = text.index("8 -row")
+    assert s.screen.attr_at(row, number).bg == 52
+    assert s.screen.attr_at(row, number).fg not in (203, 253)
+    assert s.screen.attr_at(row, number + 2).bg == 52
+    assert s.screen.attr_at(row, number + 2).fg == 203
+
+
+def test_side_by_side_patch_numbers_each_half(ctx):
+    """The left half counts lines of the old file, the right half the new."""
+    s = split_patch(ctx, 80)
+
+    row = s.screen.find_row("\u2502 2 -call(alpha, beta);")
+    assert row >= 0, s.text()
+    assert "\u2502 2 +call(alpha, gamma);" in s.screen.row_text(row), s.text()
+    keep = s.screen.row_text(row - 1)
+    assert keep.count("1  keep") == 2, keep
+    gone = s.screen.row_text(row + 2)
+    assert "\u2502 4 -gone" in gone and "\u2502 4 +added one" in gone, s.text()
+    assert "\u2502 5 +added two" in s.screen.row_text(row + 3), s.text()
+
+
+def test_added_file_is_numbered_from_one(ctx):
+    """An envelope that adds a file numbers its lines from the first."""
+    diff = (
+        "*** Begin Patch\n*** Add File: fresh.txt\n"
+        "+first line of the new file\n+second line of the new file\n"
+        "*** End Patch\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="patched"))
+    s = ctx.spawn(cols=44, rows=40)
+    s.submit("add it")
+    s.wait_text("patched")
+    s.wait_turn_done()
+
+    text = s.text()
+    assert "\u2502 1 +first line of the new file" in text, text
+    assert "\u2502 2 +second line of the new file" in text, text
+    result = ctx.mock.tool_results()[-1].strip()
+    assert result == "fresh.txt created +2 -0 at line 1", result
+
+
+def test_patch_that_did_not_apply_has_no_numbers(ctx):
+    """Without a place in the file, the rows keep their plain diff form."""
+    ctx.write_file("numbered.txt", NUMBERED)
+    diff = (
+        "--- a/numbered.txt\n+++ b/numbered.txt\n@@ -1,2 +1,2 @@\n"
+        " not in the file at all\n-row 01 of the numbered file\n"
+        "+row one of the numbered file\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="failed"))
+    s = ctx.spawn(cols=44, rows=40)
+    s.submit("patch it")
+    s.wait_text("failed")
+    s.wait_turn_done()
+
+    text = s.text()
+    assert "\u2502 -row 01 of the numbered file" in text, text
+    assert "\u2502  not in the file at all" in text, text
+
+
+def test_overlapping_hunks_drop_the_numbers(ctx):
+    """A hunk that rewrites where an earlier one starts leaves no sure line."""
+    diff = (
+        "--- a/over.txt\n+++ b/over.txt\n"
+        "@@ -1,2 +1,2 @@\n alpha line\n-beta line\n+BETA line\n"
+        "@@ -1,3 +1,3 @@\n alpha line\n BETA line\n-gamma line\n+GAMMA line\n"
+    )
+    s = indent_patch(ctx, "over.txt", "alpha line\nbeta line\ngamma line\n",
+                     diff)
+
+    assert (ctx.work / "over.txt").read_text() == (
+        "alpha line\nBETA line\nGAMMA line\n")
+    result = ctx.mock.tool_results()[-1].strip()
+    assert result == "over.txt +2 -2", result
+    text = s.text()
+    assert "\u2502 -beta line" in text, text
+    assert "\u2502 +GAMMA line" in text, text
+
+
+def test_removed_line_that_starts_with_two_dashes_is_numbered(ctx):
+    """`--- note` inside a hunk removes `-- note`, as the patch tool reads it."""
+    diff = (
+        "--- a/query.sql\n+++ b/query.sql\n@@ -1,3 +1,3 @@\n"
+        " select 1;\n--- old note\n+-- new note\n select 2;\n"
+    )
+    s = indent_patch(ctx, "query.sql", "select 1;\n-- old note\nselect 2;\n",
+                     diff)
+
+    result = ctx.mock.tool_results()[-1].strip()
+    assert result == "query.sql +1 -1 at line 1", result
+    text = s.text()
+    assert "\u2502 2 --- old note" in text, text
+    assert "\u2502 2 +-- new note" in text, text
+    assert "\u2502 3  select 2;" in text, text
 
 
 SPLIT_DIFF = (
@@ -437,9 +583,9 @@ def test_thin_patch_is_side_by_side_at_its_own_width(ctx):
     """Halves as wide as the widest line put old beside new on 80 columns."""
     s = split_patch(ctx, 80)
 
-    row = s.screen.find_row("\u2502 -call(alpha, beta);")
+    row = s.screen.find_row("\u2502 2 -call(alpha, beta);")
     text = s.screen.row_text(row)
-    assert "\u2502 +call(alpha, gamma);" in text, s.text()
+    assert "\u2502 2 +call(alpha, gamma);" in text, s.text()
     old, new = text.index("-call"), text.index("+call")
     sep = text.index("\u2502", old)
     assert sep == old + 21, text
@@ -461,8 +607,8 @@ def test_thin_patch_is_side_by_side_at_its_own_width(ctx):
     assert keep.index(" keep", keep.index("\u2502", 4) + 1) == new, s.text()
     assert s.screen.attr_at(row - 1, keep.index("keep")).bg is None
 
-    gone = s.screen.find_row("\u2502 -gone")
-    assert "\u2502 +added one" in s.screen.row_text(gone), s.text()
+    gone = s.screen.find_row("\u2502 4 -gone")
+    assert "\u2502 4 +added one" in s.screen.row_text(gone), s.text()
     two = s.screen.row_text(gone + 1)
     assert two.index("+added two") == new, s.text()
     assert two[: two.index("\u2502", 4)].strip() == "\u2502", two
@@ -474,20 +620,20 @@ def test_thin_patch_stays_unified_when_its_halves_do_not_fit(ctx):
     """Too narrow for two copies of the widest line, the diff keeps one column."""
     s = split_patch(ctx, 44)
 
-    row = s.screen.find_row("\u2502 -call(alpha, beta);")
+    row = s.screen.find_row("\u2502 2 -call(alpha, beta);")
     assert row >= 0, s.text()
     assert "+call" not in s.screen.row_text(row), s.text()
-    assert s.screen.row_text(row + 1).strip() == "\u2502 +call(alpha, gamma);"
+    assert s.screen.row_text(row + 1).strip() == "\u2502 2 +call(alpha, gamma);"
 
 
 def test_wide_patch_stays_unified_below_160_columns(ctx):
     """A line too wide for a half needs 160 columns before the diff splits."""
     s = split_patch(ctx, 159, WIDE_SPLIT_DIFF)
 
-    row = s.screen.find_row("\u2502 -call(alpha, beta);")
+    row = s.screen.find_row("\u2502 2 -call(alpha, beta);")
     assert row >= 0, s.text()
     assert "+call" not in s.screen.row_text(row), s.text()
-    assert s.screen.row_text(row + 1).startswith("  \u2502 +call(alpha, beta, x")
+    assert s.screen.row_text(row + 1).startswith("  \u2502 2 +call(alpha, beta, x")
 
 
 def test_patch_that_only_adds_stays_unified(ctx):
@@ -509,7 +655,7 @@ def test_patch_that_only_adds_stays_unified(ctx):
 def test_patch_layout_follows_a_resize(ctx):
     """Crossing 160 columns redraws the diff in the layout that now fits."""
     s = split_patch(ctx, 159, WIDE_SPLIT_DIFF)
-    old = "\u2502 -call(alpha, beta);"
+    old = "\u2502 2 -call(alpha, beta);"
     assert "+call" not in s.screen.row_text(s.screen.find_row(old)), s.text()
 
     s.resize(160, 40)
@@ -530,7 +676,8 @@ def split_column(s, first, col, stop):
     while stop not in s.screen.row_text(row):
         cont = s.screen.row_text(row)
         assert cont[col] == " ", cont
-        assert s.screen.attr_at(row, col - 6).bg == 52
+        sep = cont.rindex("\u2502", 0, col)
+        assert s.screen.attr_at(row, sep - 2).bg == 52
         assert s.screen.attr_at(row, col).bg == 22
         pieces.append(cont[col + 1:].rstrip())
         row += 1
@@ -547,7 +694,7 @@ def test_side_by_side_patch_wraps_a_long_line_in_its_column(ctx):
     )
     s = split_patch(ctx, 160, diff)
 
-    first = s.screen.find_row("\u2502 -call(alpha, beta);")
+    first = s.screen.find_row("\u2502 2 -call(alpha, beta);")
     new = s.screen.row_text(first).index("+w")
     assert split_column(s, first, new, "keep") == wide, s.text()
     assert " ..." not in s.text(), s.text()
@@ -591,11 +738,11 @@ def test_patch_shows_the_whole_diff(ctx):
     assert "\u25c6  patch many.txt" in text, text
     assert "--- a/many.txt" not in text, text
     assert "+++ b/many.txt" not in text, text
-    assert "\u2502 @@ -1,18 +1,18 @@" in text, text
+    assert "\u2502    @@ -1,18 +1,18 @@" in text, text
     for i in range(17):
-        assert f"\u2502  keep {i:02d}" in text, text
-    assert "\u2502 -keep 17" in text, text
-    first = s.screen.find_row("\u2502 -keep 17")
+        assert f"\u2502 {i + 1:2d}  keep {i:02d}" in text, text
+    assert "\u2502 18 -keep 17" in text, text
+    first = s.screen.find_row("\u2502 18 -keep 17")
     new = s.screen.row_text(first).index("+w")
     assert split_column(s, first, new, "\u2514\u2500") == wide, s.text()
     assert " ..." not in text, text
@@ -643,8 +790,8 @@ def test_failed_patch_is_collapsed(ctx):
     assert text.count("more lines") == 1, text
     assert "\u25c6  patch good.txt" in text, text
     for i in range(17):
-        assert f"\u2502  good {i:02d}" in text, text
-    assert "\u2502 +better 17" in text, text
+        assert f"\u2502 {i + 1:2d}  good {i:02d}" in text, text
+    assert "\u2502 18 +better 17" in text, text
     assert (ctx.work / "many.txt").read_text().startswith("keep 00\n")
     assert (ctx.work / "good.txt").read_text().endswith("better 17\n")
 
@@ -848,7 +995,7 @@ def test_patch_rewrites_a_line_in_place(ctx):
     s.wait_text("edited")
     s.wait_turn_done()
     assert (ctx.work / "edit.txt").read_text() == "alpha\nbeta\ngamma\n"
-    assert ctx.mock.tool_results()[-1].strip() == "edit.txt +1 -1"
+    assert ctx.mock.tool_results()[-1].strip() == "edit.txt +1 -1 at line 1"
 
 
 def test_patch_git_prefix_on_an_absolute_path_finds_the_file(ctx):

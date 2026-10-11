@@ -54,6 +54,11 @@ b8 render_unapplied(Str name, Str result) {
            || str_starts(result, STR("DENIED: "));
 }
 
+b8 render_call_changes(Str name, Str result) {
+    return render_unapplied(name, result)
+           || (str_eq(name, STR("patch")) && result.n);
+}
+
 static size_t line_cap(size_t max) {
     return uncapped() ? (size_t)-1 : max;
 }
@@ -71,8 +76,8 @@ static void write_syntax_lines(Str body, Str source, b8 grep,
                                size_t bytes);
 static void batched_syntax(Str body, b8 grep, Str hint, Arena *scratch,
                            YhlResult *out);
-static void write_patch_lines(Str patch, const YhlResult *hl, Str gutter,
-                              size_t max);
+static void write_patch_lines(Str patch, Str result, const YhlResult *hl,
+                              Str gutter, size_t max, Arena *scratch);
 
 
 static void write_clipped(Str s, size_t max, Sink sink) {
@@ -308,7 +313,8 @@ static void render_todo_call(Str args, Arena *scratch, const Conv *c,
 }
 
 static void render_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
-                        const Conv *c, size_t slot, b8 unapplied) {
+                        const Conv *c, size_t slot, Str result) {
+    b8 unapplied = render_unapplied(name, result);
     block_begin(id, expanded);
     g_render.block.full = render_in_full(name) && !unapplied;
     size_t mark = scratch->off;
@@ -482,7 +488,8 @@ static void render_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
             write_lines(content, STR("\u2502 "), R_ARG_LINES, R_LINE_BYTES,
                         tui_write_muted);
     } else if (patch.n) {
-        write_patch_lines(patch, &syntax, STR("\u2502 "), R_ARG_LINES);
+        write_patch_lines(patch, unapplied ? (Str){0} : result, &syntax,
+                          STR("\u2502 "), R_ARG_LINES, scratch);
     } else if (cmd.n) {
         if (source_code)
             write_syntax_lines(str_drop(cmd, cmd_off), syntax_source, false,
@@ -509,14 +516,13 @@ static void render_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
 
 void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
                       const Conv *c, size_t slot) {
-    b8 unapplied = false;
+    Str result = {0};
     if (c && slot != CONV_NONE && render_in_full(name)
         && str_eq(c->tool_name[slot], name)) {
-        size_t result = conv_result_slot(c, slot);
-        unapplied =
-            result != CONV_NONE && render_unapplied(name, c->text[result]);
+        size_t at = conv_result_slot(c, slot);
+        if (at != CONV_NONE) result = c->text[at];
     }
-    render_call(name, args, scratch, id, expanded, c, slot, unapplied);
+    render_call(name, args, scratch, id, expanded, c, slot, result);
 }
 
 void render_batch_child_call(Str name, Str args, Arena *scratch, u32 id,
@@ -664,9 +670,11 @@ static void add_line_syntax(const YhlResult *hl, Str source, size_t source_off,
 
 
 static b8 patch_fragment(Str line, Str *fragment) {
-    if (!line.n || str_starts(line, STR("+++ "))
-        || str_starts(line, STR("--- ")) || str_starts(line, STR("@@")))
-        return false;
+    if (!line.n) {
+        *fragment = line;
+        return true;
+    }
+    if (str_starts(line, STR("@@"))) return false;
     if (line.p[0] != '+' && line.p[0] != '-' && line.p[0] != ' ') return false;
     *fragment = str_drop(line, 1);
     return true;
@@ -692,7 +700,8 @@ static size_t patch_batch(Str patch, char *out, size_t cap) {
 }
 
 static u8 patch_marker(Str line, Str *fragment) {
-    return patch_fragment(line, fragment) ? (u8)line.p[0] : 0;
+    if (!patch_fragment(line, fragment)) return 0;
+    return line.n ? (u8)line.p[0] : ' ';
 }
 
 static Str hunk_indent(Str patch, size_t off) {
@@ -737,6 +746,200 @@ static size_t patch_file_count(Str patch) {
     Str body, hint;
     while (files < 2 && patch_section(patch, &off, &body, &hint)) files++;
     return files;
+}
+
+/* ---- line numbers ----
+ * A diff carries no trustworthy line numbers, so they come from the patch
+ * result, which names the line each applied hunk starts at in the new file.
+ * A removed line shows its number in the old file, worked back from the
+ * hunks above it. Anything that does not line up shows no numbers at all.
+ */
+
+typedef struct {
+    size_t *new_start, *old_start;
+    size_t hunks, digits, next, old_line, new_line;
+    b8 live;
+} PatchNumbers;
+
+static b8 hunk_start_row(Str line) {
+    return str_starts(line, STR("@@"))
+           || str_starts(line, STR("*** Add File: "))
+           || str_starts(line, STR("*** Delete File: "));
+}
+
+static b8 str_ends(Str s, Str suffix) {
+    return s.n >= suffix.n && !memcmp(s.p + s.n - suffix.n, suffix.p, suffix.n);
+}
+
+static b8 result_file_line(Str result, size_t *off, Str *line) {
+    while (str_line(result, off, line)) {
+        if (str_starts(*line, STR("created "))
+            && (str_ends(*line, STR(" parent directory"))
+                || str_ends(*line, STR(" parent directories"))))
+            continue;
+        return true;
+    }
+    return false;
+}
+
+static b8 result_starts(Str line, size_t *out, size_t want) {
+    static const Str one = {" at line ", 9}, many = {" at lines ", 10};
+    size_t at = line.n;
+    while (at && !str_starts(str_drop(line, at - 1), one)
+           && !str_starts(str_drop(line, at - 1), many))
+        at--;
+    if (!at) return want == 0;
+    Str list = str_drop(line, at - 1);
+    list = str_drop(list, str_starts(list, many) ? many.n : one.n);
+    size_t n = 0, off = 0;
+    while (off < list.n) {
+        size_t end = off;
+        while (end < list.n && list.p[end] != ',') end++;
+        b8 ok = true;
+        i64 v = str_int((Str){list.p + off, end - off}, &ok);
+        if (!ok || v < 1 || n == want) return false;
+        out[n++] = (size_t)v;
+        off = end;
+        if (off < list.n && !str_starts(str_drop(list, off), STR(", ")))
+            return false;
+        if (off < list.n) off += 2;
+    }
+    return n == want;
+}
+
+static b8 section_numbers(PatchNumbers *pn, Str fline, size_t first,
+                          size_t last, const size_t *adds, const size_t *dels) {
+    if (str_ends(fline, STR(" deleted"))) {
+        size_t line = 1;
+        for (size_t h = first; h < last; h++) {
+            pn->old_start[h] = line;
+            pn->new_start[h] = 0;
+            line += dels[h];
+        }
+        return true;
+    }
+    if (!result_starts(fline, pn->new_start + first, last - first))
+        return false;
+    for (size_t h = first; h < last; h++) {
+        size_t up = 0, down = 0;
+        for (size_t g = first; g < last; g++) {
+            if (pn->new_start[g] >= pn->new_start[h]) continue;
+            up += dels[g];
+            down += adds[g];
+        }
+        if (pn->new_start[h] + up <= down) return false;
+        pn->old_start[h] = pn->new_start[h] + up - down;
+    }
+    return true;
+}
+
+static size_t digit_count(size_t v) {
+    size_t d = 1;
+    while (v >= 10) {
+        v /= 10;
+        d++;
+    }
+    return d;
+}
+
+static b8 patch_numbers_fill(Str patch, Str result, PatchNumbers *pn,
+                             size_t *adds, size_t *dels, size_t *both) {
+    size_t off = 0, roff = 0, k = 0, first = 0, widest = 0;
+    b8 open = false;
+    Str line, fline = {0};
+    while (str_line(patch, &off, &line)) {
+        size_t peek = off;
+        Str hint, fragment;
+        if (patch_file_header(patch, line, &peek, &hint)) {
+            if (open && !section_numbers(pn, fline, first, k, adds, dels))
+                return false;
+            if (!result_file_line(result, &roff, &fline)) return false;
+            open = true;
+            first = k;
+            off = peek;
+        }
+        if (hunk_start_row(line)) {
+            if (!open || k == pn->hunks) return false;
+            adds[k] = dels[k] = both[k] = 0;
+            k++;
+            continue;
+        }
+        if (!k || k == first) continue;
+        u8 marker = patch_marker(line, &fragment);
+        if (marker == '+') adds[k - 1]++;
+        if (marker == '-') dels[k - 1]++;
+        if (marker == ' ') both[k - 1]++;
+    }
+    if (!open || !section_numbers(pn, fline, first, k, adds, dels))
+        return false;
+    if (result_file_line(result, &roff, &fline)) return false;
+    for (size_t h = 0; h < k; h++) {
+        size_t olds = dels[h] + both[h], news = adds[h] + both[h];
+        size_t old_last = pn->old_start[h] + olds - (olds ? 1 : 0);
+        size_t new_last = pn->new_start[h] + news - (news ? 1 : 0);
+        if (old_last > widest) widest = old_last;
+        if (new_last > widest) widest = new_last;
+    }
+    pn->digits = digit_count(widest);
+    return k == pn->hunks;
+}
+
+static void patch_numbers(Str patch, Str result, Arena *scratch,
+                          PatchNumbers *pn) {
+    *pn = (PatchNumbers){0};
+    result = todo_note_strip(progress_note_strip(result));
+    if (!result.n || !scratch) return;
+    size_t off = 0, hunks = 0;
+    Str line;
+    while (str_line(patch, &off, &line))
+        if (hunk_start_row(line)) hunks++;
+    if (!hunks) return;
+    pn->hunks = hunks;
+    pn->new_start = arena_new(scratch, size_t, hunks);
+    pn->old_start = arena_new(scratch, size_t, hunks);
+    size_t *adds = arena_new(scratch, size_t, hunks);
+    size_t *dels = arena_new(scratch, size_t, hunks);
+    size_t *both = arena_new(scratch, size_t, hunks);
+    if (!pn->new_start || !pn->old_start || !adds || !dels || !both
+        || !patch_numbers_fill(patch, result, pn, adds, dels, both))
+        *pn = (PatchNumbers){0};
+}
+
+static void numbers_meta(PatchNumbers *pn, Str line, Str file) {
+    if (!pn->digits) return;
+    if (file.n) {
+        pn->live = false;
+        return;
+    }
+    if (!hunk_start_row(line)) return;
+    pn->live = pn->next < pn->hunks;
+    if (pn->live) {
+        pn->old_line = pn->old_start[pn->next];
+        pn->new_line = pn->new_start[pn->next];
+    }
+    pn->next++;
+}
+
+static void numbers_take(PatchNumbers *pn, u8 marker, size_t *old_no,
+                         size_t *new_no) {
+    *old_no = *new_no = 0;
+    if (!pn->digits || !pn->live) return;
+    if (marker != '+') *old_no = pn->old_line++;
+    if (marker != '-') *new_no = pn->new_line++;
+}
+
+static size_t number_cells(const PatchNumbers *pn) {
+    return pn->digits ? pn->digits + 1 : 0;
+}
+
+static void write_number(const PatchNumbers *pn, size_t number) {
+    if (!pn->digits) return;
+    char cell[48];
+    i32 n = number
+                ? snprintf(cell, sizeof cell, "%*zu ", (i32)pn->digits, number)
+                : snprintf(cell, sizeof cell, "%*s ", (i32)pn->digits, "");
+    if (n > 0 && (size_t)n < sizeof cell)
+        tui_write_muted((Str){cell, (size_t)n});
 }
 
 static b8 git_preamble(Str patch, Str line, size_t off) {
@@ -852,7 +1055,8 @@ static b8 changed_span(Str line, Str other, size_t *a, size_t *b) {
 
 static void write_patch_line(Str patch, u8 marker, Str fragment,
                              const Str *partner, const YhlResult *hl,
-                             Str gutter) {
+                             Str gutter, const PatchNumbers *pn,
+                             size_t number) {
     Sink sign = tui_write_muted, body = tui_write_dim, side = tui_write_dim,
          changed = tui_write_dim;
     if (marker == '+') {
@@ -865,6 +1069,7 @@ static void write_patch_line(Str patch, u8 marker, Str fragment,
         changed = tui_write_diff_del_changed;
     }
     side(gutter);
+    write_number(pn, number);
     sign((Str){(const char *)&marker, 1});
     Str shown = clip(fragment, R_LINE_BYTES - 1);
     if (shown.n) {
@@ -891,12 +1096,16 @@ static void write_indent_note(Str indent) {
     if (n > 0) tui_write_muted((Str){note, (size_t)n});
 }
 
-static void write_patch_meta(Str line, Str file, Str gutter, Str indent) {
+static void write_patch_meta(Str line, Str file, Str gutter, Str indent,
+                             const PatchNumbers *pn) {
     Str head = clip(line, R_LINE_BYTES);
     tui_write_dim(gutter);
     if (file.n) {
         write_clipped(file, R_LINE_BYTES, write_search_path);
-    } else if (str_starts(line, STR("+++ ")) || str_starts(line, STR("--- "))) {
+        return;
+    }
+    write_number(pn, 0);
+    if (str_starts(line, STR("+++ ")) || str_starts(line, STR("--- "))) {
         tui_write_dim((Str){head.p, 4});
         tui_write_styled(str_drop(head, 4), TUI_HEADING);
         if (head.n < line.n) tui_write_source(STR(" ..."));
@@ -908,7 +1117,7 @@ static void write_patch_meta(Str line, Str file, Str gutter, Str indent) {
 }
 
 static void write_patch_unified(Str patch, const YhlResult *hl, Str gutter,
-                                size_t max) {
+                                size_t max, PatchNumbers *pn) {
     size_t cap = line_cap(max);
     b8 several = patch_file_count(patch) > 1;
     PatchPairs pairs;
@@ -926,11 +1135,15 @@ static void write_patch_unified(Str patch, const YhlResult *hl, Str gutter,
         if (marker) {
             const Str *partner =
                 marker == ' ' ? NULL : pair_partner(&pairs, marker);
+            size_t old_no, new_no;
+            numbers_take(pn, marker, &old_no, &new_no);
             write_patch_line(patch, marker, hunk_dedent(fragment, indent),
-                             partner, hl, gutter);
+                             partner, hl, gutter, pn,
+                             marker == '-' ? old_no : new_no);
         } else {
+            numbers_meta(pn, line, file);
             indent = hunk_indent_at(patch, line, file, off);
-            write_patch_meta(line, file, gutter, indent);
+            write_patch_meta(line, file, gutter, indent, pn);
         }
         tui_write(STR("\n"));
         shown++;
@@ -944,7 +1157,7 @@ static void write_patch_unified(Str patch, const YhlResult *hl, Str gutter,
 
 typedef struct {
     Str text;
-    size_t at, changed_a, changed_b;
+    size_t at, changed_a, changed_b, number;
     u8 marker;
     b8 started;
 } SplitCell;
@@ -997,7 +1210,8 @@ static void write_spaces(size_t n, Sink sink) {
 }
 
 static void write_split_cell(SplitCell *c, size_t width, Str patch,
-                             const YhlResult *hl, b8 last) {
+                             const YhlResult *hl, b8 last,
+                             const PatchNumbers *pn) {
     if (!c->marker) {
         if (!last) write_spaces(width, tui_write_dim);
         return;
@@ -1012,12 +1226,13 @@ static void write_split_cell(SplitCell *c, size_t width, Str patch,
         body = tui_write_diff_del;
         changed = tui_write_diff_del_changed;
     }
+    write_number(pn, c->started ? 0 : c->number);
     if (c->started)
         body(STR(" "));
     else
         sign((Str){(const char *)&c->marker, 1});
     c->started = true;
-    size_t room = width - 1, used = 0;
+    size_t room = width - 1 - number_cells(pn), used = 0;
     Str rest = str_drop(c->text, c->at);
     size_t take = cell_fit(rest, room, &used);
     b8 cut = take < rest.n && !uncapped() && room > 4;
@@ -1047,15 +1262,16 @@ static void write_split_cell(SplitCell *c, size_t width, Str patch,
 typedef struct {
     Str patch, gutter, indent;
     const YhlResult *hl;
+    PatchNumbers *pn;
     size_t left, right, cap, shown;
 } SplitView;
 
 static void write_split_row(SplitView *v, SplitCell *left, SplitCell *right) {
     do {
         tui_write_dim(v->gutter);
-        write_split_cell(left, v->left, v->patch, v->hl, false);
+        write_split_cell(left, v->left, v->patch, v->hl, false, v->pn);
         tui_write_dim(STR(" \u2502 "));
-        write_split_cell(right, v->right, v->patch, v->hl, true);
+        write_split_cell(right, v->right, v->patch, v->hl, true, v->pn);
         tui_write(STR("\n"));
         v->shown++;
     } while (!(split_cell_done(left) && split_cell_done(right)));
@@ -1089,6 +1305,9 @@ static size_t write_split_block(SplitView *v, size_t *off) {
         add = hunk_dedent(add, v->indent);
         SplitCell left = split_cell(del_marker, del, paired ? &add : NULL);
         SplitCell right = split_cell(add_marker, add, paired ? &del : NULL);
+        size_t unused;
+        if (del_marker) numbers_take(v->pn, '-', &left.number, &unused);
+        if (add_marker) numbers_take(v->pn, '+', &unused, &right.number);
         write_split_row(v, &left, &right);
         consumed += (size_t)(del_marker != 0) + (size_t)(add_marker != 0);
     }
@@ -1096,10 +1315,12 @@ static size_t write_split_block(SplitView *v, size_t *off) {
 }
 
 static void write_patch_split(Str patch, const YhlResult *hl, Str gutter,
-                              size_t max, size_t left, size_t right) {
+                              size_t max, size_t left, size_t right,
+                              PatchNumbers *pn) {
     SplitView v = {.patch = patch,
                    .gutter = gutter,
                    .hl = hl,
+                   .pn = pn,
                    .left = left,
                    .right = right,
                    .cap = line_cap(max)};
@@ -1121,10 +1342,12 @@ static void write_patch_split(Str patch, const YhlResult *hl, Str gutter,
             SplitCell left =
                 split_cell(' ', hunk_dedent(fragment, v.indent), NULL);
             SplitCell right = left;
+            numbers_take(pn, ' ', &left.number, &right.number);
             write_split_row(&v, &left, &right);
         } else {
+            numbers_meta(pn, line, file);
             v.indent = hunk_indent_at(patch, line, file, off);
-            write_patch_meta(line, file, gutter, v.indent);
+            write_patch_meta(line, file, gutter, v.indent, pn);
             tui_write(STR("\n"));
             v.shown++;
         }
@@ -1135,7 +1358,8 @@ static void write_patch_split(Str patch, const YhlResult *hl, Str gutter,
     tui_syntax_commit();
 }
 
-static b8 split_widths(Str patch, Str gutter, size_t *left, size_t *right) {
+static b8 split_widths(Str patch, Str gutter, size_t extra, size_t *left,
+                       size_t *right) {
     if (!tui_body_cols()) return false;
     tui_width_fitted();
     size_t frame = tui_text_cells(gutter) + 3, cols = tui_row_cols();
@@ -1158,8 +1382,8 @@ static b8 split_widths(Str patch, Str gutter, size_t *left, size_t *right) {
     }
     if (!dels || !adds) return false;
     size_t inner = cols - frame;
-    if (widest + 1 <= inner / 2) {
-        *left = *right = widest + 1;
+    if (widest + 1 + extra <= inner / 2) {
+        *left = *right = widest + 1 + extra;
         return true;
     }
     if (tui_body_cols() < R_SPLIT_COLS) return false;
@@ -1168,13 +1392,15 @@ static b8 split_widths(Str patch, Str gutter, size_t *left, size_t *right) {
     return true;
 }
 
-static void write_patch_lines(Str patch, const YhlResult *hl, Str gutter,
-                              size_t max) {
+static void write_patch_lines(Str patch, Str result, const YhlResult *hl,
+                              Str gutter, size_t max, Arena *scratch) {
+    PatchNumbers pn;
+    patch_numbers(patch, result, scratch, &pn);
     size_t left, right;
-    if (split_widths(patch, gutter, &left, &right))
-        write_patch_split(patch, hl, gutter, max, left, right);
+    if (split_widths(patch, gutter, number_cells(&pn), &left, &right))
+        write_patch_split(patch, hl, gutter, max, left, right, &pn);
     else
-        write_patch_unified(patch, hl, gutter, max);
+        write_patch_unified(patch, hl, gutter, max, &pn);
 }
 
 void render_diff_syntax(Str diff, Arena *scratch, YhlResult *out) {
@@ -1371,7 +1597,7 @@ static b8 render_batch_result(Str args, Str result, Arena *scratch, u32 id,
         Str child_args = buf_finish(&child);
         tui_tool_nest_begin();
         render_call(name, child_args, scratch, id, expanded, NULL, CONV_NONE,
-                    render_unapplied(name, json_str(row, STR("result"))));
+                    json_str(row, STR("result")));
         tui_tool_nest_end();
         if (str_eq(json_str(row, STR("status")), STR("running"))) continue;
         const JVal *duration = json_get(row, STR("ms"));

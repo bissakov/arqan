@@ -31,6 +31,12 @@
   code fits narrow terminals. Relative indent stays, so nesting and a change
   of indent still show. The hunk's `@@` row names what was dropped, such as
   `@@ · indent 8`. Tabs and spaces never count as the same indent.
+- An applied `patch` call numbers its lines. Kept and added lines show
+  their line in the new file, and removed lines their line in the old file.
+  Side by side, the left half counts the old file and the right half the
+  new. A patch that did not apply, or whose hunks overlap, shows no numbers.
+- The `patch` result names the line each hunk now starts at, such as
+  `edit.txt +2 -1 at lines 8, 1`.
 - Approximate syntax highlighting for Unity shaders. `.shader`, `.cginc`,
   `.hlsl` and `.compute` files, and code fences marked `hlsl` or `shaderlab`,
   use the C highlighter. Strings, comments, numbers, preprocessor lines, HLSL
