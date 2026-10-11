@@ -1425,9 +1425,14 @@ MediaSet *tools_set_media(MediaSet *m);
  * tmux buffer and sets the outer terminal's clipboard whatever
  * `set-clipboard` says. False when tmux is missing, refuses the command
  * (older than 3.2) or misses the same deadline.
+ *
+ * clipboard_tmux_query runs `tmux display-message -p format` and puts its
+ * output in `out`. False when tmux is missing, fails, prints nothing or more
+ * than `cap` bytes, or misses the same deadline.
  */
 b8 clipboard_image(Arena *scratch, Str *out, char *err, size_t err_cap);
 b8 clipboard_tmux_write(Str text);
+b8 clipboard_tmux_query(const char *format, char *out, size_t cap, size_t *n);
 
 /* ---- editor --------------------------------------------------------------
  * `text` edited in vi, vim or nvim, with the cursor placed at byte `cursor`.
@@ -2229,7 +2234,8 @@ void tui_write(Str s);
 /* A PNG drawn in the transcript on its own rows, through the kitty graphics
  * protocol. False, with nothing written, when the terminal is not known to
  * draw images, the transcript is detached, or `png` is not a PNG. The bytes
- * are sent to the terminal before this returns and are not kept. */
+ * are sent to the terminal before this returns and are not kept. Inside tmux,
+ * the first call asks tmux whether it passes images on to the terminal. */
 b8 tui_image(Str png, u32 w, u32 h);
 b8 tui_images_shown(void);
 
