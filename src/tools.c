@@ -1609,6 +1609,9 @@ typedef struct {
     PatchFile *file;
     size_t n;
     size_t hunks;
+    size_t *hunk_at;
+    u32 *hunk_file;
+    size_t *order;
     Arena *scratch;
     char *err;
     size_t err_cap;
@@ -1616,6 +1619,8 @@ typedef struct {
     size_t bad;
     size_t noted;
 } Patch;
+/* INVARIANT: hunk_at holds where each hunk's text starts in its file's final
+ * body, or SIZE_MAX once a later hunk rewrote that start. */
 
 
 static b8 patch_path_exists(Str s) {
@@ -1832,6 +1837,10 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str header, Str text,
         return patch_fail(p, "patch carries more than %u hunks",
                           AGENT_MAX_PATCH_HUNKS);
     f->hunk_n++;
+    size_t hunk = p->hunks - 1;
+    u32 file = (u32)(f - p->file);
+    p->hunk_file[hunk] = file;
+    p->hunk_at[hunk] = SIZE_MAX;
 
 
     if (f->unlink_it) {
@@ -1857,6 +1866,7 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str header, Str text,
                               "%s hunk %zu: a new file has no lines to "
                               "remove or keep",
                               f->path, f->hunk_n);
+        p->hunk_at[hunk] = f->body.n;
         buf_puts(&f->body, newt);
         if (!buf_ok(&f->body))
             return patch_fail(p, "%s: patch does not fit in memory", f->path);
@@ -1924,6 +1934,14 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str header, Str text,
     memmove(f->body.p + at + newt.n, f->body.p + at + oldt.n, tail);
     memcpy(f->body.p + at, newt.p, newt.n);
     f->body.n = at + newt.n + tail;
+    for (size_t i = 0; i < hunk; i++) {
+        if (p->hunk_file[i] != file || p->hunk_at[i] == SIZE_MAX) continue;
+        if (p->hunk_at[i] >= at + oldt.n)
+            p->hunk_at[i] = p->hunk_at[i] - oldt.n + newt.n;
+        else if (p->hunk_at[i] >= at)
+            p->hunk_at[i] = SIZE_MAX;
+    }
+    p->hunk_at[hunk] = at;
     return true;
 }
 
@@ -2059,6 +2077,36 @@ static b8 patch_write(Patch *p, const PatchFile *f, Buf *out) {
     return true;
 }
 
+static void patch_put_lines(Patch *p, u32 file, Buf *out) {
+    size_t n = 0;
+    for (size_t k = 0; k < p->hunks; k++) {
+        if (p->hunk_file[k] != file) continue;
+        if (p->hunk_at[k] == SIZE_MAX) return;
+        size_t i = n++;
+        while (i && p->hunk_at[p->order[i - 1]] > p->hunk_at[k]) {
+            p->order[i] = p->order[i - 1];
+            i--;
+        }
+        p->order[i] = k;
+    }
+    if (!n) return;
+    Str body = patch_body(&p->file[file]);
+    size_t line = 1, pos = 0;
+    for (size_t i = 0; i < n; i++) {
+        size_t at = p->hunk_at[p->order[i]];
+        for (; pos < at && pos < body.n; pos++)
+            if (body.p[pos] == '\n') line++;
+        p->hunk_at[p->order[i]] = line;
+    }
+    buf_puts(out, n == 1 ? STR(" at line ") : STR(" at lines "));
+    b8 first = true;
+    for (size_t k = 0; k < p->hunks; k++) {
+        if (p->hunk_file[k] != file) continue;
+        buf_putf(out, first ? "%zu" : ", %zu", p->hunk_at[k]);
+        first = false;
+    }
+}
+
 static b8 tool_patch(Str args, Arena *scratch, Buf *out, char *err,
                      size_t err_cap) {
     JVal *j = tool_args(args, scratch, err, err_cap);
@@ -2080,7 +2128,10 @@ static b8 tool_patch(Str args, Arena *scratch, Buf *out, char *err,
                .bad = 0,
                .noted = 0};
     p.file = arena_new(scratch, PatchFile, AGENT_MAX_PATCH_FILES);
-    if (!p.file) {
+    p.hunk_at = arena_new(scratch, size_t, AGENT_MAX_PATCH_HUNKS);
+    p.hunk_file = arena_new(scratch, u32, AGENT_MAX_PATCH_HUNKS);
+    p.order = arena_new(scratch, size_t, AGENT_MAX_PATCH_HUNKS);
+    if (!p.file || !p.hunk_at || !p.hunk_file || !p.order) {
         snprintf(err, err_cap, "out of memory");
         return false;
     }
@@ -2108,8 +2159,10 @@ static b8 tool_patch(Str args, Arena *scratch, Buf *out, char *err,
             buf_putf(out, "%s deleted\n", f->path);
         } else {
             if (!patch_write(&p, f, out)) return false;
-            buf_putf(out, "%s %s+%zu -%zu\n", f->path,
+            buf_putf(out, "%s %s+%zu -%zu", f->path,
                      f->create ? "created " : "", f->added, f->removed);
+            patch_put_lines(&p, (u32)i, out);
+            buf_putc(out, '\n');
         }
     }
     if (!buf_ok(out)) {
@@ -2595,7 +2648,7 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         "anchor line, then unique exact hunk context at or after it. "
         "Repeated update headers for one file apply in order. "
         "--- /dev/null creates a file and any missing parent directories; +++ /dev/null "
-        "deletes one.",
+        "deletes one. The result names the line each hunk now starts at.",
         "Change files with a diff", TOOL_IN_BUILD, TOOL_APPROVAL_PATCH,
         "{\"type\":\"object\",\"properties\":{\"patch\":{\"type\":\"string\","
         "\"description\":\"unified diff over one or more files\"}},"

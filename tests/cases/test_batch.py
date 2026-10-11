@@ -550,7 +550,7 @@ def test_batch_results_and_diffs_survive_session_replay(ctx):
     resumed.settle()
     text = resumed.text()
     assert "\u25c6  patch edit.txt" in text, text
-    assert "\u2502 -old" in text and "\u2502 +new" in text, text
+    assert "\u2502 1 -old" in text and "\u2502 1 +new" in text, text
     assert "\u25c6  read edit.txt" in text, text
     assert "\u2502  \u25c6  patch edit.txt" in text, text
     assert "\u2502  \u25c6  read edit.txt" in text, text

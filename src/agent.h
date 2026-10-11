@@ -2321,6 +2321,9 @@ void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
 /* True for a write or patch call whose result says it failed or was denied:
  * such a call draws the capped preview instead of the whole content. */
 b8 render_unapplied(Str name, Str result);
+/* True when a call drawn before its result looks different once the result
+ * is in: an unapplied write or patch, or a patch that now has line numbers. */
+b8 render_call_changes(Str name, Str result);
 void render_batch_child_call(Str name, Str args, Arena *scratch, u32 id,
                              b8 expanded, const Conv *c, size_t slot);
 
