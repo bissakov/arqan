@@ -254,6 +254,35 @@ def test_exit_deletes_the_images_it_sent(ctx):
     assert any(k["d"] == "I" and k["i"] == keys["i"] for k in deletes), deletes
 
 
+def test_a_resumed_round_draws_each_image_under_its_call(ctx):
+    """Two reads in one round replay with each image below its own call,
+    though the session saves both calls before either result."""
+    (ctx.work / "one.png").write_bytes(png(200, 100))
+    (ctx.work / "two.png").write_bytes(png(300, 100))
+    ctx.scenario('tool=read:{"path":"one.png"},tool=read:{"path":"two.png"},'
+                 "final_text=seen+both")
+    s = ctx.spawn(rows=50, TERM="xterm-kitty")
+    s.submit("look at them")
+    s.wait_text("seen both")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+
+    s = ctx.spawn(rows=50, TERM="xterm-kitty")
+    s.submit("/resume")
+    s.wait_status("pick a session")
+    s.key("enter")
+    s.wait_text("seen both")
+    lines = s.text().splitlines()
+    one = next(i for i, line in enumerate(lines) if "read one.png" in line)
+    two = next(i for i, line in enumerate(lines) if "read two.png" in line)
+    narrow = [i for i, line in enumerate(lines)
+              if PLACEHOLDER * 20 in line and PLACEHOLDER * 21 not in line]
+    wide = [i for i, line in enumerate(lines) if PLACEHOLDER * 30 in line]
+    assert len(narrow) == 5 and len(wide) == 5, s.text()
+    assert one < narrow[0] and narrow[-1] < two < wide[0], s.text()
+
+
 # ---- tmux -----------------------------------------------------------------
 def test_tmux_passes_the_image_on_to_ghostty(ctx):
     """Every graphics command is wrapped; none reaches tmux bare."""

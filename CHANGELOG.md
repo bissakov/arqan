@@ -78,6 +78,9 @@
 
 - When `read` is given a directory, the error now points at `bash` with `ls`
   or `find`. It named the `find` tool, which no longer exists.
+- A resumed or redrawn session shows each tool result, and any image it
+  loaded, under its own call. When the model made several calls at once, the
+  calls were listed first and all their results after them.
 - A call refused in a non-interactive run in Ask mode is saved as needing
   approval, not as refused by the user. A resumed session no longer tells the
   model that the user said no.
