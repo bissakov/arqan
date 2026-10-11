@@ -631,7 +631,7 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
         if query == "changed":
             self._body(200, "text/html", b"<html><body>different markup</body></html>")
             return
-        if query == "empty":
+        if query in ("empty", "allempty", "emptyblocked"):
             self._body(200, "text/html", b"<html><body><div class='no-results'>No results.</div></body></html>")
             return
         if query == "verbose":
@@ -667,6 +667,12 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
         if query in ("status202", "status403", "status429"):
             status = int(query.removeprefix("status"))
             self._body(status, "text/html", b"<html><body>refused</body></html>")
+            return
+        if query == "emptyblocked":
+            self._body(403, "text/html", b"<html><body>refused</body></html>")
+            return
+        if query == "allempty":
+            self._body(200, "text/html", b"<html><body><div class='no-results'>No results.</div></body></html>")
             return
         if query == "bothfail":
             self._body(200, "text/html", b"<html><body>different markup</body></html>")
@@ -714,6 +720,12 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
         query = parse_qs(urlsplit(self.path).query).get("q", [""])[0]
         if query == "status403":
             self._body(403, "text/html", b"<html><body>refused</body></html>")
+            return
+        if query == "empty":
+            self._body(200, "text/html; charset=utf-8",
+                       b'<html><body><ol id="b_results"><li class="b_no">'
+                       b"<h1>There are no results for empty</h1></li></ol>"
+                       b"</body></html>")
             return
 
         def ck(url):

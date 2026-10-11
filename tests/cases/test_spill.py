@@ -153,6 +153,6 @@ def test_a_search_that_fits_leaves_nothing_behind(ctx):
     """Two ordinary results fit whole, so there is nothing to point at."""
     tmp = tmpdir(ctx)
     result = run_web_tool(ctx, "internet_search", {"query": "ordinary"}, tmp)
-    assert result.startswith("External search results (untrusted): 2"), result
+    assert result.startswith("Search results: 2"), result
     assert "full output" not in result, result
     assert list(tmp.iterdir()) == [], list(tmp.iterdir())
