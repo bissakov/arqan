@@ -83,7 +83,7 @@ def test_web_search_round_trips_normalized_results(ctx):
     """Titles, snippets, entities, operators, redirects, and duplicates normalize."""
     query = 'site:example.com "quoted phrase" -excluded'
     s, result = run_web(ctx, "internet_search", {"query": query})
-    assert result.startswith("External search results (untrusted): 2"), result
+    assert result.startswith("Search results: 2"), result
     assert "First & best" in result and f"snippet for {query}." in result, result
     assert "https://example.com/first?a=1&b=two" in result, result
     assert "http://example.org/two" in result and "Second result Ω" in result, result
@@ -94,7 +94,7 @@ def test_web_search_round_trips_normalized_results(ctx):
 def test_web_search_collapses_query_whitespace(ctx):
     """Runs of whitespace and surrounding blanks leave the query before it is sent."""
     _, result = run_web(ctx, "internet_search", {"query": "  spaced \t\n  out  "})
-    assert result.startswith("External search results (untrusted): 2"), result
+    assert result.startswith("Search results: 2"), result
     assert ctx.mock.web_calls[-1]["query"]["q"] == ["spaced out"], ctx.mock.web_calls
 
     ctx.mock.reset()
@@ -106,12 +106,15 @@ def test_web_search_collapses_query_whitespace(ctx):
 def test_web_search_limit_and_empty_page(ctx):
     """A requested limit is honored and an explicit empty layout is legitimate."""
     _, one = run_web(ctx, "internet_search", {"query": "ordinary", "limit": 1})
-    assert one.startswith("External search results (untrusted): 1"), one
+    assert one.startswith("Search results: 1"), one
     assert "Second result" not in one
 
     ctx.mock.reset()
     _, empty = run_web(ctx, "internet_search", {"query": "empty"})
-    assert empty == "External search results (untrusted): 0", empty
+    assert empty == (
+        "Search results: 0\nNo match from lite.\n"
+        "Try broader terms, or fewer quotes and operators."
+    ), empty
 
 
 def test_web_search_refuses_challenges_and_changed_layouts(ctx):
@@ -135,7 +138,7 @@ def test_web_search_refuses_service_statuses(ctx):
 def test_web_search_falls_back_to_the_html_endpoint(ctx):
     """A refusal from the lite endpoint retries once on the HTML layout."""
     _, result = run_web_fallback(ctx, {"query": "liteblocked"})
-    assert result.startswith("External search results (untrusted): 2"), result
+    assert result.startswith("Search results: 2"), result
     assert "First & best" in result and "snippet for liteblocked." in result, result
     assert "https://example.com/first?a=1&b=two" in result, result
     assert "http://example.org/two" in result and "Second result Ω" in result, result
@@ -162,13 +165,53 @@ def test_web_search_names_every_endpoint_it_tried(ctx):
     assert len(ctx.mock.web_request_times) == 2, ctx.mock.web_request_times
 
 
+def test_web_search_tries_the_next_engine_when_one_finds_nothing(ctx):
+    """An empty page is not the final answer: an engine that finds nothing for
+    quotes or operators hands the query to the next one."""
+    _, result = run_web_fallback(ctx, {"query": "empty"})
+    assert result.startswith("Search results: 2\n"), result
+    assert "First & best" in result and "snippet for empty." in result, result
+    paths = [call["path"] for call in ctx.mock.web_calls]
+    assert paths == ["/web/search", "/web/search-html"], paths
+
+
+def test_web_search_reports_zero_only_when_every_engine_finds_nothing(ctx):
+    """Zero results name the engines that found nothing and suggest a broader query."""
+    _, result = run_web_fallback(ctx, {"query": "allempty"})
+    assert result.startswith("Search results: 0\n"), result
+    assert "No match from lite, html." in result, result
+    assert "quotes" in result and "operators" in result, result
+    assert "untrusted" not in result and not result.startswith("ERROR"), result
+    assert len(ctx.mock.web_calls) == 2, ctx.mock.web_calls
+
+
+def test_web_search_zero_results_name_the_engines_that_failed(ctx):
+    """An empty answer is reported, along with the engine that refused."""
+    _, result = run_web_fallback(ctx, {"query": "emptyblocked"})
+    assert result.startswith("Search results: 0\n"), result
+    assert "No match from lite." in result, result
+    assert "html" in result and "HTTP 403" in result, result
+    assert "paused for 2 minutes" in result, result
+
+
+def test_web_search_reads_the_bing_empty_page(ctx):
+    """Bing's no-results block is an empty answer, not a changed layout."""
+    _, result = run_web_backend(
+        ctx, "bing", {"query": "empty"},
+        ARQAN_SEARCH_ENDPOINT=f"{ctx.mock.origin}/web/bing",
+    )
+    assert result.startswith("Search results: 0\n"), result
+    assert "No match from bing." in result, result
+    assert "layout was not recognized" not in result, result
+
+
 def test_web_search_reads_the_brave_layout(ctx):
     """Brave's hashed class names are ignored; its stable tokens are not."""
     _, result = run_web_backend(
         ctx, "brave", {"query": "ordinary"},
         ARQAN_SEARCH_ENDPOINT=f"{ctx.mock.origin}/web/brave",
     )
-    assert result.startswith("External search results (untrusted): 2"), result
+    assert result.startswith("Search results: 2"), result
     assert "First & best" in result and "snippet for ordinary." in result, result
     assert "https://example.com/first?a=1&b=two" in result, result
     # The title element wins: the anchor also holds the site name and URL.
@@ -183,7 +226,7 @@ def test_web_search_reads_the_bing_layout(ctx):
         ctx, "bing", {"query": "ordinary"},
         ARQAN_SEARCH_ENDPOINT=f"{ctx.mock.origin}/web/bing",
     )
-    assert result.startswith("External search results (untrusted): 2"), result
+    assert result.startswith("Search results: 2"), result
     assert "First & best" in result and "snippet for ordinary." in result, result
     assert "https://example.com/first?a=1&b=two" in result, result
     assert "http://example.org/two" in result and "Second result Ω" in result, result
@@ -201,7 +244,7 @@ def test_web_search_keyless_rows_ask_for_safe_search(ctx):
         ctx, "brave", {"query": "ordinary"},
         ARQAN_SEARCH_ENDPOINT=f"{ctx.mock.origin}/web/brave",
     )
-    assert result.startswith("External search results (untrusted): 2"), result
+    assert result.startswith("Search results: 2"), result
     assert ctx.mock.web_calls[-1]["query"]["safesearch"] == ["strict"]
 
 
@@ -237,7 +280,7 @@ def test_web_search_reads_keyed_json_engines(ctx):
         ctx, "searxng", {"query": "ordinary"},
         ARQAN_SEARCH_ENDPOINT=f"{ctx.mock.origin}/web/searxng",
     )
-    assert searx.startswith("External search results (untrusted): 2"), searx
+    assert searx.startswith("Search results: 2"), searx
     assert "First & best" in searx and "second snippet" in searx, searx
     assert "ftp://example.net" not in searx and "Duplicate" not in searx, searx
     assert ctx.mock.web_calls[-1]["query"]["format"] == ["json"]
@@ -248,7 +291,7 @@ def test_web_search_reads_keyed_json_engines(ctx):
         ARQAN_SEARCH_ENDPOINT=f"{ctx.mock.origin}/web/braveapi",
         ARQAN_SEARCH_API_KEY="secret-token",
     )
-    assert brave.startswith("External search results (untrusted): 2"), brave
+    assert brave.startswith("Search results: 2"), brave
     assert "A nested snippet for ordinary." in brave, brave
     call = ctx.mock.web_calls[-1]
     assert call["token"] == "secret-token", call
@@ -261,7 +304,7 @@ def test_web_search_reads_keyed_json_engines(ctx):
         ARQAN_SEARCH_API_KEY="secret-key",
         ARQAN_SEARCH_ENGINE_ID="cx-1234",
     )
-    assert google.startswith("External search results (untrusted): 2"), google
+    assert google.startswith("Search results: 2"), google
     call = ctx.mock.web_calls[-1]
     assert call["query"]["key"] == ["secret-key"], call
     assert call["query"]["cx"] == ["cx-1234"], call
@@ -271,7 +314,10 @@ def test_web_search_reads_keyed_json_engines(ctx):
         ctx, "searxng", {"query": "empty"},
         ARQAN_SEARCH_ENDPOINT=f"{ctx.mock.origin}/web/searxng",
     )
-    assert empty == "External search results (untrusted): 0", empty
+    assert empty == (
+        "Search results: 0\nNo match from searxng.\n"
+        "Try broader terms, or fewer quotes and operators."
+    ), empty
 
 
 def test_web_search_keeps_the_key_out_of_a_failure(ctx):
@@ -318,7 +364,7 @@ def test_web_search_falls_back_when_a_keyed_engine_is_unconfigured(ctx):
         ctx, "brave_api", {"query": "ordinary"},
         **{"ARQAN_TEST_WEB_SEARCH_URL": f"{ctx.mock.origin}/web/search?q="},
     )
-    assert result.startswith("External search results (untrusted): 2"), result
+    assert result.startswith("Search results: 2"), result
     assert ctx.mock.web_calls[-1]["path"] == "/web/search", ctx.mock.web_calls
 
 
@@ -335,7 +381,7 @@ def test_web_search_treats_blank_settings_as_unset(ctx):
         ARQAN_SEARCH_ENGINE_ID="",
         **{"ARQAN_TEST_WEB_SEARCH_URL": f"{ctx.mock.origin}/web/search?q="},
     )
-    assert result.startswith("External search results (untrusted): 2"), result
+    assert result.startswith("Search results: 2"), result
     call = ctx.mock.web_calls[-1]
     assert call["path"] == "/web/search", ctx.mock.web_calls
     assert call.get("token") in (None, ""), call
@@ -355,7 +401,7 @@ def test_web_search_quarantines_only_the_refusing_engine(ctx):
     paths = [call["path"] for call in ctx.mock.web_calls]
     assert paths == ["/web/search", "/web/search-html", "/web/search-html"], paths
     for result in ctx.mock.tool_results()[-2:]:
-        assert result.startswith("External search results (untrusted): 2"), result
+        assert result.startswith("Search results: 2"), result
 
 
 def test_web_search_spaces_repeated_requests(ctx):
@@ -421,7 +467,7 @@ def test_web_search_pause_grows_until_a_success_resets_it(ctx):
     assert len(results) == 4, results
     assert "paused for 2 minutes" in results[0], results
     assert "paused for 10 minutes" in results[1], results
-    assert results[2].startswith("External search results (untrusted): 2"), results
+    assert results[2].startswith("Search results: 2"), results
     assert "paused for 2 minutes" in results[3], results
     assert len(ctx.mock.web_request_times) == 4, ctx.mock.web_request_times
 

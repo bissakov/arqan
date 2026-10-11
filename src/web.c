@@ -57,9 +57,9 @@ static b8 search_wait_until(f64 until) {
 
 
 static void search_attempts_add(char *dst, size_t cap, size_t *n,
-                                const char *msg) {
+                                const char *sep, const char *msg) {
     if (*n + 1 >= cap) return;
-    int w = snprintf(dst + *n, cap - *n, "%s%s", *n ? "; " : "", msg);
+    int w = snprintf(dst + *n, cap - *n, "%s%s", *n ? sep : "", msg);
     if (w < 0) return;
     *n = (size_t)w >= cap - *n ? cap - 1 : *n + (size_t)w;
 }
@@ -895,7 +895,8 @@ static b8 search_enter(AgentHtmlNode *node, void *ud) {
     if (class_has(node, "challenge-form") || class_has(node, "anomaly-modal")
         || class_has(node, "captcha-wrap"))
         s->challenge = true;
-    if (class_has(node, "no-results")) s->explicit_empty = true;
+    if (class_has(node, "no-results") || class_has(node, "b_no"))
+        s->explicit_empty = true;
     if (tag_is(node, "h2")) s->heading++;
     if (lay->result && class_has(node, lay->result)) {
         s->in_result = true;
@@ -1429,6 +1430,8 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out, char *err,
     SearchCtx found = {.scratch = scratch, .current = SIZE_MAX};
     char attempts[768] = {0};
     size_t attempts_n = 0;
+    char empty_engines[128] = {0};
+    size_t empty_engines_n = 0;
     b8 blocked = false;
     b8 answered = false;
     for (size_t i = 0; i < g_search.chain_n && !answered; i++) {
@@ -1438,16 +1441,37 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out, char *err,
         if (outcome == SEARCH_ERROR) return false;
         if (outcome != SEARCH_OK) {
             if (outcome == SEARCH_BLOCKED) blocked = true;
-            search_attempts_add(attempts, sizeof attempts, &attempts_n, err);
+            search_attempts_add(attempts, sizeof attempts, &attempts_n, "; ",
+                                err);
+            continue;
+        }
+        g_search.strikes[g_search.chain[i]] = 0;
+        if (!attempt.n) {
+            search_attempts_add(empty_engines, sizeof empty_engines,
+                                &empty_engines_n, ", ",
+                                k_engine[g_search.chain[i]].label);
             continue;
         }
         found = attempt;
-        g_search.strikes[g_search.chain[i]] = 0;
         answered = true;
+    }
+    if (!answered && empty_engines_n) {
+        buf_puts(out, STR("Search results: 0\nNo match from "));
+        buf_puts(out, str_c(empty_engines));
+        buf_puts(out, STR(".\n"));
+        if (attempts_n) {
+            buf_puts(out, STR("Failed: "));
+            buf_puts(out, str_c(attempts));
+            buf_puts(out, STR(".\n"));
+        }
+        buf_puts(out, STR("Try broader terms, or fewer quotes and operators."));
+        if (buf_ok(out) && out->n <= AGENT_TOOL_RESULT_BYTES) return true;
+        snprintf(err, err_cap, "search result does not fit in memory");
+        return false;
     }
     if (!answered) {
         if (!attempts_n)
-            search_attempts_add(attempts, sizeof attempts, &attempts_n,
+            search_attempts_add(attempts, sizeof attempts, &attempts_n, "; ",
                                 "web search is not available in this session");
         if (blocked) {
             snprintf(err, err_cap, "%s; do not retry a paused endpoint",
@@ -1492,7 +1516,7 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out, char *err,
         bytes += records[i].n;
         emitted++;
     }
-    buf_putf(out, "External search results (untrusted): %zu\n", emitted);
+    buf_putf(out, "Search results: %zu\n", emitted);
     for (size_t i = 0; i < emitted; i++) buf_puts(out, records[i]);
     while (out->n && out->p[out->n - 1] == '\n') out->n--;
     spill_finish(&spill, out, emitted < found.n);
