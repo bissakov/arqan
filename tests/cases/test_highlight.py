@@ -491,6 +491,27 @@ def test_patch_preview_highlights_code_but_not_diff_markers(ctx):
     assert cell(s, "= 42", 2).fg == YELLOW
 
 
+def test_patch_preview_without_shared_indent_keeps_colours(ctx):
+    """A hunk shown without its shared indent keeps its colours on the code."""
+    ctx.write_file("sample.c", "            int answer = 1;\n")
+    diff = (
+        "--- a/sample.c\n+++ b/sample.c\n@@ -1 +1 @@\n"
+        "-            int answer = 1;\n+            int answer = 42;\n"
+    )
+    args = json.dumps({"patch": diff})
+    ctx.scenario(f"tool=patch:{args},final_text=done")
+    s = ctx.spawn()
+    s.submit("patch it")
+    s.wait_turn_done()
+    assert "\u00b7 indent 12" in s.text(), s.text()
+    assert cell(s, "-int answer").fg == 203
+    assert cell(s, "+int answer").fg == GREEN
+    assert cell(s, "-int answer", 1).fg == CYAN
+    assert cell(s, "+int answer", 1).fg == CYAN
+    assert cell(s, "+int answer", 5).fg == TEXT
+    assert cell(s, "= 42", 2).fg == YELLOW
+
+
 def test_envelope_patch_preview_highlights_code(ctx):
     """Envelope file headers supply the same language hint as unified diffs."""
     ctx.write_file("sample.c", "int answer = 1;\n")

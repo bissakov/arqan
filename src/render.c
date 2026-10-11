@@ -695,6 +695,43 @@ static u8 patch_marker(Str line, Str *fragment) {
     return patch_fragment(line, fragment) ? (u8)line.p[0] : 0;
 }
 
+static Str hunk_indent(Str patch, size_t off) {
+    Str indent = {0}, line, fragment;
+    b8 found = false;
+    while (str_line(patch, &off, &line) && patch_marker(line, &fragment)) {
+        if (!str_trim(fragment).n) continue;
+        size_t lead = 0;
+        while (lead < fragment.n
+               && (fragment.p[lead] == ' ' || fragment.p[lead] == '\t'))
+            lead++;
+        if (!found) {
+            indent = (Str){fragment.p, lead};
+            found = true;
+            continue;
+        }
+        size_t same = 0;
+        while (same < indent.n && same < lead
+               && fragment.p[same] == indent.p[same])
+            same++;
+        indent.n = same;
+        if (!same) break;
+    }
+    return indent;
+}
+
+static Str hunk_dedent(Str fragment, Str indent) {
+    size_t drop = 0;
+    while (drop < indent.n && drop < fragment.n
+           && fragment.p[drop] == indent.p[drop])
+        drop++;
+    return drop ? (Str){fragment.p + drop, fragment.n - drop} : fragment;
+}
+
+static Str hunk_indent_at(Str patch, Str line, Str file, size_t off) {
+    if (file.n || !str_starts(line, STR("@@"))) return (Str){0};
+    return hunk_indent(patch, off);
+}
+
 static size_t patch_file_count(Str patch) {
     size_t off = 0, files = 0;
     Str body, hint;
@@ -754,12 +791,13 @@ typedef struct {
     size_t n, del_at, add_at;
 } PatchPairs;
 
-static void pair_block(Str patch, size_t off, PatchPairs *p) {
+static void pair_block(Str patch, size_t off, Str indent, PatchPairs *p) {
     size_t del = 0, add = 0;
     p->n = p->del_at = p->add_at = 0;
     Str line, fragment;
     while (str_line(patch, &off, &line)) {
         u8 marker = patch_marker(line, &fragment);
+        if (marker) fragment = hunk_dedent(fragment, indent);
         if (marker == '-' && !add) {
             if (del == R_PAIR_LINES) return;
             p->del[del++] = fragment;
@@ -812,41 +850,48 @@ static b8 changed_span(Str line, Str other, size_t *a, size_t *b) {
     return true;
 }
 
-static void write_patch_line(Str patch, Str line, Str head, Str fragment_full,
+static void write_patch_line(Str patch, u8 marker, Str fragment,
                              const Str *partner, const YhlResult *hl,
                              Str gutter) {
     Sink sign = tui_write_muted, body = tui_write_dim, side = tui_write_dim,
          changed = tui_write_dim;
-    if (line.p[0] == '+') {
+    if (marker == '+') {
         sign = tui_write_result;
         body = side = tui_write_diff_add;
         changed = tui_write_diff_add_changed;
-    } else if (line.p[0] == '-') {
+    } else if (marker == '-') {
         sign = tui_write_error;
         body = side = tui_write_diff_del;
         changed = tui_write_diff_del_changed;
     }
     side(gutter);
-    if (head.n) sign((Str){head.p, 1});
-    Str fragment = str_drop(head, 1);
-    if (fragment.n) {
+    sign((Str){(const char *)&marker, 1});
+    Str shown = clip(fragment, R_LINE_BYTES - 1);
+    if (shown.n) {
         size_t at = tui_transcript_pos();
-        size_t a = fragment.n, b = fragment.n;
-        if (partner && changed_span(fragment_full, *partner, &a, &b)) {
-            if (a > fragment.n) a = fragment.n;
-            if (b > fragment.n) b = fragment.n;
+        size_t a = shown.n, b = shown.n;
+        if (partner && changed_span(fragment, *partner, &a, &b)) {
+            if (a > shown.n) a = shown.n;
+            if (b > shown.n) b = shown.n;
         }
-        body((Str){fragment.p, a});
-        changed((Str){fragment.p + a, b - a});
-        body(str_drop(fragment, b));
-        if (line.p[0] != ' ')
-            add_line_syntax(hl, patch, (size_t)(fragment_full.p - patch.p),
-                            fragment, at);
+        body((Str){shown.p, a});
+        changed((Str){shown.p + a, b - a});
+        body(str_drop(shown, b));
+        if (marker != ' ')
+            add_line_syntax(hl, patch, (size_t)(shown.p - patch.p), shown, at);
     }
-    if (head.n < line.n) side(STR(" ..."));
+    if (shown.n < fragment.n) side(STR(" ..."));
 }
 
-static void write_patch_meta(Str line, Str file, Str gutter) {
+static void write_indent_note(Str indent) {
+    if (!indent.n) return;
+    char note[48];
+    i32 n = snprintf(note, sizeof note, " \u00b7 indent %zu",
+                     rendered_bytes(indent));
+    if (n > 0) tui_write_muted((Str){note, (size_t)n});
+}
+
+static void write_patch_meta(Str line, Str file, Str gutter, Str indent) {
     Str head = clip(line, R_LINE_BYTES);
     tui_write_dim(gutter);
     if (file.n) {
@@ -858,6 +903,7 @@ static void write_patch_meta(Str line, Str file, Str gutter) {
     } else {
         tui_write_muted(head);
         if (head.n < line.n) tui_write_source(STR(" ..."));
+        write_indent_note(indent);
     }
 }
 
@@ -869,22 +915,22 @@ static void write_patch_unified(Str patch, const YhlResult *hl, Str gutter,
     pairs.n = 0;
     u8 prev = 0;
     size_t off = 0, shown = 0;
-    Str line, file;
+    Str line, file, indent = {0};
     while (shown < cap && patch_next_row(patch, &off, several, &line, &file)) {
-        Str head = clip(line, R_LINE_BYTES);
-        Str fragment_full = {0};
-        u8 marker = file.n ? 0 : patch_marker(line, &fragment_full);
+        Str fragment = {0};
+        u8 marker = file.n ? 0 : patch_marker(line, &fragment);
         if (marker == '-' && prev != '-')
-            pair_block(patch, (size_t)(line.p - patch.p), &pairs);
+            pair_block(patch, (size_t)(line.p - patch.p), indent, &pairs);
         else if (marker != '-' && marker != '+')
             pairs.n = 0;
         if (marker) {
             const Str *partner =
                 marker == ' ' ? NULL : pair_partner(&pairs, marker);
-            write_patch_line(patch, line, head, fragment_full, partner, hl,
-                             gutter);
+            write_patch_line(patch, marker, hunk_dedent(fragment, indent),
+                             partner, hl, gutter);
         } else {
-            write_patch_meta(line, file, gutter);
+            indent = hunk_indent_at(patch, line, file, off);
+            write_patch_meta(line, file, gutter, indent);
         }
         tui_write(STR("\n"));
         shown++;
@@ -999,7 +1045,7 @@ static void write_split_cell(SplitCell *c, size_t width, Str patch,
 }
 
 typedef struct {
-    Str patch, gutter;
+    Str patch, gutter, indent;
     const YhlResult *hl;
     size_t left, right, cap, shown;
 } SplitView;
@@ -1039,6 +1085,8 @@ static size_t write_split_block(SplitView *v, size_t *off) {
             del_marker = patch_marker(line, &del);
         if (i < adds && str_line(v->patch, &add_at, &line))
             add_marker = patch_marker(line, &add);
+        del = hunk_dedent(del, v->indent);
+        add = hunk_dedent(add, v->indent);
         SplitCell left = split_cell(del_marker, del, paired ? &add : NULL);
         SplitCell right = split_cell(add_marker, add, paired ? &del : NULL);
         write_split_row(v, &left, &right);
@@ -1070,11 +1118,13 @@ static void write_patch_split(Str patch, const YhlResult *hl, Str gutter,
             continue;
         }
         if (marker == ' ') {
-            SplitCell left = split_cell(' ', fragment, NULL);
+            SplitCell left =
+                split_cell(' ', hunk_dedent(fragment, v.indent), NULL);
             SplitCell right = left;
             write_split_row(&v, &left, &right);
         } else {
-            write_patch_meta(line, file, gutter);
+            v.indent = hunk_indent_at(patch, line, file, off);
+            write_patch_meta(line, file, gutter, v.indent);
             tui_write(STR("\n"));
             v.shown++;
         }
@@ -1093,14 +1143,17 @@ static b8 split_widths(Str patch, Str gutter, size_t *left, size_t *right) {
     b8 several = patch_file_count(patch) > 1;
     b8 dels = false, adds = false;
     size_t widest = 0, off = 0;
-    Str line, file, fragment;
+    Str line, file, fragment, indent = {0};
     while (patch_next_row(patch, &off, several, &line, &file)) {
         u8 marker = file.n ? 0 : patch_marker(line, &fragment);
-        if (!marker) continue;
+        if (!marker) {
+            indent = hunk_indent_at(patch, line, file, off);
+            continue;
+        }
         if (marker == '-') dels = true;
         if (marker == '+') adds = true;
         size_t cells = 0;
-        cell_fit(fragment, SIZE_MAX, &cells);
+        cell_fit(hunk_dedent(fragment, indent), SIZE_MAX, &cells);
         if (cells > widest) widest = cells;
     }
     if (!dels || !adds) return false;
