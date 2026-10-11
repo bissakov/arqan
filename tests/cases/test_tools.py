@@ -285,6 +285,130 @@ def test_patch_does_not_mark_words_without_a_clear_pair(ctx):
             assert s.screen.attr_at(row, i).bg == bg, (needle, i)
 
 
+def indent_patch(ctx, name, before, diff, cols=44):
+    """Run one patch over `name`, holding `before`, in a terminal `cols` wide."""
+    ctx.write_file(name, before)
+    ctx.scenario(patch_call(diff, final_text="patched"))
+    s = ctx.spawn(cols=cols, rows=40)
+    s.submit("patch it")
+    s.wait_text("patched")
+    s.wait_turn_done()
+    return s
+
+
+def test_patch_drops_the_indent_its_hunk_shares(ctx):
+    """A deep hunk shows from its shallowest line; its header names the cut."""
+    before = '        if (ready) {\n            start("first job");\n        }\n'
+    diff = (
+        "--- a/deep.c\n+++ b/deep.c\n@@ -1,3 +1,5 @@\n"
+        "         if (ready) {\n"
+        '-            start("first job");\n'
+        '+            start("second job");\n'
+        "         }\n"
+        "+\n"
+        "+        report();\n"
+    )
+    s = indent_patch(ctx, "deep.c", before, diff)
+
+    rows = [s.screen.row_text(r).strip() for r in range(s.screen.rows)]
+    head = rows.index("\u2502 @@ -1,3 +1,5 @@ \u00b7 indent 8")
+    assert rows[head + 1:head + 7] == [
+        "\u2502  if (ready) {",
+        '\u2502 -    start("first job");',
+        '\u2502 +    start("second job");',
+        "\u2502  }",
+        "\u2502 +",
+        "\u2502 +report();",
+    ], s.text()
+
+    old_row = s.screen.find_row('\u2502 -    start("first job");')
+    old = s.screen.row_text(old_row)
+    new_row = old_row + 1
+    new = s.screen.row_text(new_row)
+    for i in range(old.index("first"), old.index("first") + 5):
+        assert s.screen.attr_at(old_row, i).bg == 88, i
+    for i in range(new.index("second"), new.index("second") + 6):
+        assert s.screen.attr_at(new_row, i).bg == 28, i
+    assert s.screen.attr_at(old_row, old.index("start")).bg == 52
+    assert s.screen.attr_at(new_row, new.index("start")).bg == 22
+
+
+def test_patch_keeps_a_change_of_indent_visible(ctx):
+    """Only the shared indent goes, so a re-indented line still differs."""
+    diff = (
+        "--- a/move.c\n+++ b/move.c\n@@ -1,2 +1,2 @@\n"
+        "     keep_this_call();\n"
+        "-    move_this_call();\n"
+        "+        move_this_call();\n"
+    )
+    s = indent_patch(ctx, "move.c", "    keep_this_call();\n    move_this_call();\n",
+                     diff)
+
+    rows = [s.screen.row_text(r).strip() for r in range(s.screen.rows)]
+    head = rows.index("\u2502 @@ -1,2 +1,2 @@ \u00b7 indent 4")
+    assert rows[head + 1:head + 4] == [
+        "\u2502  keep_this_call();",
+        "\u2502 -move_this_call();",
+        "\u2502 +    move_this_call();",
+    ], s.text()
+
+
+def test_patch_keeps_indent_that_mixes_tabs_and_spaces(ctx):
+    """A tab and four spaces share no prefix, so nothing is dropped."""
+    diff = (
+        "--- a/mixed.c\n+++ b/mixed.c\n@@ -1,2 +1,2 @@\n"
+        " \tkeep_this_call();\n"
+        "-    old_call_name();\n"
+        "+    new_call_name();\n"
+    )
+    s = indent_patch(ctx, "mixed.c", "\tkeep_this_call();\n    old_call_name();\n",
+                     diff)
+
+    text = s.text()
+    assert "indent" not in text, text
+    rows = [s.screen.row_text(r).strip() for r in range(s.screen.rows)]
+    head = rows.index("\u2502 @@ -1,2 +1,2 @@")
+    assert rows[head + 1:head + 4] == [
+        "\u2502      keep_this_call();",
+        "\u2502 -    old_call_name();",
+        "\u2502 +    new_call_name();",
+    ], s.text()
+
+
+def test_patch_without_shared_indent_has_no_indent_note(ctx):
+    """A hunk that starts at column zero keeps its header as written."""
+    diff = (
+        "--- a/flat.c\n+++ b/flat.c\n@@ -1,2 +1,2 @@\n"
+        " keep_this_call();\n"
+        "-    old_call_name();\n"
+        "+    new_call_name();\n"
+    )
+    s = indent_patch(ctx, "flat.c", "keep_this_call();\n    old_call_name();\n",
+                     diff)
+
+    text = s.text()
+    assert "indent" not in text, text
+    assert "\u2502 -    old_call_name();" in text, text
+
+
+def test_deep_patch_is_side_by_side_once_its_indent_is_dropped(ctx):
+    """The halves are sized from the lines as shown, without their shared indent."""
+    pad = " " * 24
+    diff = (
+        "--- a/side.txt\n+++ b/side.txt\n@@ -1 +1 @@\n"
+        f"-{pad}call(alpha, beta);\n+{pad}call(alpha, gamma);\n"
+    )
+    s = indent_patch(ctx, "side.txt", f"{pad}call(alpha, beta);\n", diff, cols=80)
+
+    assert "\u2502 @@ -1 +1 @@ \u00b7 indent 24" in s.text(), s.text()
+    row = s.screen.find_row("\u2502 -call(alpha, beta);")
+    assert row >= 0, s.text()
+    text = s.screen.row_text(row)
+    assert "\u2502 +call(alpha, gamma);" in text, s.text()
+    for i in range(text.index("gamma"), text.index("gamma") + 5):
+        assert s.screen.attr_at(row, i).bg == 28, i
+
+
 SPLIT_DIFF = (
     "--- a/side.txt\n+++ b/side.txt\n@@ -1,4 +1,5 @@\n"
     " keep\n-call(alpha, beta);\n+call(alpha, gamma);\n keep\n"

@@ -27,6 +27,10 @@
   Otherwise, and for a patch that only adds or only removes lines, the
   one-column view stays. A resize redraws the diff in the layout that now
   fits.
+- A `patch` call drops the indent that every line of a hunk shares, so deep
+  code fits narrow terminals. Relative indent stays, so nesting and a change
+  of indent still show. The hunk's `@@` row names what was dropped, such as
+  `@@ · indent 8`. Tabs and spaces never count as the same indent.
 - Approximate syntax highlighting for Unity shaders. `.shader`, `.cginc`,
   `.hlsl` and `.compute` files, and code fences marked `hlsl` or `shaderlab`,
   use the C highlighter. Strings, comments, numbers, preprocessor lines, HLSL
