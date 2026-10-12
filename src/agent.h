@@ -2141,10 +2141,19 @@ b8 tui_pick_timed(Str title, const TuiCmd *items, size_t n,
                   TuiPickAnchor anchor, size_t start, i32 timeout_ms,
                   size_t *out, b8 *expired, b8 *amended);
 
+typedef enum {
+    TUI_PICK_FAVORITE,
+    TUI_PICK_CONFIGURE,
+    TUI_PICK_OTHER_VALUE,
+    TUI_PICK_DELETE,
+    TUI_PICK_SMALL,
+    TUI_PICK_KEY_N
+} TuiPickKey;
+
 typedef struct {
     size_t (*act)(void *ud, size_t row, size_t *moved);
     void *ud;
-    i32 key;
+    TuiPickKey key;
 } TuiPickBinding;
 typedef struct {
     TuiCmd *rows;

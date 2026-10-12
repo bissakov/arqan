@@ -5861,7 +5861,7 @@ static b8 pick_act(const TuiSettings *set, i32 delta) {
     return true;
 }
 
-static b8 pick_row_action(i32 key) {
+static b8 pick_row_action(TuiPickKey key) {
     const TuiPickAction *a = &g_pick.action;
     if (!g_pick.has_action) return true;
     const TuiPickBinding *binding = NULL;
@@ -5921,15 +5921,15 @@ static b8 pick_amend(const TuiSettings *set) {
     X(0x0e, "Ctrl-N", "Next row", completion_move(1);)                        \
     X(0x10, "Ctrl-P", "Previous row", completion_move(-1);)                   \
     X(0x06, "Ctrl-F", "Favorite the row, on a list that offers it",           \
-      return pick_row_action(0x06);)                                          \
+      return pick_row_action(TUI_PICK_FAVORITE);)                             \
     X(0x05, "Ctrl-E", "Configure, on a list that offers it",                  \
-      return pick_row_action(0x05);)                                          \
+      return pick_row_action(TUI_PICK_CONFIGURE);)                            \
     X(0x0f, "Ctrl-O", "Enter another value, on a list that offers it",        \
-      return pick_row_action(0x0f);)                                          \
+      return pick_row_action(TUI_PICK_OTHER_VALUE);)                          \
     X(0x18, "Ctrl-X", "Delete the row, on a list that offers it",             \
-      return pick_row_action(0x18);)                                          \
+      return pick_row_action(TUI_PICK_DELETE);)                               \
     X(0x13, "Ctrl-S", "Set the small model, on a list that offers it",        \
-      return pick_row_action(0x13);)                                          \
+      return pick_row_action(TUI_PICK_SMALL);)                                \
     X(0x7f, "Backspace", "Delete the query glyph before",                     \
       return pick_erase();)                                                   \
     X(0x08, "", "", return pick_erase();)                                     \
@@ -6080,6 +6080,8 @@ b8 tui_pick_timed(Str title, const TuiCmd *items, size_t n,
 b8 tui_pick_action(Str title, size_t n, size_t search_n, TuiPickAnchor anchor,
                    size_t start, const TuiPickAction *act, size_t *out) {
     if (!act || !act->rows || !act->bindings || !act->n_bindings) return false;
+    for (size_t i = 0; i < act->n_bindings; i++)
+        if ((u32)act->bindings[i].key >= (u32)TUI_PICK_KEY_N) return false;
     return pick_impl(title, act->rows, NULL, n, search_n, anchor, start,
                      PICK_CHOOSE, out, NULL, act, 0, false);
 }

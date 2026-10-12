@@ -2687,7 +2687,7 @@ static void resume_session(Agent *ag) {
     sp.n = n;
 
     size_t pick = 0;
-    TuiPickBinding binding = {session_delete_row, &sp, 0x18};
+    TuiPickBinding binding = {session_delete_row, &sp, TUI_PICK_DELETE};
     TuiPickAction act = {items, n, &binding, 1,
                          STR("Ctrl-X deletes the selected session")};
     b8 chosen = tui_pick_action(STR("pick a session"), n, n, TUI_PICK_FIRST,
@@ -3841,11 +3841,11 @@ static b8 pick_model(Config *cfg, const Endpoints *eps, Catalog *cat,
 
     size_t rows = model_build(&mp);
     TuiPickBinding bindings[] = {
-        {model_favorite, &mp, 0x06},
-        {model_manual_action, &mp, 0x0f},
-        {model_configure_action, &mp, 0x05},
+        {model_favorite, &mp, TUI_PICK_FAVORITE},
+        {model_manual_action, &mp, TUI_PICK_OTHER_VALUE},
+        {model_configure_action, &mp, TUI_PICK_CONFIGURE},
 
-        {model_small_action, &mp, 0x13},
+        {model_small_action, &mp, TUI_PICK_SMALL},
     };
 
     TuiPickAction act = {
