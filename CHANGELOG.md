@@ -104,6 +104,9 @@
 - Anthropic: failed tool results carry `is_error`, and a reply of only
   whitespace is no longer sent back, since the API refuses it.
 - Anthropic: `/model` lists every model. It showed only the first 20.
+- The "message queued; Esc cancels it" notice stays until the queued message
+  is sent or cancelled. Before, the next streamed text, reasoning or tool
+  output removed it while the message was still waiting.
 
 ## [0.11.0] - 2026-10-08
 
