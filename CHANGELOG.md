@@ -121,6 +121,12 @@
 - The "message queued; Esc cancels it" notice stays until the queued message
   is sent or cancelled. Before, the next streamed text, reasoning or tool
   output removed it while the message was still waiting.
+- Ctrl-D deletes forward in a question prompt, such as `/title`, and cancels
+  only when the field is empty. Before, it always cancelled. In the composer
+  during a turn, Ctrl-D now deletes forward too; it was ignored.
+- `/keys` lists every key the interface answers. It now shows the question
+  prompt, Ctrl-C, and the keys that scroll the transcript.
+- Ctrl-L redraws the screen when a list is open.
 
 ## [0.11.0] - 2026-10-08
 

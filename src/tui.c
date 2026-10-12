@@ -27,7 +27,7 @@
 #define TUI_POPUP_ROWS      8
 #define TUI_PICK_MIN_ROWS   4
 #define TUI_PICK_SEARCH_MIN 10
-#define TUI_QUEUED_NOTICE   "message queued; Esc cancels it"
+#define TUI_QUEUED_NOTICE   "message queued; " TUI_KEY_ESC " cancels it"
 #define TUI_PATH_ENTS       256
 #define TUI_PATH_SLOT       512
 #define TUI_PATH_DEPTH      12
@@ -2658,11 +2658,12 @@ static void update_find_row(size_t screen_row, size_t screen_col,
     size_t tail_n =
         written > 0 && (size_t)written < sizeof tail ? (size_t)written : 0;
     Str status = {tail, tail_n};
-    Str hint =
-        g_tui.find_expand
-            ? STR("\u2191 older \u00b7 \u2193 newer \u00b7 "
-                  "^E all output \u00b7 Esc")
-            : STR("Enter/\u2191 older \u00b7 \u2193 newer \u00b7 Esc close");
+    Str hint = g_tui.find_expand
+                   ? STR("\u2191 older \u00b7 \u2193 newer \u00b7 "
+                         "^E all output \u00b7 " TUI_KEY_ESC)
+                   : STR(TUI_KEY_ENTER
+                         "/\u2191 older \u00b7 \u2193 newer \u00b7 " TUI_KEY_ESC
+                         " close");
 
     u64 hash = row_hash(query, status, ROW_POPUP);
     size_t sel_c0, sel_c1;
@@ -2926,7 +2927,7 @@ static const WelcomeLine k_welcome[] = {
     WLINE(AGENT_NAME " " AGENT_BUILD_VERSION " · a tiny terminal coding agent",
           false),
     WLINE("", false),
-    WLINE("type a message and press Enter to begin", false),
+    WLINE("type a message and press " TUI_KEY_ENTER " to begin", false),
 };
 
 #define WELCOME_LINES (sizeof k_welcome / sizeof k_welcome[0])
@@ -3519,7 +3520,11 @@ static void tui_log_sink(i32 level, Str msg, void *ud) {
 }
 
 
+#ifdef AGENT_TESTING
 static void keys_selfcheck(void);
+#else
+#define keys_selfcheck() ((void)0)
+#endif
 
 static b8 term_raw(void) {
     struct termios raw = g_tui.original_termios;
@@ -4781,6 +4786,19 @@ static b8 input_ready(i32 timeout_ms) {
     return rc > 0 && (pfd.revents & (POLLIN | POLLHUP)) != 0;
 }
 
+/* INVARIANT: above every byte, so no byte row can match it and no key can
+ * type it. The terminal sends Ctrl-C as SIGINT, and rbyte reports the
+ * interrupted read as this key. */
+enum { KEY_INTERRUPT = 0x100 };
+
+static b8 key_is_text(i32 c) {
+    return (c >= 0x20 && c < 0x7f) || (c >= 0x80 && c < KEY_INTERRUPT);
+}
+
+static b8 key_pasted(i32 c) {
+    return g_tui.pasting && c != 0x1b && c < KEY_INTERRUPT;
+}
+
 static i32 rbyte(void) {
     if (g_input.pushed) {
         g_input.pushed = false;
@@ -4790,7 +4808,7 @@ static i32 rbyte(void) {
         idle_beacon();
 
         ssize_t n = read(STDIN_FILENO, g_input.b, sizeof g_input.b);
-        if (n < 0 && errno == EINTR) return g_winch ? -3 : -2;
+        if (n < 0 && errno == EINTR) return g_winch ? -3 : KEY_INTERRUPT;
         if (n <= 0) return -1;
 #ifdef AGENT_TESTING
         g_input_bytes += (unsigned long)n;
@@ -4899,16 +4917,22 @@ static struct {
  * row and turns on state; it is never a second binding placed earlier in a
  * chain, which is what used to make the loser silent dead code.
  *
- * Contexts are layered, and the outer one is tried first: the composer's
- * table runs before the shared editor's, so a key in both is an override and
- * not a duplicate. Only one context owns the keyboard at a time, so the same
- * byte meaning different things in two of them is intended, and the page
- * `/keys` renders it under both.
+ * Contexts are layered, and the outer one is tried first: the composer and
+ * the question each sit over the shared line editor, and their tables run
+ * before its own, so a key in both is an override and not a duplicate. Only
+ * one context owns the keyboard at a time, so the same byte meaning different
+ * things in two of them is intended, and the page `/keys` renders it under
+ * both.
  *
  * A row is `X(key, label, help, body)`. `key` is a byte or a KEY_ code,
  * `body` the statements that run, and `label` names the key on the page; an
  * empty label hides the row, which is how an alias nobody types (Ctrl-J for
  * Enter, Ctrl-H for Backspace) stays bound without a line of its own.
+ *
+ * Ctrl-C reaches a byte table as KEY_INTERRUPT, since the terminal sends it
+ * as SIGINT and the interrupt must work while the loop is blocked elsewhere.
+ * A 0x03 row beside it is a hidden alias for a terminal whose interrupt key
+ * was remapped.
  *
  * KEY_PASTE is deliberately unbound. read_escape consumes the bracketed
  * paste markers and sets `g_tui.pasting` as it goes, so every context reads
@@ -4919,11 +4943,12 @@ static struct {
     case key: {                         \
         __VA_ARGS__                     \
     } break;
-#define KEY_DOC(key, label, help, ...) {label, help},
+#define KEY_DOC(key, label, help, ...) {label, help, key},
 
 typedef struct {
     const char *key;
     const char *help;
+    i32 code;
 } KeyRow;
 typedef struct {
     const char *name;
@@ -5492,26 +5517,39 @@ static void scroll_to_top(void) {
 }
 
 
+#define SCROLL_KEYS(X)                                                        \
+    X(KEY_PAGE_UP, "PgUp", "Scrolls the transcript up a page",                \
+      g_tui.scroll_rows += page;)                                             \
+    X(KEY_PAGE_DOWN, "PgDn", "Scrolls the transcript down a page",            \
+      g_tui.scroll_rows =                                                     \
+          g_tui.scroll_rows > page ? g_tui.scroll_rows - page : 0;)           \
+    X(KEY_WHEEL_UP, "", "", g_tui.scroll_rows += 3;)                          \
+    X(KEY_WHEEL_DOWN, "", "",                                                 \
+      g_tui.scroll_rows = g_tui.scroll_rows > 3 ? g_tui.scroll_rows - 3 : 0;) \
+    X(KEY_HOME, "Home",                                                       \
+      "Scrolls to the top of the transcript, where the context above does "   \
+      "not take the key",                                                     \
+      scroll_to_top();)                                                       \
+    X(KEY_END, "End",                                                         \
+      "Scrolls to the bottom of the transcript, where the context above "     \
+      "does not take the key",                                                \
+      tui_scroll_to_bottom();)                                                \
+    X(KEY_TOP, "Ctrl-Home", "Scrolls to the top of the transcript",           \
+      scroll_to_top();)                                                       \
+    X(KEY_BOTTOM, "Ctrl-End", "Scrolls to the bottom of the transcript",      \
+      tui_scroll_to_bottom();)
+
+static const KeyRow k_scroll_rows[] = {SCROLL_KEYS(KEY_DOC)};
+
 static b8 scroll_key(i32 key) {
     size_t rows, cols;
     screen_size(&rows, &cols);
     (void)cols;
     size_t page = rows > 4 ? rows - 4 : 1;
-    if (key == KEY_PAGE_UP)
-        g_tui.scroll_rows += page;
-    else if (key == KEY_PAGE_DOWN)
-        g_tui.scroll_rows =
-            g_tui.scroll_rows > page ? g_tui.scroll_rows - page : 0;
-    else if (key == KEY_WHEEL_UP)
-        g_tui.scroll_rows += 3;
-    else if (key == KEY_WHEEL_DOWN)
-        g_tui.scroll_rows = g_tui.scroll_rows > 3 ? g_tui.scroll_rows - 3 : 0;
-    else if (key == KEY_TOP || key == KEY_HOME)
-        scroll_to_top();
-    else if (key == KEY_BOTTOM || key == KEY_END)
-        tui_scroll_to_bottom();
-    else
-        return false;
+    switch (key) {
+        SCROLL_KEYS(KEY_CASE)
+        default: return false;
+    }
     g_tui.find_follow = false;
     return true;
 }
@@ -5566,37 +5604,39 @@ static b8 view_hand_to_composer(i32 c) {
     return false;
 }
 
-#define VIEW_KEYS(X)                                             \
-    X('q', "q", "Close the view", return false;)                 \
-    X(0x0d, "Enter", "Close the view", return false;)            \
-    X(0x0a, "", "", return false;)                               \
-    X(0x03, "", "", return false;)                               \
-    X('j', "j", "Down one row", view_move(1);)                   \
-    X('k', "k", "Up one row", view_move(-1);)                    \
-    X(' ', "Space", "Down a page", view_move((i32)page);)        \
-    X('b', "b", "Up a page", view_move(-(i32)page);)             \
-    X(0x04, "Ctrl-D", "Down half a page", view_move((i32)half);) \
-    X(0x15, "Ctrl-U", "Up half a page", view_move(-(i32)half);)  \
-    X('g', "g", "First row", g_view.top = 0;)                    \
-    X('G', "G", "Last row", view_end();)                         \
-    X(0x0c, "Ctrl-L", "Redraw the screen", g_tui.frame_valid = false;)
+#define VIEW_KEYS(X)                                                      \
+    X('q', "q", "Closes the view", return false;)                         \
+    X(0x0d, TUI_KEY_ENTER, "Closes the view", return false;)              \
+    X(0x0a, "", "", return false;)                                        \
+    X(KEY_INTERRUPT, "Ctrl-C", "Closes the view, or interrupts the turn", \
+      if (g_view.modal) return false;)                                    \
+    X(0x03, "", "", if (g_view.modal) return false;)                      \
+    X('j', "j", "Moves down one row", view_move(1);)                      \
+    X('k', "k", "Moves up one row", view_move(-1);)                       \
+    X(' ', TUI_KEY_SPACE, "Moves down a page", view_move((i32)page);)     \
+    X('b', "b", "Moves up a page", view_move(-(i32)page);)                \
+    X(0x04, "Ctrl-D", "Moves down half a page", view_move((i32)half);)    \
+    X(0x15, "Ctrl-U", "Moves up half a page", view_move(-(i32)half);)     \
+    X('g', "g", "Goes to the first row", g_view.top = 0;)                 \
+    X('G', "G", "Goes to the last row", view_end();)                      \
+    X(0x0c, "Ctrl-L", "Redraws the screen", g_tui.frame_valid = false;)
 
 #define VIEW_ESCAPE_KEYS(X)                                               \
-    X(KEY_NONE, "Esc", "Close the view", return false;)                   \
-    X(KEY_UP, "Up", "Up one row", view_move(-1);)                         \
-    X(KEY_DOWN, "Down", "Down one row", view_move(1);)                    \
-    X(KEY_PAGE_UP, "PgUp", "Up a page", view_move(-(i32)page);)           \
-    X(KEY_PAGE_DOWN, "PgDn", "Down a page", view_move((i32)page);)        \
+    X(KEY_NONE, TUI_KEY_ESC, "Closes the view", return false;)            \
+    X(KEY_UP, TUI_KEY_UP, "Moves up one row", view_move(-1);)             \
+    X(KEY_DOWN, TUI_KEY_DOWN, "Moves down one row", view_move(1);)        \
+    X(KEY_PAGE_UP, "PgUp", "Moves up a page", view_move(-(i32)page);)     \
+    X(KEY_PAGE_DOWN, "PgDn", "Moves down a page", view_move((i32)page);)  \
     X(KEY_WHEEL_UP, "", "", view_move(-3);)                               \
     X(KEY_WHEEL_DOWN, "", "", view_move(3);)                              \
-    X(KEY_HOME, "Home", "First row", g_view.top = 0;)                     \
+    X(KEY_HOME, "Home", "Goes to the first row", g_view.top = 0;)         \
     X(KEY_TOP, "", "", g_view.top = 0;)                                   \
-    X(KEY_END, "End", "Last row", view_end();)                            \
+    X(KEY_END, "End", "Goes to the last row", view_end();)                \
     X(KEY_BOTTOM, "", "", view_end();)                                    \
-    X(KEY_MOUSE_DOWN, "Click", "Start a selection, or close on the X",    \
+    X(KEY_MOUSE_DOWN, "Click", "Starts a selection, or closes on the X",  \
       g_view.close_down = view_close_cell(g_mouse.row, g_mouse.col);      \
       if (!g_view.close_down) sel_begin(g_mouse.row, g_mouse.col);)       \
-    X(KEY_MOUSE_DRAG, "Drag", "Extend the selection",                     \
+    X(KEY_MOUSE_DRAG, "Drag", "Extends the selection",                    \
       g_view.close_down = false;                                          \
       sel_extend(g_mouse.row, g_mouse.col);)                              \
     X(KEY_MOUSE_UP, "", "",                                               \
@@ -5627,7 +5667,7 @@ static b8 view_feed(i32 c) {
         switch (c) {
             VIEW_KEYS(KEY_CASE)
             default:
-                if (c >= 0x20 && c != 0x7f) return view_hand_to_composer(c);
+                if (key_is_text(c)) return view_hand_to_composer(c);
                 break;
         }
     }
@@ -5643,12 +5683,13 @@ static void view_run(void) {
 
 static void pick_search_row(Str query, b8 settings) {
     char row[sizeof g_tui.notice];
-    i32 n = snprintf(row, sizeof row, "search: %.*s%s%s", (i32)query.n, query.p,
-                     g_tui.comp_n ? "" : "  (no match)",
-                     settings && !query.n
-                         ? " · Space or Left/Right changes the selected "
-                           "row · Esc closes"
-                         : "");
+    i32 n =
+        snprintf(row, sizeof row, "search: %.*s%s%s", (i32)query.n, query.p,
+                 g_tui.comp_n ? "" : "  (no match)",
+                 settings && !query.n
+                     ? " · " TUI_KEY_SPACE " or " TUI_KEY_LEFT "/" TUI_KEY_RIGHT
+                       " changes the selected row · " TUI_KEY_ESC " closes"
+                     : "");
     if (n < 0) return;
     size_t len = (size_t)n < sizeof row ? (size_t)n : sizeof row - 1;
     tui_notice((Str){row, len});
@@ -5770,7 +5811,9 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
     if (g_pick.search)
         pick_search_row((Str){g_pick.query, g_pick.query_n}, settings);
     if (kind == PICK_INFO && !g_tui.notice_n)
-        tui_notice(STR("Up/Down reads the page - Enter or Esc closes"));
+        tui_notice(STR(TUI_KEY_UP "/" TUI_KEY_DOWN
+                                  " reads the page - " TUI_KEY_ENTER
+                                  " or " TUI_KEY_ESC " closes"));
     if (act) {
         g_pick.action = *act;
         g_pick.has_action = true;
@@ -5797,8 +5840,8 @@ static b8 pick_typed(i32 c) {
         repaint();
         return true;
     }
-    b8 printable = (c >= 0x20 && c < 0x7f) || c >= 0x80;
-    if (!printable || g_pick.query_n + 1 >= sizeof g_pick.query) return true;
+    if (!key_is_text(c) || g_pick.query_n + 1 >= sizeof g_pick.query)
+        return true;
     g_pick.query[g_pick.query_n++] = (char)c;
     return pick_requery();
 }
@@ -5829,7 +5872,7 @@ static b8 pick_act(const TuiSettings *set, i32 delta) {
     return true;
 }
 
-static b8 pick_row_action(i32 key) {
+static b8 pick_row_action(TuiPickKey key) {
     const TuiPickAction *a = &g_pick.action;
     if (!g_pick.has_action) return true;
     const TuiPickBinding *binding = NULL;
@@ -5873,48 +5916,55 @@ static b8 pick_amend(const TuiSettings *set) {
     return open;
 }
 
-#define PICK_KEYS(X)                                                          \
-    X(0x0d, "Enter", "Choose the row, or act on it", return pick_enter(set);) \
-    X(0x0a, "", "", return pick_enter(set);)                                  \
-    X(0x09, "Tab", "Choose the row and add your own words, where offered",    \
-      return pick_amend(set);)                                                \
-    X(0x03, "Ctrl-C", "Close without choosing", return false;)                \
-    X(0x04, "", "", return false;)                                            \
-    X(' ', "Space", "Act on the settings row",                                \
-      if (!settings) return pick_typed(c);                                    \
-      return pick_act(set, 1);)                                               \
-    X(0x0e, "Ctrl-N", "Next row", completion_move(1);)                        \
-    X(0x10, "Ctrl-P", "Previous row", completion_move(-1);)                   \
-    X(0x06, "Ctrl-F", "Favorite the row, on a list that offers it",           \
-      return pick_row_action(0x06);)                                          \
-    X(0x05, "Ctrl-E", "Configure, on a list that offers it",                  \
-      return pick_row_action(0x05);)                                          \
-    X(0x0f, "Ctrl-O", "Enter another value, on a list that offers it",        \
-      return pick_row_action(0x0f);)                                          \
-    X(0x18, "Ctrl-X", "Delete the row, on a list that offers it",             \
-      return pick_row_action(0x18);)                                          \
-    X(0x13, "Ctrl-S", "Set the small model, on a list that offers it",        \
-      return pick_row_action(0x13);)                                          \
-    X(0x7f, "Backspace", "Delete the query glyph before",                     \
-      return pick_erase();)                                                   \
-    X(0x08, "", "", return pick_erase();)                                     \
-    X(0x15, "Ctrl-U", "Clear the query", return pick_clear();)
+#define PICK_KEYS(X)                                                           \
+    X(0x0d, TUI_KEY_ENTER, "Chooses the row, or acts on it",                   \
+      return pick_enter(set);)                                                 \
+    X(0x0a, "", "", return pick_enter(set);)                                   \
+    X(0x09, TUI_KEY_TAB,                                                       \
+      "Chooses the row and adds free text to it, where offered",               \
+      return pick_amend(set);)                                                 \
+    X(KEY_INTERRUPT, "Ctrl-C",                                                 \
+      "Closes without choosing, or interrupts the turn",                       \
+      if (g_pick.modal) return false;)                                         \
+    X(0x03, "", "", if (g_pick.modal) return false;)                           \
+    X(0x04, "", "", return false;)                                             \
+    X(' ', TUI_KEY_SPACE, "Acts on the settings row",                          \
+      if (!settings) return pick_typed(c);                                     \
+      return pick_act(set, 1);)                                                \
+    X(0x0e, "Ctrl-N", "Moves to the next row", completion_move(1);)            \
+    X(0x10, "Ctrl-P", "Moves to the previous row", completion_move(-1);)       \
+    X(0x06, TUI_KEY_FAVORITE, "Favorites the row, on a list that offers it",   \
+      return pick_row_action(TUI_PICK_FAVORITE);)                              \
+    X(0x05, TUI_KEY_CONFIGURE, "Configures the row, on a list that offers it", \
+      return pick_row_action(TUI_PICK_CONFIGURE);)                             \
+    X(0x0f, TUI_KEY_OTHER_VALUE,                                               \
+      "Asks for another value, on a list that offers it",                      \
+      return pick_row_action(TUI_PICK_OTHER_VALUE);)                           \
+    X(0x18, TUI_KEY_DELETE, "Deletes the row, on a list that offers it",       \
+      return pick_row_action(TUI_PICK_DELETE);)                                \
+    X(0x13, TUI_KEY_SMALL, "Sets the small model, on a list that offers it",   \
+      return pick_row_action(TUI_PICK_SMALL);)                                 \
+    X(0x7f, "Backspace", "Deletes the last glyph of the query",                \
+      return pick_erase();)                                                    \
+    X(0x08, "", "", return pick_erase();)                                      \
+    X(0x15, "Ctrl-U", "Clears the query", return pick_clear();)                \
+    X(0x0c, "Ctrl-L", "Redraws the screen", g_tui.frame_valid = false;)
 
-#define PICK_ESCAPE_KEYS(X)                                     \
-    X(KEY_NONE, "Esc", "Close without choosing", return false;) \
-    X(KEY_DOWN, "Down", "Next row", completion_move(1);)        \
-    X(KEY_UP, "Up", "Previous row", completion_move(-1);)       \
-    X(KEY_RIGHT, "Right", "Act on the settings row forwards",   \
-      if (settings) return pick_act(set, 1);)                   \
-    X(KEY_LEFT, "Left", "Act on the settings row backwards",    \
-      if (settings) return pick_act(set, -1);)                  \
-    X(KEY_MOUSE_DOWN, "Click", "Start a selection",             \
-      sel_begin(g_mouse.row, g_mouse.col);                      \
-      keep_sel = true;)                                         \
-    X(KEY_MOUSE_DRAG, "Drag", "Extend the selection",           \
-      sel_extend(g_mouse.row, g_mouse.col);                     \
-      keep_sel = true;)                                         \
-    X(KEY_MOUSE_UP, "", "", sel_finish(); keep_sel = true;)     \
+#define PICK_ESCAPE_KEYS(X)                                                  \
+    X(KEY_NONE, TUI_KEY_ESC, "Closes without choosing", return false;)       \
+    X(KEY_DOWN, TUI_KEY_DOWN, "Moves to the next row", completion_move(1);)  \
+    X(KEY_UP, TUI_KEY_UP, "Moves to the previous row", completion_move(-1);) \
+    X(KEY_RIGHT, TUI_KEY_RIGHT, "Acts on the settings row forwards",         \
+      if (settings) return pick_act(set, 1);)                                \
+    X(KEY_LEFT, TUI_KEY_LEFT, "Acts on the settings row backwards",          \
+      if (settings) return pick_act(set, -1);)                               \
+    X(KEY_MOUSE_DOWN, "Click", "Starts a selection",                         \
+      sel_begin(g_mouse.row, g_mouse.col);                                   \
+      keep_sel = true;)                                                      \
+    X(KEY_MOUSE_DRAG, "Drag", "Extends the selection",                       \
+      sel_extend(g_mouse.row, g_mouse.col);                                  \
+      keep_sel = true;)                                                      \
+    X(KEY_MOUSE_UP, "", "", sel_finish(); keep_sel = true;)                  \
     X(KEY_MOUSE_MOVE, "", "", keep_sel = true;)
 
 static const KeyRow k_pick_rows[] = {PICK_KEYS(KEY_DOC)};
@@ -5931,7 +5981,7 @@ static b8 pick_feed(i32 c) {
     }
 
     if (c < 0) return false;
-    if (g_tui.pasting && c != 0x1b) {
+    if (key_pasted(c)) {
         if (c == '\r' || c == '\n') return true;
         return pick_typed(c);
     }
@@ -6044,6 +6094,8 @@ b8 tui_pick_timed(Str title, const TuiCmd *items, size_t n,
 b8 tui_pick_action(Str title, size_t n, size_t search_n, TuiPickAnchor anchor,
                    size_t start, const TuiPickAction *act, size_t *out) {
     if (!act || !act->rows || !act->bindings || !act->n_bindings) return false;
+    for (size_t i = 0; i < act->n_bindings; i++)
+        if ((u32)act->bindings[i].key >= (u32)TUI_PICK_KEY_N) return false;
     return pick_impl(title, act->rows, NULL, n, search_n, anchor, start,
                      PICK_CHOOSE, out, NULL, act, 0, false);
 }
@@ -6254,36 +6306,43 @@ static void edit_yank(char *buf, size_t *n, size_t *cur, size_t cap) {
 }
 
 
-#define EDIT_KEYS(X)                                                          \
-    X(0x01, "Ctrl-A", "Start of line, then the previous line",                \
-      *cur = ctrl_a_start(buf, *cur);)                                        \
-    X(0x02, "Ctrl-B", "Back one glyph", *cur = prev_glyph(buf, *cur);)        \
-    X(0x04, "Ctrl-D", "Delete forward", edit_delete(buf, n, cur);)            \
-    X(0x05, "Ctrl-E", "End of line", *cur = line_end(buf, *n, *cur);)         \
-    X(0x06, "Ctrl-F", "Forward one glyph", *cur = next_glyph(buf, *n, *cur);) \
-    X(0x7f, "Backspace", "Delete back", edit_backspace(buf, n, cur);)         \
-    X(0x08, "", "", edit_backspace(buf, n, cur);)                             \
-    X(0x0b, "Ctrl-K", "Kill to end of line", edit_kill_line(buf, n, cur);)    \
-    X(0x15, "Ctrl-U", "Kill to start of line",                                \
-      kill_range(buf, n, cur, line_start(buf, *cur), *cur);)                  \
-    X(0x17, "Ctrl-W", "Kill the word before",                                 \
-      kill_range(buf, n, cur, prev_word(buf, *cur), *cur);)                   \
-    X(0x19, "Ctrl-Y", "Put back the last kill", edit_yank(buf, n, cur, cap);)
+#define EDIT_KEYS(X)                                                         \
+    X(0x01, "Ctrl-A",                                                        \
+      "Moves to the start of the line, then to the previous line",           \
+      *cur = ctrl_a_start(buf, *cur);)                                       \
+    X(0x02, "Ctrl-B", "Moves back one glyph", *cur = prev_glyph(buf, *cur);) \
+    X(0x04, "Ctrl-D", "Deletes forward", edit_delete(buf, n, cur);)          \
+    X(0x05, "Ctrl-E", "Moves to the end of the line",                        \
+      *cur = line_end(buf, *n, *cur);)                                       \
+    X(0x06, "Ctrl-F", "Moves forward one glyph",                             \
+      *cur = next_glyph(buf, *n, *cur);)                                     \
+    X(0x7f, "Backspace", "Deletes backward", edit_backspace(buf, n, cur);)   \
+    X(0x08, "", "", edit_backspace(buf, n, cur);)                            \
+    X(0x0b, "Ctrl-K", "Kills to the end of the line",                        \
+      edit_kill_line(buf, n, cur);)                                          \
+    X(0x15, "Ctrl-U", "Kills to the start of the line",                      \
+      kill_range(buf, n, cur, line_start(buf, *cur), *cur);)                 \
+    X(0x17, "Ctrl-W", "Kills the word before",                               \
+      kill_range(buf, n, cur, prev_word(buf, *cur), *cur);)                  \
+    X(0x19, "Ctrl-Y", "Puts back the last kill", edit_yank(buf, n, cur, cap);)
 
-#define EDIT_ESCAPE_KEYS(X)                                              \
-    X(KEY_LEFT, "Left", "Back one glyph", *cur = prev_glyph(buf, *cur);) \
-    X(KEY_RIGHT, "Right", "Forward one glyph",                           \
-      *cur = next_glyph(buf, *n, *cur);)                                 \
-    X(KEY_HOME, "Home", "Start of line", *cur = line_start(buf, *cur);)  \
-    X(KEY_END, "End", "End of line", *cur = line_end(buf, *n, *cur);)    \
-    X(KEY_PREV_WORD, "Ctrl-Left", "Back one word",                       \
-      *cur = prev_word(buf, *cur);)                                      \
-    X(KEY_NEXT_WORD, "Ctrl-Right", "Forward one word",                   \
-      *cur = next_word(buf, *n, *cur);)                                  \
-    X(KEY_DELETE, "Delete", "Delete forward", edit_delete(buf, n, cur);) \
-    X(KEY_KILL_WORD, "Alt-D", "Kill the word after",                     \
-      kill_range(buf, n, cur, *cur, next_word(buf, *n, *cur));)          \
-    X(KEY_KILL_PREV_WORD, "Alt-Backspace", "Kill the word before",       \
+#define EDIT_ESCAPE_KEYS(X)                                               \
+    X(KEY_LEFT, TUI_KEY_LEFT, "Moves back one glyph",                     \
+      *cur = prev_glyph(buf, *cur);)                                      \
+    X(KEY_RIGHT, TUI_KEY_RIGHT, "Moves forward one glyph",                \
+      *cur = next_glyph(buf, *n, *cur);)                                  \
+    X(KEY_HOME, "Home", "Moves to the start of the line",                 \
+      *cur = line_start(buf, *cur);)                                      \
+    X(KEY_END, "End", "Moves to the end of the line",                     \
+      *cur = line_end(buf, *n, *cur);)                                    \
+    X(KEY_PREV_WORD, "Ctrl-Left", "Moves back one word",                  \
+      *cur = prev_word(buf, *cur);)                                       \
+    X(KEY_NEXT_WORD, "Ctrl-Right", "Moves forward one word",              \
+      *cur = next_word(buf, *n, *cur);)                                   \
+    X(KEY_DELETE, "Delete", "Deletes forward", edit_delete(buf, n, cur);) \
+    X(KEY_KILL_WORD, "Alt-D", "Kills the word after",                     \
+      kill_range(buf, n, cur, *cur, next_word(buf, *n, *cur));)           \
+    X(KEY_KILL_PREV_WORD, "Alt-Backspace", "Kills the word before",       \
       kill_range(buf, n, cur, prev_word(buf, *cur), *cur);)
 
 static const KeyRow k_edit_rows[] = {EDIT_KEYS(KEY_DOC)};
@@ -6293,7 +6352,7 @@ static b8 edit_byte(i32 c, char *buf, size_t *n, size_t *cur, size_t cap) {
     switch (c) {
         EDIT_KEYS(KEY_CASE)
         default:
-            if ((c >= 0x20 && c < 0x7f) || c >= 0x80) {
+            if (key_is_text(c)) {
                 edit_insert((char)c, buf, n, cur, cap);
                 return true;
             }
@@ -6309,6 +6368,33 @@ static b8 edit_escape(i32 key, char *buf, size_t *n, size_t *cur) {
     }
     return true;
 }
+
+typedef struct {
+    b8 done;
+    b8 answered;
+} Asked;
+
+static void ask_end(Asked *a, b8 answered) {
+    a->answered = answered;
+    a->done = true;
+}
+
+#define ASK_KEYS(X)                                                        \
+    X(0x0d, TUI_KEY_ENTER, "Answers the question",                         \
+      ask_end(a, allow_empty || n > 0);)                                   \
+    X(0x0a, "", "", ask_end(a, allow_empty || n > 0);)                     \
+    X(KEY_INTERRUPT, "Ctrl-C", "Cancels the question", ask_end(a, false);) \
+    X(0x03, "", "", ask_end(a, false);)                                    \
+    X(0x04, "Ctrl-D", "Deletes forward, or cancels on an empty field",     \
+      if (n) edit_delete(g_bulk.input, &n, &cur);                          \
+      else ask_end(a, false);)                                             \
+    X(0x0c, "Ctrl-L", "Redraws the screen", g_tui.frame_valid = false;)
+
+#define ASK_ESCAPE_KEYS(X) \
+    X(KEY_NONE, TUI_KEY_ESC, "Cancels the question", ask_end(a, false);)
+
+static const KeyRow k_ask_rows[] = {ASK_KEYS(KEY_DOC)};
+static const KeyRow k_ask_escape_rows[] = {ASK_ESCAPE_KEYS(KEY_DOC)};
 
 static b8 ask_impl(Str question, b8 secret, char *out, size_t cap, b8 edit,
                    b8 allow_empty) {
@@ -6343,13 +6429,14 @@ static b8 ask_impl(Str question, b8 secret, char *out, size_t cap, b8 edit,
     g_tui.input_cur = initial_n;
     g_tui.comp_n = 0;
     char row[sizeof g_tui.notice];
-    i32 rn = snprintf(row, sizeof row, "%.*s  (Esc cancels)", (i32)question.n,
-                      question.p);
+    i32 rn = snprintf(row, sizeof row, "%.*s  (" TUI_KEY_ESC " cancels)",
+                      (i32)question.n, question.p);
     tui_notice(rn > 0 ? (Str){row, (size_t)rn < sizeof row ? (size_t)rn
                                                            : sizeof row - 1}
                       : question);
 
-    b8 answered = false;
+    Asked asked = {0};
+    Asked *a = &asked;
     for (;;) {
         paste_retire_if_drained();
         i32 c = rbyte();
@@ -6358,30 +6445,32 @@ static b8 ask_impl(Str question, b8 secret, char *out, size_t cap, b8 edit,
             continue;
         }
         if (c < 0) break;
-        if ((c == 0x03 || c == 0x04) && !g_tui.pasting) break;
-        if ((c == '\r' || c == '\n') && !g_tui.pasting) {
-            answered = allow_empty || g_tui.input_n > 0;
-            break;
-        }
-        if (g_tui.pasting && (c == '\r' || c == '\n')) continue;
         size_t n = g_tui.input_n, cur = g_tui.input_cur;
-        if (g_tui.pasting && c != 0x1b) {
-            if ((c >= 0x20 && c < 0x7f) || c >= 0x80)
-                edit_insert((char)c, g_bulk.input, &n, &cur, limit + 1);
+        if (key_pasted(c)) {
+            if (!key_is_text(c)) continue;
+            edit_insert((char)c, g_bulk.input, &n, &cur, limit + 1);
         } else if (c == 0x1b) {
             i32 key = read_escape();
-            if (key == KEY_NONE) break;
-            if (!edit_escape(key, g_bulk.input, &n, &cur)) scroll_key(key);
-        } else if (c == 0x0c) {
-            g_tui.frame_valid = false;
+            switch (key) {
+                ASK_ESCAPE_KEYS(KEY_CASE)
+                default:
+                    if (!edit_escape(key, g_bulk.input, &n, &cur))
+                        scroll_key(key);
+                    break;
+            }
         } else {
-            edit_byte(c, g_bulk.input, &n, &cur, limit + 1);
+            switch (c) {
+                ASK_KEYS(KEY_CASE)
+                default: edit_byte(c, g_bulk.input, &n, &cur, limit + 1); break;
+            }
         }
+        if (a->done) break;
         g_tui.input_n = n;
         g_tui.input_cur = cur;
         repaint();
     }
 
+    b8 answered = asked.answered;
     size_t n = answered ? g_tui.input_n : 0;
     memcpy(out, g_bulk.input, n);
     out[n] = '\0';
@@ -6449,7 +6538,7 @@ static size_t paste_run(i32 c, b8 *after_cr, char run[PASTE_RUN_MAX]) {
         run[run_n++] = '\n';
     else if (c == '\t')
         while (run_n < PASTE_RUN_MAX) run[run_n++] = ' ';
-    else if ((c >= 0x20 && c < 0x7f) || c >= 0x80)
+    else if (key_is_text(c))
         run[run_n++] = (char)c;
     return run_n;
 }
@@ -6557,30 +6646,40 @@ static void find_expand_now(void) {
     if (g_tui.find_expand) g_tui.find_expand(g_tui.find_expand_ud);
 }
 
-#define FIND_KEYS(X)                                                           \
-    X(0x0d, "Enter", "Previous match", find_step(-1);)                         \
-    X(0x0a, "", "", find_step(-1);)                                            \
-    X(0x10, "Ctrl-P", "Previous match", find_step(-1);)                        \
-    X(0x0e, "Ctrl-N", "Next match", find_step(1);)                             \
-    X(0x07, "Ctrl-G", "Close the box", find_close();)                          \
-    X(0x05, "Ctrl-E", "Show a capped tool output in full", find_expand_now();) \
-    X(0x0c, "Ctrl-L", "Repaint the screen", g_tui.frame_valid = false;)        \
-    X(0x7f, "Backspace", "Delete the glyph before", find_erase();)             \
-    X(0x08, "", "", find_erase();)                                             \
-    X(0x15, "Ctrl-U", "Clear the query", find_clear();)                        \
-    X(0x17, "Ctrl-W", "Delete the word before", find_kill_word();)
+static void composer_clear(void);
 
-#define FIND_ESCAPE_KEYS(X)                                 \
-    X(KEY_UP, "Up", "Previous match", find_step(-1);)       \
-    X(KEY_DOWN, "Down", "Next match", find_step(1);)        \
-    X(KEY_NONE, "Esc", "Close the box", find_close();)      \
-    X(KEY_MOUSE_DOWN, "Click", "Start a selection",         \
-      sel_begin(g_mouse.row, g_mouse.col);                  \
-      keep_sel = true;)                                     \
-    X(KEY_MOUSE_DRAG, "Drag", "Extend the selection",       \
-      sel_extend(g_mouse.row, g_mouse.col);                 \
-      keep_sel = true;)                                     \
-    X(KEY_MOUSE_UP, "", "", sel_finish(); keep_sel = true;) \
+static void composer_interrupt(void) {
+    if (!g_tui.busy) composer_clear();
+}
+
+#define FIND_KEYS(X)                                                           \
+    X(0x0d, TUI_KEY_ENTER, "Goes to the previous match", find_step(-1);)       \
+    X(0x0a, "", "", find_step(-1);)                                            \
+    X(0x10, "Ctrl-P", "Goes to the previous match", find_step(-1);)            \
+    X(0x0e, "Ctrl-N", "Goes to the next match", find_step(1);)                 \
+    X(0x07, "Ctrl-G", "Closes the search box", find_close();)                  \
+    X(0x05, "Ctrl-E", "Shows a capped tool output in full",                    \
+      find_expand_now();)                                                      \
+    X(0x0c, "Ctrl-L", "Redraws the screen", g_tui.frame_valid = false;)        \
+    X(0x7f, "Backspace", "Deletes the last glyph of the query", find_erase();) \
+    X(0x08, "", "", find_erase();)                                             \
+    X(0x15, "Ctrl-U", "Clears the query", find_clear();)                       \
+    X(0x17, "Ctrl-W", "Deletes the last word of the query", find_kill_word();) \
+    X(KEY_INTERRUPT, "Ctrl-C", "Clears the composer, or interrupts the turn",  \
+      composer_interrupt();)                                                   \
+    X(0x03, "", "", composer_interrupt();)
+
+#define FIND_ESCAPE_KEYS(X)                                             \
+    X(KEY_UP, TUI_KEY_UP, "Goes to the previous match", find_step(-1);) \
+    X(KEY_DOWN, TUI_KEY_DOWN, "Goes to the next match", find_step(1);)  \
+    X(KEY_NONE, TUI_KEY_ESC, "Closes the search box", find_close();)    \
+    X(KEY_MOUSE_DOWN, "Click", "Starts a selection",                    \
+      sel_begin(g_mouse.row, g_mouse.col);                              \
+      keep_sel = true;)                                                 \
+    X(KEY_MOUSE_DRAG, "Drag", "Extends the selection",                  \
+      sel_extend(g_mouse.row, g_mouse.col);                             \
+      keep_sel = true;)                                                 \
+    X(KEY_MOUSE_UP, "", "", sel_finish(); keep_sel = true;)             \
     X(KEY_MOUSE_MOVE, "", "", keep_sel = true;)
 
 static const KeyRow k_find_rows[] = {FIND_KEYS(KEY_DOC)};
@@ -6588,8 +6687,8 @@ static const KeyRow k_find_escape_rows[] = {FIND_ESCAPE_KEYS(KEY_DOC)};
 
 
 static void find_key(i32 c) {
-    if (g_tui.pasting && c != 0x1b) {
-        if ((c >= 0x20 && c < 0x7f) || c >= 0x80) find_type(c);
+    if (key_pasted(c)) {
+        if (key_is_text(c)) find_type(c);
         sel_clear();
         repaint();
         return;
@@ -6609,7 +6708,7 @@ static void find_key(i32 c) {
     switch (c) {
         FIND_KEYS(KEY_CASE)
         default:
-            if ((c >= 0x20 && c < 0x7f) || c >= 0x80) find_type(c);
+            if (key_is_text(c)) find_type(c);
             break;
     }
     sel_clear();
@@ -6683,11 +6782,16 @@ static void ed_vertical(Ed *e, i32 dir) {
 
 
 static void ed_delete_or_eof(Ed *e) {
-    if (!e->n) {
-        ED_RETURN(e, ED_EOF);
+    if (e->n) {
+        edit_delete(e->buf, &e->n, &e->cur);
         return;
     }
-    edit_delete(e->buf, &e->n, &e->cur);
+    if (!g_tui.busy) ED_RETURN(e, ED_EOF);
+}
+
+static void ed_interrupt(Ed *e) {
+    composer_interrupt();
+    ED_RETURN(e, ED_EDIT);
 }
 
 static void ed_mouse_up(Ed *e) {
@@ -6765,58 +6869,67 @@ static void ed_end(Ed *e) {
 }
 
 
-#define COMPOSER_KEYS(X)                                                   \
-    X(0x0d, "Enter", "Send the message, or take the popup entry",          \
-      ed_enter(e);)                                                        \
-    X(0x0a, "", "", ed_enter(e);)                                          \
-    X('\t', "Tab", "Complete the popup entry", ed_tab(e);)                 \
-    X(0x0e, "Ctrl-N", "Next entry, or the next draft", ed_vertical(e, 1);) \
-    X(0x10, "Ctrl-P", "Previous entry, or the previous draft",             \
-      ed_vertical(e, -1);)                                                 \
-    X(0x04, "Ctrl-D", "Delete forward, or exit on an empty composer",      \
-      ed_delete_or_eof(e);)                                                \
-    X(0x12, "Ctrl-R", "Search the transcript", tui_find_open();            \
-      ED_RETURN(e, ED_EDIT);)                                              \
-    X(0x16, "Ctrl-V", "Attach the clipboard's image to the message",       \
-      g_tui.attach_n = 0;                                                  \
-      e->action = ED_ATTACH;)                                              \
-    X(0x0f, "Ctrl-O", "Switch between this conversation and the task's",   \
-      e->action = ED_TASK;)                                                \
-    X(0x07, "Ctrl-G", "Edit the message in your editor",                   \
-      e->action = ED_EDITOR;)                                              \
-    X(0x0c, "Ctrl-L", "Repaint the screen", g_tui.frame_valid = false;)
+#define COMPOSER_KEYS(X)                                                       \
+    X(0x0d, TUI_KEY_ENTER, "Sends the message, or takes the popup entry",      \
+      ed_enter(e);)                                                            \
+    X(0x0a, "", "", ed_enter(e);)                                              \
+    X('\t', TUI_KEY_TAB, "Completes the popup entry", ed_tab(e);)              \
+    X(0x0e, "Ctrl-N", "Moves to the next entry, or the next draft",            \
+      ed_vertical(e, 1);)                                                      \
+    X(0x10, "Ctrl-P", "Moves to the previous entry, or the previous draft",    \
+      ed_vertical(e, -1);)                                                     \
+    X(0x04, "Ctrl-D",                                                          \
+      "Deletes forward, or exits on an empty composer between turns",          \
+      ed_delete_or_eof(e);)                                                    \
+    X(KEY_INTERRUPT, "Ctrl-C", "Clears the line, or interrupts the turn",      \
+      ed_interrupt(e);)                                                        \
+    X(0x03, "", "", ed_interrupt(e);)                                          \
+    X(0x12, TUI_KEY_FIND, "Searches the transcript", tui_find_open();          \
+      ED_RETURN(e, ED_EDIT);)                                                  \
+    X(0x16, TUI_KEY_ATTACH, "Attaches the clipboard's image to the message",   \
+      g_tui.attach_n = 0;                                                      \
+      e->action = ED_ATTACH;)                                                  \
+    X(0x0f, TUI_KEY_TASK, "Switches between this conversation and the task's", \
+      e->action = ED_TASK;)                                                    \
+    X(0x07, TUI_KEY_EDITOR, "Opens the message in an external editor",         \
+      e->action = ED_EDITOR;)                                                  \
+    X(0x0c, "Ctrl-L", "Redraws the screen", g_tui.frame_valid = false;)
 
-#define COMPOSER_ESCAPE_KEYS(X)                                              \
-    X(KEY_NONE, "Esc", "Dismiss, or go back a message", ed_escape(e);)       \
-    X(KEY_UP, "Up", "Previous entry, or the previous draft",                 \
-      ed_vertical(e, -1);)                                                   \
-    X(KEY_DOWN, "Down", "Next entry, or the next draft", ed_vertical(e, 1);) \
-    X(KEY_HOME, "Home",                                                      \
-      "Start of line, or the top of the "                                    \
-      "transcript on an empty composer",                                     \
-      ed_home(e);)                                                           \
-    X(KEY_END, "End",                                                        \
-      "End of line, or the bottom of the "                                   \
-      "transcript on an empty composer",                                     \
-      ed_end(e);)                                                            \
-    X(KEY_TOP, "Ctrl-Home", "Top of the transcript", scroll_to_top();        \
-      ed_viewport(e);)                                                       \
-    X(KEY_BOTTOM, "Ctrl-End", "Bottom of the transcript",                    \
-      tui_scroll_to_bottom();                                                \
-      ed_viewport(e);)                                                       \
-    X(KEY_NEWLINE, "Alt/Shift-Enter", "Insert a line break", ed_newline(e);) \
-    X(KEY_SHIFT_TAB, "Shift-Tab", "Switch between Build and Plan mode",      \
-      e->action = ED_MODE;)                                                  \
-    X(KEY_MOUSE_DOWN, "Click", "Start a selection",                          \
-      sel_begin(g_mouse.row, g_mouse.col);                                   \
-      e->keep_sel = true;                                                    \
-      g_tui.click_down = zone_at_cell(g_mouse.row, g_mouse.col);)            \
-    X(KEY_MOUSE_DRAG, "Drag", "Extend the selection",                        \
-      sel_extend(g_mouse.row, g_mouse.col);                                  \
-      e->keep_sel = true;)                                                   \
-    X(KEY_MOUSE_MOVE, "", "",                                                \
-      g_tui.hover_id = zone_at_cell(g_mouse.row, g_mouse.col);               \
-      e->keep_sel = true; e->vertical = true; e->keep_nav = true;)           \
+#define COMPOSER_ESCAPE_KEYS(X)                                               \
+    X(KEY_NONE, TUI_KEY_ESC, "Dismisses, or goes back a message",             \
+      ed_escape(e);)                                                          \
+    X(KEY_UP, TUI_KEY_UP,                                                     \
+      "Moves to the previous entry, or the previous draft",                   \
+      ed_vertical(e, -1);)                                                    \
+    X(KEY_DOWN, TUI_KEY_DOWN, "Moves to the next entry, or the next draft",   \
+      ed_vertical(e, 1);)                                                     \
+    X(KEY_HOME, "Home",                                                       \
+      "Moves to the start of the line, or to the top of the transcript on "   \
+      "an empty composer",                                                    \
+      ed_home(e);)                                                            \
+    X(KEY_END, "End",                                                         \
+      "Moves to the end of the line, or to the bottom of the transcript on "  \
+      "an empty composer",                                                    \
+      ed_end(e);)                                                             \
+    X(KEY_TOP, "Ctrl-Home", "Scrolls to the top of the transcript",           \
+      scroll_to_top();                                                        \
+      ed_viewport(e);)                                                        \
+    X(KEY_BOTTOM, "Ctrl-End", "Scrolls to the bottom of the transcript",      \
+      tui_scroll_to_bottom();                                                 \
+      ed_viewport(e);)                                                        \
+    X(KEY_NEWLINE, "Alt/Shift-Enter", "Inserts a line break", ed_newline(e);) \
+    X(KEY_SHIFT_TAB, "Shift-Tab", "Switches between Build and Plan mode",     \
+      e->action = ED_MODE;)                                                   \
+    X(KEY_MOUSE_DOWN, "Click", "Starts a selection",                          \
+      sel_begin(g_mouse.row, g_mouse.col);                                    \
+      e->keep_sel = true;                                                     \
+      g_tui.click_down = zone_at_cell(g_mouse.row, g_mouse.col);)             \
+    X(KEY_MOUSE_DRAG, "Drag", "Extends the selection",                        \
+      sel_extend(g_mouse.row, g_mouse.col);                                   \
+      e->keep_sel = true;)                                                    \
+    X(KEY_MOUSE_MOVE, "", "",                                                 \
+      g_tui.hover_id = zone_at_cell(g_mouse.row, g_mouse.col);                \
+      e->keep_sel = true; e->vertical = true; e->keep_nav = true;)            \
     X(KEY_MOUSE_UP, "", "", ed_mouse_up(e);)
 
 static const KeyRow k_composer_rows[] = {COMPOSER_KEYS(KEY_DOC)};
@@ -6842,7 +6955,7 @@ static EdAction editor_key(i32 c) {
         find_key(c);
         return ED_EDIT;
     }
-    if (g_tui.pasting && c != 0x1b) {
+    if (key_pasted(c)) {
         paste_byte(c);
         return ED_EDIT;
     }
@@ -6888,6 +7001,8 @@ static EdAction editor_key(i32 c) {
 #define KEY_CONTEXTS(X)                          \
     X("[composer]", k_composer_rows)             \
     X("[composer]", k_composer_escape_rows)      \
+    X("[question]", k_ask_rows)                  \
+    X("[question]", k_ask_escape_rows)           \
     X("[line editing]", k_edit_rows)             \
     X("[line editing]", k_edit_escape_rows)      \
     X("[transcript search]", k_find_rows)        \
@@ -6895,7 +7010,8 @@ static EdAction editor_key(i32 c) {
     X("[lists and screens]", k_pick_rows)        \
     X("[lists and screens]", k_pick_escape_rows) \
     X("[text view]", k_view_rows)                \
-    X("[text view]", k_view_escape_rows)
+    X("[text view]", k_view_escape_rows)         \
+    X("[transcript scrolling]", k_scroll_rows)
 
 static const KeyContext k_key_contexts[] = {
 #define X(name, rows) {name, rows, sizeof rows / sizeof rows[0]},
@@ -6910,24 +7026,44 @@ enum { KEY_ROW_MAX = 0 KEY_CONTEXTS(X) };
 _Static_assert(KEY_ROW_MAX <= AGENT_MAX_KEY_ROWS,
                "the keys page outgrew AGENT_MAX_KEY_ROWS");
 
+#ifdef AGENT_TESTING
+static b8 key_label_matches_code(const KeyRow *row) {
+    const char *label = row->key;
+    if (strncmp(label, "Ctrl-", 5) != 0 || !label[5] || label[6]) return true;
+    char letter = label[5];
+    if (letter < 'A' || letter > 'Z') return true;
+    if (letter == 'C' && row->code == KEY_INTERRUPT) return true;
+    return row->code == (letter & 0x1f);
+}
+
 static void keys_selfcheck(void) {
+    b8 failed = false;
     for (size_t a = 0; a < KEY_CONTEXT_N; a++) {
         const KeyContext *ka = &k_key_contexts[a];
         for (size_t i = 0; i < ka->n; i++) {
             const char *key = ka->rows[i].key;
             if (!key || !key[0]) continue;
+            if (!key_label_matches_code(&ka->rows[i])) {
+                fprintf(stderr, "keys: %s labels code 0x%x as %s\n", ka->name,
+                        (unsigned)ka->rows[i].code, key);
+                failed = true;
+            }
             for (size_t b = 0; b <= a; b++) {
                 const KeyContext *kb = &k_key_contexts[b];
                 if (strcmp(kb->name, ka->name) != 0) continue;
                 size_t upto = b == a ? i : kb->n;
                 for (size_t j = 0; j < upto; j++)
-                    if (kb->rows[j].key && !strcmp(kb->rows[j].key, key))
-                        agent_log(AGENT_LOG_WARN, "keys: %s lists %s twice",
-                                  ka->name, key);
+                    if (kb->rows[j].key && !strcmp(kb->rows[j].key, key)) {
+                        fprintf(stderr, "keys: %s lists %s twice\n", ka->name,
+                                key);
+                        failed = true;
+                    }
             }
         }
     }
+    if (failed) exit(2);
 }
+#endif
 
 size_t tui_key_rows(TuiCmd *rows, size_t max) {
     if (!rows) return 0;
@@ -6998,7 +7134,8 @@ static void busy_submit(void) {
     if (!g_tui.input_n) return;
     if (g_bulk.input[0] != '/') {
         if (g_tui.queued_n) {
-            tui_notice(STR("a message is already queued; Esc cancels it"));
+            tui_notice(
+                STR("a message is already queued; " TUI_KEY_ESC " cancels it"));
             return;
         }
         memcpy(g_bulk.queued, g_bulk.input, g_tui.input_n);
@@ -7063,7 +7200,6 @@ static void poll_input(void) {
     if (g_view.active && !g_view.modal) {
         while (g_view.active && !g_tui.input_eof && input_ready(0)) {
             i32 c = rbyte();
-            if (c == -2) continue;
             if (c < 0 && c != -3) {
                 g_tui.input_eof = true;
                 view_close();
@@ -7079,7 +7215,6 @@ static void poll_input(void) {
     if (g_pick.active && !g_pick.modal) {
         while (g_pick.active && !g_tui.input_eof && input_ready(0)) {
             i32 c = rbyte();
-            if (c == -2) continue;
             if (c < 0 && c != -3) {
                 g_tui.input_eof = true;
                 pick_close();
@@ -7104,12 +7239,10 @@ static void poll_input(void) {
             dirty = true;
             continue;
         }
-        if (c == -2) continue;
         if (c < 0) {
             g_tui.input_eof = true;
             break;
         }
-        if ((c == 0x03 || c == 0x04) && !g_tui.pasting) continue;
         EdAction action = editor_key(c);
         if (action == ED_SUBMIT) {
             busy_submit();
@@ -7124,8 +7257,8 @@ static void poll_input(void) {
         else if (action == ED_TASK)
             busy_task();
         else if (action == ED_EDITOR)
-            tui_notice(STR("the editor opens between turns; Esc interrupts "
-                           "this one"));
+            tui_notice(STR("the editor opens between turns; " TUI_KEY_ESC
+                           " interrupts this one"));
         dirty = true;
     }
     if (dirty) repaint();
@@ -7163,11 +7296,6 @@ b8 tui_readline(const char *prompt, char *buf, size_t cap, size_t *out_n) {
         tick_until_input();
         i32 c = rbyte();
         if (c == -3) {
-            repaint();
-            continue;
-        }
-        if (c == -2 || (c == 0x03 && !g_tui.pasting)) {
-            composer_clear();
             repaint();
             continue;
         }

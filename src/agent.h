@@ -149,7 +149,7 @@ typedef bool b8;
 #define AGENT_MAX_MODELS AGENT_MAX_POPUP
 
 #define AGENT_MAX_FAVORITES          64
-#define AGENT_MAX_KEY_ROWS           128
+#define AGENT_MAX_KEY_ROWS           160
 #define AGENT_MAX_ENDPOINTS          32
 #define AGENT_MAX_ENDPOINT_NAME      64
 #define AGENT_MAX_URL                512
@@ -2141,10 +2141,37 @@ b8 tui_pick_timed(Str title, const TuiCmd *items, size_t n,
                   TuiPickAnchor anchor, size_t start, i32 timeout_ms,
                   size_t *out, b8 *expired, b8 *amended);
 
+typedef enum {
+    TUI_PICK_FAVORITE,
+    TUI_PICK_CONFIGURE,
+    TUI_PICK_OTHER_VALUE,
+    TUI_PICK_DELETE,
+    TUI_PICK_SMALL,
+    TUI_PICK_KEY_N
+} TuiPickKey;
+
+#define TUI_KEY_ENTER       "Enter"
+#define TUI_KEY_ESC         "Esc"
+#define TUI_KEY_TAB         "Tab"
+#define TUI_KEY_SPACE       "Space"
+#define TUI_KEY_UP          "Up"
+#define TUI_KEY_DOWN        "Down"
+#define TUI_KEY_LEFT        "Left"
+#define TUI_KEY_RIGHT       "Right"
+#define TUI_KEY_FIND        "Ctrl-R"
+#define TUI_KEY_EDITOR      "Ctrl-G"
+#define TUI_KEY_ATTACH      "Ctrl-V"
+#define TUI_KEY_TASK        "Ctrl-O"
+#define TUI_KEY_FAVORITE    "Ctrl-F"
+#define TUI_KEY_CONFIGURE   "Ctrl-E"
+#define TUI_KEY_OTHER_VALUE "Ctrl-O"
+#define TUI_KEY_DELETE      "Ctrl-X"
+#define TUI_KEY_SMALL       "Ctrl-S"
+
 typedef struct {
     size_t (*act)(void *ud, size_t row, size_t *moved);
     void *ud;
-    i32 key;
+    TuiPickKey key;
 } TuiPickBinding;
 typedef struct {
     TuiCmd *rows;

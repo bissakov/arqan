@@ -6,11 +6,18 @@ the completion popup being open, the composer being empty, which context owns
 the keyboard. These cases pin both sides of every such pair, so a binding
 added later cannot quietly take a key that already had a meaning.
 
-`/keys` is the same table rendered, so a duplicate that survived the compiler
-shows up here as one key listed twice under one context.
+Three guards keep the tables honest. The compiler refuses a key bound twice in
+one table, since each table expands into a `switch`. The test build's
+self-check refuses, at startup, a label listed twice in one context and a
+`Ctrl-<letter>` label that does not match its key, so every case here fails
+at once. And `/keys` is the same table rendered, so these cases read it back
+as the user sees it.
 """
 
 import re
+
+from tests.cases.test_busy import click_tail, folded_read
+from tests.cases.test_title import one_turn, session_titles
 
 
 # ---- the page ------------------------------------------------------------
@@ -74,7 +81,7 @@ def parse_bindings(rows: list[str]) -> dict[str, list[str]]:
             continue
         if context is None:
             continue
-        m = re.match(r"^((?:Ctrl|Alt|Shift)-\w+|[A-Z][a-z]+)\s{2,}\S", row)
+        m = re.match(r"^((?:Ctrl|Alt|Shift)-\w+|[A-Z][A-Za-z]+)\s{2,}\S", row)
         if m:
             out[context].append(m.group(1))
     return out
@@ -86,14 +93,16 @@ def test_keys_page_lists_bindings_grouped_by_context(ctx):
     open_keys(s)
     bindings = parse_bindings(whole_page(s))
     assert set(bindings) == {
-        "composer", "line editing", "transcript search", "lists and screens",
-        "text view",
+        "composer", "question", "line editing", "transcript search",
+        "lists and screens", "text view", "transcript scrolling",
     }, sorted(bindings)
     assert "Ctrl-R" in bindings["composer"], bindings["composer"]
     assert "Ctrl-G" in bindings["transcript search"], \
         bindings["transcript search"]
     assert "Ctrl-Y" in bindings["line editing"], bindings["line editing"]
     assert "Ctrl-D" in bindings["text view"], bindings["text view"]
+    assert "PgUp" in bindings["transcript scrolling"], \
+        bindings["transcript scrolling"]
 
 
 def test_keys_page_headings_are_non_interactive_separators(ctx):
@@ -277,3 +286,111 @@ def test_a_signal_key_leaves_no_input_debt(ctx):
     assert s.term.input_consumed >= s._sent, (
         f"input debt {s._sent - s.term.input_consumed} outlives the key"
     )
+
+
+# ---- Ctrl-C and Ctrl-D ---------------------------------------------------
+
+def test_ctrl_d_deletes_forward_in_the_composer_during_a_turn(ctx):
+    """A turn holds back the exit, not the editing: Ctrl-D deletes forward,
+    and on an empty composer it does nothing until the turn ends."""
+    ctx.scenario("hold,text=done")
+    s = ctx.spawn()
+    s.submit("go on")
+    s.wait_activity("thinking")
+
+    s.type("abc").sync()
+    s.key("home").sync()
+    s.key("ctrl-d").sync()
+    assert s.composer_text() == "bc", s.composer_lines()
+    s.key("ctrl-d", "ctrl-d", "ctrl-d").sync()
+    assert s.composer_text() == "", s.composer_lines()
+
+    ctx.mock.release()
+    s.wait_text("done")
+    s.wait_turn_done()
+
+
+def test_ctrl_c_closes_a_modal_list(ctx):
+    """Between turns the list owns the keyboard, so Ctrl-C closes it
+    without choosing, and the next turn runs to its end."""
+    ctx.scenario("text=fine")
+    s = ctx.spawn()
+    open_keys(s)
+    s.key("ctrl-c")
+    s.wait_gone("Ctrl-R")
+
+    s.submit("next")
+    s.wait_text("fine")
+    s.wait_turn_done()
+    assert "[interrupted]" not in s.text(), s.text()
+
+
+def test_ctrl_c_mid_turn_interrupts_and_leaves_a_list_open(ctx):
+    """During a turn Ctrl-C stops the turn; the list opened over it stays."""
+    ctx.scenario("hold,text=done")
+    s = ctx.spawn()
+    s.submit("go on")
+    s.wait_activity("thinking")
+    s.submit("/keys")
+    s.wait_text("Ctrl-R")
+
+    s.key("ctrl-c")
+    s.wait_text("[interrupted]")
+    assert "Ctrl-R" in s.text(), s.text()
+    s.key("esc").sync()
+    s.wait_gone("Ctrl-R")
+    s.wait_turn_done()
+    assert len(ctx.mock.requests) == 1, ctx.mock.requests
+
+
+def test_ctrl_c_mid_turn_interrupts_and_leaves_a_text_view_open(ctx):
+    """The view's hint says Esc closes and Ctrl-C interrupts; both hold."""
+    s = folded_read(ctx)
+    click_tail(s)
+    s.wait_text("line 0012 of output")
+
+    s.key("ctrl-c")
+    s.wait_status("ready")
+    assert "line 0012 of output" in s.text(), s.text()
+    assert "esc close" in s.text(), s.text()
+    s.key("esc").sync()
+    s.wait_gone("esc close")
+    s.wait_text("[interrupted]")
+    assert "done" not in s.text(), s.text()
+
+
+def test_ctrl_l_redraws_a_list(ctx):
+    """Ctrl-L repaints every cell, so a damaged screen comes back whole."""
+    s = ctx.spawn()
+    open_keys(s)
+    s.settle()
+    before = s.snapshot()
+    s.term.feed(b"\x1b[2;1Hscribble over the list")
+    assert s.snapshot() != before
+    s.key("ctrl-l").sync()
+    assert s.snapshot() == before, s.snapshot()
+
+
+def test_ctrl_d_in_a_question_deletes_forward_and_cancels_when_empty(ctx):
+    """The question edits like the composer: Ctrl-D deletes the glyph under
+    the cursor, and only an empty field takes it as the way out."""
+    s = one_turn(ctx)
+    s.submit("/title alpha bravo")
+    s.wait_text("session named: alpha bravo")
+    s.type("/title").sync()
+    s.key("enter")
+    s.wait_text("Esc cancels")
+    assert s.composer_text() == "alpha bravo", s.composer_lines()
+
+    s.key("home").sync()
+    s.key("ctrl-d").sync()
+    assert s.composer_text() == "lpha bravo", s.composer_lines()
+    s.key("ctrl-k").sync()
+    assert s.composer_text() == "", s.composer_lines()
+    assert "Esc cancels" in s.text(), "a deleting Ctrl-D does not cancel"
+
+    s.key("ctrl-d")
+    s.wait_gone("Esc cancels")
+    assert session_titles(ctx) == ["alpha bravo"]
+    s.type("still here").sync()
+    assert s.composer_text() == "still here", s.composer_lines()

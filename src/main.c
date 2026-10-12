@@ -113,16 +113,18 @@ static size_t commands_init(b8 images, b8 subagents, b8 mcp) {
                              "disable, prompts, prompt")};
     if (subagents)
         g_commands.v[n++] =
-            (TuiCmd){STR("/task"),
-                     STR("Show what the delegated task is doing (Ctrl-O)")};
+            (TuiCmd){STR("/task"), STR("Show what the delegated task is doing "
+                                       "(" TUI_KEY_TASK ")")};
     if (images)
         g_commands.v[n++] = (TuiCmd){
             STR("/attach"),
-            STR("Attach an image to the next message, by path or from the clipboard (Ctrl-V)")};
-    g_commands.v[n++] = (TuiCmd){
-        STR("/editor"), STR("Write the message in your editor (Ctrl-G)")};
+            STR("Attach an image to the next message, by path or from the "
+                "clipboard (" TUI_KEY_ATTACH ")")};
     g_commands.v[n++] =
-        (TuiCmd){STR("/find"), STR("Search the transcript (Ctrl-R)")};
+        (TuiCmd){STR("/editor"),
+                 STR("Write the message in your editor (" TUI_KEY_EDITOR ")")};
+    g_commands.v[n++] =
+        (TuiCmd){STR("/find"), STR("Search the transcript (" TUI_KEY_FIND ")")};
     g_commands.v[n++] =
         (TuiCmd){STR("/keys"), STR("Show the keyboard shortcuts")};
     g_commands.v[n++] =
@@ -702,13 +704,14 @@ static Str ask_user_answer(Agent *ag, Str args) {
     char hint[128];
     i32 hn;
     if (wait_ms > 0) {
-        hn = snprintf(hint, sizeof hint,
-                      "no answer in %ds picks the recommended option - "
-                      "Tab adds to an answer",
-                      wait_ms / 1000 > 0 ? wait_ms / 1000 : 1);
+        hn = snprintf(
+            hint, sizeof hint,
+            "no answer in %ds picks the recommended option - " TUI_KEY_TAB
+            " adds to an answer",
+            wait_ms / 1000 > 0 ? wait_ms / 1000 : 1);
     } else {
-        hn =
-            snprintf(hint, sizeof hint, "Tab adds your own words to an answer");
+        hn = snprintf(hint, sizeof hint,
+                      TUI_KEY_TAB " adds your own words to an answer");
     }
     if (hn > 0 && (size_t)hn < sizeof hint) tui_notice((Str){hint, (size_t)hn});
 
@@ -2605,8 +2608,9 @@ static size_t session_delete_row(void *ud, size_t row, size_t *moved) {
     if (!sp->has_armed || sp->armed != row) {
         sp->has_armed = true;
         sp->armed = row;
-        snprintf(msg, sizeof msg, "Press Ctrl-X again to delete %.*s",
-                 (i32)name.n, name.p);
+        snprintf(msg, sizeof msg,
+                 "Press " TUI_KEY_DELETE " again to delete %.*s", (i32)name.n,
+                 name.p);
         tui_notice(str_c(msg));
         return sp->n;
     }
@@ -2687,9 +2691,9 @@ static void resume_session(Agent *ag) {
     sp.n = n;
 
     size_t pick = 0;
-    TuiPickBinding binding = {session_delete_row, &sp, 0x18};
+    TuiPickBinding binding = {session_delete_row, &sp, TUI_PICK_DELETE};
     TuiPickAction act = {items, n, &binding, 1,
-                         STR("Ctrl-X deletes the selected session")};
+                         STR(TUI_KEY_DELETE " deletes the selected session")};
     b8 chosen = tui_pick_action(STR("pick a session"), n, n, TUI_PICK_FIRST,
                                 TUI_PICK_NONE, &act, &pick);
     if (sp.deleted && !chosen) {
@@ -3841,17 +3845,19 @@ static b8 pick_model(Config *cfg, const Endpoints *eps, Catalog *cat,
 
     size_t rows = model_build(&mp);
     TuiPickBinding bindings[] = {
-        {model_favorite, &mp, 0x06},
-        {model_manual_action, &mp, 0x0f},
-        {model_configure_action, &mp, 0x05},
+        {model_favorite, &mp, TUI_PICK_FAVORITE},
+        {model_manual_action, &mp, TUI_PICK_OTHER_VALUE},
+        {model_configure_action, &mp, TUI_PICK_CONFIGURE},
 
-        {model_small_action, &mp, 0x13},
+        {model_small_action, &mp, TUI_PICK_SMALL},
     };
 
-    TuiPickAction act = {
-        mp.rows, cat->n, bindings, 4,
-        STR("Ctrl-F pins \xc2\xb7 Ctrl-O manual entry \xc2\xb7 "
-            "Ctrl-E configures \xc2\xb7 Ctrl-S small model")};
+    TuiPickAction act = {mp.rows, cat->n, bindings, 4,
+                         STR(TUI_KEY_FAVORITE
+                             " pins \xc2\xb7 " TUI_KEY_OTHER_VALUE
+                             " manual entry \xc2\xb7 " TUI_KEY_CONFIGURE
+                             " configures \xc2\xb7 " TUI_KEY_SMALL
+                             " small model")};
     size_t pick = 0;
     size_t start = 0;
     for (size_t r = 0; r < rows; r++)
@@ -5218,7 +5224,8 @@ static b8 on_busy_command(Str line, void *ud) {
         copy_last_reply(ag->conv);
         ran = true;
     } else if (command_offered(name)) {
-        notice_fmt("%.*s waits until the turn ends; Esc stops the turn",
+        notice_fmt("%.*s waits until the turn ends; " TUI_KEY_ESC
+                   " stops the turn",
                    (i32)name.n, name.p);
         return false;
     } else {
@@ -5653,8 +5660,9 @@ static b8 name_session(Agent *ag, b8 manual, b8 *interrupted_out) {
     }
     if (!cfg->small_model.n) {
         if (manual)
-            tui_notice(STR("no small model is configured: pick one with "
-                           "Ctrl-S in /model"));
+            tui_notice(
+                STR("no small model is configured: pick one with " TUI_KEY_SMALL
+                    " in /model"));
         return false;
     }
     sess->title_tried = true;
@@ -6093,8 +6101,8 @@ static b8 agent_turn_interactive(Agent *ag, Str text) {
         ok = agent_turn(ag, next);
     }
     if (g_tview.showing == TVIEW_TASK)
-        tui_notice(
-            STR("the reply is in the conversation; Ctrl-O returns to it"));
+        tui_notice(STR("the reply is in the conversation; " TUI_KEY_TASK
+                       " returns to it"));
     return ok;
 }
 
