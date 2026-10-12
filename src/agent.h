@@ -1341,12 +1341,20 @@ ShellClass shell_classify(Str cmd, b8 contained);
 b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap);
 void shell_set_idle(void (*fn)(void *ud), void *ud);
 void shell_set_interrupt_flag(volatile sig_atomic_t *flag);
+/* Asked while a command or a job is waited on. True ends the wait early and
+ * leaves the command running as a job. */
+void shell_set_yield(b8 (*fn)(void));
 /* Called with the path of every file `write` and `patch` create, replace or
  * delete, after the change reaches disk. */
 void tools_set_touch(void (*fn)(void *ud, Str path), void *ud);
 
 void shell_set_timeout(i32 ms);
 void jobs_stop(void);
+/* Names each job that ended since the model last saw its state, once.
+ * INVARIANT: append it after todo_note_stale and before progress_note, the
+ * reverse of the order the transcript strips them in. */
+void jobs_note(Buf *out);
+Str jobs_note_strip(Str result);
 
 
 Str prompt_build(const ToolRegistry *tools, Str configured, Arena *persist,

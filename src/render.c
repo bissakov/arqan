@@ -49,7 +49,7 @@ static b8 render_in_full(Str name) {
 
 b8 render_unapplied(Str name, Str result) {
     if (!render_in_full(name)) return false;
-    result = todo_note_strip(progress_note_strip(result));
+    result = todo_note_strip(jobs_note_strip(progress_note_strip(result)));
     return str_starts(result, STR("ERROR: "))
            || str_starts(result, STR("DENIED: "));
 }
@@ -887,7 +887,7 @@ static b8 patch_numbers_fill(Str patch, Str result, PatchNumbers *pn,
 static void patch_numbers(Str patch, Str result, Arena *scratch,
                           PatchNumbers *pn) {
     *pn = (PatchNumbers){0};
-    result = todo_note_strip(progress_note_strip(result));
+    result = todo_note_strip(jobs_note_strip(progress_note_strip(result)));
     if (!result.n || !scratch) return;
     size_t off = 0, hunks = 0;
     Str line;
@@ -1636,7 +1636,7 @@ static void render_tool_result_nested(Str name, Str args, Str result,
         && render_batch_result(args, result, scratch, id, expanded, ms))
         return;
     block_begin(id, expanded);
-    result = todo_note_strip(progress_note_strip(result));
+    result = todo_note_strip(jobs_note_strip(progress_note_strip(result)));
     b8 dim_edge = nested || str_eq(name, STR("batch"));
     if (str_eq(name, STR("batch")) && str_starts(result, STR("batch ")))
         tui_write_dim(STR("\u2502\n"));
@@ -1913,7 +1913,7 @@ Str render_result_text(Str name, Str args, Str result, Arena *scratch,
     b8 full = render_in_full(name);
     if (shown) *shown = full ? SIZE_MAX : R_RESULT_LINES;
     if (syntax) syntax->n = 0;
-    result = todo_note_strip(progress_note_strip(result));
+    result = todo_note_strip(jobs_note_strip(progress_note_strip(result)));
     if (str_starts(result, STR("ERROR: "))) return str_drop(result, 7);
     if (str_eq(name, STR("batch")) && scratch && str_starts(result, STR("{")))
         return render_batch_text(args, result, false, scratch, syntax);

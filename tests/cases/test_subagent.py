@@ -752,6 +752,30 @@ def test_an_interrupt_leaves_the_worker_running(ctx):
     assert "the cat is in src/one.c" in last_result(ctx), last_result(ctx)
 
 
+def test_a_queued_message_ends_the_wait_not_the_task(ctx):
+    """A message the user queues ends a long wait on a task the way Ctrl-C
+    does: the turn hands over and the task is still there to collect."""
+    a_small_tree(ctx)
+    ctx.scenario(collect(ctx))
+    s = spawn(ctx, sub="hold=1,text=the+cat+is+in+src/one.c")
+    s.submit("delegate it")
+    s.wait_for(lambda t: bool(sub_requests(ctx))
+               and t.contains("task continue 1"), "the task wait")
+    ctx.scenario("text=heard+you,final_text=heard+you")
+    s.submit("something else")
+    s.wait_text("heard you")
+    s.wait_turn_done()
+    assert "is still running" in parent_results(ctx)[-1], parent_results(ctx)
+    ctx.mock.release()
+
+    ctx.scenario('tool=task:{"id":1,"wait_ms":%d},final_text=done' % WAIT)
+    s.submit("poll it")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    assert "the cat is in src/one.c" in last_result(ctx), last_result(ctx)
+
+
 # ---- reads outside the project --------------------------------------------
 
 
