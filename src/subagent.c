@@ -245,7 +245,11 @@ SubOutcome subagent_slice(Subagent *s, const SubRun *r, Buf *out, char *err,
             subagent_cost(out, s);
             return SUB_REPORTED;
         }
-        if (!sub_run_calls(s, r, before)) {
+        RoundDeadline outer =
+            shell_swap_round_deadline(round_deadline_after(round_started));
+        b8 called = sub_run_calls(s, r, before);
+        shell_swap_round_deadline(outer);
+        if (!called) {
             buf_putf(out, "Task %u", s->id);
             subagent_label(out, s);
             buf_putf(out,

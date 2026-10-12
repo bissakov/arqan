@@ -317,6 +317,29 @@ def test_a_poll_before_it_finishes_answers_with_progress(ctx):
     ctx.mock.release()
 
 
+def test_a_task_wait_stops_at_the_round_limit(ctx):
+    """A wait for the report shares the round limit with every other wait in
+    the response, so the next request goes out while the prompt cache is
+    still warm."""
+    a_small_tree(ctx)
+    ctx.scenario(collect(ctx))
+    s = spawn(ctx, sub="hold=1,text=the+cat+is+in+src/one.c",
+              ARQAN_TEST_ROUND_WAIT_MS="2000")
+    started = time.monotonic()
+    s.submit("delegate it")
+    s.wait_text("done")
+    took = time.monotonic() - started
+    s.wait_turn_done()
+
+    progress = parent_results(ctx)[1]
+    assert took < 10.0, f"the wait held the next request for {took:.1f}s"
+    assert "running" in progress, progress
+    assert "the cat is in src/one.c" not in progress, progress
+    assert "\n\nThis response's 2 seconds of waiting ran out. Call task(id=1) " \
+        "again for the report." in progress, progress
+    ctx.mock.release()
+
+
 def test_a_poll_after_it_finishes_carries_the_report_and_the_cost(ctx):
     """The report is the tool result, with one line naming what it cost."""
     a_small_tree(ctx)

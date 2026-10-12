@@ -78,6 +78,7 @@ typedef bool b8;
 #define AGENT_ELIDE_AT           75
 #define AGENT_ELIDE_MIN_GAIN_PCT 10
 #define AGENT_CACHE_TTL_S        300.0
+#define AGENT_ROUND_WAIT_S       280
 #define AGENT_CACHE_HISTORY      3
 #define AGENT_ELIDE_NOTE_BYTES   76
 #define AGENT_COMPACT_RESERVE    16384
@@ -1352,6 +1353,21 @@ void shell_set_yield(b8 (*fn)(void));
 void tools_set_touch(void (*fn)(void *ud, Str path), void *ud);
 
 void shell_set_timeout(i32 ms);
+/* The waits of one response share one deadline, so the next request reaches
+ * the provider before its prompt cache expires. Past the expiry there is
+ * nothing left to keep, and waits run in full. A zero deadline turns it off. */
+typedef struct {
+    f64 deadline_s;
+    f64 expires_s;
+    f64 wait_s;
+} RoundDeadline;
+RoundDeadline round_deadline_after(f64 request_sent_s);
+/* Installs `next` and returns the deadline it replaces, to restore after. */
+RoundDeadline shell_swap_round_deadline(RoundDeadline next);
+/* `want_ms` cut to the round deadline; `cut` says whether it was. */
+size_t shell_round_wait_ms(size_t want_ms, b8 *cut);
+/* "this response's N seconds of waiting ran out" */
+void shell_round_spent_text(char *z, size_t cap);
 void jobs_stop(void);
 /* Names each job that ended since the model last saw its state, once.
  * INVARIANT: append it after todo_note_stale and before progress_note, the
