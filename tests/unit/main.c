@@ -993,6 +993,59 @@ static void conv_result_slot_pairs_like_call_slot(void) {
     CHECK(conv_result_slot(&c, 13) == CONV_NONE);
 }
 
+/* ---- config paths ------------------------------------------------------ */
+
+typedef struct {
+    const char *name;
+    b8 set;
+    char value[512];
+} SavedEnv;
+
+static void env_save(SavedEnv *e, const char *name) {
+    const char *v = getenv(name);
+    e->name = name;
+    e->set = v && strlen(v) < sizeof e->value;
+    if (e->set) memcpy(e->value, v, strlen(v) + 1);
+}
+
+static void env_restore(const SavedEnv *e) {
+    if (e->set)
+        setenv(e->name, e->value, 1);
+    else
+        unsetenv(e->name);
+}
+
+static void config_files_keep_the_user_file_past_many_system_dirs(void) {
+    WITH_ARENA(a, 1 << 16);
+    SavedEnv dirs, home;
+    env_save(&dirs, "XDG_CONFIG_DIRS");
+    env_save(&home, "XDG_CONFIG_HOME");
+    setenv("XDG_CONFIG_DIRS", "/s1:/s2:/s3:/s4:/s5:/s6:/s7:/s8:/s9", 1);
+    setenv("XDG_CONFIG_HOME", "/user", 1);
+
+    Str files[AGENT_MAX_CONFIG_FILES];
+    size_t n = paths_config_files(STR("config.toml"), &a, files,
+                                  AGENT_MAX_CONFIG_FILES);
+    CHECK(n == AGENT_MAX_CONFIG_FILES);
+    CHECK(n && str_eq(files[n - 1], STR("/user/" AGENT_NAME "/config.toml")));
+    CHECK(n && str_eq(files[n - 2], STR("/s1/" AGENT_NAME "/config.toml")));
+    CHECK(str_eq(files[0], STR("/s7/" AGENT_NAME "/config.toml")));
+
+    n = paths_config_files(STR("config.toml"), &a, files, 1);
+    CHECK(n == 1);
+    CHECK(n && str_eq(files[0], STR("/user/" AGENT_NAME "/config.toml")));
+
+    setenv("XDG_CONFIG_DIRS", "/s1:/s2", 1);
+    n = paths_config_files(STR("config.toml"), &a, files,
+                           AGENT_MAX_CONFIG_FILES);
+    CHECK(n == 3);
+    CHECK(str_eq(files[0], STR("/s2/" AGENT_NAME "/config.toml")));
+    CHECK(n == 3 && str_eq(files[2], STR("/user/" AGENT_NAME "/config.toml")));
+
+    env_restore(&dirs);
+    env_restore(&home);
+}
+
 /* ---- child processes --------------------------------------------------- */
 
 static void child_close_fds_reaches_past_the_fallback_cap(void) {
@@ -1098,6 +1151,8 @@ int main(void) {
     RUN(conv_touch_keeps_a_bounded_unique_list);
     RUN(conv_clone_carries_the_touched_list);
     RUN(conv_result_slot_pairs_like_call_slot);
+
+    RUN(config_files_keep_the_user_file_past_many_system_dirs);
 
     RUN(child_close_fds_reaches_past_the_fallback_cap);
     if (g_fail) {

@@ -1129,9 +1129,12 @@ void http_print_ca_trust(void);
 /* ---- spilled tool output -------------------------------------------------
  * The full output of a tool whose result is a page, written to
  * "$TMPDIR/arqan-<tool>-<hash>.<ext>" at mode 0600 so a later call can
- * narrow it without replaying it. Best effort throughout: every entry point is a
- * no-op once the spill has failed or was never opened, and the tool answers
- * as it would without one. No arena: a Spill owns only its file. */
+ * narrow it without replaying it. The hash covers the call and a secret of
+ * the process, so a rerun replaces its own file and never another run's; a
+ * name it cannot replace moves on to the next of a few candidates. Best
+ * effort throughout: every entry point is a no-op once the spill has failed
+ * or was never opened, and the tool answers as it would without one. No
+ * arena: a Spill owns only its file. */
 typedef struct {
     char path[AGENT_SPILL_PATH_MAX];
     i32 fd;

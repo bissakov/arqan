@@ -8,6 +8,8 @@ instead of paging the whole run back into the context.
 import json
 import re
 
+from tests.mockprovider.server import Scenario
+
 
 def run_tool(ctx, name, args, reply="done", tmp=None):
     ctx.scenario(f"tool={name}:{json.dumps(args)},final_text={reply.replace(' ', '+')}")
@@ -89,15 +91,55 @@ def test_output_that_fits_leaves_nothing_behind(ctx):
     assert list(tmp.iterdir()) == [], list(tmp.iterdir())
 
 
+def run_bash_calls(ctx, calls, tmp):
+    ctx.scenario(Scenario(tools=[("bash", json.dumps(c)) for c in calls],
+                          final_text="calls done"))
+    s = ctx.spawn(TMPDIR=str(tmp))
+    s.submit("run the calls")
+    s.wait_text("calls done")
+    s.wait_turn_done()
+    return ctx.mock.tool_results()[-len(calls):]
+
+
+SEQ = {"command": "seq 1 100000", "description": "count to 100000", "limit": 32}
+
+
 def test_repeating_a_call_reuses_its_own_file(ctx):
-    """The name hashes the call, so a rerun overwrites rather than piles up."""
+    """Within one run the name hashes the call, so a rerun overwrites."""
     tmp = tmpdir(ctx)
-    # TODO: placeholder description; write a real one
-    args = {"command": "seq 1 100000", "description": "qzx", "limit": 32}
-    first = run_tool(ctx, "bash", args, tmp=tmp)
-    second = run_tool(ctx, "bash", args, tmp=tmp)
+    first, second = run_bash_calls(ctx, [SEQ, SEQ], tmp)
     assert spill_path(first)[0] == spill_path(second)[0]
     assert len(list(tmp.iterdir())) == 1, list(tmp.iterdir())
+
+
+def test_two_runs_never_share_a_file(ctx):
+    """A second run of the same call must not replace the file the first named."""
+    tmp = tmpdir(ctx)
+    first = run_tool(ctx, "bash", SEQ, tmp=tmp)
+    second = run_tool(ctx, "bash", SEQ, tmp=tmp)
+    first_path, second_path = spill_path(first)[0], spill_path(second)[0]
+    assert first_path != second_path, first_path
+    for path in (first_path, second_path):
+        body = (tmp / path.rsplit("/", 1)[1]).read_bytes()
+        assert body.startswith(b"1\n2\n") and body.endswith(b"100000\n"), path
+
+
+def test_a_name_it_cannot_replace_moves_the_spill_elsewhere(ctx):
+    """Something else at the name, such as a file another user made, must not
+    turn spilling off."""
+    tmp = tmpdir(ctx)
+    squat = {
+        "command": 'for f in "$TMPDIR"/arqan-bash-*.log; do if [ -s "$f" ]; '
+                   'then rm "$f" && mkdir "$f" && touch "$f/x"; fi; done',
+        "description": "put a directory where the spill was",
+    }
+    first, _, third = run_bash_calls(ctx, [SEQ, squat, SEQ], tmp)
+    first_path, third_path = spill_path(first)[0], spill_path(third)[0]
+    assert (tmp / first_path.rsplit("/", 1)[1]).is_dir(), first_path
+    assert third_path != first_path, third_path
+    assert third_path.startswith(str(tmp) + "/arqan-bash-"), third_path
+    body = (tmp / third_path.rsplit("/", 1)[1]).read_bytes()
+    assert body.startswith(b"1\n2\n") and body.endswith(b"100000\n"), body[-40:]
 
 
 def test_a_paged_fetch_spills_the_whole_extracted_text(ctx):

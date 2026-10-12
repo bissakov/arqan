@@ -234,12 +234,14 @@ size_t paths_config_files(Str name, Arena *a, Str *out, size_t max) {
     const char *dirs = getenv("XDG_CONFIG_DIRS");
     if (!dirs || !*dirs) dirs = "/etc/xdg";
 
+    Str user = paths_file(AGENT_DIR_CONFIG, name, a);
+    size_t sys_room = user.n ? max - 1 : max;
 
     Str sys[8];
     size_t sys_n = 0;
     Str all = str_c(dirs);
     size_t start = 0;
-    for (size_t i = 0; i <= all.n && sys_n < 8; i++) {
+    for (size_t i = 0; i <= all.n && sys_n < 8 && sys_n < sys_room; i++) {
         if (i != all.n && all.p[i] != ':') continue;
         Str d = {all.p + start, i - start};
         start = i + 1;
@@ -256,8 +258,7 @@ size_t paths_config_files(Str name, Arena *a, Str *out, size_t max) {
     }
 
     size_t n = 0;
-    for (size_t i = sys_n; i > 0 && n < max; i--) out[n++] = sys[i - 1];
-    Str user = paths_file(AGENT_DIR_CONFIG, name, a);
-    if (user.n && n < max) out[n++] = user;
+    for (size_t i = sys_n; i > 0; i--) out[n++] = sys[i - 1];
+    if (user.n) out[n++] = user;
     return n;
 }
