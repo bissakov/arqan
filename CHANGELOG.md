@@ -101,6 +101,14 @@
   context window now says so. A tool call cut off at `max_tokens` fails, and
   the model is told why.
 - Anthropic: HTTP 529 (overloaded) is retried like other transient errors.
+- Two sessions that run the same command, fetch or search no longer share a
+  spill file. Before, the second run replaced the file the first had named,
+  so the first model read output that was not its own. A file at the name
+  that cannot be replaced, such as one another user made, no longer turns
+  spilling off for that call.
+- The user config file is read even when `XDG_CONFIG_DIRS` lists eight or
+  more directories. Before, the system directories took every slot and the
+  user's `config.toml`, `mcp.json`, prompts and themes were ignored.
 - Anthropic: failed tool results carry `is_error`, and a reply of only
   whitespace is no longer sent back, since the API refuses it.
 - Anthropic: `/model` lists every model. It showed only the first 20.

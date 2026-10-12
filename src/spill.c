@@ -18,6 +18,45 @@ Str spill_dir(void) {
     return s;
 }
 
+#define SPILL_SECRET_BYTES 16
+#define SPILL_NAME_TRIES   (SHA256_BYTES / sizeof(u64))
+
+static struct {
+    pid_t pid;
+    u8 secret[SPILL_SECRET_BYTES];
+} g_spill_secret;
+
+static b8 spill_read_random(u8 *out, size_t n) {
+    i32 fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    size_t got = 0;
+    while (got < n) {
+        ssize_t r = read(fd, out + got, n - got);
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) break;
+        got += (size_t)r;
+    }
+    close(fd);
+    return got == n;
+}
+
+static void spill_secret_refresh(void) {
+    pid_t pid = getpid();
+    if (g_spill_secret.pid == pid) return;
+    g_spill_secret.pid = pid;
+    if (spill_read_random(g_spill_secret.secret, SPILL_SECRET_BYTES)) return;
+    u64 seed[2] = {(u64)pid, (u64)(agent_now_seconds() * 1e9)};
+    memcpy(g_spill_secret.secret, seed, sizeof seed);
+}
+
+static void spill_names(Str key, u8 names[SHA256_BYTES]) {
+    spill_secret_refresh();
+    u8 mix[SPILL_SECRET_BYTES + SHA256_BYTES];
+    memcpy(mix, g_spill_secret.secret, SPILL_SECRET_BYTES);
+    sha256(key.p, key.n, mix + SPILL_SECRET_BYTES);
+    sha256(mix, sizeof mix, names);
+}
+
 static void spill_drop(Spill *s) {
     if (s->fd >= 0) close(s->fd);
     if (s->path[0]) unlink(s->path);
@@ -34,26 +73,26 @@ void spill_open(Spill *s, const char *tool, const char *ext, Str key) {
     s->full = false;
 
     Str dir = spill_dir();
-    i32 n = snprintf(s->path, sizeof s->path,
-                     "%.*s/" AGENT_NAME "-%s-%016llx.%s", (i32)dir.n, dir.p,
-                     tool, (unsigned long long)str_hash64(key), ext);
-
-    if (n < 0 || (size_t)n >= AGENT_SPILL_PATH_MAX) {
-        s->path[0] = '\0';
-        return;
+    u8 names[SHA256_BYTES];
+    spill_names(key, names);
+    for (size_t i = 0; i < SPILL_NAME_TRIES; i++) {
+        u64 name;
+        memcpy(&name, names + i * sizeof name, sizeof name);
+        i32 n = snprintf(s->path, sizeof s->path,
+                         "%.*s/" AGENT_NAME "-%s-%016llx.%s", (i32)dir.n, dir.p,
+                         tool, (unsigned long long)name, ext);
+        if (n < 0 || (size_t)n >= AGENT_SPILL_PATH_MAX) break;
+        if (unlink(s->path) != 0 && errno != ENOENT) continue;
+        i32 fd =
+            open(s->path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                 0600);
+        if (fd >= 0) {
+            s->fd = fd;
+            return;
+        }
+        if (errno != EEXIST) break;
     }
-
-    if (unlink(s->path) != 0 && errno != ENOENT) {
-        s->path[0] = '\0';
-        return;
-    }
-    i32 fd = open(s->path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
-                  0600);
-    if (fd < 0) {
-        s->path[0] = '\0';
-        return;
-    }
-    s->fd = fd;
+    s->path[0] = '\0';
 }
 
 static b8 spill_raw(Spill *s, const char *p, size_t n) {
