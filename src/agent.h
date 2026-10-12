@@ -149,7 +149,7 @@ typedef bool b8;
 #define AGENT_MAX_MODELS AGENT_MAX_POPUP
 
 #define AGENT_MAX_FAVORITES          64
-#define AGENT_MAX_KEY_ROWS           128
+#define AGENT_MAX_KEY_ROWS           160
 #define AGENT_MAX_ENDPOINTS          32
 #define AGENT_MAX_ENDPOINT_NAME      64
 #define AGENT_MAX_URL                512

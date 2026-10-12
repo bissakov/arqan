@@ -12,6 +12,8 @@ shows up here as one key listed twice under one context.
 
 import re
 
+from .test_busy import click_tail, folded_read
+
 
 # ---- the page ------------------------------------------------------------
 
@@ -277,3 +279,86 @@ def test_a_signal_key_leaves_no_input_debt(ctx):
     assert s.term.input_consumed >= s._sent, (
         f"input debt {s._sent - s.term.input_consumed} outlives the key"
     )
+
+
+# ---- Ctrl-C and Ctrl-D ---------------------------------------------------
+
+def test_ctrl_d_deletes_forward_in_the_composer_during_a_turn(ctx):
+    """A turn holds back the exit, not the editing: Ctrl-D deletes forward,
+    and on an empty composer it does nothing until the turn ends."""
+    ctx.scenario("hold,text=done")
+    s = ctx.spawn()
+    s.submit("go on")
+    s.wait_activity("thinking")
+
+    s.type("abc").sync()
+    s.key("home").sync()
+    s.key("ctrl-d").sync()
+    assert s.composer_text() == "bc", s.composer_lines()
+    s.key("ctrl-d", "ctrl-d", "ctrl-d").sync()
+    assert s.composer_text() == "", s.composer_lines()
+
+    ctx.mock.release()
+    s.wait_text("done")
+    s.wait_turn_done()
+
+
+def test_ctrl_c_closes_a_modal_list(ctx):
+    """Between turns the list owns the keyboard, so Ctrl-C closes it
+    without choosing, and the next turn runs to its end."""
+    ctx.scenario("text=fine")
+    s = ctx.spawn()
+    open_keys(s)
+    s.key("ctrl-c")
+    s.wait_gone("Ctrl-R")
+
+    s.submit("next")
+    s.wait_text("fine")
+    s.wait_turn_done()
+    assert "[interrupted]" not in s.text(), s.text()
+
+
+def test_ctrl_c_mid_turn_interrupts_and_leaves_a_list_open(ctx):
+    """During a turn Ctrl-C stops the turn; the list opened over it stays."""
+    ctx.scenario("hold,text=done")
+    s = ctx.spawn()
+    s.submit("go on")
+    s.wait_activity("thinking")
+    s.submit("/keys")
+    s.wait_text("Ctrl-R")
+
+    s.key("ctrl-c")
+    s.wait_text("[interrupted]")
+    assert "Ctrl-R" in s.text(), s.text()
+    s.key("esc").sync()
+    s.wait_gone("Ctrl-R")
+    s.wait_turn_done()
+    assert len(ctx.mock.requests) == 1, ctx.mock.requests
+
+
+def test_ctrl_c_mid_turn_interrupts_and_leaves_a_text_view_open(ctx):
+    """The view's hint says Esc closes and Ctrl-C interrupts; both hold."""
+    s = folded_read(ctx)
+    click_tail(s)
+    s.wait_text("line 0012 of output")
+
+    s.key("ctrl-c")
+    s.wait_status("ready")
+    assert "line 0012 of output" in s.text(), s.text()
+    assert "esc close" in s.text(), s.text()
+    s.key("esc").sync()
+    s.wait_gone("esc close")
+    s.wait_text("[interrupted]")
+    assert "done" not in s.text(), s.text()
+
+
+def test_ctrl_l_redraws_a_list(ctx):
+    """Ctrl-L repaints every cell, so a damaged screen comes back whole."""
+    s = ctx.spawn()
+    open_keys(s)
+    s.settle()
+    before = s.snapshot()
+    s.term.feed(b"\x1b[2;1Hscribble over the list")
+    assert s.snapshot() != before
+    s.key("ctrl-l").sync()
+    assert s.snapshot() == before, s.snapshot()
