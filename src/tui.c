@@ -27,7 +27,7 @@
 #define TUI_POPUP_ROWS      8
 #define TUI_PICK_MIN_ROWS   4
 #define TUI_PICK_SEARCH_MIN 10
-#define TUI_QUEUED_NOTICE   "message queued; Esc cancels it"
+#define TUI_QUEUED_NOTICE   "message queued; " TUI_KEY_ESC " cancels it"
 #define TUI_PATH_ENTS       256
 #define TUI_PATH_SLOT       512
 #define TUI_PATH_DEPTH      12
@@ -2658,11 +2658,12 @@ static void update_find_row(size_t screen_row, size_t screen_col,
     size_t tail_n =
         written > 0 && (size_t)written < sizeof tail ? (size_t)written : 0;
     Str status = {tail, tail_n};
-    Str hint =
-        g_tui.find_expand
-            ? STR("\u2191 older \u00b7 \u2193 newer \u00b7 "
-                  "^E all output \u00b7 Esc")
-            : STR("Enter/\u2191 older \u00b7 \u2193 newer \u00b7 Esc close");
+    Str hint = g_tui.find_expand
+                   ? STR("\u2191 older \u00b7 \u2193 newer \u00b7 "
+                         "^E all output \u00b7 " TUI_KEY_ESC)
+                   : STR(TUI_KEY_ENTER
+                         "/\u2191 older \u00b7 \u2193 newer \u00b7 " TUI_KEY_ESC
+                         " close");
 
     u64 hash = row_hash(query, status, ROW_POPUP);
     size_t sel_c0, sel_c1;
@@ -2926,7 +2927,7 @@ static const WelcomeLine k_welcome[] = {
     WLINE(AGENT_NAME " " AGENT_BUILD_VERSION " · a tiny terminal coding agent",
           false),
     WLINE("", false),
-    WLINE("type a message and press Enter to begin", false),
+    WLINE("type a message and press " TUI_KEY_ENTER " to begin", false),
 };
 
 #define WELCOME_LINES (sizeof k_welcome / sizeof k_welcome[0])
@@ -5598,14 +5599,14 @@ static b8 view_hand_to_composer(i32 c) {
 
 #define VIEW_KEYS(X)                                                    \
     X('q', "q", "Close the view", return false;)                        \
-    X(0x0d, "Enter", "Close the view", return false;)                   \
+    X(0x0d, TUI_KEY_ENTER, "Close the view", return false;)             \
     X(0x0a, "", "", return false;)                                      \
     X(KEY_INTERRUPT, "Ctrl-C", "Close the view, or interrupt the turn", \
       if (g_view.modal) return false;)                                  \
     X(0x03, "", "", if (g_view.modal) return false;)                    \
     X('j', "j", "Down one row", view_move(1);)                          \
     X('k', "k", "Up one row", view_move(-1);)                           \
-    X(' ', "Space", "Down a page", view_move((i32)page);)               \
+    X(' ', TUI_KEY_SPACE, "Down a page", view_move((i32)page);)         \
     X('b', "b", "Up a page", view_move(-(i32)page);)                    \
     X(0x04, "Ctrl-D", "Down half a page", view_move((i32)half);)        \
     X(0x15, "Ctrl-U", "Up half a page", view_move(-(i32)half);)         \
@@ -5614,9 +5615,9 @@ static b8 view_hand_to_composer(i32 c) {
     X(0x0c, "Ctrl-L", "Redraw the screen", g_tui.frame_valid = false;)
 
 #define VIEW_ESCAPE_KEYS(X)                                               \
-    X(KEY_NONE, "Esc", "Close the view", return false;)                   \
-    X(KEY_UP, "Up", "Up one row", view_move(-1);)                         \
-    X(KEY_DOWN, "Down", "Down one row", view_move(1);)                    \
+    X(KEY_NONE, TUI_KEY_ESC, "Close the view", return false;)             \
+    X(KEY_UP, TUI_KEY_UP, "Up one row", view_move(-1);)                   \
+    X(KEY_DOWN, TUI_KEY_DOWN, "Down one row", view_move(1);)              \
     X(KEY_PAGE_UP, "PgUp", "Up a page", view_move(-(i32)page);)           \
     X(KEY_PAGE_DOWN, "PgDn", "Down a page", view_move((i32)page);)        \
     X(KEY_WHEEL_UP, "", "", view_move(-3);)                               \
@@ -5675,12 +5676,13 @@ static void view_run(void) {
 
 static void pick_search_row(Str query, b8 settings) {
     char row[sizeof g_tui.notice];
-    i32 n = snprintf(row, sizeof row, "search: %.*s%s%s", (i32)query.n, query.p,
-                     g_tui.comp_n ? "" : "  (no match)",
-                     settings && !query.n
-                         ? " · Space or Left/Right changes the selected "
-                           "row · Esc closes"
-                         : "");
+    i32 n =
+        snprintf(row, sizeof row, "search: %.*s%s%s", (i32)query.n, query.p,
+                 g_tui.comp_n ? "" : "  (no match)",
+                 settings && !query.n
+                     ? " · " TUI_KEY_SPACE " or " TUI_KEY_LEFT "/" TUI_KEY_RIGHT
+                       " changes the selected row · " TUI_KEY_ESC " closes"
+                     : "");
     if (n < 0) return;
     size_t len = (size_t)n < sizeof row ? (size_t)n : sizeof row - 1;
     tui_notice((Str){row, len});
@@ -5802,7 +5804,9 @@ static b8 pick_open(Str title, const TuiCmd *items, const TuiMark *marks,
     if (g_pick.search)
         pick_search_row((Str){g_pick.query, g_pick.query_n}, settings);
     if (kind == PICK_INFO && !g_tui.notice_n)
-        tui_notice(STR("Up/Down reads the page - Enter or Esc closes"));
+        tui_notice(STR(TUI_KEY_UP "/" TUI_KEY_DOWN
+                                  " reads the page - " TUI_KEY_ENTER
+                                  " or " TUI_KEY_ESC " closes"));
     if (act) {
         g_pick.action = *act;
         g_pick.has_action = true;
@@ -5905,52 +5909,55 @@ static b8 pick_amend(const TuiSettings *set) {
     return open;
 }
 
-#define PICK_KEYS(X)                                                          \
-    X(0x0d, "Enter", "Choose the row, or act on it", return pick_enter(set);) \
-    X(0x0a, "", "", return pick_enter(set);)                                  \
-    X(0x09, "Tab", "Choose the row and add your own words, where offered",    \
-      return pick_amend(set);)                                                \
-    X(KEY_INTERRUPT, "Ctrl-C",                                                \
-      "Close without choosing, or interrupt the turn",                        \
-      if (g_pick.modal) return false;)                                        \
-    X(0x03, "", "", if (g_pick.modal) return false;)                          \
-    X(0x04, "", "", return false;)                                            \
-    X(' ', "Space", "Act on the settings row",                                \
-      if (!settings) return pick_typed(c);                                    \
-      return pick_act(set, 1);)                                               \
-    X(0x0e, "Ctrl-N", "Next row", completion_move(1);)                        \
-    X(0x10, "Ctrl-P", "Previous row", completion_move(-1);)                   \
-    X(0x06, "Ctrl-F", "Favorite the row, on a list that offers it",           \
-      return pick_row_action(TUI_PICK_FAVORITE);)                             \
-    X(0x05, "Ctrl-E", "Configure, on a list that offers it",                  \
-      return pick_row_action(TUI_PICK_CONFIGURE);)                            \
-    X(0x0f, "Ctrl-O", "Enter another value, on a list that offers it",        \
-      return pick_row_action(TUI_PICK_OTHER_VALUE);)                          \
-    X(0x18, "Ctrl-X", "Delete the row, on a list that offers it",             \
-      return pick_row_action(TUI_PICK_DELETE);)                               \
-    X(0x13, "Ctrl-S", "Set the small model, on a list that offers it",        \
-      return pick_row_action(TUI_PICK_SMALL);)                                \
-    X(0x7f, "Backspace", "Delete the query glyph before",                     \
-      return pick_erase();)                                                   \
-    X(0x08, "", "", return pick_erase();)                                     \
-    X(0x15, "Ctrl-U", "Clear the query", return pick_clear();)                \
+#define PICK_KEYS(X)                                                        \
+    X(0x0d, TUI_KEY_ENTER, "Choose the row, or act on it",                  \
+      return pick_enter(set);)                                              \
+    X(0x0a, "", "", return pick_enter(set);)                                \
+    X(0x09, TUI_KEY_TAB,                                                    \
+      "Choose the row and add your own words, where offered",               \
+      return pick_amend(set);)                                              \
+    X(KEY_INTERRUPT, "Ctrl-C",                                              \
+      "Close without choosing, or interrupt the turn",                      \
+      if (g_pick.modal) return false;)                                      \
+    X(0x03, "", "", if (g_pick.modal) return false;)                        \
+    X(0x04, "", "", return false;)                                          \
+    X(' ', TUI_KEY_SPACE, "Act on the settings row",                        \
+      if (!settings) return pick_typed(c);                                  \
+      return pick_act(set, 1);)                                             \
+    X(0x0e, "Ctrl-N", "Next row", completion_move(1);)                      \
+    X(0x10, "Ctrl-P", "Previous row", completion_move(-1);)                 \
+    X(0x06, TUI_KEY_FAVORITE, "Favorite the row, on a list that offers it", \
+      return pick_row_action(TUI_PICK_FAVORITE);)                           \
+    X(0x05, TUI_KEY_CONFIGURE, "Configure, on a list that offers it",       \
+      return pick_row_action(TUI_PICK_CONFIGURE);)                          \
+    X(0x0f, TUI_KEY_OTHER_VALUE,                                            \
+      "Enter another value, on a list that offers it",                      \
+      return pick_row_action(TUI_PICK_OTHER_VALUE);)                        \
+    X(0x18, TUI_KEY_DELETE, "Delete the row, on a list that offers it",     \
+      return pick_row_action(TUI_PICK_DELETE);)                             \
+    X(0x13, TUI_KEY_SMALL, "Set the small model, on a list that offers it", \
+      return pick_row_action(TUI_PICK_SMALL);)                              \
+    X(0x7f, "Backspace", "Delete the query glyph before",                   \
+      return pick_erase();)                                                 \
+    X(0x08, "", "", return pick_erase();)                                   \
+    X(0x15, "Ctrl-U", "Clear the query", return pick_clear();)              \
     X(0x0c, "Ctrl-L", "Redraw the screen", g_tui.frame_valid = false;)
 
-#define PICK_ESCAPE_KEYS(X)                                     \
-    X(KEY_NONE, "Esc", "Close without choosing", return false;) \
-    X(KEY_DOWN, "Down", "Next row", completion_move(1);)        \
-    X(KEY_UP, "Up", "Previous row", completion_move(-1);)       \
-    X(KEY_RIGHT, "Right", "Act on the settings row forwards",   \
-      if (settings) return pick_act(set, 1);)                   \
-    X(KEY_LEFT, "Left", "Act on the settings row backwards",    \
-      if (settings) return pick_act(set, -1);)                  \
-    X(KEY_MOUSE_DOWN, "Click", "Start a selection",             \
-      sel_begin(g_mouse.row, g_mouse.col);                      \
-      keep_sel = true;)                                         \
-    X(KEY_MOUSE_DRAG, "Drag", "Extend the selection",           \
-      sel_extend(g_mouse.row, g_mouse.col);                     \
-      keep_sel = true;)                                         \
-    X(KEY_MOUSE_UP, "", "", sel_finish(); keep_sel = true;)     \
+#define PICK_ESCAPE_KEYS(X)                                           \
+    X(KEY_NONE, TUI_KEY_ESC, "Close without choosing", return false;) \
+    X(KEY_DOWN, TUI_KEY_DOWN, "Next row", completion_move(1);)        \
+    X(KEY_UP, TUI_KEY_UP, "Previous row", completion_move(-1);)       \
+    X(KEY_RIGHT, TUI_KEY_RIGHT, "Act on the settings row forwards",   \
+      if (settings) return pick_act(set, 1);)                         \
+    X(KEY_LEFT, TUI_KEY_LEFT, "Act on the settings row backwards",    \
+      if (settings) return pick_act(set, -1);)                        \
+    X(KEY_MOUSE_DOWN, "Click", "Start a selection",                   \
+      sel_begin(g_mouse.row, g_mouse.col);                            \
+      keep_sel = true;)                                               \
+    X(KEY_MOUSE_DRAG, "Drag", "Extend the selection",                 \
+      sel_extend(g_mouse.row, g_mouse.col);                           \
+      keep_sel = true;)                                               \
+    X(KEY_MOUSE_UP, "", "", sel_finish(); keep_sel = true;)           \
     X(KEY_MOUSE_MOVE, "", "", keep_sel = true;)
 
 static const KeyRow k_pick_rows[] = {PICK_KEYS(KEY_DOC)};
@@ -6308,20 +6315,20 @@ static void edit_yank(char *buf, size_t *n, size_t *cur, size_t cap) {
       kill_range(buf, n, cur, prev_word(buf, *cur), *cur);)                   \
     X(0x19, "Ctrl-Y", "Put back the last kill", edit_yank(buf, n, cur, cap);)
 
-#define EDIT_ESCAPE_KEYS(X)                                              \
-    X(KEY_LEFT, "Left", "Back one glyph", *cur = prev_glyph(buf, *cur);) \
-    X(KEY_RIGHT, "Right", "Forward one glyph",                           \
-      *cur = next_glyph(buf, *n, *cur);)                                 \
-    X(KEY_HOME, "Home", "Start of line", *cur = line_start(buf, *cur);)  \
-    X(KEY_END, "End", "End of line", *cur = line_end(buf, *n, *cur);)    \
-    X(KEY_PREV_WORD, "Ctrl-Left", "Back one word",                       \
-      *cur = prev_word(buf, *cur);)                                      \
-    X(KEY_NEXT_WORD, "Ctrl-Right", "Forward one word",                   \
-      *cur = next_word(buf, *n, *cur);)                                  \
-    X(KEY_DELETE, "Delete", "Delete forward", edit_delete(buf, n, cur);) \
-    X(KEY_KILL_WORD, "Alt-D", "Kill the word after",                     \
-      kill_range(buf, n, cur, *cur, next_word(buf, *n, *cur));)          \
-    X(KEY_KILL_PREV_WORD, "Alt-Backspace", "Kill the word before",       \
+#define EDIT_ESCAPE_KEYS(X)                                                    \
+    X(KEY_LEFT, TUI_KEY_LEFT, "Back one glyph", *cur = prev_glyph(buf, *cur);) \
+    X(KEY_RIGHT, TUI_KEY_RIGHT, "Forward one glyph",                           \
+      *cur = next_glyph(buf, *n, *cur);)                                       \
+    X(KEY_HOME, "Home", "Start of line", *cur = line_start(buf, *cur);)        \
+    X(KEY_END, "End", "End of line", *cur = line_end(buf, *n, *cur);)          \
+    X(KEY_PREV_WORD, "Ctrl-Left", "Back one word",                             \
+      *cur = prev_word(buf, *cur);)                                            \
+    X(KEY_NEXT_WORD, "Ctrl-Right", "Forward one word",                         \
+      *cur = next_word(buf, *n, *cur);)                                        \
+    X(KEY_DELETE, "Delete", "Delete forward", edit_delete(buf, n, cur);)       \
+    X(KEY_KILL_WORD, "Alt-D", "Kill the word after",                           \
+      kill_range(buf, n, cur, *cur, next_word(buf, *n, *cur));)                \
+    X(KEY_KILL_PREV_WORD, "Alt-Backspace", "Kill the word before",             \
       kill_range(buf, n, cur, prev_word(buf, *cur), *cur);)
 
 static const KeyRow k_edit_rows[] = {EDIT_KEYS(KEY_DOC)};
@@ -6358,18 +6365,19 @@ static void ask_end(Asked *a, b8 answered) {
     a->done = true;
 }
 
-#define ASK_KEYS(X)                                                            \
-    X(0x0d, "Enter", "Answer the question", ask_end(a, allow_empty || n > 0);) \
-    X(0x0a, "", "", ask_end(a, allow_empty || n > 0);)                         \
-    X(KEY_INTERRUPT, "Ctrl-C", "Cancel the question", ask_end(a, false);)      \
-    X(0x03, "", "", ask_end(a, false);)                                        \
-    X(0x04, "Ctrl-D", "Delete forward, or cancel on an empty field",           \
-      if (n) edit_delete(g_bulk.input, &n, &cur);                              \
-      else ask_end(a, false);)                                                 \
+#define ASK_KEYS(X)                                                       \
+    X(0x0d, TUI_KEY_ENTER, "Answer the question",                         \
+      ask_end(a, allow_empty || n > 0);)                                  \
+    X(0x0a, "", "", ask_end(a, allow_empty || n > 0);)                    \
+    X(KEY_INTERRUPT, "Ctrl-C", "Cancel the question", ask_end(a, false);) \
+    X(0x03, "", "", ask_end(a, false);)                                   \
+    X(0x04, "Ctrl-D", "Delete forward, or cancel on an empty field",      \
+      if (n) edit_delete(g_bulk.input, &n, &cur);                         \
+      else ask_end(a, false);)                                            \
     X(0x0c, "Ctrl-L", "Redraw the screen", g_tui.frame_valid = false;)
 
 #define ASK_ESCAPE_KEYS(X) \
-    X(KEY_NONE, "Esc", "Cancel the question", ask_end(a, false);)
+    X(KEY_NONE, TUI_KEY_ESC, "Cancel the question", ask_end(a, false);)
 
 static const KeyRow k_ask_rows[] = {ASK_KEYS(KEY_DOC)};
 static const KeyRow k_ask_escape_rows[] = {ASK_ESCAPE_KEYS(KEY_DOC)};
@@ -6407,8 +6415,8 @@ static b8 ask_impl(Str question, b8 secret, char *out, size_t cap, b8 edit,
     g_tui.input_cur = initial_n;
     g_tui.comp_n = 0;
     char row[sizeof g_tui.notice];
-    i32 rn = snprintf(row, sizeof row, "%.*s  (Esc cancels)", (i32)question.n,
-                      question.p);
+    i32 rn = snprintf(row, sizeof row, "%.*s  (" TUI_KEY_ESC " cancels)",
+                      (i32)question.n, question.p);
     tui_notice(rn > 0 ? (Str){row, (size_t)rn < sizeof row ? (size_t)rn
                                                            : sizeof row - 1}
                       : question);
@@ -6631,7 +6639,7 @@ static void composer_interrupt(void) {
 }
 
 #define FIND_KEYS(X)                                                           \
-    X(0x0d, "Enter", "Previous match", find_step(-1);)                         \
+    X(0x0d, TUI_KEY_ENTER, "Previous match", find_step(-1);)                   \
     X(0x0a, "", "", find_step(-1);)                                            \
     X(0x10, "Ctrl-P", "Previous match", find_step(-1);)                        \
     X(0x0e, "Ctrl-N", "Next match", find_step(1);)                             \
@@ -6646,17 +6654,17 @@ static void composer_interrupt(void) {
       composer_interrupt();)                                                   \
     X(0x03, "", "", composer_interrupt();)
 
-#define FIND_ESCAPE_KEYS(X)                                 \
-    X(KEY_UP, "Up", "Previous match", find_step(-1);)       \
-    X(KEY_DOWN, "Down", "Next match", find_step(1);)        \
-    X(KEY_NONE, "Esc", "Close the box", find_close();)      \
-    X(KEY_MOUSE_DOWN, "Click", "Start a selection",         \
-      sel_begin(g_mouse.row, g_mouse.col);                  \
-      keep_sel = true;)                                     \
-    X(KEY_MOUSE_DRAG, "Drag", "Extend the selection",       \
-      sel_extend(g_mouse.row, g_mouse.col);                 \
-      keep_sel = true;)                                     \
-    X(KEY_MOUSE_UP, "", "", sel_finish(); keep_sel = true;) \
+#define FIND_ESCAPE_KEYS(X)                                  \
+    X(KEY_UP, TUI_KEY_UP, "Previous match", find_step(-1);)  \
+    X(KEY_DOWN, TUI_KEY_DOWN, "Next match", find_step(1);)   \
+    X(KEY_NONE, TUI_KEY_ESC, "Close the box", find_close();) \
+    X(KEY_MOUSE_DOWN, "Click", "Start a selection",          \
+      sel_begin(g_mouse.row, g_mouse.col);                   \
+      keep_sel = true;)                                      \
+    X(KEY_MOUSE_DRAG, "Drag", "Extend the selection",        \
+      sel_extend(g_mouse.row, g_mouse.col);                  \
+      keep_sel = true;)                                      \
+    X(KEY_MOUSE_UP, "", "", sel_finish(); keep_sel = true;)  \
     X(KEY_MOUSE_MOVE, "", "", keep_sel = true;)
 
 static const KeyRow k_find_rows[] = {FIND_KEYS(KEY_DOC)};
@@ -6846,36 +6854,37 @@ static void ed_end(Ed *e) {
 }
 
 
-#define COMPOSER_KEYS(X)                                                   \
-    X(0x0d, "Enter", "Send the message, or take the popup entry",          \
-      ed_enter(e);)                                                        \
-    X(0x0a, "", "", ed_enter(e);)                                          \
-    X('\t', "Tab", "Complete the popup entry", ed_tab(e);)                 \
-    X(0x0e, "Ctrl-N", "Next entry, or the next draft", ed_vertical(e, 1);) \
-    X(0x10, "Ctrl-P", "Previous entry, or the previous draft",             \
-      ed_vertical(e, -1);)                                                 \
-    X(0x04, "Ctrl-D",                                                      \
-      "Delete forward, or exit on an empty composer between turns",        \
-      ed_delete_or_eof(e);)                                                \
-    X(KEY_INTERRUPT, "Ctrl-C", "Clear the line, or interrupt the turn",    \
-      ed_interrupt(e);)                                                    \
-    X(0x03, "", "", ed_interrupt(e);)                                      \
-    X(0x12, "Ctrl-R", "Search the transcript", tui_find_open();            \
-      ED_RETURN(e, ED_EDIT);)                                              \
-    X(0x16, "Ctrl-V", "Attach the clipboard's image to the message",       \
-      g_tui.attach_n = 0;                                                  \
-      e->action = ED_ATTACH;)                                              \
-    X(0x0f, "Ctrl-O", "Switch between this conversation and the task's",   \
-      e->action = ED_TASK;)                                                \
-    X(0x07, "Ctrl-G", "Edit the message in your editor",                   \
-      e->action = ED_EDITOR;)                                              \
+#define COMPOSER_KEYS(X)                                                     \
+    X(0x0d, TUI_KEY_ENTER, "Send the message, or take the popup entry",      \
+      ed_enter(e);)                                                          \
+    X(0x0a, "", "", ed_enter(e);)                                            \
+    X('\t', TUI_KEY_TAB, "Complete the popup entry", ed_tab(e);)             \
+    X(0x0e, "Ctrl-N", "Next entry, or the next draft", ed_vertical(e, 1);)   \
+    X(0x10, "Ctrl-P", "Previous entry, or the previous draft",               \
+      ed_vertical(e, -1);)                                                   \
+    X(0x04, "Ctrl-D",                                                        \
+      "Delete forward, or exit on an empty composer between turns",          \
+      ed_delete_or_eof(e);)                                                  \
+    X(KEY_INTERRUPT, "Ctrl-C", "Clear the line, or interrupt the turn",      \
+      ed_interrupt(e);)                                                      \
+    X(0x03, "", "", ed_interrupt(e);)                                        \
+    X(0x12, TUI_KEY_FIND, "Search the transcript", tui_find_open();          \
+      ED_RETURN(e, ED_EDIT);)                                                \
+    X(0x16, TUI_KEY_ATTACH, "Attach the clipboard's image to the message",   \
+      g_tui.attach_n = 0;                                                    \
+      e->action = ED_ATTACH;)                                                \
+    X(0x0f, TUI_KEY_TASK, "Switch between this conversation and the task's", \
+      e->action = ED_TASK;)                                                  \
+    X(0x07, TUI_KEY_EDITOR, "Edit the message in your editor",               \
+      e->action = ED_EDITOR;)                                                \
     X(0x0c, "Ctrl-L", "Repaint the screen", g_tui.frame_valid = false;)
 
 #define COMPOSER_ESCAPE_KEYS(X)                                              \
-    X(KEY_NONE, "Esc", "Dismiss, or go back a message", ed_escape(e);)       \
-    X(KEY_UP, "Up", "Previous entry, or the previous draft",                 \
+    X(KEY_NONE, TUI_KEY_ESC, "Dismiss, or go back a message", ed_escape(e);) \
+    X(KEY_UP, TUI_KEY_UP, "Previous entry, or the previous draft",           \
       ed_vertical(e, -1);)                                                   \
-    X(KEY_DOWN, "Down", "Next entry, or the next draft", ed_vertical(e, 1);) \
+    X(KEY_DOWN, TUI_KEY_DOWN, "Next entry, or the next draft",               \
+      ed_vertical(e, 1);)                                                    \
     X(KEY_HOME, "Home",                                                      \
       "Start of line, or the top of the "                                    \
       "transcript on an empty composer",                                     \
@@ -7086,7 +7095,8 @@ static void busy_submit(void) {
     if (!g_tui.input_n) return;
     if (g_bulk.input[0] != '/') {
         if (g_tui.queued_n) {
-            tui_notice(STR("a message is already queued; Esc cancels it"));
+            tui_notice(
+                STR("a message is already queued; " TUI_KEY_ESC " cancels it"));
             return;
         }
         memcpy(g_bulk.queued, g_bulk.input, g_tui.input_n);
@@ -7208,8 +7218,8 @@ static void poll_input(void) {
         else if (action == ED_TASK)
             busy_task();
         else if (action == ED_EDITOR)
-            tui_notice(STR("the editor opens between turns; Esc interrupts "
-                           "this one"));
+            tui_notice(STR("the editor opens between turns; " TUI_KEY_ESC
+                           " interrupts this one"));
         dirty = true;
     }
     if (dirty) repaint();

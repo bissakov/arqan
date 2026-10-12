@@ -2150,6 +2150,24 @@ typedef enum {
     TUI_PICK_KEY_N
 } TuiPickKey;
 
+#define TUI_KEY_ENTER       "Enter"
+#define TUI_KEY_ESC         "Esc"
+#define TUI_KEY_TAB         "Tab"
+#define TUI_KEY_SPACE       "Space"
+#define TUI_KEY_UP          "Up"
+#define TUI_KEY_DOWN        "Down"
+#define TUI_KEY_LEFT        "Left"
+#define TUI_KEY_RIGHT       "Right"
+#define TUI_KEY_FIND        "Ctrl-R"
+#define TUI_KEY_EDITOR      "Ctrl-G"
+#define TUI_KEY_ATTACH      "Ctrl-V"
+#define TUI_KEY_TASK        "Ctrl-O"
+#define TUI_KEY_FAVORITE    "Ctrl-F"
+#define TUI_KEY_CONFIGURE   "Ctrl-E"
+#define TUI_KEY_OTHER_VALUE "Ctrl-O"
+#define TUI_KEY_DELETE      "Ctrl-X"
+#define TUI_KEY_SMALL       "Ctrl-S"
+
 typedef struct {
     size_t (*act)(void *ud, size_t row, size_t *moved);
     void *ud;

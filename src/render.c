@@ -616,7 +616,8 @@ void render_task_header(u32 id, Str label, Str model, Str provider, b8 small,
     tui_write_muted(STR("\n"));
     tui_write_dim(STR("\u2502 "));
     tui_write_muted(live ? STR("in progress") : STR("finished"));
-    tui_write_muted(STR(" \u00b7 Ctrl-O returns to the conversation\n"));
+    tui_write_muted(
+        STR(" \u00b7 " TUI_KEY_TASK " returns to the conversation\n"));
 }
 
 static b8 split_status(Str result, Str *body, Str *status) {
