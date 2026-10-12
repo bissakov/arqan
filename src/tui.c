@@ -3520,7 +3520,11 @@ static void tui_log_sink(i32 level, Str msg, void *ud) {
 }
 
 
+#ifdef AGENT_TESTING
 static void keys_selfcheck(void);
+#else
+#define keys_selfcheck() ((void)0)
+#endif
 
 static b8 term_raw(void) {
     struct termios raw = g_tui.original_termios;
@@ -4939,11 +4943,12 @@ static struct {
     case key: {                         \
         __VA_ARGS__                     \
     } break;
-#define KEY_DOC(key, label, help, ...) {label, help},
+#define KEY_DOC(key, label, help, ...) {label, help, key},
 
 typedef struct {
     const char *key;
     const char *help;
+    i32 code;
 } KeyRow;
 typedef struct {
     const char *name;
@@ -7007,24 +7012,44 @@ enum { KEY_ROW_MAX = 0 KEY_CONTEXTS(X) };
 _Static_assert(KEY_ROW_MAX <= AGENT_MAX_KEY_ROWS,
                "the keys page outgrew AGENT_MAX_KEY_ROWS");
 
+#ifdef AGENT_TESTING
+static b8 key_label_matches_code(const KeyRow *row) {
+    const char *label = row->key;
+    if (strncmp(label, "Ctrl-", 5) != 0 || !label[5] || label[6]) return true;
+    char letter = label[5];
+    if (letter < 'A' || letter > 'Z') return true;
+    if (letter == 'C' && row->code == KEY_INTERRUPT) return true;
+    return row->code == (letter & 0x1f);
+}
+
 static void keys_selfcheck(void) {
+    b8 failed = false;
     for (size_t a = 0; a < KEY_CONTEXT_N; a++) {
         const KeyContext *ka = &k_key_contexts[a];
         for (size_t i = 0; i < ka->n; i++) {
             const char *key = ka->rows[i].key;
             if (!key || !key[0]) continue;
+            if (!key_label_matches_code(&ka->rows[i])) {
+                fprintf(stderr, "keys: %s labels code 0x%x as %s\n", ka->name,
+                        (unsigned)ka->rows[i].code, key);
+                failed = true;
+            }
             for (size_t b = 0; b <= a; b++) {
                 const KeyContext *kb = &k_key_contexts[b];
                 if (strcmp(kb->name, ka->name) != 0) continue;
                 size_t upto = b == a ? i : kb->n;
                 for (size_t j = 0; j < upto; j++)
-                    if (kb->rows[j].key && !strcmp(kb->rows[j].key, key))
-                        agent_log(AGENT_LOG_WARN, "keys: %s lists %s twice",
-                                  ka->name, key);
+                    if (kb->rows[j].key && !strcmp(kb->rows[j].key, key)) {
+                        fprintf(stderr, "keys: %s lists %s twice\n", ka->name,
+                                key);
+                        failed = true;
+                    }
             }
         }
     }
+    if (failed) exit(2);
 }
+#endif
 
 size_t tui_key_rows(TuiCmd *rows, size_t max) {
     if (!rows) return 0;
