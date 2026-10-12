@@ -2,16 +2,19 @@
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-12
+
 ### Added
 
 - `/diff` shows what this session changed, as `git diff`, in a window. It
   covers every file `write` and `patch` touched since the conversation
   started, including files git does not track yet, and the list survives
   `/resume`, `/rewind`, `/fork` and `/compact`. The model does not see it.
+  ([`79c9f62`])
 - Diff rows are tinted. In a `patch` call, in its expanded window and in
   `/diff`, added lines sit on a green background and removed lines on a red
   one, with the file headers muted. Two theme slots control the colours:
-  `diff_add_bg` and `diff_del_bg`.
+  `diff_add_bg` and `diff_del_bg`. ([`79c9f62`])
 - A `patch` call in the transcript reads more like a review. A one-file
   patch drops its `---`/`+++` rows, git's `diff --git` and `index` lines,
   and the `*** Begin Patch` envelope, since the call title already names the
@@ -19,6 +22,7 @@
   muted. When removed lines are followed by the same number of added lines,
   each pair marks the words that changed on a stronger background, set by
   the theme slots `diff_add_changed_bg` and `diff_del_changed_bg`.
+  ([`ff4563d`])
 - A `patch` call shows its diff side by side when it fits. Removed lines sit
   on the left and the lines that replace them on the right, and unchanged
   lines show on both sides. Each half is as wide as the longest line, so a
@@ -26,51 +30,53 @@
   splits from 160 columns, with long lines wrapping inside their half.
   Otherwise, and for a patch that only adds or only removes lines, the
   one-column view stays. A resize redraws the diff in the layout that now
-  fits.
+  fits. ([`056f0bd`])
 - A `patch` call drops the indent that every line of a hunk shares, so deep
   code fits narrow terminals. Relative indent stays, so nesting and a change
   of indent still show. The hunk's `@@` row names what was dropped, such as
   `@@ · indent 8`. Tabs and spaces never count as the same indent.
+  ([`004da07`])
 - An applied `patch` call numbers its lines. Kept and added lines show
   their line in the new file, and removed lines their line in the old file.
   Side by side, the left half counts the old file and the right half the
   new. A patch that did not apply, or whose hunks overlap, shows no numbers.
+  ([`289d62c`])
 - The `patch` result names the line each hunk now starts at, such as
-  `edit.txt +2 -1 at lines 8, 1`.
+  `edit.txt +2 -1 at lines 8, 1`. ([`289d62c`])
 - Approximate syntax highlighting for Unity shaders. `.shader`, `.cginc`,
   `.hlsl` and `.compute` files, and code fences marked `hlsl` or `shaderlab`,
   use the C highlighter. Strings, comments, numbers, preprocessor lines, HLSL
   types and function calls get colours; ShaderLab words such as `Pass` stay
-  plain.
+  plain. ([`e9a154a`])
 - PNG images now show in the transcript inside tmux when tmux runs in kitty
   or Ghostty. tmux needs `allow-passthrough` set to `on` or `all`, and the
   outer terminal needs 24-bit colour in tmux. arqan asks tmux once, when the
-  first image is drawn. Otherwise the caption line stays.
+  first image is drawn. Otherwise the caption line stays. ([`d22fb90`])
 
 ### Changed
 
 - A message you queue no longer waits for a long `job` or `task` wait to
   run out. The wait ends at once, and the job or task keeps running. A
   `bash` command that has run for a second becomes a job instead of holding
-  the message until its deadline.
+  the message until its deadline. ([`dc976db`])
 - The model learns when a job ends without polling for it. The next tool
   result names each job that ended since the model last saw it, so the model
-  can do other work while a job runs.
+  can do other work while a job runs. ([`dc976db`])
 - What the model reads no longer names settings or parts of arqan it cannot
   see. The prompt and tool descriptions say a call may need the user's
   approval, instead of saying it always does; with `permissions = free`,
   nothing waits. Errors say a feature is not available in this session
   instead of naming `images` or `shell_timeout_ms`, and an approved plan no
-  longer mentions Build mode.
+  longer mentions Build mode. ([`79f8820`])
 - The tool descriptions match what this session can do. `read` describes
   images only when images are on, and never to a subagent, which gets none.
   `bash` describes the read-only sandbox only when Landlock is running, and
   the network only on kernels that block it. It says other commands run
   without those limits. With `shell_timeout_ms = 0`, it offers no
   `timeout_ms` and no jobs. The `task` description now says the subagent can
-  run read-only commands.
+  run read-only commands. ([`79f8820`])
 - Failed or denied `write` and `patch` calls collapse to a short preview;
-  click to see the rest.
+  click to see the rest. ([`897c776`])
 - A failed `patch` explains itself better. A hunk whose first line is
   wrong is now located by its other lines, so the error names the line that
   differs instead of saying no line of its context is in the file. A line
@@ -79,6 +85,7 @@
   line matches in a long file, the error asks the model to read the file
   again instead of showing its last lines. The error says how many other
   hunks matched, and a blank line the hunk expects is called a blank line.
+  ([`518c32f`])
 - The window that opens when you click a folded block during a turn, and
   the one `/diff` opens, is now a pager. It sits over the transcript above
   the composer and grows up to its full height. A title rule names the block
@@ -87,7 +94,7 @@
   of a `batch` are highlighted. `j`/`k`, Space/`b`, `g`/`G` and
   Ctrl-D/Ctrl-U move through it, and `/keys` lists them. Any other key
   closes it and goes to the composer. While it is open, the spinner row says
-  Esc closes it, not that Esc interrupts the turn.
+  Esc closes it, not that Esc interrupts the turn. ([`2dac546`])
 
 ### Fixed
 
@@ -95,56 +102,59 @@
   that started with none of ` `, `-` or `+`, such as a shell `done` written
   without its `+`, ended the hunk, and every line after it was skipped while
   the call reported success. Such a line is now refused and nothing is
-  written.
+  written. ([`518c32f`])
 - `patch` ignores empty lines at the end of a hunk when the hunk does not
   match with them, so a blank separator line between hunks no longer counts
-  as context.
+  as context. ([`518c32f`])
 - `patch` finds a file whose header git quoted, such as
-  `--- "a/my file.txt"`, including escaped bytes like `\303\251`.
+  `--- "a/my file.txt"`, including escaped bytes like `\303\251`. ([`518c32f`])
 - Waits no longer let the prompt cache expire. When the model put several
   `job` waits in one response, they ran one after another for up to 16
   minutes before the next request, and the provider wrote the whole prompt to
   its cache again. Now the `job`, `bash` and `task` waits of one response
   share one limit, a little under the five-minute cache. A wait it cuts
-  short says so, and a command still gets a second to finish.
+  short says so, and a command still gets a second to finish. ([`806c836`])
 - When `read` is given a directory, the error now points at `bash` with `ls`
-  or `find`. It named the `find` tool, which no longer exists.
+  or `find`. It named the `find` tool, which no longer exists. ([`809a775`])
 - A resumed or redrawn session shows each tool result, and any image it
   loaded, under its own call. When the model made several calls at once, the
-  calls were listed first and all their results after them.
+  calls were listed first and all their results after them. ([`d22fb90`])
 - A call refused in a non-interactive run in Ask mode is saved as needing
   approval, not as refused by the user. A resumed session no longer tells the
-  model that the user said no.
+  model that the user said no. ([`79f8820`])
 - Dragging over a draft in the composer copies the text after the cursor.
   Before, text to the right of the cursor on its row was left out, so a drag
-  over only that text copied nothing and showed no notice.
+  over only that text copied nothing and showed no notice. ([`5d59627`])
 - Anthropic: a reply that thinks between its tool calls no longer breaks the
   session. Each thinking block goes back in the place it arrived, as the API
-  requires, including after `/resume`.
+  requires, including after `/resume`. ([`60daef5`])
 - Anthropic: a reply that stops at `max_tokens`, is refused, or overflows the
   context window now says so. A tool call cut off at `max_tokens` fails, and
-  the model is told why.
+  the model is told why. ([`60daef5`])
 - Anthropic: HTTP 529 (overloaded) is retried like other transient errors.
+  ([`60daef5`])
 - Two sessions that run the same command, fetch or search no longer share a
   spill file. Before, the second run replaced the file the first had named,
   so the first model read output that was not its own. A file at the name
   that cannot be replaced, such as one another user made, no longer turns
-  spilling off for that call.
+  spilling off for that call. ([`18fdf59`])
 - The user config file is read even when `XDG_CONFIG_DIRS` lists eight or
   more directories. Before, the system directories took every slot and the
   user's `config.toml`, `mcp.json`, prompts and themes were ignored.
+  ([`18fdf59`])
 - Anthropic: failed tool results carry `is_error`, and a reply of only
-  whitespace is no longer sent back, since the API refuses it.
+  whitespace is no longer sent back, since the API refuses it. ([`60daef5`])
 - Anthropic: `/model` lists every model. It showed only the first 20.
+  ([`60daef5`])
 - The "message queued; Esc cancels it" notice stays until the queued message
   is sent or cancelled. Before, the next streamed text, reasoning or tool
-  output removed it while the message was still waiting.
+  output removed it while the message was still waiting. ([`a004349`])
 - Ctrl-D deletes forward in a question prompt, such as `/title`, and cancels
   only when the field is empty. Before, it always cancelled. In the composer
-  during a turn, Ctrl-D now deletes forward too; it was ignored.
+  during a turn, Ctrl-D now deletes forward too; it was ignored. ([`8f896e7`])
 - `/keys` lists every key the interface answers. It now shows the question
-  prompt, Ctrl-C, and the keys that scroll the transcript.
-- Ctrl-L redraws the screen when a list is open.
+  prompt, Ctrl-C, and the keys that scroll the transcript. ([`8f896e7`])
+- Ctrl-L redraws the screen when a list is open. ([`8f896e7`])
 
 ## [0.11.0] - 2026-10-08
 
@@ -994,7 +1004,8 @@
 - Portable Linux x86_64 archive, installer, checksum, and draft release
   automation.
 
-[Unreleased]: https://github.com/bissakov/arqan/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/bissakov/arqan/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/bissakov/arqan/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/bissakov/arqan/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/bissakov/arqan/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/bissakov/arqan/compare/v0.8.0...v0.9.1
@@ -1007,6 +1018,25 @@
 [0.2.0]: https://github.com/bissakov/arqan/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/bissakov/arqan/releases/tag/v0.1.0
 
+[`79c9f62`]: https://github.com/bissakov/arqan/commit/79c9f628a4537693a1493bf6d34886d745adc07c
+[`ff4563d`]: https://github.com/bissakov/arqan/commit/ff4563d6e9071c9437c76ebe135909f1bb43d5e1
+[`056f0bd`]: https://github.com/bissakov/arqan/commit/056f0bd1033ed06b0440f8d9b925f6baf2f97cf3
+[`004da07`]: https://github.com/bissakov/arqan/commit/004da075bca0f5213965dc334f86f5d9acd1f7a7
+[`289d62c`]: https://github.com/bissakov/arqan/commit/289d62c7fe708a3aa4765799be0f8b09da9e35e3
+[`e9a154a`]: https://github.com/bissakov/arqan/commit/e9a154a666ff7eb54865e124e6a213ca76ab02ff
+[`d22fb90`]: https://github.com/bissakov/arqan/commit/d22fb90febdc653647d48d02e0b2bc0cc90cce96
+[`dc976db`]: https://github.com/bissakov/arqan/commit/dc976dbf69b8b4a1dcd8863c63c6b2cbf264ac5a
+[`79f8820`]: https://github.com/bissakov/arqan/commit/79f88202a95b8e826d8f67b8bb9f680123d5f182
+[`897c776`]: https://github.com/bissakov/arqan/commit/897c776e676ee24b78f533da8f85ccf98dbb7fb9
+[`518c32f`]: https://github.com/bissakov/arqan/commit/518c32ffcb71000e01e45f71c800a7be6e9e8d9b
+[`2dac546`]: https://github.com/bissakov/arqan/commit/2dac546349fed48b0fc5b266657f7b3fd2464628
+[`806c836`]: https://github.com/bissakov/arqan/commit/806c836bebafc1dbc8156b7f533cad98d552e87d
+[`809a775`]: https://github.com/bissakov/arqan/commit/809a775a832a7a4c54d22364925a8c7d8adc23f4
+[`5d59627`]: https://github.com/bissakov/arqan/commit/5d59627d82ebdf52147e6b6ac2c31aaa756bca27
+[`60daef5`]: https://github.com/bissakov/arqan/commit/60daef5c1ea7a36871efda23e2054a11f0944646
+[`18fdf59`]: https://github.com/bissakov/arqan/commit/18fdf59177432a344752bef50df1a338e6450b97
+[`a004349`]: https://github.com/bissakov/arqan/commit/a0043492682c98666040729d4edc787f1c9d38de
+[`8f896e7`]: https://github.com/bissakov/arqan/commit/8f896e76847fcb6fab3e3bf716d90c2fab8090f5
 [`f30e299`]: https://github.com/bissakov/arqan/commit/f30e2998679f07559ffb5854ebdfbdb221ced59f
 [`ae49fcb`]: https://github.com/bissakov/arqan/commit/ae49fcbdda4e73b37a27c85b7421b0e325b225d8
 [`5d87e91`]: https://github.com/bissakov/arqan/commit/5d87e91188175710cf1f30f17157e9d396007eae
