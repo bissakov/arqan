@@ -1649,81 +1649,203 @@ static void quote_line(char *dst, size_t cap, Str s) {
     dst[w] = 0;
 }
 
-static size_t patch_agree(Str body, size_t boff, Str oldt, size_t ooff,
-                          size_t *bad, Str *bl, Str *ol) {
-    size_t n = 0;
-    *bad = boff, *bl = (Str){NULL, 0}, *ol = (Str){NULL, 0};
-    for (;;) {
-        Str want, have;
-        if (!str_line(oldt, &ooff, &want)) return n;
-        size_t at = boff;
-        if (!str_line(body, &boff, &have)) {
-            *bad = at, *ol = want;
-            return n;
-        }
-        if (!str_eq(have, want)) {
-            *bad = at, *bl = have, *ol = want;
-            return n;
-        }
-        n++;
+static size_t body_lines(Str body) {
+    if (!body.n) return 0;
+    return line_of(body, body.n) - (body.p[body.n - 1] == '\n' ? 1u : 0u);
+}
+
+static size_t line_start_back(Str body, size_t floor, size_t at, size_t k) {
+    for (; k; k--) {
+        if (at <= floor) return SIZE_MAX;
+        at--;
+        while (at > floor && body.p[at - 1] != '\n') at--;
     }
+    return at;
+}
+
+static Str line_at(Str s, size_t at) {
+    Str line = {NULL, 0};
+    if (!str_line(s, &at, &line)) return (Str){NULL, 0};
+    return line;
+}
+
+typedef struct {
+    size_t run;
+    size_t k;
+    size_t hunk_at;
+    size_t body_at;
+} PatchRun;
+
+static PatchRun patch_agreeing_run(Str body, size_t floor, size_t at, Str oldt,
+                                   size_t hunk_at, size_t k) {
+    PatchRun r = {0, k, hunk_at, at};
+    size_t h = hunk_at, b = at;
+    Str want, have;
+    while (str_line(oldt, &h, &want) && str_line(body, &b, &have)
+           && str_eq(have, want))
+        r.run++;
+    while (r.k && r.body_at > floor) {
+        size_t hp = line_start_back(oldt, 0, r.hunk_at, 1);
+        size_t bp = line_start_back(body, floor, r.body_at, 1);
+        if (!str_eq(line_at(body, bp), line_at(oldt, hp))) break;
+        r.k--, r.hunk_at = hp, r.body_at = bp, r.run++;
+    }
+    return r;
+}
+
+static size_t patch_anchor_lines(Str oldt, size_t *at, size_t *index,
+                                 size_t max) {
+    size_t n = 0, off = 0, k = 0;
+    Str want;
+    for (; n < max; k++) {
+        size_t line_off = off;
+        if (!str_line(oldt, &off, &want)) break;
+        if (!str_trim(want).n) continue;
+        at[n] = line_off, index[n] = k, n++;
+    }
+    return n;
+}
+
+static size_t patch_no_context(Str body, char *note, size_t cap) {
+    if (body_lines(body) <= AGENT_PATCH_CONTEXT_LINES) {
+        snprintf(note, cap, "; no line of its context is in the file");
+        return 0;
+    }
+    snprintf(note, cap,
+             "; no line of its context is in the file; read the file again "
+             "before you rebuild the hunk");
+    return SIZE_MAX;
+}
+
+static b8 patch_skew(char *note, size_t cap, Str h1, Str h2, Str b1, Str b2,
+                     size_t b1_line, size_t extra_after) {
+    char quoted[128];
+    if (h1.p && b1.p && b2.p && str_trim(h1).n && str_eq(h1, b2)) {
+        quote_line(quoted, sizeof quoted, b1);
+        if (b1.n)
+            snprintf(note, cap, "; line %zu \"%s\" is missing from the hunk",
+                     b1_line, quoted);
+        else
+            snprintf(note, cap,
+                     "; line %zu, a blank line, is missing from the hunk",
+                     b1_line);
+        return true;
+    }
+    if (h1.p && h2.p && b1.p && str_trim(h2).n && str_eq(h2, b1)) {
+        quote_line(quoted, sizeof quoted, h1);
+        if (h1.n)
+            snprintf(note, cap,
+                     "; the hunk has an extra line \"%s\" after line %zu",
+                     quoted, extra_after);
+        else
+            snprintf(note, cap,
+                     "; the hunk has an extra blank line after line %zu",
+                     extra_after);
+        return true;
+    }
+    return false;
 }
 
 static size_t patch_diverge(Str body, size_t start, Str oldt, char *note,
                             size_t cap) {
-    Str anchor = {NULL, 0};
-    size_t off = 0, anchor_off = 0;
-    for (;;) {
-        size_t at = off;
-        Str line;
-        if (!str_line(oldt, &off, &line)) break;
-        if (str_trim(line).n) {
-            anchor = line, anchor_off = at;
-            break;
-        }
-    }
-    if (!anchor.n) {
+    size_t anchor_off[AGENT_PATCH_FIT_ANCHORS];
+    size_t anchor_at[AGENT_PATCH_FIT_ANCHORS];
+    size_t anchors = patch_anchor_lines(oldt, anchor_off, anchor_at,
+                                        AGENT_PATCH_FIT_ANCHORS);
+    if (!anchors) {
         note[0] = 0;
         return body.n;
     }
 
     b8 have = false;
-    size_t best = 0, bad = 0;
-    Str bl = {NULL, 0}, ol = {NULL, 0};
-    off = start;
-    for (;;) {
+    PatchRun best = {0};
+    size_t off = start, tries = 0;
+    Str line;
+    while (tries < AGENT_PATCH_FIT_TRIES) {
         size_t at = off;
-        Str line;
         if (!str_line(body, &off, &line)) break;
-        if (!str_eq(line, anchor) && !same_but_space(line, anchor)) continue;
-        size_t b_at = 0;
-        Str b_line, o_line;
-        size_t score =
-            patch_agree(body, at, oldt, anchor_off, &b_at, &b_line, &o_line);
-        if (have && score <= best) continue;
-        have = true, best = score, bad = b_at, bl = b_line, ol = o_line;
+        for (size_t i = 0; i < anchors && tries < AGENT_PATCH_FIT_TRIES; i++) {
+            Str anchor = line_at(oldt, anchor_off[i]);
+            if (!str_eq(line, anchor) && !same_but_space(line, anchor))
+                continue;
+            tries++;
+            PatchRun run = patch_agreeing_run(body, start, at, oldt,
+                                              anchor_off[i], anchor_at[i]);
+            if (have && run.run <= best.run) continue;
+            have = true, best = run;
+        }
     }
-    if (!have) {
-        snprintf(note, cap, "; no line of its context is in the file");
-        return body.n;
-    }
-    if (!ol.n && !bl.n) {
-        snprintf(note, cap, "; its context is already there from line %zu",
-                 line_of(body, bad));
-        return bad;
-    }
+    if (!have) return patch_no_context(body, note, cap);
+
+    size_t bad = best.body_at;
+    Str want_line = {NULL, 0}, have_line = {NULL, 0};
     char want[128];
-    quote_line(want, sizeof want, ol);
-    if (!bl.n) {
+    if (!best.run) {
+        want_line = line_at(oldt, best.hunk_at);
+        have_line = line_at(body, bad);
+    } else if (best.k) {
+        size_t h1 = line_start_back(oldt, 0, best.hunk_at, 1);
+        want_line = line_at(oldt, h1);
+        if (bad <= start) {
+            quote_line(want, sizeof want, want_line);
+            snprintf(note, cap, "; the hunk wants \"%s\" before line %zu", want,
+                     line_of(body, bad));
+            return bad;
+        }
+        bad = line_start_back(body, start, bad, 1);
+        have_line = line_at(body, bad);
+        Str h2 = best.k >= 2 ? line_at(oldt, line_start_back(oldt, 0, h1, 1))
+                             : (Str){NULL, 0};
+        size_t b2 = line_start_back(body, start, bad, 1);
+        Str b2_line = b2 == SIZE_MAX ? (Str){NULL, 0} : line_at(body, b2);
+        if (patch_skew(note, cap, want_line, h2, have_line, b2_line,
+                       line_of(body, bad), line_of(body, bad)))
+            return bad;
+    } else {
+        size_t h = best.hunk_at;
+        for (size_t i = 0; i < best.run; i++) {
+            str_line(oldt, &h, &want_line);
+            str_line(body, &bad, &have_line);
+        }
+        want_line = line_at(oldt, h);
+        if (!want_line.p) {
+            snprintf(note, cap, "; its context is already there from line %zu",
+                     line_of(body, best.body_at));
+            return best.body_at;
+        }
+        have_line = line_at(body, bad);
+        size_t h2 = h, b2 = bad;
+        Str skip;
+        Str h2_line =
+            str_line(oldt, &h2, &skip) ? line_at(oldt, h2) : (Str){NULL, 0};
+        Str b2_line =
+            str_line(body, &b2, &skip) ? line_at(body, b2) : (Str){NULL, 0};
+        size_t b1_line = line_of(body, bad);
+        if (patch_skew(note, cap, want_line, h2_line, have_line, b2_line,
+                       b1_line, b1_line - 1))
+            return bad;
+    }
+    quote_line(want, sizeof want, want_line);
+    if (!have_line.p) {
         snprintf(note, cap, "; the file ends at line %zu, before \"%s\"",
                  line_of(body, bad), want);
         return bad;
     }
     char has[128];
-    quote_line(has, sizeof has, bl);
-    snprintf(note, cap, "; line %zu is \"%s\" where the hunk wants \"%s\"%s",
-             line_of(body, bad), has, want,
-             same_but_space(bl, ol) ? " (only spacing differs)" : "");
+    quote_line(has, sizeof has, have_line);
+    if (!want_line.n)
+        snprintf(note, cap,
+                 "; line %zu is \"%s\" where the hunk wants a blank line",
+                 line_of(body, bad), has);
+    else if (!have_line.n)
+        snprintf(note, cap, "; line %zu is blank where the hunk wants \"%s\"",
+                 line_of(body, bad), want);
+    else
+        snprintf(
+            note, cap, "; line %zu is \"%s\" where the hunk wants \"%s\"%s",
+            line_of(body, bad), has, want,
+            same_but_space(have_line, want_line) ? " (only spacing differs)"
+                                                 : "");
     return bad;
 }
 
@@ -1765,10 +1887,38 @@ static b8 patch_path_exists(Str s) {
            && stat(z, &st) == 0;
 }
 
-static Str patch_path(Str s) {
+static Str patch_unquote(Patch *p, Str s) {
+    if (s.n < 2 || s.p[0] != '"' || s.p[s.n - 1] != '"') return s;
+    s = (Str){s.p + 1, s.n - 2};
+    if (!memchr(s.p, '\\', s.n)) return s;
+    char *out = (char *)arena_alloc(p->scratch, s.n, 1);
+    if (!out) return s;
+    size_t w = 0;
+    for (size_t i = 0; i < s.n; i++) {
+        char c = s.p[i];
+        if (c != '\\' || i + 1 == s.n) {
+            out[w++] = c;
+            continue;
+        }
+        c = s.p[++i];
+        if (c < '0' || c > '7') {
+            out[w++] = c == 'n' ? '\n' : c == 't' ? '\t' : c;
+            continue;
+        }
+        unsigned v = 0;
+        for (size_t k = 0; k < 3 && i < s.n && s.p[i] >= '0' && s.p[i] <= '7';
+             k++, i++)
+            v = v * 8 + (unsigned)(s.p[i] - '0');
+        i--;
+        out[w++] = (char)(unsigned char)(v & 0xffu);
+    }
+    return (Str){out, w};
+}
+
+static Str patch_path(Patch *p, Str s) {
     const char *tab = (const char *)memchr(s.p, '\t', s.n);
     if (tab) s.n = (size_t)(tab - s.p);
-    s = str_trim(s);
+    s = patch_unquote(p, str_trim(s));
     if (str_eq(s, STR("/dev/null"))) return s;
     if (!str_starts(s, STR("a/")) && !str_starts(s, STR("b/"))) return s;
 
@@ -1810,11 +1960,27 @@ static void patch_bad_hunk(Patch *p, const char *fmt, ...) {
 static void patch_current(Patch *p, const char *path, Str body, size_t off) {
     if (p->err_n + 2 >= p->err_cap) return;
 
+    size_t total = body_lines(body);
+    if (!total) {
+        if (p->err_n) p->err[p->err_n++] = '\n';
+        int n = snprintf(p->err + p->err_n, p->err_cap - p->err_n,
+                         "%s is empty", path);
+        if (n < 0) return;
+        size_t room = p->err_cap - p->err_n;
+        p->err_n += (size_t)n < room ? (size_t)n : room - 1;
+        return;
+    }
     size_t line = line_of(body, off);
     size_t first = line > AGENT_PATCH_CONTEXT_LINES / 2
                        ? line - AGENT_PATCH_CONTEXT_LINES / 2
                        : 1;
     size_t last = first + AGENT_PATCH_CONTEXT_LINES - 1;
+    if (last > total) {
+        last = total;
+        first = total >= AGENT_PATCH_CONTEXT_LINES
+                    ? total - AGENT_PATCH_CONTEXT_LINES + 1
+                    : 1;
+    }
     size_t pos = 0, at = 1;
     Str text;
     while (at < first && str_line(body, &pos, &text)) at++;
@@ -1925,6 +2091,30 @@ static size_t hunk_scan(Str text, size_t off, Buf *o, Buf *n, PatchFile *f) {
     }
 }
 
+static b8 hunk_stray(Str text, size_t end, Str *line) {
+    static const char *const git[] = {
+        "diff --git ",  "index ",         "old mode ",
+        "new mode ",    "new file mode ", "deleted file mode ",
+        "rename from ", "rename to ",     "similarity index ",
+        "copy from ",   "copy to ",       "dissimilarity index "};
+    size_t off = end;
+    if (!str_line(text, &off, line)) return false;
+    if (str_starts(*line, STR("@@"))) return false;
+    Str next;
+    if (str_starts(*line, STR("--- ")) && str_line(text, &off, &next)
+        && str_starts(next, STR("+++ ")))
+        return false;
+    for (size_t i = 0; i < sizeof git / sizeof *git; i++)
+        if (str_starts(*line, (Str){git[i], strlen(git[i])})) return false;
+    return true;
+}
+
+static size_t hunk_blank_tail(Str text, size_t off, size_t end) {
+    size_t n = 0;
+    Str line;
+    while (off < end && str_line(text, &off, &line)) n = line.n ? 0 : n + 1;
+    return n;
+}
 
 static b8 patch_anchor(Patch *p, PatchFile *f, Str header, size_t *start) {
     Str anchor = str_trim(str_drop(header, 2));
@@ -1977,14 +2167,23 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str header, Str text,
     p->hunk_file[hunk] = file;
     p->hunk_at[hunk] = SIZE_MAX;
 
+    size_t end = hunk_scan(text, *off, NULL, NULL, NULL);
+    Str stray;
+    if (hunk_stray(text, end, &stray)) {
+        char quoted[128];
+        quote_line(quoted, sizeof quoted, stray);
+        return patch_fail(p,
+                          "%s hunk %zu: line \"%s\" has no ' ', '-' or '+' "
+                          "prefix; start every hunk line with one",
+                          f->path, f->hunk_n, quoted);
+    }
 
     if (f->unlink_it) {
         *off = hunk_scan(text, *off, NULL, NULL, f);
         return true;
     }
 
-    size_t end = hunk_scan(text, *off, NULL, NULL, NULL);
-
+    size_t blank_tail = hunk_blank_tail(text, *off, end);
     size_t span = end - *off + 1;
     Buf o, n;
     buf_init(&o, p->scratch, span);
@@ -1996,6 +2195,10 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str header, Str text,
     Str oldt = buf_finish(&o), newt = buf_finish(&n);
 
     if (f->create) {
+        if (oldt.n && oldt.n == blank_tail) {
+            oldt.n = 0;
+            newt.n -= blank_tail;
+        }
         if (oldt.n)
             return patch_fail(p,
                               "%s hunk %zu: a new file has no lines to "
@@ -2019,6 +2222,12 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str header, Str text,
     size_t start;
     if (!patch_anchor(p, f, header, &start)) return true;
     count = patch_matches(body, oldt, start, hits, sizeof hits / sizeof *hits);
+    if (!count && blank_tail && oldt.n > blank_tail) {
+        oldt.n -= blank_tail;
+        newt.n -= blank_tail;
+        count =
+            patch_matches(body, oldt, start, hits, sizeof hits / sizeof *hits);
+    }
     size_t at = count == 1 ? hits[0] : (size_t)-1;
 
     if (at == (size_t)-1 && !count && oldt.p[oldt.n - 1] == '\n'
@@ -2058,7 +2267,7 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str header, Str text,
             size_t bad = patch_diverge(body, start, oldt, note, sizeof note);
             patch_bad_hunk(p, "%s hunk %zu: context not found%s", f->path,
                            f->hunk_n, note);
-            patch_current(p, f->path, body, bad);
+            if (bad != SIZE_MAX) patch_current(p, f->path, body, bad);
         }
         return true;
     }
@@ -2187,8 +2396,8 @@ static b8 patch_parse(Patch *p, Str text) {
             if (!str_line(text, &peek, &next) || !str_starts(next, STR("+++ ")))
                 continue;
             off = peek;
-            f = patch_open(p, patch_path(str_drop(line, 4)),
-                           patch_path(str_drop(next, 4)));
+            f = patch_open(p, patch_path(p, str_drop(line, 4)),
+                           patch_path(p, str_drop(next, 4)));
             if (!f) return false;
         } else if (str_starts(line, STR("@@"))) {
             if (!f)
@@ -2278,6 +2487,20 @@ static b8 tool_patch(Str args, Arena *scratch, Buf *out, char *err,
                                         "\nand %zu more hunk%s did not apply",
                                         p.bad - p.noted,
                                         p.bad - p.noted == 1 ? "" : "s");
+        size_t matched = p.hunks - p.bad;
+        char other[160];
+        int w = matched ? snprintf(other, sizeof other,
+                                   "\nthe other %zu hunk%s matched; fix the "
+                                   "failed hunk%s and send the whole patch "
+                                   "again",
+                                   matched, matched == 1 ? "" : "s",
+                                   p.bad == 1 ? "" : "s")
+                        : 0;
+        if (w > 0 && (size_t)w < sizeof other
+            && p.err_n + (size_t)w + 32 < p.err_cap) {
+            memcpy(p.err + p.err_n, other, (size_t)w + 1);
+            p.err_n += (size_t)w;
+        }
         if (p.err_n + 32 < p.err_cap)
             snprintf(p.err + p.err_n, p.err_cap - p.err_n,
                      "\nnothing was written");

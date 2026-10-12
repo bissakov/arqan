@@ -1226,6 +1226,210 @@ def test_patch_does_not_replace_a_suffix_of_a_line(ctx):
     assert path.read_text() == "prefix-old\n"
 
 
+def test_patch_line_without_a_prefix_is_refused(ctx):
+    """A bare line once ended the hunk and the lines after it were dropped."""
+    original = "one\ntwo\nthree\n"
+    path = ctx.write_file("loop.sh", original)
+    diff = (
+        "--- loop.sh\n+++ loop.sh\n@@\n one\n"
+        "+for x in a b; do\n+  echo $x\ndone\n+after\n-two\n three\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert result.startswith("ERROR:"), result
+    assert 'loop.sh hunk 1: line "done" has no' in result, result
+    assert path.read_text() == original
+
+
+def test_patch_mismatch_is_found_from_any_context_line(ctx):
+    """A wrong first line must not hide the lines of the hunk that match."""
+    words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta",
+             "theta", "iota", "kappa", "lambda", "mu"]
+    original = "".join(f"{w}\n" for w in words)
+    path = ctx.write_file("edit.txt", original)
+    diff = (
+        "--- edit.txt\n+++ edit.txt\n@@\n"
+        " betta\n gamma\n-delta\n+DELTA\n epsilon\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert 'line 2 is "beta" where the hunk wants "betta"' in result, result
+    assert "no line of its context" not in result, result
+    assert "2: beta" in result, result
+    assert path.read_text() == original
+
+
+def test_patch_mismatch_survives_an_extra_line_in_the_hunk(ctx):
+    """A line the file lacks shifts the rest; the error names that line."""
+    words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta",
+             "theta", "iota", "kappa", "lambda", "mu"]
+    original = "".join(f"{w}\n" for w in words)
+    path = ctx.write_file("edit.txt", original)
+    diff = "--- edit.txt\n+++ edit.txt\n@@\n beta\n\n gamma\n-delta\n+DELTA\n"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "the hunk has an extra blank line after line 2" in result, result
+    assert path.read_text() == original
+
+
+def test_patch_mismatch_names_a_line_the_hunk_skipped(ctx):
+    words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta",
+             "theta", "iota", "kappa", "lambda", "mu"]
+    original = "".join(f"{w}\n" for w in words)
+    path = ctx.write_file("edit.txt", original)
+    skipped_before_the_run = (
+        "--- edit.txt\n+++ edit.txt\n@@\n alpha\n gamma\n-delta\n+DELTA\n"
+    )
+    skipped_after_the_run = (
+        "--- edit.txt\n+++ edit.txt\n@@\n alpha\n-gamma\n+GAMMA\n"
+    )
+    extra_after_the_run = (
+        "--- edit.txt\n+++ edit.txt\n@@\n alpha\n extra\n-beta\n+BETA\n"
+    )
+    ctx.scenario(
+        patch_call(skipped_before_the_run) + ","
+        + patch_call(skipped_after_the_run) + ","
+        + patch_call(extra_after_the_run, final_text="done")
+    )
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    before, after, extra = ctx.mock.tool_results()[-3:]
+    assert 'line 2 "beta" is missing from the hunk' in before, before
+    assert 'line 2 "beta" is missing from the hunk' in after, after
+    assert 'the hunk has an extra line "extra" after line 1' in extra, extra
+    assert path.read_text() == original
+
+
+def test_patch_mismatch_before_the_first_line_of_the_file(ctx):
+    path = ctx.write_file("edit.txt", "alpha\nbeta\n")
+    diff = "--- edit.txt\n+++ edit.txt\n@@\n header\n alpha\n-beta\n+BETA\n"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert 'the hunk wants "header" before line 1' in result, result
+    assert path.read_text() == "alpha\nbeta\n"
+
+
+def test_patch_with_no_known_line_shows_no_excerpt(ctx):
+    """Text from elsewhere in a long file would not help rebuild the hunk."""
+    original = "".join(f"line {i}\n" for i in range(30))
+    path = ctx.write_file("edit.txt", original)
+    diff = "--- edit.txt\n+++ edit.txt\n@@\n other\n-missing\n+new\n"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "no line of its context is in the file" in result, result
+    assert "read the file again" in result, result
+    assert "current lines" not in result, result
+    assert path.read_text() == original
+
+
+def test_patch_excerpt_stops_at_the_end_of_the_file(ctx):
+    original = "a\nb\nc\n"
+    path = ctx.write_file("edit.txt", original)
+    diff = "--- edit.txt\n+++ edit.txt\n@@\n b\n c\n d\n-e\n+f\n"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "edit.txt current lines 1-3:\n1: a\n2: b\n3: c\n" in result, result
+    assert path.read_text() == original
+
+
+def test_failed_patch_counts_the_hunks_that_matched(ctx):
+    original = "one\ntwo\nthree\nfour\n"
+    path = ctx.write_file("edit.txt", original)
+    diff = (
+        "--- edit.txt\n+++ edit.txt\n"
+        "@@\n-one\n+ONE\n"
+        "@@\n-zwei\n+TWO\n"
+        "@@\n-three\n+THREE\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "edit.txt hunk 2: context not found" in result, result
+    assert "the other 2 hunks matched" in result, result
+    assert result.rstrip().endswith("nothing was written"), result
+    assert path.read_text() == original
+
+
+def test_patch_ignores_empty_lines_that_end_a_hunk(ctx):
+    """An empty separator line after a hunk is not a blank line of context."""
+    path = ctx.write_file("edit.txt", "one\ntwo\nthree\n")
+    diff = (
+        "--- edit.txt\n+++ edit.txt\n"
+        "@@\n one\n-two\n+TWO\n\n"
+        "@@\n-three\n+THREE\n\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert not result.startswith("ERROR:"), result
+    assert path.read_text() == "one\nTWO\nTHREE\n"
+
+
+def test_patch_empty_line_that_ends_a_hunk_still_matches_a_blank_line(ctx):
+    path = ctx.write_file("edit.txt", "one\n\nmid\none\ntwo\n")
+    diff = "--- edit.txt\n+++ edit.txt\n@@\n-one\n+ONE\n\n"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert not result.startswith("ERROR:"), result
+    assert path.read_text() == "ONE\n\nmid\none\ntwo\n"
+
+
+def test_patch_quoted_git_paths_find_the_file(ctx):
+    """git quotes a path with special characters and escapes its bytes."""
+    spaced = ctx.write_file("my file.txt", "old\n")
+    accented = ctx.write_file("caf\u00e9.txt", "old\n")
+    diff = (
+        '--- "a/my file.txt"\n+++ "b/my file.txt"\n@@\n-old\n+new\n'
+        '--- "a/caf\\303\\251.txt"\n+++ "b/caf\\303\\251.txt"\n'
+        "@@\n-old\n+new\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit them")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert not result.startswith("ERROR:"), result
+    assert spaced.read_text() == "new\n"
+    assert accented.read_text() == "new\n"
+
+
 def test_patch_accepts_apply_patch_envelope(ctx):
     ctx.write_file("edit.txt", "old\n")
     ctx.write_file("delete.txt", "gone\n")
