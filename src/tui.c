@@ -27,6 +27,7 @@
 #define TUI_POPUP_ROWS      8
 #define TUI_PICK_MIN_ROWS   4
 #define TUI_PICK_SEARCH_MIN 10
+#define TUI_QUEUED_NOTICE   "message queued; Esc cancels it"
 #define TUI_PATH_ENTS       256
 #define TUI_PATH_SLOT       512
 #define TUI_PATH_DEPTH      12
@@ -2160,6 +2161,12 @@ static size_t popup_visual_rows(size_t body_cols, size_t cap) {
     return rows;
 }
 
+static Str notice_shown(void) {
+    if (g_tui.notice_n) return (Str){g_tui.notice, g_tui.notice_n};
+    if (g_tui.busy && g_tui.queued_n) return STR(TUI_QUEUED_NOTICE);
+    return (Str){0};
+}
+
 static void update_notice_row(size_t screen_row, Str text, size_t screen_col,
                               size_t screen_cols, size_t body_cols, b8 force) {
     u64 hash = row_hash(STR("notice"), text, ROW_POPUP);
@@ -3247,7 +3254,8 @@ static void repaint(void) {
     if (g_tui.picking && overlay_cap * 2 / 3 > popup_cap)
         popup_cap = overlay_cap * 2 / 3;
     size_t popup_rows = popup_visual_rows(body_cols, popup_cap);
-    size_t notice_rows = g_tui.notice_n ? 1 : 0;
+    Str notice = notice_shown();
+    size_t notice_rows = notice.n ? 1 : 0;
     size_t find_rows = g_tui.find_open ? 1 : 0;
     size_t activity_rows = g_tui.activity_n ? 2 : 0;
 
@@ -3321,8 +3329,7 @@ static void repaint(void) {
     if (find_rows)
         update_find_row(overlay_top, body_col, cols, body_cols, force);
     if (notice_rows)
-        update_notice_row(overlay_top + find_rows,
-                          (Str){g_tui.notice, g_tui.notice_n}, body_col, cols,
+        update_notice_row(overlay_top + find_rows, notice, body_col, cols,
                           body_cols, force);
     paint_completions(overlay_top + find_rows + notice_rows, popup_rows,
                       body_col, cols, body_cols, force);
@@ -6999,7 +7006,7 @@ static void busy_submit(void) {
         if (g_tui.hist)
             history_add(g_tui.hist, (Str){g_bulk.input, g_tui.input_n});
         composer_clear();
-        tui_notice(STR("message queued; Esc cancels it"));
+        tui_notice(STR(TUI_QUEUED_NOTICE));
         return;
     }
     if (!g_busy.fn) return;

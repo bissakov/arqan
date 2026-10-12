@@ -205,6 +205,64 @@ def test_escape_cancels_a_queued_message_without_interrupting(ctx):
     assert "[interrupted]" not in s.text(), s.text()
 
 
+QUEUED_NOTICE = "message queued; Esc cancels it"
+
+
+def queue_in_held_turn(ctx, spec):
+    """A session whose first round is held with a follow-up queued, the
+    notice on screen, and the round then let go."""
+    ctx.scenario(spec)
+    s = ctx.spawn(TMPDIR=str(ctx.work))
+    s.submit("go on")
+    s.wait_activity("thinking")
+    s.submit("and then this")
+    s.wait_text(QUEUED_NOTICE)
+    ctx.mock.release()
+    return s
+
+
+def test_the_queued_notice_outlasts_a_streamed_reply(ctx):
+    """The reply streaming on does not take the notice away: the message is
+    still waiting and Esc still cancels it."""
+    s = queue_in_held_turn(ctx, "hold,text=" + "+".join(["streamed"] * 60)
+                           + ",chunk=4,delay=0.05")
+    s.wait_text("streamed")
+    assert s.activity_label() == "responding", s.snapshot("streaming")
+    assert len(ctx.mock.requests) == 1, ctx.mock.requests
+    assert QUEUED_NOTICE in s.text(), s.snapshot("streaming")
+    s.wait_turn_done()
+
+
+def test_the_queued_notice_outlasts_reasoning(ctx):
+    """A reasoning trace streaming on does not take the notice away."""
+    s = queue_in_held_turn(
+        ctx, "hold,reasoning=" + "+".join(["weighing"] * 60)
+        + ",chunk=4,delay=0.05,text=done")
+    s.wait_activity("reasoning")
+    s.wait_text("weighing")
+    assert len(ctx.mock.requests) == 1, ctx.mock.requests
+    assert QUEUED_NOTICE in s.text(), s.snapshot("reasoning")
+    s.wait_turn_done()
+
+
+def test_the_queued_notice_outlasts_a_tool_result(ctx):
+    """A tool result reaching the transcript does not take the notice away
+    while the next tool of the round still runs."""
+    s = queue_in_held_turn(
+        ctx, "hold,tool=bash:" + json.dumps(
+            {"command": "echo first-out", "description": "qzx"})
+        + ",tool=bash:" + json.dumps(
+            {"command": "sleep 3; echo second-out", "description": "qzx"})
+        + ",final_text=done")
+    s.wait_for(lambda t: t.contains("sleep 3; echo second-out")
+               and s.activity_label() == "running bash",
+               "the second command running under the first result")
+    assert s.screen.find_row("first-out") < s.screen.find_row("sleep 3")
+    assert len(ctx.mock.requests) == 1, ctx.mock.requests
+    assert QUEUED_NOTICE in s.text(), s.snapshot("second command")
+    s.wait_turn_done()
+
+
 def test_ctrl_c_stops_the_turn_and_keeps_the_typed_text(ctx):
     """A running turn outranks the composer.
 
