@@ -83,6 +83,12 @@
 
 ### Fixed
 
+- Waits no longer let the prompt cache expire. When the model put several
+  `job` waits in one response, they ran one after another for up to 16
+  minutes before the next request, and the provider wrote the whole prompt to
+  its cache again. Now the `job`, `bash` and `task` waits of one response
+  share one limit, a little under the five-minute cache. A wait it cuts
+  short says so, and a command still gets a second to finish.
 - When `read` is given a directory, the error now points at `bash` with `ls`
   or `find`. It named the `find` tool, which no longer exists.
 - A resumed or redrawn session shows each tool result, and any image it

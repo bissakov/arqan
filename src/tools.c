@@ -389,6 +389,7 @@ typedef struct {
     ToolsPolicy policy;
     ToolsTouch touch;
     JobTable job;
+    RoundDeadline round;
     ToolExecution execution;
 } ToolsState;
 
@@ -425,7 +426,65 @@ void shell_set_timeout(i32 ms) {
     g_tools.shell.timeout_ms = ms > 0 ? ms : 0;
 }
 
+_Static_assert(AGENT_ROUND_WAIT_S < (i32)AGENT_CACHE_TTL_S,
+               "a round's waits end before the prompt cache expires");
+
+static f64 round_wait_s(void) {
+#ifdef AGENT_TESTING
+    const char *value = getenv(AGENT_ENV_PREFIX "TEST_ROUND_WAIT_MS");
+    if (value && *value) {
+        b8 ok = false;
+        i64 ms = str_int(str_c(value), &ok);
+        if (ok && ms > 0 && ms <= AGENT_ROUND_WAIT_S * 1000)
+            return (f64)ms / 1000.0;
+    }
+#endif
+    return (f64)AGENT_ROUND_WAIT_S;
+}
+
+RoundDeadline round_deadline_after(f64 request_sent_s) {
+    f64 wait_s = round_wait_s();
+    return (RoundDeadline){request_sent_s + wait_s,
+                           request_sent_s + AGENT_CACHE_TTL_S, wait_s};
+}
+
+RoundDeadline shell_swap_round_deadline(RoundDeadline next) {
+    RoundDeadline previous = g_tools.round;
+    g_tools.round = next.deadline_s > 0.0 ? next : (RoundDeadline){0};
+    return previous;
+}
+
+size_t shell_round_wait_ms(size_t want_ms, b8 *cut) {
+    if (cut) *cut = false;
+    RoundDeadline r = g_tools.round;
+    if (r.deadline_s <= 0.0) return want_ms;
+    f64 now = agent_now_seconds();
+    if (now >= r.expires_s) return want_ms;
+    f64 left_ms = (r.deadline_s - now) * 1000.0;
+    if (!want_ms || left_ms >= (f64)want_ms) return want_ms;
+    if (cut) *cut = true;
+    return left_ms > 0.0 ? (size_t)left_ms : 0;
+}
+
+void shell_round_spent_text(char *z, size_t cap) {
+    u32 s = (u32)(g_tools.round.wait_s + 0.5);
+    snprintf(z, cap, "this response's %u second%s of waiting ran out", s,
+             s == 1 ? "" : "s");
+}
+
+static const char *round_cut_suffix(char *z, size_t cap) {
+    if (cap < 3) return "";
+    z[0] = ';';
+    z[1] = ' ';
+    shell_round_spent_text(z + 2, cap - 2);
+    return z;
+}
+
 #define SHELL_POLL_MS 50
+
+#define SHELL_ROUND_MIN_MS 1000
+#define TOOLS_TEXT2(x)     #x
+#define TOOLS_TEXT(x)      TOOLS_TEXT2(x)
 
 
 #define JOB_DRAIN_MS         200
@@ -1170,7 +1229,7 @@ static size_t job_log_bytes(const Job *j) {
 }
 
 
-static void job_note(Buf *out, u32 id, f64 started, b8 for_user) {
+static void job_note(Buf *out, u32 id, f64 started, const char *why) {
     Job *j = job_find(id);
     if (!j) return;
     char size[32];
@@ -1179,8 +1238,7 @@ static void job_note(Buf *out, u32 id, f64 started, b8 for_user) {
     buf_putf(out,
              "[output continues in %s (%s); call job with id=%u for the "
              "rest]\n[still running as job %u after %us%s]",
-             j->path, size, id, id, (u32)(agent_now_seconds() - started),
-             for_user ? "; detached for a user message" : "");
+             j->path, size, id, id, (u32)(agent_now_seconds() - started), why);
 }
 
 
@@ -1212,6 +1270,7 @@ typedef struct {
     Buf *out;
     Str cmd;
     size_t first, limit, shown, total;
+    b8 round_cut;
 } ShellPage;
 
 static void shell_page_put(void *ud, const char *p, size_t n) {
@@ -1236,7 +1295,11 @@ static b8 shell_page_detach(void *ud, pid_t pid, i32 fd, f64 started,
     if (pg->total > pg->first + pg->shown)
         buf_putf(pg->out, "\n[shown %zu of %zu output bytes so far]", pg->shown,
                  pg->total);
-    job_note(pg->out, job, started, for_user);
+    char spent[96];
+    job_note(pg->out, job, started,
+             for_user        ? "; detached for a user message"
+             : pg->round_cut ? round_cut_suffix(spent, sizeof spent)
+                             : "");
     return true;
 }
 
@@ -1247,8 +1310,8 @@ static i32 shell_exit_code(i32 status) {
 }
 
 static b8 shell_capture_page(Str cmd, size_t offset, size_t limit,
-                             i32 timeout_ms, ShellClass cls, Buf *out,
-                             char *err, size_t err_cap) {
+                             i32 timeout_ms, b8 round_cut, ShellClass cls,
+                             Buf *out, char *err, size_t err_cap) {
     if (!arg_cstr(cmd, g_shell_io.command, sizeof g_shell_io.command, "command",
                   err, err_cap))
         return false;
@@ -1259,8 +1322,11 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit,
     }
 
     spill_open(&g_shell_io.spill, "bash", "log", cmd);
-    ShellPage pg = {
-        .out = out, .cmd = cmd, .first = offset - 1, .limit = limit};
+    ShellPage pg = {.out = out,
+                    .cmd = cmd,
+                    .first = offset - 1,
+                    .limit = limit,
+                    .round_cut = round_cut};
     ShellSink sink = {.put = shell_page_put,
                       .detach = shell_page_detach,
                       .ud = &pg,
@@ -1333,11 +1399,18 @@ static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err,
     if (!arg_wait_ms(j, (size_t)g_tools.shell.timeout_ms,
                      (size_t)g_tools.shell.timeout_ms, &timeout, err, err_cap))
         return false;
+    b8 round_cut = false;
+    if (timeout) {
+        size_t round_ms = shell_round_wait_ms(timeout, &round_cut);
+        if (round_ms < SHELL_ROUND_MIN_MS) round_ms = SHELL_ROUND_MIN_MS;
+        round_cut = round_cut && round_ms < timeout;
+        if (round_cut) timeout = round_ms;
+    }
     Str command = json_str(j, STR("command"));
     ShellClass cls = shell_classify(command, sandbox_abi() >= 1);
     if (cls == SHELL_READS_INSIDE) sandbox_prepare(scratch);
-    return shell_capture_page(command, offset, limit, (i32)timeout, cls, out,
-                              err, err_cap);
+    return shell_capture_page(command, offset, limit, (i32)timeout, round_cut,
+                              cls, out, err, err_cap);
 }
 
 
@@ -1391,9 +1464,11 @@ static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
 
     b8 interrupted = false;
     b8 yielded = false;
+    b8 round_cut = false;
     if (kill_it) {
         job_signal(job);
     } else {
+        wait_ms = shell_round_wait_ms(wait_ms, &round_cut);
         f64 started = agent_now_seconds();
         f64 exited = 0.0;
 
@@ -1433,8 +1508,11 @@ static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
     }
     if (job->running) {
         g_tools.execution = (ToolExecution){.pending = true, .job_id = job->id};
+        char spent[96];
         buf_putf(out, "[job %u still running after %s%s]", job->id, age,
-                 yielded ? "; stopped waiting for a user message" : "");
+                 yielded     ? "; stopped waiting for a user message"
+                 : round_cut ? round_cut_suffix(spent, sizeof spent)
+                             : "");
     } else {
         g_tools.execution = (ToolExecution){
             .job_id = job->id, .exit_code = shell_exit_code(job->status)};
@@ -2523,13 +2601,18 @@ static Str bash_description(Arena *persist, i32 shell_timeout_ms) {
                      "prompts for input, sudo included, fails rather than "
                      "waits. "));
     if (shell_timeout_ms > 0)
-        buf_puts(&b, STR("A command still running after the deadline is not "
-                         "killed: it carries on as a job the result names, "
-                         "and the job tool waits for the rest. Set timeout_ms "
-                         "to what this command is worth waiting for: a build "
-                         "you expect to take minutes should become a job in "
-                         "seconds, while a test you expect to finish should "
-                         "be waited out."));
+        buf_puts(
+            &b,
+            STR("A command still running after the deadline is not "
+                "killed: it carries on as a job the result names, "
+                "and the job tool waits for the rest. Set timeout_ms "
+                "to what this command is worth waiting for: a build "
+                "you expect to take minutes should become a job in "
+                "seconds, while a test you expect to finish should "
+                "be waited out. The calls in one response share " TOOLS_TEXT(
+                    AGENT_ROUND_WAIT_S) " seconds of "
+                                        "waiting; a command still running when that time "
+                                        "is used up becomes a job."));
     else
         buf_puts(&b, STR("There is no time limit: every command is waited "
                          "out."));
@@ -2687,7 +2770,9 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         "job is worth waiting for this time; a job that outlasts the wait is "
         "reported as still running. A job that ends is named in the next "
         "tool result, so do other work in between, and wait again when "
-        "nothing else is left. Job ids last for this session only.",
+        "nothing else is left. The calls in one response share " TOOLS_TEXT(
+            AGENT_ROUND_WAIT_S) " seconds of waiting, so put one "
+                                "long wait in each response. Job ids last for this session only.",
         "Follow a background command", BOTH, TOOL_APPROVAL_NONE,
         "{\"type\":\"object\",\"properties\":{"
         "\"id\":{\"type\":\"integer\",\"description\":\"the job to act on; omit to list\"},"
@@ -2759,11 +2844,12 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         "\"id\":{\"type\":\"integer\",\"description\":\"the running task "
         "to collect; omit to start one\"},"
         "\"wait_ms\":{\"type\":\"integer\",\"description\":\"how long to "
-        "wait for the report before answering, up to 240000; default 0, "
-        "which answers with whatever it has\"},"
-        "\"action\":{\"type\":\"string\",\"enum\":[\"continue\",\"drop\"],"
-        "\"description\":\"default continue; drop abandons the task\"}},"
-        "\"required\":[]}",
+        "wait for the report before answering, up to 240000 and within the " TOOLS_TEXT(
+            AGENT_ROUND_WAIT_S) " seconds of waiting the calls in one "
+                                "response share; default 0, which answers with whatever it has\"},"
+                                "\"action\":{\"type\":\"string\",\"enum\":[\"continue\",\"drop\"],"
+                                "\"description\":\"default continue; drop abandons the task\"}},"
+                                "\"required\":[]}",
         tool_agent_only);
     tools_set_subagents(r, subagents);
     tools_set_task_limit(r, subagent_tasks);

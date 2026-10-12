@@ -8,6 +8,7 @@ continues to arrive, and that nothing it started survives the session.
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -356,6 +357,92 @@ def test_a_job_wait_past_the_maximum_is_granted_as_the_maximum(ctx):
     assert "[job 1 exit 0" in followed, followed
 
 
+# The test build shortens the time the waits of one response share, which is
+# a little under the provider's five-minute prompt cache in a real session.
+ROUND_WAIT_MS = "2000"
+SPENT = "this response's 2 seconds of waiting ran out"
+
+
+def test_the_waits_of_one_response_share_one_time_limit(ctx):
+    """Several waits in one response run one after another, and the next
+    request waits for all of them. Together they stop at the round limit, so
+    the request goes out while the prompt cache is still warm."""
+    ctx.scenario(
+        "tool=" + bash("sleep 60") + ",tool=" + job(id=1, timeout_ms=300)
+        + ",tool=" + job(id=1, timeout_ms=10000) + ",tool="
+        + job(id=1, timeout_ms=10000) + ",final_text=followed"
+    )
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="200",
+                  ARQAN_TEST_ROUND_WAIT_MS=ROUND_WAIT_MS)
+    started = time.monotonic()
+    s.submit("wait for it three times")
+    s.wait_text("followed")
+    took = time.monotonic() - started
+    s.wait_turn_done()
+
+    first, second, third = results(ctx)[1:4]
+    assert took < 8.0, f"the waits held the next request for {took:.1f}s"
+    assert "[job 1 still running after" in first, first
+    assert "of waiting ran out" not in first, first
+    assert re.search(r"\[job 1 still running after \d+s; " + SPENT + r"\]$",
+                     second), second
+    assert third.endswith("; " + SPENT + "]"), third
+
+
+def test_a_command_becomes_a_job_at_the_round_limit(ctx):
+    """A command that would outlast the round limit is detached at it, even
+    with a longer shell deadline."""
+    ctx.scenario("tool=" + bash("sleep 60") + ",final_text=followed")
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="60000",
+                  ARQAN_TEST_ROUND_WAIT_MS=ROUND_WAIT_MS)
+    started = time.monotonic()
+    s.submit("run something slow")
+    s.wait_text("followed")
+    took = time.monotonic() - started
+    s.wait_turn_done()
+
+    detached = results(ctx)[0]
+    assert took < 8.0, f"the command held the next request for {took:.1f}s"
+    assert re.search(r"\[still running as job 1 after \d+s; " + SPENT + r"\]$",
+                     detached), detached
+
+
+def test_the_shared_waiting_time_is_in_the_descriptions(ctx):
+    """The model reads the limit where it learns the tools, before a result
+    first cuts a wait short."""
+    ctx.scenario("final_text=done")
+    s = ctx.spawn()
+    s.submit("hello")
+    s.wait_turn_done()
+
+    tools = {t["function"]["name"]: t["function"]
+             for t in ctx.mock.requests[0]["tools"]}
+    shared = "The calls in one response share 280 seconds of waiting"
+    assert shared in tools["bash"]["description"], tools["bash"]
+    assert shared in tools["job"]["description"], tools["job"]
+    assert "put one long wait in each response" in \
+        tools["job"]["description"], tools["job"]
+
+
+def test_a_quick_command_after_the_round_limit_still_finishes(ctx):
+    """Past the limit, a command still gets a moment to finish, so a quick
+    check does not turn into a job."""
+    ctx.scenario(
+        "tool=" + bash("sleep 60") + ",tool=" + job(id=1, timeout_ms=10000)
+        + ",tool=" + bash("echo quick-check") + ",final_text=followed"
+    )
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="200",
+                  ARQAN_TEST_ROUND_WAIT_MS=ROUND_WAIT_MS)
+    s.submit("wait, then check")
+    s.wait_text("followed")
+    s.wait_turn_done()
+
+    checked = results(ctx)[2]
+    assert "quick-check" in checked, checked
+    assert "[exit 0]" in checked, checked
+    assert "still running as job" not in checked, checked
+
+
 def test_no_deadline_means_no_per_call_deadline(ctx):
     """With detaching turned off, a call asking for it is told so."""
     ctx.scenario("tool=" + bash_for("echo hi", 100) + ",final_text=refused")
@@ -369,6 +456,22 @@ def test_no_deadline_means_no_per_call_deadline(ctx):
     assert "timeout_ms is unavailable in this session: every command is " \
         "waited out" in out, out
     assert "shell_timeout_ms" not in out, out
+
+
+def test_no_deadline_waits_out_a_command_past_the_round_limit(ctx):
+    """Turning detaching off means every command is waited out, so the round
+    limit does not detach one either."""
+    ctx.scenario("tool=" + bash("sleep 2.5; echo waited-out")
+                 + ",final_text=followed")
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="0",
+                  ARQAN_TEST_ROUND_WAIT_MS=ROUND_WAIT_MS)
+    s.submit("run it to the end")
+    s.wait_text("followed")
+    s.wait_turn_done()
+
+    out = results(ctx)[0]
+    assert "waited-out" in out, out
+    assert "still running as job" not in out, out
 
 
 def test_no_deadline_leaves_jobs_out_of_the_bash_description(ctx):

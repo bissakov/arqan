@@ -192,6 +192,7 @@ static struct {
     b8 replying;
     b8 rerender_pending;
     b8 one_shot;
+    f64 request_sent_s;
 } g_turn;
 
 static void one_shot_diag(const char *kind, Str name, Str text) {
@@ -391,6 +392,7 @@ static void on_usage(const Conv *conv, size_t prompt_tokens,
 static void on_retry(i32 attempt, i32 attempts, i32 delay_ms, Str reason,
                      void *ud) {
     (void)ud;
+    g_turn.request_sent_s = agent_now_seconds() + (f64)delay_ms / 1000.0;
     if (g_turn.one_shot) {
         char row[256];
         i32 n =
@@ -1411,23 +1413,33 @@ static void task_telemetry(const TaskWorker *w, b8 small, Str text) {
     tel_send(&e);
 }
 
-static void task_wait(Agent *ag, TaskWorker *w, size_t wait_ms) {
-    f64 until = agent_now_seconds() + (f64)wait_ms / 1000.0;
+static b8 task_wait(Agent *ag, TaskWorker *w, size_t wait_ms) {
+    b8 round_cut = false;
+    f64 until = agent_now_seconds()
+                + (f64)shell_round_wait_ms(wait_ms, &round_cut) / 1000.0;
     while (!w->ended && (w->running || w->reader.fd >= 0)) {
         task_drain(ag, w);
-        if (w->ended || g_got_sigint) return;
+        if (w->ended || g_got_sigint) return false;
         if (!w->running) {
             task_drain(ag, w);
-            return;
+            return false;
         }
-        if (agent_now_seconds() >= until) return;
-        if (tui_queued_pending()) return;
+        if (agent_now_seconds() >= until) return round_cut;
+        if (tui_queued_pending()) return false;
         tui_poll_input();
         poll(NULL, 0, 25);
     }
+    return false;
 }
 
-static void task_put_running(Buf *out, const TaskWorker *w) {
+static void task_put_round_spent(Buf *out) {
+    char spent[96];
+    shell_round_spent_text(spent, sizeof spent);
+    if (spent[0] >= 'a' && spent[0] <= 'z') spent[0] = (char)(spent[0] - 32);
+    buf_putf(out, "%s. ", spent);
+}
+
+static void task_put_running(Buf *out, const TaskWorker *w, b8 round_cut) {
     const Subagent *s = &w->sub;
     buf_putf(out, "Task %u", s->id);
     subagent_label(out, s);
@@ -1437,8 +1449,10 @@ static void task_put_running(Buf *out, const TaskWorker *w) {
              s->tool_calls == 1 ? "" : "s",
              (unsigned long long)(elapsed_ms(w->started) / 1000));
     subagent_progress(out, s);
+    buf_puts(out, STR("\n\n"));
+    if (round_cut) task_put_round_spent(out);
     buf_putf(out,
-             "\n\nCall task(id=%u) again for the report. Do other work in "
+             "Call task(id=%u) again for the report. Do other work in "
              "between; the task keeps running either way.",
              s->id);
 }
@@ -1544,7 +1558,7 @@ static void task_answer(Agent *ag, Str args, Str *result) {
             *result = text;
             return;
         }
-        task_wait(ag, w, wait_ms);
+        b8 round_cut = task_wait(ag, w, wait_ms);
         if (!w->ended && !w->running) {
             w->ended = true;
             w->outcome = SUB_FAILED;
@@ -1559,7 +1573,7 @@ static void task_answer(Agent *ag, Str args, Str *result) {
             *result = text;
             return;
         }
-        task_put_running(&out, w);
+        task_put_running(&out, w, round_cut);
         if (w == task_focused() && g_tview.showing == TVIEW_TASK)
             tview_show(ag, TVIEW_TASK);
         *result = buf_finish(&out);
@@ -1630,7 +1644,7 @@ static void task_answer(Agent *ag, Str args, Str *result) {
         return;
     }
 
-    if (wait_ms) task_wait(ag, w, wait_ms);
+    b8 round_cut = wait_ms && task_wait(ag, w, wait_ms);
     if (w->ended) {
         task_put_report(&out, w);
         Str text = buf_finish(&out);
@@ -1642,10 +1656,11 @@ static void task_answer(Agent *ag, Str args, Str *result) {
     }
     buf_putf(&out, "Task %u", w->sub.id);
     subagent_label(&out, &w->sub);
+    buf_puts(&out, STR(" started in the background.\n"));
+    if (round_cut) task_put_round_spent(&out);
     buf_putf(&out,
-             " started in the background.\nCarry on with other work, then "
-             "call task(id=%u) for the report. Add wait_ms to that call to "
-             "wait for it instead.",
+             "Carry on with other work, then call task(id=%u) for the report. "
+             "Add wait_ms to that call to wait for it instead.",
              w->sub.id);
     *result = buf_finish(&out);
 }
@@ -5927,7 +5942,9 @@ static b8 agent_turn(Agent *ag, Str text) {
         char err[256] = {0};
         arena_reset(ag->scratch);
         size_t before = conv->n;
+        g_turn.request_sent_s = agent_now_seconds();
         i32 rc = provider_run(&p, err, sizeof err);
+        f64 request_sent_s = g_turn.request_sent_s;
 
         md_end();
         md_set_muted(false);
@@ -5992,7 +6009,10 @@ static b8 agent_turn(Agent *ag, Str text) {
         }
 
         size_t tail = conv->n;
+        RoundDeadline outer =
+            shell_swap_round_deadline(round_deadline_after(request_sent_s));
         TurnAction act = run_tool_calls(ag, before, tail);
+        shell_swap_round_deadline(outer);
         if (p.stop == PROVIDER_STOP_MAX_TOKENS) {
             if (conv_add_note(conv, STR(CUT_CALL_NOTE)) != CONV_NONE
                 && !g_turn.one_shot)
