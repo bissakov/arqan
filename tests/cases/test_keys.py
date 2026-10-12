@@ -6,8 +6,12 @@ the completion popup being open, the composer being empty, which context owns
 the keyboard. These cases pin both sides of every such pair, so a binding
 added later cannot quietly take a key that already had a meaning.
 
-`/keys` is the same table rendered, so a duplicate that survived the compiler
-shows up here as one key listed twice under one context.
+Three guards keep the tables honest. The compiler refuses a key bound twice in
+one table, since each table expands into a `switch`. The test build's
+self-check refuses, at startup, a label listed twice in one context and a
+`Ctrl-<letter>` label that does not match its key, so every case here fails
+at once. And `/keys` is the same table rendered, so these cases read it back
+as the user sees it.
 """
 
 import re
