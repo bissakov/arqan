@@ -4912,16 +4912,22 @@ static struct {
  * row and turns on state; it is never a second binding placed earlier in a
  * chain, which is what used to make the loser silent dead code.
  *
- * Contexts are layered, and the outer one is tried first: the composer's
- * table runs before the shared editor's, so a key in both is an override and
- * not a duplicate. Only one context owns the keyboard at a time, so the same
- * byte meaning different things in two of them is intended, and the page
- * `/keys` renders it under both.
+ * Contexts are layered, and the outer one is tried first: the composer and
+ * the question each sit over the shared line editor, and their tables run
+ * before its own, so a key in both is an override and not a duplicate. Only
+ * one context owns the keyboard at a time, so the same byte meaning different
+ * things in two of them is intended, and the page `/keys` renders it under
+ * both.
  *
  * A row is `X(key, label, help, body)`. `key` is a byte or a KEY_ code,
  * `body` the statements that run, and `label` names the key on the page; an
  * empty label hides the row, which is how an alias nobody types (Ctrl-J for
  * Enter, Ctrl-H for Backspace) stays bound without a line of its own.
+ *
+ * Ctrl-C reaches a byte table as KEY_INTERRUPT, since the terminal sends it
+ * as SIGINT and the interrupt must work while the loop is blocked elsewhere.
+ * A 0x03 row beside it is a hidden alias for a terminal whose interrupt key
+ * was remapped.
  *
  * KEY_PASTE is deliberately unbound. read_escape consumes the bracketed
  * paste markers and sets `g_tui.pasting` as it goes, so every context reads
@@ -6329,6 +6335,32 @@ static b8 edit_escape(i32 key, char *buf, size_t *n, size_t *cur) {
     return true;
 }
 
+typedef struct {
+    b8 done;
+    b8 answered;
+} Asked;
+
+static void ask_end(Asked *a, b8 answered) {
+    a->answered = answered;
+    a->done = true;
+}
+
+#define ASK_KEYS(X)                                                            \
+    X(0x0d, "Enter", "Answer the question", ask_end(a, allow_empty || n > 0);) \
+    X(0x0a, "", "", ask_end(a, allow_empty || n > 0);)                         \
+    X(KEY_INTERRUPT, "Ctrl-C", "Cancel the question", ask_end(a, false);)      \
+    X(0x03, "", "", ask_end(a, false);)                                        \
+    X(0x04, "Ctrl-D", "Delete forward, or cancel on an empty field",           \
+      if (n) edit_delete(g_bulk.input, &n, &cur);                              \
+      else ask_end(a, false);)                                                 \
+    X(0x0c, "Ctrl-L", "Redraw the screen", g_tui.frame_valid = false;)
+
+#define ASK_ESCAPE_KEYS(X) \
+    X(KEY_NONE, "Esc", "Cancel the question", ask_end(a, false);)
+
+static const KeyRow k_ask_rows[] = {ASK_KEYS(KEY_DOC)};
+static const KeyRow k_ask_escape_rows[] = {ASK_ESCAPE_KEYS(KEY_DOC)};
+
 static b8 ask_impl(Str question, b8 secret, char *out, size_t cap, b8 edit,
                    b8 allow_empty) {
     if (!g_tui.fullscreen || !out || cap < 2) return false;
@@ -6368,7 +6400,8 @@ static b8 ask_impl(Str question, b8 secret, char *out, size_t cap, b8 edit,
                                                            : sizeof row - 1}
                       : question);
 
-    b8 answered = false;
+    Asked asked = {0};
+    Asked *a = &asked;
     for (;;) {
         paste_retire_if_drained();
         i32 c = rbyte();
@@ -6377,31 +6410,32 @@ static b8 ask_impl(Str question, b8 secret, char *out, size_t cap, b8 edit,
             continue;
         }
         if (c < 0) break;
-        if (c == KEY_INTERRUPT) break;
-        if ((c == 0x03 || c == 0x04) && !g_tui.pasting) break;
-        if ((c == '\r' || c == '\n') && !g_tui.pasting) {
-            answered = allow_empty || g_tui.input_n > 0;
-            break;
-        }
-        if (g_tui.pasting && (c == '\r' || c == '\n')) continue;
         size_t n = g_tui.input_n, cur = g_tui.input_cur;
         if (key_pasted(c)) {
-            if (key_is_text(c))
-                edit_insert((char)c, g_bulk.input, &n, &cur, limit + 1);
+            if (!key_is_text(c)) continue;
+            edit_insert((char)c, g_bulk.input, &n, &cur, limit + 1);
         } else if (c == 0x1b) {
             i32 key = read_escape();
-            if (key == KEY_NONE) break;
-            if (!edit_escape(key, g_bulk.input, &n, &cur)) scroll_key(key);
-        } else if (c == 0x0c) {
-            g_tui.frame_valid = false;
+            switch (key) {
+                ASK_ESCAPE_KEYS(KEY_CASE)
+                default:
+                    if (!edit_escape(key, g_bulk.input, &n, &cur))
+                        scroll_key(key);
+                    break;
+            }
         } else {
-            edit_byte(c, g_bulk.input, &n, &cur, limit + 1);
+            switch (c) {
+                ASK_KEYS(KEY_CASE)
+                default: edit_byte(c, g_bulk.input, &n, &cur, limit + 1); break;
+            }
         }
+        if (a->done) break;
         g_tui.input_n = n;
         g_tui.input_cur = cur;
         repaint();
     }
 
+    b8 answered = asked.answered;
     size_t n = answered ? g_tui.input_n : 0;
     memcpy(out, g_bulk.input, n);
     out[n] = '\0';
@@ -6926,6 +6960,8 @@ static EdAction editor_key(i32 c) {
 #define KEY_CONTEXTS(X)                          \
     X("[composer]", k_composer_rows)             \
     X("[composer]", k_composer_escape_rows)      \
+    X("[question]", k_ask_rows)                  \
+    X("[question]", k_ask_escape_rows)           \
     X("[line editing]", k_edit_rows)             \
     X("[line editing]", k_edit_escape_rows)      \
     X("[transcript search]", k_find_rows)        \

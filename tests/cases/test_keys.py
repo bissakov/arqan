@@ -12,7 +12,8 @@ shows up here as one key listed twice under one context.
 
 import re
 
-from .test_busy import click_tail, folded_read
+from tests.cases.test_busy import click_tail, folded_read
+from tests.cases.test_title import one_turn, session_titles
 
 
 # ---- the page ------------------------------------------------------------
@@ -88,8 +89,8 @@ def test_keys_page_lists_bindings_grouped_by_context(ctx):
     open_keys(s)
     bindings = parse_bindings(whole_page(s))
     assert set(bindings) == {
-        "composer", "line editing", "transcript search", "lists and screens",
-        "text view",
+        "composer", "question", "line editing", "transcript search",
+        "lists and screens", "text view",
     }, sorted(bindings)
     assert "Ctrl-R" in bindings["composer"], bindings["composer"]
     assert "Ctrl-G" in bindings["transcript search"], \
@@ -362,3 +363,28 @@ def test_ctrl_l_redraws_a_list(ctx):
     assert s.snapshot() != before
     s.key("ctrl-l").sync()
     assert s.snapshot() == before, s.snapshot()
+
+
+def test_ctrl_d_in_a_question_deletes_forward_and_cancels_when_empty(ctx):
+    """The question edits like the composer: Ctrl-D deletes the glyph under
+    the cursor, and only an empty field takes it as the way out."""
+    s = one_turn(ctx)
+    s.submit("/title alpha bravo")
+    s.wait_text("session named: alpha bravo")
+    s.type("/title").sync()
+    s.key("enter")
+    s.wait_text("Esc cancels")
+    assert s.composer_text() == "alpha bravo", s.composer_lines()
+
+    s.key("home").sync()
+    s.key("ctrl-d").sync()
+    assert s.composer_text() == "lpha bravo", s.composer_lines()
+    s.key("ctrl-k").sync()
+    assert s.composer_text() == "", s.composer_lines()
+    assert "Esc cancels" in s.text(), "a deleting Ctrl-D does not cancel"
+
+    s.key("ctrl-d")
+    s.wait_gone("Esc cancels")
+    assert session_titles(ctx) == ["alpha bravo"]
+    s.type("still here").sync()
+    assert s.composer_text() == "still here", s.composer_lines()
