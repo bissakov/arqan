@@ -5511,26 +5511,37 @@ static void scroll_to_top(void) {
 }
 
 
+#define SCROLL_KEYS(X)                                                        \
+    X(KEY_PAGE_UP, "PgUp", "Up a page of the transcript",                     \
+      g_tui.scroll_rows += page;)                                             \
+    X(KEY_PAGE_DOWN, "PgDn", "Down a page of the transcript",                 \
+      g_tui.scroll_rows =                                                     \
+          g_tui.scroll_rows > page ? g_tui.scroll_rows - page : 0;)           \
+    X(KEY_WHEEL_UP, "", "", g_tui.scroll_rows += 3;)                          \
+    X(KEY_WHEEL_DOWN, "", "",                                                 \
+      g_tui.scroll_rows = g_tui.scroll_rows > 3 ? g_tui.scroll_rows - 3 : 0;) \
+    X(KEY_HOME, "Home",                                                       \
+      "Top of the transcript, where the context above does not take the key", \
+      scroll_to_top();)                                                       \
+    X(KEY_END, "End",                                                         \
+      "Bottom of the transcript, where the context above does not take the "  \
+      "key",                                                                  \
+      tui_scroll_to_bottom();)                                                \
+    X(KEY_TOP, "Ctrl-Home", "Top of the transcript", scroll_to_top();)        \
+    X(KEY_BOTTOM, "Ctrl-End", "Bottom of the transcript",                     \
+      tui_scroll_to_bottom();)
+
+static const KeyRow k_scroll_rows[] = {SCROLL_KEYS(KEY_DOC)};
+
 static b8 scroll_key(i32 key) {
     size_t rows, cols;
     screen_size(&rows, &cols);
     (void)cols;
     size_t page = rows > 4 ? rows - 4 : 1;
-    if (key == KEY_PAGE_UP)
-        g_tui.scroll_rows += page;
-    else if (key == KEY_PAGE_DOWN)
-        g_tui.scroll_rows =
-            g_tui.scroll_rows > page ? g_tui.scroll_rows - page : 0;
-    else if (key == KEY_WHEEL_UP)
-        g_tui.scroll_rows += 3;
-    else if (key == KEY_WHEEL_DOWN)
-        g_tui.scroll_rows = g_tui.scroll_rows > 3 ? g_tui.scroll_rows - 3 : 0;
-    else if (key == KEY_TOP || key == KEY_HOME)
-        scroll_to_top();
-    else if (key == KEY_BOTTOM || key == KEY_END)
-        tui_scroll_to_bottom();
-    else
-        return false;
+    switch (key) {
+        SCROLL_KEYS(KEY_CASE)
+        default: return false;
+    }
     g_tui.find_follow = false;
     return true;
 }
@@ -6969,7 +6980,8 @@ static EdAction editor_key(i32 c) {
     X("[lists and screens]", k_pick_rows)        \
     X("[lists and screens]", k_pick_escape_rows) \
     X("[text view]", k_view_rows)                \
-    X("[text view]", k_view_escape_rows)
+    X("[text view]", k_view_escape_rows)         \
+    X("[transcript scrolling]", k_scroll_rows)
 
 static const KeyContext k_key_contexts[] = {
 #define X(name, rows) {name, rows, sizeof rows / sizeof rows[0]},

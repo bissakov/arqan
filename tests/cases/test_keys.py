@@ -77,7 +77,7 @@ def parse_bindings(rows: list[str]) -> dict[str, list[str]]:
             continue
         if context is None:
             continue
-        m = re.match(r"^((?:Ctrl|Alt|Shift)-\w+|[A-Z][a-z]+)\s{2,}\S", row)
+        m = re.match(r"^((?:Ctrl|Alt|Shift)-\w+|[A-Z][A-Za-z]+)\s{2,}\S", row)
         if m:
             out[context].append(m.group(1))
     return out
@@ -90,13 +90,15 @@ def test_keys_page_lists_bindings_grouped_by_context(ctx):
     bindings = parse_bindings(whole_page(s))
     assert set(bindings) == {
         "composer", "question", "line editing", "transcript search",
-        "lists and screens", "text view",
+        "lists and screens", "text view", "transcript scrolling",
     }, sorted(bindings)
     assert "Ctrl-R" in bindings["composer"], bindings["composer"]
     assert "Ctrl-G" in bindings["transcript search"], \
         bindings["transcript search"]
     assert "Ctrl-Y" in bindings["line editing"], bindings["line editing"]
     assert "Ctrl-D" in bindings["text view"], bindings["text view"]
+    assert "PgUp" in bindings["transcript scrolling"], \
+        bindings["transcript scrolling"]
 
 
 def test_keys_page_headings_are_non_interactive_separators(ctx):
