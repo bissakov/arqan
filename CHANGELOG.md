@@ -71,6 +71,14 @@
   run read-only commands.
 - Failed or denied `write` and `patch` calls collapse to a short preview;
   click to see the rest.
+- A failed `patch` explains itself better. A hunk whose first line is
+  wrong is now located by its other lines, so the error names the line that
+  differs instead of saying no line of its context is in the file. A line
+  the hunk skips, or one it adds that the file does not have, is named as
+  such. The excerpt of the current file stops at its last line. When no
+  line matches in a long file, the error asks the model to read the file
+  again instead of showing its last lines. The error says how many other
+  hunks matched, and a blank line the hunk expects is called a blank line.
 - The window that opens when you click a folded block during a turn, and
   the one `/diff` opens, is now a pager. It sits over the transcript above
   the composer and grows up to its full height. A title rule names the block
@@ -83,6 +91,16 @@
 
 ### Fixed
 
+- `patch` no longer drops part of a hunk without saying so. A hunk line
+  that started with none of ` `, `-` or `+`, such as a shell `done` written
+  without its `+`, ended the hunk, and every line after it was skipped while
+  the call reported success. Such a line is now refused and nothing is
+  written.
+- `patch` ignores empty lines at the end of a hunk when the hunk does not
+  match with them, so a blank separator line between hunks no longer counts
+  as context.
+- `patch` finds a file whose header git quoted, such as
+  `--- "a/my file.txt"`, including escaped bytes like `\303\251`.
 - Waits no longer let the prompt cache expire. When the model put several
   `job` waits in one response, they ran one after another for up to 16
   minutes before the next request, and the provider wrote the whole prompt to
