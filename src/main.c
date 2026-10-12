@@ -1421,6 +1421,7 @@ static void task_wait(Agent *ag, TaskWorker *w, size_t wait_ms) {
             return;
         }
         if (agent_now_seconds() >= until) return;
+        if (tui_queued_pending()) return;
         tui_poll_input();
         poll(NULL, 0, 25);
     }
@@ -1743,6 +1744,7 @@ static ToolCallResult run_regular_tool(Agent *ag, size_t call, size_t tool,
                       ? conv->media->n - run.media_off
                       : 0;
     todo_note_stale(name, &out);
+    jobs_note(&out);
     progress_record(name, args, run.ok, run.execution.exit_code, ag->scratch);
     const TodoList *todos = todo_current();
     progress_todo_done_count(todo_done(todos), todos->n);
@@ -6506,6 +6508,7 @@ i32 main(i32 argc, char **argv) {
 
     shell_set_idle(on_idle, NULL);
     shell_set_interrupt_flag(&g_got_sigint);
+    shell_set_yield(tui_queued_pending);
     shell_set_timeout(cfg.shell_timeout_ms);
     diff_set_idle(on_idle, NULL);
 

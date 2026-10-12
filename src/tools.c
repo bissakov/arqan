@@ -350,6 +350,7 @@ typedef struct {
     b8 running;
     b8 drained;
     b8 reported;
+    b8 announced;
     i32 status;
     i32 fd;
     f64 started;
@@ -362,6 +363,7 @@ typedef struct {
 typedef struct {
     void (*idle)(void *ud);
     void *idle_ud;
+    b8 (*yield)(void);
     volatile sig_atomic_t *interrupt;
     i32 timeout_ms;
 } ShellHost;
@@ -415,6 +417,10 @@ void shell_set_interrupt_flag(volatile sig_atomic_t *flag) {
     g_tools.shell.interrupt = flag;
 }
 
+void shell_set_yield(b8 (*fn)(void)) {
+    g_tools.shell.yield = fn;
+}
+
 void shell_set_timeout(i32 ms) {
     g_tools.shell.timeout_ms = ms > 0 ? ms : 0;
 }
@@ -422,7 +428,8 @@ void shell_set_timeout(i32 ms) {
 #define SHELL_POLL_MS 50
 
 
-#define JOB_DRAIN_MS 200
+#define JOB_DRAIN_MS         200
+#define SHELL_YIELD_AFTER_MS 1000
 
 typedef struct {
     char command[AGENT_MAX_COMMAND];
@@ -434,7 +441,7 @@ static ShellIo g_shell_io;
 
 typedef struct {
     void (*put)(void *ud, const char *p, size_t n);
-    b8 (*detach)(void *ud, pid_t pid, i32 fd, f64 started);
+    b8 (*detach)(void *ud, pid_t pid, i32 fd, f64 started, b8 for_user);
     void *ud;
     i32 detach_ms;
 } ShellSink;
@@ -454,6 +461,10 @@ typedef struct {
 
 static b8 shell_interrupted(void) {
     return g_tools.shell.interrupt && *g_tools.shell.interrupt;
+}
+
+static b8 shell_yield(void) {
+    return g_tools.shell.yield && g_tools.shell.yield();
 }
 
 static void shell_kill(pid_t pid, b8 reaped, i32 sig) {
@@ -837,12 +848,14 @@ static ShellEnd shell_run(const char *command, const ShellSink *sink,
             drain_until = agent_now_seconds() + JOB_DRAIN_MS / 1000.0;
         }
         if (!interrupted && !undetachable && !exit->reaped && sink->detach
-            && sink->detach_ms > 0
-            && (agent_now_seconds() - started) * 1000.0
-                   >= (f64)sink->detach_ms) {
-            if (sink->detach(sink->ud, pid, fds[0], started))
-                return SHELL_DETACHED;
-            undetachable = true;
+            && sink->detach_ms > 0) {
+            f64 ran_ms = (agent_now_seconds() - started) * 1000.0;
+            b8 for_user = ran_ms >= (f64)SHELL_YIELD_AFTER_MS && shell_yield();
+            if (for_user || ran_ms >= (f64)sink->detach_ms) {
+                if (sink->detach(sink->ud, pid, fds[0], started, for_user))
+                    return SHELL_DETACHED;
+                undetachable = true;
+            }
         }
         if (ready < 0) {
             if (errno == EINTR) continue;
@@ -1157,7 +1170,7 @@ static size_t job_log_bytes(const Job *j) {
 }
 
 
-static void job_note(Buf *out, u32 id, f64 started) {
+static void job_note(Buf *out, u32 id, f64 started, b8 for_user) {
     Job *j = job_find(id);
     if (!j) return;
     char size[32];
@@ -1165,8 +1178,9 @@ static void job_note(Buf *out, u32 id, f64 started) {
     if (out->n && out->p[out->n - 1] != '\n') buf_putc(out, '\n');
     buf_putf(out,
              "[output continues in %s (%s); call job with id=%u for the "
-             "rest]\n[still running as job %u after %us]",
-             j->path, size, id, id, (u32)(agent_now_seconds() - started));
+             "rest]\n[still running as job %u after %us%s]",
+             j->path, size, id, id, (u32)(agent_now_seconds() - started),
+             for_user ? "; detached for a user message" : "");
 }
 
 
@@ -1213,7 +1227,8 @@ static void shell_page_put(void *ud, const char *p, size_t n) {
     pg->total += n;
 }
 
-static b8 shell_page_detach(void *ud, pid_t pid, i32 fd, f64 started) {
+static b8 shell_page_detach(void *ud, pid_t pid, i32 fd, f64 started,
+                            b8 for_user) {
     ShellPage *pg = ud;
     u32 job = job_detach(pid, fd, &g_shell_io.spill, pg->cmd);
     if (!job) return false;
@@ -1221,7 +1236,7 @@ static b8 shell_page_detach(void *ud, pid_t pid, i32 fd, f64 started) {
     if (pg->total > pg->first + pg->shown)
         buf_putf(pg->out, "\n[shown %zu of %zu output bytes so far]", pg->shown,
                  pg->total);
-    job_note(pg->out, job, started);
+    job_note(pg->out, job, started, for_user);
     return true;
 }
 
@@ -1348,6 +1363,7 @@ static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
             job_status_text(job, state, sizeof state);
             job_elapsed_text(job, age, sizeof age);
             spill_size_text(size, sizeof size, job_log_bytes(job));
+            if (!job->running) job->announced = true;
             buf_putf(out, "job %u  %s  %s  %s  %s\n", job->id, state, age, size,
                      job->cmd);
             live++;
@@ -1374,6 +1390,7 @@ static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
     if (str_eq(action, STR("poll"))) wait_ms = 0;
 
     b8 interrupted = false;
+    b8 yielded = false;
     if (kill_it) {
         job_signal(job);
     } else {
@@ -1390,6 +1407,9 @@ static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
             } else if (g_tools.shell.interrupt && *g_tools.shell.interrupt) {
                 interrupted = true;
                 job_signal(job);
+                break;
+            } else if (shell_yield()) {
+                yielded = true;
                 break;
             } else if ((agent_now_seconds() - started) * 1000.0
                        >= (f64)wait_ms) {
@@ -1413,14 +1433,15 @@ static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
     }
     if (job->running) {
         g_tools.execution = (ToolExecution){.pending = true, .job_id = job->id};
-        buf_putf(out, "[job %u still running after %s]", job->id, age);
+        buf_putf(out, "[job %u still running after %s%s]", job->id, age,
+                 yielded ? "; stopped waiting for a user message" : "");
     } else {
         g_tools.execution = (ToolExecution){
             .job_id = job->id, .exit_code = shell_exit_code(job->status)};
         char state[32];
         job_status_text(job, state, sizeof state);
         buf_putf(out, "[job %u %s after %s]", job->id, state, age);
-
+        job->announced = true;
         if (!pending) job->reported = true;
     }
     if (interrupted) {
@@ -1428,6 +1449,42 @@ static b8 tool_job(Str args, Arena *scratch, Buf *out, char *err,
         buf_puts(out, STR("\n[interrupted]"));
     }
     return buf_ok(out) && out->n <= AGENT_TOOL_RESULT_BYTES;
+}
+
+#define JOBS_NOTE_PREFIX "\n\n[jobs ended: "
+#define JOBS_NOTE_BYTES  1024
+
+void jobs_note(Buf *out) {
+    size_t named = 0;
+    for (size_t i = 0; i < AGENT_MAX_JOBS; i++) {
+        Job *job = &g_tools.job.jobs[i];
+        if (!job->id || job->announced) continue;
+        job_refresh(job);
+        if (job->running) continue;
+        char state[32], age[16];
+        job_status_text(job, state, sizeof state);
+        job_elapsed_text(job, age, sizeof age);
+        buf_puts(out, named ? STR(", ") : STR(JOBS_NOTE_PREFIX));
+        buf_putf(out, "job %u %s after %s", job->id, state, age);
+        job->announced = true;
+        named++;
+    }
+    if (named)
+        buf_puts(out, STR(". Call job with its id for the rest of its "
+                          "output.]"));
+}
+
+Str jobs_note_strip(Str result) {
+    if (!result.n || result.p[result.n - 1] != ']') return result;
+    Str prefix = STR(JOBS_NOTE_PREFIX);
+    size_t window = result.n < JOBS_NOTE_BYTES ? result.n : JOBS_NOTE_BYTES;
+    for (size_t i = 0; i < window; i++) {
+        size_t at = result.n - 1 - i;
+        if (result.p[at] != '\n' || !at || result.p[at - 1] != '\n') continue;
+        if (str_starts(str_drop(result, at - 1), prefix))
+            return (Str){result.p, at - 1};
+    }
+    return result;
 }
 
 /* ---- patch ----
@@ -2628,9 +2685,9 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         "deadline. Each call returns the output since the last one and says "
         "whether the job is still running. Set timeout_ms to how long the "
         "job is worth waiting for this time; a job that outlasts the wait is "
-        "reported as still running, and waiting again is the right move. Keep "
-        "polling rather than leaving a job unattended. Job ids last for this "
-        "session only.",
+        "reported as still running. A job that ends is named in the next "
+        "tool result, so do other work in between, and wait again when "
+        "nothing else is left. Job ids last for this session only.",
         "Follow a background command", BOTH, TOOL_APPROVAL_NONE,
         "{\"type\":\"object\",\"properties\":{"
         "\"id\":{\"type\":\"integer\",\"description\":\"the job to act on; omit to list\"},"

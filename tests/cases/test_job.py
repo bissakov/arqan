@@ -166,7 +166,10 @@ def test_a_full_table_waits_instead_of_orphaning(ctx):
     detached = [r for r in out if "still running as job" in r]
     assert len(detached) == 8, detached
     assert out[8].startswith("run-8\n"), out[8]
-    assert out[8].endswith("[exit 0]"), out[8]
+    # jobs that ended meanwhile are named after the exit line, not in place of it
+    waited = out[8].split("\n\n[jobs ended: ")
+    assert len(waited) <= 2, out[8]
+    assert waited[0].endswith("[exit 0]"), out[8]
 
 
 def test_a_job_does_not_outlive_the_session(ctx):
@@ -186,6 +189,118 @@ def test_a_job_does_not_outlive_the_session(ctx):
     assert not (ctx.work / "orphan.txt").exists(), "a job outlived the session"
     logs = list(ctx.work.glob("arqan-bash-*.log"))
     assert not logs, f"job logs left behind: {logs}"
+
+
+def wait_for_file(path: Path, timeout: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return True
+        time.sleep(0.05)
+    return path.exists()
+
+
+def test_a_queued_message_ends_a_job_wait_and_not_the_job(ctx):
+    """A message the user queued is not held back by a long wait: the wait
+    ends, the turn hands over to the message, and the job runs on."""
+    ctx.scenario(
+        "tool=" + bash("sleep 3; touch finished.txt") + ",tool="
+        + job(id=1, timeout_ms=60000) + ",final_text=never"
+    )
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="200")
+    s.submit("run something slow and wait for it")
+    s.wait_activity("running job")
+    ctx.scenario("text=heard+you,final_text=heard+you")
+    s.submit("something else")
+    s.wait_text("heard you")
+    s.wait_turn_done()
+
+    waited = results(ctx)[1]
+    assert "[job 1 still running after" in waited, waited
+    assert "stopped waiting for a user message" in waited, waited
+    assert "never" not in s.text(), s.text()
+    messages = ctx.mock.requests[-1]["messages"]
+    assert messages[-1]["role"] == "user", messages
+    assert messages[-1]["content"] == "something else", messages
+    assert wait_for_file(ctx.work / "finished.txt"), "the job was killed"
+
+
+def test_a_queued_message_detaches_a_running_command(ctx):
+    """A command inside its deadline becomes a job when the user queues a
+    message, rather than holding the message until the deadline."""
+    ctx.scenario(
+        "tool=" + bash("sleep 3; touch finished.txt") + ",final_text=never"
+    )
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="60000")
+    s.submit("run something slow")
+    s.wait_activity("running bash")
+    ctx.scenario("text=heard+you,final_text=heard+you")
+    s.submit("something else")
+    s.wait_text("heard you")
+    s.wait_turn_done()
+
+    detached = results(ctx)[0]
+    assert "still running as job 1" in detached, detached
+    assert "detached for a user message" in detached, detached
+    assert wait_for_file(ctx.work / "finished.txt"), "the command was killed"
+
+
+def test_a_queued_message_leaves_a_quick_command_whole(ctx):
+    """A command that finishes within a second is not turned into a job just
+    because a message is waiting."""
+    ctx.scenario("hold,tool=" + bash("echo quick") + ",final_text=never")
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="60000")
+    s.submit("run something quick")
+    s.wait_for(lambda _: len(ctx.mock.requests) >= 1, "the first request")
+    s.submit("something else")
+    s.wait_text("message queued")
+    ctx.scenario("text=heard+you,final_text=heard+you")
+    ctx.mock.release()
+    s.wait_text("heard you")
+    s.wait_turn_done()
+
+    out = results(ctx)[0]
+    assert out.startswith("quick\n"), out
+    assert out.endswith("[exit 0]"), out
+    assert "job" not in out, out
+
+
+def test_a_job_that_ends_is_named_in_the_next_result(ctx):
+    """The model learns a job ended without polling for it: the next tool
+    result says so once, and the transcript does not show the note."""
+    ctx.scenario(
+        "tool=" + bash_for("sleep 0.3; echo one", 100)
+        + ",tool=" + bash("sleep 0.8; echo two")
+        + ",tool=" + bash("echo three") + ",final_text=noted"
+    )
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="5000")
+    s.submit("run things")
+    s.wait_text("noted")
+    s.wait_turn_done()
+
+    detached, second, third = results(ctx)
+    assert "still running as job 1" in detached, detached
+    assert second.startswith("two\n"), second
+    assert "[jobs ended: job 1 exit 0 after" in second, second
+    assert "jobs ended" not in third, third
+    assert "jobs ended" not in s.text(), s.text()
+
+
+def test_a_job_the_job_tool_reported_is_not_named_again(ctx):
+    """A job whose end the job tool already gave is not repeated as a note."""
+    ctx.scenario(
+        "tool=" + bash("sleep 0.4; echo late") + ",tool=" + job(id=1)
+        + ",tool=" + bash("echo after") + ",final_text=followed"
+    )
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="200")
+    s.submit("run something slow")
+    s.wait_text("followed")
+    s.wait_turn_done()
+
+    followed, after = results(ctx)[1], results(ctx)[2]
+    assert "[job 1 exit 0" in followed, followed
+    assert "jobs ended" not in followed, followed
+    assert "jobs ended" not in after, after
 
 
 def test_a_call_can_hand_the_turn_back_sooner(ctx):

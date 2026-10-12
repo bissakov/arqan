@@ -49,6 +49,13 @@
 
 ### Changed
 
+- A message you queue no longer waits for a long `job` or `task` wait to
+  run out. The wait ends at once, and the job or task keeps running. A
+  `bash` command that has run for a second becomes a job instead of holding
+  the message until its deadline.
+- The model learns when a job ends without polling for it. The next tool
+  result names each job that ended since the model last saw it, so the model
+  can do other work while a job runs.
 - What the model reads no longer names settings or parts of arqan it cannot
   see. The prompt and tool descriptions say a call may need the user's
   approval, instead of saying it always does; with `permissions = free`,
