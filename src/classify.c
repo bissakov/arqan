@@ -59,6 +59,9 @@ static const char *const k_awk_options[] = {"--posix", "--traditional", "--"};
 static const char *const k_xxd_valued[] = {
     "-c", "-cols", "-l", "-len", "-s", "-seek", "-g", "-o",
 };
+static const char *const k_ast_grep_reading[] = {"run", "scan", "outline"};
+static const char *const k_ast_grep_other[] = {"new", "test", "lsp",
+                                               "completions"};
 
 #define SHELL_SEGMENT_WORDS 64
 #define LIST_N(a)           (sizeof(a) / sizeof *(a))
@@ -408,6 +411,39 @@ static b8 shell_xxd_read_only(const Str *arg, size_t args) {
     return true;
 }
 
+/* NOTE: `run`, `scan` and `outline` write only with `-U` or an interactive
+ * session, and load native code only when `--custom-languages` is not
+ * `ignore`. `sg` is left out: shadow-utils ships an `sg` that runs a command
+ * as another group. A global option such as `-c` may come before the
+ * subcommand, so when the first word is an option, any word naming another
+ * subcommand is refused. */
+static b8 shell_ast_grep_read_only(const Str *arg, size_t args) {
+    if (!args) return false;
+    Str first = shell_unquoted(arg[0]);
+    b8 option_first = first.n > 1 && first.p[0] == '-';
+    if (!option_first
+        && !word_in(arg[0], k_ast_grep_reading, LIST_N(k_ast_grep_reading)))
+        return false;
+    for (size_t a = 0; a < args; a++) {
+        Str v = shell_unquoted(arg[a]);
+        if (option_first
+            && word_in(arg[a], k_ast_grep_other, LIST_N(k_ast_grep_other)))
+            return false;
+        if (short_option_has(v, 'U') || short_option_has(v, 'i')
+            || option_abbreviates(v, "--update-all")
+            || option_abbreviates(v, "--interactive"))
+            return false;
+        if (str_eq(v, STR("--custom-languages"))) {
+            if (a + 1 >= args || !word_is(arg[a + 1], "ignore")) return false;
+            a++;
+        } else if (option_abbreviates(v, "--custom-languages")
+                   && !str_eq(v, STR("--custom-languages=ignore"))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static b8 shell_git_read_only(const Str *w, size_t n, b8 contained) {
     size_t k = 0;
     while (k < n) {
@@ -455,6 +491,7 @@ static b8 shell_segment_read_only(const Str *w, size_t n, b8 contained,
         if (!scripted && word_outside(raw)) *outside = true;
     }
     if (word_is(prog, "git")) return shell_git_read_only(arg, args, contained);
+    if (word_is(prog, "ast-grep")) return shell_ast_grep_read_only(arg, args);
     if (!word_in(prog, k_read_only_programs, LIST_N(k_read_only_programs)))
         return false;
     if (word_is(prog, "sed")) return shell_sed_read_only(arg, args, outside);

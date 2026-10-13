@@ -1345,6 +1345,26 @@ typedef enum {
 } ShellClass;
 ShellClass shell_classify(Str cmd, b8 contained);
 b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap);
+typedef enum {
+    PROGRAM_DONE,
+    PROGRAM_FAILED,
+    PROGRAM_INTERRUPTED,
+    PROGRAM_STOPPED,
+    PROGRAM_YIELDED
+} ProgramEnd;
+/* Runs argv[0], an absolute path, with no shell, under the sandbox and the
+ * environment of a read-only command; the sandbox lets it read outside the
+ * project only when `reads` is outside it. Its stdout and stderr together go
+ * to `put` as they arrive. PROGRAM_STOPPED: killed at timeout_ms.
+ * PROGRAM_YIELDED: killed because the user sent a message. */
+ProgramEnd shell_run_program(const char *const *argv,
+                             void (*put)(void *ud, const char *p, size_t n),
+                             void *ud, Str reads, i32 timeout_ms,
+                             i32 *exit_code, Arena *scratch, char *err,
+                             size_t err_cap);
+b8 code_search_available(void);
+b8 code_search_run(Str args, Arena *scratch, Buf *out, char *err,
+                   size_t err_cap);
 void shell_set_idle(void (*fn)(void *ud), void *ud);
 void shell_set_interrupt_flag(volatile sig_atomic_t *flag);
 /* Asked while a command or a job is waited on. True ends the wait early and

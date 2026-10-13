@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Added
+
+- A `code_search` tool searches code by its syntax with
+  [ast-grep](https://ast-grep.github.io), and is offered only when
+  `ast-grep` is on `PATH`. `outline` lists what a file or directory defines,
+  with line ranges; `definition` returns the source of a definition;
+  `callers` lists each call with the function it is in, and every other
+  whole-word mention, so a call inside a macro or in code that does not
+  parse still shows. These three modes know C, C++, C#, Python, Rust, Go,
+  JavaScript, TypeScript and TSX. `pattern` and `rule` pass an ast-grep
+  query through, in any language ast-grep supports. A file ast-grep skips
+  without a word, over 3 MB and 200,000 lines or not UTF-8, is named in
+  the result. It is read-only, so it runs without approval, in plan mode
+  and in subagents. A project's `sgconfig.yml` is ignored and custom
+  grammars are never loaded.
+- `ast-grep run`, `scan` and `outline` run through `bash` without approval
+  when they cannot write: no `-U`, no interactive mode, and
+  `--custom-languages` absent or `ignore`.
+
 ## [0.12.0] - 2026-10-12
 
 ### Added

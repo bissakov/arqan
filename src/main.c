@@ -28,6 +28,7 @@
 #include "ignore.c"
 #include "classify.c"
 #include "tools.c"
+#include "codesearch.c"
 #include "batch.c"
 #include "mcp.c"
 #include "todo.c"
