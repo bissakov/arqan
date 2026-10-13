@@ -260,6 +260,17 @@ static Str patch_target(Str patch, char *buf, size_t cap) {
                    : first;
 }
 
+static Str code_search_target(const JVal *j, Str path, char *buf, size_t cap) {
+    Str mode = json_str(j, STR("mode"));
+    Str what = json_str(j, STR("name"));
+    if (!what.n) what = json_str(j, STR("pattern"));
+    i32 len = snprintf(buf, cap, "%.*s%s%.*s%s%.*s", (i32)mode.n, mode.p,
+                       what.n ? " " : "", (i32)what.n, what.p,
+                       path.n ? " in " : "", (i32)path.n, path.p);
+    if (len <= 0) return mode;
+    return str_clip_utf8((Str){buf, (size_t)len}, cap - 1);
+}
+
 static void render_todo_row(const TodoList *l, size_t i) {
     tui_write_dim(STR("\u2502 "));
     switch (l->status[i]) {
@@ -360,6 +371,10 @@ static void render_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
                     ? json_str(j, STR("query"))
                     : (Str){0};
     Str target = query.n ? query : path.n ? path : cmd;
+    char code_search_buf[R_TARGET_BYTES + 32];
+    if (str_eq(name, STR("code_search")))
+        target = code_search_target(j, path, code_search_buf,
+                                    sizeof code_search_buf);
     b8 search =
         query.n && (str_eq(name, STR("find")) || str_eq(name, STR("grep")));
 
@@ -501,7 +516,8 @@ static void render_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
     } else if (task_prompt.n) {
         write_lines(task_prompt, STR("\u2502 "), R_ARG_LINES, R_LINE_BYTES,
                     tui_write_muted);
-    } else if (!path.n && !query.n && !str_eq(name, STR("job"))) {
+    } else if (!path.n && !query.n && !str_eq(name, STR("job"))
+               && !str_eq(name, STR("code_search"))) {
         write_lines(args, STR("\u2502 "), R_ARG_LINES, R_LINE_BYTES,
                     tui_write_muted);
     } else {
@@ -1901,6 +1917,8 @@ Str render_call_text(Str name, Str args, Arena *scratch, size_t *shown,
         body = json_str(j, STR("question"));
     } else if (str_eq(name, STR("job"))) {
         body = (Str){0};
+    } else if (str_eq(name, STR("code_search"))) {
+        body = str_eq(json_str(j, STR("mode")), STR("rule")) ? args : (Str){0};
     } else if (!path.n && !query.n) {
         body = args;
     } else {

@@ -838,9 +838,9 @@ static void sandbox_prepare(Arena *scratch) {
                   "commands run with only writes denied");
 }
 
-static ShellEnd shell_run(const char *command, const ShellSink *sink,
-                          ShellClass cls, ShellExit *exit, char *err,
-                          size_t err_cap) {
+static ShellEnd shell_run(const char *command, const char *const *argv,
+                          const ShellSink *sink, ShellClass cls,
+                          ShellExit *exit, char *err, size_t err_cap) {
     *exit = (ShellExit){0};
     b8 sandbox = cls != SHELL_WRITES && sandbox_abi() >= 1;
     i32 fds[2];
@@ -866,7 +866,10 @@ static ShellEnd shell_run(const char *command, const ShellSink *sink,
         child_close_fds(3);
         if (sandbox) shell_child_landlock(cls);
         environ = envp;
-        execl("/bin/sh", "sh", "-c", command, (char *)NULL);
+        if (argv)
+            execv(argv[0], (char *const *)(uintptr_t)argv);
+        else
+            execl("/bin/sh", "sh", "-c", command, (char *)NULL);
         _exit(127);
     }
     close(fds[1]);
@@ -993,8 +996,8 @@ b8 shell_capture(Str cmd, Buf *out, char *err, size_t err_cap) {
     ShellRing ring = {0};
     ShellSink sink = {.put = shell_ring_put, .ud = &ring};
     ShellExit exit;
-    ShellEnd end =
-        shell_run(g_shell_io.command, &sink, SHELL_WRITES, &exit, err, err_cap);
+    ShellEnd end = shell_run(g_shell_io.command, NULL, &sink, SHELL_WRITES,
+                             &exit, err, err_cap);
     if (end == SHELL_FAILED) return false;
 
     const char *r = g_shell_io.ring;
@@ -1309,6 +1312,55 @@ static i32 shell_exit_code(i32 status) {
                                  : 1;
 }
 
+typedef struct {
+    void (*put)(void *ud, const char *p, size_t n);
+    void *ud;
+    b8 stopped;
+    b8 for_user;
+} ProgramSink;
+
+static b8 tools_path_inside(Str path);
+
+static void program_put(void *ud, const char *p, size_t n) {
+    ProgramSink *s = ud;
+    s->put(s->ud, p, n);
+}
+
+static b8 program_stop(void *ud, pid_t pid, i32 fd, f64 started, b8 for_user) {
+    (void)fd;
+    (void)started;
+    ProgramSink *s = ud;
+    s->stopped = true;
+    s->for_user = for_user;
+    shell_kill(pid, false, SIGKILL);
+    return false;
+}
+
+ProgramEnd shell_run_program(const char *const *argv,
+                             void (*put)(void *ud, const char *p, size_t n),
+                             void *ud, Str reads, i32 timeout_ms,
+                             i32 *exit_code, Arena *scratch, char *err,
+                             size_t err_cap) {
+    *exit_code = -1;
+    if (shell_interrupted()) return PROGRAM_INTERRUPTED;
+    sandbox_prepare(scratch);
+    ShellClass cls =
+        tools_path_inside(reads) ? SHELL_READS_INSIDE : SHELL_READS_OUTSIDE;
+    ProgramSink program = {.put = put, .ud = ud};
+    ShellSink sink = {.put = program_put,
+                      .detach = program_stop,
+                      .ud = &program,
+                      .detach_ms = timeout_ms};
+    ShellExit exit;
+    ShellEnd end = shell_run(NULL, argv, &sink, cls, &exit, err, err_cap);
+    if (end == SHELL_FAILED) return PROGRAM_FAILED;
+    if (end == SHELL_INTERRUPTED) return PROGRAM_INTERRUPTED;
+    if (program.stopped)
+        return program.for_user ? PROGRAM_YIELDED : PROGRAM_STOPPED;
+    *exit_code = exit.reaped ? shell_exit_code(exit.status) : -1;
+    return PROGRAM_DONE;
+}
+
 static b8 shell_capture_page(Str cmd, size_t offset, size_t limit,
                              i32 timeout_ms, b8 round_cut, ShellClass cls,
                              Buf *out, char *err, size_t err_cap) {
@@ -1333,7 +1385,7 @@ static b8 shell_capture_page(Str cmd, size_t offset, size_t limit,
                       .detach_ms = timeout_ms};
     ShellExit exit;
     ShellEnd end =
-        shell_run(g_shell_io.command, &sink, cls, &exit, err, err_cap);
+        shell_run(g_shell_io.command, NULL, &sink, cls, &exit, err, err_cap);
     if (end == SHELL_FAILED) {
         spill_finish(&g_shell_io.spill, out, false);
         return false;
@@ -2623,7 +2675,7 @@ static b8 tools_path_inside(Str path) {
 static b8 tool_reads_paths(const ToolRegistry *r, size_t id) {
     if (!r->run || id >= r->n || r->source[id] != TOOL_SRC_BUILTIN)
         return false;
-    return r->run[id] == tool_read;
+    return r->run[id] == tool_read || r->run[id] == code_search_run;
 }
 
 static b8 tool_is_bash(const ToolRegistry *r, size_t id) {
@@ -2951,6 +3003,37 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         "\"limit\":{\"type\":\"integer\",\"description\":\"at most 2000 extracted lines\"}},"
         "\"required\":[\"url\"]}",
         page_fetch_run);
+    if (code_search_available())
+        ADD("code_search",
+            "Search code by its syntax with ast-grep. outline: what a file "
+            "or directory defines, with line ranges. definition: the source "
+            "of each definition of name. callers: each call of name and the "
+            "function it is in; rows marked other are the remaining "
+            "whole-word mentions, such as declarations, uses as a value, "
+            "comments, strings and macro bodies. These three modes know c, "
+            "cpp, csharp, python, rust, go, javascript, typescript and tsx. "
+            "pattern: an ast-grep pattern such as `foo($A, $$$)`, where $A "
+            "is one node and $$$ any number. rule: an ast-grep rule object. "
+            "pattern and rule need lang and take any language ast-grep "
+            "supports. Files in .gitignore are skipped.",
+            "Search code by syntax", READS, TOOL_APPROVAL_NONE,
+            "{\"type\":\"object\",\"properties\":{"
+            "\"mode\":{\"enum\":[\"outline\",\"definition\",\"callers\","
+            "\"pattern\",\"rule\"]},"
+            "\"path\":{\"type\":\"string\",\"description\":\"file or "
+            "directory; default .\"},"
+            "\"name\":{\"type\":\"string\",\"description\":\"identifier, for "
+            "definition and callers\"},"
+            "\"lang\":{\"type\":\"string\",\"description\":\"needed for "
+            "pattern and rule; otherwise limits the search\"},"
+            "\"pattern\":{\"type\":\"string\"},"
+            "\"rule\":{\"type\":\"object\"},"
+            "\"offset\":{\"type\":\"integer\",\"description\":\"first result "
+            "line, 1-based\"},"
+            "\"limit\":{\"type\":\"integer\",\"description\":\"at most 2000 "
+            "result lines; default 400\"}},"
+            "\"required\":[\"mode\"]}",
+            code_search_run);
     if (r->n < AGENT_MAX_TOOLS) {
         r->name[r->n] = STR("bash");
         r->desc[r->n] = bash_desc;

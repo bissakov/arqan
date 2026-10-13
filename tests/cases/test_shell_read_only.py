@@ -48,6 +48,12 @@ READ_ONLY = [
     "awk 'NR==1' notes.txt",
     "sort -r notes.txt",
     "diff notes.txt /dev/null; true",
+    "ast-grep run -l c -p 'alpha($A, $$$)' src; true",
+    "ast-grep -p alpha -r omega src; true",
+    "ast-grep scan --inline-rules '{id: x, language: c, rule: {kind: identifier}}' src; true",
+    "ast-grep outline src/one.c; true",
+    "ast-grep run --custom-languages ignore -p alpha src; true",
+    "ast-grep run --custom-languages=ignore --json=stream -p alpha src; true",
 ]
 
 
@@ -111,6 +117,24 @@ WRITING = [
     "git grep -Otouch alpha",
     "git log --out=out.txt",
     'sed -"i" s/a/b/ notes.txt',
+    "ast-grep run -p alpha -r omega -U src",
+    "ast-grep run -p alpha -r omega --update-all src",
+    "ast-grep -Up alpha -r omega src",
+    "ast-grep scan -U src",
+    "ast-grep run -i -p alpha src",
+    "ast-grep run --interactive -p alpha src",
+    "ast-grep run --custom-languages trust -p alpha src",
+    "ast-grep scan --custom-languages=allow src",
+    "ast-grep run --custom-languages -p alpha src",
+    "ast-grep new rule x",
+    "ast-grep test --update-all",
+    "ast-grep lsp",
+    "ast-grep completions bash",
+    "ast-grep -c /dev/null new rule x",
+    "ast-grep --config=/dev/null new project",
+    "ast-grep -c sgconfig.yml lsp",
+    "ast-grep -c /dev/null test",
+    "sg run -p alpha src",
 ]
 
 
