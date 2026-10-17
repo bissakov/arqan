@@ -378,6 +378,7 @@ static void put_text(const char *s, size_t n);
 static void nl_commit(void);
 static void transcript_put(Str s);
 static void images_forget(void);
+static void images_send_wanted(void);
 static b8 image_terminal(void);
 
 static Str provider_from_url(Str url) {
@@ -1239,22 +1240,31 @@ static u32 zone_at_off(size_t off) {
  * whose foreground color carries its id. The transcript holds those rows as
  * ordinary text, so an image scrolls and clips like the rows around it; only
  * the painter adds the color and the row marks. The terminal decodes the
- * PNG; nothing here reads its pixels.
+ * PNG.
  *
- * The bytes belong to the caller and may be gone by the next paint, so an
- * image is sent while it is being written into the transcript, never later.
+ * A PNG larger than the pixels it is drawn on is sent scaled down to them
+ * through thumb_png, and sent again if a wider transcript later draws it at
+ * more than 1.5 times what was sent. When the terminal reports no pixel size
+ * the box is taken at twice the assumed cell, since a sharp image beats a
+ * blurred one. A PNG that cannot be scaled goes out as it is.
+ *
+ * An image is sent the first time a frame paints one of its rows, right
+ * after that frame, so a resumed session sends only what is on screen. Until
+ * then its slot is pending and holds the caller's bytes, which stay valid
+ * until the transcript is reset.
  *
  * Inside tmux every command goes out through tmux passthrough, and only once
  * tmux has said it can carry them.
  */
-#define TUI_IMAGE_RANGES   (AGENT_MAX_MEDIA * 2)
-#define TUI_IMAGE_SLOTS    (AGENT_MAX_MEDIA * 2)
-#define TUI_IMAGE_CHUNK    3072u
-#define TUI_IMAGE_CELL_W   10u
-#define TUI_IMAGE_CELL_H   20u
-#define TUI_IMAGE_MIN_ROWS 4u
-#define TUI_IMAGE_MAX_COLS 256u
-#define TUI_IMAGE_CELL     "\xf4\x8e\xbb\xae"
+#define TUI_IMAGE_RANGES        (AGENT_MAX_MEDIA * 2)
+#define TUI_IMAGE_SLOTS         (AGENT_MAX_MEDIA * 2)
+#define TUI_IMAGE_CHUNK         3072u
+#define TUI_IMAGE_CELL_W        10u
+#define TUI_IMAGE_CELL_H        20u
+#define TUI_IMAGE_MIN_ROWS      4u
+#define TUI_IMAGE_MAX_COLS      256u
+#define TUI_IMAGE_UNKNOWN_SCALE 2u
+#define TUI_IMAGE_CELL          "\xf4\x8e\xbb\xae"
 
 static const u16 k_image_marks[] = {
     0x0305, 0x030D, 0x030E, 0x0310, 0x0312, 0x033D, 0x033E, 0x033F,
@@ -1290,6 +1300,15 @@ typedef struct {
     u16 cols[TUI_IMAGE_SLOTS];
     u16 rows[TUI_IMAGE_SLOTS];
     b8 live[TUI_IMAGE_SLOTS];
+    b8 pending[TUI_IMAGE_SLOTS];
+    b8 wanted[TUI_IMAGE_SLOTS];
+    Str png[TUI_IMAGE_SLOTS];
+    u32 src_w[TUI_IMAGE_SLOTS];
+    u32 src_h[TUI_IMAGE_SLOTS];
+    u32 sent_w[TUI_IMAGE_SLOTS];
+    u32 sent_h[TUI_IMAGE_SLOTS];
+    b8 any_wanted;
+    Arena *work;
     size_t next;
 } TuiImages;
 
@@ -1777,6 +1796,8 @@ static void update_text_row(size_t screen_row, Str prefix, Str text,
     if (image != SIZE_MAX) {
         u32 id = image_id(g_img.at_slot[image]);
         size_t rel = text_off - g_img.at_a[image];
+        g_img.wanted[g_img.at_slot[image]] = true;
+        g_img.any_wanted = true;
         hash = hash_add(hash, &id, sizeof id);
         hash = hash_add(hash, &rel, sizeof rel);
     }
@@ -3112,6 +3133,10 @@ void tui_set_reflow(void (*fn)(void *ud), void *ud) {
     g_reflow.cols = tui_body_cols();
 }
 
+void tui_set_image_arena(Arena *work) {
+    g_img.work = work;
+}
+
 void tui_width_fitted(void) {
     g_reflow.fitted = true;
 }
@@ -3511,6 +3536,7 @@ static void repaint(void) {
     g_tui.frame_valid = true;
     g_tui.size_warning = false;
     frame_end();
+    images_send_wanted();
 }
 
 static void tui_log_sink(i32 level, Str msg, void *ud) {
@@ -3999,18 +4025,27 @@ static b8 image_tmux_passes(void) {
     return passes && draws && tmux_has_feature(features, STR("RGB"));
 }
 
-static void image_cell_pixels(size_t *w, size_t *h) {
+static b8 image_cell_pixels(size_t *w, size_t *h) {
     *w = TUI_IMAGE_CELL_W;
     *h = TUI_IMAGE_CELL_H;
     struct winsize ws = {0};
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != 0 || !ws.ws_col || !ws.ws_row)
-        return;
+        return false;
     size_t cw = (size_t)ws.ws_xpixel / ws.ws_col;
     size_t ch = (size_t)ws.ws_ypixel / ws.ws_row;
-    if (cw && ch) {
-        *w = cw;
-        *h = ch;
-    }
+    if (!cw || !ch) return false;
+    *w = cw;
+    *h = ch;
+    return true;
+}
+
+static void image_box(size_t cols, size_t rows, u32 *w, u32 *h) {
+    size_t cell_w, cell_h;
+    u64 scale =
+        image_cell_pixels(&cell_w, &cell_h) ? 1 : TUI_IMAGE_UNKNOWN_SCALE;
+    u64 bw = (u64)cols * cell_w * scale, bh = (u64)rows * cell_h * scale;
+    *w = bw > UINT32_MAX ? UINT32_MAX : (u32)bw;
+    *h = bh > UINT32_MAX ? UINT32_MAX : (u32)bh;
 }
 
 static void image_fit(u32 w, u32 h, size_t max_cols, size_t max_rows,
@@ -4056,7 +4091,7 @@ static void image_command(const char *keys, i32 n, size_t cap, const u8 *data,
     put_str(g_img.tmux ? "\033\033\\\033\\" : "\033\\");
 }
 
-static void image_delete(size_t slot) {
+static void image_unsend(size_t slot) {
     if (!g_img.live[slot]) return;
     char keys[48];
     i32 n = snprintf(keys, sizeof keys, "a=d,d=I,i=%u,q=2", image_id(slot));
@@ -4064,10 +4099,40 @@ static void image_delete(size_t slot) {
     g_img.live[slot] = false;
 }
 
-static size_t image_send(Str png, u64 key, size_t cols, size_t rows) {
+static void image_delete(size_t slot) {
+    g_img.pending[slot] = false;
+    g_img.png[slot] = (Str){0};
+    image_unsend(slot);
+}
+
+static size_t image_claim(u64 key) {
     size_t slot = g_img.next;
     g_img.next = (slot + 1) % TUI_IMAGE_SLOTS;
     image_delete(slot);
+    g_img.pending[slot] = true;
+    g_img.key[slot] = key;
+    return slot;
+}
+
+static void image_send(size_t slot) {
+    Str png = g_img.png[slot];
+    size_t cols = g_img.cols[slot], rows = g_img.rows[slot];
+    u32 sent_w = g_img.src_w[slot], sent_h = g_img.src_h[slot];
+    u32 box_w, box_h;
+    image_box(cols, rows, &box_w, &box_h);
+    Arena *work = g_img.work;
+    size_t mark = work ? work->off : 0;
+    if (work && (sent_w > box_w || sent_h > box_h)) {
+        Str small;
+        u32 small_w, small_h;
+        if (thumb_png(work, png, box_w, box_h, &small, &small_w, &small_h)
+            == THUMB_SCALED) {
+            png = small;
+            sent_w = small_w;
+            sent_h = small_h;
+        }
+    }
+    image_unsend(slot);
     for (size_t at = 0; at < png.n; at += TUI_IMAGE_CHUNK) {
         size_t take =
             png.n - at < TUI_IMAGE_CHUNK ? png.n - at : TUI_IMAGE_CHUNK;
@@ -4080,11 +4145,34 @@ static size_t image_send(Str png, u64 key, size_t cols, size_t rows) {
         image_command(keys, n, sizeof keys, (const u8 *)png.p + at, take);
     }
     flush_out();
+    if (work) work->off = mark;
+    g_img.pending[slot] = false;
+    g_img.png[slot] = (Str){0};
+    g_img.sent_w[slot] = sent_w;
+    g_img.sent_h[slot] = sent_h;
     g_img.live[slot] = true;
-    g_img.key[slot] = key;
-    g_img.cols[slot] = (u16)cols;
-    g_img.rows[slot] = (u16)rows;
-    return slot;
+}
+
+static b8 image_outgrown(size_t slot, size_t cols, size_t rows) {
+    u32 sent_w = g_img.sent_w[slot], sent_h = g_img.sent_h[slot];
+    if (sent_w >= g_img.src_w[slot] && sent_h >= g_img.src_h[slot])
+        return false;
+    u32 box_w, box_h, drawn_w, drawn_h;
+    image_box(cols, rows, &box_w, &box_h);
+    thumb_size(g_img.src_w[slot], g_img.src_h[slot], box_w, box_h, &drawn_w,
+               &drawn_h);
+    return (u64)drawn_w * 2 > (u64)sent_w * 3
+           || (u64)drawn_h * 2 > (u64)sent_h * 3;
+}
+
+static void images_send_wanted(void) {
+    if (!g_img.any_wanted) return;
+    g_img.any_wanted = false;
+    for (size_t i = 0; i < TUI_IMAGE_SLOTS; i++) {
+        if (!g_img.wanted[i]) continue;
+        g_img.wanted[i] = false;
+        if (g_img.pending[i]) image_send(i);
+    }
 }
 
 static void image_place(size_t slot, size_t cols, size_t rows) {
@@ -4099,7 +4187,8 @@ static void image_place(size_t slot, size_t cols, size_t rows) {
 
 static size_t image_find(u64 key) {
     for (size_t i = 0; i < TUI_IMAGE_SLOTS; i++)
-        if (g_img.live[i] && g_img.key[i] == key) return i;
+        if ((g_img.live[i] || g_img.pending[i]) && g_img.key[i] == key)
+            return i;
     return SIZE_MAX;
 }
 
@@ -4159,10 +4248,18 @@ b8 tui_image(Str png, u32 w, u32 h) {
         cols = g_img.cols[slot];
         rows = g_img.rows[slot];
     }
-    if (slot == SIZE_MAX)
-        slot = image_send(png, key, cols, rows);
-    else if (cols != g_img.cols[slot] || rows != g_img.rows[slot])
+    if (slot == SIZE_MAX) slot = image_claim(key);
+    if (!g_img.pending[slot] && image_outgrown(slot, cols, rows))
+        g_img.pending[slot] = true;
+    if (g_img.pending[slot]) {
+        g_img.png[slot] = png;
+        g_img.src_w[slot] = w;
+        g_img.src_h[slot] = h;
+        g_img.cols[slot] = (u16)cols;
+        g_img.rows[slot] = (u16)rows;
+    } else if (cols != g_img.cols[slot] || rows != g_img.rows[slot]) {
         image_place(slot, cols, rows);
+    }
     g_img.used[slot] = g_img.build;
     image_rows_put(slot, cols, rows);
     tui_width_fitted();

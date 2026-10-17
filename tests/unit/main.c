@@ -89,6 +89,7 @@ i32 http_get(const char *base_url, const char *path, const char *api_key,
 #include "theme.c"
 #include "progress.c"
 #include "provider.c"
+#include "thumb.c"
 
 #include <fcntl.h>
 #include <stdlib.h>
@@ -993,6 +994,259 @@ static void conv_result_slot_pairs_like_call_slot(void) {
     CHECK(conv_result_slot(&c, 13) == CONV_NONE);
 }
 
+/* ---- thumbnails -------------------------------------------------------- */
+
+typedef void (*PixelFn)(u32 x, u32 y, u8 out[4]);
+
+static u8 *be32_put(u8 *p, u32 v) {
+    p[0] = (u8)(v >> 24);
+    p[1] = (u8)(v >> 16);
+    p[2] = (u8)(v >> 8);
+    p[3] = (u8)v;
+    return p + 4;
+}
+
+static u8 *chunk_put(u8 *p, const char *kind, const u8 *data, size_t n) {
+    p = be32_put(p, (u32)n);
+    memcpy(p, kind, 4);
+    if (n) memcpy(p + 4, data, n);
+    u32 crc = agent_crc32(0, p, 4 + n);
+    return be32_put(p + 4 + n, crc);
+}
+
+static Str stored_rgba_png(Arena *a, u32 w, u32 h, PixelFn pixel) {
+    size_t stride = (size_t)w * 4 + 1, raw_n = stride * h;
+    size_t blocks = raw_n / 65535 + 1;
+    size_t z_n = 2 + raw_n + blocks * 5 + 4;
+    u8 *raw = arena_alloc(a, raw_n, 1);
+    u8 *z = arena_alloc(a, z_n, 1);
+    u8 *file = arena_alloc(a, 8 + 25 + 12 + z_n + 12, 1);
+    if (!raw || !z || !file) return (Str){0};
+    for (u32 y = 0; y < h; y++) {
+        u8 *row = raw + y * stride;
+        row[0] = 0;
+        for (u32 x = 0; x < w; x++) pixel(x, y, row + 1 + x * 4);
+    }
+    u8 *p = z;
+    *p++ = 0x78;
+    *p++ = 0x01;
+    u32 s1 = 1, s2 = 0;
+    for (size_t i = 0; i < raw_n; i++) {
+        s1 = (s1 + raw[i]) % 65521;
+        s2 = (s2 + s1) % 65521;
+    }
+    for (size_t at = 0, b = 0; b < blocks; b++) {
+        size_t take = raw_n - at < 65535 ? raw_n - at : 65535;
+        *p++ = (u8)(b + 1 == blocks);
+        *p++ = (u8)take;
+        *p++ = (u8)(take >> 8);
+        *p++ = (u8)~take;
+        *p++ = (u8)(~take >> 8);
+        memcpy(p, raw + at, take);
+        p += take;
+        at += take;
+    }
+    p = be32_put(p, s2 << 16 | s1);
+    u8 ihdr[13] = {0, 0, 0, 0, 0, 0, 0, 0, 8, 6, 0, 0, 0};
+    be32_put(ihdr, w);
+    be32_put(ihdr + 4, h);
+    u8 *q = file;
+    memcpy(q, "\x89PNG\r\n\x1a\n", 8);
+    q = chunk_put(q + 8, "IHDR", ihdr, sizeof ihdr);
+    q = chunk_put(q, "IDAT", z, (size_t)(p - z));
+    q = chunk_put(q, "IEND", NULL, 0);
+    return (Str){(const char *)file, (size_t)(q - file)};
+}
+
+static u8 *png_pixels(Arena *a, Str png, u32 *w, u32 *h) {
+    AgentPng *dec = arena_alloc(a, agent_png_size(), 16);
+    u64 work_n = 0;
+    if (!dec || agent_png_begin(dec, png.p, png.n, w, h, &work_n)) return NULL;
+    u8 *work = arena_alloc(a, (size_t)work_n + 1, 16);
+    size_t n = (size_t)*w * *h * 4;
+    u8 *px = arena_alloc(a, n, 16);
+    if (!work || !px || agent_png_finish(dec, work, (size_t)work_n, px, n))
+        return NULL;
+    return px;
+}
+
+static void red(u32 x, u32 y, u8 out[4]) {
+    (void)x;
+    (void)y;
+    out[0] = 255;
+    out[1] = out[2] = 0;
+    out[3] = 255;
+}
+
+static void checker(u32 x, u32 y, u8 out[4]) {
+    u8 v = (x + y) % 2 ? 255 : 0;
+    out[0] = out[1] = out[2] = v;
+    out[3] = 255;
+}
+
+static void red_or_clear(u32 x, u32 y, u8 out[4]) {
+    (void)y;
+    b8 on = x % 2 == 0;
+    out[0] = on ? 255 : 0;
+    out[1] = out[2] = 0;
+    out[3] = on ? 255 : 0;
+}
+
+static void ramps(u32 x, u32 y, u8 out[4]) {
+    for (u32 c = 0; c < 3; c++) {
+        u32 v = 0;
+        for (u32 k = 0; k <= x; k++) v += (3 * k + c) * 7 + y * 3;
+        out[c] = (u8)v;
+    }
+    out[3] = 255;
+}
+
+static void thumb_size_keeps_the_aspect(void) {
+    u32 w, h;
+    thumb_size(2000, 1000, 960, 480, &w, &h);
+    CHECK(w == 960 && h == 480);
+    thumb_size(100, 2000, 1000, 480, &w, &h);
+    CHECK(w == 24 && h == 480);
+    thumb_size(300, 150, 960, 480, &w, &h);
+    CHECK(w == 300 && h == 150);
+    thumb_size(8000, 1, 10, 10, &w, &h);
+    CHECK(w == 10 && h == 1);
+}
+
+static void thumb_leaves_a_fitting_png_alone(void) {
+    WITH_ARENA(a, 1 << 20);
+    Str png = stored_rgba_png(&a, 40, 20, red);
+    Str out = {0};
+    u32 w = 0, h = 0;
+    CHECK(png.n > 0);
+    CHECK(thumb_png(&a, png, 40, 20, &out, &w, &h) == THUMB_FITS);
+    CHECK(out.n == 0);
+}
+
+static void thumb_scales_a_png_down(void) {
+    WITH_ARENA(a, 4 << 20);
+    Str png = stored_rgba_png(&a, 400, 200, red);
+    Str out = {0};
+    u32 w = 0, h = 0;
+    CHECK(thumb_png(&a, png, 100, 100, &out, &w, &h) == THUMB_SCALED);
+    CHECK(w == 100 && h == 50);
+    u32 pw = 0, ph = 0;
+    u8 *px = png_pixels(&a, out, &pw, &ph);
+    CHECK(px != NULL && pw == 100 && ph == 50);
+    b8 all_red = px != NULL;
+    for (size_t i = 0; px && i < (size_t)pw * ph; i++)
+        all_red &= px[i * 4] == 255 && px[i * 4 + 1] == 0 && px[i * 4 + 2] == 0
+                   && px[i * 4 + 3] == 255;
+    CHECK(all_red);
+    CHECK(out.n > 33 && (u8)out.p[25] == 2);
+}
+
+static void thumb_averages_each_box(void) {
+    WITH_ARENA(a, 1 << 20);
+    Str png = stored_rgba_png(&a, 8, 8, checker);
+    Str out = {0};
+    u32 w = 0, h = 0;
+    CHECK(thumb_png(&a, png, 4, 4, &out, &w, &h) == THUMB_SCALED);
+    u32 pw = 0, ph = 0;
+    u8 *px = png_pixels(&a, out, &pw, &ph);
+    CHECK(px != NULL && pw == 4 && ph == 4);
+    b8 grey = px != NULL;
+    for (size_t i = 0; px && i < 16; i++)
+        grey &= px[i * 4] == 128 && px[i * 4 + 3] == 255;
+    CHECK(grey);
+}
+
+static void thumb_output_decodes_when_nothing_repeats(void) {
+    WITH_ARENA(a, 1 << 20);
+    Str png = stored_rgba_png(&a, 40, 30, ramps);
+    Str out = {0};
+    u32 w = 0, h = 0;
+    CHECK(thumb_png(&a, png, 8, 6, &out, &w, &h) == THUMB_SCALED);
+    u32 pw = 0, ph = 0;
+    CHECK(png_pixels(&a, out, &pw, &ph) != NULL && pw == 8 && ph == 6);
+}
+
+static void thumb_averages_over_premultiplied_alpha(void) {
+    WITH_ARENA(a, 1 << 20);
+    Str png = stored_rgba_png(&a, 8, 2, red_or_clear);
+    Str out = {0};
+    u32 w = 0, h = 0;
+    CHECK(thumb_png(&a, png, 4, 1, &out, &w, &h) == THUMB_SCALED);
+    CHECK(out.n > 33 && (u8)out.p[25] == 6);
+    AgentPng *dec = arena_alloc(&a, agent_png_size(), 16);
+    u64 work_n = 0;
+    u32 pw = 0, ph = 0;
+    CHECK(dec && !agent_png_begin(dec, out.p, out.n, &pw, &ph, &work_n));
+    u8 *work = arena_alloc(&a, (size_t)work_n + 1, 16);
+    u8 px[4 * 4 * 1];
+    CHECK(work && !agent_png_finish(dec, work, (size_t)work_n, px, sizeof px));
+    for (size_t i = 0; i < 4; i++) {
+        CHECK(px[i * 4 + 3] == 128);
+        CHECK(px[i * 4] == 128 && px[i * 4 + 1] == 0);
+    }
+}
+
+static void thumb_refuses_what_it_cannot_decode(void) {
+    WITH_ARENA(a, 1 << 20);
+    Str out = {0};
+    u32 w = 0, h = 0;
+    CHECK(thumb_png(&a, STR("not a png"), 10, 10, &out, &w, &h) == THUMB_BAD);
+    Str png = stored_rgba_png(&a, 64, 64, red);
+    Str cut = {png.p, png.n - 300};
+    CHECK(thumb_png(&a, cut, 10, 10, &out, &w, &h) == THUMB_BAD);
+    CHECK(thumb_png(&a, png, 0, 10, &out, &w, &h) == THUMB_BAD);
+}
+
+static void thumb_refuses_too_many_pixels(void) {
+    WITH_ARENA(a, 1 << 20);
+    u8 ihdr[13] = {0, 0, 0, 0, 0, 0, 0, 0, 8, 6, 0, 0, 0};
+    be32_put(ihdr, 5000);
+    be32_put(ihdr + 4, 4000);
+    u8 file[64];
+    memcpy(file, "\x89PNG\r\n\x1a\n", 8);
+    u8 *end = chunk_put(file + 8, "IHDR", ihdr, sizeof ihdr);
+    end = chunk_put(end, "IDAT", NULL, 0);
+    end = chunk_put(end, "IEND", NULL, 0);
+    Str png = {(const char *)file, (size_t)(end - file)};
+    Str out = {0};
+    u32 w = 0, h = 0;
+    CHECK(thumb_png(&a, png, 100, 100, &out, &w, &h) == THUMB_TOO_BIG);
+}
+
+static void thumb_checks_room_before_taking_it(void) {
+    WITH_ARENA(big, 4 << 20);
+    Str png = stored_rgba_png(&big, 400, 200, red);
+    static alignas(64) u8 mem[256 << 10];
+    Arena a;
+    arena_init(&a, mem, sizeof mem);
+    Str out = {0};
+    u32 w = 0, h = 0;
+    CHECK(thumb_png(&a, png, 100, 100, &out, &w, &h) == THUMB_NO_ROOM);
+    CHECK(arena_used(&a) <= agent_png_size() + 16);
+    Arena tiny;
+    arena_init(&tiny, mem, 64);
+    CHECK(thumb_png(&tiny, png, 100, 100, &out, &w, &h) == THUMB_NO_ROOM);
+    CHECK(arena_used(&tiny) == 0);
+}
+
+static void thumb_survives_every_short_arena(void) {
+    WITH_ARENA(big, 1 << 20);
+    Str png = stored_rgba_png(&big, 64, 32, checker);
+    static alignas(64) u8 mem[1 << 20];
+    b8 scaled = false;
+    for (size_t cap = 0; cap <= sizeof mem && !scaled; cap += 4096) {
+        Arena a;
+        arena_init(&a, mem, cap);
+        Str out = {0};
+        u32 w = 0, h = 0;
+        ThumbStatus st = thumb_png(&a, png, 16, 16, &out, &w, &h);
+        CHECK(st == THUMB_SCALED || st == THUMB_NO_ROOM);
+        CHECK(arena_used(&a) <= cap);
+        scaled = st == THUMB_SCALED;
+    }
+    CHECK(scaled);
+}
+
 /* ---- config paths ------------------------------------------------------ */
 
 typedef struct {
@@ -1153,6 +1407,17 @@ int main(void) {
     RUN(conv_result_slot_pairs_like_call_slot);
 
     RUN(config_files_keep_the_user_file_past_many_system_dirs);
+
+    RUN(thumb_size_keeps_the_aspect);
+    RUN(thumb_leaves_a_fitting_png_alone);
+    RUN(thumb_scales_a_png_down);
+    RUN(thumb_averages_each_box);
+    RUN(thumb_output_decodes_when_nothing_repeats);
+    RUN(thumb_averages_over_premultiplied_alpha);
+    RUN(thumb_refuses_what_it_cannot_decode);
+    RUN(thumb_refuses_too_many_pixels);
+    RUN(thumb_checks_room_before_taking_it);
+    RUN(thumb_survives_every_short_arena);
 
     RUN(child_close_fds_reaches_past_the_fallback_cap);
     if (g_fail) {

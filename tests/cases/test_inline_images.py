@@ -7,6 +7,9 @@ alone. The pty reports no pixel size, so a cell counts as 10 by 20 pixels.
 
 Inside tmux the commands go out through its passthrough, once tmux says it
 allows passthrough, has 24-bit color and runs in kitty or Ghostty.
+
+A PNG larger than the pixels it is drawn on goes out scaled down to them.
+With no pixel size reported, that box is taken at twice the 10 by 20 cell.
 """
 
 import base64
@@ -56,6 +59,66 @@ def stored_png(w: int, h: int) -> bytes:
             + chunk(b"IEND", b""))
 
 
+def rgba_png(w: int, h: int, pixel) -> bytes:
+    """An RGBA PNG whose pixel at (x, y) is `pixel(x, y)`."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return (struct.pack(">I", len(data)) + body
+                + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
+
+    raw = b"".join(b"\x00" + b"".join(bytes(pixel(x, y)) for x in range(w))
+                   for y in range(h))
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw))
+            + chunk(b"IEND", b""))
+
+
+def decode_png(data: bytes) -> tuple[int, int, list[list[tuple[int, ...]]]]:
+    """Width, height and pixel rows of an 8-bit RGB or RGBA PNG that is not
+    interlaced, with every filter type undone."""
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", data[:8]
+    at, idat, w, h, ch = 8, b"", 0, 0, 0
+    while at < len(data):
+        n, kind = struct.unpack(">I4s", data[at:at + 8])
+        body = data[at + 8:at + 8 + n]
+        crc = struct.unpack(">I", data[at + 8 + n:at + 12 + n])[0]
+        assert crc == zlib.crc32(kind + body) & 0xFFFFFFFF, kind
+        if kind == b"IHDR":
+            w, h, depth, color, _, _, lace = struct.unpack(">IIBBBBB", body)
+            assert depth == 8 and color in (2, 6) and lace == 0, body
+            ch = 3 if color == 2 else 4
+        elif kind == b"IDAT":
+            idat += body
+        at += 12 + n
+    raw, stride = zlib.decompress(idat), w * ch
+    assert len(raw) == h * (1 + stride), (len(raw), w, h)
+    rows, prev = [], bytearray(stride)
+    for y in range(h):
+        kind, line = raw[y * (1 + stride)], bytearray(
+            raw[y * (1 + stride) + 1:(y + 1) * (1 + stride)])
+        for i in range(stride):
+            a = line[i - ch] if i >= ch else 0
+            b = prev[i]
+            c = prev[i - ch] if i >= ch else 0
+            if kind == 1:
+                line[i] = (line[i] + a) & 255
+            elif kind == 2:
+                line[i] = (line[i] + b) & 255
+            elif kind == 3:
+                line[i] = (line[i] + (a + b) // 2) & 255
+            elif kind == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                pred = a if pa <= pb and pa <= pc else b if pb <= pc else c
+                line[i] = (line[i] + pred) & 255
+            else:
+                assert kind == 0, kind
+        rows.append([tuple(line[x * ch:(x + 1) * ch]) for x in range(w)])
+        prev = line
+    return w, h, rows
+
+
 def passed_through(s) -> bytes:
     """What the child handed to tmux to pass on, unwrapped."""
     return b"".join(m.group(1).replace(b"\x1b\x1b", b"\x1b")
@@ -78,8 +141,11 @@ def graphics(s, tmux: bool = False) -> list[tuple[dict, bytes]]:
 
 
 def transmitted(s, tmux: bool = False) -> list[tuple[dict, bytes]]:
-    """The images sent, as (keys of the first chunk, decoded bytes)."""
-    images, current = [], None
+    """The images sent in full, as (keys of the first chunk, decoded bytes).
+
+    One whose last chunk has not arrived yet is left out, so a wait for a
+    count never reads a half-sent image."""
+    images, current, done = [], None, 0
     for keys, payload in graphics(s, tmux):
         if keys.get("a") == "T":
             current = [keys, bytearray()]
@@ -89,7 +155,8 @@ def transmitted(s, tmux: bool = False) -> list[tuple[dict, bytes]]:
         current[1] += payload
         if keys.get("m", "0") == "0":
             current = None
-    return [(k, base64.b64decode(bytes(b))) for k, b in images]
+            done = len(images)
+    return [(k, base64.b64decode(bytes(b))) for k, b in images[:done]]
 
 
 def placements(s) -> list[dict]:
@@ -213,6 +280,93 @@ def test_a_tall_image_is_held_to_half_the_screen(ctx):
     assert keys["c"] == "2", keys
 
 
+# ---- scaled down ----------------------------------------------------------
+def test_a_png_larger_than_its_box_is_sent_scaled_down(ctx):
+    """Drawn on 48 by 12 cells, the box is 960 by 480 pixels at twice the
+    assumed cell, so a 2000 by 1000 image goes out at 960 by 480, still a PNG
+    of the same color."""
+    s = send_attached(ctx, png(2000, 1000), TERM="xterm-kitty")
+    [(keys, body)] = transmitted(s)
+    assert (keys["c"], keys["r"], keys["f"]) == ("48", "12", "100"), keys
+    w, h, rows = decode_png(body)
+    assert (w, h) == (960, 480), (w, h)
+    assert {p for row in rows for p in row} == {(255, 0, 0)}
+    assert image_rows(s, 48) == 12, s.text()
+
+
+def test_a_reported_cell_size_is_the_box(ctx):
+    """With the pixel size known, the box is the cells it covers."""
+    s = send_attached(ctx, png(2000, 1000), TERM="xterm-kitty",
+                      cell_px=(10, 20))
+    [(keys, body)] = transmitted(s)
+    assert (keys["c"], keys["r"]) == ("48", "12"), keys
+    assert decode_png(body)[:2] == (480, 240)
+
+
+def test_a_png_that_fits_its_reported_box_goes_out_as_it_is(ctx):
+    data = png(300, 150)
+    s = send_attached(ctx, data, TERM="xterm-kitty", cell_px=(10, 20))
+    [(keys, body)] = transmitted(s)
+    assert body == data
+    assert (keys["c"], keys["r"]) == ("30", "8"), keys
+
+
+def test_scaling_down_averages_over_premultiplied_alpha(ctx):
+    """Opaque red beside fully transparent black averages to half-opaque
+    red, not to a darker red, and the alpha channel is kept."""
+    def pixel(x, y):
+        return (255, 0, 0, 255) if (x // 2) % 2 == 0 else (0, 0, 0, 0)
+
+    s = send_attached(ctx, rgba_png(1600, 400, pixel), TERM="xterm-kitty",
+                      cell_px=(10, 20))
+    [(keys, body)] = transmitted(s)
+    w, h, rows = decode_png(body)
+    assert w < 1600 and h < 400, (w, h)
+    pixels = {p for row in rows for p in row}
+    assert all(len(p) == 4 for p in pixels), pixels
+    assert all(p[0] == 255 and p[1:3] == (0, 0) for p in pixels if p[3]), pixels
+    assert any(0 < p[3] < 255 for p in pixels), pixels
+
+
+def test_a_wider_transcript_sends_the_scaled_image_again(ctx):
+    """Drawn more than 1.5 times larger than what was sent, the image is
+    deleted and sent again rather than blown up: here whole, since the new
+    box holds all of it. A narrower transcript only places it again."""
+    data = png(2000, 400)
+    (ctx.work / "shot.png").write_bytes(data)
+    ctx.scenario("text=a+red+rectangle")
+    s = ctx.spawn(cols=40, TERM="xterm-kitty")
+    attach(s, "shot.png")
+    s.submit("what is this")
+    s.wait_text("a red rectangle")
+    s.wait_turn_done()
+    [(keys, body)] = transmitted(s)
+    assert (keys["c"], keys["r"]) == ("36", "4"), keys
+    assert decode_png(body)[:2] == (720, 144)
+    s.resize(120, 24)
+    s.wait_for(lambda t: len(transmitted(s)) == 2, "the image sent again")
+    again, body = transmitted(s)[1]
+    assert again["i"] == keys["i"], (keys, again)
+    assert (again["c"], again["r"]) == ("116", "12"), again
+    assert body == data, (len(body), len(data), decode_png(body)[:2])
+    deletes = [k for k, _ in graphics(s) if k.get("a") == "d"]
+    assert any(k["i"] == keys["i"] for k in deletes), deletes
+    s.resize(100, 24)
+    s.wait_for(lambda t: image_rows(s, 96) == 10, "the narrower image")
+    assert len(transmitted(s)) == 2, [k for k, _ in transmitted(s)]
+
+
+def test_a_png_that_does_not_decode_goes_out_as_it_is(ctx):
+    """The header says 2000 by 1000 but the pixel data is cut short: the
+    bytes go out unchanged and the terminal decides."""
+    good = png(2000, 1000)
+    end = good.index(b"IEND") - 4
+    data = good[:end - 40] + good[end:]
+    s = send_attached(ctx, data, TERM="xterm-kitty")
+    [(_, body)] = transmitted(s)
+    assert body == data
+
+
 def test_a_width_change_places_the_image_again_without_sending_it(ctx):
     """A narrower transcript shrinks the image; the bytes stay sent."""
     s = send_attached(ctx, png(600, 100), TERM="xterm-kitty")
@@ -281,6 +435,48 @@ def test_a_resumed_round_draws_each_image_under_its_call(ctx):
     wide = [i for i, line in enumerate(lines) if PLACEHOLDER * 30 in line]
     assert len(narrow) == 5 and len(wide) == 5, s.text()
     assert one < narrow[0] and narrow[-1] < two < wide[0], s.text()
+
+
+def test_a_resumed_session_sends_only_the_images_on_screen(ctx):
+    """Resuming sends no image whose rows are off screen. Scrolling up to one
+    sends it then, once."""
+    (ctx.work / "one.png").write_bytes(png(200, 400))
+    (ctx.work / "two.png").write_bytes(png(300, 400))
+    ctx.scenario('tool=read:{"path":"one.png"},tool=read:{"path":"two.png"},'
+                 "final_text=seen+both")
+    s = ctx.spawn(TERM="xterm-kitty")
+    s.submit("look at them")
+    s.wait_text("seen both")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+
+    s = ctx.spawn(TERM="xterm-kitty")
+    s.submit("/resume")
+    s.wait_status("pick a session")
+    s.key("enter")
+    s.wait_text("seen both")
+    s.sync()
+
+    def sent() -> list[str]:
+        return [k["c"] for k, _ in transmitted(s)]
+
+    assert sent() == ["18"], sent()
+
+    def first_shown(text: str) -> bool:
+        return any(PLACEHOLDER * 12 in line and PLACEHOLDER * 13 not in line
+                   for line in text.splitlines())
+
+    for _ in range(4):
+        if first_shown(s.text()):
+            break
+        s.key("pageup").sync()
+    assert first_shown(s.text()), s.text()
+    s.wait_for(lambda t: len(sent()) == 2, "the first image sent")
+    assert sent() == ["18", "12"], sent()
+    s.key("pagedown").sync()
+    s.key("pageup").sync()
+    assert len(sent()) == 2, sent()
 
 
 # ---- tmux -----------------------------------------------------------------

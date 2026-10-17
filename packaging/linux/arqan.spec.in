@@ -35,5 +35,7 @@ cp -a usr %{buildroot}/
 %doc /usr/share/doc/arqan/vendor/lexbor/NOTICE
 %license /usr/share/licenses/arqan/LICENSE
 %license /usr/share/licenses/arqan/vendor/lexbor/LICENSE
+%license /usr/share/licenses/arqan/vendor/wuffs/LICENSE
+%license /usr/share/licenses/arqan/vendor/miniz/LICENSE
 %license /usr/share/licenses/arqan/vendor/tree-sitter/licenses/*.txt
 %license /usr/share/licenses/arqan/vendor/tree-sitter/runtime/unicode/LICENSE
