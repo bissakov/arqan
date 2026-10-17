@@ -342,15 +342,24 @@ static void prompt_tool_guidance(Buf *b, const ToolRegistry *tools,
     b8 write = prompt_offers(tools, STR("write"), mode);
     b8 code_search = prompt_offers(tools, STR("code_search"), mode);
 
-    if (bash && read)
+    if (code_search) {
+        buf_puts(b, STR("- To find where a symbol is defined or called, or "
+                        "what a file defines, use code_search, not rg"));
+        if (read)
+            buf_puts(b, STR("; outline a file before reading it, then read "
+                            "only the lines you need"));
+        buf_puts(b, STR("\n"));
+    }
+    if (bash && read && code_search)
+        buf_puts(b, STR("- Use read to look at a file and bash with rg, ls "
+                        "or find to search text, strings, config and file "
+                        "names; a pipeline of reading programs never needs "
+                        "approval, so prefer it to an inline script\n"));
+    else if (bash && read)
         buf_puts(b, STR("- Use read to look at a file and bash with rg, ls "
                         "or find to search; a pipeline of reading programs "
                         "never needs approval, so prefer it to an inline "
                         "script\n"));
-    if (code_search && read)
-        buf_puts(b, STR("- To find code, prefer code_search to reading whole "
-                        "files: outline a file before reading it, then read "
-                        "only the lines you need\n"));
     if (bash)
         buf_puts(b, STR("- After changing code, run the project's build or "
                         "tests when you can find them, and say so when you "

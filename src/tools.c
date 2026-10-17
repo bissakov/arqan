@@ -3005,7 +3005,9 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         page_fetch_run);
     if (code_search_available())
         ADD("code_search",
-            "Search code by its syntax with ast-grep. outline: what a file "
+            "Find where a symbol is defined or called, or what a file "
+            "defines, by parsing the code with ast-grep instead of matching "
+            "text. outline: what a file "
             "or directory defines, with line ranges. definition: the source "
             "of each definition of name. callers: each call of name and the "
             "function it is in; rows marked other are the remaining "
