@@ -23,6 +23,12 @@
 
 ### Fixed
 
+- A large image drawn in the transcript is now sent to the terminal scaled
+  down to the pixels it covers, not at full size. Large images sent through
+  tmux could make Ghostty close every window. The model still gets the
+  original image.
+- Resuming a session sends only the images on screen. An image scrolled
+  off screen is sent when it first comes into view.
 - An `ask_user` question no longer arrives with no context when the model
   laid out the options only in its reasoning. When a round has reasoning but
   no reply text, its question is not shown, and the model is asked to write

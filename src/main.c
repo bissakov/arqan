@@ -12,6 +12,7 @@
 #include "paths.c"
 #include "spill.c"
 #include "media.c"
+#include "thumb.c"
 #include "clipboard.c"
 #include "diff.c"
 #include "editor.c"
@@ -6593,6 +6594,7 @@ i32 main(i32 argc, char **argv) {
     tui_set_busy_command(on_busy_command, &agent);
     tools_set_touch(touch_path, &agent);
     tui_set_reflow(reflow_transcript, &agent);
+    tui_set_image_arena(&scratch);
     g_task.ag = &agent;
     g_task.focus = AGENT_MAX_TASKS;
     for (size_t i = 0; i < AGENT_MAX_TASKS; i++) task_slot_arm(&g_task.w[i]);

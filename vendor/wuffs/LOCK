@@ -1,0 +1,6 @@
+name: Wuffs
+version: 0.3.4
+source: https://github.com/google/wuffs/archive/refs/tags/v0.3.4.tar.gz
+source-sha256: fec09526c9d86acb55cfc4742d8c0d298af16de8978ced336ea2071ee2ca6e18
+files: release/c/wuffs-v0.3.c, LICENSE
+modules: base, adler32, crc32, deflate, zlib, png

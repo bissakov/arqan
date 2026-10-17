@@ -90,6 +90,7 @@ for exe in arqan arqan-highlight; do
 done
 for path in README.md CHANGELOG.md LICENSE THIRD_PARTY_NOTICES.md \
     vendor/lexbor/LICENSE vendor/lexbor/NOTICE \
+    vendor/wuffs/LICENSE vendor/miniz/LICENSE \
     vendor/tree-sitter/licenses/*.txt vendor/tree-sitter/runtime/unicode/LICENSE; do
     [ -f "$path" ] || fail "missing payload file: $path"
     mkdir -p -- "$payload/doc/$(dirname -- "$path")"
@@ -246,6 +247,10 @@ stage_usr_layout() {
     cp -a -- "$payload/doc/vendor/lexbor" \
         "$root/usr/share/licenses/$PROGRAM/vendor/lexbor"
     rm -- "$root/usr/share/licenses/$PROGRAM/vendor/lexbor/NOTICE"
+    cp -a -- "$payload/doc/vendor/wuffs" \
+        "$root/usr/share/licenses/$PROGRAM/vendor/wuffs"
+    cp -a -- "$payload/doc/vendor/miniz" \
+        "$root/usr/share/licenses/$PROGRAM/vendor/miniz"
     cp -a -- "$payload/doc/vendor/tree-sitter" \
         "$root/usr/share/licenses/$PROGRAM/vendor/tree-sitter"
 }

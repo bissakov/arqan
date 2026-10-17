@@ -76,12 +76,14 @@ class Session:
         rows=24,
         name="arqan",
         quiet=QUIET,
+        cell_px=None,
     ):
         self.argv = list(argv)
         self.env = dict(env or {})
         self.cwd = cwd
         self.cols = cols
         self.rows = rows
+        self.cell_px = cell_px
         self.name = name
         self.quiet = max(quiet, QUIET)
         self.term = Terminal(cols, rows)
@@ -100,8 +102,8 @@ class Session:
     # ---- lifecycle --------------------------------------------------------
     def start(self) -> "Session":
         master, slave = pty.openpty()
-        _set_winsize(master, self.cols, self.rows)
-        _set_winsize(slave, self.cols, self.rows)
+        _set_winsize(master, self.cols, self.rows, self.cell_px)
+        _set_winsize(slave, self.cols, self.rows, self.cell_px)
 
         argv = [SETSID, "--ctty", *self.argv] if SETSID else list(self.argv)
         self.proc = subprocess.Popen(
@@ -510,7 +512,7 @@ class Session:
 
     def resize(self, cols: int, rows: int) -> "Session":
         self.cols, self.rows = cols, rows
-        _set_winsize(self.master, cols, rows)
+        _set_winsize(self.master, cols, rows, self.cell_px)
         self.term.resize(cols, rows)
         if self.proc and self.proc.poll() is None:
             os.killpg(os.getpgid(self.proc.pid), signal.SIGWINCH)
@@ -679,5 +681,9 @@ def _child_setup():  # only without setsid(1); see SETSID above
         pass
 
 
-def _set_winsize(fd: int, cols: int, rows: int):
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+def _set_winsize(fd: int, cols: int, rows: int, cell_px=None):
+    """`cell_px`, a (width, height) in pixels, sets the pixel size a terminal
+    reports; without it the pty reports none, as most do not."""
+    xpixel, ypixel = (cols * cell_px[0], rows * cell_px[1]) if cell_px else (0, 0)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ,
+                struct.pack("HHHH", rows, cols, xpixel, ypixel))

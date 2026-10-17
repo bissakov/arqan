@@ -223,6 +223,7 @@ class Ctx:
         wait: bool = True,
         cwd: str | None = None,
         args: list[str] | None = None,
+        cell_px: tuple[int, int] | None = None,
         **env_overrides,
     ) -> Session:
         """Start `arqan` on a pty and wait for the first frame."""
@@ -234,6 +235,7 @@ class Ctx:
             rows=rows,
             name=self.case,
             quiet=self.quiet,
+            cell_px=cell_px,
         )
         s.start()
         self.sessions.append(s)

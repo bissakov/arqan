@@ -1,0 +1,8 @@
+name: miniz
+version: 3.1.2
+source: https://github.com/richgel999/miniz/releases/download/3.1.2/miniz-3.1.2.zip
+source-sha256: f0446d863f9c19926ad9483c523fdc42e42b8d4a6a431d27e09d49c79a140d9a
+files: miniz.c, miniz.h, LICENSE
+modules: deflate (tdefl), crc32
+patches: tdefl_start_dynamic_block always sends at least two distance codes,
+  as zlib does, since Wuffs refuses a block with none. Marked `agent:`.

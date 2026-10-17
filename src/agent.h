@@ -1460,6 +1460,29 @@ void media_write_anthropic(Buf *b, const MediaSet *m, size_t id);
 void mcp_set_media(MediaSet *m);
 MediaSet *tools_set_media(MediaSet *m);
 
+/* ---- thumbnails ----------------------------------------------------------
+ * thumb_png writes `png` scaled down to fit `max_w` by `max_h` pixels, as a
+ * PNG, keeping its aspect. THUMB_FITS when it already fits, THUMB_BAD when
+ * it does not decode, THUMB_TOO_BIG when it has too many pixels to decode,
+ * and THUMB_NO_ROOM when `a` cannot hold the work. Every buffer, `out`
+ * included, is taken from `a`: save `a->off` before and restore it once `out`
+ * is no longer needed, whatever the result.
+ *
+ * thumb_size is the size thumb_png scales `w` by `h` to: never larger, and
+ * never below one pixel.
+ */
+typedef enum {
+    THUMB_SCALED,
+    THUMB_FITS,
+    THUMB_BAD,
+    THUMB_TOO_BIG,
+    THUMB_NO_ROOM,
+} ThumbStatus;
+
+ThumbStatus thumb_png(Arena *a, Str png, u32 max_w, u32 max_h, Str *out,
+                      u32 *out_w, u32 *out_h);
+void thumb_size(u32 w, u32 h, u32 max_w, u32 max_h, u32 *out_w, u32 *out_h);
+
 /* ---- clipboard ----------------------------------------------------------
  * The image the system clipboard holds, read through the first helper that
  * is installed (wl-paste, xclip, pngpaste) and returned as the bytes it
@@ -2303,6 +2326,7 @@ void tui_find_open(void);
 void tui_set_find_expand(void (*fn)(void *ud), void *ud);
 void tui_width_fitted(void);
 void tui_set_reflow(void (*fn)(void *ud), void *ud);
+void tui_set_image_arena(Arena *work);
 void tui_block(void);
 void tui_tool_nest_begin(void);
 void tui_tool_nest_end(void);
@@ -2310,9 +2334,10 @@ void tui_write(Str s);
 
 /* A PNG drawn in the transcript on its own rows, through the kitty graphics
  * protocol. False, with nothing written, when the terminal is not known to
- * draw images, the transcript is detached, or `png` is not a PNG. The bytes
- * are sent to the terminal before this returns and are not kept. Inside tmux,
- * the first call asks tmux whether it passes images on to the terminal. */
+ * draw images, the transcript is detached, or `png` is not a PNG. The image
+ * is sent after the first frame that paints one of its rows, so `png` must
+ * stay valid until the transcript is reset. Inside tmux, the first call asks
+ * tmux whether it passes images on to the terminal. */
 b8 tui_image(Str png, u32 w, u32 h);
 b8 tui_images_shown(void);
 

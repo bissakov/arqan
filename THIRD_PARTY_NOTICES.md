@@ -11,6 +11,17 @@ License 2.0. See:
 - `vendor/lexbor/LICENSE`
 - `vendor/lexbor/NOTICE`
 
+## Wuffs
+
+Wuffs 0.3.4 decodes the PNG images drawn in the transcript and is distributed
+under the Apache License 2.0. See `vendor/wuffs/LICENSE`.
+
+## miniz
+
+The deflate compressor of miniz 3.1.2 writes the scaled-down PNG images drawn
+in the transcript and is distributed under the MIT License. See
+`vendor/miniz/LICENSE`.
+
 ## Tree-sitter
 
 The Tree-sitter 0.26.11 C runtime is distributed under the MIT License. See

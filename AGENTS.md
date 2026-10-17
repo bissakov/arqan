@@ -182,8 +182,9 @@ bounds and rendering conventions instead of building a second path.
 - What a page leaves out goes to a spill file the result names. Spilling is
   best effort and never changes what a tool answers.
 - An image over `AGENT_MAX_IMAGE_BYTES` or `AGENT_MAX_IMAGE_SIDE` is refused
-  with the limit named. Nothing is resized, and no pixel decoder is added. A
-  turn with no media keeps the plain-string content shape on the wire.
+  with the limit named. Nothing sent to the model is resized; only the copy
+  the transcript draws is scaled down to its drawn size, in `thumb.c`. A turn
+  with no media keeps the plain-string content shape on the wire.
 - `images = off` leaves `Conv.media` absent, so no image reaches the model,
   including one a resumed session saved, and `/attach` is not registered.
 - The registry enforces tool availability, including plan mode and disabled

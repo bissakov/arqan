@@ -63,6 +63,10 @@ SRC     := src/main.c
 OBJ     := $(BUILDDIR)/arqan.o
 REV_STAMP := $(BUILDDIR)/build-rev
 LEXBOR_OBJ := $(BUILDDIR)/vendor/lexbor.o
+WUFFS_OBJ := $(BUILDDIR)/vendor/wuffs.o
+MINIZ_OBJ := $(BUILDDIR)/vendor/miniz.o
+IMAGE_OBJ := $(WUFFS_OBJ) $(MINIZ_OBJ)
+VENDOR_OBJ := $(LEXBOR_OBJ) $(IMAGE_OBJ)
 BIN     := $(BINDIR)/arqan
 TEST_OBJ := $(BUILDDIR)/arqan-test.o
 TEST_BIN := $(BINDIR)/arqan-test
@@ -104,9 +108,9 @@ all: $(BIN) $(HL_BIN)
 
 minimal: $(BIN)
 
-$(BIN): $(OBJ) $(LEXBOR_OBJ)
+$(BIN): $(OBJ) $(VENDOR_OBJ)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) $(OBJ) $(LEXBOR_OBJ) -o $@ $(LDFLAGS) $(LIBS) $(MATH_LIBS)
+	$(CC) $(CFLAGS) $(OBJ) $(VENDOR_OBJ) -o $@ $(LDFLAGS) $(LIBS) $(MATH_LIBS)
 
 $(REV_STAMP): FORCE
 	@mkdir -p $(BUILDDIR)
@@ -124,13 +128,23 @@ $(LEXBOR_OBJ): vendor/lexbor/bridge.c vendor/lexbor/bridge.h \
 	@mkdir -p $(BUILDDIR)/vendor
 	$(CC) $(VENDOR_CFLAGS) -Ivendor/lexbor -c $< -o $@
 
+$(WUFFS_OBJ): vendor/wuffs/bridge.c vendor/wuffs/bridge.h \
+              vendor/wuffs/wuffs-v0.3.c
+	@mkdir -p $(BUILDDIR)/vendor
+	$(CC) $(VENDOR_CFLAGS) -c $< -o $@
+
+$(MINIZ_OBJ): vendor/miniz/bridge.c vendor/miniz/bridge.h \
+              vendor/miniz/miniz.c vendor/miniz/miniz.h
+	@mkdir -p $(BUILDDIR)/vendor
+	$(CC) $(VENDOR_CFLAGS) -c $< -o $@
+
 $(TEST_OBJ): $(SRC) $(wildcard src/*.c) $(wildcard src/*.h)
 	@mkdir -p $(BUILDDIR)
 	$(CC) $(CFLAGS) $(CURL_CFLAGS) -DAGENT_TESTING -c $(SRC) -o $@
 
-$(TEST_BIN): $(TEST_OBJ) $(LEXBOR_OBJ)
+$(TEST_BIN): $(TEST_OBJ) $(VENDOR_OBJ)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) $(TEST_OBJ) $(LEXBOR_OBJ) -o $@ $(LDFLAGS) $(LIBS) \
+	$(CC) $(CFLAGS) $(TEST_OBJ) $(VENDOR_OBJ) -o $@ $(LDFLAGS) $(LIBS) \
 	    $(MATH_LIBS)
 
 $(HL_BIN): $(HL_OBJ)
@@ -285,10 +299,11 @@ check-format: check-clang-format
 	    echo "Formatting differs from .clang-format. Run 'make fmt'."; \
 	    exit 1; }
 
-# Standalone: links no libcurl and reads no terminal, so it needs only src/.
-$(UNIT_BIN): $(UNIT_SRC) $(wildcard src/*.c) $(wildcard src/*.h)
+# Standalone: links no libcurl and reads no terminal, so it needs only src/
+# and the image decoder and compressor.
+$(UNIT_BIN): $(UNIT_SRC) $(wildcard src/*.c) $(wildcard src/*.h) $(IMAGE_OBJ)
 	@mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -Isrc $(UNIT_SRC) -o $@
+	$(CC) $(CFLAGS) -Isrc $(UNIT_SRC) $(IMAGE_OBJ) -o $@
 
 test-unit: $(UNIT_BIN)
 	$(UNIT_BIN)
@@ -302,6 +317,13 @@ FUZZ_CFLAGS := -std=c17 -g -O1 -fsanitize=fuzzer,address,undefined \
 $(BINDIR)/fuzz/%: tests/fuzz/%.c $(wildcard src/*.c) $(wildcard src/*.h)
 	@mkdir -p $(dir $@)
 	$(FUZZ_CC) $(FUZZ_CFLAGS) $< -o $@
+
+$(BINDIR)/fuzz/fuzz_thumb: tests/fuzz/fuzz_thumb.c $(wildcard src/*.c) \
+                           $(wildcard src/*.h) $(wildcard vendor/wuffs/*) \
+                           $(wildcard vendor/miniz/*)
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) $< vendor/wuffs/bridge.c vendor/miniz/bridge.c \
+	    -o $@
 
 FUZZ_HL_BUILD := $(BUILDDIR)/fuzz-highlight
 FUZZ_HL_OBJ := $(patsubst $(BUILDDIR)/%,$(FUZZ_HL_BUILD)/%,\
