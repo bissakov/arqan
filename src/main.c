@@ -665,6 +665,10 @@ static u32 elapsed_ms(f64 started) {
     return ms > (f64)UINT32_MAX ? UINT32_MAX : (u32)ms;
 }
 
+static const char QUESTION_HELD_NOTE[] =
+    "ERROR: the question was not shown, since this round has no reply text. "
+    "Write the context in a reply, then call ask_user again.";
+
 static Str ask_user_answer(Agent *ag, Str args) {
     JVal *j = json_parse(ag->scratch, args);
     Str question = json_str(j, STR("question"));
@@ -1928,7 +1932,7 @@ static void redraw_round(Agent *ag) {
 }
 
 static TurnAction run_round_calls(Agent *ag, size_t first, size_t last,
-                                  b8 *redraw) {
+                                  b8 hold_questions, b8 *held, b8 *redraw) {
     Conv *conv = ag->conv;
     ag->permission_blocked_one_shot = false;
 
@@ -1995,6 +1999,12 @@ static TurnAction run_round_calls(Agent *ag, size_t first, size_t last,
             continue;
         }
         if (str_eq(name, STR("ask_user"))) {
+            if (hold_questions) {
+                *held = true;
+                if (!add_result(ag, i, STR("ask"), STR(QUESTION_HELD_NOTE), 0))
+                    return TURN_FULL;
+                continue;
+            }
             tui_activity_end();
             notify_event(NOTIFY_INPUT_NEEDED,
                          STR("the assistant asked a question"), 0);
@@ -2048,9 +2058,11 @@ static TurnAction run_round_calls(Agent *ag, size_t first, size_t last,
 /* NOTE: the repaint waits for the round's last result. The transcript
  * rebuilds from Conv, which already holds every call of the round, so a
  * repaint before a later call runs would draw that call twice. */
-static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last) {
+static TurnAction run_tool_calls(Agent *ag, size_t first, size_t last,
+                                 b8 hold_questions, b8 *held) {
     b8 redraw = false;
-    TurnAction act = run_round_calls(ag, first, last, &redraw);
+    TurnAction act =
+        run_round_calls(ag, first, last, hold_questions, held, &redraw);
     if (redraw) redraw_round(ag);
     return act;
 }
@@ -5829,6 +5841,11 @@ static b8 reply_is_blank(const Conv *conv) {
            && !str_trim(conv->text[i]).n;
 }
 
+static b8 round_reply_blank(const Conv *conv, size_t head) {
+    return head < conv->n && conv->role[head] == M_ASSISTANT
+           && !str_trim(conv->text[head]).n;
+}
+
 
 static void announce_interrupt(void) {
     if (g_turn.one_shot)
@@ -5909,6 +5926,7 @@ static b8 agent_turn(Agent *ag, Str text) {
 
     b8 ok = false;
     b8 asked_for_reply = false;
+    b8 question_held = false;
     NotifyKind ending = NOTIFY_TURN_FAILED;
     Str ending_text = {0};
     char ending_buf[256] = {0};
@@ -6018,9 +6036,12 @@ static b8 agent_turn(Agent *ag, Str text) {
         }
 
         size_t tail = conv->n;
+        b8 hold_questions = !question_held && p.reason_bytes > 0
+                            && round_reply_blank(conv, before);
         RoundDeadline outer =
             shell_swap_round_deadline(round_deadline_after(request_sent_s));
-        TurnAction act = run_tool_calls(ag, before, tail);
+        TurnAction act =
+            run_tool_calls(ag, before, tail, hold_questions, &question_held);
         shell_swap_round_deadline(outer);
         if (p.stop == PROVIDER_STOP_MAX_TOKENS) {
             if (conv_add_note(conv, STR(CUT_CALL_NOTE)) != CONV_NONE

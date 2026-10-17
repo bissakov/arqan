@@ -1801,6 +1801,7 @@ typedef struct {
     size_t cache_read_tokens;
     size_t total_tokens;
     b8 usage_valid;
+    size_t reason_bytes;
     ProviderStop stop;
     char status_msg[AGENT_MAX_PROVIDER_MSG + 1];
 } Provider;

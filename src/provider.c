@@ -1879,6 +1879,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
         attempt++;
     }
     p->ud = saved_ud;
+    p->reason_bytes = s->reason_bytes;
 
     TelEvent tev;
     tel_open(&tev, "request");

@@ -21,6 +21,14 @@
   when they cannot write: no `-U`, no interactive mode, and
   `--custom-languages` absent or `ignore`.
 
+### Fixed
+
+- An `ask_user` question no longer arrives with no context when the model
+  laid out the options only in its reasoning. When a round has reasoning but
+  no reply text, its question is not shown, and the model is asked to write
+  the context in a reply and ask again. This happens once per turn, so a
+  second question is always shown.
+
 ## [0.12.0] - 2026-10-12
 
 ### Added
