@@ -66,6 +66,7 @@ def payload_files() -> set[str]:
     files = {
         "README.md", "CHANGELOG.md", "LICENSE", "THIRD_PARTY_NOTICES.md",
         "vendor/lexbor/LICENSE", "vendor/lexbor/NOTICE",
+        "vendor/wuffs/LICENSE", "vendor/miniz/LICENSE",
         "vendor/tree-sitter/runtime/unicode/LICENSE",
     }
     files.update(f"vendor/tree-sitter/licenses/{name}" for name in LICENSES)
