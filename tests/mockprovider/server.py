@@ -107,6 +107,12 @@ class Scenario:
         # that family uses ("reasoning_content" or "reasoning").
         self.reasoning: str | None = kw.get("reasoning")
         self.reasoning_summaries: list[str] = kw.get("reasoning_summaries", [])
+        # With reasoning_every=1 the reasoning precedes every reply of the
+        # turn, not only the first, the way a model that thinks each round
+        # does.
+        self.reasoning_every: bool = _truthy(kw.get("reasoning_every", "0"))
+        # call_text: reply text streamed ahead of the tool calls of a round.
+        self.call_text: str = kw.get("call_text", "")
         self.redacted: str | None = kw.get("redacted")
         # A thinking block that ends with no signature, as a cut-off stream or
         # a proxy that drops `signature_delta` delivers it.
@@ -217,7 +223,7 @@ class Scenario:
             elif key == "reasoning_summaries":
                 kw[key] = [m for m in _unescape(value).split("|") if m]
             elif key in ("text", "final_text", "prefix", "error", "reasoning",
-                         "redacted"):
+                         "redacted", "call_text"):
                 kw[key] = _unescape(value)
             else:
                 kw[key] = value
@@ -461,7 +467,7 @@ class _AnthropicHandlerMixin:
         thoughts = scenario.reasoning_summaries or (
             [scenario.reasoning] if scenario.reasoning else []
         )
-        if tool_replies == 0:
+        if tool_replies == 0 or scenario.reasoning_every:
             for order, thought in enumerate(thoughts):
                 signature = (f"sig_mock_{order}"
                              if scenario.reasoning_summaries else "sig_mock")
@@ -478,6 +484,15 @@ class _AnthropicHandlerMixin:
                 index += 1
 
         if emit_tools:
+            if scenario.call_text:
+                deltas = [{"type": "text_delta", "text": piece}
+                          for piece in chunks(scenario.call_text,
+                                              scenario.chunk)]
+                if not self._anth_block(
+                    index, {"type": "text", "text": ""}, deltas, scenario
+                ):
+                    return
+                index += 1
             for order, (name, args) in enumerate(scenario.tools):
                 if scenario.interleaved and order:
                     if not self._anth_block(
@@ -1166,7 +1181,8 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
                     })):
                         return
                     self._pace(scenario)
-        elif scenario.reasoning and tool_replies == 0:
+        elif scenario.reasoning and (tool_replies == 0
+                                     or scenario.reasoning_every):
             for piece in chunks(scenario.reasoning, scenario.chunk):
                 piece = budget.take(piece)
                 if not piece:
@@ -1179,6 +1195,11 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             # The thinking took it all: the turn ends where the cap does.
             finish = "length"
         elif emit_tools:
+            if scenario.call_text:
+                for piece in chunks(scenario.call_text, scenario.chunk):
+                    if not self._sse(frame({"content": piece})):
+                        return
+                    completion_chars += len(piece)
             for index, (name, args) in enumerate(scenario.tools):
                 call = {
                     "index": index,
