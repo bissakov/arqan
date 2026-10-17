@@ -34,6 +34,11 @@
   no reply text, its question is not shown, and the model is asked to write
   the context in a reply and ask again. This happens once per turn, so a
   second question is always shown.
+- A new `todo` call no longer causes an unexpected cache miss. The previous
+  step list was cut down to a short note even when it was already in the
+  cached prefix, so the provider wrote the whole conversation again. It is
+  now cut down only when the elision boundary moves past the newer call,
+  and that rebuild is reported as eliding.
 
 ## [0.12.0] - 2026-10-12
 

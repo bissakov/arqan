@@ -207,6 +207,43 @@ def test_a_change_keeps_its_arguments_below_the_boundary(ctx):
     assert "older write arguments removed" not in body, body[:400]
 
 
+def test_a_new_step_list_leaves_the_old_one_below_the_boundary(ctx):
+    """A todo call stubs only when the boundary passes the call after it.
+
+    The newest step list below the boundary went out whole. A new todo call
+    above the boundary used to stub it, which rewrote the cached prefix with
+    no rebuild declared, and the provider wrote the whole conversation again.
+    """
+    s = windowed(ctx)
+    ctx.write_file("big.txt", numbered(400))
+    steps = [{"text": f"step {i} " + "y" * 80, "status": "pending"}
+             for i in range(8)]
+    plan = json.dumps({"items": steps})
+    ctx.scenario(f"tool=todo:{plan},"
+                 'tool=bash:{"command":"cat big.txt","description":"show it"},'
+                 "final_text=planned")
+    s.submit("plan it")
+    s.wait_text("planned")
+    s.wait_turn_done()
+
+    ctx.scenario("text=sure,final_text=sure")
+    for prompt in ("thanks", "and again"):
+        s.submit(prompt)
+        s.wait_turn_done()
+    assert "older bash result elided" in wire(ctx), wire(ctx)[:400]
+    fired = ctx.mock.requests[-1]["messages"]
+    assert steps[0]["text"] in json.dumps(fired), "the newest list went out"
+
+    steps[0]["status"] = "in_progress"
+    ctx.scenario(f"tool=todo:{json.dumps({'items': steps})},final_text=moved")
+    s.submit("start")
+    s.wait_text("moved")
+    s.wait_turn_done()
+    for n, body in enumerate(ctx.mock.requests[-2:]):
+        assert body["messages"][:len(fired)] == fired, (
+            f"request {n + 1} of the turn rewrote the cached prefix")
+
+
 def test_a_replayable_round_leaves_the_wire_whole(ctx):
     """A read the model can simply make again is removed, not described.
 
