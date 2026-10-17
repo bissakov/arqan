@@ -584,7 +584,31 @@ def test_the_prompt_suggests_code_search_only_when_offered(ctx):
         s.close()
         return ctx.mock.requests[-1]["messages"][0]["content"]
 
-    assert "code_search" not in prompt()
-    if not have_ast_grep():
-        return
-    assert "prefer code_search to reading whole files" in prompt(**ON)
+    without = prompt()
+    assert "code_search" not in without
+    assert "bash with rg, ls or find to search; a pipeline" in without, without
+
+    path = fake_ast_grep(ctx, "exit 0\n")
+    offered = prompt(**ON, PATH=path)
+    assert "- To find where a symbol is defined or called, or what a file " \
+        "defines, use code_search, not rg; outline a file before reading " \
+        "it, then read only the lines you need\n" in offered, offered
+    assert "bash with rg, ls or find to search text, strings, config and " \
+        "file names; a pipeline" in offered, offered
+    assert offered.index("use code_search, not rg") \
+        < offered.index("bash with rg"), offered
+
+
+def test_the_description_says_what_the_tool_finds(ctx):
+    """The description leads with the questions the tool answers, so the
+    model picks it over rg for a symbol."""
+    ctx.scenario("final_text=done")
+    s = ctx.spawn(**ON, PATH=fake_ast_grep(ctx, "exit 0\n"))
+    s.submit("hello")
+    s.wait_turn_done()
+    s.close()
+    tools = {t["function"]["name"]: t["function"]
+             for t in ctx.mock.requests[-1]["tools"]}
+    assert tools["code_search"]["description"].startswith(
+        "Find where a symbol is defined or called, or what a file defines, "
+        "by parsing the code with ast-grep instead of matching text. "), tools
