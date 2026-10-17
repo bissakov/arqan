@@ -270,9 +270,13 @@ static b8 conv_result_failed(const Conv *c, size_t result) {
     return str_starts(c->text[result], STR("ERROR: "));
 }
 
-static b8 conv_todo_live(const Conv *c, size_t i) {
+/* INVARIANT: only a later call below the boundary retires a todo call. One
+ * above it would stub a block the cached prefix already holds, with no
+ * rebuild declared. */
+static b8 conv_todo_live(const Conv *c, size_t i, size_t recent) {
     if (!str_eq(c->tool_name[i], STR("todo"))) return false;
-    for (size_t j = i + 1; j < c->n; j++)
+    size_t end = recent < c->n ? recent : c->n;
+    for (size_t j = i + 1; j < end; j++)
         if (conv_is_call(c, j) && str_eq(c->tool_name[j], STR("todo")))
             return false;
     return true;
@@ -341,7 +345,7 @@ b8 conv_args_elided(const Conv *c, size_t i, size_t recent) {
     if (conv_slot_dropped(c, i, recent)) return false;
     if (tool_args_are_work(c->tool_name[i])) return false;
     if (conv_call_failed(c, i)) return true;
-    if (conv_todo_live(c, i)) return false;
+    if (conv_todo_live(c, i, recent)) return false;
     return c->text[i].n > AGENT_ELIDE_BYTES;
 }
 
