@@ -3124,18 +3124,23 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         "\"required\":[\"text\",\"status\"]}}},\"required\":[\"items\"]}",
         todo_run);
     ADD("ask_user",
-        "Ask the user to choose between options. Mark the one you "
-        "recommend; they may also answer in their own words. Write the "
+        "Ask the user to choose between options. Make the question "
+        "self-contained: state in it everything needed to answer, "
+        "including the findings, list, draft or code it refers to, what "
+        "each option does and what follows from each. Repeat what an "
+        "earlier reply said instead of referring to it; never write \"the "
+        "options above\" or \"as discussed\". Keep each option label short "
+        "and put its consequences in its detail. Mark the one you "
+        "recommend; the user may also answer in their own words. Write the "
         "question and options in the third person, naming \"the agent\" "
-        "and \"the user\" (\"Should the agent keep the old API?\", "
-        "\"The user will explain\"), never \"I\", \"you\" or \"we\": the "
-        "user picks an option, so those words are ambiguous. The user sees "
-        "your replies and this question, never your reasoning: write what "
-        "the question refers to, such as findings, a list or a draft, in a "
-        "reply before the call or in the question.",
+        "and \"the user\" (\"Should the agent keep the old API?\", \"The "
+        "user will explain\"), never \"I\", \"you\" or \"we\".",
         "Ask the user to choose", BOTH | TOOL_FIXED | TOOL_INTERACTIVE,
         TOOL_APPROVAL_NONE,
-        "{\"type\":\"object\",\"properties\":{\"question\":{\"type\":\"string\"},\"options\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"label\":{\"type\":\"string\"},\"detail\":{\"type\":\"string\"},\"recommended\":{\"type\":\"boolean\"}},\"required\":[\"label\"]}}},\"required\":[\"question\",\"options\"]}",
+        "{\"type\":\"object\",\"properties\":{\"question\":{\"type\":"
+        "\"string\",\"description\":\"self-contained: all the context "
+        "needed to answer, repeated from earlier replies\"},"
+        "\"options\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"label\":{\"type\":\"string\"},\"detail\":{\"type\":\"string\"},\"recommended\":{\"type\":\"boolean\"}},\"required\":[\"label\"]}}},\"required\":[\"question\",\"options\"]}",
         tool_agent_only);
     ADD("submit_plan", "Hand the finished plan to the user to approve.",
         "Hand the plan over", TOOL_IN_PLAN | TOOL_FIXED, TOOL_APPROVAL_NONE,

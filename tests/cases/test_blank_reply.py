@@ -1,11 +1,11 @@
 """A reply with no text: the model answered in its reasoning, which the user
 never sees, so the agent asks once more for the reply itself. A question
-asked after reasoning alone waits for that reply in the same way."""
+asked after reasoning alone is still shown at once: holding it cost a round
+and the model often asked again with no more context."""
 
 import json
 
-NOTE = "The user never sees your reasoning"
-HELD = "the question was not shown"
+NOTE = "Your last reply had no text. Write your reply now."
 QUESTION = json.dumps({
     "question": "Which fix should the agent apply?",
     "options": [
@@ -120,38 +120,20 @@ def turn_results(ctx) -> list[str]:
     return out
 
 
-def test_a_question_after_reasoning_alone_is_held(ctx):
-    """The options were laid out only in reasoning, so the question waits."""
+def test_a_question_after_reasoning_alone_is_shown(ctx):
+    """No round is spent asking the model to repeat its question."""
     ctx.scenario("reasoning=options+one+two+and+three,"
-                 f"tool=ask_user:{QUESTION},tool_rounds=2,"
-                 "final_text=applying+it")
+                 f"tool=ask_user:{QUESTION},final_text=applying+it")
     s = ctx.spawn()
     s.submit("fix the stale frame")
     s.wait_status("pick an answer")
+    assert len(ctx.mock.requests) == 1, ctx.mock.requests
+    assert "Which fix should the agent apply?" in s.text(), s.text()
+    s.key("enter")
+    s.wait_text("applying it")
+    s.wait_turn_done()
+    assert turn_results(ctx) == ["1 + 2"], turn_results(ctx)
     assert len(ctx.mock.requests) == 2, ctx.mock.requests
-    held = turn_results(ctx)
-    assert len(held) == 1 and held[0].startswith("ERROR: ") \
-        and HELD in held[0], held
-    s.key("enter")
-    s.wait_text("applying it")
-    s.wait_turn_done()
-    assert turn_results(ctx)[1:] == ["1 + 2"], turn_results(ctx)
-
-
-def test_a_question_is_held_once_per_turn(ctx):
-    """A model that reasons again without a reply still gets its answer."""
-    ctx.scenario("reasoning=still+weighing,reasoning_every=1,"
-                 f"tool=ask_user:{QUESTION},tool_rounds=2,"
-                 "final_text=applying+it")
-    s = ctx.spawn()
-    s.submit("fix the stale frame")
-    s.wait_status("pick an answer")
-    s.key("enter")
-    s.wait_text("applying it")
-    s.wait_turn_done()
-    results = turn_results(ctx)
-    assert len(results) == 2 and HELD in results[0], results
-    assert results[1] == "1 + 2", results
 
 
 def test_a_question_after_a_reply_is_shown(ctx):
@@ -170,20 +152,18 @@ def test_a_question_after_a_reply_is_shown(ctx):
     assert len(ctx.mock.requests) == 2, ctx.mock.requests
 
 
-def test_an_anthropic_question_after_thinking_alone_is_held(ctx):
-    """The held call keeps its signed thinking and its result on the wire."""
+def test_an_anthropic_question_after_thinking_alone_is_shown(ctx):
+    """The call keeps its signed thinking and its answer on the wire."""
     ctx.scenario("reasoning=options+one+two+and+three,"
-                 f"tool=ask_user:{QUESTION},tool_rounds=2,"
-                 "final_text=applying+it")
+                 f"tool=ask_user:{QUESTION},final_text=applying+it")
     s = ctx.spawn(ARQAN_API="anthropic")
     s.submit("fix the stale frame")
     s.wait_status("pick an answer")
+    assert len(ctx.mock.requests) == 1, ctx.mock.requests
     s.key("enter")
     s.wait_text("applying it")
     s.wait_turn_done()
-    results = turn_results(ctx)
-    assert len(results) == 2 and HELD in results[0], results
-    assert results[1] == "1 + 2", results
+    assert turn_results(ctx) == ["1 + 2"], turn_results(ctx)
     assistant = ctx.mock.requests[-1]["messages"][1]
     assert assistant["content"][0] == {
         "type": "thinking",

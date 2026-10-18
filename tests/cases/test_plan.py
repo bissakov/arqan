@@ -75,9 +75,9 @@ def test_plan_prompt_asks_for_additions_before_the_plan(ctx):
     assert ASK_BEFORE_PLAN in system, system
     assert "Yes, the user will add it in their next message" in system, system
     assert "I'll" not in system, system
-    assert "The user sees your replies and tool calls, never your " \
-        "reasoning" in system, system
-    assert "the user cannot see your reasoning" in system, system
+    assert "- Write findings, drafts and answers in a reply\n" in system, \
+        system
+    assert "reasoning" not in system, system
 
 
 def test_ask_user_asks_for_the_third_person(ctx):
@@ -91,7 +91,33 @@ def test_ask_user_asks_for_the_third_person(ctx):
     tools = ctx.mock.requests[-1]["tools"]
     desc = next(t["function"]["description"] for t in tools if t["function"]["name"] == "ask_user")
     assert "third person" in desc, desc
-    assert "never your reasoning" in desc, desc
+
+
+def test_ask_user_asks_for_a_self_contained_question(ctx):
+    """A question that leans on an earlier reply reaches the user with no
+    context, so the tool and the prompt ask for all of it in the question
+    itself, as plain instructions."""
+    ctx.scenario("text=ok")
+    s = ctx.spawn(ARQAN_SYSTEM_PROMPT=None)
+    s.submit("hello")
+    s.wait_turn_done()
+
+    request = ctx.mock.requests[-1]
+    tool = next(t["function"] for t in request["tools"]
+                if t["function"]["name"] == "ask_user")
+    desc = tool["description"]
+    assert "self-contained" in desc, desc
+    assert "Repeat what an earlier reply said" in desc, desc
+    assert "reply before the call" not in desc, desc
+    assert "reasoning" not in desc, desc
+    question = tool["parameters"]["properties"]["question"]
+    assert "self-contained" in question.get("description", ""), question
+
+    system = request["messages"][0]["content"]
+    line = next(l for l in system.splitlines()
+                if "Make every ask_user question self-contained" in l)
+    assert "reasoning" not in line, line
+    assert "in a reply or in the question itself" not in system, system
 
 
 def test_one_shot_plan_prompt_does_not_ask(ctx):
