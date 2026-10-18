@@ -29,11 +29,6 @@
   original image.
 - Resuming a session sends only the images on screen. An image scrolled
   off screen is sent when it first comes into view.
-- An `ask_user` question no longer arrives with no context when the model
-  laid out the options only in its reasoning. When a round has reasoning but
-  no reply text, its question is not shown, and the model is asked to write
-  the context in a reply and ask again. This happens once per turn, so a
-  second question is always shown.
 - A new `todo` call no longer causes an unexpected cache miss. The previous
   step list was cut down to a short note even when it was already in the
   cached prefix, so the provider wrote the whole conversation again. It is

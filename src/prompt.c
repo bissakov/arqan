@@ -29,9 +29,7 @@ static const char PROMPT_BUILTIN[] =
     "{batch_guidance}"
     "{todo_guidance}"
     "{ask_user_guidance}"
-    "- The user sees your replies and tool calls, never your reasoning. "
-    "Write findings, drafts and answers in a reply, not only in your "
-    "reasoning\n"
+    "- Write findings, drafts and answers in a reply\n"
     "- Say plainly when something failed, is uncertain, or went unchecked\n"
     "- Be concise: no preamble, no restating the request, and no summary of "
     "what you just showed\n"
@@ -54,9 +52,7 @@ static const char PROMPT_PLAN_BUILTIN[] =
     "{batch_guidance}"
     "- If the request needs no change, such as a question about the code, "
     "answer it directly and do not call submit_plan\n"
-    "- The user sees your replies and tool calls, never your reasoning. "
-    "Write findings, drafts and answers in a reply, not only in your "
-    "reasoning\n"
+    "- Write findings, drafts and answers in a reply\n"
     "{ask_user_guidance}"
     "- Call submit_plan once the plan is complete: the plan is its argument, "
     "written as Markdown, and the user decides from it whether the work goes "
@@ -281,10 +277,10 @@ static void prompt_tools(Buf *b, const ToolRegistry *tools, AgentMode mode,
 static void prompt_ask_user(Buf *b, const ToolRegistry *tools, AgentMode mode) {
     size_t id = tools ? tools_find(tools, STR("ask_user")) : TOOL_NONE;
     if (id == TOOL_NONE || !tools_available(tools, id, mode)) return;
-    buf_puts(b, STR("- Before ask_user, put what the question refers to, "
-                    "such as findings, a list or a draft, in a reply or in "
-                    "the question itself: the user cannot see your "
-                    "reasoning\n"));
+    buf_puts(b, STR("- Make every ask_user question self-contained: state "
+                    "in it the findings, list, draft or code it refers to "
+                    "and what each option does, and repeat what an earlier "
+                    "reply said instead of referring to it\n"));
     if (mode == MODE_PLAN) {
         buf_puts(b, STR("- Call ask_user whenever a choice is the user's to "
                         "make, offering the options you see and marking the "
