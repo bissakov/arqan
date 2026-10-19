@@ -136,9 +136,9 @@ def test_disabled_editing_tools_have_no_shell_editing_guidance(ctx):
 def test_approval_wording_holds_under_both_permission_settings(ctx):
     """Free never asks, so approval is only ever a possibility.
 
-    The model cannot see the setting, so the wording names none. The prompt
-    and tools stay the same under both settings, so switching keeps the
-    provider's prompt cache."""
+    The model cannot see the setting, so the wording names none. Only the
+    bash description differs: Free runs read-only commands without the
+    sandbox, so it does not describe one."""
     seen = []
     for policy in ("ask", "free"):
         ctx.scenario("text=ok")
@@ -148,25 +148,30 @@ def test_approval_wording_holds_under_both_permission_settings(ctx):
         tools = {t["function"]["name"]: t["function"]["description"]
                  for t in ctx.mock.requests[-1]["tools"]}
         seen.append((content, tools))
-    assert seen[0] == seen[1]
+    (ask_content, ask_tools), (free_content, free_tools) = seen
+    assert {**ask_tools, "bash": ""} == {**free_tools, "bash": ""}
+    assert ask_content.replace(ask_tools["bash"], free_tools["bash"]) \
+        == free_content
+    assert "filesystem writes" not in free_tools["bash"], free_tools["bash"]
 
-    content, tools = seen[0]
-    assert "- Some calls may wait for the user's approval" in content, content
-    assert "- Reading a path outside the project may need the user's " \
-        "approval" in content, content
-    assert tools["read"].endswith(
-        "A path outside the project may need the user's approval."), \
-        tools["read"]
-    bash = tools["bash"]
-    assert "runs without asking the user" not in bash, bash
-    assert "never needs approval and is the only kind allowed in plan " \
-        "mode" in bash, bash
-    assert "Any other command" in bash, bash
-    assert "may need the user's approval." in bash, bash
-    for text in (content, *tools.values()):
-        assert "needs the user's approval" not in text, text
-        assert "calls wait for" not in text, text
-        assert "permissions are set" not in text, text
+    for content, tools in seen:
+        assert "- Some calls may wait for the user's approval" in content, \
+            content
+        assert "- Reading a path outside the project may need the user's " \
+            "approval" in content, content
+        assert tools["read"].endswith(
+            "A path outside the project may need the user's approval."), \
+            tools["read"]
+        bash = tools["bash"]
+        assert "runs without asking the user" not in bash, bash
+        assert "never needs approval and is the only kind allowed in plan " \
+            "mode" in bash, bash
+        assert "Any other command" in bash, bash
+        assert "may need the user's approval." in bash, bash
+        for text in (content, *tools.values()):
+            assert "needs the user's approval" not in text, text
+            assert "calls wait for" not in text, text
+            assert "permissions are set" not in text, text
 
 
 def test_model_facing_text_names_no_internals(ctx):

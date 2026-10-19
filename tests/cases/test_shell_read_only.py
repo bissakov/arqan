@@ -270,7 +270,7 @@ def test_the_sandbox_is_described_only_when_it_runs(ctx):
     assert "On Linux" not in off, off
     if not landlock_available():
         return
-    on = bash_description(ctx)
+    on = bash_description(ctx, ARQAN_PERMISSIONS="ask")
     assert "A read-only command runs with filesystem writes" in on, on
     assert "On Linux" not in on, on
     assert ("the network denied" in on) == (landlock_abi() >= 4), on
@@ -338,6 +338,99 @@ def test_a_link_out_of_the_project_is_not_followed_under_the_sandbox(ctx):
     result = ctx.mock.tool_results()[0]
     assert "Permission denied" in result, result
     assert "outside body" not in result, result
+
+
+SPILLING_SORT = "sort -S 1K -T . big.txt | tail -n 1"
+LISTS_TOOLS = "Available tools:\n{tools}"
+
+
+def a_big_file(ctx):
+    ctx.write_file("big.txt", "".join(f"line {i:08d} {'x' * 40}\n"
+                                      for i in range(4000)))
+
+
+def bash_texts(request) -> tuple[str, str]:
+    """What the model is told about bash: the schema description and the
+    system prompt that lists the tools."""
+    schema = next(t["function"]["description"] for t in request["tools"]
+                  if t["function"]["name"] == "bash")
+    system = next(m["content"] for m in request["messages"]
+                  if m["role"] == "system")
+    return schema, system
+
+
+def test_free_build_mode_runs_read_only_commands_without_the_sandbox(ctx):
+    """Free skips no approval by sandboxing, so the sandbox guards nothing
+    there and only breaks the commands the classifier misjudges."""
+    if not landlock_available():
+        return
+    a_big_file(ctx)
+    (ctx.home / "secret").write_text("outside body\n")
+    os.symlink(ctx.home / "secret", ctx.work / "link")
+    ctx.scenario(bash(SPILLING_SORT) + "," + bash("cat link")
+                 + ",final_text=done")
+    s = ctx.spawn(ARQAN_PERMISSIONS="free", ARQAN_SYSTEM_PROMPT=LISTS_TOOLS)
+    s.submit("sort it")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    results = ctx.mock.tool_results()
+    assert len(results) == 2, results
+    assert "Permission denied" not in results[0], results[0]
+    assert "line 00003999" in results[0], results[0]
+    assert "[exit 0]" in results[0], results[0]
+    assert "outside body" in results[1], results[1]
+    for text in bash_texts(ctx.mock.requests[0]):
+        assert "filesystem writes" not in text, text
+
+
+def test_free_plan_mode_keeps_the_sandbox(ctx):
+    """Plan mode promises the model reads only, and the sandbox is what
+    holds it to that, whatever the approval policy."""
+    if not landlock_available():
+        return
+    a_big_file(ctx)
+    ctx.scenario(bash(SPILLING_SORT) + ",final_text=done")
+    s = ctx.spawn(ARQAN_PERMISSIONS="free", ARQAN_MODE="plan")
+    s.submit("sort it")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[0]
+    assert "Permission denied" in result, result
+    for text in bash_texts(ctx.mock.requests[0]):
+        assert "A read-only command runs with filesystem writes" in text, text
+
+
+def test_switching_to_free_drops_the_sandbox_and_says_so(ctx):
+    """The policy changes mid-session, and the next request describes bash
+    as it now runs."""
+    if not landlock_available():
+        return
+    a_big_file(ctx)
+    ctx.scenario("text=first")
+    s = ctx.spawn(ARQAN_PERMISSIONS="ask", ARQAN_SYSTEM_PROMPT=LISTS_TOOLS)
+    s.submit("hello")
+    s.wait_text("first")
+    s.wait_turn_done()
+    for text in bash_texts(ctx.mock.requests[-1]):
+        assert "A read-only command runs with filesystem writes" in text, text
+
+    s.open_settings().settings_select("Permissions")
+    s.key("right").sync()
+    assert s.settings_option("Permissions") == "Free", s.text()
+    s.key("esc")
+    s.wait_status("ready")
+    ctx.scenario(bash(SPILLING_SORT) + ",final_text=second")
+    s.submit("sort it")
+    s.wait_text("second")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[0]
+    assert "Permission denied" not in result, result
+    assert "[exit 0]" in result, result
+    for text in bash_texts(ctx.mock.requests[-1]):
+        assert "filesystem writes" not in text, text
 
 
 def test_a_git_driver_runs_inside_the_sandbox(ctx):

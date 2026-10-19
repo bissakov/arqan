@@ -1204,12 +1204,15 @@ void tools_set_task_limit(ToolRegistry *r, i32 tasks);
 
 void tools_set_mode(AgentMode mode);
 
+void tools_set_permissions(PermissionPolicy permissions);
+
 void tools_set_interactive(b8 interactive);
 
 b8 tools_available(const ToolRegistry *r, size_t id, AgentMode mode);
 b8 tools_available_to(const ToolRegistry *r, size_t id, AgentMode mode,
                       ToolAudience audience);
-Str tools_desc_for(const ToolRegistry *r, size_t id, ToolAudience audience);
+Str tools_desc_for(const ToolRegistry *r, size_t id, AgentMode mode,
+                   ToolAudience audience);
 size_t tools_find(const ToolRegistry *r, Str name);
 b8 tools_batchable(const ToolRegistry *r, size_t id);
 ToolApprovalClass tools_approval_class(const ToolRegistry *r, size_t id);
@@ -2088,6 +2091,7 @@ typedef enum {
     CACHE_CAUSE_ELIDE,
     CACHE_CAUSE_COMPACT,
     CACHE_CAUSE_MODE,
+    CACHE_CAUSE_PERMISSIONS,
     CACHE_CAUSE_TOOLS,
     CACHE_CAUSE_MODEL,
     CACHE_CAUSE_MEDIA,

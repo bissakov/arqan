@@ -268,7 +268,7 @@ static void prompt_tools(Buf *b, const ToolRegistry *tools, AgentMode mode,
     if (!tools) return;
     for (size_t i = 0; i < tools->n; i++) {
         if (!tools_available_to(tools, i, mode, audience)) continue;
-        Str desc = tools_desc_for(tools, i, audience);
+        Str desc = tools_desc_for(tools, i, mode, audience);
         buf_putf(b, "- %.*s: %.*s\n", (int)tools->name[i].n, tools->name[i].p,
                  (int)desc.n, desc.p);
     }

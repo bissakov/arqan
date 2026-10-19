@@ -21,6 +21,15 @@
   when they cannot write: no `-U`, no interactive mode, and
   `--custom-languages` absent or `ignore`.
 
+### Changed
+
+- With `permissions = "free"` in build mode, a read-only shell command no
+  longer runs under Landlock. Free asks for nothing, so the sandbox
+  protected nothing and only broke commands that write a cache or temporary
+  file, use the network, or read outside the project. Plan mode and
+  subagents keep the sandbox. The `bash` description sent to the model
+  follows the setting.
+
 ### Fixed
 
 - A large image drawn in the transcript is now sent to the terminal scaled
