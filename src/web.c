@@ -19,6 +19,8 @@
 #define WEB_OUTLINE_BYTES      1024u
 #define WEB_SUMMARY_BYTES      160u
 #define WEB_CACHE_ENTRIES      16u
+#define WEB_READ_MAX           3u
+#define WEB_READ_MIN_BYTES     1024u
 #define WEB_PAGE_ACCEPT                                             \
     "text/markdown, text/html;q=0.9, application/xhtml+xml;q=0.9, " \
     "text/plain;q=0.8, */*;q=0.5"
@@ -132,9 +134,9 @@ static b8 web_public_only(void) {
     return true;
 }
 
-static i32 web_request(const char *url, const char *operation, Buf *body,
-                       const char *accept, const char *header,
-                       HttpUrlReq *req) {
+static void web_request_init(HttpUrlReq *req, const char *url,
+                             const char *operation, Buf *body,
+                             const char *accept, const char *header) {
     *req = (HttpUrlReq){
         .url = url,
         .operation = operation,
@@ -151,10 +153,20 @@ static i32 web_request(const char *url, const char *operation, Buf *body,
         .on_idle = g_web_hooks.idle,
         .idle_ud = g_web_hooks.idle_ud,
     };
-    i32 rc = http_url_get(req);
+}
+
+static void web_request_log(const HttpUrlReq *req, i32 rc) {
     if (rc > 0)
-        agent_log(AGENT_LOG_DEBUG, "%s: %s: %s", operation, url,
+        agent_log(AGENT_LOG_DEBUG, "%s: %s: %s", req->operation, req->url,
                   req->failure[0] ? req->failure : "no detail");
+}
+
+static i32 web_request(const char *url, const char *operation, Buf *body,
+                       const char *accept, const char *header,
+                       HttpUrlReq *req) {
+    web_request_init(req, url, operation, body, accept, header);
+    i32 rc = http_url_get(req);
+    web_request_log(req, rc);
     return rc;
 }
 
@@ -978,6 +990,10 @@ static Str markdown_title(Str body) {
     return (Str){0};
 }
 
+static b8 page_extract(HttpUrlReq *req, i32 rc, Buf *source, const char *url,
+                       Arena *scratch, Str *title, Str *body,
+                       const char **effective, char *err, size_t err_cap);
+
 b8 page_fetch_run(Str args, Arena *scratch, Buf *out, char *err,
                   size_t err_cap) {
     JVal *j = web_args(args, scratch, err, err_cap);
@@ -1036,49 +1052,11 @@ b8 page_fetch_run(Str args, Arena *scratch, Buf *out, char *err,
     HttpUrlReq req;
     i32 rc =
         web_request(url, "page_fetch", &source, WEB_PAGE_ACCEPT, NULL, &req);
-    if (rc != 0) {
-        if (rc < 0)
-            snprintf(err, err_cap, "HTTP status %lld", (long long)-rc);
-        else
-            web_failure_text(&req, err, err_cap);
-        return false;
-    }
-    Str raw = buf_finish(&source);
-    if (!buf_ok(&source)) {
-        snprintf(err, err_cap, "response does not fit in memory");
-        return false;
-    }
-    media_type(req.content_type);
-    const char *effective = req.effective_url[0] ? req.effective_url : url;
+    const char *effective = url;
     Str title = {0}, body = {0};
-    b8 too_large = false;
-    if (!strcmp(req.content_type, "text/html")
-        || !strcmp(req.content_type, "application/xhtml+xml")) {
-        AgentHtmlDoc *doc = agent_html_parse(raw.p, raw.n);
-        if (!doc) {
-            snprintf(err, err_cap, "HTML parsing failed");
-            return false;
-        }
-        char base[AGENT_WEB_URL_BYTES];
-        body = html_extract(doc, effective, scratch, &title, base, &too_large);
-        agent_html_destroy(doc);
-    } else if (!strncmp(req.content_type, "text/", 5)
-               || !strcmp(req.content_type, "application/json")
-               || !strcmp(req.content_type, "application/xml")
-               || type_suffix(req.content_type, "+json")
-               || type_suffix(req.content_type, "+xml")) {
-        body = plain_extract(raw, scratch, &too_large);
-        if (!strcmp(req.content_type, "text/markdown"))
-            title = markdown_title(body);
-    } else {
-        snprintf(err, err_cap, "unsupported media type: %s", req.content_type);
+    if (!page_extract(&req, rc, &source, url, scratch, &title, &body,
+                      &effective, err, err_cap))
         return false;
-    }
-    if (too_large) {
-        snprintf(err, err_cap, "extracted text exceeds %u bytes",
-                 (unsigned)WEB_EXTRACT_BYTES);
-        return false;
-    }
     WebCacheEntry *stored = web_cache_store(url, effective, title, body);
     WebPage page = {title,
                     effective,
@@ -1088,6 +1066,53 @@ b8 page_fetch_run(Str args, Arena *scratch, Buf *out, char *err,
                     stored ? stored->bytes : 0};
     return page_answer(out, stored, &page, first, limit, query, scratch, err,
                        err_cap);
+}
+
+static b8 page_extract(HttpUrlReq *req, i32 rc, Buf *source, const char *url,
+                       Arena *scratch, Str *title, Str *body,
+                       const char **effective, char *err, size_t err_cap) {
+    if (rc != 0) {
+        if (rc < 0)
+            snprintf(err, err_cap, "HTTP status %lld", (long long)-rc);
+        else
+            web_failure_text(req, err, err_cap);
+        return false;
+    }
+    Str raw = buf_finish(source);
+    if (!buf_ok(source)) {
+        snprintf(err, err_cap, "response does not fit in memory");
+        return false;
+    }
+    media_type(req->content_type);
+    *effective = req->effective_url[0] ? req->effective_url : url;
+    *title = (Str){0};
+    *body = (Str){0};
+    b8 too_large = false;
+    const char *type = req->content_type;
+    if (!strcmp(type, "text/html") || !strcmp(type, "application/xhtml+xml")) {
+        AgentHtmlDoc *doc = agent_html_parse(raw.p, raw.n);
+        if (!doc) {
+            snprintf(err, err_cap, "HTML parsing failed");
+            return false;
+        }
+        char base[AGENT_WEB_URL_BYTES];
+        *body = html_extract(doc, *effective, scratch, title, base, &too_large);
+        agent_html_destroy(doc);
+    } else if (!strncmp(type, "text/", 5) || !strcmp(type, "application/json")
+               || !strcmp(type, "application/xml") || type_suffix(type, "+json")
+               || type_suffix(type, "+xml")) {
+        *body = plain_extract(raw, scratch, &too_large);
+        if (!strcmp(type, "text/markdown")) *title = markdown_title(*body);
+    } else {
+        snprintf(err, err_cap, "unsupported media type: %s", type);
+        return false;
+    }
+    if (too_large) {
+        snprintf(err, err_cap, "extracted text exceeds %u bytes",
+                 (unsigned)WEB_EXTRACT_BYTES);
+        return false;
+    }
+    return true;
 }
 
 static b8 class_has(AgentHtmlNode *node, const char *want) {
@@ -1793,6 +1818,137 @@ static SearchOutcome search_backend_run(SearchEngine engine, size_t slot,
     return SEARCH_OK;
 }
 
+typedef struct {
+    char url[AGENT_WEB_URL_BYTES];
+    Buf source;
+    Str body;
+    size_t fetch;
+    b8 ok;
+    char err[256];
+} WebRead;
+
+static b8 web_arg_reads(const JVal *j, size_t *out, char *err, size_t err_cap) {
+    const JVal *v = json_get(j, STR("read"));
+    *out = 0;
+    if (!v || v->type == J_NULL) return true;
+    if (v->type != J_NUM || v->u.n < 0 || v->u.n > (f64)WEB_READ_MAX
+        || v->u.n != (f64)(u64)v->u.n) {
+        snprintf(err, err_cap, "read must be a whole number in 0..%u",
+                 (unsigned)WEB_READ_MAX);
+        return false;
+    }
+    *out = (size_t)v->u.n;
+    return true;
+}
+
+static void search_read_fetch(WebRead *pages, size_t n, Arena *scratch) {
+    HttpUrlReq *reqs = arena_new(scratch, HttpUrlReq, n);
+    if (!reqs) {
+        for (size_t i = 0; i < n; i++)
+            if (!pages[i].ok && !pages[i].err[0])
+                snprintf(pages[i].err, sizeof pages[i].err,
+                         "page does not fit in memory");
+        return;
+    }
+    size_t want = 0;
+    for (size_t i = 0; i < n; i++) {
+        WebRead *p = &pages[i];
+        if (p->ok || p->err[0]) continue;
+        buf_init(&p->source, scratch, 65536);
+        web_request_init(&reqs[want], p->url, "search_read", &p->source,
+                         WEB_PAGE_ACCEPT, NULL);
+        p->fetch = want++;
+    }
+    if (want) http_url_get_many(reqs, want);
+    for (size_t i = 0; i < n; i++) {
+        WebRead *p = &pages[i];
+        if (p->ok || p->err[0]) continue;
+        HttpUrlReq *req = &reqs[p->fetch];
+        web_request_log(req, req->result);
+        const char *effective = p->url;
+        Str title = {0};
+        if (!page_extract(req, req->result, &p->source, p->url, scratch, &title,
+                          &p->body, &effective, p->err, sizeof p->err))
+            continue;
+        web_cache_store(p->url, effective, title, p->body);
+        p->ok = true;
+    }
+}
+
+static b8 search_read(Buf *out, const SearchCtx *found, size_t n,
+                      const char *query, size_t tail, Arena *scratch, char *err,
+                      size_t err_cap) {
+    WebRead *pages = arena_new(scratch, WebRead, n);
+    PassageQuery *q = arena_new(scratch, PassageQuery, 1);
+    if (!pages || !q) {
+        snprintf(err, err_cap, "search result does not fit in memory");
+        return false;
+    }
+    for (size_t i = 0; i < n; i++) {
+        WebRead *p = &pages[i];
+        *p = (WebRead){0};
+        Str url = found->result[i].url;
+        if (url.n >= sizeof p->url || memchr(url.p, '\0', url.n)) {
+            snprintf(p->err, sizeof p->err, "URL is too long");
+            continue;
+        }
+        memcpy(p->url, url.p, url.n);
+        p->url[url.n] = '\0';
+        if (!http_url_ok(p->url)) {
+            snprintf(p->err, sizeof p->err, "URL is not a public HTTP(S) URL");
+            continue;
+        }
+        WebCacheEntry *hit = web_cache_find(p->url);
+        if (hit && web_cache_load(hit, scratch, &p->body))
+            p->ok = true;
+        else if (hit)
+            web_cache_drop(hit);
+    }
+    search_read_fetch(pages, n, scratch);
+    if (g_web_hooks.interrupt_flag && *g_web_hooks.interrupt_flag) {
+        snprintf(err, err_cap, "interrupted");
+        return false;
+    }
+
+    passage_query(str_c(query), q);
+    buf_puts(out, STR("\n\nPages read (untrusted):\n"));
+    for (size_t i = 0; i < n; i++) {
+        WebRead *p = &pages[i];
+        size_t used = out->n + tail;
+        size_t room = used < AGENT_TOOL_RESULT_BYTES
+                          ? (AGENT_TOOL_RESULT_BYTES - used) / (n - i)
+                          : 0;
+        char head[320];
+        if (!p->ok) {
+            snprintf(head, sizeof head, "\nResult %zu: could not read: %s\n",
+                     i + 1, p->err);
+            if (strlen(head) <= room) buf_puts(out, str_c(head));
+            continue;
+        }
+        Buf passages;
+        buf_init(&passages, scratch, 2048);
+        PassageReport report;
+        size_t budget = room > 64 ? room - 64 : 0;
+        if (!passage_write(p->body, q, budget, scratch, &passages, &report)) {
+            snprintf(err, err_cap, "ranking a page ran out of memory");
+            return false;
+        }
+        if (report.shown)
+            snprintf(head, sizeof head, "\nResult %zu, lines %zu-%zu:\n", i + 1,
+                     report.first_line, report.last_line);
+        else
+            snprintf(head, sizeof head,
+                     "\nResult %zu: no passage matches the query (%zu "
+                     "lines).\n",
+                     i + 1, str_lines(p->body));
+        if (strlen(head) > room) continue;
+        buf_puts(out, str_c(head));
+        if (report.shown) buf_puts(out, buf_finish(&passages));
+    }
+    while (out->n && out->p[out->n - 1] == '\n') out->n--;
+    return true;
+}
+
 b8 internet_search_run(Str args, Arena *scratch, Buf *out, char *err,
                        size_t err_cap) {
     JVal *j = web_args(args, scratch, err, err_cap);
@@ -1809,6 +1965,8 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out, char *err,
     size_t limit;
     if (!web_arg_count(j, STR("limit"), 8, 10, &limit, err, err_cap))
         return false;
+    size_t reads;
+    if (!web_arg_reads(j, &reads, err, err_cap)) return false;
 
     SearchCtx found = {.scratch = scratch, .current = SIZE_MAX};
     char attempts[768] = {0};
@@ -1866,6 +2024,7 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out, char *err,
     }
 
     if (found.n > limit) found.n = limit;
+    size_t pages = reads < found.n ? reads : found.n;
     Str records[10];
 
     static Spill spill;
@@ -1892,6 +2051,7 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out, char *err,
         }
         spill_put(&spill, records[i].p, records[i].n);
         size_t reserve = 64 + (spill.fd >= 0 ? AGENT_SPILL_NOTE_BYTES : 0);
+        reserve += pages * WEB_READ_MIN_BYTES;
         if (!room || bytes + records[i].n + reserve > AGENT_TOOL_RESULT_BYTES) {
             room = false;
             continue;
@@ -1902,6 +2062,13 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out, char *err,
     buf_putf(out, "Search results: %zu\n", emitted);
     for (size_t i = 0; i < emitted; i++) buf_puts(out, records[i]);
     while (out->n && out->p[out->n - 1] == '\n') out->n--;
+    if (pages
+        && !search_read(out, &found, pages, query,
+                        spill.fd >= 0 ? AGENT_SPILL_NOTE_BYTES : 0, scratch,
+                        err, err_cap)) {
+        spill_finish(&spill, out, false);
+        return false;
+    }
     spill_finish(&spill, out, emitted < found.n);
     if (!buf_ok(out) || out->n > AGENT_TOOL_RESULT_BYTES) {
         snprintf(err, err_cap, "search result exceeds the %u byte limit",

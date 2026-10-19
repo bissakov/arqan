@@ -679,6 +679,22 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
         if query in ("empty", "allempty", "emptyblocked"):
             self._body(200, "text/html", b"<html><body><div class='no-results'>No results.</div></body></html>")
             return
+        if query.startswith("frob"):
+            # results that point back at fixture pages, for search with read
+            origin = f"http://{self.headers.get('Host')}"
+            pages = ["/web/manual", "/web/frob"]
+            if "broken" in query:
+                pages = ["/web/manual", "/web/nothere"]
+            if "slow" in query:
+                pages = ["/web/slow"]
+            rows = "".join(
+                f'<a class="result-link" href="//duckduckgo.com/l/?uddg='
+                f'{quote(origin + page, safe="")}">Page {i}</a>'
+                f'<div class="result-snippet">snippet {i}</div>'
+                for i, page in enumerate(pages, 1)
+            )
+            self._body(200, "text/html", f"<html><body>{rows}</body></html>".encode())
+            return
         if query == "verbose":
             # ten results whose snippets together exceed one result page
             rows = []
@@ -971,6 +987,13 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             ))
         elif path == "/web/base/child":
             self._body(200, "text/plain", b"child\n")
+        elif path == "/web/frob":
+            self._body(200, "text/markdown", (
+                "# Frob notes\n\nUnrelated opening words.\n\n## Limits\n\n"
+                "The frobnicator timeout can be raised to 90 seconds.\n"
+            ).encode())
+        elif path == "/web/nothere":
+            self._body(404, "text/html", b"<html><body>missing</body></html>")
         elif path == "/web/negotiate":
             if "text/markdown" in (self.headers.get("Accept") or ""):
                 self._body(200, "text/markdown; charset=utf-8", (

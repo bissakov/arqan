@@ -1094,9 +1094,12 @@ typedef struct {
     char failure[256];
     HttpFailure kind;
     i64 status;
+    i32 result;
 } HttpUrlReq;
 
+#define AGENT_HTTP_URL_MANY 4
 i32 http_url_get(HttpUrlReq *r);
+i32 http_url_get_many(HttpUrlReq *reqs, size_t n);
 
 typedef struct {
     const char *url;
@@ -1360,6 +1363,8 @@ typedef struct {
 typedef struct {
     size_t matched;
     size_t shown;
+    size_t first_line;
+    size_t last_line;
 } PassageReport;
 
 void passage_query(Str query, PassageQuery *q);

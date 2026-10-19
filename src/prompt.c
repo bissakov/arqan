@@ -448,6 +448,10 @@ static void prompt_web(Buf *b, const ToolRegistry *tools, AgentMode mode,
                         "or installed dependency sources, man pages and "
                         "--help describe the version this project uses; name "
                         "that version in a web query\n"));
+    if (search)
+        buf_puts(b, STR("- Give internet_search read to quote the best "
+                        "passages of its top 1 to 3 results in the same "
+                        "call, instead of fetching each page\n"));
     if (fetch)
         buf_puts(b, STR("- Give page_fetch a query to get the passages that "
                         "answer it; page with offset only to read a whole "

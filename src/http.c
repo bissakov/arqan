@@ -660,8 +660,24 @@ static HttpFailure url_failure_kind(CURLcode rc) {
     }
 }
 
-i32 http_url_get(HttpUrlReq *r) {
-    if (!r || !r->out) return 1;
+typedef struct {
+    HttpUrlReq *r;
+    CURL *curl;
+    struct curl_slist *hdrs;
+    UrlCtx ctx;
+    char curl_err[CURL_ERROR_SIZE];
+    CURLcode rc;
+    b8 done;
+} UrlXfer;
+
+static i32 url_setup(UrlXfer *x) {
+    HttpUrlReq *r = x->r;
+    x->curl = NULL;
+    x->hdrs = NULL;
+    x->rc = CURLE_OK;
+    x->done = false;
+    x->curl_err[0] = '\0';
+    if (!r->out) return 1;
     r->effective_url[0] = '\0';
     r->content_type[0] = '\0';
     r->failure[0] = '\0';
@@ -682,23 +698,15 @@ i32 http_url_get(HttpUrlReq *r) {
         r->kind = HTTP_FAIL_OTHER;
         return 1;
     }
-    CURLM *multi = curl_multi_init();
-    if (!multi) {
-        curl_easy_cleanup(curl);
-        snprintf(r->failure, sizeof r->failure, "curl multi init failed");
-        r->kind = HTTP_FAIL_OTHER;
-        return 1;
-    }
 
-    UrlCtx ctx = {r->out, r->max_bytes, false, false};
-    char curl_err[CURL_ERROR_SIZE] = {0};
+    UrlCtx *ctx = &x->ctx;
+    *ctx = (UrlCtx){r->out, r->max_bytes, false, false};
     char accept[256];
     i32 accept_n = snprintf(accept, sizeof accept, "Accept: %s",
                             r->accept ? r->accept
                                       : "text/html,application/xhtml+xml,"
                                         "application/xml;q=0.9,*/*;q=0.8");
     if (accept_n < 0 || (size_t)accept_n >= sizeof accept) {
-        curl_multi_cleanup(multi);
         curl_easy_cleanup(curl);
         snprintf(r->failure, sizeof r->failure, "Accept header is too long");
         r->kind = HTTP_FAIL_OTHER;
@@ -718,7 +726,7 @@ i32 http_url_get(HttpUrlReq *r) {
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, AGENT_WEB_USER_AGENT);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, url_body_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, ctx);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, drop_header_cb);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, (long)r->max_redirects);
@@ -742,40 +750,21 @@ i32 http_url_get(HttpUrlReq *r) {
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS,
                      (long)r->connect_timeout_ms);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, (long)r->timeout_ms);
-    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, curl_err);
+    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, x->curl_err);
     http_apply_ca(curl);
     if (r->public_only) {
         curl_easy_setopt(curl, CURLOPT_OPENSOCKETFUNCTION, public_open_cb);
-        curl_easy_setopt(curl, CURLOPT_OPENSOCKETDATA, &ctx);
+        curl_easy_setopt(curl, CURLOPT_OPENSOCKETDATA, ctx);
     }
+    x->curl = curl;
+    x->hdrs = hdrs;
+    return 0;
+}
 
-    CURLMcode mc = curl_multi_add_handle(multi, curl);
-    CURLcode rc = CURLE_OK;
-    b8 interrupted = false;
-    i32 running = 1;
-    while (mc == CURLM_OK && running) {
-        mc = curl_multi_perform(multi, &running);
-        if (mc == CURLM_OK && running) {
-            struct curl_waitfd extra = {r->idle_fd, CURL_WAIT_POLLIN, 0};
-            b8 watch = r->idle_fd >= 0;
-            i32 numfds = 0;
-            mc = curl_multi_poll(multi, watch ? &extra : NULL, watch ? 1u : 0u,
-                                 HTTP_POLL_MS, &numfds);
-        }
-        if (r->on_idle) r->on_idle(r->idle_ud);
-        if (r->interrupt_flag && *r->interrupt_flag) {
-            interrupted = true;
-            break;
-        }
-    }
-    if (mc != CURLM_OK) rc = CURLE_RECV_ERROR;
-    if (!interrupted && rc == CURLE_OK) {
-        CURLMsg *msg;
-        i32 left = 0;
-        while ((msg = curl_multi_info_read(multi, &left)))
-            if (msg->msg == CURLMSG_DONE) rc = msg->data.result;
-    }
-
+static i32 url_finish(UrlXfer *x, b8 interrupted) {
+    HttpUrlReq *r = x->r;
+    CURL *curl = x->curl;
+    CURLcode rc = x->rc;
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
     r->status = (i64)status;
@@ -800,10 +789,10 @@ i32 http_url_get(HttpUrlReq *r) {
     http_record("GET", r->operation ? r->operation : "web", r->url, curl, rc,
                 r->status, NULL, interrupted);
 
-    curl_multi_remove_handle(multi, curl);
-    curl_multi_cleanup(multi);
-    curl_slist_free_all(hdrs);
+    curl_slist_free_all(x->hdrs);
     curl_easy_cleanup(curl);
+    x->curl = NULL;
+    x->hdrs = NULL;
 
     if (interrupted) {
         snprintf(r->failure, sizeof r->failure, "interrupted");
@@ -811,7 +800,7 @@ i32 http_url_get(HttpUrlReq *r) {
         r->out->n = 0;
         return 3;
     }
-    if (ctx.too_large) {
+    if (x->ctx.too_large) {
         snprintf(r->failure, sizeof r->failure,
                  "decompressed response exceeds %u bytes",
                  (unsigned)r->max_bytes);
@@ -828,7 +817,7 @@ i32 http_url_get(HttpUrlReq *r) {
     }
     if (rc != CURLE_OK) {
         r->kind = url_failure_kind(rc);
-        if (ctx.blocked) {
+        if (x->ctx.blocked) {
             r->kind = HTTP_FAIL_NOT_PUBLIC;
             snprintf(r->failure, sizeof r->failure,
                      "destination resolved to a non-public address");
@@ -839,13 +828,85 @@ i32 http_url_get(HttpUrlReq *r) {
                 "redirect URL is malformed, unsupported, or contains credentials");
         } else {
             snprintf(r->failure, sizeof r->failure, "%s",
-                     curl_err[0] ? curl_err : curl_easy_strerror(rc));
+                     x->curl_err[0] ? x->curl_err : curl_easy_strerror(rc));
         }
         r->out->n = 0;
         return 2;
     }
     if (status < 200 || status >= 300) return -(i32)status;
     return 0;
+}
+
+i32 http_url_get_many(HttpUrlReq *reqs, size_t n) {
+    if (!reqs || n > AGENT_HTTP_URL_MANY) return 1;
+    UrlXfer xfer[AGENT_HTTP_URL_MANY];
+    CURLM *multi = NULL;
+    size_t live = 0;
+    for (size_t i = 0; i < n; i++) {
+        xfer[i] = (UrlXfer){.r = &reqs[i]};
+        reqs[i].result = url_setup(&xfer[i]);
+        if (!reqs[i].result) live++;
+    }
+    if (live) multi = curl_multi_init();
+    if (live && !multi) {
+        for (size_t i = 0; i < n; i++) {
+            if (!xfer[i].curl) continue;
+            curl_slist_free_all(xfer[i].hdrs);
+            curl_easy_cleanup(xfer[i].curl);
+            snprintf(reqs[i].failure, sizeof reqs[i].failure,
+                     "curl multi init failed");
+            reqs[i].kind = HTTP_FAIL_OTHER;
+            reqs[i].result = 1;
+        }
+        return 1;
+    }
+
+    const HttpUrlReq *hooks = &reqs[0];
+    CURLMcode mc = CURLM_OK;
+    for (size_t i = 0; i < n && mc == CURLM_OK; i++)
+        if (xfer[i].curl) mc = curl_multi_add_handle(multi, xfer[i].curl);
+    b8 interrupted = false;
+    i32 running = live ? 1 : 0;
+    while (mc == CURLM_OK && running) {
+        mc = curl_multi_perform(multi, &running);
+        CURLMsg *msg;
+        i32 left = 0;
+        while (mc == CURLM_OK && (msg = curl_multi_info_read(multi, &left))) {
+            if (msg->msg != CURLMSG_DONE) continue;
+            for (size_t i = 0; i < n; i++) {
+                if (xfer[i].curl != msg->easy_handle) continue;
+                xfer[i].rc = msg->data.result;
+                xfer[i].done = true;
+            }
+        }
+        if (mc == CURLM_OK && running) {
+            struct curl_waitfd extra = {hooks->idle_fd, CURL_WAIT_POLLIN, 0};
+            b8 watch = hooks->idle_fd >= 0;
+            i32 numfds = 0;
+            mc = curl_multi_poll(multi, watch ? &extra : NULL, watch ? 1u : 0u,
+                                 HTTP_POLL_MS, &numfds);
+        }
+        if (hooks->on_idle) hooks->on_idle(hooks->idle_ud);
+        if (hooks->interrupt_flag && *hooks->interrupt_flag) {
+            interrupted = true;
+            break;
+        }
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (!xfer[i].curl) continue;
+        if (!interrupted && !xfer[i].done && xfer[i].rc == CURLE_OK)
+            xfer[i].rc = CURLE_RECV_ERROR;
+        curl_multi_remove_handle(multi, xfer[i].curl);
+        reqs[i].result = url_finish(&xfer[i], interrupted);
+    }
+    if (multi) curl_multi_cleanup(multi);
+    return interrupted ? 3 : 0;
+}
+
+i32 http_url_get(HttpUrlReq *r) {
+    if (!r) return 1;
+    http_url_get_many(r, 1);
+    return r->result;
 }
 
 i32 http_post(const HttpReq *r) {

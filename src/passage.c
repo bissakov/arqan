@@ -525,6 +525,8 @@ b8 passage_write(Str body, const PassageQuery *q, size_t budget, Arena *scratch,
                                  ps[i].clip != 0);
         buf_put(out, label, w);
         buf_putc(out, '\n');
+        if (!report->first_line) report->first_line = ps[i].first;
+        report->last_line = ps[j].last;
         for (size_t k = i; k <= j; k++) {
             Str text = passage_text(body, &ps[k]);
             if (ps[k].clip) text.n = ps[k].clip;

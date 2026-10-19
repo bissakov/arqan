@@ -198,6 +198,7 @@ def test_the_delegate_gets_web_guidance_but_no_task_line(ctx):
 
     system = sub_requests(ctx)[0]["messages"][0]["content"]
     assert "- Before searching the web, look on disk: " in system, system
+    assert "- Give internet_search read to quote" in system, system
     assert "- Give page_fetch a query to get the passages" in system, system
     assert "to task; only its report" not in system, system
     assert system.index("Guidelines:\n") < system.index("- Before searching"), system

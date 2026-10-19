@@ -29,6 +29,11 @@
   with its line range and heading, and an outline of the page's headings.
   The rest of the page stays in the spill file. A page without `query`
   now says which lines it shows, as `Lines a-b of N`.
+- `internet_search` takes `read`, from 0 to 3. It fetches that many of the
+  top results at the same time and quotes, under each result, the passages
+  that best match the search query. A page that cannot be read gets one
+  line saying why and does not fail the search. A later `page_fetch` of a
+  page read this way uses the copy already fetched.
 
 ### Changed
 
@@ -37,9 +42,10 @@
   and parsing the page again. The copy lives in the spill directory; one no
   result named is deleted when the session ends.
 - The built-in prompts guide web lookups when the web tools are offered:
-  look on disk for the version the project uses before searching, give
-  `page_fetch` a `query`, and, in the main prompts, delegate research that
-  needs several searches and pages to `task`.
+  look on disk for the version the project uses before searching, use
+  `read` with `internet_search`, give `page_fetch` a `query`, and, in the
+  main prompts, delegate research that needs several searches and pages to
+  `task`.
 - With `permissions = "free"` in build mode, a read-only shell command no
   longer runs under Landlock. Free asks for nothing, so the sandbox
   protected nothing and only broke commands that write a cache or temporary
