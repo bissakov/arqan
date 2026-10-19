@@ -654,6 +654,65 @@ def test_clearing_the_composer_takes_the_attachment_back(ctx):
     assert len(openai_images(body)) == 1, body["messages"][-1]
 
 
+def test_clearing_the_only_marker_sends_no_image(ctx):
+    """Regression: with every marker gone the turn still carried the image,
+    so a paste made by mistake could not be taken back."""
+    path = clipboard(ctx, png(4, 3))
+    ctx.scenario("text=no+picture")
+    s = ctx.spawn(PATH=path)
+    s.key("ctrl-v")
+    wait_composer(s, "[Image #1]")
+    s.key("ctrl-u").sync()
+    s.submit("just text")
+    s.wait_text("no picture")
+    s.wait_turn_done()
+    assert ctx.mock.requests[-1]["messages"][-1] == {
+        "role": "user", "content": "just text",
+    }, ctx.mock.requests[-1]["messages"]
+
+
+def test_a_rewound_image_goes_when_its_marker_is_cleared(ctx):
+    """Regression: rewinding to a turn with an image and clearing its text
+    still sent the image with the new message."""
+    shot(ctx)
+    ctx.scenario("text=ok")
+    s = ctx.spawn()
+    attach(s, "shot.png")
+    s.submit("look")
+    s.wait_text("ok")
+    s.wait_turn_done()
+    s.key("esc").sync()
+    s.key("esc")
+    s.wait_status("rewind to a message")
+    s.key("enter")
+    wait_composer(s, "[Image #1] look")
+    s.key("ctrl-u").sync()
+    s.submit("never mind")
+    s.wait_turn_done()
+    assert ctx.mock.requests[-1]["messages"][-1] == {
+        "role": "user", "content": "never mind",
+    }, ctx.mock.requests[-1]["messages"]
+
+
+def test_a_command_typed_behind_a_marker_leaves_it_in_place(ctx):
+    """A command runs without its leading markers, and they come back to
+    the composer, so the image still goes with the next message."""
+    shot(ctx)
+    ctx.scenario("text=seen")
+    s = ctx.spawn()
+    attach(s, "shot.png")
+    s.type("/mode").sync()
+    s.key("enter")
+    s.wait_text("plan mode")
+    wait_composer(s, "[Image #1]")
+    s.submit("look")
+    s.wait_text("seen")
+    s.wait_turn_done()
+    body = ctx.mock.requests[-1]
+    assert len(openai_images(body)) == 1, body["messages"][-1]
+    assert body["messages"][-1]["content"][0]["text"] == "[Image #1] look"
+
+
 def test_a_typed_attach_keeps_the_markers_it_was_typed_behind(ctx):
     """Submitting `/attach` empties the composer, so the markers the line
     carried are what the images still standing are read from."""
@@ -663,6 +722,21 @@ def test_a_typed_attach_keeps_the_markers_it_was_typed_behind(ctx):
     attach(s, "one.png")
     attach(s, "two.png", 2)
     wait_composer(s, "[Image #1] [Image #2]")
+
+
+def test_piped_attaches_keep_every_image(ctx):
+    """Regression: without a tty there is no composer to hold markers, so a
+    second /attach dropped the first image."""
+    a = shot(ctx, "one.png", 4, 3)
+    b = shot(ctx, "two.png", 6, 5)
+    ctx.scenario("text=two+pictures")
+    out = ctx.run_piped("/attach one.png\n/attach two.png\ncompare them\n/exit\n")
+    assert "two pictures" in out.stdout, out.stdout + out.stderr
+
+    body = ctx.mock.requests[-1]
+    urls = openai_images(body)
+    assert [base64.b64decode(u.partition(",")[2]) for u in urls] == [a, b], \
+        body["messages"][-1]
 
 
 def test_deleting_one_marker_renumbers_what_the_next_attach_adds(ctx):
