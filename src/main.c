@@ -3236,7 +3236,7 @@ static b8 image_tag_at(Str text, size_t i, size_t pending_n, size_t *num,
 }
 
 static void pending_drop_unnamed(Agent *ag, Str carried) {
-    if (!ag->pending_n) return;
+    if (!ag->pending_n || !tui_is_fullscreen()) return;
     size_t mark = ag->scratch->off;
     Str draft = tui_input();
 
@@ -3383,7 +3383,9 @@ static Str turn_bind_images(Agent *ag, Str text, size_t *off, size_t *count) {
 
     b8 none = true;
     for (size_t i = 0; i < ag->pending_n; i++) none = none && !named[i];
-    if (none)
+    /* NOTE: without the full-screen composer no marker is ever shown, so
+     * a line that names none carries them all. */
+    if (none && !tui_is_fullscreen())
         for (size_t i = 0; i < ag->pending_n; i++) named[i] = true;
 
     size_t renum[AGENT_MAX_MEDIA_PER_TURN] = {0};
@@ -6708,8 +6710,15 @@ i32 main(i32 argc, char **argv) {
 
 
     static char line[AGENT_LINE_BUF];
+    char shed[AGENT_MAX_MEDIA_PER_TURN * 16];
+    size_t shed_n = 0;
     for (;;) {
         size_t ln = 0;
+        if (shed_n) {
+            pending_drop_unnamed(&agent, (Str){shed, shed_n});
+            composer_restore_pending(&agent);
+            shed_n = 0;
+        }
         ctx_sync(&g_ctx, &conv);
         todo_sync(&conv, &scratch);
         if (!tui_readline("> ", line, sizeof line, &ln)) break;
@@ -6718,8 +6727,6 @@ i32 main(i32 argc, char **argv) {
             continue;
         }
 
-        char shed[AGENT_MAX_MEDIA_PER_TURN * 16];
-        size_t shed_n = 0;
         if (agent.pending_n) {
             size_t skip = pending_prefix(&agent, line, ln);
             if (skip) {

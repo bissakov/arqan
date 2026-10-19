@@ -80,6 +80,14 @@
   had the same text. Ghostty uses that text as the notification ID, so on
   KDE Plasma a repeat replaced the earlier notification in the tray and
   showed no popup. The `notify_command` hook gets the same text.
+- Deleting the last `[Image #n]` marker from the composer now removes the
+  image. Before, a message with no marker left still carried every
+  attached image, so an image pasted by mistake, or one brought back by a
+  rewind, could not be removed. A command typed after a marker, such as
+  `[Image #1] /mode`, now puts the marker back in the composer, so the
+  image stays attached.
+- With input piped in, a second `/attach` no longer drops the image the
+  first one attached.
 
 ## [0.12.0] - 2026-10-12
 
