@@ -366,13 +366,19 @@ typedef struct {
     b8 (*yield)(void);
     volatile sig_atomic_t *interrupt;
     i32 timeout_ms;
+    Str unconfined_desc;
 } ShellHost;
 
 typedef struct {
     AgentMode mode;
+    PermissionPolicy permissions;
     b8 interactive;
     Str root;
 } ToolsPolicy;
+
+typedef struct {
+    ToolAudience audience;
+} ToolsCall;
 
 typedef struct {
     void (*fn)(void *ud, Str path);
@@ -387,6 +393,7 @@ typedef struct {
 typedef struct {
     ShellHost shell;
     ToolsPolicy policy;
+    ToolsCall call;
     ToolsTouch touch;
     JobTable job;
     RoundDeadline round;
@@ -1426,6 +1433,11 @@ static ShellClass bash_args_class(Str args, Arena *scratch) {
     return cls;
 }
 
+static b8 bash_unconfined(AgentMode mode, ToolAudience audience) {
+    return g_tools.policy.permissions == PERMISSION_FREE && mode != MODE_PLAN
+           && audience == TOOL_FOR_MAIN;
+}
+
 static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err,
                     size_t err_cap) {
     JVal *j = tool_args(args, scratch, err, err_cap);
@@ -1460,6 +1472,8 @@ static b8 tool_bash(Str args, Arena *scratch, Buf *out, char *err,
     }
     Str command = json_str(j, STR("command"));
     ShellClass cls = shell_classify(command, sandbox_abi() >= 1);
+    if (bash_unconfined(g_tools.policy.mode, g_tools.call.audience))
+        cls = SHELL_WRITES;
     if (cls == SHELL_READS_INSIDE) sandbox_prepare(scratch);
     return shell_capture_page(command, offset, limit, (i32)timeout, round_cut,
                               cls, out, err, err_cap);
@@ -2595,6 +2609,9 @@ static b8 tool_agent_only(Str args, Arena *scratch, Buf *out, char *err,
 void tools_set_mode(AgentMode mode) {
     g_tools.policy.mode = mode;
 }
+void tools_set_permissions(PermissionPolicy permissions) {
+    g_tools.policy.permissions = permissions;
+}
 void tools_set_interactive(b8 interactive) {
     g_tools.policy.interactive = interactive;
 }
@@ -2840,7 +2857,8 @@ static struct {
 #define READ_DESC_OUTSIDE \
     "A path outside the project may need the user's approval."
 
-static Str bash_description(Arena *persist, i32 shell_timeout_ms) {
+static Str bash_description(Arena *persist, i32 shell_timeout_ms,
+                            b8 sandboxed) {
     i32 abi = sandbox_abi();
     Buf b;
     buf_init(&b, persist, 2048);
@@ -2856,7 +2874,7 @@ static Str bash_description(Arena *persist, i32 shell_timeout_ms) {
                  "find and git log, with no redirection, substitution or "
                  "inline script, is read-only: it never needs approval and "
                  "is the only kind allowed in plan mode. "));
-    if (abi >= 1)
+    if (sandboxed)
         buf_putf(&b,
                  "A read-only command runs with filesystem writes%s denied, "
                  "and reads only the project and the system directories, so "
@@ -2967,8 +2985,13 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
                  "\"maximum\":%u,\"description\":\"at most %u bytes\"}%s},"
                  "\"required\":[\"command\",\"description\"]}",
                  AGENT_SHELL_OUT_BYTES, AGENT_SHELL_OUT_BYTES, timeout_schema);
-    Str bash_desc = bash_description(persist, shell_timeout_ms);
-    if (schema_n < 0 || (size_t)schema_n >= 1024 || !bash_desc.n) {
+    b8 sandboxed = sandbox_abi() >= 1;
+    Str bash_desc = bash_description(persist, shell_timeout_ms, sandboxed);
+    g_tools.shell.unconfined_desc =
+        sandboxed ? bash_description(persist, shell_timeout_ms, false)
+                  : bash_desc;
+    if (schema_n < 0 || (size_t)schema_n >= 1024 || !bash_desc.n
+        || !g_tools.shell.unconfined_desc.n) {
         r->name = NULL;
         return;
     }
@@ -3184,8 +3207,12 @@ void tools_set_images(ToolRegistry *r, b8 on) {
     if (id != TOOL_NONE && !on) r->desc[id] = r->desc_sub[id];
 }
 
-Str tools_desc_for(const ToolRegistry *r, size_t id, ToolAudience audience) {
-    return audience == TOOL_FOR_SUB ? r->desc_sub[id] : r->desc[id];
+Str tools_desc_for(const ToolRegistry *r, size_t id, AgentMode mode,
+                   ToolAudience audience) {
+    if (audience == TOOL_FOR_SUB) return r->desc_sub[id];
+    if (tool_is_bash(r, id) && bash_unconfined(mode, audience))
+        return g_tools.shell.unconfined_desc;
+    return r->desc[id];
 }
 
 void tools_set_task_limit(ToolRegistry *r, i32 tasks) {
@@ -3277,10 +3304,13 @@ b8 tools_run_report(const ToolRegistry *r, size_t id, Str args,
         return false;
     }
     if (audience == TOOL_FOR_SUB) tools_set_media(NULL);
+    ToolsCall caller = g_tools.call;
+    g_tools.call = (ToolsCall){.audience = audience};
     b8 ok = r->source[id] == TOOL_SRC_MCP
                 ? mcp_call(r->ext[id], r->name[id], args, scratch, out, err,
                            err_cap)
                 : r->run[id](args, scratch, out, err, err_cap);
+    g_tools.call = caller;
     tools_set_media(previous);
     if (execution) *execution = g_tools.execution;
     g_tools.execution = (ToolExecution){0};
@@ -3306,7 +3336,8 @@ void tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api,
                 buf_putf(b, "{\"name\":");
                 buf_json_str(b, r->name[i]);
                 buf_putf(b, ",\"description\":");
-                buf_json_str(b, tools_desc_for(r, i, audience));
+                buf_json_str(
+                    b, tools_desc_for(r, i, g_tools.policy.mode, audience));
                 buf_puts(b, STR(",\"input_schema\":"));
                 if (str_eq(r->name[i], STR("batch")))
                     batch_write_schema(b, r, g_tools.policy.mode, audience);
@@ -3318,7 +3349,8 @@ void tools_write_schemas(Buf *b, const ToolRegistry *r, ApiKind api,
             buf_putf(b, "{\"type\":\"function\",\"function\":{\"name\":");
             buf_json_str(b, r->name[i]);
             buf_putf(b, ",\"description\":");
-            buf_json_str(b, tools_desc_for(r, i, audience));
+            buf_json_str(b,
+                         tools_desc_for(r, i, g_tools.policy.mode, audience));
             buf_puts(b, STR(",\"parameters\":"));
             if (str_eq(r->name[i], STR("batch")))
                 batch_write_schema(b, r, g_tools.policy.mode, audience);
@@ -3340,8 +3372,9 @@ size_t tools_schema_bytes(const ToolRegistry *r, ToolAudience audience) {
             str_eq(r->name[i], STR("batch"))
                 ? batch_schema_bytes(r, g_tools.policy.mode, audience)
                 : r->schema[i].n;
-        total +=
-            r->name[i].n + tools_desc_for(r, i, audience).n + schema + PER_TOOL;
+        total += r->name[i].n
+                 + tools_desc_for(r, i, g_tools.policy.mode, audience).n
+                 + schema + PER_TOOL;
     }
     return total;
 }

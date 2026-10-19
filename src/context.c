@@ -219,6 +219,7 @@ Str cache_cause_name(CacheCause cause) {
         case CACHE_CAUSE_ELIDE: return STR("eliding");
         case CACHE_CAUSE_COMPACT: return STR("compacting");
         case CACHE_CAUSE_MODE: return STR("a mode change");
+        case CACHE_CAUSE_PERMISSIONS: return STR("a permissions change");
         case CACHE_CAUSE_TOOLS: return STR("a tool change");
         case CACHE_CAUSE_MODEL: return STR("a model change");
         case CACHE_CAUSE_MEDIA: return STR("an image change");

@@ -585,12 +585,55 @@ static void agent_set_mode(Agent *ag, AgentMode mode) {
     if (ag->show_instructions) tview_paint(ag, 0, true);
 }
 
+typedef struct {
+    Str template;
+    Str prompt[2];
+    PromptSources sources[2];
+} BuildPrompts;
+
+static BuildPrompts g_build_prompts;
+
+static void build_prompt_select(Agent *ag, PermissionPolicy policy) {
+    BuildPrompts *bp = &g_build_prompts;
+    if (!bp->prompt[policy].n) {
+        char err[AGENT_MAX_PATH + 128] = {0};
+        PromptSources sources;
+        Str prompt = prompt_build(ag->tools, bp->template, ag->persist,
+                                  ag->scratch, &sources, err, sizeof err);
+        if (!prompt.n) {
+            char row[AGENT_MAX_PATH + 192];
+            snprintf(row, sizeof row,
+                     "the system prompt was not rebuilt for the new "
+                     "permissions: %s",
+                     err[0] ? err : "out of memory");
+            if (g_turn.one_shot)
+                one_shot_diag("warning", (Str){0}, str_c(row));
+            else
+                tui_notice(str_c(row));
+            return;
+        }
+        bp->prompt[policy] = prompt;
+        bp->sources[policy] = sources;
+    }
+    Config *cfg = ag->cfg;
+    cfg->system_prompt = bp->prompt[policy];
+    cfg->system_sources = bp->sources[policy];
+    if (cfg->mode == MODE_PLAN) return;
+    if (ag->conv->n && ag->conv->role[0] == M_SYSTEM)
+        ag->conv->text[0] = cfg->system_prompt;
+    if (ag->show_instructions) tview_paint(ag, 0, true);
+}
+
 static void agent_set_permissions(Agent *ag, PermissionPolicy policy) {
     TelEvent e;
     tel_open(&e, "permissions");
     tel_bool(&e, "free", policy == PERMISSION_FREE);
     tel_send(&e);
+    if (ag->cfg->permissions != policy)
+        cache_guard_cause(&g_cache, CACHE_CAUSE_PERMISSIONS, 0);
     ag->cfg->permissions = policy;
+    tools_set_permissions(policy);
+    build_prompt_select(ag, policy);
     if (!conf_remember(CONF_PERMISSIONS, permission_name(policy),
                        ag->scratch)) {
         if (g_turn.one_shot)
@@ -6448,6 +6491,8 @@ i32 main(i32 argc, char **argv) {
         return 2;
     }
     char prompt_err[AGENT_MAX_PATH + 128] = {0};
+    tools_set_permissions(cfg.permissions);
+    g_build_prompts.template = cfg.system_prompt;
     cfg.system_prompt =
         prompt_build(&tools, cfg.system_prompt, &persist, &scratch,
                      &cfg.system_sources, prompt_err, sizeof prompt_err);
@@ -6455,6 +6500,8 @@ i32 main(i32 argc, char **argv) {
         fprintf(stderr, AGENT_NAME ": %s\n", prompt_err);
         return 2;
     }
+    g_build_prompts.prompt[cfg.permissions] = cfg.system_prompt;
+    g_build_prompts.sources[cfg.permissions] = cfg.system_sources;
     arena_reset(&scratch);
     cfg.plan_prompt =
         prompt_build_plan(&tools, &persist, &scratch, &cfg.plan_sources,

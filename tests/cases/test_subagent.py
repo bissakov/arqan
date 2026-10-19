@@ -14,6 +14,7 @@ import json
 import re
 import signal
 import time
+from pathlib import Path
 
 READ_ONLY = ["bash", "internet_search", "page_fetch", "read"]
 
@@ -232,6 +233,27 @@ def test_the_subagent_runs_read_only_shell_commands_only(ctx):
     assert any("bash for a subagent runs read-only commands only" in r
                for r in results), results
     assert not (ctx.work / "s").exists()
+
+
+def test_the_subagent_keeps_the_sandbox_in_free_mode(ctx):
+    """Free drops the sandbox for the parent only: the delegate is read-only
+    by contract, and the sandbox is what holds it to that."""
+    lsm = Path("/sys/kernel/security/lsm")
+    if not (lsm.exists() and "landlock" in lsm.read_text()):
+        return
+    ctx.write_file("big.txt", "".join(f"line {i:08d} {'x' * 40}\n"
+                                      for i in range(4000)))
+    ctx.scenario(collect(ctx))
+    s = spawn(ctx, sub='tool=bash:{"command":"sort -S 1K -T . big.txt",'
+                       '"description":"x"}',
+              ARQAN_PERMISSIONS="free")
+    s.submit("delegate it")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    results = [m["content"] for r in sub_requests(ctx)
+               for m in r.get("messages", []) if m.get("role") == "tool"]
+    assert any("Permission denied" in r for r in results), results
 
 
 def test_plan_mode_keeps_the_task_tool_and_the_same_audience(ctx):
