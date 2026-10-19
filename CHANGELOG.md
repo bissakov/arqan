@@ -32,6 +32,13 @@
 
 ### Fixed
 
+- `page_fetch` keeps the block structure of pages built from `div`, list
+  and definition list markup, so each block lands on its own line instead
+  of one huge line. A line longer than 2048 bytes is split at a space, or
+  at a character boundary when it has none. A line that still does not fit
+  in a result is clipped and the result says so; the next call starts after
+  it. Before, a long line could leave a result with no text, or a
+  continuation call that repeated the same request.
 - A large image drawn in the transcript is now sent to the terminal scaled
   down to the pixels it covers, not at full size. Large images sent through
   tmux could make Ghostty close every window. The model still gets the

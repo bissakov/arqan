@@ -1,6 +1,7 @@
 """Built-in public web search and bounded page fetching."""
 
 import json
+import re
 
 
 def web_env(ctx):
@@ -539,6 +540,72 @@ def test_web_fetch_pages_at_line_boundaries(ctx):
     ctx.mock.reset()
     _, later = run_web(ctx, "page_fetch", {"url": url, "offset": 2400, "limit": 100})
     assert "line 2400\n" in later and "line 2499\n" in later, later
+
+
+def body_lines(result):
+    """The page lines of a page_fetch result, without its header and notes."""
+    _, _, rest = result.partition("\n\n")
+    return [line for line in rest.split("\n")
+            if line and not line.startswith("[")]
+
+
+def fetch_all_pages(ctx, url, limit=2000):
+    """Follow continuation calls from the first line to the end of a page."""
+    results, offset = [], 1
+    while True:
+        ctx.mock.reset()
+        _, result = run_web(ctx, "page_fetch", {"url": url, "offset": offset, "limit": limit})
+        assert not result.startswith("ERROR: "), result
+        assert len(result.encode()) <= 8192, len(result.encode())
+        results.append(result)
+        found = re.search(r'\[continue with page_fetch \{.*"offset":(\d+),', result)
+        if not found:
+            return results
+        following = int(found.group(1))
+        assert following > offset, (offset, result[-400:])
+        assert len(results) < 20, results
+        offset = following
+
+
+def test_web_fetch_breaks_lines_at_block_tags(ctx):
+    """Minified div, list and definition markup keeps one block per line."""
+    _, result = run_web(ctx, "page_fetch", {"url": f"{ctx.mock.origin}/web/divs"})
+    lines = body_lines(result)
+    for line in ("alpha one", "beta two", "- gamma item", "- delta item",
+                 "term word", "definition text", "before rule", "after rule",
+                 "cell a | cell b"):
+        assert line in lines, result
+
+
+def test_web_fetch_reaches_every_byte_of_a_long_line(ctx):
+    """A 20 KB line splits at spaces, and paging walks through all of it."""
+    url = f"{ctx.mock.origin}/web/longline"
+    results = fetch_all_pages(ctx, url)
+    assert len(results) > 1, results
+    text = "\n".join(line for r in results for line in body_lines(r))
+    words = text.split()
+    assert words == [f"w{i:05d}" for i in range(1, 2901)] + ["last", "line"], text[-300:]
+    assert all(len(line.encode()) <= 2048 for line in text.split("\n")), text
+
+
+def test_web_fetch_reaches_a_long_run_without_spaces(ctx):
+    """A run with no space splits on character boundaries, even as the last line."""
+    url = f"{ctx.mock.origin}/web/longhtml"
+    results = fetch_all_pages(ctx, url)
+    lines = [line for r in results for line in body_lines(r)]
+    assert "".join(lines) == "x\u03a9" * 7000, lines[-1][-100:]
+
+
+def test_web_fetch_clips_a_line_that_cannot_fit(ctx):
+    """A long URL leaves less room than one line: the line is clipped, never skipped."""
+    url = f"{ctx.mock.origin}/web/longline?pad={'p' * 2900}"
+    _, result = run_web(ctx, "page_fetch", {"url": url})
+    assert len(result.encode()) <= 8192, len(result.encode())
+    tail = result.replace("p" * 2900, "<pad>")
+    assert "w00001 w00002" in result, tail
+    assert "[line 1 clipped; the full line is in the spill file]" in result, tail
+    assert '"offset":2,' in result, tail
+    assert "[full output: " in result, tail
 
 
 def test_web_fetch_validates_urls_before_networking(ctx):

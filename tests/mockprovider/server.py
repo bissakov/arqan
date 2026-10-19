@@ -970,6 +970,24 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             ))
         elif path == "/web/base/child":
             self._body(200, "text/plain", b"child\n")
+        elif path == "/web/divs":
+            self._body(200, "text/html", (
+                "<html><head><title>Divs</title></head><body>"
+                "<div>alpha one</div><div>beta two</div>"
+                "<ul><li><div>gamma item</div></li><li>delta item</li></ul>"
+                "<dl><dt>term word</dt><dd>definition text</dd></dl>"
+                "<div>before rule</div><hr><div>after rule</div>"
+                "<table><tr><td><div>cell a</div></td><td>cell b</td></tr></table>"
+                "</body></html>"
+            ).encode())
+        elif path == "/web/longline":
+            words = " ".join(f"w{i:05d}" for i in range(1, 2901))
+            self._body(200, "text/plain", (words + "\nlast line\n").encode())
+        elif path == "/web/longhtml":
+            run = "x\u03a9" * 7000
+            self._body(200, "text/html; charset=utf-8", (
+                f"<html><head><title>Run</title></head><body><p>{run}</p></body></html>"
+            ).encode())
         elif self.path.startswith("/__requests"):
             self._json(200, srv.requests)
         elif self.path.startswith("/health"):

@@ -12,6 +12,7 @@
 #define WEB_EXTRACT_BYTES (4u << 20)
 #define WEB_TITLE_BYTES   512u
 #define WEB_SNIPPET_BYTES 1024u
+#define WEB_LINE_BYTES    2048u
 
 typedef struct {
     void (*idle)(void *ud);
@@ -224,7 +225,38 @@ typedef struct {
     size_t max;
     b8 pending_space;
     b8 too_large;
+    size_t line_start;
 } Normal;
+
+static void normal_wrap(Normal *n) {
+    Buf *b = n->buf;
+    while (b->n - n->line_start > WEB_LINE_BYTES) {
+        size_t limit = n->line_start + WEB_LINE_BYTES;
+        size_t cut = limit;
+        while (cut > n->line_start && b->p[cut] != ' ') cut--;
+        if (cut > n->line_start) {
+            b->p[cut] = '\n';
+            n->line_start = cut + 1;
+            continue;
+        }
+        cut = limit;
+        while (cut > n->line_start && ((u8)b->p[cut] & 0xc0u) == 0x80u) cut--;
+        if (cut == n->line_start) cut = limit;
+        if (b->n >= n->max) {
+            n->too_large = true;
+            return;
+        }
+        size_t tail = b->n - cut;
+        buf_putc(b, '\n');
+        if (!buf_ok(b)) {
+            n->too_large = true;
+            return;
+        }
+        memmove(b->p + cut + 1, b->p + cut, tail);
+        b->p[cut] = '\n';
+        n->line_start = cut + 1;
+    }
+}
 
 static void normal_put(Normal *n, const char *p, size_t len) {
     if (n->too_large) return;
@@ -232,8 +264,19 @@ static void normal_put(Normal *n, const char *p, size_t len) {
         n->too_large = true;
         return;
     }
+    size_t at = n->buf->n;
     buf_put(n->buf, p, len);
-    if (!buf_ok(n->buf)) n->too_large = true;
+    if (!buf_ok(n->buf)) {
+        n->too_large = true;
+        return;
+    }
+    for (size_t i = len; i; i--) {
+        if (p[i - 1] == '\n') {
+            n->line_start = at + i;
+            break;
+        }
+    }
+    if (n->buf->n - n->line_start > WEB_LINE_BYTES) normal_wrap(n);
 }
 
 static size_t utf8_char(const u8 *p, size_t n) {
@@ -319,7 +362,7 @@ static Str visible_text(AgentHtmlNode *node, Arena *scratch, size_t max,
                         b8 *too_large) {
     Buf b;
     buf_init(&b, scratch, max < 256 ? max + 1 : 256);
-    VisibleCtx v = {{&b, max, false, false}};
+    VisibleCtx v = {{&b, max, false, false, 0}};
     html_walk(node, visible_enter, NULL, &v);
     Str out = normal_finish(&v.norm);
     *too_large = !buf_ok(&b);
@@ -417,6 +460,7 @@ typedef struct {
     Normal norm;
     const char *base;
     size_t pre_depth;
+    size_t cell_depth;
 } ExtractCtx;
 
 static b8 heading_level(AgentHtmlNode *node, size_t *level) {
@@ -427,6 +471,26 @@ static b8 heading_level(AgentHtmlNode *node, size_t *level) {
         return true;
     }
     return false;
+}
+
+static b8 line_block_tag(AgentHtmlNode *node) {
+    static const char *const blocks[] = {
+        "div",     "ul",       "ol",         "dl",      "dt",      "dd",
+        "header",  "figure",   "figcaption", "details", "summary", "caption",
+        "address", "fieldset", "legend",     "hr",
+    };
+    size_t n = 0;
+    const char *tag = agent_html_tag(node, &n);
+    if (!tag) return false;
+    for (size_t i = 0; i < sizeof blocks / sizeof blocks[0]; i++)
+        if (strlen(blocks[i]) == n && !memcmp(tag, blocks[i], n)) return true;
+    return false;
+}
+
+static b8 normal_at_marker(const Normal *n) {
+    if (n->buf->n != n->line_start + 2) return false;
+    const char *p = n->buf->p + n->line_start;
+    return (p[0] == '-' || p[0] == '>') && p[1] == ' ';
 }
 
 static b8 extract_enter(AgentHtmlNode *node, void *ud) {
@@ -464,6 +528,10 @@ static b8 extract_enter(AgentHtmlNode *node, void *ud) {
     } else if (tag_is(node, "td") || tag_is(node, "th")) {
         if (x->norm.buf->n && x->norm.buf->p[x->norm.buf->n - 1] != '\n')
             normal_put(&x->norm, " | ", 3);
+        x->cell_depth++;
+    } else if (line_block_tag(node)) {
+        if (!x->cell_depth && !normal_at_marker(&x->norm))
+            normal_break(&x->norm, 1);
     }
     return true;
 }
@@ -485,6 +553,10 @@ static void extract_leave(AgentHtmlNode *node, void *ud) {
         normal_break(&x->norm, 2);
     } else if (tag_is(node, "code") && !x->pre_depth) {
         normal_put(&x->norm, "`", 1);
+    } else if (tag_is(node, "td") || tag_is(node, "th")) {
+        if (x->cell_depth) x->cell_depth--;
+    } else if (line_block_tag(node)) {
+        if (!x->cell_depth) normal_break(&x->norm, 1);
     } else if (tag_is(node, "a")) {
         size_t n = 0;
         const char *href = agent_html_attr(node, "href", 4, &n);
@@ -524,7 +596,7 @@ static Str html_extract(AgentHtmlDoc *doc, const char *effective,
     if (!selected) selected = root;
     Buf b;
     buf_init(&b, scratch, 8192);
-    ExtractCtx x = {{&b, WEB_EXTRACT_BYTES, false, false}, base, 0};
+    ExtractCtx x = {{&b, WEB_EXTRACT_BYTES, false, false, 0}, base, 0, 0};
     html_walk(selected, extract_enter, extract_leave, &x);
     Str body = normal_finish(&x.norm);
     *too_large = x.norm.too_large || !buf_ok(&b);
@@ -534,7 +606,7 @@ static Str html_extract(AgentHtmlDoc *doc, const char *effective,
 static Str plain_extract(Str source, Arena *scratch, b8 *too_large) {
     Buf b;
     buf_init(&b, scratch, 8192);
-    Normal n = {&b, WEB_EXTRACT_BYTES, false, false};
+    Normal n = {&b, WEB_EXTRACT_BYTES, false, false, 0};
     size_t off = 0;
     while (off < source.n) {
         size_t start = off;
@@ -585,26 +657,60 @@ static b8 page_output(Buf *out, Str title, const char *effective,
     size_t off = 0;
     Str line;
     for (size_t ln = 1; ln < first; ln++) str_line(body, &off, &line);
-    size_t shown = 0;
-    size_t reserve = strlen(input) * 2 + 192;
+    Buf note;
+    buf_init(&note, scratch, 256);
+    buf_puts(&note, STR("[continue with page_fetch {\"url\":"));
+    buf_json_str(&note, str_c(input));
+    buf_puts(&note, STR(",\"offset\":"));
+    size_t note_head = note.n;
+    if (!buf_ok(&note)) {
+        spill_finish(&spill, out, false);
+        snprintf(err, err_cap, "continuation call does not fit in memory");
+        return false;
+    }
+    size_t reserve = note_head + 64;
     if (spill.fd >= 0) reserve += AGENT_SPILL_NOTE_BYTES;
-    if (reserve > AGENT_TOOL_RESULT_BYTES / 2)
-        reserve = AGENT_TOOL_RESULT_BYTES / 2;
-    while (shown < limit && str_line(body, &off, &line)) {
-        if (line.n + 1 > AGENT_TOOL_RESULT_BYTES - out->n
-            || out->n + line.n + 1 + reserve > AGENT_TOOL_RESULT_BYTES)
+    size_t shown = 0;
+    b8 clipped = false;
+    while (shown < limit) {
+        size_t line_off = off;
+        if (!str_line(body, &off, &line)) break;
+        b8 fits = out->n + reserve < AGENT_TOOL_RESULT_BYTES
+                  && line.n + 1 <= AGENT_TOOL_RESULT_BYTES - out->n - reserve;
+        if (!fits && shown) {
+            off = line_off;
             break;
+        }
+        if (!fits) {
+            char clip_note[96];
+            snprintf(
+                clip_note, sizeof clip_note, "[line %zu clipped%s]\n", first,
+                spill.fd >= 0 ? "; the full line is in the spill file" : "");
+            size_t need = out->n + reserve + strlen(clip_note) + 1;
+            Str part = need < AGENT_TOOL_RESULT_BYTES
+                           ? str_clip_utf8(line, AGENT_TOOL_RESULT_BYTES - need)
+                           : (Str){line.p, 0};
+            if (!part.n) {
+                spill_finish(&spill, out, false);
+                snprintf(err, err_cap,
+                         "the page header and continuation call leave no room "
+                         "for page text in the %u byte result limit",
+                         (unsigned)AGENT_TOOL_RESULT_BYTES);
+                return false;
+            }
+            buf_puts(out, part);
+            buf_putc(out, '\n');
+            buf_puts(out, str_c(clip_note));
+            clipped = true;
+            shown++;
+            break;
+        }
         buf_puts(out, line);
         buf_putc(out, '\n');
         shown++;
     }
     if (off < body.n) {
-        Buf note;
-        buf_init(&note, scratch, 256);
-        buf_puts(&note, STR("[continue with page_fetch {\"url\":"));
-        buf_json_str(&note, str_c(input));
-        buf_putf(&note, ",\"offset\":%zu,\"limit\":%zu}]", first + shown,
-                 limit);
+        buf_putf(&note, "%zu,\"limit\":%zu}]", first + shown, limit);
         Str n = buf_finish(&note);
         if (!buf_ok(&note) || n.n + out->n > AGENT_TOOL_RESULT_BYTES) {
             spill_finish(&spill, out, false);
@@ -614,7 +720,7 @@ static b8 page_output(Buf *out, Str title, const char *effective,
         }
         buf_puts(out, n);
     }
-    spill_finish(&spill, out, first > 1 || off < body.n);
+    spill_finish(&spill, out, first > 1 || off < body.n || clipped);
     if (!buf_ok(out) || out->n > AGENT_TOOL_RESULT_BYTES) {
         snprintf(err, err_cap, "page result exceeds the %u byte limit",
                  (unsigned)AGENT_TOOL_RESULT_BYTES);
