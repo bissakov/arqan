@@ -779,12 +779,53 @@ def test_web_argument_limits_are_refused_not_clamped(ctx):
 def test_web_tools_can_be_disabled_together(ctx):
     """The existing disable list withholds and refuses both network tools."""
     ctx.scenario('tool=page_fetch:{"url":"https://example.com/"},final_text=done')
-    s = ctx.spawn(args=["--disable-tools", "internet_search,page_fetch"])
+    s = ctx.spawn(ARQAN_SYSTEM_PROMPT=None,
+                  args=["--disable-tools", "internet_search,page_fetch"])
     s.submit("fetch")
     s.wait_turn_done()
     names = [t["function"]["name"] for t in ctx.mock.requests[0]["tools"]]
     assert "internet_search" not in names and "page_fetch" not in names
     assert "page_fetch is disabled" in ctx.mock.tool_results()[-1]
+    system = ctx.mock.requests[0]["messages"][0]["content"]
+    for line in (WEB_DISK, WEB_QUERY, WEB_TASK):
+        assert line not in system, system
+
+
+WEB_DISK = ("- Before searching the web, look on disk: vendored or installed "
+            "dependency sources, man pages and --help describe the version this "
+            "project uses; name that version in a web query\n")
+WEB_QUERY = ("- Give page_fetch a query to get the passages that answer it; "
+             "page with offset only to read a whole document\n")
+WEB_TASK = ("- Delegate research that needs several searches and pages to "
+            "task; only its report enters this conversation\n")
+
+
+def built_in_prompt(ctx, *args, **env):
+    ctx.scenario("final_text=done")
+    s = ctx.spawn(ARQAN_SYSTEM_PROMPT=None, args=list(args), **env)
+    s.submit("hello")
+    s.wait_turn_done()
+    s.close()
+    return ctx.mock.requests[-1]["messages"][0]["content"]
+
+
+def test_the_prompt_guides_web_lookups_only_when_offered(ctx):
+    """Each web line names tools the agent has, after the tool guidance."""
+    offered = built_in_prompt(ctx)
+    for line in (WEB_DISK, WEB_QUERY, WEB_TASK):
+        assert line in offered, offered
+    assert offered.index("- After changing code") < offered.index(WEB_DISK), offered
+
+    no_page = built_in_prompt(ctx, "--disable-tools", "page_fetch")
+    assert WEB_DISK in no_page and WEB_TASK in no_page, no_page
+    assert WEB_QUERY not in no_page, no_page
+
+    no_task = built_in_prompt(ctx, ARQAN_SUBAGENTS="false")
+    assert WEB_DISK in no_task and WEB_QUERY in no_task, no_task
+    assert WEB_TASK not in no_task, no_task
+
+    no_disk = built_in_prompt(ctx, "--disable-tools", "read,bash")
+    assert WEB_DISK not in no_disk and WEB_QUERY in no_disk, no_disk
 
 
 def test_web_transfer_keeps_ctrl_c_responsive(ctx):

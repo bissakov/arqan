@@ -189,6 +189,20 @@ def test_the_task_and_read_descriptions_match_what_the_delegate_can_do(ctx):
     assert "image" not in listed.lower(), listed
 
 
+def test_the_delegate_gets_web_guidance_but_no_task_line(ctx):
+    """The delegate cannot delegate, so only the parent hears about task."""
+    ctx.scenario(delegate(ctx))
+    s = spawn(ctx)
+    s.submit("delegate it")
+    s.wait_turn_done()
+
+    system = sub_requests(ctx)[0]["messages"][0]["content"]
+    assert "- Before searching the web, look on disk: " in system, system
+    assert "- Give page_fetch a query to get the passages" in system, system
+    assert "to task; only its report" not in system, system
+    assert system.index("Guidelines:\n") < system.index("- Before searching"), system
+
+
 def test_the_parent_still_carries_its_own_tools(ctx):
     """The audience narrows the sub request, not the one that made it."""
     ctx.scenario(delegate(ctx))

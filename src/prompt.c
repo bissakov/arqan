@@ -26,6 +26,7 @@ static const char PROMPT_BUILTIN[] =
     "- Do not commit, push, reset, or delete files or branches unless the "
     "user asks\n"
     "{tool_guidance}"
+    "{web_guidance}"
     "{batch_guidance}"
     "{todo_guidance}"
     "{ask_user_guidance}"
@@ -50,6 +51,7 @@ static const char PROMPT_PLAN_BUILTIN[] =
     "- Read the code before planning it: a plan built on a guess about the "
     "codebase is worse than no plan\n"
     "{batch_guidance}"
+    "{web_guidance}"
     "- If the request needs no change, such as a question about the code, "
     "answer it directly and do not call submit_plan\n"
     "- Write findings, drafts and answers in a reply\n"
@@ -149,6 +151,7 @@ static const char PROMPT_SUB_BUILTIN[] =
     "Available tools:\n"
     "{tools}\n"
     "Guidelines:\n"
+    "{web_guidance}"
     "- Answer once, when you are done: your final message is the whole "
     "report, and nothing before it is read\n"
     "- Stop searching once you can answer the question; it needs an answer, "
@@ -428,6 +431,34 @@ static void prompt_mcp(Buf *b) {
                     "between turns, so the tools you are given may change.\n"));
 }
 
+static b8 prompt_offers_to(const ToolRegistry *tools, Str name, AgentMode mode,
+                           ToolAudience audience) {
+    size_t id = tools ? tools_find(tools, name) : TOOL_NONE;
+    return id != TOOL_NONE && tools_available_to(tools, id, mode, audience);
+}
+
+static void prompt_web(Buf *b, const ToolRegistry *tools, AgentMode mode,
+                       ToolAudience audience) {
+    b8 search = prompt_offers_to(tools, STR("internet_search"), mode, audience);
+    b8 fetch = prompt_offers_to(tools, STR("page_fetch"), mode, audience);
+    if (!search && !fetch) return;
+    if (prompt_offers_to(tools, STR("read"), mode, audience)
+        || prompt_offers_to(tools, STR("bash"), mode, audience))
+        buf_puts(b, STR("- Before searching the web, look on disk: vendored "
+                        "or installed dependency sources, man pages and "
+                        "--help describe the version this project uses; name "
+                        "that version in a web query\n"));
+    if (fetch)
+        buf_puts(b, STR("- Give page_fetch a query to get the passages that "
+                        "answer it; page with offset only to read a whole "
+                        "document\n"));
+    if (audience == TOOL_FOR_MAIN
+        && prompt_offers_to(tools, STR("task"), mode, audience))
+        buf_puts(b, STR("- Delegate research that needs several searches and "
+                        "pages to task; only its report enters this "
+                        "conversation\n"));
+}
+
 static void prompt_expand(Buf *b, Str tmpl, const ToolRegistry *tools,
                           AgentMode mode, ToolAudience audience, Str cwd) {
     for (size_t i = 0; i < tmpl.n; i++) {
@@ -458,6 +489,8 @@ static void prompt_expand(Buf *b, Str tmpl, const ToolRegistry *tools,
             prompt_batch(b, tools, mode, audience);
         else if (str_eq(name, STR("mcp_guidance")))
             prompt_mcp(b);
+        else if (str_eq(name, STR("web_guidance")))
+            prompt_web(b, tools, mode, audience);
         else {
             buf_putc(b, '{');
             continue;
