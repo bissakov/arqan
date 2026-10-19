@@ -801,12 +801,12 @@ def test_web_tools_can_be_disabled_together(ctx):
 WEB_DISK = ("- Before searching the web, look on disk: vendored or installed "
             "dependency sources, man pages and --help describe the version this "
             "project uses; name that version in a web query\n")
-WEB_QUERY = ("- Give page_fetch a query to get the passages that answer it; "
-             "page with offset only to read a whole document\n")
-WEB_READ = ("- Give internet_search read to quote the best passages of its "
-            "top 1 to 3 results in the same call, instead of fetching each page\n")
+WEB_QUERY = ("- To answer a question from a page, give page_fetch a query; "
+             "use offset only to read the whole page\n")
+WEB_READ = ("- To read the top results of a search, set read on "
+            "internet_search instead of fetching each page\n")
 WEB_TASK = ("- Delegate research that needs several searches and pages to "
-            "task; only its report enters this conversation\n")
+            "task\n")
 
 
 def built_in_prompt(ctx, *args, **env):

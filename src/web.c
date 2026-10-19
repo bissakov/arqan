@@ -698,7 +698,7 @@ static b8 page_lines(Buf *out, b8 spilled, const char *input, Str body,
                            : (Str){line.p, 0};
             if (!part.n) {
                 snprintf(err, err_cap,
-                         "the URL is too long for a result to hold page text");
+                         "the URL is too long to leave room for page text");
                 return false;
             }
             buf_puts(&page, part);
@@ -755,7 +755,7 @@ static b8 page_passages(Buf *out, b8 spilled, Str body, const char *query,
     if (spilled) tail += AGENT_SPILL_NOTE_BYTES;
     if (!buf_ok(out) || out->n + tail + 256 > AGENT_TOOL_RESULT_BYTES) {
         snprintf(err, err_cap,
-                 "the URL is too long for a result to hold passages");
+                 "the URL is too long to leave room for passages");
         return false;
     }
     PassageReport report;
@@ -772,7 +772,7 @@ static b8 page_passages(Buf *out, b8 spilled, Str body, const char *query,
         buf_puts(out, buf_finish(&found));
     } else if (report.matched) {
         buf_putf(out,
-                 "Passages matching the query: %zu; none fits in a result. "
+                 "Passages matching the query: %zu, each too long to show. "
                  "Read the page with offset.\n",
                  report.matched);
     } else if (!q->n) {
