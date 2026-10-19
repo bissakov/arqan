@@ -912,6 +912,7 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path.startswith("/web/"):
             srv.web_user_agents.append(self.headers.get("User-Agent"))
+            srv.web_accepts.append(self.headers.get("Accept"))
             srv.web_request_times.append(time.monotonic())
             srv.web_calls.append({
                 "path": path,
@@ -970,6 +971,17 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             ))
         elif path == "/web/base/child":
             self._body(200, "text/plain", b"child\n")
+        elif path == "/web/negotiate":
+            if "text/markdown" in (self.headers.get("Accept") or ""):
+                self._body(200, "text/markdown; charset=utf-8", (
+                    "```\n# not a title\n```\n\n# Markdown Title\n\n"
+                    "The markdown body.\n"
+                ).encode())
+            else:
+                self._body(200, "text/html", (
+                    "<html><head><title>HTML Title</title></head>"
+                    "<body><p>The html body.</p></body></html>"
+                ).encode())
         elif path == "/web/divs":
             self._body(200, "text/html", (
                 "<html><head><title>Divs</title></head><body>"
@@ -1432,6 +1444,7 @@ class MockProvider:
         self.httpd.versions = []           # type: ignore[attr-defined]
         self.httpd.listings = []           # type: ignore[attr-defined]
         self.httpd.web_user_agents = []     # type: ignore[attr-defined]
+        self.httpd.web_accepts = []         # type: ignore[attr-defined]
         self.httpd.web_request_times = []   # type: ignore[attr-defined]
         self.httpd.web_calls = []           # type: ignore[attr-defined]
         self.httpd.verbose = False         # type: ignore[attr-defined]
@@ -1541,6 +1554,11 @@ class MockProvider:
         return self.httpd.web_user_agents  # type: ignore[attr-defined]
 
     @property
+    def web_accepts(self) -> list:
+        """The Accept header of each fixture web request, if present."""
+        return self.httpd.web_accepts  # type: ignore[attr-defined]
+
+    @property
     def web_request_times(self) -> list:
         """Monotonic arrival times for fixture web requests."""
         return self.httpd.web_request_times  # type: ignore[attr-defined]
@@ -1560,6 +1578,7 @@ class MockProvider:
         self.versions.clear()
         self.listings.clear()
         self.web_user_agents.clear()
+        self.web_accepts.clear()
         self.web_request_times.clear()
         self.web_calls.clear()
 

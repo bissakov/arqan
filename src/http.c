@@ -692,9 +692,20 @@ i32 http_url_get(HttpUrlReq *r) {
 
     UrlCtx ctx = {r->out, r->max_bytes, false, false};
     char curl_err[CURL_ERROR_SIZE] = {0};
+    char accept[256];
+    i32 accept_n = snprintf(accept, sizeof accept, "Accept: %s",
+                            r->accept ? r->accept
+                                      : "text/html,application/xhtml+xml,"
+                                        "application/xml;q=0.9,*/*;q=0.8");
+    if (accept_n < 0 || (size_t)accept_n >= sizeof accept) {
+        curl_multi_cleanup(multi);
+        curl_easy_cleanup(curl);
+        snprintf(r->failure, sizeof r->failure, "Accept header is too long");
+        r->kind = HTTP_FAIL_OTHER;
+        return 1;
+    }
     struct curl_slist *hdrs = NULL;
-    hdrs = curl_slist_append(hdrs, "Accept: text/html,application/xhtml+xml,"
-                                   "application/xml;q=0.9,*/*;q=0.8");
+    hdrs = curl_slist_append(hdrs, accept);
     hdrs = curl_slist_append(hdrs, "Accept-Language: en-US,en;q=0.9");
     hdrs = curl_slist_append(hdrs, "Upgrade-Insecure-Requests: 1");
     hdrs = curl_slist_append(hdrs, "Sec-Fetch-Dest: document");

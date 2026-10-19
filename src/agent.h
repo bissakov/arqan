@@ -1081,6 +1081,7 @@ typedef struct {
     i32 timeout_ms;
     i32 max_redirects;
     b8 public_only;
+    const char *accept;
     const char *header[2];
     const volatile sig_atomic_t *interrupt_flag;
     i32 idle_fd;

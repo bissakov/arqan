@@ -13,6 +13,9 @@
 #define WEB_TITLE_BYTES   512u
 #define WEB_SNIPPET_BYTES 1024u
 #define WEB_LINE_BYTES    2048u
+#define WEB_PAGE_ACCEPT                                             \
+    "text/markdown, text/html;q=0.9, application/xhtml+xml;q=0.9, " \
+    "text/plain;q=0.8, */*;q=0.5"
 
 typedef struct {
     void (*idle)(void *ud);
@@ -124,7 +127,8 @@ static b8 web_public_only(void) {
 }
 
 static i32 web_request(const char *url, const char *operation, Buf *body,
-                       const char *header, HttpUrlReq *req) {
+                       const char *accept, const char *header,
+                       HttpUrlReq *req) {
     *req = (HttpUrlReq){
         .url = url,
         .operation = operation,
@@ -134,6 +138,7 @@ static i32 web_request(const char *url, const char *operation, Buf *body,
         .timeout_ms = 20000,
         .max_redirects = 5,
         .public_only = web_public_only(),
+        .accept = accept,
         .header = {header, NULL},
         .interrupt_flag = g_web_hooks.interrupt_flag,
         .idle_fd = g_web_hooks.idle_fd,
@@ -745,6 +750,22 @@ static b8 type_suffix(const char *type, const char *suffix) {
     return tn >= sn && !memcmp(type + tn - sn, suffix, sn);
 }
 
+static Str markdown_title(Str body) {
+    size_t off = 0;
+    Str line;
+    b8 fenced = false;
+    while (str_line(body, &off, &line)) {
+        if (str_starts(line, STR("```")) || str_starts(line, STR("~~~"))) {
+            fenced = !fenced;
+            continue;
+        }
+        if (fenced || !str_starts(line, STR("# "))) continue;
+        Str title = str_trim(str_drop(line, 2));
+        if (title.n) return str_clip_utf8(title, WEB_TITLE_BYTES);
+    }
+    return (Str){0};
+}
+
 b8 page_fetch_run(Str args, Arena *scratch, Buf *out, char *err,
                   size_t err_cap) {
     JVal *j = web_args(args, scratch, err, err_cap);
@@ -767,7 +788,8 @@ b8 page_fetch_run(Str args, Arena *scratch, Buf *out, char *err,
     Buf source;
     buf_init(&source, scratch, 65536);
     HttpUrlReq req;
-    i32 rc = web_request(url, "page_fetch", &source, NULL, &req);
+    i32 rc =
+        web_request(url, "page_fetch", &source, WEB_PAGE_ACCEPT, NULL, &req);
     if (rc != 0) {
         if (rc < 0)
             snprintf(err, err_cap, "HTTP status %lld", (long long)-rc);
@@ -800,6 +822,8 @@ b8 page_fetch_run(Str args, Arena *scratch, Buf *out, char *err,
                || type_suffix(req.content_type, "+json")
                || type_suffix(req.content_type, "+xml")) {
         body = plain_extract(raw, scratch, &too_large);
+        if (!strcmp(req.content_type, "text/markdown"))
+            title = markdown_title(body);
     } else {
         snprintf(err, err_cap, "unsupported media type: %s", req.content_type);
         return false;
@@ -1454,7 +1478,7 @@ static SearchOutcome search_backend_run(SearchEngine engine, size_t slot,
     Buf source;
     buf_init(&source, scratch, 65536);
     HttpUrlReq req;
-    i32 rc = web_request(request_url.p, "internet_search", &source,
+    i32 rc = web_request(request_url.p, "internet_search", &source, NULL,
                          search_header(spec, scratch), &req);
     if (req.status == 202 || req.status == 403 || req.status == 429) {
         char pause[32];

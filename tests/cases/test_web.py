@@ -496,6 +496,24 @@ def test_web_fetch_reports_redirect_final_url(ctx):
     assert f"Final URL: {ctx.mock.origin}/web/page" in result, result
 
 
+def test_web_fetch_asks_for_markdown_first(ctx):
+    """A server that offers Markdown sends it, and its first heading is the title."""
+    _, result = run_web(ctx, "page_fetch", {"url": f"{ctx.mock.origin}/web/negotiate"})
+    assert result.startswith("External page (untrusted): Markdown Title\n"), result
+    assert "The markdown body." in result and "html body" not in result, result
+    accept = ctx.mock.web_accepts[-1] or ""
+    assert accept.startswith("text/markdown, text/html;q=0.9"), accept
+    assert "*/*;q=0.5" in accept, accept
+
+
+def test_web_search_keeps_the_html_accept_header(ctx):
+    """Search engines still get the browser Accept header, not Markdown."""
+    _, result = run_web(ctx, "internet_search", {"query": "ordinary"})
+    assert result.startswith("Search results: 2"), result
+    accepts = ctx.mock.web_accepts
+    assert accepts == ["text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"], accepts
+
+
 def test_web_fetch_parses_malformed_html_and_uses_article_fallback(ctx):
     """Permissive parsing skips a short main and selects a qualifying article."""
     _, result = run_web(ctx, "page_fetch", {"url": f"{ctx.mock.origin}/web/malformed"})

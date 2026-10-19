@@ -20,6 +20,10 @@
 - `ast-grep run`, `scan` and `outline` run through `bash` without approval
   when they cannot write: no `-U`, no interactive mode, and
   `--custom-languages` absent or `ignore`.
+- `page_fetch` asks for Markdown first, so a server that offers it, as
+  many documentation hosts do, sends Markdown instead of HTML. The first
+  `# ` heading is the page title. Search engines still get the HTML
+  `Accept` header.
 
 ### Changed
 
