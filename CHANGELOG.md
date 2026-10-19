@@ -32,6 +32,10 @@
 
 ### Changed
 
+- `page_fetch` keeps each page it fetched for 15 minutes, so the next page
+  of it, or a `query` on it, reads the copy on disk instead of downloading
+  and parsing the page again. The copy lives in the spill directory; one no
+  result named is deleted when the session ends.
 - With `permissions = "free"` in build mode, a read-only shell command no
   longer runs under Landlock. Free asks for nothing, so the sandbox
   protected nothing and only broke commands that write a cache or temporary

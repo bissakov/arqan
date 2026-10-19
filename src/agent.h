@@ -204,6 +204,7 @@ typedef bool b8;
 #define AGENT_WEB_QUERY_BYTES            1025
 #define AGENT_WEB_TYPE_BYTES             128
 #define AGENT_WEB_SEARCH_INTERVAL_MS     10000
+#define AGENT_WEB_CACHE_SECONDS          900
 #define AGENT_WEB_SEARCH_PAUSE_MS        3600000
 #define AGENT_WEB_SEARCH_PAUSE_FIRST_MS  120000
 #define AGENT_WEB_SEARCH_PAUSE_SECOND_MS 600000
@@ -1152,6 +1153,8 @@ typedef struct {
 void spill_open(Spill *s, const char *tool, const char *ext, Str key);
 void spill_put(Spill *s, const char *p, size_t n);
 void spill_finish(Spill *s, Buf *out, b8 keep);
+b8 spill_close(Spill *s, char *path, size_t path_cap, size_t *written);
+void spill_note(Buf *out, const char *path, size_t written, b8 full);
 i32 spill_release(Spill *s, char *path, size_t path_cap, size_t *written);
 
 void spill_size_text(char *z, size_t cap, size_t n);
@@ -1341,6 +1344,7 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out, char *err,
                        size_t err_cap);
 b8 page_fetch_run(Str args, Arena *scratch, Buf *out, char *err,
                   size_t err_cap);
+void web_cache_clear(void);
 
 // ---- passages -------------------------------------------------------------
 #define AGENT_PASSAGE_TERMS 16

@@ -20,7 +20,7 @@ def run_tool(ctx, name, args, reply="done", tmp=None):
     return ctx.mock.tool_results()[-1]
 
 
-def run_web_tool(ctx, name, args, tmp):
+def run_web_tool(ctx, name, args, tmp, exit=False):
     ctx.scenario(f"tool={name}:{json.dumps(args)},final_text=web+done")
     s = ctx.spawn(
         rows=40,
@@ -31,6 +31,9 @@ def run_web_tool(ctx, name, args, tmp):
     s.submit(f"use {name}")
     s.wait_text("web done")
     s.wait_turn_done()
+    if exit:
+        s.submit("/exit")
+        s.wait_exit()
     return ctx.mock.tool_results()[-1]
 
 
@@ -169,11 +172,22 @@ def test_a_later_fetch_page_still_names_the_file(ctx):
 
 
 def test_a_short_fetch_leaves_nothing_behind(ctx):
-    """The whole extracted text is in the answer, so no file survives it."""
+    """The whole extracted text is in the answer, so no file outlives the
+    session; the page stays cached on disk only while it runs."""
     tmp = tmpdir(ctx)
-    result = run_web_tool(ctx, "page_fetch", {"url": f"{ctx.mock.origin}/web/text"}, tmp)
+    result = run_web_tool(ctx, "page_fetch", {"url": f"{ctx.mock.origin}/web/text"},
+                          tmp, exit=True)
     assert "full output" not in result, result
     assert list(tmp.iterdir()) == [], list(tmp.iterdir())
+
+
+def test_a_named_fetch_file_outlives_the_session(ctx):
+    """A file a result named is the model's to read, so exit leaves it."""
+    tmp = tmpdir(ctx)
+    url = f"{ctx.mock.origin}/web/lines"
+    result = run_web_tool(ctx, "page_fetch", {"url": url, "limit": 10}, tmp, exit=True)
+    path, _ = spill_path(result)
+    assert [p.name for p in tmp.iterdir()] == [path.rsplit("/", 1)[1]], list(tmp.iterdir())
 
 
 def test_a_cut_search_spills_every_result_it_parsed(ctx):

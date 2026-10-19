@@ -1,6 +1,7 @@
 """Built-in public web search and bounded page fetching."""
 
 import json
+import os
 import re
 
 
@@ -593,6 +594,68 @@ def test_web_fetch_query_and_offset_are_refused_together(ctx):
     _, result = run_web(ctx, "page_fetch", {"url": url, "query": "timeout", "offset": 2})
     assert result == "ERROR: offset and query cannot be combined", result
     assert not ctx.mock.web_calls, ctx.mock.web_calls
+
+
+def run_web_calls(ctx, calls, turns=1, between=None, **env):
+    """Several page_fetch calls in one session; `between` runs after each turn."""
+    spec = ",".join(f"tool=page_fetch:{json.dumps(args)}" for args in calls)
+    ctx.scenario(spec + ",final_text=web+done")
+    s = ctx.spawn(rows=40, **web_env(ctx), **env)
+    for turn in range(turns):
+        s.submit("fetch pages")
+        s.wait_text("web done")
+        s.wait_turn_done()
+        if between:
+            between(turn)
+    last = ctx.mock.requests[-1].get("messages", [])
+    return s, [m.get("content", "") for m in last if m.get("role") == "tool"]
+
+
+def test_web_fetch_reuses_a_page_within_a_session(ctx):
+    """Paging and querying a fetched page reads it from disk, not the network."""
+    manual = f"{ctx.mock.origin}/web/manual"
+    lines = f"{ctx.mock.origin}/web/lines"
+    _, results = run_web_calls(ctx, [
+        {"url": manual, "limit": 5},
+        {"url": manual, "offset": 3, "limit": 5},
+        {"url": manual, "query": "frobnicator timeout"},
+        {"url": lines, "limit": 5},
+    ])
+    assert len(results) == 4, results
+    assert "\nLines 1-5 of " in results[0], results[0][:300]
+    assert "\nLines 3-7 of " in results[1], results[1][:300]
+    assert "defaults to 37 seconds" in results[2], results[2]
+    assert "line 1\n" in results[3], results[3][:300]
+    paths = [call["path"] for call in ctx.mock.web_calls]
+    assert paths == ["/web/manual", "/web/lines"], paths
+
+
+def test_web_fetch_cache_expires(ctx):
+    """An expired page is fetched again."""
+    url = f"{ctx.mock.origin}/web/manual"
+    _, results = run_web_calls(ctx, [{"url": url}, {"url": url, "offset": 3}],
+                               ARQAN_TEST_WEB_CACHE_SECONDS="0")
+    assert "\nLines 3-" in results[1], results[1][:300]
+    paths = [call["path"] for call in ctx.mock.web_calls]
+    assert paths == ["/web/manual", "/web/manual"], paths
+
+
+def test_web_fetch_refetches_when_its_file_is_gone(ctx):
+    """A cached page whose file was deleted is fetched again, not misread."""
+    url = f"{ctx.mock.origin}/web/manual"
+
+    def delete_spill(turn):
+        if turn:
+            return
+        found = re.search(r"\[full output: (\S+?), ", ctx.mock.tool_results()[-1])
+        assert found, ctx.mock.tool_results()[-1][-300:]
+        os.unlink(found.group(1))
+
+    _, results = run_web_calls(ctx, [{"url": url, "limit": 5}], turns=2,
+                               between=delete_spill)
+    assert len(results) == 2 and results[0] == results[1], results
+    paths = [call["path"] for call in ctx.mock.web_calls]
+    assert paths == ["/web/manual", "/web/manual"], paths
 
 
 def body_lines(result):
