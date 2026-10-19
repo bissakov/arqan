@@ -74,6 +74,12 @@
   cached prefix, so the provider wrote the whole conversation again. It is
   now cut down only when the elision boundary moves past the newer call,
   and that rebuild is reported as eliding.
+- A notification that asks for input now names what it asks: the question,
+  the start of the plan, or the command, path or MCP tool waiting for
+  approval, as in `arqan: allow bash: make test`. Before, each kind always
+  had the same text. Ghostty uses that text as the notification ID, so on
+  KDE Plasma a repeat replaced the earlier notification in the tray and
+  showed no popup. The `notify_command` hook gets the same text.
 
 ## [0.12.0] - 2026-10-12
 

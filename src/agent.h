@@ -2461,6 +2461,7 @@ b8 md_muted(void);
 
 void render_tool_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
                       const Conv *c, size_t slot);
+Str render_patch_target(Str patch, Arena *scratch);
 /* True for a write or patch call whose result says it failed or was denied:
  * such a call draws the capped preview instead of the whole content. */
 b8 render_unapplied(Str name, Str result);

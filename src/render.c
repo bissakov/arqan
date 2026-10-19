@@ -260,6 +260,12 @@ static Str patch_target(Str patch, char *buf, size_t cap) {
                    : first;
 }
 
+Str render_patch_target(Str patch, Arena *scratch) {
+    char buf[R_TARGET_BYTES + 32];
+    Str target = patch_target(patch, buf, sizeof buf);
+    return target.p == buf ? str_dup(scratch, target) : target;
+}
+
 static Str code_search_target(const JVal *j, Str path, char *buf, size_t cap) {
     Str mode = json_str(j, STR("mode"));
     Str what = json_str(j, STR("name"));

@@ -13,6 +13,12 @@ def bare_osc9_written(raw: bytes) -> bool:
     return b"\x1b]9;" in raw.replace(b"\x1b\x1b]9;", b"")
 
 
+def wait_notification(s, text: str) -> list[str]:
+    """The escape is written just before the picker draws, so poll for it."""
+    s.wait_for(lambda _: text in s.screen.notifications, repr(text))
+    return s.screen.notifications
+
+
 def test_a_finished_turn_notifies_over_osc9(ctx):
     """The terminal is handed the notification; arqan links no OS API."""
     ctx.scenario("text=all+done+here")
@@ -191,3 +197,83 @@ def test_the_hook_gets_no_api_key(ctx):
     names = [line.split("=", 1)[0] for line in out.read_text().splitlines()]
     assert "HOME" in names, names
     assert "ARQAN_API_KEY" not in names, names
+
+
+# Ghostty uses the notification text as its ID, and Plasma shows no popup for
+# a replacement of one that timed out. A text that names what is asked differs
+# from one request to the next, so each one pops up.
+
+
+def test_a_question_notification_names_the_question(ctx):
+    """The fixed text never popped up again after the first question."""
+    question = json.dumps({
+        "question": "Which fix should the agent apply?",
+        "options": [{"label": "the first"}, {"label": "the second"}],
+    })
+    ctx.scenario(f"tool=ask_user:{question},final_text=ok")
+    s = ctx.spawn()
+    s.submit("fix it")
+    s.wait_status("pick an answer")
+    said = wait_notification(s, "arqan: Which fix should the agent apply?")
+    assert "arqan: the assistant asked a question" not in said, said
+    s.key("esc")
+    s.wait_turn_done()
+
+
+def test_a_write_approval_notification_names_the_path(ctx):
+    """The picker title alone is the same for every write."""
+    args = json.dumps({"path": "guarded.txt", "content": "changed"})
+    ctx.scenario(f"tool=write:{args},final_text=understood")
+    s = ctx.spawn(ARQAN_PERMISSIONS="ask")
+    s.submit("write it")
+    s.wait_status("allow write?")
+    wait_notification(s, "arqan: allow write: guarded.txt")
+    s.key("esc")
+    s.wait_text("understood")
+    s.wait_turn_done()
+
+
+def test_a_shell_approval_notification_names_the_command(ctx):
+    """The command, not its description, is what the user approves."""
+    args = json.dumps({"command": "touch made.txt\necho second line",
+                       "description": "make a file"})
+    ctx.scenario(f"tool=bash:{args},final_text=understood")
+    s = ctx.spawn(ARQAN_PERMISSIONS="ask")
+    s.submit("make it")
+    s.wait_status("allow bash?")
+    wait_notification(s, "arqan: allow bash: touch made.txt echo second line")
+    s.key("esc")
+    s.wait_text("understood")
+    s.wait_turn_done()
+    assert not (ctx.work / "made.txt").exists()
+
+
+def test_a_patch_approval_notification_names_the_file(ctx):
+    """A patch names its file the way the transcript does."""
+    patch = ("--- a/one.txt\n+++ b/one.txt\n@@\n-old\n+new\n")
+    (ctx.work / "one.txt").write_text("old\n")
+    args = json.dumps({"patch": patch})
+    ctx.scenario(f"tool=patch:{args},final_text=understood")
+    s = ctx.spawn(ARQAN_PERMISSIONS="ask")
+    s.submit("patch it")
+    s.wait_status("allow patch?")
+    wait_notification(s, "arqan: allow patch: one.txt")
+    s.key("esc")
+    s.wait_text("understood")
+    s.wait_turn_done()
+
+
+def test_a_plan_notification_names_the_plan(ctx):
+    """Heading marks are dropped so the plan's own words lead."""
+    plan = "## Fix the stale frame\n\n1. Read the file\n2. Change the line"
+    ctx.scenario(f"tool=submit_plan:{json.dumps({'plan': plan})}")
+    s = ctx.spawn()
+    s.key("shift-tab")
+    s.wait_for(lambda _: s.status_field(2) == "plan", "plan mode")
+    s.submit("plan the change")
+    s.wait_status("continue?")
+    wait_notification(
+        s, "arqan: plan ready: Fix the stale frame 1. Read the file "
+           "2. Change the line")
+    s.key("esc")
+    s.wait_turn_done()
