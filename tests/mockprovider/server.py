@@ -679,6 +679,22 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
         if query in ("empty", "allempty", "emptyblocked"):
             self._body(200, "text/html", b"<html><body><div class='no-results'>No results.</div></body></html>")
             return
+        if query.startswith("frob"):
+            # results that point back at fixture pages, for search with read
+            origin = f"http://{self.headers.get('Host')}"
+            pages = ["/web/manual", "/web/frob"]
+            if "broken" in query:
+                pages = ["/web/manual", "/web/nothere"]
+            if "slow" in query:
+                pages = ["/web/slow"]
+            rows = "".join(
+                f'<a class="result-link" href="//duckduckgo.com/l/?uddg='
+                f'{quote(origin + page, safe="")}">Page {i}</a>'
+                f'<div class="result-snippet">snippet {i}</div>'
+                for i, page in enumerate(pages, 1)
+            )
+            self._body(200, "text/html", f"<html><body>{rows}</body></html>".encode())
+            return
         if query == "verbose":
             # ten results whose snippets together exceed one result page
             rows = []
@@ -912,6 +928,7 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path.startswith("/web/"):
             srv.web_user_agents.append(self.headers.get("User-Agent"))
+            srv.web_accepts.append(self.headers.get("Accept"))
             srv.web_request_times.append(time.monotonic())
             srv.web_calls.append({
                 "path": path,
@@ -970,6 +987,57 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
             ))
         elif path == "/web/base/child":
             self._body(200, "text/plain", b"child\n")
+        elif path == "/web/frob":
+            self._body(200, "text/markdown", (
+                "# Frob notes\n\nUnrelated opening words.\n\n## Limits\n\n"
+                "The frobnicator timeout can be raised to 90 seconds.\n"
+            ).encode())
+        elif path == "/web/nothere":
+            self._body(404, "text/html", b"<html><body>missing</body></html>")
+        elif path == "/web/negotiate":
+            if "text/markdown" in (self.headers.get("Accept") or ""):
+                self._body(200, "text/markdown; charset=utf-8", (
+                    "```\n# not a title\n```\n\n# Markdown Title\n\n"
+                    "The markdown body.\n"
+                ).encode())
+            else:
+                self._body(200, "text/html", (
+                    "<html><head><title>HTML Title</title></head>"
+                    "<body><p>The html body.</p></body></html>"
+                ).encode())
+        elif path == "/web/divs":
+            self._body(200, "text/html", (
+                "<html><head><title>Divs</title></head><body>"
+                "<div>alpha one</div><div>beta two</div>"
+                "<ul><li><div>gamma item</div></li><li>delta item</li></ul>"
+                "<dl><dt>term word</dt><dd>definition text</dd></dl>"
+                "<div>before rule</div><hr><div>after rule</div>"
+                "<table><tr><td><div>cell a</div></td><td>cell b</td></tr></table>"
+                "</body></html>"
+            ).encode())
+        elif path == "/web/manual":
+            sections = []
+            for i in range(1, 61):
+                if i == 47:
+                    sections.append(
+                        "<h2>Configuring the frobnicator timeout</h2>"
+                        "<p>The frobnicator timeout defaults to 37 seconds. "
+                        "Set FROB_TIMEOUT to change it.</p>")
+                else:
+                    filler = " ".join([f"ordinary manual text about topic {i}"] * 20)
+                    sections.append(f"<h2>Section {i}</h2><p>{filler}</p>")
+            self._body(200, "text/html", (
+                "<html><head><title>Manual</title></head><body><main>"
+                "<h1>Manual</h1>" + "".join(sections) + "</main></body></html>"
+            ).encode())
+        elif path == "/web/longline":
+            words = " ".join(f"w{i:05d}" for i in range(1, 2901))
+            self._body(200, "text/plain", (words + "\nlast line\n").encode())
+        elif path == "/web/longhtml":
+            run = "x\u03a9" * 7000
+            self._body(200, "text/html; charset=utf-8", (
+                f"<html><head><title>Run</title></head><body><p>{run}</p></body></html>"
+            ).encode())
         elif self.path.startswith("/__requests"):
             self._json(200, srv.requests)
         elif self.path.startswith("/health"):
@@ -1414,6 +1482,7 @@ class MockProvider:
         self.httpd.versions = []           # type: ignore[attr-defined]
         self.httpd.listings = []           # type: ignore[attr-defined]
         self.httpd.web_user_agents = []     # type: ignore[attr-defined]
+        self.httpd.web_accepts = []         # type: ignore[attr-defined]
         self.httpd.web_request_times = []   # type: ignore[attr-defined]
         self.httpd.web_calls = []           # type: ignore[attr-defined]
         self.httpd.verbose = False         # type: ignore[attr-defined]
@@ -1523,6 +1592,11 @@ class MockProvider:
         return self.httpd.web_user_agents  # type: ignore[attr-defined]
 
     @property
+    def web_accepts(self) -> list:
+        """The Accept header of each fixture web request, if present."""
+        return self.httpd.web_accepts  # type: ignore[attr-defined]
+
+    @property
     def web_request_times(self) -> list:
         """Monotonic arrival times for fixture web requests."""
         return self.httpd.web_request_times  # type: ignore[attr-defined]
@@ -1542,6 +1616,7 @@ class MockProvider:
         self.versions.clear()
         self.listings.clear()
         self.web_user_agents.clear()
+        self.web_accepts.clear()
         self.web_request_times.clear()
         self.web_calls.clear()
 

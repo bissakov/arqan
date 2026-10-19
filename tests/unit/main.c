@@ -90,6 +90,7 @@ i32 http_get(const char *base_url, const char *path, const char *api_key,
 #include "progress.c"
 #include "provider.c"
 #include "thumb.c"
+#include "passage.c"
 
 #include <fcntl.h>
 #include <stdlib.h>
@@ -1300,6 +1301,204 @@ static void config_files_keep_the_user_file_past_many_system_dirs(void) {
     env_restore(&home);
 }
 
+/* ---- passages ---------------------------------------------------------- */
+
+static b8 query_has(const PassageQuery *q, const char *term, b8 phrase) {
+    for (size_t i = 0; i < q->n; i++)
+        if (q->phrase[i] == phrase && str_eq(passage_term(q, i), str_c(term)))
+            return true;
+    return false;
+}
+
+static Str passages_for(Arena *a, const char *body, const char *query,
+                        size_t budget, PassageReport *report) {
+    static PassageQuery q;
+    passage_query(str_c(query), &q);
+    Buf b;
+    buf_init(&b, a, 256);
+    b8 ok = passage_write(str_c(body), &q, budget, a, &b, report);
+    CHECK(ok);
+    Str out = buf_finish(&b);
+    CHECK(out.n <= budget);
+    return out;
+}
+
+static b8 text_has(Str s, const char *needle) {
+    size_t n = strlen(needle);
+    for (size_t i = 0; n <= s.n && i <= s.n - n; i++)
+        if (!memcmp(s.p + i, needle, n)) return true;
+    return false;
+}
+
+static void passage_query_drops_operators_and_keeps_phrases(void) {
+    static PassageQuery q;
+    passage_query(STR("site:example.com \"Exact  Phrase\" -excluded OR the "
+                      "Timeout timeout intitle:x config:value std::vector"),
+                  &q);
+    CHECK(q.n == 8);
+    CHECK(query_has(&q, "exact phrase", true));
+    CHECK(query_has(&q, "exact", false) && query_has(&q, "phrase", false));
+    CHECK(query_has(&q, "timeout", false));
+    CHECK(query_has(&q, "config", false) && query_has(&q, "value", false));
+    CHECK(query_has(&q, "std", false) && query_has(&q, "vector", false));
+    CHECK(!query_has(&q, "excluded", false) && !query_has(&q, "site", false));
+    CHECK(!query_has(&q, "or", false) && !query_has(&q, "the", false));
+    CHECK(!query_has(&q, "x", false) && !query_has(&q, "example", false));
+
+    passage_query(STR("a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 "
+                      "a16 a17 a18 a19 a20"),
+                  &q);
+    CHECK(q.n == AGENT_PASSAGE_TERMS);
+    CHECK(query_has(&q, "a16", false) && !query_has(&q, "a17", false));
+
+    passage_query(STR("the of -x site:y"), &q);
+    CHECK(q.n == 0);
+}
+
+static void passage_heading_match_outranks_the_body(void) {
+    WITH_ARENA(a, 1u << 20);
+    PassageReport r;
+    Str out = passages_for(&a,
+                           "# Intro\n\nGeneral timeout words, timeout.\n\n"
+                           "# Timeout settings\n\nThe timeout is set here.\n",
+                           "timeout", 100, &r);
+    CHECK(r.matched == 2 && r.shown == 1);
+    CHECK(text_has(out, "[lines 5-7, under \"Timeout settings\"]\n"));
+    CHECK(!text_has(out, "General words"));
+}
+
+static void passage_phrase_hit_outranks_scattered_words(void) {
+    WITH_ARENA(a, 1u << 20);
+    PassageReport r;
+    Str out = passages_for(&a,
+                           "# One\nreset the connection, reset it, connection "
+                           "pool reset, connection again\n"
+                           "# Two\na connection reset happened\n",
+                           "\"connection reset\"", 90, &r);
+    CHECK(r.matched == 2 && r.shown == 1);
+    CHECK(text_has(out, "a connection reset happened"));
+    CHECK(!text_has(out, "pool"));
+}
+
+static void passage_labels_carry_line_ranges(void) {
+    WITH_ARENA(a, 1u << 20);
+    PassageReport r;
+    Str out = passages_for(&a,
+                           "plain start\n\n# First\n\nnothing\n\n## Second\n"
+                           "needle one\nneedle two\n\n# Third\nmore\n",
+                           "needle", 4096, &r);
+    CHECK(r.matched == 1 && r.shown == 1);
+    CHECK(str_eq(out, STR("[lines 7-9, under \"Second\"]\n"
+                          "## Second\nneedle one\nneedle two\n")));
+
+    out = passages_for(&a, "first needle\n\nsecond\n", "needle", 4096, &r);
+    CHECK(str_eq(out, STR("[lines 1-3]\nfirst needle\n\nsecond\n")));
+}
+
+static void passage_neighbours_merge_into_one_range(void) {
+    WITH_ARENA(a, 1u << 20);
+    PassageReport r;
+    Str out = passages_for(&a, "# A\nneedle a\n# B\nneedle b\n# C\nnothing\n",
+                           "needle", 4096, &r);
+    CHECK(r.matched == 2 && r.shown == 2);
+    CHECK(str_eq(out, STR("[lines 1-4, under \"A\"]\n# A\nneedle a\n\n"
+                          "# B\nneedle b\n")));
+}
+
+static void passage_output_stays_within_the_budget(void) {
+    WITH_ARENA(a, 4u << 20);
+    Buf body;
+    buf_init(&body, &a, 1u << 16);
+    for (i32 i = 0; i < 200; i++)
+        buf_putf(&body,
+                 "%s# Part %d\n\nneedle %d and some filler words "
+                 "that pad the passage out a little\n\n",
+                 i % 7 ? "" : "```\n# fenced\n```\n\n", i, i);
+    Str text = buf_finish(&body);
+    CHECK(buf_ok(&body));
+    char z[1u << 16];
+    CHECK(text.n < sizeof z);
+    memcpy(z, text.p, text.n);
+    z[text.n] = '\0';
+    for (size_t budget = 0; budget < 3000; budget += 37) {
+        size_t mark = arena_used(&a);
+        PassageReport r;
+        passages_for(&a, z, "needle \"some filler\"", budget, &r);
+        CHECK(r.matched == 200);
+        a.off = mark;
+    }
+}
+
+static void passage_handles_empty_flat_and_long_bodies(void) {
+    WITH_ARENA(a, 1u << 20);
+    PassageReport r;
+    Str out = passages_for(&a, "", "needle", 4096, &r);
+    CHECK(out.n == 0 && r.matched == 0 && r.shown == 0);
+
+    out = passages_for(&a, "no headings here\n\nbut a needle here\n", "needle",
+                       4096, &r);
+    CHECK(r.shown == 1 && text_has(out, "[lines 1-3]\n"));
+    CHECK(!text_has(out, "under"));
+
+    char line[2100];
+    memset(line, 'x', sizeof line - 1);
+    memcpy(line, "needle ", 7);
+    line[sizeof line - 1] = '\0';
+    out = passages_for(&a, line, "needle", 500, &r);
+    CHECK(r.matched == 1 && r.shown == 1);
+    CHECK(text_has(out, "[line 1, clipped]\nneedle xxx"));
+    CHECK(out.n <= 500 && out.n > 400);
+
+    out = passages_for(&a, line, "needle", 20, &r);
+    CHECK(r.matched == 1 && r.shown == 0 && out.n == 0);
+}
+
+static void passage_keeps_invalid_utf8(void) {
+    WITH_ARENA(a, 1u << 20);
+    PassageReport r;
+    Str out = passages_for(&a, "# H\n\nbad \xff\xfe bytes needle\n", "needle",
+                           4096, &r);
+    CHECK(text_has(out, "bad \xff\xfe bytes needle\n"));
+}
+
+static void passage_fences_hide_fake_headings(void) {
+    WITH_ARENA(a, 1u << 20);
+    PassageReport r;
+    const char *body = "```\n# not a heading\nneedle in code\n```\n\n"
+                       "# Real\n\ntext\n";
+    Str out = passages_for(&a, body, "needle", 4096, &r);
+    CHECK(text_has(out, "[lines 1-4]\n"));
+    Buf b;
+    buf_init(&b, &a, 256);
+    CHECK(passage_outline(str_c(body), 1024, &b) == 1);
+    CHECK(str_eq(buf_finish(&b), STR("6: # Real\n")));
+
+    buf_init(&b, &a, 256);
+    CHECK(passage_outline(STR("#hashtag\nplain\n"), 1024, &b) == 0);
+    CHECK(buf_finish(&b).n == 0);
+}
+
+static void passage_outline_prefers_top_levels(void) {
+    WITH_ARENA(a, 1u << 20);
+    Buf body;
+    buf_init(&body, &a, 4096);
+    for (i32 i = 1; i <= 20; i++)
+        buf_putf(&body, "## Section %d\ntext\n#### Detail %d\ntext\n", i, i);
+    Str text = buf_finish(&body);
+    Buf b;
+    buf_init(&b, &a, 256);
+    CHECK(passage_outline(text, 1024, &b) == 20);
+    Str out = buf_finish(&b);
+    CHECK(out.n <= 1024);
+    CHECK(text_has(out, "1: ## Section 1\n") && !text_has(out, "Detail"));
+    CHECK(text_has(out, "[20 more headings]\n"));
+
+    buf_init(&b, &a, 256);
+    size_t written = passage_outline(text, 200, &b);
+    out = buf_finish(&b);
+    CHECK(written > 0 && written < 20 && out.n <= 200);
+}
+
 /* ---- child processes --------------------------------------------------- */
 
 static void child_close_fds_reaches_past_the_fallback_cap(void) {
@@ -1420,6 +1619,17 @@ int main(void) {
     RUN(thumb_survives_every_short_arena);
 
     RUN(child_close_fds_reaches_past_the_fallback_cap);
+
+    RUN(passage_query_drops_operators_and_keeps_phrases);
+    RUN(passage_heading_match_outranks_the_body);
+    RUN(passage_phrase_hit_outranks_scattered_words);
+    RUN(passage_labels_carry_line_ranges);
+    RUN(passage_neighbours_merge_into_one_range);
+    RUN(passage_output_stays_within_the_budget);
+    RUN(passage_handles_empty_flat_and_long_bodies);
+    RUN(passage_keeps_invalid_utf8);
+    RUN(passage_fences_hide_fake_headings);
+    RUN(passage_outline_prefers_top_levels);
     if (g_fail) {
         printf("%d failure(s) in %d cases\n", g_fail, g_ran);
         return 1;

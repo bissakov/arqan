@@ -204,6 +204,7 @@ typedef bool b8;
 #define AGENT_WEB_QUERY_BYTES            1025
 #define AGENT_WEB_TYPE_BYTES             128
 #define AGENT_WEB_SEARCH_INTERVAL_MS     10000
+#define AGENT_WEB_CACHE_SECONDS          900
 #define AGENT_WEB_SEARCH_PAUSE_MS        3600000
 #define AGENT_WEB_SEARCH_PAUSE_FIRST_MS  120000
 #define AGENT_WEB_SEARCH_PAUSE_SECOND_MS 600000
@@ -1081,6 +1082,7 @@ typedef struct {
     i32 timeout_ms;
     i32 max_redirects;
     b8 public_only;
+    const char *accept;
     const char *header[2];
     const volatile sig_atomic_t *interrupt_flag;
     i32 idle_fd;
@@ -1092,9 +1094,12 @@ typedef struct {
     char failure[256];
     HttpFailure kind;
     i64 status;
+    i32 result;
 } HttpUrlReq;
 
+#define AGENT_HTTP_URL_MANY 4
 i32 http_url_get(HttpUrlReq *r);
+i32 http_url_get_many(HttpUrlReq *reqs, size_t n);
 
 typedef struct {
     const char *url;
@@ -1151,6 +1156,8 @@ typedef struct {
 void spill_open(Spill *s, const char *tool, const char *ext, Str key);
 void spill_put(Spill *s, const char *p, size_t n);
 void spill_finish(Spill *s, Buf *out, b8 keep);
+b8 spill_close(Spill *s, char *path, size_t path_cap, size_t *written);
+void spill_note(Buf *out, const char *path, size_t written, b8 full);
 i32 spill_release(Spill *s, char *path, size_t path_cap, size_t *written);
 
 void spill_size_text(char *z, size_t cap, size_t n);
@@ -1340,6 +1347,31 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out, char *err,
                        size_t err_cap);
 b8 page_fetch_run(Str args, Arena *scratch, Buf *out, char *err,
                   size_t err_cap);
+void web_cache_clear(void);
+
+// ---- passages -------------------------------------------------------------
+#define AGENT_PASSAGE_TERMS 16
+
+typedef struct {
+    char text[AGENT_WEB_QUERY_BYTES];
+    u32 off[AGENT_PASSAGE_TERMS];
+    u32 len[AGENT_PASSAGE_TERMS];
+    b8 phrase[AGENT_PASSAGE_TERMS];
+    size_t n;
+} PassageQuery;
+
+typedef struct {
+    size_t matched;
+    size_t shown;
+    size_t first_line;
+    size_t last_line;
+} PassageReport;
+
+void passage_query(Str query, PassageQuery *q);
+Str passage_term(const PassageQuery *q, size_t i);
+b8 passage_write(Str body, const PassageQuery *q, size_t budget, Arena *scratch,
+                 Buf *out, PassageReport *report);
+size_t passage_outline(Str body, size_t budget, Buf *out);
 
 typedef enum {
     SHELL_WRITES,

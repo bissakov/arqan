@@ -188,6 +188,26 @@ i32 spill_release(Spill *s, char *path, size_t path_cap, size_t *written) {
     return fd;
 }
 
+void spill_note(Buf *out, const char *path, size_t written, b8 full) {
+    char size[32];
+    spill_size_text(size, sizeof size, written);
+    if (out->n && out->p[out->n - 1] != '\n') buf_puts(out, STR("\n\n"));
+    buf_putf(out, "[full output: %s, %s%s; grep or read part of it]\n", path,
+             size, full ? ", truncated there" : "");
+}
+
+b8 spill_close(Spill *s, char *path, size_t path_cap, size_t *written) {
+    i32 fd = spill_release(s, path, path_cap, written);
+    if (fd < 0) return false;
+    if (close(fd) != 0 || !*written) {
+        unlink(path);
+        path[0] = '\0';
+        *written = 0;
+        return false;
+    }
+    return true;
+}
+
 void spill_finish(Spill *s, Buf *out, b8 keep) {
     if (s->fd < 0) return;
     b8 ok = spill_flush(s);
@@ -198,10 +218,5 @@ void spill_finish(Spill *s, Buf *out, b8 keep) {
         s->path[0] = '\0';
         return;
     }
-    char size[32];
-    spill_size_text(size, sizeof size, s->written);
-
-    if (out->n && out->p[out->n - 1] != '\n') buf_puts(out, STR("\n\n"));
-    buf_putf(out, "[full output: %s, %s%s; grep or read part of it]\n", s->path,
-             size, s->full ? ", truncated there" : "");
+    spill_note(out, s->path, s->written, s->full);
 }

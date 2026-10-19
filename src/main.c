@@ -8,6 +8,7 @@
 #include "width.c"
 #include "json.c"
 #include "http.c"
+#include "passage.c"
 #include "web.c"
 #include "paths.c"
 #include "spill.c"
@@ -6364,6 +6365,7 @@ static i32 task_worker_main(const CliOpts *opts) {
     shell_set_idle(worker_idle, NULL);
     shell_set_interrupt_flag(&g_worker_stop);
     web_set_idle(worker_idle, NULL, g_worker.ctl, &g_worker_stop);
+    atexit(web_cache_clear);
 
     Buf out;
     buf_init(&out, &scratch, 8192);
@@ -6595,6 +6597,7 @@ i32 main(i32 argc, char **argv) {
     atexit(task_workers_stop);
     atexit(mcp_shutdown);
     web_set_idle(on_idle, NULL, tui_input_fd(), &g_got_sigint);
+    atexit(web_cache_clear);
     atexit(tui_stop);
     atexit(highlight_close);
 

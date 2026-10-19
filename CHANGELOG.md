@@ -20,9 +20,33 @@
 - `ast-grep run`, `scan` and `outline` run through `bash` without approval
   when they cannot write: no `-U`, no interactive mode, and
   `--custom-languages` absent or `ignore`.
+- `page_fetch` asks for Markdown first, so a server that offers it, as
+  many documentation hosts do, sends Markdown instead of HTML. The first
+  `# ` heading is the page title. Search engines still get the HTML
+  `Accept` header.
+- `page_fetch` takes a `query` of words or quoted phrases. Instead of the
+  top of the page, it returns the passages that best match the query, each
+  with its line range and heading, and an outline of the page's headings.
+  The rest of the page stays in the spill file. A page without `query`
+  now says which lines it shows, as `Lines a-b of N`.
+- `internet_search` takes `read`, from 0 to 3. It fetches that many of the
+  top results at the same time and, after the results, quotes the passages
+  of each page that best match the search query. A page that cannot be
+  read gets one line saying why and does not fail the search. A later
+  `page_fetch` of a page read this way uses the copy already fetched.
 
 ### Changed
 
+- Pages that `page_fetch` or `internet_search` fetched are kept for 15
+  minutes, so the next page of one, or a `query` on it, reads the copy on
+  disk instead of downloading and parsing the page again. Up to 16 pages
+  are kept in the spill directory. A copy that no result named is deleted
+  when it is replaced or when the session ends.
+- The built-in prompts guide web lookups when the web tools are offered:
+  look on disk for the version the project uses before searching, use
+  `read` with `internet_search`, give `page_fetch` a `query`, and, in the
+  main prompts, delegate research that needs several searches and pages to
+  `task`.
 - With `permissions = "free"` in build mode, a read-only shell command no
   longer runs under Landlock. Free asks for nothing, so the sandbox
   protected nothing and only broke commands that write a cache or temporary
@@ -32,6 +56,13 @@
 
 ### Fixed
 
+- `page_fetch` keeps the block structure of pages built from `div`, list
+  and definition list markup, so each block lands on its own line instead
+  of one huge line. A line longer than 2048 bytes is split at a space, or
+  at a character boundary when it has none. A line that still does not fit
+  in a result is clipped and the result says so; the next call starts after
+  it. Before, a long line could leave a result with no text, or a
+  continuation call that repeated the same request.
 - A large image drawn in the transcript is now sent to the terminal scaled
   down to the pixels it covers, not at full size. Large images sent through
   tmux could make Ghostty close every window. The model still gets the

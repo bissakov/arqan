@@ -1,6 +1,8 @@
 """Built-in public web search and bounded page fetching."""
 
 import json
+import os
+import re
 
 
 def web_env(ctx):
@@ -62,7 +64,9 @@ def test_web_tool_schemas_are_offered_in_build_mode(ctx):
     tools = {t["function"]["name"]: t["function"] for t in ctx.mock.requests[-1]["tools"]}
     assert "web_search" not in tools and "web_fetch" not in tools
     assert tools["internet_search"]["parameters"]["required"] == ["query"]
+    assert tools["internet_search"]["parameters"]["properties"]["read"]["type"] == "integer"
     assert tools["page_fetch"]["parameters"]["required"] == ["url"]
+    assert tools["page_fetch"]["parameters"]["properties"]["query"]["type"] == "string"
     assert "untrusted" in tools["page_fetch"]["description"]
 
 
@@ -495,6 +499,24 @@ def test_web_fetch_reports_redirect_final_url(ctx):
     assert f"Final URL: {ctx.mock.origin}/web/page" in result, result
 
 
+def test_web_fetch_asks_for_markdown_first(ctx):
+    """A server that offers Markdown sends it, and its first heading is the title."""
+    _, result = run_web(ctx, "page_fetch", {"url": f"{ctx.mock.origin}/web/negotiate"})
+    assert result.startswith("External page (untrusted): Markdown Title\n"), result
+    assert "The markdown body." in result and "html body" not in result, result
+    accept = ctx.mock.web_accepts[-1] or ""
+    assert accept.startswith("text/markdown, text/html;q=0.9"), accept
+    assert "*/*;q=0.5" in accept, accept
+
+
+def test_web_search_keeps_the_html_accept_header(ctx):
+    """Search engines still get the browser Accept header, not Markdown."""
+    _, result = run_web(ctx, "internet_search", {"query": "ordinary"})
+    assert result.startswith("Search results: 2"), result
+    accepts = ctx.mock.web_accepts
+    assert accepts == ["text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"], accepts
+
+
 def test_web_fetch_parses_malformed_html_and_uses_article_fallback(ctx):
     """Permissive parsing skips a short main and selects a qualifying article."""
     _, result = run_web(ctx, "page_fetch", {"url": f"{ctx.mock.origin}/web/malformed"})
@@ -533,12 +555,177 @@ def test_web_fetch_pages_at_line_boundaries(ctx):
     url = f"{ctx.mock.origin}/web/lines"
     _, first = run_web(ctx, "page_fetch", {"url": url, "limit": 2000})
     assert len(first.encode()) <= 8192, len(first.encode())
+    assert "\nLines 1-" in first and " of 2500\n\n" in first, first[:300]
     assert "line 1\n" in first
     assert f'[continue with page_fetch {{"url":"{url}","offset":' in first, first[-300:]
 
     ctx.mock.reset()
     _, later = run_web(ctx, "page_fetch", {"url": url, "offset": 2400, "limit": 100})
+    assert "\nLines 2400-2499 of 2500\n\n" in later, later[:300]
     assert "line 2400\n" in later and "line 2499\n" in later, later
+
+
+def test_web_fetch_query_returns_the_passages_that_match(ctx):
+    """A query deep in a long page comes back with its heading and an outline."""
+    url = f"{ctx.mock.origin}/web/manual"
+    _, result = run_web(ctx, "page_fetch", {"url": url, "query": "frobnicator timeout default"})
+    assert len(result.encode()) <= 8192, len(result.encode())
+    assert result.startswith("External page (untrusted): Manual\n"), result
+    assert "\nLines: " in result and "\nPassages matching the query: " in result, result
+    assert 'under "Configuring the frobnicator timeout"]' in result, result
+    assert "defaults to 37 seconds" in result, result
+    assert "ordinary manual text" not in result.partition("Outline:")[0], result
+    outline = result.partition("\nOutline:\n")[2]
+    assert ": # Manual\n" in outline and ": ## Section 1\n" in outline, result
+    assert "more headings]" in outline, result
+    assert "[full output: " in outline, result
+
+
+def test_web_fetch_query_reports_no_match_with_the_outline(ctx):
+    """A query with no match says so and still gives the outline and full output."""
+    url = f"{ctx.mock.origin}/web/manual"
+    _, result = run_web(ctx, "page_fetch", {"url": url, "query": "zebra"})
+    assert "No passage matches the query. Try other words" in result, result
+    assert "\nOutline:\n" in result and "[full output: " in result, result
+    ctx.mock.reset()
+    _, result = run_web(ctx, "page_fetch", {"url": url, "query": "the of"})
+    assert "No passage matches the query: use more specific words.\n" in result, result
+
+
+def test_web_fetch_query_and_offset_are_refused_together(ctx):
+    """A query picks passages, so a line offset alongside it is an error."""
+    url = f"{ctx.mock.origin}/web/manual"
+    _, result = run_web(ctx, "page_fetch", {"url": url, "query": "timeout", "offset": 2})
+    assert result == "ERROR: offset and query cannot be combined", result
+    assert not ctx.mock.web_calls, ctx.mock.web_calls
+
+
+def run_web_calls(ctx, calls, turns=1, between=None, **env):
+    """Several page_fetch calls in one session; `between` runs after each turn."""
+    spec = ",".join(f"tool=page_fetch:{json.dumps(args)}" for args in calls)
+    ctx.scenario(spec + ",final_text=web+done")
+    s = ctx.spawn(rows=40, **web_env(ctx), **env)
+    for turn in range(turns):
+        s.submit("fetch pages")
+        s.wait_text("web done")
+        s.wait_turn_done()
+        if between:
+            between(turn)
+    last = ctx.mock.requests[-1].get("messages", [])
+    return s, [m.get("content", "") for m in last if m.get("role") == "tool"]
+
+
+def test_web_fetch_reuses_a_page_within_a_session(ctx):
+    """Paging and querying a fetched page reads it from disk, not the network."""
+    manual = f"{ctx.mock.origin}/web/manual"
+    lines = f"{ctx.mock.origin}/web/lines"
+    _, results = run_web_calls(ctx, [
+        {"url": manual, "limit": 5},
+        {"url": manual, "offset": 3, "limit": 5},
+        {"url": manual, "query": "frobnicator timeout"},
+        {"url": lines, "limit": 5},
+    ])
+    assert len(results) == 4, results
+    assert "\nLines 1-5 of " in results[0], results[0][:300]
+    assert "\nLines 3-7 of " in results[1], results[1][:300]
+    assert "defaults to 37 seconds" in results[2], results[2]
+    assert "line 1\n" in results[3], results[3][:300]
+    paths = [call["path"] for call in ctx.mock.web_calls]
+    assert paths == ["/web/manual", "/web/lines"], paths
+
+
+def test_web_fetch_cache_expires(ctx):
+    """An expired page is fetched again."""
+    url = f"{ctx.mock.origin}/web/manual"
+    _, results = run_web_calls(ctx, [{"url": url}, {"url": url, "offset": 3}],
+                               ARQAN_TEST_WEB_CACHE_SECONDS="0")
+    assert "\nLines 3-" in results[1], results[1][:300]
+    paths = [call["path"] for call in ctx.mock.web_calls]
+    assert paths == ["/web/manual", "/web/manual"], paths
+
+
+def test_web_fetch_refetches_when_its_file_is_gone(ctx):
+    """A cached page whose file was deleted is fetched again, not misread."""
+    url = f"{ctx.mock.origin}/web/manual"
+
+    def delete_spill(turn):
+        if turn:
+            return
+        found = re.search(r"\[full output: (\S+?), ", ctx.mock.tool_results()[-1])
+        assert found, ctx.mock.tool_results()[-1][-300:]
+        os.unlink(found.group(1))
+
+    _, results = run_web_calls(ctx, [{"url": url, "limit": 5}], turns=2,
+                               between=delete_spill)
+    assert len(results) == 2 and results[0] == results[1], results
+    paths = [call["path"] for call in ctx.mock.web_calls]
+    assert paths == ["/web/manual", "/web/manual"], paths
+
+
+def body_lines(result):
+    """The page lines of a page_fetch result, without its header and notes."""
+    _, _, rest = result.partition("\n\n")
+    return [line for line in rest.split("\n")
+            if line and not line.startswith("[")]
+
+
+def fetch_all_pages(ctx, url, limit=2000):
+    """Follow continuation calls from the first line to the end of a page."""
+    results, offset = [], 1
+    while True:
+        ctx.mock.reset()
+        _, result = run_web(ctx, "page_fetch", {"url": url, "offset": offset, "limit": limit})
+        assert not result.startswith("ERROR: "), result
+        assert len(result.encode()) <= 8192, len(result.encode())
+        results.append(result)
+        found = re.search(r'\[continue with page_fetch \{.*"offset":(\d+),', result)
+        if not found:
+            return results
+        following = int(found.group(1))
+        assert following > offset, (offset, result[-400:])
+        assert len(results) < 20, results
+        offset = following
+
+
+def test_web_fetch_breaks_lines_at_block_tags(ctx):
+    """Minified div, list and definition markup keeps one block per line."""
+    _, result = run_web(ctx, "page_fetch", {"url": f"{ctx.mock.origin}/web/divs"})
+    lines = body_lines(result)
+    for line in ("alpha one", "beta two", "- gamma item", "- delta item",
+                 "term word", "definition text", "before rule", "after rule",
+                 "cell a | cell b"):
+        assert line in lines, result
+
+
+def test_web_fetch_reaches_every_byte_of_a_long_line(ctx):
+    """A 20 KB line splits at spaces, and paging walks through all of it."""
+    url = f"{ctx.mock.origin}/web/longline"
+    results = fetch_all_pages(ctx, url)
+    assert len(results) > 1, results
+    text = "\n".join(line for r in results for line in body_lines(r))
+    words = text.split()
+    assert words == [f"w{i:05d}" for i in range(1, 2901)] + ["last", "line"], text[-300:]
+    assert all(len(line.encode()) <= 2048 for line in text.split("\n")), text
+
+
+def test_web_fetch_reaches_a_long_run_without_spaces(ctx):
+    """A run with no space splits on character boundaries, even as the last line."""
+    url = f"{ctx.mock.origin}/web/longhtml"
+    results = fetch_all_pages(ctx, url)
+    lines = [line for r in results for line in body_lines(r)]
+    assert "".join(lines) == "x\u03a9" * 7000, lines[-1][-100:]
+
+
+def test_web_fetch_clips_a_line_that_cannot_fit(ctx):
+    """A long URL leaves less room than one line: the line is clipped, never skipped."""
+    url = f"{ctx.mock.origin}/web/longline?pad={'p' * 2900}"
+    _, result = run_web(ctx, "page_fetch", {"url": url})
+    assert len(result.encode()) <= 8192, len(result.encode())
+    tail = result.replace("p" * 2900, "<pad>")
+    assert "w00001 w00002" in result, tail
+    assert "[line 1 clipped; the full output file has the whole line]" in result, tail
+    assert '"offset":2,' in result, tail
+    assert "[full output: " in result, tail
 
 
 def test_web_fetch_validates_urls_before_networking(ctx):
@@ -576,8 +763,13 @@ def test_web_argument_limits_are_refused_not_clamped(ctx):
         ("internet_search", {"query": "a\x00b"}, "nul byte"),
         ("internet_search", {"query": "x" * 1025}, "query too long"),
         ("internet_search", {"query": "ok", "limit": 11}, "1..10"),
+        ("internet_search", {"query": "ok", "read": 4}, "0..3"),
+        ("internet_search", {"query": "ok", "read": -1}, "0..3"),
+        ("internet_search", {"query": "ok", "read": 1.5}, "0..3"),
         ("page_fetch", {"url": "http://example.com/" + "x" * 4096}, "URL too long"),
         ("page_fetch", {"url": "http://example.com/", "limit": 2001}, "1..2000"),
+        ("page_fetch", {"url": "http://example.com/", "query": "x" * 1025}, "query too long"),
+        ("page_fetch", {"url": "http://example.com/", "query": 7}, "query must be a string"),
     ]
     spec = ",".join(f"tool={name}:{json.dumps(args)}" for name, args, _ in calls)
     ctx.scenario(spec + ",final_text=done")
@@ -594,12 +786,58 @@ def test_web_argument_limits_are_refused_not_clamped(ctx):
 def test_web_tools_can_be_disabled_together(ctx):
     """The existing disable list withholds and refuses both network tools."""
     ctx.scenario('tool=page_fetch:{"url":"https://example.com/"},final_text=done')
-    s = ctx.spawn(args=["--disable-tools", "internet_search,page_fetch"])
+    s = ctx.spawn(ARQAN_SYSTEM_PROMPT=None,
+                  args=["--disable-tools", "internet_search,page_fetch"])
     s.submit("fetch")
     s.wait_turn_done()
     names = [t["function"]["name"] for t in ctx.mock.requests[0]["tools"]]
     assert "internet_search" not in names and "page_fetch" not in names
     assert "page_fetch is disabled" in ctx.mock.tool_results()[-1]
+    system = ctx.mock.requests[0]["messages"][0]["content"]
+    for line in (WEB_DISK, WEB_READ, WEB_QUERY, WEB_TASK):
+        assert line not in system, system
+
+
+WEB_DISK = ("- Before searching the web, look on disk: vendored or installed "
+            "dependency sources, man pages and --help describe the version this "
+            "project uses; name that version in a web query\n")
+WEB_QUERY = ("- To answer a question from a page, give page_fetch a query; "
+             "use offset only to read the whole page\n")
+WEB_READ = ("- To read the top results of a search, set read on "
+            "internet_search instead of fetching each page\n")
+WEB_TASK = ("- Delegate research that needs several searches and pages to "
+            "task\n")
+
+
+def built_in_prompt(ctx, *args, **env):
+    ctx.scenario("final_text=done")
+    s = ctx.spawn(ARQAN_SYSTEM_PROMPT=None, args=list(args), **env)
+    s.submit("hello")
+    s.wait_turn_done()
+    s.close()
+    return ctx.mock.requests[-1]["messages"][0]["content"]
+
+
+def test_the_prompt_guides_web_lookups_only_when_offered(ctx):
+    """Each web line names tools the agent has, after the tool guidance."""
+    offered = built_in_prompt(ctx)
+    for line in (WEB_DISK, WEB_READ, WEB_QUERY, WEB_TASK):
+        assert line in offered, offered
+    assert offered.index("- After changing code") < offered.index(WEB_DISK), offered
+
+    no_page = built_in_prompt(ctx, "--disable-tools", "page_fetch")
+    assert WEB_DISK in no_page and WEB_READ in no_page and WEB_TASK in no_page, no_page
+    assert WEB_QUERY not in no_page, no_page
+
+    no_search = built_in_prompt(ctx, "--disable-tools", "internet_search")
+    assert WEB_READ not in no_search and WEB_QUERY in no_search, no_search
+
+    no_task = built_in_prompt(ctx, ARQAN_SUBAGENTS="false")
+    assert WEB_DISK in no_task and WEB_QUERY in no_task, no_task
+    assert WEB_TASK not in no_task, no_task
+
+    no_disk = built_in_prompt(ctx, "--disable-tools", "read,bash")
+    assert WEB_DISK not in no_disk and WEB_QUERY in no_disk, no_disk
 
 
 def test_web_transfer_keeps_ctrl_c_responsive(ctx):
@@ -637,6 +875,80 @@ def test_web_telemetry_keeps_queries_urls_and_content_out(ctx):
     events = [json.loads(line) for p in files for line in p.read_text().splitlines()]
     web_http = [e for e in events if e.get("ev") == "http" and e.get("path") == "internet_search"]
     assert web_http and len(web_http[-1]["host"]) == 16, web_http
+
+
+def test_web_search_reads_its_top_results(ctx):
+    """read quotes the best passages of the top pages, and caches them."""
+    query = "frobnicator timeout"
+    manual = f"{ctx.mock.origin}/web/manual"
+    calls = [
+        ("internet_search", {"query": query, "read": 2}),
+        ("page_fetch", {"url": manual, "query": "frobnicator"}),
+    ]
+    ctx.scenario(",".join(f"tool={n}:{json.dumps(a)}" for n, a in calls)
+                 + ",final_text=web+done")
+    s = ctx.spawn(rows=40, **web_env(ctx))
+    s.submit("search and read")
+    s.wait_text("web done")
+    s.wait_turn_done()
+    last = ctx.mock.requests[-1]["messages"]
+    results = [m.get("content", "") for m in last if m.get("role") == "tool"]
+    assert len(results) == 2, results
+    search = results[0]
+    assert len(search.encode()) <= 8192, len(search.encode())
+    assert search.startswith("Search results: 2\n"), search
+    assert "\nPages read (untrusted):\n" in search, search
+    first = search.index("\nResult 1, lines ")
+    second = search.index("\nResult 2, lines ")
+    assert first < search.index("defaults to 37 seconds") < second, search
+    assert second < search.index("raised to 90 seconds"), search
+    assert "ordinary manual text" not in search, search
+    assert "defaults to 37 seconds" in results[1], results[1]
+    paths = sorted(call["path"] for call in ctx.mock.web_calls)
+    assert paths == ["/web/frob", "/web/manual", "/web/search"], paths
+    assert "text/markdown" in (ctx.mock.web_accepts[-1] or ""), ctx.mock.web_accepts
+
+
+def test_web_search_reports_a_page_it_could_not_read(ctx):
+    """One page failing leaves the search and the other page standing."""
+    _, result = run_web(ctx, "internet_search", {"query": "frob broken timeout", "read": 2})
+    assert result.startswith("Search results: 2\n"), result
+    assert "defaults to 37 seconds" in result, result
+    assert "\nResult 2: could not read: HTTP status 404\n" in result + "\n", result
+
+
+def test_web_search_read_keeps_ctrl_c_responsive(ctx):
+    """Reading result pages pumps the TUI, and Ctrl-C interrupts it."""
+    args = {"query": "frob slow", "read": 1}
+    ctx.scenario(f"tool=internet_search:{json.dumps(args)},final_text=too+late")
+    s = ctx.spawn(**web_env(ctx))
+    s.submit("search slowly")
+    s.wait_for(lambda t: any(c["path"] == "/web/slow" for c in ctx.mock.web_calls),
+               "the slow page request")
+    s.key("ctrl-c")
+    s.wait_text("[interrupted]", timeout=1.0)
+    s.wait_turn_done()
+    assert "too late" not in s.text()
+
+
+def test_web_search_read_keeps_urls_and_content_out_of_telemetry(ctx):
+    """Pages read by a search log only an operation label and a hashed host."""
+    ctx.write_config("telemetry = true\n")
+    args = {"query": "frob private-needle", "read": 2}
+    ctx.scenario(f"tool=internet_search:{json.dumps(args)},final_text=private-final")
+    s = ctx.spawn(**web_env(ctx))
+    s.submit("private prompt needle")
+    s.wait_turn_done()
+
+    files = list((ctx.home / ".local" / "state" / "arqan" / "telemetry").rglob("*.jsonl"))
+    assert files
+    logged = "".join(p.read_text() for p in files)
+    for value in ("private-needle", "frobnicator", "37 seconds", "/web/manual",
+                  "/web/frob", ctx.mock.origin):
+        assert value not in logged, logged
+    events = [json.loads(line) for p in files for line in p.read_text().splitlines()]
+    reads = [e for e in events if e.get("ev") == "http" and e.get("path") == "search_read"]
+    assert len(reads) == 2 and all(len(e["host"]) == 16 for e in reads), reads
 
 
 def test_web_results_survive_session_resume(ctx):
