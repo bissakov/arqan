@@ -710,9 +710,34 @@ static u32 elapsed_ms(f64 started) {
     return ms > (f64)UINT32_MAX ? UINT32_MAX : (u32)ms;
 }
 
+/* NOTE: Ghostty uses the notification text as its ID, and Plasma shows no
+ * popup when a notification that timed out is replaced. Naming what is asked
+ * keeps the text different from one request to the next. */
+static void notify_input_needed(Arena *scratch, Str label, Str detail,
+                                Str fallback) {
+    detail = str_clip_utf8(str_trim(detail), AGENT_MAX_NOTIFY_TEXT);
+    if (!detail.n) {
+        notify_event(NOTIFY_INPUT_NEEDED, fallback, 0);
+        return;
+    }
+    size_t mark = scratch->off;
+    Buf b;
+    buf_init(&b, scratch, label.n + 2 + detail.n);
+    if (label.n) {
+        buf_puts(&b, label);
+        buf_puts(&b, STR(": "));
+    }
+    buf_puts(&b, detail);
+    notify_event(NOTIFY_INPUT_NEEDED, buf_ok(&b) ? buf_finish(&b) : fallback,
+                 0);
+    scratch->off = mark;
+}
+
 static Str ask_user_answer(Agent *ag, Str args) {
     JVal *j = json_parse(ag->scratch, args);
     Str question = json_str(j, STR("question"));
+    notify_input_needed(ag->scratch, (Str){0}, question,
+                        STR("the assistant asked a question"));
     const JVal *opts = j ? json_get(j, STR("options")) : NULL;
     size_t n = opts && opts->type == J_ARR ? opts->u.arr.n : 0;
     if (n > AGENT_MAX_POPUP - 1) n = AGENT_MAX_POPUP - 1;
@@ -811,9 +836,19 @@ static Str ask_user_answer(Agent *ag, Str args) {
     return str_dup(ag->persist, str_c(typed));
 }
 
+static Str approval_target(Arena *scratch, ToolApprovalClass approval, Str name,
+                           Str args) {
+    if (approval == TOOL_APPROVAL_MCP) return name;
+    JVal *j = json_parse(scratch, args);
+    Str patch = json_str(j, STR("patch"));
+    if (patch.n) return render_patch_target(patch, scratch);
+    Str path = json_str(j, STR("path"));
+    return path.n ? path : json_str(j, STR("command"));
+}
 
-static ToolAuthorization
-tool_authorization(Agent *ag, ToolApprovalClass approval, size_t at) {
+static ToolAuthorization tool_authorization(Agent *ag,
+                                            ToolApprovalClass approval,
+                                            Str name, Str args, size_t at) {
     if (approval == TOOL_APPROVAL_NONE
         || ag->cfg->permissions == PERMISSION_FREE
         || (ag->permission_grants & ((u8)1u << (u8)approval)))
@@ -829,7 +864,18 @@ tool_authorization(Agent *ag, ToolApprovalClass approval, size_t at) {
     }
 
     tui_activity_end();
-    notify_event(NOTIFY_INPUT_NEEDED, cls, 0);
+    {
+        size_t mark = ag->scratch->off;
+        char label[64];
+        i32 ln = snprintf(label, sizeof label, "allow %.*s", (i32)cls.n, cls.p);
+        Str asked = ln > 0 && (size_t)ln < sizeof label
+                        ? (Str){label, (size_t)ln}
+                        : cls;
+        notify_input_needed(ag->scratch, asked,
+                            approval_target(ag->scratch, approval, name, args),
+                            cls);
+        ag->scratch->off = mark;
+    }
     Str once = STR("Approve only this call");
     Str remembered = STR("Approve this class until the process exits");
     if (approval == TOOL_APPROVAL_BASH) {
@@ -875,6 +921,11 @@ static TurnAction submit_plan_answer(Agent *ag, Str args, Str *result) {
                       "complete plan.");
         return TURN_CONTINUE;
     }
+    Str opening = str_trim(plan);
+    while (opening.n && opening.p[0] == '#')
+        opening = str_trim(str_drop(opening, 1));
+    notify_input_needed(ag->scratch, STR("plan ready"), opening,
+                        STR("a plan is ready to review"));
     size_t at = tui_transcript_pos();
     if (!g_turn.one_shot) render_plan(plan);
 
@@ -1776,7 +1827,8 @@ static ToolCallResult run_regular_tool(Agent *ag, size_t call, size_t tool,
     if (tool != TOOL_NONE && !tools_disabled(ag->tools, tool)
         && tools_available(ag->tools, tool, ag->cfg->mode))
         approval = tools_call_approval(ag->tools, tool, args, ag->scratch);
-    ToolAuthorization authorization = tool_authorization(ag, approval, call_at);
+    ToolAuthorization authorization =
+        tool_authorization(ag, approval, name, args, call_at);
     if (authorization == TOOL_AUTH_DENIED && approval != TOOL_APPROVAL_NONE) {
         Str cls = tools_approval_name(approval);
         (void)tools_run(ag->tools, tool, args, authorization, ag->scratch, &out,
@@ -2031,8 +2083,6 @@ static TurnAction run_round_calls(Agent *ag, size_t first, size_t last,
 
         if (str_eq(name, STR("submit_plan"))) {
             tui_activity_end();
-            notify_event(NOTIFY_INPUT_NEEDED, STR("a plan is ready to review"),
-                         0);
             Str result = {0};
             TurnAction act = submit_plan_answer(ag, args, &result);
             if (!add_result(ag, i, STR("plan"), result, 0)) return TURN_FULL;
@@ -2041,8 +2091,6 @@ static TurnAction run_round_calls(Agent *ag, size_t first, size_t last,
         }
         if (str_eq(name, STR("ask_user"))) {
             tui_activity_end();
-            notify_event(NOTIFY_INPUT_NEEDED,
-                         STR("the assistant asked a question"), 0);
             Str answer = ask_user_answer(ag, args);
             b8 dismissed = !answer.n;
             if (dismissed)
