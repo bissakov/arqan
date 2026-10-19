@@ -689,18 +689,16 @@ static b8 page_lines(Buf *out, b8 spilled, const char *input, Str body,
         }
         if (!fits) {
             char clip_note[96];
-            snprintf(clip_note, sizeof clip_note, "[line %zu clipped%s]\n",
-                     first,
-                     spilled ? "; the full line is in the spill file" : "");
+            snprintf(
+                clip_note, sizeof clip_note, "[line %zu clipped%s]\n", first,
+                spilled ? "; the full output file has the whole line" : "");
             size_t need = base + strlen(clip_note) + 1;
             Str part = need < AGENT_TOOL_RESULT_BYTES
                            ? str_clip_utf8(line, AGENT_TOOL_RESULT_BYTES - need)
                            : (Str){line.p, 0};
             if (!part.n) {
                 snprintf(err, err_cap,
-                         "the page header and continuation call leave no room "
-                         "for page text in the %u byte result limit",
-                         (unsigned)AGENT_TOOL_RESULT_BYTES);
+                         "the URL is too long for a result to hold page text");
                 return false;
             }
             buf_puts(&page, part);
@@ -757,9 +755,7 @@ static b8 page_passages(Buf *out, b8 spilled, Str body, const char *query,
     if (spilled) tail += AGENT_SPILL_NOTE_BYTES;
     if (!buf_ok(out) || out->n + tail + 256 > AGENT_TOOL_RESULT_BYTES) {
         snprintf(err, err_cap,
-                 "the page header leaves no room for passages in the %u byte "
-                 "result limit",
-                 (unsigned)AGENT_TOOL_RESULT_BYTES);
+                 "the URL is too long for a result to hold passages");
         return false;
     }
     PassageReport report;
@@ -776,16 +772,16 @@ static b8 page_passages(Buf *out, b8 spilled, Str body, const char *query,
         buf_puts(out, buf_finish(&found));
     } else if (report.matched) {
         buf_putf(out,
-                 "Passages matching the query: %zu, none small enough to "
-                 "show.\n",
+                 "Passages matching the query: %zu; none fits in a result. "
+                 "Read the page with offset.\n",
                  report.matched);
     } else if (!q->n) {
-        buf_puts(out, STR("No passage matches the query: it has no words "
-                          "left once stopwords and search operators are "
-                          "removed.\n"));
+        buf_puts(out, STR("No passage matches the query: use more specific "
+                          "words.\n"));
     } else {
-        buf_puts(out, STR("No passage matches the query. Read the page with "
-                          "offset, or grep the spill file.\n"));
+        buf_puts(out, STR("No passage matches the query. Try other words, "
+                          "read the page with offset, or grep the full "
+                          "output file.\n"));
     }
     buf_puts(out, STR("\nOutline:\n"));
     buf_puts(out, headings.n ? headings : STR("(no headings)\n"));

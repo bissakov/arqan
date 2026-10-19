@@ -582,11 +582,14 @@ def test_web_fetch_query_returns_the_passages_that_match(ctx):
 
 
 def test_web_fetch_query_reports_no_match_with_the_outline(ctx):
-    """A query with no match says so and still gives the outline and spill file."""
+    """A query with no match says so and still gives the outline and full output."""
     url = f"{ctx.mock.origin}/web/manual"
     _, result = run_web(ctx, "page_fetch", {"url": url, "query": "zebra"})
-    assert "No passage matches the query." in result, result
+    assert "No passage matches the query. Try other words" in result, result
     assert "\nOutline:\n" in result and "[full output: " in result, result
+    ctx.mock.reset()
+    _, result = run_web(ctx, "page_fetch", {"url": url, "query": "the of"})
+    assert "No passage matches the query: use more specific words.\n" in result, result
 
 
 def test_web_fetch_query_and_offset_are_refused_together(ctx):
@@ -720,7 +723,7 @@ def test_web_fetch_clips_a_line_that_cannot_fit(ctx):
     assert len(result.encode()) <= 8192, len(result.encode())
     tail = result.replace("p" * 2900, "<pad>")
     assert "w00001 w00002" in result, tail
-    assert "[line 1 clipped; the full line is in the spill file]" in result, tail
+    assert "[line 1 clipped; the full output file has the whole line]" in result, tail
     assert '"offset":2,' in result, tail
     assert "[full output: " in result, tail
 
