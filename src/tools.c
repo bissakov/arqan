@@ -3023,7 +3023,8 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         "{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\","
         "\"description\":\"public HTTP or HTTPS URL\"},"
         "\"offset\":{\"type\":\"integer\",\"description\":\"first extracted body line, 1-based; default 1\"},"
-        "\"limit\":{\"type\":\"integer\",\"description\":\"at most 2000 extracted lines\"}},"
+        "\"limit\":{\"type\":\"integer\",\"description\":\"at most 2000 extracted lines\"},"
+        "\"query\":{\"type\":\"string\",\"description\":\"words or quoted phrases; returns the passages that best match them, with line numbers and an outline, instead of the top of the page\"}},"
         "\"required\":[\"url\"]}",
         page_fetch_run);
     if (code_search_available())

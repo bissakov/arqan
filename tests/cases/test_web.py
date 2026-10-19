@@ -64,6 +64,7 @@ def test_web_tool_schemas_are_offered_in_build_mode(ctx):
     assert "web_search" not in tools and "web_fetch" not in tools
     assert tools["internet_search"]["parameters"]["required"] == ["query"]
     assert tools["page_fetch"]["parameters"]["required"] == ["url"]
+    assert tools["page_fetch"]["parameters"]["properties"]["query"]["type"] == "string"
     assert "untrusted" in tools["page_fetch"]["description"]
 
 
@@ -552,12 +553,46 @@ def test_web_fetch_pages_at_line_boundaries(ctx):
     url = f"{ctx.mock.origin}/web/lines"
     _, first = run_web(ctx, "page_fetch", {"url": url, "limit": 2000})
     assert len(first.encode()) <= 8192, len(first.encode())
+    assert "\nLines 1-" in first and " of 2500\n\n" in first, first[:300]
     assert "line 1\n" in first
     assert f'[continue with page_fetch {{"url":"{url}","offset":' in first, first[-300:]
 
     ctx.mock.reset()
     _, later = run_web(ctx, "page_fetch", {"url": url, "offset": 2400, "limit": 100})
+    assert "\nLines 2400-2499 of 2500\n\n" in later, later[:300]
     assert "line 2400\n" in later and "line 2499\n" in later, later
+
+
+def test_web_fetch_query_returns_the_passages_that_match(ctx):
+    """A query deep in a long page comes back with its heading and an outline."""
+    url = f"{ctx.mock.origin}/web/manual"
+    _, result = run_web(ctx, "page_fetch", {"url": url, "query": "frobnicator timeout default"})
+    assert len(result.encode()) <= 8192, len(result.encode())
+    assert result.startswith("External page (untrusted): Manual\n"), result
+    assert "\nLines: " in result and "\nPassages matching the query: " in result, result
+    assert 'under "Configuring the frobnicator timeout"]' in result, result
+    assert "defaults to 37 seconds" in result, result
+    assert "ordinary manual text" not in result.partition("Outline:")[0], result
+    outline = result.partition("\nOutline:\n")[2]
+    assert ": # Manual\n" in outline and ": ## Section 1\n" in outline, result
+    assert "more headings]" in outline, result
+    assert "[full output: " in outline, result
+
+
+def test_web_fetch_query_reports_no_match_with_the_outline(ctx):
+    """A query with no match says so and still gives the outline and spill file."""
+    url = f"{ctx.mock.origin}/web/manual"
+    _, result = run_web(ctx, "page_fetch", {"url": url, "query": "zebra"})
+    assert "No passage matches the query." in result, result
+    assert "\nOutline:\n" in result and "[full output: " in result, result
+
+
+def test_web_fetch_query_and_offset_are_refused_together(ctx):
+    """A query picks passages, so a line offset alongside it is an error."""
+    url = f"{ctx.mock.origin}/web/manual"
+    _, result = run_web(ctx, "page_fetch", {"url": url, "query": "timeout", "offset": 2})
+    assert result == "ERROR: offset and query cannot be combined", result
+    assert not ctx.mock.web_calls, ctx.mock.web_calls
 
 
 def body_lines(result):
@@ -663,6 +698,8 @@ def test_web_argument_limits_are_refused_not_clamped(ctx):
         ("internet_search", {"query": "ok", "limit": 11}, "1..10"),
         ("page_fetch", {"url": "http://example.com/" + "x" * 4096}, "URL too long"),
         ("page_fetch", {"url": "http://example.com/", "limit": 2001}, "1..2000"),
+        ("page_fetch", {"url": "http://example.com/", "query": "x" * 1025}, "query too long"),
+        ("page_fetch", {"url": "http://example.com/", "query": 7}, "query must be a string"),
     ]
     spec = ",".join(f"tool={name}:{json.dumps(args)}" for name, args, _ in calls)
     ctx.scenario(spec + ",final_text=done")

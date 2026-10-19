@@ -992,6 +992,21 @@ class _Handler(_AnthropicHandlerMixin, BaseHTTPRequestHandler):
                 "<table><tr><td><div>cell a</div></td><td>cell b</td></tr></table>"
                 "</body></html>"
             ).encode())
+        elif path == "/web/manual":
+            sections = []
+            for i in range(1, 61):
+                if i == 47:
+                    sections.append(
+                        "<h2>Configuring the frobnicator timeout</h2>"
+                        "<p>The frobnicator timeout defaults to 37 seconds. "
+                        "Set FROB_TIMEOUT to change it.</p>")
+                else:
+                    filler = " ".join([f"ordinary manual text about topic {i}"] * 20)
+                    sections.append(f"<h2>Section {i}</h2><p>{filler}</p>")
+            self._body(200, "text/html", (
+                "<html><head><title>Manual</title></head><body><main>"
+                "<h1>Manual</h1>" + "".join(sections) + "</main></body></html>"
+            ).encode())
         elif path == "/web/longline":
             words = " ".join(f"w{i:05d}" for i in range(1, 2901))
             self._body(200, "text/plain", (words + "\nlast line\n").encode())

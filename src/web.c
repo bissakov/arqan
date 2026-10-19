@@ -9,10 +9,13 @@
 #include <time.h>
 #include <curl/curl.h>
 
-#define WEB_EXTRACT_BYTES (4u << 20)
-#define WEB_TITLE_BYTES   512u
-#define WEB_SNIPPET_BYTES 1024u
-#define WEB_LINE_BYTES    2048u
+#define WEB_EXTRACT_BYTES      (4u << 20)
+#define WEB_TITLE_BYTES        512u
+#define WEB_SNIPPET_BYTES      1024u
+#define WEB_LINE_BYTES         2048u
+#define WEB_LINES_HEADER_BYTES 48u
+#define WEB_OUTLINE_BYTES      1024u
+#define WEB_SUMMARY_BYTES      160u
 #define WEB_PAGE_ACCEPT                                             \
     "text/markdown, text/html;q=0.9, application/xhtml+xml;q=0.9, " \
     "text/plain;q=0.8, */*;q=0.5"
@@ -630,30 +633,11 @@ static Str plain_extract(Str source, Arena *scratch, b8 *too_large) {
     return out;
 }
 
-static b8 page_output(Buf *out, Str title, const char *effective,
-                      const char *input, Str body, size_t first, size_t limit,
-                      Arena *scratch, char *err, size_t err_cap) {
-    static Spill spill;
-    spill_open(&spill, "page_fetch", "txt", str_c(input));
-    spill_put(&spill, body.p, body.n);
-    if (body.n && body.p[body.n - 1] != '\n') spill_put(&spill, "\n", 1);
-
-    if (!title.n) title = STR("(untitled)");
-    buf_puts(out, STR("External page (untrusted): "));
-    buf_puts(out, str_clip_utf8(title, WEB_TITLE_BYTES));
-    buf_puts(out, STR("\nFinal URL: "));
-    buf_puts(out, str_c(effective));
-    buf_puts(out, STR("\n\n"));
-    if (!buf_ok(out) || out->n >= AGENT_TOOL_RESULT_BYTES) {
-        spill_finish(&spill, out, false);
-        snprintf(err, err_cap, "page header exceeds the %u byte result limit",
-                 (unsigned)AGENT_TOOL_RESULT_BYTES);
-        return false;
-    }
-
+static b8 page_lines(Buf *out, const Spill *spill, const char *input, Str body,
+                     size_t first, size_t limit, Arena *scratch, b8 *keep,
+                     char *err, size_t err_cap) {
     size_t total = str_lines(body);
     if (first > total && !(first == 1 && total == 0)) {
-        spill_finish(&spill, out, false);
         snprintf(err, err_cap,
                  "page has %zu body lines; offset %zu is past its end", total,
                  first);
@@ -668,20 +652,22 @@ static b8 page_output(Buf *out, Str title, const char *effective,
     buf_json_str(&note, str_c(input));
     buf_puts(&note, STR(",\"offset\":"));
     size_t note_head = note.n;
-    if (!buf_ok(&note)) {
-        spill_finish(&spill, out, false);
-        snprintf(err, err_cap, "continuation call does not fit in memory");
+    Buf page;
+    buf_init(&page, scratch, 8192);
+    if (!buf_ok(&note) || !buf_ok(&page)) {
+        snprintf(err, err_cap, "page text does not fit in memory");
         return false;
     }
-    size_t reserve = note_head + 64;
-    if (spill.fd >= 0) reserve += AGENT_SPILL_NOTE_BYTES;
+    size_t reserve = WEB_LINES_HEADER_BYTES + note_head + 64;
+    if (spill->fd >= 0) reserve += AGENT_SPILL_NOTE_BYTES;
     size_t shown = 0;
     b8 clipped = false;
     while (shown < limit) {
         size_t line_off = off;
         if (!str_line(body, &off, &line)) break;
-        b8 fits = out->n + reserve < AGENT_TOOL_RESULT_BYTES
-                  && line.n + 1 <= AGENT_TOOL_RESULT_BYTES - out->n - reserve;
+        size_t base = out->n + reserve + page.n;
+        b8 fits = base < AGENT_TOOL_RESULT_BYTES
+                  && line.n + 1 <= AGENT_TOOL_RESULT_BYTES - base;
         if (!fits && shown) {
             off = line_off;
             break;
@@ -690,42 +676,141 @@ static b8 page_output(Buf *out, Str title, const char *effective,
             char clip_note[96];
             snprintf(
                 clip_note, sizeof clip_note, "[line %zu clipped%s]\n", first,
-                spill.fd >= 0 ? "; the full line is in the spill file" : "");
-            size_t need = out->n + reserve + strlen(clip_note) + 1;
+                spill->fd >= 0 ? "; the full line is in the spill file" : "");
+            size_t need = base + strlen(clip_note) + 1;
             Str part = need < AGENT_TOOL_RESULT_BYTES
                            ? str_clip_utf8(line, AGENT_TOOL_RESULT_BYTES - need)
                            : (Str){line.p, 0};
             if (!part.n) {
-                spill_finish(&spill, out, false);
                 snprintf(err, err_cap,
                          "the page header and continuation call leave no room "
                          "for page text in the %u byte result limit",
                          (unsigned)AGENT_TOOL_RESULT_BYTES);
                 return false;
             }
-            buf_puts(out, part);
-            buf_putc(out, '\n');
-            buf_puts(out, str_c(clip_note));
+            buf_puts(&page, part);
+            buf_putc(&page, '\n');
+            buf_puts(&page, str_c(clip_note));
             clipped = true;
             shown++;
             break;
         }
-        buf_puts(out, line);
-        buf_putc(out, '\n');
+        buf_puts(&page, line);
+        buf_putc(&page, '\n');
         shown++;
     }
+    Str text = buf_finish(&page);
+    if (!buf_ok(&page)) {
+        snprintf(err, err_cap, "page text does not fit in memory");
+        return false;
+    }
+    if (shown)
+        buf_putf(out, "Lines %zu-%zu of %zu\n\n", first, first + shown - 1,
+                 total);
+    else
+        buf_putf(out, "Lines: %zu\n\n", total);
+    buf_puts(out, text);
     if (off < body.n) {
         buf_putf(&note, "%zu,\"limit\":%zu}]", first + shown, limit);
         Str n = buf_finish(&note);
         if (!buf_ok(&note) || n.n + out->n > AGENT_TOOL_RESULT_BYTES) {
-            spill_finish(&spill, out, false);
             snprintf(err, err_cap,
                      "continuation call exceeds the result limit");
             return false;
         }
         buf_puts(out, n);
     }
-    spill_finish(&spill, out, first > 1 || off < body.n || clipped);
+    *keep = first > 1 || off < body.n || clipped;
+    return true;
+}
+
+static b8 page_passages(Buf *out, const Spill *spill, Str body,
+                        const char *query, Arena *scratch, char *err,
+                        size_t err_cap) {
+    buf_putf(out, "Lines: %zu\n\n", str_lines(body));
+    PassageQuery *q = arena_new(scratch, PassageQuery, 1);
+    Buf outline, found;
+    buf_init(&outline, scratch, WEB_OUTLINE_BYTES);
+    buf_init(&found, scratch, 4096);
+    if (!q || !buf_ok(&outline) || !buf_ok(&found)) {
+        snprintf(err, err_cap, "page text does not fit in memory");
+        return false;
+    }
+    passage_query(str_c(query), q);
+    passage_outline(body, WEB_OUTLINE_BYTES, &outline);
+    Str headings = buf_finish(&outline);
+    size_t tail = WEB_SUMMARY_BYTES + headings.n + 32;
+    if (spill->fd >= 0) tail += AGENT_SPILL_NOTE_BYTES;
+    if (!buf_ok(out) || out->n + tail + 256 > AGENT_TOOL_RESULT_BYTES) {
+        snprintf(err, err_cap,
+                 "the page header leaves no room for passages in the %u byte "
+                 "result limit",
+                 (unsigned)AGENT_TOOL_RESULT_BYTES);
+        return false;
+    }
+    PassageReport report;
+    if (!passage_write(body, q, AGENT_TOOL_RESULT_BYTES - out->n - tail,
+                       scratch, &found, &report)) {
+        snprintf(err, err_cap, "ranking the page ran out of memory");
+        return false;
+    }
+    if (report.shown) {
+        buf_putf(out, "Passages matching the query: %zu", report.matched);
+        if (report.shown < report.matched)
+            buf_putf(out, " (%zu shown)", report.shown);
+        buf_puts(out, STR("\n\n"));
+        buf_puts(out, buf_finish(&found));
+    } else if (report.matched) {
+        buf_putf(out,
+                 "Passages matching the query: %zu, none small enough to "
+                 "show.\n",
+                 report.matched);
+    } else if (!q->n) {
+        buf_puts(out, STR("No passage matches the query: it has no words "
+                          "left once stopwords and search operators are "
+                          "removed.\n"));
+    } else {
+        buf_puts(out, STR("No passage matches the query. Read the page with "
+                          "offset, or grep the spill file.\n"));
+    }
+    buf_puts(out, STR("\nOutline:\n"));
+    buf_puts(out, headings.n ? headings : STR("(no headings)\n"));
+    return true;
+}
+
+static b8 page_output(Buf *out, Str title, const char *effective,
+                      const char *input, Str body, size_t first, size_t limit,
+                      const char *query, Arena *scratch, char *err,
+                      size_t err_cap) {
+    static Spill spill;
+    spill_open(&spill, "page_fetch", "txt", str_c(input));
+    spill_put(&spill, body.p, body.n);
+    if (body.n && body.p[body.n - 1] != '\n') spill_put(&spill, "\n", 1);
+
+    if (!title.n) title = STR("(untitled)");
+    buf_puts(out, STR("External page (untrusted): "));
+    buf_puts(out, str_clip_utf8(title, WEB_TITLE_BYTES));
+    buf_puts(out, STR("\nFinal URL: "));
+    buf_puts(out, str_c(effective));
+    buf_putc(out, '\n');
+    if (!buf_ok(out) || out->n >= AGENT_TOOL_RESULT_BYTES) {
+        spill_finish(&spill, out, false);
+        snprintf(err, err_cap, "page header exceeds the %u byte result limit",
+                 (unsigned)AGENT_TOOL_RESULT_BYTES);
+        return false;
+    }
+
+    b8 keep = true;
+    b8 ok = query
+                ? page_passages(out, &spill, body, query, scratch, err, err_cap)
+                : page_lines(out, &spill, input, body, first, limit, scratch,
+                             &keep, err, err_cap);
+    if (!ok) {
+        spill_finish(&spill, out, false);
+        return false;
+    }
+    if (query && spill.fd >= 0) buf_putc(out, '\n');
+    spill_finish(&spill, out, keep);
     if (!buf_ok(out) || out->n > AGENT_TOOL_RESULT_BYTES) {
         snprintf(err, err_cap, "page result exceeds the %u byte limit",
                  (unsigned)AGENT_TOOL_RESULT_BYTES);
@@ -784,6 +869,24 @@ b8 page_fetch_run(Str args, Arena *scratch, Buf *out, char *err,
         || !web_arg_count(j, STR("limit"), AGENT_READ_LINES, AGENT_READ_LINES,
                           &limit, err, err_cap))
         return false;
+    char query_z[AGENT_WEB_QUERY_BYTES];
+    const char *query = NULL;
+    const JVal *query_v = json_get(j, STR("query"));
+    if (query_v && query_v->type != J_NULL) {
+        if (query_v->type != J_STR) {
+            snprintf(err, err_cap, "query must be a string");
+            return false;
+        }
+        if (!web_arg_cstr(query_v->u.s, query_z, sizeof query_z, "query", err,
+                          err_cap))
+            return false;
+        const JVal *offset_v = json_get(j, STR("offset"));
+        if (offset_v && offset_v->type != J_NULL) {
+            snprintf(err, err_cap, "offset and query cannot be combined");
+            return false;
+        }
+        query = query_z;
+    }
 
     Buf source;
     buf_init(&source, scratch, 65536);
@@ -833,8 +936,8 @@ b8 page_fetch_run(Str args, Arena *scratch, Buf *out, char *err,
                  (unsigned)WEB_EXTRACT_BYTES);
         return false;
     }
-    return page_output(out, title, effective, url, body, first, limit, scratch,
-                       err, err_cap);
+    return page_output(out, title, effective, url, body, first, limit, query,
+                       scratch, err, err_cap);
 }
 
 static b8 class_has(AgentHtmlNode *node, const char *want) {

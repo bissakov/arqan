@@ -1342,6 +1342,28 @@ b8 internet_search_run(Str args, Arena *scratch, Buf *out, char *err,
 b8 page_fetch_run(Str args, Arena *scratch, Buf *out, char *err,
                   size_t err_cap);
 
+// ---- passages -------------------------------------------------------------
+#define AGENT_PASSAGE_TERMS 16
+
+typedef struct {
+    char text[AGENT_WEB_QUERY_BYTES];
+    u32 off[AGENT_PASSAGE_TERMS];
+    u32 len[AGENT_PASSAGE_TERMS];
+    b8 phrase[AGENT_PASSAGE_TERMS];
+    size_t n;
+} PassageQuery;
+
+typedef struct {
+    size_t matched;
+    size_t shown;
+} PassageReport;
+
+void passage_query(Str query, PassageQuery *q);
+Str passage_term(const PassageQuery *q, size_t i);
+b8 passage_write(Str body, const PassageQuery *q, size_t budget, Arena *scratch,
+                 Buf *out, PassageReport *report);
+size_t passage_outline(Str body, size_t budget, Buf *out);
+
 typedef enum {
     SHELL_WRITES,
     SHELL_READS_OUTSIDE,

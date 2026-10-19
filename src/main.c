@@ -8,6 +8,7 @@
 #include "width.c"
 #include "json.c"
 #include "http.c"
+#include "passage.c"
 #include "web.c"
 #include "paths.c"
 #include "spill.c"

@@ -24,6 +24,11 @@
   many documentation hosts do, sends Markdown instead of HTML. The first
   `# ` heading is the page title. Search engines still get the HTML
   `Accept` header.
+- `page_fetch` takes a `query` of words or quoted phrases. Instead of the
+  top of the page, it returns the passages that best match the query, each
+  with its line range and heading, and an outline of the page's headings.
+  The rest of the page stays in the spill file. A page without `query`
+  now says which lines it shows, as `Lines a-b of N`.
 
 ### Changed
 
