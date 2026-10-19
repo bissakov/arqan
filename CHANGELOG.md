@@ -30,17 +30,18 @@
   The rest of the page stays in the spill file. A page without `query`
   now says which lines it shows, as `Lines a-b of N`.
 - `internet_search` takes `read`, from 0 to 3. It fetches that many of the
-  top results at the same time and quotes, under each result, the passages
-  that best match the search query. A page that cannot be read gets one
-  line saying why and does not fail the search. A later `page_fetch` of a
-  page read this way uses the copy already fetched.
+  top results at the same time and, after the results, quotes the passages
+  of each page that best match the search query. A page that cannot be
+  read gets one line saying why and does not fail the search. A later
+  `page_fetch` of a page read this way uses the copy already fetched.
 
 ### Changed
 
-- `page_fetch` keeps each page it fetched for 15 minutes, so the next page
-  of it, or a `query` on it, reads the copy on disk instead of downloading
-  and parsing the page again. The copy lives in the spill directory; one no
-  result named is deleted when the session ends.
+- Pages that `page_fetch` or `internet_search` fetched are kept for 15
+  minutes, so the next page of one, or a `query` on it, reads the copy on
+  disk instead of downloading and parsing the page again. Up to 16 pages
+  are kept in the spill directory. A copy that no result named is deleted
+  when it is replaced or when the session ends.
 - The built-in prompts guide web lookups when the web tools are offered:
   look on disk for the version the project uses before searching, use
   `read` with `internet_search`, give `page_fetch` a `query`, and, in the
