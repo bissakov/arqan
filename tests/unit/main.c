@@ -658,6 +658,63 @@ static void media_refuses_full_capacity(void) {
     CHECK(str_eq(m.bytes[0], image));
 }
 
+static b8 str_holds(Str hay, Str needle) {
+    for (size_t i = 0; needle.n <= hay.n && i <= hay.n - needle.n; i++)
+        if (!memcmp(hay.p + i, needle.p, needle.n)) return true;
+    return false;
+}
+
+static size_t media_write_two_rounds(MediaSet *m, Arena *session,
+                                     Arena *request, Str image) {
+    Buf want;
+    buf_init(&want, request, 64);
+    buf_base64(&want, image.p, image.n);
+    Str encoded = buf_finish(&want);
+    size_t first_round_off = 0;
+    for (i32 round = 0; round < 2; round++) {
+        Buf body;
+        buf_init(&body, request, 16);
+        media_write_anthropic(&body, m, 0);
+        CHECK(buf_ok(&body));
+        CHECK(str_holds(buf_finish(&body), encoded));
+        Buf openai;
+        buf_init(&openai, request, 16);
+        media_write_openai(&openai, m, 0);
+        CHECK(buf_ok(&openai));
+        CHECK(str_holds(buf_finish(&openai), encoded));
+        if (round == 0) first_round_off = session->off;
+    }
+    CHECK(session->off == first_round_off);
+    return first_round_off;
+}
+
+static void media_caches_the_encoding_while_the_arena_has_room(void) {
+    WITH_ARENA(session, 4096);
+    WITH_ARENA(request, 4096);
+    MediaSet m;
+    CHECK(media_init(&m, &session, 1));
+    char err[128] = "";
+    Str image = STR("GIF89a\x01\0\x01\0\0\0\0\0\0\0");
+    CHECK(media_add(&m, &session, image, STR("picture"), err, sizeof err) == 0);
+    size_t held = session.off;
+    CHECK(media_write_two_rounds(&m, &session, &request, image) > held);
+    CHECK(m.b64[0].n == (image.n + 2) / 3 * 4);
+}
+
+static void media_cache_leaves_half_the_session_arena_free(void) {
+    WITH_ARENA(session, 4096);
+    WITH_ARENA(request, 4096);
+    MediaSet m;
+    CHECK(media_init(&m, &session, 1));
+    char err[128] = "";
+    Str image = STR("GIF89a\x01\0\x01\0\0\0\0\0\0\0");
+    CHECK(media_add(&m, &session, image, STR("picture"), err, sizeof err) == 0);
+    CHECK(arena_alloc(&session, session.cap / 2 - session.off, 1));
+    size_t held = session.off;
+    CHECK(media_write_two_rounds(&m, &session, &request, image) == held);
+    CHECK(m.b64[0].n == 0);
+}
+
 /* ---- sha-256 ------------------------------------------------------------ */
 
 static b8 sha256_is(const void *p, size_t n, const char *want) {
@@ -1588,6 +1645,8 @@ int main(void) {
     RUN(tasklog_writes_the_end_past_the_cap);
     RUN(media_refuses_a_short_label_allocation);
     RUN(media_refuses_full_capacity);
+    RUN(media_caches_the_encoding_while_the_arena_has_room);
+    RUN(media_cache_leaves_half_the_session_arena_free);
 
     RUN(theme_colour_parse_accepts_the_value_forms);
     RUN(theme_colour_parse_rejects_everything_else);

@@ -745,14 +745,17 @@ void buf_base64(Buf *b, const void *p, size_t n) {
     }
     if (!buf_reserve(b, b->n + (n + 2) / 3 * 4)) return;
     const u8 *s = (const u8 *)p;
+    char *o = b->p + b->n;
     size_t i = 0;
     for (; n - i >= 3; i += 3) {
         u32 v = (u32)s[i] << 16 | (u32)s[i + 1] << 8 | s[i + 2];
-        b->p[b->n++] = k_b64[v >> 18];
-        b->p[b->n++] = k_b64[(v >> 12) & 0x3f];
-        b->p[b->n++] = k_b64[(v >> 6) & 0x3f];
-        b->p[b->n++] = k_b64[v & 0x3f];
+        o[0] = k_b64[v >> 18];
+        o[1] = k_b64[(v >> 12) & 0x3f];
+        o[2] = k_b64[(v >> 6) & 0x3f];
+        o[3] = k_b64[v & 0x3f];
+        o += 4;
     }
+    b->n = (size_t)(o - b->p);
     if (i == n) return;
     u32 v = (u32)s[i] << 16;
     if (n - i == 2) v |= (u32)s[i + 1] << 8;
