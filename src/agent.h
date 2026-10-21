@@ -1451,8 +1451,10 @@ Str prompt_title_ask(void);
  * Images attached to a turn. The bytes are kept as they were read and are
  * base64-encoded on the first request that carries them. The encoding is
  * kept beside them, since the request is rebuilt from the whole conversation
- * for every turn and every tool round after it: a session holds an image
- * once at its own size and once encoded, a third larger.
+ * for every turn and every tool round after it, but only while the session
+ * arena stays at least half free. That arena never shrinks, so past that
+ * point an image is encoded straight into each request instead, and the room
+ * is left for the conversation and for new images.
  *
  * An entry whose `bytes` are empty is one a resumed session could not read
  * back. It keeps its place so the numbering in the transcript still matches

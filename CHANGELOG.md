@@ -56,6 +56,11 @@
 
 ### Fixed
 
+- A session with many images no longer fills its memory with a second,
+  base64 copy of each one. That copy is kept only while at least half the
+  session memory is free; after that, an image is encoded into each request
+  instead. Before, a session of about 20 large images ran out of room for
+  new messages and images, and printed `arena OOM` errors on every request.
 - `page_fetch` keeps the block structure of pages built from `div`, list
   and definition list markup, so each block lands on its own line instead
   of one huge line. A line longer than 2048 bytes is split at a space, or

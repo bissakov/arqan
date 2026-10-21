@@ -278,24 +278,31 @@ void media_describe(char *out, size_t cap, const MediaSet *m, size_t id) {
         snprintf(out, cap, "%.*s - %s", (i32)kind.n, kind.p, size);
 }
 
-static Str media_base64(const MediaSet *m, size_t id) {
-    if (m->b64[id].n) return m->b64[id];
-    if (!m->arena || !m->bytes[id].n) return (Str){0};
-    Buf b;
-    buf_init(&b, m->arena, (m->bytes[id].n + 2) / 3 * 4 + 1);
-    buf_base64(&b, m->bytes[id].p, m->bytes[id].n);
-    Str enc = buf_finish(&b);
-    if (!buf_ok(&b)) return (Str){0};
-    m->b64[id] = enc;
-    return enc;
+static b8 media_cache_leaves_half_free(const Arena *a, size_t need) {
+    size_t left = a->cap - a->off;
+    return need <= left && left - need >= a->cap / 2;
 }
 
 static void media_put_base64(Buf *b, const MediaSet *m, size_t id) {
-    Str enc = media_base64(m, id);
-    if (enc.n)
-        buf_puts(b, enc);
-    else
-        buf_base64(b, m->bytes[id].p, m->bytes[id].n);
+    Str bytes = m->bytes[id];
+    if (m->b64[id].n) {
+        buf_puts(b, m->b64[id]);
+        return;
+    }
+    size_t encoded_n = (bytes.n + 2) / 3 * 4;
+    if (bytes.n && m->arena && bytes.n <= AGENT_MAX_IMAGE_BYTES
+        && media_cache_leaves_half_free(m->arena, encoded_n + 1)) {
+        Buf cache;
+        buf_init(&cache, m->arena, encoded_n + 1);
+        buf_base64(&cache, bytes.p, bytes.n);
+        Str enc = buf_finish(&cache);
+        if (buf_ok(&cache)) {
+            m->b64[id] = enc;
+            buf_puts(b, enc);
+            return;
+        }
+    }
+    buf_base64(b, bytes.p, bytes.n);
 }
 
 void media_write_openai(Buf *b, const MediaSet *m, size_t id) {
