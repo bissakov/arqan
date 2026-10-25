@@ -53,14 +53,16 @@ typedef struct {
 } Language;
 
 static Language languages[YHL_LANG_COUNT] = {
-    {"c", "c hlsl shaderlab", ".c .h .shader .cginc .hlsl .compute",
+    {"c", "c hlsl shaderlab glsl",
+     ".c .h .shader .cginc .hlsl .compute .glsl .vert .frag .comp .geom "
+     ".tesc .tese .task .mesh .rgen .rchit .rmiss .rahit .rint .rcall",
      tree_sitter_c, NULL, 0},
     {"cpp", "cpp c++ cxx", ".cc .cpp .cxx .hh .hpp .hxx", tree_sitter_cpp, NULL,
      0},
     {"rust", "rust rs", ".rs", tree_sitter_rust, NULL, 0},
     {"go", "go golang", ".go", tree_sitter_go, NULL, 0},
-    {"python", "python py", ".py .pyw .bzl .bazel", tree_sitter_python, NULL,
-     0},
+    {"python", "python py", ".py .pyw .pyi .bzl .bazel", tree_sitter_python,
+     NULL, 0},
     {"javascript", "javascript js jsx node", ".js .jsx .mjs .cjs",
      tree_sitter_javascript, NULL, 0},
     {"typescript", "typescript ts", ".ts .mts .cts", tree_sitter_typescript,
