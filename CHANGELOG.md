@@ -34,6 +34,13 @@
   of each page that best match the search query. A page that cannot be
   read gets one line saying why and does not fail the search. A later
   `page_fetch` of a page read this way uses the copy already fetched.
+- Approximate syntax highlighting for GLSL shaders. `.glsl`, `.vert`,
+  `.frag`, `.comp`, `.geom`, `.tesc`, `.tese`, `.task`, `.mesh` and the ray
+  tracing stages `.rgen`, `.rchit`, `.rmiss`, `.rahit`, `.rint` and `.rcall`,
+  and code fences marked `glsl`, use the C highlighter. Comments, numbers,
+  `#version`, types such as `vec3` and function calls get colours; GLSL
+  words such as `in`, `out` and `uniform` stay plain.
+- Python stub files (`.pyi`) get Python highlighting.
 
 ### Changed
 

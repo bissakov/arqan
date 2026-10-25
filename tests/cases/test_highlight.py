@@ -278,6 +278,49 @@ def test_unity_shaders_highlight_with_the_c_grammar(ctx):
         proc.wait(timeout=2)
 
 
+GLSL_SHADER = b'''#version 450
+layout(location = 0) in vec3 in_position;
+layout(push_constant) uniform Push { mat4 clip; } push;
+// tint
+void main() {
+    gl_Position = push.clip * vec4(in_position, 1.0);
+}
+'''
+
+
+def test_glsl_shaders_highlight_with_the_c_grammar(ctx):
+    """GLSL shader files and fences get approximate colours from C."""
+    def kind_at(runs, needle):
+        at = GLSL_SHADER.index(needle)
+        return next((k for a, b, k in runs if a <= at < b), 0)
+
+    hints = [
+        (2, b"shaders/mesh.vert"), (2, b"mesh.frag"), (2, b"blur.comp"),
+        (2, b"common.glsl"), (2, b"hair.geom"), (2, b"hair.tesc"),
+        (2, b"hair.tese"), (2, b"cull.task"), (2, b"cull.mesh"),
+        (2, b"trace.rgen"), (2, b"trace.rchit"), (2, b"trace.rmiss"),
+        (2, b"trace.rahit"), (2, b"trace.rint"), (2, b"trace.rcall"),
+        (2, b"MESH.VERT"), (1, b"glsl"),
+    ]
+    proc = helper()
+    try:
+        status, expected = request(proc, 1, 1, b"c", GLSL_SHADER)
+        assert status == OK
+        assert kind_at(expected, b"#version") == 4
+        assert kind_at(expected, b"// tint") == 1
+        assert kind_at(expected, b"1.0") == 3
+        assert kind_at(expected, b"vec3") == 5
+        assert kind_at(expected, b"mat4") == 5
+        assert kind_at(expected, b"void") == 5
+        for request_id, (hint_kind, hint) in enumerate(hints, 2):
+            status, runs = request(proc, request_id, hint_kind, hint,
+                                   GLSL_SHADER)
+            assert status == OK and runs == expected, (hint, status)
+    finally:
+        proc.terminate()
+        proc.wait(timeout=2)
+
+
 CONFIG_SAMPLES = {
     b"ini": b"; c\n[core]\nname = 1\n",
     b"properties": b"# c\nkey = value\n",
@@ -327,6 +370,7 @@ def test_config_files_resolve_by_name_and_extension(ctx):
         (b"bash", 2, b".zshrc"), (b"bash", 2, b".envrc"),
         (b"bash", 2, b".env"), (b"bash", 2, b"PKGBUILD"),
         (b"python", 2, b"defs.bzl"), (b"python", 2, b"BUILD.bazel"),
+        (b"python", 2, b"typing.pyi"),
     ]
     proc = helper()
     try:
