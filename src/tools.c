@@ -1681,6 +1681,33 @@ static b8 same_but_space(Str a, Str b) {
     return i == a.n && j == b.n;
 }
 
+static b8 patch_blank(char c) {
+    return c == ' ' || c == '\t';
+}
+
+static size_t patch_indent(Str s) {
+    size_t i = 0;
+    while (i < s.n && patch_blank(s.p[i])) i++;
+    return i;
+}
+
+static b8 same_but_inner_space(Str a, Str b) {
+    while (a.n && patch_blank(a.p[a.n - 1])) a.n--;
+    while (b.n && patch_blank(b.p[b.n - 1])) b.n--;
+    size_t i = patch_indent(a), j = patch_indent(b);
+    if (i != j || (i && memcmp(a.p, b.p, i))) return false;
+    while (i < a.n && j < b.n) {
+        b8 gap = patch_blank(a.p[i]);
+        if (gap != patch_blank(b.p[j])) return false;
+        if (!gap && a.p[i] != b.p[j]) return false;
+        i++, j++;
+        if (!gap) continue;
+        while (i < a.n && patch_blank(a.p[i])) i++;
+        while (j < b.n && patch_blank(b.p[j])) j++;
+    }
+    return i == a.n && j == b.n;
+}
+
 static void quote_line(char *dst, size_t cap, Str s) {
     size_t w = 0;
     if (cap < 8) {
@@ -2023,6 +2050,10 @@ static void patch_bad_hunk(Patch *p, const char *fmt, ...) {
     p->noted++;
 }
 
+static const char k_patch_rebuild[] =
+    "\nBuild a new hunk from this exact current text; do not retry the "
+    "failed hunk unchanged";
+
 static void patch_current(Patch *p, const char *path, Str body, size_t off) {
     if (p->err_n + 2 >= p->err_cap) return;
 
@@ -2069,13 +2100,61 @@ static void patch_current(Patch *p, const char *path, Str body, size_t off) {
         p->err_n += (size_t)n < room ? (size_t)n : room - 1;
     }
     if (p->err_n + 2 >= p->err_cap) return;
-    n = snprintf(p->err + p->err_n, p->err_cap - p->err_n,
-                 "\nBuild a new hunk from this exact current text; do not "
-                 "retry the failed hunk unchanged");
+    n = snprintf(p->err + p->err_n, p->err_cap - p->err_n, "%s",
+                 k_patch_rebuild);
     if (n > 0) {
         room = p->err_cap - p->err_n;
         p->err_n += (size_t)n < room ? (size_t)n : room - 1;
     }
+}
+
+static b8 patch_put(Patch *p, size_t reserve, const char *fmt, ...) {
+    if (p->err_n + reserve + 1 >= p->err_cap) return false;
+    size_t room = p->err_cap - p->err_n - reserve;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(p->err + p->err_n, room, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= room) {
+        p->err[p->err_n] = 0;
+        return false;
+    }
+    p->err_n += (size_t)n;
+    return true;
+}
+
+static b8 patch_around_line(Patch *p, size_t reserve, Str text, size_t at,
+                            size_t first, size_t last) {
+    if (at == first && first == last)
+        return patch_put(p, reserve, "\n%zu: the hunk's text", at);
+    if (at == first)
+        return patch_put(p, reserve, "\n%zu-%zu: the hunk's text", first, last);
+    if (at > first && at <= last) return true;
+    char quoted[160];
+    quote_line(quoted, sizeof quoted, text);
+    return patch_put(p, reserve, "\n%zu: %s", at, quoted);
+}
+
+static void patch_around(Patch *p, const char *path, Str body,
+                         const size_t *hits, size_t shown, size_t span) {
+    size_t reserve = sizeof k_patch_rebuild + 128;
+    size_t total = body_lines(body);
+    b8 fits = patch_put(p, reserve, "\n%s around each match:", path);
+    for (size_t i = 0; fits && i < shown; i++) {
+        size_t first = line_of(body, hits[i]);
+        size_t last = first + (span ? span - 1 : 0);
+        size_t from = first > AGENT_PATCH_AROUND_LINES
+                          ? first - AGENT_PATCH_AROUND_LINES
+                          : 1;
+        size_t to = last + AGENT_PATCH_AROUND_LINES;
+        if (to > total) to = total;
+        size_t pos = 0, at = 1;
+        Str text;
+        while (at < from && str_line(body, &pos, &text)) at++;
+        for (; fits && at <= to && str_line(body, &pos, &text); at++)
+            fits = patch_around_line(p, reserve, text, at, first, last);
+    }
+    patch_put(p, 0, "%s", k_patch_rebuild);
 }
 
 static PatchFile *patch_open(Patch *p, Str oldp, Str newp) {
@@ -2120,8 +2199,10 @@ static PatchFile *patch_open(Patch *p, Str oldp, Str newp) {
 }
 
 
-static size_t hunk_scan(Str text, size_t off, Buf *o, Buf *n, PatchFile *f) {
+static size_t hunk_scan(Str text, size_t off, Buf *o, Buf *n, PatchFile *f,
+                        Str kept) {
     Str line;
+    size_t kept_at = 0;
     char prev = ' ';
     for (;;) {
         size_t start = off;
@@ -2143,11 +2224,17 @@ static size_t hunk_scan(Str text, size_t off, Buf *o, Buf *n, PatchFile *f) {
         }
         if (c != ' ' && c != '-' && c != '+') return start;
         Str body = line.n ? str_drop(line, 1) : line;
+        b8 keep = true;
+        if (kept.p && c != '+') {
+            Str have;
+            keep = str_line(kept, &kept_at, &have);
+            if (keep) body = have;
+        }
         if (c != '+' && o) {
             buf_puts(o, body);
             buf_putc(o, '\n');
         }
-        if (c != '-' && n) {
+        if (c != '-' && n && keep) {
             buf_puts(n, body);
             buf_putc(n, '\n');
         }
@@ -2222,6 +2309,29 @@ static size_t patch_matches(Str body, Str oldt, size_t start, size_t *hits,
     return count;
 }
 
+static size_t patch_loose_span(Str body, size_t at, Str oldt) {
+    size_t h = 0, b = at;
+    Str want, have;
+    while (str_line(oldt, &h, &want))
+        if (!str_line(body, &b, &have) || body.p[b - 1] != '\n'
+            || !same_but_inner_space(have, want))
+            return SIZE_MAX;
+    return b - at;
+}
+
+static size_t patch_loose_match(Str body, Str oldt, size_t start, size_t *at,
+                                size_t *span) {
+    size_t count = 0, off = start;
+    Str line;
+    do {
+        size_t n = patch_loose_span(body, off, oldt);
+        if (n == SIZE_MAX) continue;
+        if (!count) *at = off, *span = n;
+        count++;
+    } while (count < 2 && str_line(body, &off, &line));
+    return count;
+}
+
 static b8 patch_hunk(Patch *p, PatchFile *f, Str header, Str text,
                      size_t *off) {
     if (++p->hunks > AGENT_MAX_PATCH_HUNKS)
@@ -2233,7 +2343,9 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str header, Str text,
     p->hunk_file[hunk] = file;
     p->hunk_at[hunk] = SIZE_MAX;
 
-    size_t end = hunk_scan(text, *off, NULL, NULL, NULL);
+    Str hunk_lines = {NULL, 0};
+    size_t hunk_off = *off;
+    size_t end = hunk_scan(text, *off, NULL, NULL, NULL, hunk_lines);
     Str stray;
     if (hunk_stray(text, end, &stray)) {
         char quoted[128];
@@ -2245,7 +2357,7 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str header, Str text,
     }
 
     if (f->unlink_it) {
-        *off = hunk_scan(text, *off, NULL, NULL, f);
+        *off = hunk_scan(text, *off, NULL, NULL, f, hunk_lines);
         return true;
     }
 
@@ -2254,7 +2366,7 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str header, Str text,
     Buf o, n;
     buf_init(&o, p->scratch, span);
     buf_init(&n, p->scratch, span);
-    hunk_scan(text, *off, &o, &n, f);
+    hunk_scan(text, *off, &o, &n, f, hunk_lines);
     *off = end;
     if (!buf_ok(&o) || !buf_ok(&n))
         return patch_fail(p, "%s: patch does not fit in memory", f->path);
@@ -2308,6 +2420,20 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str header, Str text,
             if (newt.n && newt.p[newt.n - 1] == '\n') newt.n--;
         }
     }
+    size_t loose_span = 0;
+    if (at == (size_t)-1 && !count && oldt.p[oldt.n - 1] == '\n'
+        && patch_loose_match(body, oldt, start, &at, &loose_span) != 1)
+        at = (size_t)-1;
+    if (at != (size_t)-1 && loose_span) {
+        Str region = {body.p + at, loose_span};
+        Buf kept;
+        buf_init(&kept, p->scratch, loose_span + newt.n);
+        hunk_scan(text, hunk_off, NULL, &kept, NULL, region);
+        if (!buf_ok(&kept))
+            return patch_fail(p, "%s: patch does not fit in memory", f->path);
+        oldt = region;
+        newt = buf_finish(&kept);
+    }
     if (at == (size_t)-1) {
         if (count > 1) {
             char at_lines[96];
@@ -2327,7 +2453,7 @@ static b8 patch_hunk(Patch *p, PatchFile *f, Str header, Str text,
                            "(lines %s%s); widen it with a nearby unique line",
                            f->path, f->hunk_n, count, at_lines,
                            count > shown ? ", ..." : "");
-            patch_current(p, f->path, body, hits[0]);
+            patch_around(p, f->path, body, hits, shown, body_lines(oldt));
         } else {
             char note[384];
             size_t bad = patch_diverge(body, start, oldt, note, sizeof note);

@@ -60,6 +60,12 @@
   file, use the network, or read outside the project. Plan mode and
   subagents keep the sandbox. The `bash` description sent to the model
   follows the setting.
+- `patch` applies a hunk whose lines differ from the file only in the
+  spaces inside a line or at its end, when that text is in one place only.
+  Indentation must still match, and unchanged lines keep the file's text.
+- When a hunk's text is in more than one place, the `patch` error shows the
+  lines around each match instead of only the first, so the hunk can be
+  widened without reading the file again.
 
 ### Fixed
 

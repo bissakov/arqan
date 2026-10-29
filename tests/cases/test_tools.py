@@ -1079,6 +1079,24 @@ def test_patch_ambiguous_context_names_matching_lines(ctx):
     assert (ctx.work / "edit.txt").read_text() == "repeat\nother\nrepeat\n"
 
 
+def test_patch_ambiguous_context_shows_the_lines_around_each_match(ctx):
+    original = "a1\nb1\nrepeat\nc1\nd1\nmid\na2\nb2\nrepeat\nc2\nd2\n"
+    path = ctx.write_file("edit.txt", original)
+    diff = "--- edit.txt\n+++ edit.txt\n@@\n-repeat\n+changed\n"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("apply it")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "matches 2 places (lines 3, 9)" in result, result
+    for line in ("1: a1", "2: b1", "3: the hunk's text", "4: c1", "5: d1",
+                 "7: a2", "8: b2", "9: the hunk's text", "10: c2", "11: d2"):
+        assert f"\n{line}\n" in result, (line, result)
+    assert "do not retry the failed hunk unchanged" in result, result
+    assert path.read_text() == original
+
+
 def test_patch_anchor_locates_a_repeated_block(ctx):
     original = "first\nold\nlast\nsecond\nold\nlast\n"
     path = ctx.write_file("edit.txt", original)
@@ -1211,6 +1229,50 @@ def test_patch_spacing_mismatch_shows_nearby_text_without_applying(ctx):
     result = ctx.mock.tool_results()[-1]
     assert "only spacing differs" in result, result
     assert "1:     old" in result, result
+    assert path.read_text() == original
+
+
+def test_patch_spacing_inside_lines_applies_and_keeps_the_file_text(ctx):
+    original = "head\nint a;    // one  \nint bb;   // two\nend\n"
+    path = ctx.write_file("edit.c", original)
+    diff = (
+        "--- edit.c\n+++ edit.c\n@@\n"
+        " int a; // one\n-int bb;  // two\n+int bb = 1; // two\n end\n"
+    )
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert result.startswith("edit.c +1 -1 at line 2"), result
+    assert path.read_text() == "head\nint a;    // one  \nint bb = 1; // two\nend\n"
+
+
+def test_patch_spacing_inside_lines_needs_a_unique_match(ctx):
+    original = "a  b\nc\na   b\nc\n"
+    path = ctx.write_file("edit.txt", original)
+    diff = "--- edit.txt\n+++ edit.txt\n@@\n-a b\n+z\n c\n"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "context not found" in result, result
+    assert path.read_text() == original
+
+
+def test_patch_spacing_inside_lines_does_not_join_words(ctx):
+    original = "int x;\n"
+    path = ctx.write_file("edit.c", original)
+    diff = "--- edit.c\n+++ edit.c\n@@\n-intx;\n+int y;\n"
+    ctx.scenario(patch_call(diff, final_text="done"))
+    s = ctx.spawn()
+    s.submit("edit it")
+    s.wait_turn_done()
+
+    assert "context not found" in ctx.mock.tool_results()[-1]
     assert path.read_text() == original
 
 

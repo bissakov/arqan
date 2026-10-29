@@ -67,6 +67,7 @@ typedef bool b8;
 #define AGENT_MAX_PATCH_NOTES     4
 #define AGENT_MAX_TOUCHED         256
 #define AGENT_PATCH_CONTEXT_LINES 5
+#define AGENT_PATCH_AROUND_LINES  2
 #define AGENT_PATCH_FIT_ANCHORS   8
 #define AGENT_PATCH_FIT_TRIES     4096
 #define AGENT_TOOL_ERR            1024
