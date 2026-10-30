@@ -325,6 +325,11 @@ $(BINDIR)/fuzz/fuzz_thumb: tests/fuzz/fuzz_thumb.c $(wildcard src/*.c) \
 	$(FUZZ_CC) $(FUZZ_CFLAGS) $< vendor/wuffs/bridge.c vendor/miniz/bridge.c \
 	    -o $@
 
+$(BINDIR)/fuzz/fuzz_pdf: tests/fuzz/fuzz_pdf.c $(wildcard src/*.c) \
+                         $(wildcard src/*.h) $(wildcard vendor/wuffs/*)
+	@mkdir -p $(dir $@)
+	$(FUZZ_CC) $(FUZZ_CFLAGS) $< vendor/wuffs/bridge.c -o $@
+
 FUZZ_HL_BUILD := $(BUILDDIR)/fuzz-highlight
 FUZZ_HL_OBJ := $(patsubst $(BUILDDIR)/%,$(FUZZ_HL_BUILD)/%,\
                $(filter-out $(BUILDDIR)/highlight/arqan-highlight.o,$(HL_OBJ)))

@@ -14,6 +14,7 @@
 #include "spill.c"
 #include "media.c"
 #include "thumb.c"
+#include "pdf.c"
 #include "clipboard.c"
 #include "diff.c"
 #include "editor.c"

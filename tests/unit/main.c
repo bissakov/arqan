@@ -91,6 +91,7 @@ i32 http_get(const char *base_url, const char *path, const char *api_key,
 #include "provider.c"
 #include "thumb.c"
 #include "passage.c"
+#include "pdf.c"
 
 #include <fcntl.h>
 #include <stdlib.h>
@@ -1602,6 +1603,634 @@ static void child_close_fds_reaches_past_the_fallback_cap(void) {
     CHECK(setrlimit(RLIMIT_NOFILE, &saved) == 0);
 }
 
+/* ---- PDF text ---------------------------------------------------------- */
+
+static alignas(64) u8 g_pdf_mem[1u << 24];
+
+typedef struct {
+    Buf b;
+    size_t off[16];
+    u32 n;
+} PdfDoc;
+
+static void pdoc_begin(PdfDoc *d, Arena *a) {
+    buf_init(&d->b, a, 8192);
+    buf_puts(&d->b, STR("%PDF-1.4\n"));
+    d->n = 0;
+}
+
+static void pdoc_obj(PdfDoc *d, const char *body) {
+    if (d->n + 1 >= 16) return;
+    d->off[++d->n] = d->b.n;
+    buf_putf(&d->b, "%u 0 obj\n%s\nendobj\n", d->n, body);
+}
+
+static void pdoc_stream(PdfDoc *d, const char *dict, Str data) {
+    if (d->n + 1 >= 16) return;
+    d->off[++d->n] = d->b.n;
+    buf_putf(&d->b, "%u 0 obj\n<< %s /Length %zu >>\nstream\n", d->n, dict,
+             data.n);
+    buf_put(&d->b, data.p, data.n);
+    buf_puts(&d->b, STR("\nendstream\nendobj\n"));
+}
+
+static Str pdoc_end(PdfDoc *d, const char *trailer) {
+    size_t xref = d->b.n;
+    buf_putf(&d->b, "xref\n0 %u\n0000000000 65535 f \n", d->n + 1);
+    for (u32 i = 1; i <= d->n; i++)
+        buf_putf(&d->b, "%010zu 00000 n \n", d->off[i]);
+    buf_putf(
+        &d->b,
+        "trailer\n<< /Size %u /Root 1 0 R %s >>\nstartxref\n%zu\n%%%%EOF\n",
+        d->n + 1, trailer, xref);
+    return (Str){d->b.p, d->b.n};
+}
+
+static void pdoc_page(PdfDoc *d, const char *font, Str content) {
+    pdoc_obj(d, "<< /Type /Catalog /Pages 2 0 R >>");
+    pdoc_obj(d, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    pdoc_obj(d, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                "/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>");
+    pdoc_stream(d, "", content);
+    pdoc_obj(d, font);
+}
+
+static Str pdf_simple(Arena *a, const char *font, const char *content) {
+    PdfDoc d;
+    pdoc_begin(&d, a);
+    pdoc_page(&d, font, str_c(content));
+    return pdoc_end(&d, "");
+}
+
+#define HELVETICA                                                    \
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding " \
+    "/WinAnsiEncoding >>"
+
+static Str pdf_run(Str pdf, b8 *ok, PdfStats *stats, char *err,
+                   size_t err_cap) {
+    Arena a;
+    arena_init(&a, g_pdf_mem, sizeof g_pdf_mem);
+    Buf out;
+    buf_init(&out, &a, 4096);
+    err[0] = '\0';
+    *ok = pdf_text(pdf, &a, &out, stats, err, err_cap) && buf_ok(&out);
+    return (Str){out.p, out.n};
+}
+
+static Str pdf_page_text(Str pdf) {
+    b8 ok;
+    PdfStats stats;
+    char err[256];
+    Str text = pdf_run(pdf, &ok, &stats, err, sizeof err);
+    if (!ok) printf("  pdf_text failed: %s\n", err);
+    return ok ? text : (Str){0};
+}
+
+static b8 pdf_has(Str text, const char *needle) {
+    return pdf_find(text, 0, str_c(needle)) != PDF_NOT_FOUND;
+}
+
+static Str pdf_zlib_stored(Arena *a, Str raw) {
+    u8 *z = arena_alloc(a, raw.n + 11, 1);
+    if (!z || raw.n > 65535) return (Str){0};
+    u32 s1 = 1, s2 = 0;
+    for (size_t i = 0; i < raw.n; i++) {
+        s1 = (s1 + (u8)raw.p[i]) % 65521;
+        s2 = (s2 + s1) % 65521;
+    }
+    u8 *p = z;
+    *p++ = 0x78;
+    *p++ = 0x01;
+    *p++ = 1;
+    *p++ = (u8)raw.n;
+    *p++ = (u8)(raw.n >> 8);
+    *p++ = (u8)~raw.n;
+    *p++ = (u8)(~raw.n >> 8);
+    memcpy(p, raw.p, raw.n);
+    p = be32_put(p + raw.n, s2 << 16 | s1);
+    return (Str){(const char *)z, (size_t)(p - z)};
+}
+
+static Str pdf_hex_encode(Arena *a, Str raw) {
+    Buf b;
+    buf_init(&b, a, raw.n * 2 + 2);
+    for (size_t i = 0; i < raw.n; i++) buf_putf(&b, "%02x", (u8)raw.p[i]);
+    buf_putc(&b, '>');
+    return (Str){b.p, b.n};
+}
+
+static Str pdf_a85_encode(Arena *a, Str raw) {
+    Buf b;
+    buf_init(&b, a, raw.n * 2 + 8);
+    for (size_t i = 0; i < raw.n; i += 4) {
+        size_t take = raw.n - i < 4 ? raw.n - i : 4;
+        u32 v = 0;
+        for (size_t k = 0; k < 4; k++)
+            v = v << 8 | (k < take ? (u8)raw.p[i + k] : 0u);
+        if (!v && take == 4) {
+            buf_putc(&b, 'z');
+            continue;
+        }
+        char group[5];
+        for (i32 k = 4; k >= 0; k--) {
+            group[k] = (char)('!' + v % 85);
+            v /= 85;
+        }
+        buf_put(&b, group, take + 1);
+    }
+    buf_puts(&b, STR("~>"));
+    return (Str){b.p, b.n};
+}
+
+static Str pdf_lzw_encode(Arena *a, Str raw) {
+    Buf b;
+    buf_init(&b, a, raw.n * 2 + 8);
+    u32 acc = 0, have = 0;
+    for (size_t i = 0; i <= raw.n + 1; i++) {
+        u32 code = i == 0 ? 256 : i <= raw.n ? (u8)raw.p[i - 1] : 257;
+        acc = acc << 9 | code;
+        have += 9;
+        while (have >= 8) {
+            buf_putc(&b, (char)(acc >> (have - 8)));
+            have -= 8;
+        }
+    }
+    if (have) buf_putc(&b, (char)(acc << (8 - have)));
+    return (Str){b.p, b.n};
+}
+
+static Str pdf_rle_encode(Arena *a, Str raw) {
+    Buf b;
+    buf_init(&b, a, raw.n * 2 + 8);
+    buf_putc(&b, (char)(257 - 3));
+    buf_putc(&b, ' ');
+    for (size_t i = 0; i < raw.n; i += 100) {
+        size_t take = raw.n - i < 100 ? raw.n - i : 100;
+        buf_putc(&b, (char)(take - 1));
+        buf_put(&b, raw.p + i, take);
+    }
+    buf_putc(&b, (char)128);
+    return (Str){b.p, b.n};
+}
+
+static b8 pdf_utf8_valid(Str s) {
+    for (size_t i = 0; i < s.n;) {
+        u8 c = (u8)s.p[i];
+        size_t len = c < 0x80         ? 1
+                     : (c >> 5) == 6  ? 2
+                     : (c >> 4) == 14 ? 3
+                     : (c >> 3) == 30 ? 4
+                                      : 0;
+        if (!len || len > s.n - i) return false;
+        for (size_t k = 1; k < len; k++)
+            if (((u8)s.p[i + k] & 0xC0) != 0x80) return false;
+        i += len;
+    }
+    return true;
+}
+
+static void pdf_places_lines_and_spaces(void) {
+    WITH_ARENA(a, 1u << 16);
+    Str pdf = pdf_simple(&a, HELVETICA,
+                         "BT /F1 10 Tf 72 700 Td (Hello,) Tj ( world) Tj "
+                         "0 -14 Td [(Next)-300(line)-20(s)] TJ "
+                         "0 -40 Td (Far) Tj ET");
+    CHECK(str_eq(pdf_page_text(pdf), STR("--- page 1 of 1 ---\nHello, world\n"
+                                         "Next lines\n\nFar\n")));
+}
+
+static void pdf_numbers_each_page(void) {
+    WITH_ARENA(a, 1u << 16);
+    PdfDoc d;
+    pdoc_begin(&d, &a);
+    pdoc_obj(&d, "<< /Type /Catalog /Pages 2 0 R >>");
+    pdoc_obj(&d, "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 "
+                 "/Resources << /Font << /F1 5 0 R >> >> >>");
+    pdoc_obj(&d, "<< /Type /Page /Parent 2 0 R /Contents 6 0 R >>");
+    pdoc_obj(&d, "<< /Type /Page /Parent 2 0 R /Contents [7 0 R 8 0 R] >>");
+    pdoc_obj(&d, HELVETICA);
+    pdoc_stream(&d, "", STR("BT /F1 10 Tf 72 700 Td (One) Tj ET"));
+    pdoc_stream(&d, "", STR("BT /F1 10 Tf 72 700 Td"));
+    pdoc_stream(&d, "", STR("(Two) Tj ET"));
+    Str text = pdf_page_text(pdoc_end(&d, ""));
+    CHECK(str_eq(text, STR("--- page 1 of 2 ---\nOne\n\n"
+                           "--- page 2 of 2 ---\nTwo\n")));
+}
+
+static void pdf_decodes_each_filter(void) {
+    WITH_ARENA(a, 1u << 18);
+    Str content = STR("BT /F1 10 Tf 72 700 Td (Filtered text) Tj ET");
+    struct {
+        const char *dict;
+        Str data;
+    } cases[] = {
+        {"/Filter /FlateDecode", pdf_zlib_stored(&a, content)},
+        {"/Filter [/ASCIIHexDecode /FlateDecode]",
+         pdf_hex_encode(&a, pdf_zlib_stored(&a, content))},
+        {"/Filter /ASCII85Decode", pdf_a85_encode(&a, content)},
+        {"/Filter /LZWDecode", pdf_lzw_encode(&a, content)},
+        {"/Filter /RunLengthDecode", pdf_rle_encode(&a, content)},
+        {"/Filter [/AHx /A85]",
+         pdf_hex_encode(&a, pdf_a85_encode(&a, content))},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        PdfDoc d;
+        pdoc_begin(&d, &a);
+        pdoc_obj(&d, "<< /Type /Catalog /Pages 2 0 R >>");
+        pdoc_obj(&d, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        pdoc_obj(&d,
+                 "<< /Type /Page /Parent 2 0 R "
+                 "/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>");
+        pdoc_stream(&d, cases[i].dict, cases[i].data);
+        pdoc_obj(&d, HELVETICA);
+        Str text = pdf_page_text(pdoc_end(&d, ""));
+        if (!pdf_has(text, "Filtered text")) printf("  filter case %zu\n", i);
+        CHECK(pdf_has(text, "Filtered text"));
+    }
+}
+
+static void pdf_reads_xref_and_object_streams(void) {
+    WITH_ARENA(a, 1u << 18);
+    Buf f;
+    buf_init(&f, &a, 8192);
+    buf_puts(&f, STR("%PDF-1.5\n"));
+    size_t off3 = f.n;
+    buf_puts(&f, STR("3 0 obj\n<< /Type /Page /Parent 2 0 R /Resources "
+                     "<< /Font << /F1 5 0 R >> >> /Contents 4 0 R >>\n"
+                     "endobj\n"));
+    size_t off4 = f.n;
+    Str content = STR("BT /F1 10 Tf 72 700 Td (From streams) Tj ET");
+    buf_putf(&f, "4 0 obj\n<< /Length %zu >>\nstream\n", content.n);
+    buf_puts(&f, content);
+    buf_puts(&f, STR("\nendstream\nendobj\n"));
+    const char *o1 = "<< /Type /Catalog /Pages 2 0 R >>";
+    const char *o2 = "<< /Type /Pages /Kids [3 0 R] /Count 1 >>";
+    char head[64];
+    i32 head_n = snprintf(head, sizeof head, "1 0 2 %zu 5 %zu ", strlen(o1) + 1,
+                          strlen(o1) + strlen(o2) + 2);
+    size_t off6 = f.n;
+    Buf body;
+    buf_init(&body, &a, 512);
+    buf_putf(&body, "%s%s\n%s\n%s", head, o1, o2, HELVETICA);
+    Str packed = pdf_zlib_stored(&a, (Str){body.p, body.n});
+    buf_putf(&f,
+             "6 0 obj\n<< /Type /ObjStm /N 3 /First %d /Filter /FlateDecode "
+             "/Length %zu >>\nstream\n",
+             head_n, packed.n);
+    buf_puts(&f, packed);
+    buf_puts(&f, STR("\nendstream\nendobj\n"));
+    size_t off7 = f.n;
+    u8 rows[8][4] = {{0, 0, 0, 0},
+                     {2, 0, 6, 0},
+                     {2, 0, 6, 1},
+                     {1, (u8)(off3 >> 8), (u8)off3, 0},
+                     {1, (u8)(off4 >> 8), (u8)off4, 0},
+                     {2, 0, 6, 2},
+                     {1, (u8)(off6 >> 8), (u8)off6, 0},
+                     {1, (u8)(off7 >> 8), (u8)off7, 0}};
+    u8 up[8 * 5];
+    for (u32 r = 0; r < 8; r++) {
+        up[r * 5] = 2;
+        for (u32 c = 0; c < 4; c++)
+            up[r * 5 + 1 + c] = (u8)(rows[r][c] - (r ? rows[r - 1][c] : 0));
+    }
+    Str xref = pdf_zlib_stored(&a, (Str){(const char *)up, sizeof up});
+    buf_putf(&f,
+             "7 0 obj\n<< /Type /XRef /Size 8 /W [1 2 1] /Root 1 0 R "
+             "/Filter /FlateDecode /DecodeParms << /Predictor 12 /Columns 4 "
+             ">> /Length %zu >>\nstream\n",
+             xref.n);
+    buf_puts(&f, xref);
+    buf_putf(&f, "\nendstream\nendobj\nstartxref\n%zu\n%%%%EOF\n", off7);
+    CHECK(off7 < 65536);
+    Str text = pdf_page_text((Str){f.p, f.n});
+    CHECK(pdf_has(text, "From streams"));
+}
+
+static void pdf_rebuilds_a_broken_xref(void) {
+    WITH_ARENA(a, 1u << 16);
+    Str pdf =
+        pdf_simple(&a, HELVETICA, "BT /F1 10 Tf 72 700 Td (Recovered) Tj ET");
+    char *p = (char *)pdf.p;
+    size_t xref = pdf_find(pdf, 0, STR("xref\n0 6\n"));
+    CHECK(xref != PDF_NOT_FOUND);
+    for (size_t i = xref + 9; i < pdf.n && memcmp(p + i, "trailer", 7); i++)
+        if (p[i] >= '1' && p[i] <= '9') p[i] = '7';
+    CHECK(pdf_has(pdf_page_text(pdf), "Recovered"));
+    size_t start = pdf_find(pdf, 0, STR("startxref"));
+    CHECK(start != PDF_NOT_FOUND);
+    memcpy(p + start, "startxyz!", 9);
+    CHECK(pdf_has(pdf_page_text(pdf), "Recovered"));
+}
+
+static void pdf_maps_type0_through_tounicode(void) {
+    WITH_ARENA(a, 1u << 16);
+    PdfDoc d;
+    pdoc_begin(&d, &a);
+    pdoc_page(&d,
+              "<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding "
+              "/Identity-H /DescendantFonts [<< /Type /Font /Subtype "
+              "/CIDFontType2 /DW 500 >>] /ToUnicode 6 0 R >>",
+              STR("BT /F1 10 Tf 72 700 Td "
+                  "<0001 0003 0010 0011 0012 0020 0021 0099> Tj ET"));
+    pdoc_stream(&d, "",
+                STR("begincmap 1 begincodespacerange <0000> <FFFF> "
+                    "endcodespacerange 2 beginbfchar <0001> <0048> "
+                    "<0003> <00660069> endbfchar 2 beginbfrange "
+                    "<0010> <0012> <0061> <0020> <0021> [<0041> <0042>] "
+                    "endbfrange endcmap"));
+    b8 ok;
+    PdfStats stats;
+    char err[256];
+    Str text = pdf_run(pdoc_end(&d, ""), &ok, &stats, err, sizeof err);
+    CHECK(ok);
+    CHECK(pdf_has(text, "HfiabcAB\xEF\xBF\xBD\n"));
+    CHECK(stats.unmapped == 1);
+}
+
+static void pdf_maps_differences_and_glyph_names(void) {
+    WITH_ARENA(a, 1u << 16);
+    Str pdf = pdf_simple(
+        &a,
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Custom /Encoding "
+        "<< /BaseEncoding /WinAnsiEncoding /Differences [65 /alpha /uni03B2 "
+        "/f_i /g123 /parenleftbig] >> >>",
+        "BT /F1 10 Tf 72 700 Td (ABCDEa) Tj ET");
+    CHECK(pdf_has(pdf_page_text(pdf), "\xCE\xB1\xCE\xB2"
+                                      "fi\xEF\xBF\xBD(a\n"));
+}
+
+static void pdf_composes_an_accent_over_a_letter(void) {
+    WITH_ARENA(a, 1u << 16);
+    Str pdf = pdf_simple(&a,
+                         "<< /Type /Font /Subtype /Type1 /BaseFont "
+                         "/Times-Roman /Encoding /WinAnsiEncoding >>",
+                         "BT /F1 10 Tf 1 0 0 1 100 700 Tm (Appliqu) Tj "
+                         "1 0 0 1 132.78 700 Tm (\\264) Tj "
+                         "1 0 0 1 132.78 700 Tm (e) Tj ET");
+    CHECK(pdf_has(pdf_page_text(pdf), "Appliqu\xC3\xA9\n"));
+}
+
+static Str pdf_hex_bytes(Arena *a, const char *hex) {
+    Str raw = str_c(hex);
+    return pdf_str_decode(a, raw, true);
+}
+
+#define PDF_FIXTURE_O \
+    "566fa873ee33c797cd3b904fdadf814afa34df9a38f6ed41b984e2c6da2aa6f5"
+#define PDF_FIXTURE_U \
+    "6a377f14504be9f1aba99e13933760ac00000000000000000000000000000000"
+
+/* Encrypted with an empty user password by an independent writer, and
+ * checked against poppler's pdftotext. */
+static Str pdf_encrypted(Arena *a, b8 aes, const char *u) {
+    Str stream =
+        aes ? pdf_hex_bytes(a,
+                            "6465666768696a6b6c6d6e6f70717273dc1518fe806ebf59"
+                            "f17bd7f665acb5e04e7600a2f8bc76325b646a726adffaec"
+                            "7b7303c5e5a77653ccc73ea59a012c027eebcd6a7fd8ba3d"
+                            "a37828ad67b32420")
+            : pdf_hex_bytes(a,
+                            "40d5f4040e631048d46f5bf002b904ad5652b8f122de3a65"
+                            "dfc5960f0987398d23796626174a08e9f734e03ea85ec940"
+                            "b990a93da7");
+    PdfDoc d;
+    pdoc_begin(&d, a);
+    pdoc_obj(&d, "<< /Type /Catalog /Pages 2 0 R >>");
+    pdoc_obj(&d, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    pdoc_obj(&d, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                 "/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>");
+    pdoc_stream(&d, "/Filter /FlateDecode", stream);
+    pdoc_obj(&d, HELVETICA);
+    char dict[512];
+    snprintf(dict, sizeof dict,
+             "<< /Filter /Standard %s /O <" PDF_FIXTURE_O "> /U <%s> "
+             "/P -3904 >>",
+             aes ? "/V 4 /R 4 /Length 128 /CF << /StdCF << /CFM /AESV2 "
+                   "/AuthEvent /DocOpen /Length 16 >> >> /StmF /StdCF "
+                   "/StrF /StdCF"
+                 : "/V 2 /R 3 /Length 128",
+             u);
+    pdoc_obj(&d, dict);
+    return pdoc_end(&d, "/Encrypt 6 0 R /ID [<000102030405060708090a0b0c0d0e0f>"
+                        " <000102030405060708090a0b0c0d0e0f>]");
+}
+
+static void pdf_decrypts_rc4_and_aes(void) {
+    WITH_ARENA(a, 1u << 16);
+    CHECK(pdf_has(pdf_page_text(pdf_encrypted(&a, false, PDF_FIXTURE_U)),
+                  "Secret text 42"));
+    CHECK(pdf_has(pdf_page_text(pdf_encrypted(&a, true, PDF_FIXTURE_U)),
+                  "Secret text 42"));
+}
+
+static void pdf_refuses_a_password(void) {
+    WITH_ARENA(a, 1u << 16);
+    Str pdf = pdf_encrypted(&a, false,
+                            "7a377f14504be9f1aba99e13933760ac0000000000000000"
+                            "0000000000000000");
+    b8 ok;
+    PdfStats stats;
+    char err[256];
+    pdf_run(pdf, &ok, &stats, err, sizeof err);
+    CHECK(!ok);
+    CHECK(strstr(err, "password") != NULL);
+}
+
+static void pdf_crypto_matches_reference_vectors(void) {
+    u8 sum[16];
+    Md5 m;
+    md5_init(&m);
+    md5_update(&m, "abc", 3);
+    md5_final(&m, sum);
+    static const u8 abc[16] = {0x90, 0x01, 0x50, 0x98, 0x3c, 0xd2, 0x4f, 0xb0,
+                               0xd6, 0x96, 0x3f, 0x7d, 0x28, 0xe1, 0x7f, 0x72};
+    CHECK(!memcmp(sum, abc, 16));
+    u8 key[16], block[16] = {0x69, 0xc4, 0xe0, 0xd8, 0x6a, 0x7b, 0x04, 0x30,
+                             0xd8, 0xcd, 0xb7, 0x80, 0x70, 0xb4, 0xc5, 0x5a};
+    for (u32 i = 0; i < 16; i++) key[i] = (u8)i;
+    Aes s;
+    aes_init(&s, key, 16);
+    aes_decrypt_block(&s, block);
+    for (u32 i = 0; i < 16; i++) CHECK(block[i] == (u8)(i * 0x11));
+}
+
+static void pdf_reports_pages_without_text(void) {
+    WITH_ARENA(a, 1u << 16);
+    Str pdf = pdf_simple(&a, HELVETICA, "0 0 m 100 100 l S");
+    b8 ok;
+    PdfStats stats;
+    char err[256];
+    Str text = pdf_run(pdf, &ok, &stats, err, sizeof err);
+    CHECK(ok);
+    CHECK(stats.pages == 1 && stats.pages_with_text == 0);
+    CHECK(pdf_has(text, "[no text on this page]"));
+}
+
+static void pdf_stops_cycles_and_deep_nesting(void) {
+    WITH_ARENA(a, 1u << 18);
+    PdfDoc d;
+    pdoc_begin(&d, &a);
+    pdoc_obj(&d, "<< /Type /Catalog /Pages 2 0 R >>");
+    pdoc_obj(&d, "<< /Type /Pages /Kids [2 0 R 3 0 R] /Count 1 >>");
+    pdoc_obj(&d, "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 5 "
+                 "0 R /F2 7 0 R /F3 8 0 R >> /XObject << /X0 6 0 R >> >> "
+                 "/Contents 4 0 R >>");
+    pdoc_stream(&d, "",
+                STR("/X0 Do BT /F2 10 Tf /F3 10 Tf /F1 10 Tf 72 700 Td "
+                    "(Still here) Tj ET"));
+    pdoc_obj(&d, HELVETICA);
+    pdoc_stream(&d,
+                "/Type /XObject /Subtype /Form /BBox [0 0 9 9] /Resources "
+                "<< /XObject << /X0 6 0 R >> >>",
+                STR("q /X0 Do Q"));
+    pdoc_obj(&d, "7 0 R");
+    char *deep = arena_alloc(&a, 200001, 1);
+    CHECK(deep != NULL);
+    if (!deep) return;
+    memset(deep, '[', 100000);
+    memset(deep + 100000, ']', 100000);
+    deep[200000] = '\0';
+    pdoc_obj(&d, deep);
+    CHECK(pdf_has(pdf_page_text(pdoc_end(&d, "")), "Still here"));
+}
+
+static void pdf_survives_truncation_and_corruption(void) {
+    WITH_ARENA(a, 1u << 18);
+    Str inputs[] = {
+        pdf_simple(
+            &a, HELVETICA,
+            "BT /F1 10 Tf 72 700 Td [(A)-300(B)] TJ (\\050x\\051) Tj ET"),
+        pdf_encrypted(&a, true, PDF_FIXTURE_U),
+    };
+    char *copy = arena_alloc(&a, 4096, 1);
+    CHECK(copy != NULL);
+    if (!copy) return;
+    u32 seed = 12345;
+    for (size_t k = 0; k < sizeof inputs / sizeof inputs[0]; k++) {
+        Str in = inputs[k];
+        CHECK(in.n <= 4096);
+        if (in.n > 4096) continue;
+        for (size_t n = 0; n <= in.n; n++) {
+            memcpy(copy, in.p, n);
+            b8 ok;
+            PdfStats stats;
+            char err[256];
+            Str text = pdf_run((Str){copy, n}, &ok, &stats, err, sizeof err);
+            if (ok) CHECK(pdf_utf8_valid(text));
+        }
+        for (u32 round = 0; round < 3000; round++) {
+            memcpy(copy, in.p, in.n);
+            for (u32 flips = 0; flips < 1 + round % 4; flips++) {
+                seed = seed * 1103515245u + 12345u;
+                size_t at = (seed >> 8) % in.n;
+                seed = seed * 1103515245u + 12345u;
+                copy[at] = (char)(seed >> 16);
+            }
+            b8 ok;
+            PdfStats stats;
+            char err[256];
+            Str text = pdf_run((Str){copy, in.n}, &ok, &stats, err, sizeof err);
+            if (ok) CHECK(pdf_utf8_valid(text));
+        }
+    }
+}
+
+static void pdf_fails_cleanly_in_a_small_arena(void) {
+    WITH_ARENA(a, 1u << 16);
+    Str pdf = pdf_simple(&a, HELVETICA, "BT /F1 10 Tf 72 700 Td (Fits) Tj ET");
+    b8 any_ok = false;
+    for (size_t cap = 64; cap <= sizeof g_pdf_mem; cap *= 2) {
+        Arena small;
+        arena_init(&small, g_pdf_mem, cap);
+        Buf out;
+        buf_init(&out, &small, 64);
+        PdfStats stats;
+        char err[256];
+        b8 ok = pdf_text(pdf, &small, &out, &stats, err, sizeof err);
+        CHECK(small.off <= cap);
+        if (ok && buf_ok(&out)) {
+            any_ok = true;
+            CHECK(pdf_has((Str){out.p, out.n}, "Fits"));
+        } else if (!ok) {
+            CHECK(err[0] != '\0');
+        }
+    }
+    CHECK(any_ok);
+}
+
+static void pdf_sniff_finds_the_header(void) {
+    CHECK(pdf_sniff(STR("%PDF-1.7\n")));
+    CHECK(pdf_sniff(STR("junk before\n%PDF-1.4\n")));
+    CHECK(!pdf_sniff(STR("plain text about %PDF")));
+    CHECK(!pdf_sniff(STR("")));
+}
+
+/* A CFF font with glyphs asteriskmath and dagger at codes 3 and 'y', as an
+ * embedded TeX CMSY font has them. */
+#define PDF_CFF_HEX                                                          \
+    "01000401000101010241000101010d1c002e0f1c0033101c003711000101010d617374" \
+    "657269736b6d6174680000000187007000020379000301010203040e0e0e"
+
+/* A TrueType font whose cmap maps 'A' and 'B' to glyphs 1 and 2. */
+#define PDF_TTF_HEX                                                          \
+    "000100000002002000010000636d6170000000000000002c0000002c6d617870000000" \
+    "00000000580000000600000001000300010000000c0004002000000004000400010000" \
+    "0042ffff00000041ffffffc0000100000000000050000003"
+
+static void pdf_reads_the_encoding_of_an_embedded_cff_font(void) {
+    WITH_ARENA(a, 1u << 16);
+    PdfDoc d;
+    pdoc_begin(&d, &a);
+    pdoc_page(&d,
+              "<< /Type /Font /Subtype /Type1 /BaseFont /ABCDEF+CMSY7 "
+              "/FontDescriptor << /FontFile3 6 0 R >> >>",
+              STR("BT /F1 10 Tf 72 700 Td (\\003y) Tj ET"));
+    pdoc_stream(&d, "/Subtype /Type1C", pdf_hex_bytes(&a, PDF_CFF_HEX));
+    CHECK(
+        pdf_has(pdf_page_text(pdoc_end(&d, "")), "\xE2\x88\x97\xE2\x80\xA0\n"));
+}
+
+static void pdf_maps_a_cid_truetype_font_through_its_cmap(void) {
+    WITH_ARENA(a, 1u << 16);
+    PdfDoc d;
+    pdoc_begin(&d, &a);
+    pdoc_page(&d,
+              "<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding "
+              "/Identity-H /DescendantFonts [<< /Type /Font /Subtype "
+              "/CIDFontType2 /CIDToGIDMap /Identity /FontDescriptor "
+              "<< /FontFile2 6 0 R >> >>] >>",
+              STR("BT /F1 10 Tf 72 700 Td <00020001> Tj ET"));
+    pdoc_stream(&d, "", pdf_hex_bytes(&a, PDF_TTF_HEX));
+    CHECK(pdf_has(pdf_page_text(pdoc_end(&d, "")), "BA\n"));
+}
+
+static void pdf_type3_glyphs_fall_back_to_their_codes(void) {
+    WITH_ARENA(a, 1u << 16);
+    Str pdf = pdf_simple(&a,
+                         "<< /Type /Font /Subtype /Type3 /FontMatrix [0.001 0 "
+                         "0 0.001 0 0] /FirstChar 60 /LastChar 61 /Widths "
+                         "[500 500] /Encoding << /Differences [60 /g7 /a1] >> "
+                         "/CharProcs << >> >>",
+                         "BT /F1 10 Tf 72 700 Td (<) Tj ET");
+    CHECK(pdf_has(pdf_page_text(pdf), "<\n"));
+}
+
+static void pdf_drops_brace_tips_and_breaks_lines_going_back(void) {
+    WITH_ARENA(a, 1u << 16);
+    Str brace = pdf_simple(&a,
+                           "<< /Type /Font /Subtype /Type1 /BaseFont /CMEX10 "
+                           "/Encoding << /Differences [65 /bracehtipdownleft "
+                           "/x] >> >>",
+                           "BT /F1 10 Tf 72 700 Td (BAAB) Tj ET");
+    CHECK(str_eq(pdf_page_text(brace), STR("--- page 1 of 1 ---\nxx\n")));
+    Str lines = pdf_simple(&a, HELVETICA,
+                           "BT /F1 30 Tf 72 700 Td (Big) Tj /F1 8 Tf "
+                           "-10 -14 Td (small) Tj ET");
+    CHECK(
+        str_eq(pdf_page_text(lines), STR("--- page 1 of 1 ---\nBig\nsmall\n")));
+}
+
 int main(void) {
     agent_log_set_level(AGENT_LOG_ERROR + 1);
 
@@ -1689,6 +2318,26 @@ int main(void) {
     RUN(passage_keeps_invalid_utf8);
     RUN(passage_fences_hide_fake_headings);
     RUN(passage_outline_prefers_top_levels);
+    RUN(pdf_places_lines_and_spaces);
+    RUN(pdf_numbers_each_page);
+    RUN(pdf_decodes_each_filter);
+    RUN(pdf_reads_xref_and_object_streams);
+    RUN(pdf_rebuilds_a_broken_xref);
+    RUN(pdf_maps_type0_through_tounicode);
+    RUN(pdf_maps_differences_and_glyph_names);
+    RUN(pdf_composes_an_accent_over_a_letter);
+    RUN(pdf_decrypts_rc4_and_aes);
+    RUN(pdf_refuses_a_password);
+    RUN(pdf_crypto_matches_reference_vectors);
+    RUN(pdf_reports_pages_without_text);
+    RUN(pdf_stops_cycles_and_deep_nesting);
+    RUN(pdf_survives_truncation_and_corruption);
+    RUN(pdf_fails_cleanly_in_a_small_arena);
+    RUN(pdf_sniff_finds_the_header);
+    RUN(pdf_reads_the_encoding_of_an_embedded_cff_font);
+    RUN(pdf_maps_a_cid_truetype_font_through_its_cmap);
+    RUN(pdf_type3_glyphs_fall_back_to_their_codes);
+    RUN(pdf_drops_brace_tips_and_breaks_lines_going_back);
     if (g_fail) {
         printf("%d failure(s) in %d cases\n", g_fail, g_ran);
         return 1;

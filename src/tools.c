@@ -54,17 +54,16 @@ static void open_failed(const char *z, int e, char *err, size_t err_cap) {
         snprintf(err, err_cap, "open %s failed: %s", z, why);
 }
 
-static b8 slurp(const char *z, Arena *scratch, Str *out, char *err,
-                size_t err_cap) {
+static b8 slurp_up_to(const char *z, Arena *scratch, size_t max, Str *out,
+                      char *err, size_t err_cap) {
     u64 size = 0;
     errno = 0;
-    FileStatus status =
-        file_read(scratch, z, AGENT_MAX_FILE_BYTES, 0, out, &size);
+    FileStatus status = file_read(scratch, z, max, 0, out, &size);
     switch (status) {
         case FILE_OK: return true;
         case FILE_TOO_LARGE:
             snprintf(err, err_cap, "%s is too large: %llu bytes, limit %u", z,
-                     (unsigned long long)size, (unsigned)AGENT_MAX_FILE_BYTES);
+                     (unsigned long long)size, (unsigned)max);
             break;
         case FILE_NOT_REGULAR: {
             struct stat st;
@@ -85,6 +84,11 @@ static b8 slurp(const char *z, Arena *scratch, Str *out, char *err,
             break;
     }
     return false;
+}
+
+static b8 slurp(const char *z, Arena *scratch, Str *out, char *err,
+                size_t err_cap) {
+    return slurp_up_to(z, scratch, AGENT_MAX_FILE_BYTES, out, err, err_cap);
 }
 
 static b8 arg_count(const JVal *j, Str key, size_t dflt, size_t max,
@@ -129,7 +133,9 @@ static b8 arg_wait_ms(const JVal *j, size_t dflt, size_t max, size_t *out,
  * and says which call continues from there. */
 
 
-#define READ_SNIFF 8000
+#define READ_SNIFF       8000
+#define READ_PDF_HEAD    1024
+#define READ_NOTES_BYTES 1024
 
 static struct {
     MediaSet *destination;
@@ -155,52 +161,46 @@ static b8 read_not_text(const char *path, Str body, char *err, size_t err_cap) {
     return false;
 }
 
-static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err,
-                    size_t err_cap) {
-    JVal *j = tool_args(args, scratch, err, err_cap);
-    if (!j) return false;
-    char z[AGENT_MAX_PATH];
-    if (!arg_cstr(json_str(j, STR("path")), z, sizeof z, "path", err, err_cap))
-        return false;
-    size_t first, limit;
-    if (!arg_count(j, STR("offset"), 1, AGENT_MAX_FILE_BYTES, &first, err,
-                   err_cap))
-        return false;
-    if (!arg_count(j, STR("limit"), AGENT_READ_LINES, AGENT_READ_LINES, &limit,
-                   err, err_cap))
-        return false;
+static b8 read_is_pdf(const char *path, Arena *scratch) {
+    size_t mark = scratch->off;
+    Str head;
+    b8 pdf = file_read(scratch, path, AGENT_MAX_PDF_BYTES, READ_PDF_HEAD, &head,
+                       NULL)
+                 == FILE_OK
+             && pdf_sniff(head);
+    scratch->off = mark;
+    return pdf;
+}
 
-    Str body;
-    if (!slurp(z, scratch, &body, err, err_cap)) return false;
-    Str mime;
-    u32 w, h;
-    if (media_sniff(body, &mime, &w, &h)) {
-        MediaSet *m = g_read_media.destination;
-        if (!m || !m->arena) {
-            snprintf(err, err_cap,
-                     "cannot read image: images are not available in this "
-                     "session");
-            return false;
-        }
-        size_t mark = m->arena->off;
-        size_t id = media_add(m, m->arena, body, str_c(z), err, err_cap);
-        if (id == MEDIA_NONE) {
-            m->arena->off = mark;
-            return false;
-        }
-        char description[160];
-        media_describe(description, sizeof description, m, id);
-        buf_putf(out, "[Image #%zu] %s", id + 1, description);
-        if (!buf_ok(out)) {
-            m->n = id;
-            m->arena->off = mark;
-            snprintf(err, err_cap, "not enough memory for image result");
-            return false;
-        }
-        return true;
+static b8 read_pdf_text(const char *path, Str body, Arena *scratch, Str *text,
+                        PdfStats *stats, char *err, size_t err_cap) {
+    Buf b;
+    buf_init(&b, scratch, body.n / 8 + 4096);
+    char why[200];
+    if (!pdf_text(body, scratch, &b, stats, why, sizeof why)) {
+        snprintf(err, err_cap, "%s is a PDF, but %s.", path, why);
+        return false;
     }
-    if (body.n && read_not_text(z, body, err, err_cap)) return false;
+    *text = (Str){b.p, b.n};
+    return true;
+}
 
+static void read_pdf_notes(Buf *out, const PdfStats *stats) {
+    if (!stats->pages_with_text && stats->pages == 1)
+        buf_puts(out, STR("\n[its one page has no text; it may be a scanned "
+                          "image, which read cannot see]"));
+    else if (!stats->pages_with_text)
+        buf_putf(out,
+                 "\n[none of its %u pages has text; they may be scanned "
+                 "images, which read cannot see]",
+                 stats->pages);
+    if (stats->unmapped)
+        buf_putf(out, "\n[%u glyphs have no known text and show as U+FFFD]",
+                 stats->unmapped);
+}
+
+static b8 read_page(const char *z, Str body, size_t first, size_t limit,
+                    Buf *out, char *err, size_t err_cap) {
     size_t off = 0;
     Str line;
     for (size_t ln = 1; ln < first; ln++) {
@@ -239,6 +239,81 @@ static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err,
         buf_putf(out, "\n[read %zu of %zu lines; continue with offset=%zu]",
                  shown, first - 1 + shown + rest, first + shown);
     }
+    return true;
+}
+
+/* NOTE: a PDF's bytes and the text drawn from it can take most of the
+ * scratch arena, so they are released before returning. `out` is reserved
+ * first so that it sits below the mark and never grows above it. */
+static b8 read_pdf(const char *z, size_t first, size_t limit, Arena *scratch,
+                   Buf *out, char *err, size_t err_cap) {
+    if (!buf_reserve(out, out->n + AGENT_READ_BYTES + READ_NOTES_BYTES)) {
+        snprintf(err, err_cap, "not enough memory to read %s", z);
+        return false;
+    }
+    size_t mark = scratch->off;
+    Str body, text;
+    PdfStats stats;
+    b8 ok = slurp_up_to(z, scratch, AGENT_MAX_PDF_BYTES, &body, err, err_cap)
+            && read_pdf_text(z, body, scratch, &text, &stats, err, err_cap)
+            && read_page(z, text, first, limit, out, err, err_cap);
+    if (ok) read_pdf_notes(out, &stats);
+    if ((u8 *)out->p + out->cap <= scratch->base + mark) scratch->off = mark;
+    if (ok && !buf_ok(out)) {
+        snprintf(err, err_cap, "%s does not fit in memory", z);
+        return false;
+    }
+    return ok;
+}
+
+static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err,
+                    size_t err_cap) {
+    JVal *j = tool_args(args, scratch, err, err_cap);
+    if (!j) return false;
+    char z[AGENT_MAX_PATH];
+    if (!arg_cstr(json_str(j, STR("path")), z, sizeof z, "path", err, err_cap))
+        return false;
+    size_t first, limit;
+    if (!arg_count(j, STR("offset"), 1, AGENT_MAX_FILE_BYTES, &first, err,
+                   err_cap))
+        return false;
+    if (!arg_count(j, STR("limit"), AGENT_READ_LINES, AGENT_READ_LINES, &limit,
+                   err, err_cap))
+        return false;
+
+    if (read_is_pdf(z, scratch))
+        return read_pdf(z, first, limit, scratch, out, err, err_cap);
+    Str body;
+    if (!slurp(z, scratch, &body, err, err_cap)) return false;
+    Str mime;
+    u32 w, h;
+    if (media_sniff(body, &mime, &w, &h)) {
+        MediaSet *m = g_read_media.destination;
+        if (!m || !m->arena) {
+            snprintf(err, err_cap,
+                     "cannot read image: images are not available in this "
+                     "session");
+            return false;
+        }
+        size_t mark = m->arena->off;
+        size_t id = media_add(m, m->arena, body, str_c(z), err, err_cap);
+        if (id == MEDIA_NONE) {
+            m->arena->off = mark;
+            return false;
+        }
+        char description[160];
+        media_describe(description, sizeof description, m, id);
+        buf_putf(out, "[Image #%zu] %s", id + 1, description);
+        if (!buf_ok(out)) {
+            m->n = id;
+            m->arena->off = mark;
+            snprintf(err, err_cap, "not enough memory for image result");
+            return false;
+        }
+        return true;
+    }
+    if (body.n && read_not_text(z, body, err, err_cap)) return false;
+    if (!read_page(z, body, first, limit, out, err, err_cap)) return false;
     if (!buf_ok(out)) {
         snprintf(err, err_cap, "%s does not fit in memory", z);
         return false;
@@ -2973,13 +3048,18 @@ static struct {
     "every task before your final answer. "
 #define TASK_DESC_TAIL ", and task ids last for this conversation only."
 
-#define READ_DESC_TEXT                                                \
-    "Read a page of a text file: up to 2000 lines or 8KB, "           \
-    "whichever is less. Use offset and limit to page through a long " \
-    "file one range at a time rather than reading it whole. "
-#define READ_DESC_IMAGES                                               \
-    "PNG, JPEG, GIF and WebP files return their whole image content. " \
-    "Offset and limit apply only to text; they do not crop or page images. "
+#define READ_DESC_KINDS_IMAGES                                        \
+    "Read a file: a text file, a PDF as the text of its pages, or a " \
+    "PNG, JPEG, GIF or WebP image whole. Other binary files are "     \
+    "refused. "
+#define READ_DESC_KINDS_TEXT                                        \
+    "Read a file: a text file, or a PDF as the text of its pages. " \
+    "Other binary files are refused. "
+#define READ_DESC_PAGE                                                 \
+    "Text comes a page at a time: up to 2000 lines or 8KB, whichever " \
+    "is less. Use offset and limit to page through a long file one "   \
+    "range at a time rather than reading it whole. "
+#define READ_DESC_IMAGE_PAGE "Offset and limit do not crop or page images. "
 #define READ_DESC_OUTSIDE \
     "A path outside the project may need the user's approval."
 
@@ -3122,14 +3202,18 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         return;
     }
 
-    ADD("read", READ_DESC_TEXT READ_DESC_IMAGES READ_DESC_OUTSIDE,
+    ADD("read",
+        READ_DESC_KINDS_IMAGES READ_DESC_PAGE READ_DESC_IMAGE_PAGE
+            READ_DESC_OUTSIDE,
         "Read a page of a file", READS, TOOL_APPROVAL_NONE,
         "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},"
         "\"offset\":{\"type\":\"integer\",\"description\":\"first line, 1-based\"},"
         "\"limit\":{\"type\":\"integer\",\"description\":\"at most 2000 lines\"}},"
         "\"required\":[\"path\"]}",
         tool_read);
-    if (r->n) r->desc_sub[r->n - 1] = STR(READ_DESC_TEXT READ_DESC_OUTSIDE);
+    if (r->n)
+        r->desc_sub[r->n - 1] =
+            STR(READ_DESC_KINDS_TEXT READ_DESC_PAGE READ_DESC_OUTSIDE);
     ADD("internet_search",
         "Search the public web. "
         "Returns up to ten titles, links, and snippets; with read, also "
