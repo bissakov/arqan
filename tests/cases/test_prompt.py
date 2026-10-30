@@ -199,8 +199,8 @@ def test_model_facing_text_names_no_internals(ctx):
 def test_read_describes_images_only_when_they_are_on(ctx):
     """With images off, read has no image behaviour to describe."""
     _, on = model_view(ctx)
-    assert "PNG, JPEG, GIF and WebP files return their whole image " \
-        "content" in on["read"]["description"], on["read"]
+    assert "or a PNG, JPEG, GIF or WebP image whole" \
+        in on["read"]["description"], on["read"]
     _, off = model_view(ctx, ARQAN_IMAGES="off")
     assert "image" not in off["read"]["description"].lower(), off["read"]
 

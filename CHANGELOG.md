@@ -4,6 +4,16 @@
 
 ### Added
 
+- `read` opens PDF files and returns the text of their pages, with a
+  `--- page N of M ---` line before each, and pages through it with
+  `offset` and `limit` like a text file. The text comes from arqan's own
+  reader, with no outside tool. It handles compressed and object streams,
+  damaged cross-reference tables, and PDFs encrypted with RC4 or AES-128
+  that have no password to open them. A PDF may be up to 64 MB. `read`
+  refuses a PDF that needs a password or uses AES-256, and says when a
+  page has no text, as with a scanned page. A glyph whose font gives no
+  clue to its text shows as U+FFFD, and the result says how many there
+  are.
 - A `code_search` tool searches code by its syntax with
   [ast-grep](https://ast-grep.github.io), and is offered only when
   `ast-grep` is on `PATH`. `outline` lists what a file or directory defines,

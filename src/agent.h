@@ -45,6 +45,7 @@ typedef bool b8;
 #define AGENT_MAX_PATH           4096
 #define AGENT_MAX_COMMAND        (1u << 16)
 #define AGENT_MAX_FILE_BYTES     (16u << 20)
+#define AGENT_MAX_PDF_BYTES      (64u << 20)
 #define AGENT_MAX_IMAGE_BYTES    (5u << 20)
 #define AGENT_MAX_IMAGE_SIDE     8000u
 #define AGENT_MAX_MEDIA          64
@@ -1520,6 +1521,27 @@ typedef enum {
 ThumbStatus thumb_png(Arena *a, Str png, u32 max_w, u32 max_h, Str *out,
                       u32 *out_w, u32 *out_h);
 void thumb_size(u32 w, u32 h, u32 max_w, u32 max_h, u32 *out_w, u32 *out_h);
+
+/* ---- PDF text -------------------------------------------------------------
+ * pdf_sniff is true when `bytes` look like a PDF file: "%PDF-" within the
+ * first kilobyte, since the format allows junk before it.
+ *
+ * pdf_text appends the text of each page of the PDF in `bytes` to `out` as
+ * UTF-8 lines, with a "--- page N of M ---" line before each page. A glyph
+ * whose font says nothing about its meaning shows as U+FFFD. Every buffer,
+ * the growth of `out` included, comes from `a`: save `a->off` before and
+ * restore it once the text is no longer needed. False with `err` filled in,
+ * as a clause such as "it is protected by a password", when the file cannot
+ * be opened at all. A page that fails is noted in the text and counted in
+ * `stats` instead.
+ */
+typedef struct {
+    u32 pages, pages_with_text, pages_failed, unmapped;
+} PdfStats;
+
+b8 pdf_sniff(Str bytes);
+b8 pdf_text(Str bytes, Arena *a, Buf *out, PdfStats *stats, char *err,
+            size_t err_cap);
 
 /* ---- clipboard ----------------------------------------------------------
  * The image the system clipboard holds, read through the first helper that
