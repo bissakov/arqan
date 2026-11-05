@@ -478,7 +478,7 @@ def test_ask_user_keeps_the_detail_of_the_answer(ctx):
     assert answer_rows(again, "sqlite")[1] == "one file", again.text()
     # a replayed call shows the question as it did live, not its arguments
     assert "\u25c6  ask\n" in again.text(), again.text()
-    assert "\u2502 Which storage?" in again.text(), again.text()
+    assert "\u2502  Which storage?" in again.text(), again.text()
     assert '"question"' not in again.text(), again.text()
 
 
@@ -606,6 +606,71 @@ def test_ask_user_shows_a_multi_line_question_once_and_whole(ctx):
         assert found[0] < options, "\n".join(rows)
 
 
+def test_ask_user_renders_the_question_as_markdown(ctx):
+    """A question formatted as Markdown shows its styles, not its markers,
+    and keeps the block gutter on every row, live and after a resume."""
+    question = ("The agent found **two problems**:\n\n"
+                "- `config.toml` is loose\n- the cache is stale\n\n"
+                "Which should the agent fix?")
+    ctx.scenario(ask(question, [{"label": "all"}]) + ",final_text=noted")
+    s = ctx.spawn(cols=80, rows=24)
+    to_plan(s)
+    s.submit("plan the cleanup")
+    s.wait_status("pick an answer")
+
+    def check(s):
+        text = s.text()
+        assert "**" not in text and "`" not in text, text
+        for needle in ("two problems", "config.toml is loose",
+                       "the cache is stale", "Which should the agent fix?"):
+            row = s.screen.find_row(needle)
+            assert row >= 0, (needle, text)
+            assert s.screen.row_text(row).lstrip().startswith("\u2502"), \
+                (needle, s.screen.row_text(row))
+        row = s.screen.find_row("two problems")
+        col = s.screen.row_text(row).index("two problems")
+        assert s.screen.attr_at(row, col).bold, s.screen.row_text(row)
+
+    check(s)
+    s.key("enter")
+    s.wait_text("noted")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+
+    again = ctx.spawn(cols=80, rows=24)
+    again.submit("/resume")
+    again.wait_text("plan the cleanup")
+    again.key("enter")
+    again.wait_text("noted")
+    check(again)
+
+
+def test_ask_user_fits_a_markdown_table_inside_the_gutter(ctx):
+    """A table in a question is sized to the room beside the gutter, so no
+    row wraps."""
+    question = ("| option | effect |\n| --- | --- |\n"
+                "| sqlite | keeps local state beside the project and supports"
+                " simple portable backups for every user |")
+    ctx.scenario(ask(question, [{"label": "sqlite"}]))
+    s = ctx.spawn(cols=60, rows=40)
+    to_plan(s)
+    s.submit("plan the storage")
+    s.wait_status("pick an answer")
+
+    rows = [r.strip() for r in s.screen.lines()]
+    top = next((i for i, r in enumerate(rows) if "\u250c" in r), -1)
+    end = next((i for i, r in enumerate(rows) if "\u2514" in r), -1)
+    assert 0 <= top < end, "\n".join(rows)
+    for r in rows[top:end + 1]:
+        assert r[:3] == "\u2502  ", "\n".join(rows)
+        assert r[3] in "\u250c\u251c\u2502\u2514", "\n".join(rows)
+        assert r[-1] in "\u2510\u2524\u2502\u2518", "\n".join(rows)
+    head = next(i for i, r in enumerate(rows) if "keeps local state" in r)
+    tail = next(i for i, r in enumerate(rows) if "every user" in r)
+    assert head < tail, "the narrow table should wrap its cell"
+
+
 def test_ask_user_question_is_selectable(ctx):
     """A drag over the question copies it while the picker waits."""
     ctx.scenario(ask("Which storage?", [{"label": "sqlite"}]))
@@ -614,7 +679,7 @@ def test_ask_user_question_is_selectable(ctx):
     s.submit("plan the storage")
     s.wait_status("pick an answer")
 
-    row = s.screen.find_row("\u2502 Which storage?")
+    row = s.screen.find_row("\u2502  Which storage?")
     assert row >= 0, s.text()
     col = s.screen.row_text(row).index("Which") + 1
     s.mouse("down", row + 1, col)
@@ -934,7 +999,8 @@ def test_ask_user_transcript_scrolls_while_the_picker_waits(ctx):
 
 
 def test_ask_user_question_keeps_one_colour_when_it_wraps(ctx):
-    """A wrapped question reads in the text colour on every row."""
+    """A wrapped question reads in the text colour on every row, and every
+    row keeps the block gutter."""
     words = " ".join(f"word{i}" for i in range(40))
     ctx.scenario(
         ask(words, [{"label": "yes"}, {"label": "no"}]) + ",final_text=noted"
@@ -946,11 +1012,12 @@ def test_ask_user_question_keeps_one_colour_when_it_wraps(ctx):
     s.wait_text("noted")
     s.wait_turn_done()
 
-    first = s.screen.find_row("\u2502 word0 ")
+    first = s.screen.find_row("\u2502  word0 ")
     assert first >= 0, s.text()
     row = s.screen.row_text(first)
     assert s.screen.attr_at(first, row.index("\u2502")).fg == 245  # S_MUTED
     assert s.screen.attr_at(first, row.index("word0")).fg == 253  # S_TEXT
     tail = s.screen.row_text(first + 1)
-    assert "word" in tail and "\u2502" not in tail, s.text()
+    assert "word" in tail and tail.lstrip().startswith("\u2502"), s.text()
+    assert s.screen.attr_at(first + 1, tail.index("\u2502")).fg == 245
     assert s.screen.attr_at(first + 1, tail.index("word")).fg == 253

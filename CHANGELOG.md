@@ -54,6 +54,9 @@
 
 ### Changed
 
+- An `ask_user` question renders as Markdown, so bold, code, lists and
+  tables show as they do in a reply. Rows of a question that wrap keep the
+  block's gutter.
 - Pages that `page_fetch` or `internet_search` fetched are kept for 15
   minutes, so the next page of one, or a `query` on it, reads the copy on
   disk instead of downloading and parsing the page again. Up to 16 pages
