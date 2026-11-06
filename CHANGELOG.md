@@ -79,6 +79,11 @@
 - When a hunk's text is in more than one place, the `patch` error shows the
   lines around each match instead of only the first, so the hunk can be
   widened without reading the file again.
+- `/rewind` trims the saved session in place. It used to copy the kept turns
+  into a new file and keep the old one, so every rewind left a near-full
+  copy behind. The turns rewound past can no longer be resumed. A rewind to
+  the first message, or in a session live in another arqan, still starts a
+  new file.
 
 ### Fixed
 
