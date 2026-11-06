@@ -598,13 +598,11 @@ void render_plan(Str plan) {
 void render_question(Str question) {
     tui_block();
     tui_write_tool(STR("\u25c6  ask\n"));
-    size_t off = 0;
-    Str line;
-    while (str_line(question, &off, &line)) {
-        tui_write_dim(STR("\u2502 "));
-        tui_write_text(line);
-        tui_write(STR("\n"));
-    }
+    tui_tool_nest_begin();
+    md_write(question);
+    if (!question.n || question.p[question.n - 1] != '\n') md_write(STR("\n"));
+    md_end();
+    tui_tool_nest_end();
 }
 
 void render_note(Str note) {

@@ -439,7 +439,7 @@ static void md_indent(size_t n) {
 
 static void md_rule(void) {
     char buf[MD_RULE_MAX * 3];
-    size_t cells = tui_body_cols();
+    size_t cells = tui_row_cols();
     tui_width_fitted();
     if (!cells || cells > MD_RULE_MAX) cells = MD_RULE_MAX;
     for (size_t i = 0; i < cells; i++) memcpy(buf + i * 3, "\u2500", 3);
@@ -803,7 +803,7 @@ static void md_table_line(Str line, const size_t *width, b8 head) {
 }
 
 static void md_table_fit(size_t *width, size_t cols) {
-    size_t body = tui_body_cols();
+    size_t body = tui_row_cols();
     size_t frame = cols * 3 + 1;
     if (!body || cols > MD_TABLE_COLS || body < frame + cols) return;
     size_t budget = body - frame, total = 0, widest = 0;

@@ -6,7 +6,7 @@
 |▌
 |
 |  ◆  ask
-|  │ Which storage?
+|  │  Which storage?
 |
 |
 |    Tab adds your own words to an answer
