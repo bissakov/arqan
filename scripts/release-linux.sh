@@ -108,6 +108,7 @@ smoke_deb() {
             if grep -q "^# deb http://snapshot" /etc/apt/sources.list 2>/dev/null; then
                 sed -i -e "/^deb /d" -e "s|^# deb http://snapshot|deb http://snapshot|" /etc/apt/sources.list
                 echo "Acquire::Check-Valid-Until \"false\";" >/etc/apt/apt.conf.d/99snapshot
+                echo "Acquire::Retries \"5\";" >>/etc/apt/apt.conf.d/99snapshot
             fi
             apt-get update >/dev/null
             apt-get install -y "/packages/'"$deb"'" >/dev/null
