@@ -11,6 +11,8 @@
  * describe it.
  */
 
+#define MEDIA_PART_BYTES 256
+
 b8 media_init(MediaSet *m, Arena *persist, size_t cap) {
     memset(m, 0, sizeof *m);
     if (!cap) return false;
@@ -239,6 +241,11 @@ size_t media_add_missing(MediaSet *m, Arena *persist, Str label, Str mime,
 
 b8 media_live(const MediaSet *m, size_t id) {
     return m && id < m->n && m->bytes[id].n > 0;
+}
+
+size_t media_encoded_size(const MediaSet *m, size_t id) {
+    if (!media_live(m, id)) return 0;
+    return (m->bytes[id].n + 2) / 3 * 4 + MEDIA_PART_BYTES;
 }
 
 

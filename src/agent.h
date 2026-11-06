@@ -57,6 +57,14 @@ typedef bool b8;
     (AGENT_MAX_BATCH_STEPS * (6u * AGENT_TOOL_RESULT_BYTES + 512u) + 128u)
 #define AGENT_READ_LINES 2000
 
+#define AGENT_IMAGE_BUDGET_MB     16
+#define AGENT_MIN_IMAGE_BUDGET_MB 8
+#define AGENT_MAX_IMAGE_BUDGET_MB 64
+#define AGENT_MAX_REQUEST_IMAGES  20
+_Static_assert((AGENT_MAX_IMAGE_BYTES + 2) / 3 * 4 + 1024
+                   < (AGENT_MIN_IMAGE_BUDGET_MB << 20),
+               "the smallest image budget must hold the largest image");
+
 #define AGENT_READ_BYTES (AGENT_TOOL_RESULT_BYTES - 256u)
 
 #define AGENT_SHELL_OUT_BYTES \
@@ -763,6 +771,7 @@ typedef enum {
     CONF_ASK_TIMEOUT_MS,
     CONF_SHELL_TIMEOUT_MS,
     CONF_IMAGES,
+    CONF_IMAGE_BUDGET_MB,
     CONF_RESUME_LAST,
     CONF_COMPACT,
     CONF_COMPACT_AT,
@@ -909,6 +918,7 @@ typedef struct {
     b8 auto_title;
 
     b8 images;
+    size_t image_budget;
     b8 resume_last;
     CompactMode compact;
     u32 compact_at;
@@ -1489,6 +1499,7 @@ size_t media_add_file(MediaSet *m, Arena *persist, Arena *scratch, Str path,
 size_t media_add_missing(MediaSet *m, Arena *persist, Str label, Str mime,
                          Str file);
 b8 media_live(const MediaSet *m, size_t id);
+size_t media_encoded_size(const MediaSet *m, size_t id);
 
 size_t media_keep(MediaSet *m, size_t base, const size_t *ids, size_t n);
 
@@ -1611,6 +1622,8 @@ typedef struct {
     size_t touched_n, touched_cap;
     b8 touched_overflow;
     size_t elide_start;
+    size_t image_cut;
+    u16 image_cut_k;
     size_t checkpoint;
     size_t n, cap;
 } Conv;
@@ -1653,6 +1666,16 @@ b8 conv_elide_advance(Conv *c);
 b8 conv_result_elided(const Conv *c, size_t i, size_t recent);
 b8 conv_slot_dropped(const Conv *c, size_t i, size_t recent);
 b8 conv_media_elided(const Conv *c, size_t i, size_t recent);
+/* ---- images per request --------------------------------------------------
+ * conv_media_fit picks the oldest image a request carries, so the images sent
+ * stay within `budget` encoded bytes and AGENT_MAX_REQUEST_IMAGES. An older
+ * image is withheld and its slot says so. The cut moves in steps of half the
+ * budget, so it rarely breaks the prompt cache, and spares the newest slot
+ * with images while it fits. It is derived from the conversation alone, so
+ * resume and compaction keep no record of it. True when the cut moved.
+ */
+b8 conv_media_fit(Conv *c, size_t budget);
+b8 conv_image_sent(const Conv *c, size_t i, size_t k);
 b8 conv_args_elided(const Conv *c, size_t i, size_t recent);
 b8 conv_args_are_stub(Str args, Arena *scratch);
 
@@ -1884,6 +1907,7 @@ typedef struct {
     size_t cache_read_tokens;
     size_t total_tokens;
     b8 usage_valid;
+    b8 image_cut_moved;
     ProviderStop stop;
     char status_msg[AGENT_MAX_PROVIDER_MSG + 1];
 } Provider;

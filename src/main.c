@@ -3311,6 +3311,21 @@ static size_t attach_from_clipboard(Agent *ag, char *err, size_t err_cap) {
                      err_cap);
 }
 
+static b8 pending_fits(const Agent *ag, size_t added, char *err,
+                       size_t err_cap) {
+    size_t total = media_encoded_size(&g_media, added);
+    for (size_t i = 0; i < ag->pending_n; i++)
+        total += media_encoded_size(&g_media, ag->pending[i]);
+    if (total <= ag->cfg->image_budget) return true;
+    char have[32], max[32];
+    spill_size_text(have, sizeof have, total);
+    spill_size_text(max, sizeof max, ag->cfg->image_budget);
+    snprintf(err, err_cap,
+             "these images come to %s once encoded; image_budget_mb allows %s",
+             have, max);
+    return false;
+}
+
 static void attach_image(Agent *ag, Str path, Str carried) {
     path = str_trim(path);
 
@@ -3333,10 +3348,16 @@ static void attach_image(Agent *ag, Str path, Str carried) {
     }
     char err[256] = {0};
     size_t mark = ag->scratch->off;
+    size_t held = ag->persist->off;
 
     size_t id = path.n ? media_add_file(&g_media, ag->persist, ag->scratch,
                                         path, err, sizeof err)
                        : attach_from_clipboard(ag, err, sizeof err);
+    if (id != MEDIA_NONE && !pending_fits(ag, id, err, sizeof err)) {
+        g_media.n = id;
+        ag->persist->off = held;
+        id = MEDIA_NONE;
+    }
     if (id == MEDIA_NONE) {
         ag->scratch->off = mark;
         notice_fmt("%s", err);
@@ -6049,6 +6070,8 @@ static b8 agent_turn(Agent *ag, Str text) {
         g_turn.request_sent_s = agent_now_seconds();
         i32 rc = provider_run(&p, err, sizeof err);
         f64 request_sent_s = g_turn.request_sent_s;
+        if (p.image_cut_moved)
+            cache_guard_cause(&g_cache, CACHE_CAUSE_MEDIA, 0);
 
         md_end();
         md_set_muted(false);

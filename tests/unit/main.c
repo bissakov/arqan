@@ -196,6 +196,50 @@ static void buf_reserve_reports_failure(void) {
     CHECK(!buf_ok(&b));
 }
 
+static void buf_grows_in_place_at_the_arena_tail(void) {
+    WITH_ARENA(a, 4096);
+    Buf b;
+    buf_init(&b, &a, 16);
+    char *start = b.p;
+    for (int i = 0; i < 100; i++) buf_puts(&b, STR("0123456789"));
+    CHECK(buf_ok(&b));
+    CHECK(b.p == start);
+    CHECK(b.n == 1000);
+    CHECK(a.off == b.cap);
+    CHECK(!memcmp(b.p + 990, "0123456789", 10));
+}
+
+static void buf_copies_when_another_allocation_follows(void) {
+    WITH_ARENA(a, 4096);
+    Buf b;
+    buf_init(&b, &a, 16);
+    buf_puts(&b, STR("0123456789"));
+    char *start = b.p;
+    CHECK(arena_alloc(&a, 8, 1) != NULL);
+    buf_puts(&b, STR("0123456789"));
+    CHECK(buf_ok(&b));
+    CHECK(b.p != start);
+    CHECK(!memcmp(b.p, "01234567890123456789", 20));
+    CHECK(!memcmp(start, "0123456789", 10));
+}
+
+static void buf_takes_the_rest_of_the_arena_in_place(void) {
+    WITH_ARENA(a, 1024);
+    Buf b;
+    buf_init(&b, &a, 600);
+    char *start = b.p;
+    char chunk[700];
+    memset(chunk, 'x', sizeof chunk);
+    buf_put(&b, chunk, sizeof chunk);
+    CHECK(buf_ok(&b));
+    CHECK(b.p == start);
+    CHECK(b.cap == 1024);
+    CHECK(a.off == 1024);
+    buf_put(&b, chunk, 400);
+    CHECK(!buf_ok(&b));
+    CHECK(b.n == 700);
+}
+
 static void buf_json_str_escapes(void) {
     WITH_ARENA(a, 4096);
     Buf b;
@@ -1021,6 +1065,124 @@ static void conv_clone_carries_the_touched_list(void) {
     CHECK(copy.touched_n == 2);
     CHECK(str_eq(copy.touched[1], STR("b.txt")));
     CHECK(!copy.touched_overflow);
+}
+
+#define FIT_IMAGE_BYTES 280u
+
+static void fit_add_images(Conv *c, Arena *a, size_t n) {
+    char err[64];
+    Str image = STR("GIF89a\x01\0\x01\0\0\0\0\0\0\0");
+    size_t slot = conv_add_tool(c, (Str){0}, STR("[Image]"));
+    size_t off = c->media->n;
+    for (size_t i = 0; i < n; i++)
+        CHECK(media_add(c->media, a, image, STR("x"), err, sizeof err)
+              != MEDIA_NONE);
+    conv_attach_media(c, slot, off, n);
+}
+
+static size_t fit_sent(const Conv *c, size_t *count) {
+    size_t bytes = 0, n = 0;
+    for (size_t i = 0; i < c->n; i++)
+        for (size_t k = 0; k < c->media_n[i]; k++)
+            if (conv_image_sent(c, i, k)) {
+                bytes += media_encoded_size(c->media, c->media_off[i] + k);
+                n++;
+            }
+    *count = n;
+    return bytes;
+}
+
+static void fit_begin(Conv *c, MediaSet *m, Arena *a) {
+    CHECK(conv_init(c, a, 128));
+    CHECK(media_init(m, a, AGENT_MAX_MEDIA));
+    conv_set_media(c, m);
+    CHECK(conv_add(c, M_SYSTEM, STR("sys")) == 0);
+    CHECK(conv_add(c, M_USER, STR("go")) == 1);
+}
+
+static void conv_media_fit_keeps_requests_within_the_budget(void) {
+    WITH_ARENA(a, 1 << 20);
+    Conv c;
+    MediaSet m;
+    fit_begin(&c, &m, &a);
+    size_t budget = 10 * FIT_IMAGE_BYTES;
+    size_t moves = 0;
+    for (size_t round = 0; round < 40; round++) {
+        fit_add_images(&c, &a, 1);
+        size_t before = c.image_cut, before_k = c.image_cut_k;
+        if (conv_media_fit(&c, budget)) moves++;
+        size_t n;
+        CHECK(fit_sent(&c, &n) <= budget);
+        CHECK(n >= 5 || n == round + 1);
+        CHECK(conv_image_sent(&c, c.n - 1, 0));
+        CHECK(c.image_cut > before
+              || (c.image_cut == before && c.image_cut_k >= before_k));
+    }
+    CHECK(moves >= 5 && moves <= 7);
+    CHECK(!conv_image_sent(&c, 2, 0));
+    CHECK(!conv_media_fit(&c, budget));
+
+    WITH_ARENA(request, 1 << 20);
+    Buf b;
+    buf_init(&b, &request, 1024);
+    conv_write_json(&b, &c, NULL);
+    CHECK(buf_ok(&b));
+    CHECK(str_holds(buf_finish(&b), STR("1 image no longer sent")));
+}
+
+static void conv_media_fit_sends_everything_under_the_budget(void) {
+    WITH_ARENA(a, 1 << 20);
+    Conv c;
+    MediaSet m;
+    fit_begin(&c, &m, &a);
+    for (size_t round = 0; round < 10; round++) fit_add_images(&c, &a, 1);
+    CHECK(!conv_media_fit(&c, 10 * FIT_IMAGE_BYTES));
+    size_t n;
+    CHECK(fit_sent(&c, &n) == 10 * FIT_IMAGE_BYTES);
+    CHECK(n == 10);
+    CHECK(c.image_cut == 0 && c.image_cut_k == 0);
+}
+
+static void conv_media_fit_caps_the_image_count(void) {
+    WITH_ARENA(a, 1 << 20);
+    Conv c;
+    MediaSet m;
+    fit_begin(&c, &m, &a);
+    for (size_t round = 0; round < 30; round++) {
+        fit_add_images(&c, &a, 1);
+        conv_media_fit(&c, (size_t)1 << 30);
+        size_t n;
+        fit_sent(&c, &n);
+        CHECK(n <= AGENT_MAX_REQUEST_IMAGES);
+        CHECK(n >= AGENT_MAX_REQUEST_IMAGES / 2 || n == round + 1);
+    }
+}
+
+static void conv_media_fit_spares_the_newest_slot(void) {
+    WITH_ARENA(a, 1 << 20);
+    Conv c;
+    MediaSet m;
+    fit_begin(&c, &m, &a);
+    for (size_t round = 0; round < 3; round++) fit_add_images(&c, &a, 1);
+    fit_add_images(&c, &a, 8);
+    size_t budget = 10 * FIT_IMAGE_BYTES;
+    CHECK(conv_media_fit(&c, budget));
+    for (size_t k = 0; k < 8; k++) CHECK(conv_image_sent(&c, c.n - 1, k));
+    size_t n;
+    CHECK(fit_sent(&c, &n) <= budget);
+    CHECK(n == 8);
+}
+
+static void conv_media_fit_sends_the_newest_image_past_the_budget(void) {
+    WITH_ARENA(a, 1 << 20);
+    Conv c;
+    MediaSet m;
+    fit_begin(&c, &m, &a);
+    fit_add_images(&c, &a, 1);
+    fit_add_images(&c, &a, 1);
+    CHECK(conv_media_fit(&c, FIT_IMAGE_BYTES / 2));
+    CHECK(!conv_image_sent(&c, 2, 0));
+    CHECK(conv_image_sent(&c, 3, 0));
 }
 
 static void conv_result_slot_pairs_like_call_slot(void) {
@@ -2242,6 +2404,9 @@ int main(void) {
 
     RUN(buf_latches_on_exhaustion);
     RUN(buf_reserve_reports_failure);
+    RUN(buf_grows_in_place_at_the_arena_tail);
+    RUN(buf_copies_when_another_allocation_follows);
+    RUN(buf_takes_the_rest_of_the_arena_in_place);
     RUN(buf_json_str_escapes);
     RUN(buf_json_str_escapes_control);
     RUN(base64_round_trips);
@@ -2291,6 +2456,11 @@ int main(void) {
 
     RUN(conv_touch_keeps_a_bounded_unique_list);
     RUN(conv_clone_carries_the_touched_list);
+    RUN(conv_media_fit_keeps_requests_within_the_budget);
+    RUN(conv_media_fit_sends_everything_under_the_budget);
+    RUN(conv_media_fit_caps_the_image_count);
+    RUN(conv_media_fit_spares_the_newest_slot);
+    RUN(conv_media_fit_sends_the_newest_image_past_the_budget);
     RUN(conv_result_slot_pairs_like_call_slot);
 
     RUN(config_files_keep_the_user_file_past_many_system_dirs);

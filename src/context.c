@@ -48,7 +48,7 @@ static f64 ctx_slot_media(const Conv *c, size_t i, size_t recent) {
     size_t off = c->media_off[i], n = c->media_n[i];
     for (size_t k = 0; k < n; k++) {
         size_t id = off + k;
-        if (!media_live(m, id)) continue;
+        if (!conv_image_sent(c, i, k)) continue;
         f64 t = CTX_IMAGE_TOKENS;
         if (m->w[id] && m->h[id]) {
             t = (f64)m->w[id] * (f64)m->h[id] / CTX_IMAGE_PIXELS;
