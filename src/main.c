@@ -2926,7 +2926,8 @@ static void rewind_conversation(Agent *ag) {
     tui_batch_end();
 
     char err[256] = {0};
-    if (!session_fork(sess, conv, err, sizeof err)) {
+    if (!session_rewind(sess, conv, err, sizeof err)
+        && !session_fork(sess, conv, err, sizeof err)) {
         session_begin(sess);
         save_session(ag);
     }

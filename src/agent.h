@@ -1859,6 +1859,7 @@ b8 session_update_tool(Session *s, const Conv *c, size_t slot, char *err,
                        size_t err_cap);
 
 b8 session_fork(Session *s, const Conv *c, char *err, size_t err_cap);
+b8 session_rewind(Session *s, const Conv *c, char *err, size_t err_cap);
 
 b8 session_export_markdown(const Conv *c, Str requested, char *path,
                            size_t path_cap, char *err, size_t err_cap);

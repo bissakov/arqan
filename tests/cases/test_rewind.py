@@ -1,6 +1,21 @@
 """Rewinding the conversation: Escape twice, or /rewind, to edit an earlier turn."""
 
+import json
+
 ARM = "Press Escape again to edit previous message"
+
+
+def session_files(ctx):
+    """The transcripts saved for the one working directory."""
+    root = ctx.home / ".local" / "share" / "arqan" / "sessions"
+    dirs = [p for p in root.iterdir() if p.is_dir()] if root.exists() else []
+    assert len(dirs) == 1, sorted(p.name for p in dirs)
+    return sorted(p for p in dirs[0].iterdir() if p.is_file())
+
+
+def saved_contents(path):
+    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    return [line["content"] for line in lines if "role" in line]
 
 
 def turn(ctx, s, prompt, reply):
@@ -114,6 +129,56 @@ def test_picking_an_older_message_drops_everything_after_it(ctx):
     s.key("enter")
     s.wait_gone("first answer")
     assert s.composer_text() == "first question", s.composer_lines()
+    assert "second answer" not in s.text(), s.text()
+
+
+def test_rewinding_trims_the_saved_session_in_place(ctx):
+    """The session file loses the rewound turns; no copy is left beside it."""
+    s = ctx.spawn()
+    turn(ctx, s, "first question", "first answer")
+    turn(ctx, s, "second question", "second answer")
+    s.submit("/rewind")
+    s.wait_status("rewind to a message")
+    s.key("enter")
+    s.wait_gone("second answer")
+    s.settle()
+
+    files = session_files(ctx)
+    assert len(files) == 1, [p.name for p in files]
+    assert saved_contents(files[0]) == ["first question", "first answer"]
+
+
+def test_the_rewound_session_continues_in_the_same_file(ctx):
+    """The next turn appends to the trimmed file, and resume replays it."""
+    s = ctx.spawn()
+    turn(ctx, s, "first question", "first answer")
+    turn(ctx, s, "second question", "second answer")
+    s.submit("/rewind")
+    s.wait_status("rewind to a message")
+    s.key("enter")
+    s.wait_gone("second answer")
+    ctx.scenario("text=fresh+answer")
+    s.key("enter")
+    s.wait_text("fresh answer")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+
+    files = session_files(ctx)
+    assert len(files) == 1, [p.name for p in files]
+    assert saved_contents(files[0]) == [
+        "first question",
+        "first answer",
+        "second question",
+        "fresh answer",
+    ]
+
+    s = ctx.spawn()
+    s.submit("/resume")
+    s.wait_status("pick a session")
+    s.key("enter")
+    s.wait_text("fresh answer")
+    assert "first answer" in s.text(), s.text()
     assert "second answer" not in s.text(), s.text()
 
 

@@ -673,6 +673,49 @@ static b8 sess_put_media(SessOut *o, Str dir, const Conv *c, size_t i,
     return true;
 }
 
+static b8 sess_out_conv(SessOut *o, Str dir, const Conv *c, size_t from,
+                        b8 elide, size_t touched_from, char *err,
+                        size_t err_cap) {
+    if (elide)
+        sess_out_putf(o, "{\"type\":\"elide\",\"start\":%zu}\n",
+                      c->elide_start);
+    for (size_t i = from; i < c->n; i++) {
+        if (c->role[i] == M_SYSTEM) continue;
+        const char *role = c->role[i] == M_USER   ? "user"
+                           : c->role[i] == M_TOOL ? "tool"
+                                                  : "assistant";
+        sess_out_putf(o, "{\"role\":\"%s\"", role);
+        if (c->tool_call_id[i].n) {
+            sess_out_puts(o, STR(",\"id\":"));
+            sess_out_json(o, c->tool_call_id[i]);
+        }
+        if (c->tool_name[i].n) {
+            sess_out_puts(o, STR(",\"name\":"));
+            sess_out_json(o, c->tool_name[i]);
+        }
+        if (c->role[i] == M_ASSISTANT && c->has_tool_call[i]
+            && !c->tool_name[i].n)
+            sess_out_puts(o, STR(",\"calls\":true"));
+        if (c->anthropic_thinking[i].n) {
+            sess_out_puts(o, STR(",\"anthropic_thinking\":"));
+            sess_out_puts(o, c->anthropic_thinking[i]);
+        }
+        if (c->shell_out[i].n) {
+            sess_out_puts(o, STR(",\"output\":"));
+            sess_out_json(o, c->shell_out[i]);
+        }
+        if (!sess_put_media(o, dir, c, i, err, err_cap)) return false;
+        if (c->ms[i]) sess_out_putf(o, ",\"ms\":%u", c->ms[i]);
+        if (c->sent_at[i] > 0)
+            sess_out_putf(o, ",\"sent_at\":%lld", (long long)c->sent_at[i]);
+        sess_out_puts(o, STR(",\"content\":"));
+        sess_out_json(o, c->text[i]);
+        sess_out_puts(o, STR("}\n"));
+    }
+    sess_out_touched(o, c, touched_from);
+    return true;
+}
+
 b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
     if (err_cap) err[0] = '\0';
     if (s->read_only) {
@@ -753,45 +796,8 @@ b8 session_save(Session *s, const Conv *c, char *err, size_t err_cap) {
     SessOut out = {.fd = fd};
     if (created) sess_out_metadata(&out, s->title);
     if (newline) sess_out_putc(&out, '\n');
-    if (elide_moved)
-        sess_out_putf(&out, "{\"type\":\"elide\",\"start\":%zu}\n",
-                      c->elide_start);
-    b8 serialized = true;
-    for (size_t i = s->written; i < c->n && serialized; i++) {
-        if (c->role[i] == M_SYSTEM) continue;
-        const char *role = c->role[i] == M_USER   ? "user"
-                           : c->role[i] == M_TOOL ? "tool"
-                                                  : "assistant";
-        sess_out_putf(&out, "{\"role\":\"%s\"", role);
-        if (c->tool_call_id[i].n) {
-            sess_out_puts(&out, STR(",\"id\":"));
-            sess_out_json(&out, c->tool_call_id[i]);
-        }
-        if (c->tool_name[i].n) {
-            sess_out_puts(&out, STR(",\"name\":"));
-            sess_out_json(&out, c->tool_name[i]);
-        }
-        if (c->role[i] == M_ASSISTANT && c->has_tool_call[i]
-            && !c->tool_name[i].n)
-            sess_out_puts(&out, STR(",\"calls\":true"));
-        if (c->anthropic_thinking[i].n) {
-            sess_out_puts(&out, STR(",\"anthropic_thinking\":"));
-            sess_out_puts(&out, c->anthropic_thinking[i]);
-        }
-        if (c->shell_out[i].n) {
-            sess_out_puts(&out, STR(",\"output\":"));
-            sess_out_json(&out, c->shell_out[i]);
-        }
-        serialized = sess_put_media(&out, dir, c, i, err, err_cap);
-        if (!serialized) break;
-        if (c->ms[i]) sess_out_putf(&out, ",\"ms\":%u", c->ms[i]);
-        if (c->sent_at[i] > 0)
-            sess_out_putf(&out, ",\"sent_at\":%lld", (long long)c->sent_at[i]);
-        sess_out_puts(&out, STR(",\"content\":"));
-        sess_out_json(&out, c->text[i]);
-        sess_out_puts(&out, STR("}\n"));
-    }
-    if (serialized) sess_out_touched(&out, c, s->touched_written);
+    b8 serialized = sess_out_conv(&out, dir, c, s->written, elide_moved,
+                                  s->touched_written, err, err_cap);
     b8 ok = serialized && sess_out_flush(&out) && fsync(fd) == 0;
     i32 saved = out.error ? out.error : ok ? 0 : errno;
     if (!ok) {
@@ -931,6 +937,53 @@ b8 session_fork(Session *s, const Conv *c, char *err, size_t err_cap) {
     }
     sess_lock_drop(s, (Str){old.path_buf, old.path.n}, old.lock_fd);
     if (old.title.n) session_set_title(s, (Str){old.title_buf, old.title.n});
+    return true;
+}
+
+typedef struct {
+    const Session *s;
+    const Conv *c;
+    char *err;
+    size_t err_cap;
+} SessRewrite;
+
+static b8 sess_rewrite_lines(FILE *f, void *ud) {
+    const SessRewrite *r = ud;
+    SessOut out = {.fd = fileno(f)};
+    sess_out_metadata(&out, r->s->title);
+    b8 ok = sess_out_conv(&out, r->s->dir, r->c, 0, r->c->elide_start != 0, 0,
+                          r->err, r->err_cap)
+            && sess_out_flush(&out);
+    if (out.error) errno = out.error;
+    return ok;
+}
+
+b8 session_rewind(Session *s, const Conv *c, char *err, size_t err_cap) {
+    if (err_cap) err[0] = '\0';
+    if (s->read_only || s->save_blocked || !s->path.n || s->lock_fd < 0) {
+        snprintf(err, err_cap, "this session cannot be rewritten in place");
+        return false;
+    }
+    b8 kept = false;
+    for (size_t i = 0; i < c->n && !kept; i++)
+        if (c->role[i] != M_SYSTEM) kept = true;
+    if (!kept) {
+        snprintf(err, err_cap, "nothing is left to keep");
+        return false;
+    }
+    SessRewrite rewrite = {s, c, err, err_cap};
+    errno = 0;
+    if (!file_write_atomic(s->path.p, 0600, true, sess_rewrite_lines,
+                           &rewrite)) {
+        if (!err[0])
+            snprintf(err, err_cap, "could not rewrite session file: %s",
+                     strerror(errno ? errno : EIO));
+        return false;
+    }
+    s->written = c->n;
+    s->elide_written = c->elide_start;
+    s->touched_written = c->touched_n;
+    s->sync_dir = false;
     return true;
 }
 
