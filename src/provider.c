@@ -30,6 +30,8 @@ b8 conv_init(Conv *c, Arena *persist, size_t cap) {
     c->touched_cap = AGENT_MAX_TOUCHED;
     c->touched_overflow = false;
     c->elide_start = 0;
+    c->image_cut = 0;
+    c->image_cut_k = 0;
     c->checkpoint = 0;
     c->n = 0;
     c->cap = cap;
@@ -87,6 +89,10 @@ void conv_truncate(Conv *c, size_t keep) {
     } else if (c->elide_start > keep) {
         c->elide_start = keep;
     }
+    if (c->image_cut >= keep) {
+        c->image_cut = 0;
+        c->image_cut_k = 0;
+    }
     if (c->checkpoint >= keep) c->checkpoint = 0;
     if (!c->media) return;
     size_t live = 0;
@@ -123,6 +129,8 @@ b8 conv_clone_head(Conv *dst, const Conv *src, size_t keep, Arena *a,
     dst->touched_n = touched;
     dst->touched_overflow = src->touched_overflow || touched < src->touched_n;
     dst->elide_start = src->elide_start > n ? n : src->elide_start;
+    dst->image_cut = src->image_cut < n ? src->image_cut : 0;
+    dst->image_cut_k = src->image_cut < n ? src->image_cut_k : 0;
     dst->checkpoint = src->checkpoint < n ? src->checkpoint : 0;
     dst->n = n;
     return true;
@@ -391,6 +399,8 @@ b8 conv_compact_head(Conv *c, size_t keep, Str checkpoint) {
     c->media_n[1] = 0;
     c->n = 2 + tail;
     c->elide_start = 0;
+    c->image_cut = 0;
+    c->image_cut_k = 0;
     c->checkpoint = 1;
     return true;
 }
@@ -407,20 +417,91 @@ static Str conv_call_name(const Conv *c, size_t result) {
     return STR("tool");
 }
 
-static size_t conv_media_live(const Conv *c, size_t i) {
-    size_t live = 0;
-    for (size_t k = 0; k < c->media_n[i]; k++)
-        if (media_live(c->media, (size_t)c->media_off[i] + k)) live++;
-    return live;
-}
-
 b8 conv_media_elided(const Conv *c, size_t i, size_t recent) {
     return c->role[i] == M_TOOL && i < recent;
 }
 
+b8 conv_image_sent(const Conv *c, size_t i, size_t k) {
+    if (!media_live(c->media, (size_t)c->media_off[i] + k)) return false;
+    return i > c->image_cut || (i == c->image_cut && k >= c->image_cut_k);
+}
+
+static size_t conv_media_sent(const Conv *c, size_t i) {
+    size_t sent = 0;
+    for (size_t k = 0; k < c->media_n[i]; k++)
+        if (conv_image_sent(c, i, k)) sent++;
+    return sent;
+}
+
+static size_t conv_media_withheld(const Conv *c, size_t i, size_t recent) {
+    if (conv_media_elided(c, i, recent)) return 0;
+    size_t withheld = 0;
+    for (size_t k = 0; k < c->media_n[i]; k++)
+        if (media_live(c->media, (size_t)c->media_off[i] + k)
+            && !conv_image_sent(c, i, k))
+            withheld++;
+    return withheld;
+}
+
 static size_t conv_tool_media(const Conv *c, size_t i, size_t recent) {
     if (c->role[i] != M_TOOL || conv_media_elided(c, i, recent)) return 0;
-    return conv_media_live(c, i);
+    return conv_media_sent(c, i);
+}
+
+static size_t image_cut_at(size_t total, size_t limit, size_t newest) {
+    if (total <= limit) return 0;
+    size_t over = total - limit;
+    size_t step = limit / 2 ? limit / 2 : 1;
+    size_t stepped = over / step * step + (over % step ? step : 0);
+    size_t spared = newest > over ? newest : over;
+    return stepped < spared ? stepped : spared;
+}
+
+b8 conv_media_fit(Conv *c, size_t budget) {
+    size_t was = c->image_cut, was_k = c->image_cut_k;
+    c->image_cut = 0;
+    c->image_cut_k = 0;
+    if (!budget) budget = (size_t)AGENT_IMAGE_BUDGET_MB << 20;
+    size_t bytes = 0, count = 0, newest_bytes = 0, newest_count = 0;
+    for (size_t i = 0; c->media && i < c->n; i++) {
+        size_t slot_bytes = bytes, slot_count = count;
+        for (size_t k = 0; k < c->media_n[i]; k++) {
+            size_t id = (size_t)c->media_off[i] + k;
+            if (!media_live(c->media, id)) continue;
+            bytes += media_encoded_size(c->media, id);
+            count++;
+        }
+        if (count > slot_count) {
+            newest_bytes = slot_bytes;
+            newest_count = slot_count;
+        }
+    }
+    size_t cut_bytes = image_cut_at(bytes, budget, newest_bytes);
+    size_t cut_count =
+        image_cut_at(count, AGENT_MAX_REQUEST_IMAGES, newest_count);
+    size_t seen_bytes = 0, seen = 0, last = 0, last_k = 0;
+    b8 placed = !cut_bytes && !cut_count;
+    for (size_t i = 0; !placed && i < c->n; i++) {
+        for (size_t k = 0; !placed && k < c->media_n[i]; k++) {
+            size_t id = (size_t)c->media_off[i] + k;
+            if (!media_live(c->media, id)) continue;
+            if (seen_bytes >= cut_bytes && seen >= cut_count) {
+                c->image_cut = i;
+                c->image_cut_k = (u16)k;
+                placed = true;
+                continue;
+            }
+            seen_bytes += media_encoded_size(c->media, id);
+            seen++;
+            last = i;
+            last_k = k;
+        }
+    }
+    if (!placed && seen) {
+        c->image_cut = last;
+        c->image_cut_k = (u16)last_k;
+    }
+    return c->image_cut != was || c->image_cut_k != was_k;
 }
 
 
@@ -493,6 +574,25 @@ b8 conv_args_are_stub(Str args, Arena *scratch) {
     return stub;
 }
 
+static void write_withheld_note(Buf *b, size_t withheld) {
+    buf_putf(b,
+             "\\n[%zu image%s no longer sent: a request carries only the "
+             "newest images, up to image_budget_mb]",
+             withheld, withheld == 1 ? "" : "s");
+}
+
+static void write_slot_text(Buf *b, const Conv *c, size_t i, size_t recent) {
+    size_t withheld = conv_media_withheld(c, i, recent);
+    if (!withheld) {
+        buf_json_str(b, c->text[i]);
+        return;
+    }
+    buf_putc(b, '"');
+    buf_json_chars(b, c->text[i]);
+    write_withheld_note(b, withheld);
+    buf_putc(b, '"');
+}
+
 static void write_tool_result(Buf *b, const Conv *c, size_t i, size_t recent) {
     if (conv_result_elided(c, i, recent)) {
         Str name = conv_call_name(c, i);
@@ -503,29 +603,28 @@ static void write_tool_result(Buf *b, const Conv *c, size_t i, size_t recent) {
                  "Call it again if you still need it.]\"",
                  c->text[i].n);
     } else {
-        buf_json_str(b, c->text[i]);
+        write_slot_text(b, c, i, recent);
     }
 }
 
 static void oai_write_content(Buf *b, const Conv *c, size_t i) {
-    if (!conv_media_live(c, i)) {
-        buf_json_str(b, c->text[i]);
+    if (!conv_media_sent(c, i)) {
+        write_slot_text(b, c, i, 0);
         return;
     }
     buf_putc(b, '[');
     b8 first = true;
-    if (c->text[i].n) {
+    if (c->text[i].n || conv_media_withheld(c, i, 0)) {
         buf_puts(b, STR("{\"type\":\"text\",\"text\":"));
-        buf_json_str(b, c->text[i]);
+        write_slot_text(b, c, i, 0);
         buf_putc(b, '}');
         first = false;
     }
     for (size_t k = 0; k < c->media_n[i]; k++) {
-        size_t id = (size_t)c->media_off[i] + k;
-        if (!media_live(c->media, id)) continue;
+        if (!conv_image_sent(c, i, k)) continue;
         if (!first) buf_putc(b, ',');
         first = false;
-        media_write_openai(b, c->media, id);
+        media_write_openai(b, c->media, (size_t)c->media_off[i] + k);
     }
     buf_putc(b, ']');
 }
@@ -556,10 +655,9 @@ static void oai_write_tool_images(Buf *b, const Conv *c, size_t i,
         buf_json_chars(b, conv_call_name(c, j));
         buf_puts(b, STR("):\"}"));
         for (size_t k = 0; k < c->media_n[j]; k++) {
-            size_t id = (size_t)c->media_off[j] + k;
-            if (!media_live(c->media, id)) continue;
+            if (!conv_image_sent(c, j, k)) continue;
             buf_putc(b, ',');
-            media_write_openai(b, c->media, id);
+            media_write_openai(b, c->media, (size_t)c->media_off[j] + k);
         }
     }
     buf_puts(b, STR("]}"));
@@ -658,18 +756,17 @@ static b8 anth_has_plain_block(const Conv *c, size_t i) {
 static b8 anth_has_block(const Conv *c, size_t i) {
     if (conv_slot_dropped(c, i, conv_elide_start(c))) return false;
     return c->anthropic_thinking[i].n || anth_has_plain_block(c, i)
-           || conv_media_live(c, i) > 0;
+           || conv_media_sent(c, i) > 0;
 }
 
 
 static void anth_write_media(Buf *b, const Conv *c, size_t i, b8 *first) {
     if (c->role[i] == M_TOOL) return;
     for (size_t k = 0; k < c->media_n[i]; k++) {
-        size_t id = (size_t)c->media_off[i] + k;
-        if (!media_live(c->media, id)) continue;
+        if (!conv_image_sent(c, i, k)) continue;
         if (!*first) buf_putc(b, ',');
         *first = false;
-        media_write_anthropic(b, c->media, id);
+        media_write_anthropic(b, c->media, (size_t)c->media_off[i] + k);
     }
 }
 
@@ -729,10 +826,9 @@ static void anth_write_block(Buf *b, const Conv *c, size_t i, size_t recent,
             write_tool_result(b, c, i, recent);
             buf_putc(b, '}');
             for (size_t k = 0; k < c->media_n[i]; k++) {
-                size_t id = (size_t)c->media_off[i] + k;
-                if (!media_live(c->media, id)) continue;
+                if (!conv_image_sent(c, i, k)) continue;
                 buf_putc(b, ',');
-                media_write_anthropic(b, c->media, id);
+                media_write_anthropic(b, c->media, (size_t)c->media_off[i] + k);
             }
             buf_putc(b, ']');
         } else {
@@ -754,7 +850,7 @@ static void anth_write_block(Buf *b, const Conv *c, size_t i, size_t recent,
         return;
     }
     buf_puts(b, STR("{\"type\":\"text\",\"text\":"));
-    buf_json_str(b, c->text[i]);
+    write_slot_text(b, c, i, recent);
     anth_write_cache(b, cache);
     buf_putc(b, '}');
 }
@@ -1721,6 +1817,7 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     p->usage_valid = false;
     p->stop = PROVIDER_STOP_END;
     p->status_msg[0] = '\0';
+    p->image_cut_moved = conv_media_fit(p->conv, p->cfg->image_budget);
 
     StreamState *s = arena_new(scratch, StreamState, 1);
     if (!s) {
@@ -1916,7 +2013,12 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     }
     if (rc != 0) {
         if (rc < 0) {
-            snprintf(err, err_cap, "HTTP %d", -rc);
+            if (rc == -413)
+                snprintf(err, err_cap,
+                         "HTTP 413: the request is too large; lower "
+                         "image_budget_mb to send fewer images");
+            else
+                snprintf(err, err_cap, "HTTP %d", -rc);
             status_message(str_c(err_body), p->cfg->api_key, scratch,
                            p->status_msg, sizeof p->status_msg);
         } else if (fail[0])

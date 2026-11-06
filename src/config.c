@@ -97,6 +97,10 @@ static const ConfSpec k_conf[CONF_N] = {
                                CONF_TEXT(AGENT_SHELL_TIMEOUT_MS), NULL, CV_NUM,
                                0, AGENT_JOB_WAIT_MAX_MS, 0, false},
     [CONF_IMAGES] = {"images", "auto", "auto,off", CV_ENUM, 0, 0, 0, false},
+    [CONF_IMAGE_BUDGET_MB] = {"image_budget_mb",
+                              CONF_TEXT(AGENT_IMAGE_BUDGET_MB), NULL, CV_NUM,
+                              AGENT_MIN_IMAGE_BUDGET_MB,
+                              AGENT_MAX_IMAGE_BUDGET_MB, 0, true},
     [CONF_RESUME_LAST] = {"resume_last", "false", NULL, CV_BOOL, 0, 0, 0, true},
     [CONF_COMPACT] = {"compact", "auto", "off,manual,auto", CV_ENUM, 0, 0, 0,
                       true},
@@ -506,6 +510,7 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
     c->ask_timeout_ms = (i32)conf_num(conf, CONF_ASK_TIMEOUT_MS);
     c->shell_timeout_ms = (i32)conf_num(conf, CONF_SHELL_TIMEOUT_MS);
     c->images = !str_eq(conf_str(conf, CONF_IMAGES), STR("off"));
+    c->image_budget = (size_t)conf_num(conf, CONF_IMAGE_BUDGET_MB) << 20;
     c->resume_last = conf_bool(conf, CONF_RESUME_LAST);
     Str compact = conf_str(conf, CONF_COMPACT);
     c->compact = str_eq(compact, STR("off"))      ? COMPACT_OFF

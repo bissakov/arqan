@@ -603,6 +603,12 @@ b8 buf_ok(const Buf *b) {
     return !b->oom;
 }
 
+static b8 buf_is_arena_tail(const Buf *b) {
+    const Arena *a = b->a;
+    return a && b->p && b->cap <= a->off
+           && (u8 *)b->p == a->base + (a->off - b->cap);
+}
+
 static b8 buf_grow(Buf *b, size_t need) {
     if (need <= b->cap) return true;
     if (b->oom) return false;
@@ -613,6 +619,16 @@ static b8 buf_grow(Buf *b, size_t need) {
             break;
         }
         nc *= 2;
+    }
+    if (buf_is_arena_tail(b)) {
+        Arena *a = b->a;
+        size_t room = a->cap - a->off + b->cap;
+        if (nc > room && need <= room) nc = room;
+        if (nc <= room) {
+            a->off += nc - b->cap;
+            b->cap = nc;
+            return true;
+        }
     }
     char *np = (char *)arena_alloc(b->a, nc, 1);
     if (!np) {
