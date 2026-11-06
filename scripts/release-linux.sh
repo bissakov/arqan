@@ -103,12 +103,12 @@ smoke_deb() {
             sentinel=${ARQAN_SMOKE_SENTINEL:-arqan-package-sentinel}
             export DEBIAN_FRONTEND=noninteractive
             # NOTE: deb.debian.org no longer serves the bullseye-security
-            # pool, so Debian 11 uses the snapshot lines its image ships.
+            # pool, so Debian 11 installs from archive.debian.org.
             # See packaging/linux/Dockerfile.
-            if grep -q "^# deb http://snapshot" /etc/apt/sources.list 2>/dev/null; then
-                sed -i -e "/^deb /d" -e "s|^# deb http://snapshot|deb http://snapshot|" /etc/apt/sources.list
-                echo "Acquire::Check-Valid-Until \"false\";" >/etc/apt/apt.conf.d/99snapshot
-                echo "Acquire::Retries \"5\";" >>/etc/apt/apt.conf.d/99snapshot
+            if grep -q "^deb http://deb.debian.org/.* bullseye" /etc/apt/sources.list 2>/dev/null; then
+                sed -i -e "/^# deb /d" -e "s|http://deb\.debian\.org/|http://archive.debian.org/|" /etc/apt/sources.list
+                echo "Acquire::Check-Valid-Until \"false\";" >/etc/apt/apt.conf.d/99archive
+                echo "Acquire::Retries \"5\";" >>/etc/apt/apt.conf.d/99archive
             fi
             apt-get update >/dev/null
             apt-get install -y "/packages/'"$deb"'" >/dev/null
