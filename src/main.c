@@ -2040,6 +2040,7 @@ static TurnAction run_round_calls(Agent *ag, size_t first, size_t last,
                                   b8 *redraw) {
     Conv *conv = ag->conv;
     ag->permission_blocked_one_shot = false;
+    tools_round_begin(ag->tools);
 
     TurnAction pending = TURN_CONTINUE;
     for (size_t i = first; i < last; i++) {

@@ -141,6 +141,13 @@ static struct {
     MediaSet *destination;
 } g_read_media;
 
+typedef struct {
+    size_t images;
+    b8 can_combine;
+} ReadRound;
+
+static ReadRound g_read_round;
+
 MediaSet *tools_set_media(MediaSet *m) {
     MediaSet *previous = g_read_media.destination;
     g_read_media.destination = m;
@@ -295,6 +302,15 @@ static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err,
                      "session");
             return false;
         }
+        if (g_read_round.images >= AGENT_MAX_MEDIA_PER_TURN) {
+            snprintf(err, err_cap,
+                     "%u images were already read in this response%s",
+                     (unsigned)AGENT_MAX_MEDIA_PER_TURN,
+                     g_read_round.can_combine
+                         ? "; combine the rest into one image and read that"
+                         : "");
+            return false;
+        }
         size_t mark = m->arena->off;
         size_t id = media_add(m, m->arena, body, str_c(z), err, err_cap);
         if (id == MEDIA_NONE) {
@@ -310,6 +326,7 @@ static b8 tool_read(Str args, Arena *scratch, Buf *out, char *err,
             snprintf(err, err_cap, "not enough memory for image result");
             return false;
         }
+        g_read_round.images++;
         return true;
     }
     if (body.n && read_not_text(z, body, err, err_cap)) return false;
@@ -2810,6 +2827,13 @@ static b8 tool_agent_only(Str args, Arena *scratch, Buf *out, char *err,
 void tools_set_mode(AgentMode mode) {
     g_tools.policy.mode = mode;
 }
+void tools_round_begin(const ToolRegistry *r) {
+    size_t bash = tools_find(r, STR("bash"));
+    g_read_round = (ReadRound){
+        .can_combine = g_tools.policy.mode == MODE_BUILD && bash != TOOL_NONE
+                       && tools_available(r, bash, MODE_BUILD),
+    };
+}
 void tools_set_permissions(PermissionPolicy permissions) {
     g_tools.policy.permissions = permissions;
 }
@@ -3133,6 +3157,7 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
     r->ext = arena_new(persist, u16, AGENT_MAX_TOOLS);
     r->off = arena_new(persist, b8, AGENT_MAX_TOOLS);
     r->n = 0;
+    r->read_images = true;
     char root[PATH_MAX];
     g_tools.policy.root =
         realpath(".", root) ? str_dup(persist, str_c(root)) : (Str){0};
@@ -3419,6 +3444,7 @@ void tools_set_subagents(ToolRegistry *r, b8 on) {
 void tools_set_images(ToolRegistry *r, b8 on) {
     size_t id = tools_find(r, STR("read"));
     if (id != TOOL_NONE && !on) r->desc[id] = r->desc_sub[id];
+    r->read_images = on && id != TOOL_NONE;
 }
 
 Str tools_desc_for(const ToolRegistry *r, size_t id, AgentMode mode,

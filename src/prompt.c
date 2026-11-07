@@ -333,7 +333,7 @@ static void prompt_stop(Buf *b, const ToolRegistry *tools, AgentMode mode) {
 }
 
 static void prompt_tool_guidance(Buf *b, const ToolRegistry *tools,
-                                 AgentMode mode) {
+                                 AgentMode mode, ToolAudience audience) {
     if (!tools) return;
     b8 read = prompt_offers(tools, STR("read"), mode);
     b8 bash = prompt_offers(tools, STR("bash"), mode);
@@ -382,6 +382,11 @@ static void prompt_tool_guidance(Buf *b, const ToolRegistry *tools,
         buf_puts(b, STR("- Reading a path outside the project may need the "
                         "user's approval, so stay inside it unless the task "
                         "needs more\n"));
+    if (read && bash && tools->read_images && mode == MODE_BUILD
+        && audience == TOOL_FOR_MAIN)
+        buf_puts(b, STR("- To compare several images, combine them into one "
+                        "downscaled image and read that; to see detail in a "
+                        "large image, crop the part you need first\n"));
 
     b8 approvals = read;
     for (size_t i = 0; !approvals && i < tools->n; i++)
@@ -485,7 +490,7 @@ static void prompt_expand(Buf *b, Str tmpl, const ToolRegistry *tools,
         else if (str_eq(name, STR("todo_guidance")))
             prompt_todo(b, tools, mode);
         else if (str_eq(name, STR("tool_guidance")))
-            prompt_tool_guidance(b, tools, mode);
+            prompt_tool_guidance(b, tools, mode, audience);
         else if (str_eq(name, STR("batch_guidance")))
             prompt_batch(b, tools, mode, audience);
         else if (str_eq(name, STR("mcp_guidance")))

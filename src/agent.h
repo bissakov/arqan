@@ -1207,6 +1207,7 @@ typedef struct {
     u16 *ext;
     b8 *off;
     size_t n;
+    b8 read_images;
 } ToolRegistry;
 
 
@@ -1218,6 +1219,8 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
 void tools_set_subagents(ToolRegistry *r, b8 on);
 
 void tools_set_images(ToolRegistry *r, b8 on);
+
+void tools_round_begin(const ToolRegistry *r);
 
 void tools_set_task_limit(ToolRegistry *r, i32 tasks);
 
