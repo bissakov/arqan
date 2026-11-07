@@ -1084,7 +1084,8 @@ static size_t fit_sent(const Conv *c, size_t *count) {
     size_t bytes = 0, n = 0;
     for (size_t i = 0; i < c->n; i++)
         for (size_t k = 0; k < c->media_n[i]; k++)
-            if (conv_image_sent(c, i, k)) {
+            if (!conv_media_elided(c, i, c->elide_start)
+                && conv_image_sent(c, i, k)) {
                 bytes += media_encoded_size(c->media, c->media_off[i] + k);
                 n++;
             }
@@ -1110,17 +1111,17 @@ static void conv_media_fit_keeps_requests_within_the_budget(void) {
     for (size_t round = 0; round < 40; round++) {
         fit_add_images(&c, &a, 1);
         size_t before = c.image_cut, before_k = c.image_cut_k;
-        if (conv_media_fit(&c, budget)) moves++;
+        if (conv_media_fit(&c, budget, false)) moves++;
         size_t n;
         CHECK(fit_sent(&c, &n) <= budget);
-        CHECK(n >= 5 || n == round + 1);
+        CHECK(n >= 2 || n == round + 1);
         CHECK(conv_image_sent(&c, c.n - 1, 0));
         CHECK(c.image_cut > before
               || (c.image_cut == before && c.image_cut_k >= before_k));
     }
-    CHECK(moves >= 5 && moves <= 7);
+    CHECK(moves == 4);
     CHECK(!conv_image_sent(&c, 2, 0));
-    CHECK(!conv_media_fit(&c, budget));
+    CHECK(!conv_media_fit(&c, budget, false));
 
     WITH_ARENA(request, 1 << 20);
     Buf b;
@@ -1136,7 +1137,7 @@ static void conv_media_fit_sends_everything_under_the_budget(void) {
     MediaSet m;
     fit_begin(&c, &m, &a);
     for (size_t round = 0; round < 10; round++) fit_add_images(&c, &a, 1);
-    CHECK(!conv_media_fit(&c, 10 * FIT_IMAGE_BYTES));
+    CHECK(!conv_media_fit(&c, 10 * FIT_IMAGE_BYTES, false));
     size_t n;
     CHECK(fit_sent(&c, &n) == 10 * FIT_IMAGE_BYTES);
     CHECK(n == 10);
@@ -1148,14 +1149,16 @@ static void conv_media_fit_caps_the_image_count(void) {
     Conv c;
     MediaSet m;
     fit_begin(&c, &m, &a);
+    size_t moves = 0;
     for (size_t round = 0; round < 30; round++) {
         fit_add_images(&c, &a, 1);
-        conv_media_fit(&c, (size_t)1 << 30);
+        if (conv_media_fit(&c, (size_t)1 << 30, false)) moves++;
         size_t n;
         fit_sent(&c, &n);
         CHECK(n <= AGENT_MAX_REQUEST_IMAGES);
-        CHECK(n >= AGENT_MAX_REQUEST_IMAGES / 2 || n == round + 1);
+        CHECK(n >= AGENT_MAX_REQUEST_IMAGES / 4 || n == round + 1);
     }
+    CHECK(moves == 1);
 }
 
 static void conv_media_fit_spares_the_newest_slot(void) {
@@ -1166,7 +1169,7 @@ static void conv_media_fit_spares_the_newest_slot(void) {
     for (size_t round = 0; round < 3; round++) fit_add_images(&c, &a, 1);
     fit_add_images(&c, &a, 8);
     size_t budget = 10 * FIT_IMAGE_BYTES;
-    CHECK(conv_media_fit(&c, budget));
+    CHECK(conv_media_fit(&c, budget, false));
     for (size_t k = 0; k < 8; k++) CHECK(conv_image_sent(&c, c.n - 1, k));
     size_t n;
     CHECK(fit_sent(&c, &n) <= budget);
@@ -1180,9 +1183,42 @@ static void conv_media_fit_sends_the_newest_image_past_the_budget(void) {
     fit_begin(&c, &m, &a);
     fit_add_images(&c, &a, 1);
     fit_add_images(&c, &a, 1);
-    CHECK(conv_media_fit(&c, FIT_IMAGE_BYTES / 2));
+    CHECK(conv_media_fit(&c, FIT_IMAGE_BYTES / 2, false));
     CHECK(!conv_image_sent(&c, 2, 0));
     CHECK(conv_image_sent(&c, 3, 0));
+}
+
+static void conv_media_fit_waits_for_a_cold_cache(void) {
+    WITH_ARENA(a, 1 << 20);
+    Conv c;
+    MediaSet m;
+    fit_begin(&c, &m, &a);
+    for (size_t round = 0; round < 8; round++) fit_add_images(&c, &a, 1);
+    size_t budget = 10 * FIT_IMAGE_BYTES;
+    CHECK(!conv_media_fit(&c, budget, false));
+    size_t n;
+    CHECK(fit_sent(&c, &n) == 8 * FIT_IMAGE_BYTES);
+    CHECK(conv_media_fit(&c, budget, true));
+    CHECK(fit_sent(&c, &n) <= budget / 2);
+    CHECK(n == 5);
+    CHECK(conv_image_sent(&c, c.n - 1, 0));
+    CHECK(!conv_media_fit(&c, budget, true));
+}
+
+static void conv_media_fit_skips_elided_images(void) {
+    WITH_ARENA(a, 1 << 20);
+    Conv c;
+    MediaSet m;
+    fit_begin(&c, &m, &a);
+    for (size_t round = 0; round < 8; round++) fit_add_images(&c, &a, 1);
+    c.elide_start = 7;
+    for (size_t round = 0; round < 4; round++) fit_add_images(&c, &a, 1);
+    size_t budget = 10 * FIT_IMAGE_BYTES;
+    CHECK(!conv_media_fit(&c, budget, false));
+    for (size_t i = 7; i < c.n; i++) CHECK(conv_image_sent(&c, i, 0));
+    size_t n;
+    CHECK(fit_sent(&c, &n) == 7 * FIT_IMAGE_BYTES);
+    CHECK(n == 7);
 }
 
 static void conv_result_slot_pairs_like_call_slot(void) {
@@ -2461,6 +2497,8 @@ int main(void) {
     RUN(conv_media_fit_caps_the_image_count);
     RUN(conv_media_fit_spares_the_newest_slot);
     RUN(conv_media_fit_sends_the_newest_image_past_the_budget);
+    RUN(conv_media_fit_waits_for_a_cold_cache);
+    RUN(conv_media_fit_skips_elided_images);
     RUN(conv_result_slot_pairs_like_call_slot);
 
     RUN(config_files_keep_the_user_file_past_many_system_dirs);

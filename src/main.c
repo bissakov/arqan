@@ -260,9 +260,20 @@ static void cache_guard_begin(CacheGuard *g) {
 }
 
 static void cache_guard_cause(CacheGuard *g, CacheCause cause, size_t freed) {
+    g->warm = false;
     if (g->cause != CACHE_CAUSE_NONE) return;
     g->cause = cause;
     g->freed_tokens = freed;
+}
+
+static b8 cache_guard_cold(const CacheGuard *g) {
+    return !g->warm
+           || agent_now_seconds() - g->last_request_s > AGENT_CACHE_TTL_S;
+}
+
+static void cache_guard_sent(CacheGuard *g) {
+    g->warm = true;
+    g->last_request_s = agent_now_seconds();
 }
 
 static Str fmt_grouped(char *out, size_t cap, size_t v) {
@@ -6064,6 +6075,7 @@ static b8 agent_turn(Agent *ag, Str text) {
             .on_idle = on_idle,
             .idle_fd = tui_input_fd(),
             .interrupt_flag = &g_got_sigint,
+            .cache_cold = cache_guard_cold(&g_cache),
         };
         char err[256] = {0};
         arena_reset(ag->scratch);
@@ -6109,6 +6121,7 @@ static b8 agent_turn(Agent *ag, Str text) {
         b8 cache_bad =
             cache_guard_observe(&g_cache, p.prompt_tokens, p.cache_read_tokens,
                                 p.cache_creation_tokens, ag->cfg->cache_guard);
+        cache_guard_sent(&g_cache);
         if (name_session_now(ag)) {
             announce_interrupt();
             ending = NOTIFY_INTERRUPTED;

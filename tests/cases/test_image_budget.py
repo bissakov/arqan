@@ -1,9 +1,10 @@
 """Older images stop being sent once a request would carry more of them than
 the image budget allows, so a session full of screenshots keeps working.
 
-The budget counts images as they travel, base64-encoded. The cut moves
-forward in steps of half the budget, so most requests repeat the one before
-and the prompt cache holds; a withheld image leaves a note in its slot."""
+The budget counts images as they travel, base64-encoded. The cut moves only
+when a request would go over the budget, and then keeps a quarter of it, so
+most requests repeat the one before and the prompt cache holds. A withheld
+image leaves a note in its slot."""
 
 from .test_image import attach, png, sessions_dir
 
@@ -74,7 +75,7 @@ def test_image_budget_keeps_a_screenshot_session_going(ctx):
     sizes = [encoded_bytes(request_images(body)) for body in requests]
     assert max(sizes) <= BUDGET, sizes
     last = requests[-1]
-    assert len(request_images(last)) >= 2, sizes
+    assert max(len(request_images(body)) for body in requests) >= 4, sizes
     assert newest_call_sent(last)
 
 
@@ -85,6 +86,16 @@ def test_image_budget_moves_the_cut_in_steps(ctx):
     counts = [len(request_images(body)) for body in ctx.mock.requests]
     grew = sum(1 for a, b in zip(counts, counts[1:]) if b == a + 1)
     assert grew * 2 > len(counts), counts
+
+
+def test_image_budget_moves_the_cut_only_when_over(ctx):
+    """Regression: the cut moved every two or three screenshots, and each
+    move rewrote the prompt cache."""
+    big_shot(ctx)
+    read_rounds(ctx, 16)
+    counts = [len(request_images(body)) for body in ctx.mock.requests]
+    moves = sum(1 for a, b in zip(counts, counts[1:]) if b <= a)
+    assert moves <= 3, counts
 
 
 def test_image_budget_notes_a_withheld_image(ctx):
