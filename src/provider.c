@@ -448,60 +448,77 @@ static size_t conv_tool_media(const Conv *c, size_t i, size_t recent) {
     return conv_media_sent(c, i);
 }
 
-static size_t image_cut_at(size_t total, size_t limit, size_t newest) {
-    if (total <= limit) return 0;
-    size_t over = total - limit;
-    size_t step = limit / 2 ? limit / 2 : 1;
-    size_t stepped = over / step * step + (over % step ? step : 0);
-    size_t spared = newest > over ? newest : over;
-    return stepped < spared ? stepped : spared;
+#define IMAGE_KEEP_SHARE_FORCED 4
+#define IMAGE_KEEP_SHARE_COLD   2
+
+typedef struct {
+    size_t bytes, count;
+} ImageLoad;
+
+static b8 image_load_within(ImageLoad load, size_t bytes, size_t count) {
+    return load.bytes <= bytes && load.count <= count;
 }
 
-b8 conv_media_fit(Conv *c, size_t budget) {
-    size_t was = c->image_cut, was_k = c->image_cut_k;
-    c->image_cut = 0;
-    c->image_cut_k = 0;
-    if (!budget) budget = (size_t)AGENT_IMAGE_BUDGET_MB << 20;
-    size_t bytes = 0, count = 0, newest_bytes = 0, newest_count = 0;
-    for (size_t i = 0; c->media && i < c->n; i++) {
-        size_t slot_bytes = bytes, slot_count = count;
+static b8 conv_image_counted(const Conv *c, size_t i, size_t k) {
+    return !conv_media_elided(c, i, c->elide_start)
+           && media_live(c->media, (size_t)c->media_off[i] + k);
+}
+
+static ImageLoad conv_image_load(const Conv *c) {
+    ImageLoad load = {0};
+    for (size_t i = 0; i < c->n; i++)
         for (size_t k = 0; k < c->media_n[i]; k++) {
-            size_t id = (size_t)c->media_off[i] + k;
-            if (!media_live(c->media, id)) continue;
-            bytes += media_encoded_size(c->media, id);
-            count++;
-        }
-        if (count > slot_count) {
-            newest_bytes = slot_bytes;
-            newest_count = slot_count;
-        }
-    }
-    size_t cut_bytes = image_cut_at(bytes, budget, newest_bytes);
-    size_t cut_count =
-        image_cut_at(count, AGENT_MAX_REQUEST_IMAGES, newest_count);
-    size_t seen_bytes = 0, seen = 0, last = 0, last_k = 0;
-    b8 placed = !cut_bytes && !cut_count;
-    for (size_t i = 0; !placed && i < c->n; i++) {
-        for (size_t k = 0; !placed && k < c->media_n[i]; k++) {
-            size_t id = (size_t)c->media_off[i] + k;
-            if (!media_live(c->media, id)) continue;
-            if (seen_bytes >= cut_bytes && seen >= cut_count) {
-                c->image_cut = i;
-                c->image_cut_k = (u16)k;
-                placed = true;
+            if (conv_media_elided(c, i, c->elide_start)
+                || !conv_image_sent(c, i, k))
                 continue;
-            }
-            seen_bytes += media_encoded_size(c->media, id);
-            seen++;
-            last = i;
-            last_k = k;
+            load.bytes +=
+                media_encoded_size(c->media, (size_t)c->media_off[i] + k);
+            load.count++;
+        }
+    return load;
+}
+
+b8 conv_media_fit(Conv *c, size_t budget, b8 cache_cold) {
+    if (!c->media) return false;
+    if (!budget) budget = (size_t)AGENT_IMAGE_BUDGET_MB << 20;
+    ImageLoad sent = conv_image_load(c);
+    b8 over = !image_load_within(sent, budget, AGENT_MAX_REQUEST_IMAGES);
+    size_t share = over ? IMAGE_KEEP_SHARE_FORCED : IMAGE_KEEP_SHARE_COLD;
+    size_t keep_bytes = budget / share;
+    size_t keep_count = AGENT_MAX_REQUEST_IMAGES / share;
+    if (!over
+        && (!cache_cold || image_load_within(sent, keep_bytes, keep_count)))
+        return false;
+
+    ImageLoad kept = {0};
+    size_t newest = CONV_NONE, cut = 0, cut_k = 0;
+    b8 full = false;
+    for (size_t i = c->n; !full && i-- > 0;) {
+        for (size_t k = c->media_n[i]; !full && k-- > 0;) {
+            if (!conv_image_counted(c, i, k)) continue;
+            if (newest == CONV_NONE) newest = i;
+            size_t id = (size_t)c->media_off[i] + k;
+            ImageLoad next = {kept.bytes + media_encoded_size(c->media, id),
+                              kept.count + 1};
+            b8 spared =
+                i == newest
+                && image_load_within(next, budget, AGENT_MAX_REQUEST_IMAGES);
+            full = kept.count
+                   && !image_load_within(next, keep_bytes, keep_count)
+                   && !spared;
+            if (full) continue;
+            kept = next;
+            cut = i;
+            cut_k = k;
         }
     }
-    if (!placed && seen) {
-        c->image_cut = last;
-        c->image_cut_k = (u16)last_k;
-    }
-    return c->image_cut != was || c->image_cut_k != was_k;
+    if (!kept.count) return false;
+    b8 later =
+        cut > c->image_cut || (cut == c->image_cut && cut_k > c->image_cut_k);
+    if (!later) return false;
+    c->image_cut = cut;
+    c->image_cut_k = (u16)cut_k;
+    return true;
 }
 
 
@@ -1817,7 +1834,8 @@ i32 provider_run(Provider *p, char *err, size_t err_cap) {
     p->usage_valid = false;
     p->stop = PROVIDER_STOP_END;
     p->status_msg[0] = '\0';
-    p->image_cut_moved = conv_media_fit(p->conv, p->cfg->image_budget);
+    p->image_cut_moved =
+        conv_media_fit(p->conv, p->cfg->image_budget, p->cache_cold);
 
     StreamState *s = arena_new(scratch, StreamState, 1);
     if (!s) {

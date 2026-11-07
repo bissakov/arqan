@@ -1669,12 +1669,14 @@ b8 conv_media_elided(const Conv *c, size_t i, size_t recent);
 /* ---- images per request --------------------------------------------------
  * conv_media_fit picks the oldest image a request carries, so the images sent
  * stay within `budget` encoded bytes and AGENT_MAX_REQUEST_IMAGES. An older
- * image is withheld and its slot says so. The cut moves in steps of half the
- * budget, so it rarely breaks the prompt cache, and spares the newest slot
- * with images while it fits. It is derived from the conversation alone, so
- * resume and compaction keep no record of it. True when the cut moved.
+ * image is withheld and its slot says so. Images of elided tool results do
+ * not count. Moving the cut rewrites the prompt cache, so it moves only when
+ * the images go over the limit, down to a quarter of it, or when
+ * `cache_cold` is set, down to half. It keeps the newest slot with images
+ * while that fits and never moves back. Resume and compaction reset it.
+ * True when the cut moved.
  */
-b8 conv_media_fit(Conv *c, size_t budget);
+b8 conv_media_fit(Conv *c, size_t budget, b8 cache_cold);
 b8 conv_image_sent(const Conv *c, size_t i, size_t k);
 b8 conv_args_elided(const Conv *c, size_t i, size_t recent);
 b8 conv_args_are_stub(Str args, Arena *scratch);
@@ -1902,6 +1904,7 @@ typedef struct {
     void (*on_idle)(void *ud);
     i32 idle_fd;
     const volatile sig_atomic_t *interrupt_flag;
+    b8 cache_cold;
     size_t prompt_tokens;
     size_t completion_tokens;
     size_t cache_creation_tokens;
@@ -2191,6 +2194,8 @@ typedef struct {
     size_t misses;
     size_t wasted_tokens;
     b8 armed;
+    b8 warm;
+    f64 last_request_s;
 } CacheGuard;
 
 Str cache_cause_name(CacheCause cause);

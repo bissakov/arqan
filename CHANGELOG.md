@@ -93,7 +93,10 @@
   images, up to 16 MB once encoded and at most 20 of them; an older image
   is replaced by a note in its message. Set the size with
   `image_budget_mb`, from 8 to 64. `/attach` refuses an image that would
-  take one message over it.
+  take one message over it. Older images are dropped only when a request
+  would go over the limit, and then down to a quarter of it, or when the
+  prompt cache is rebuilt anyway, so dropping them rarely costs a cache
+  rewrite.
 - A session with many images no longer fills its memory with a second,
   base64 copy of each one. That copy is kept only while at least half the
   session memory is free; after that, an image is encoded into each request
