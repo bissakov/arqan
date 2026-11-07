@@ -689,11 +689,14 @@ def test_batch_write_child_shows_the_whole_content(ctx):
 
 def test_batch_image_results_survive_session_replay(ctx):
     from .test_image import png
+    from .test_mcp import write_mcp as write_image_mcp
 
-    for i in range(8):
-        (ctx.work / f"image-{i}.png").write_bytes(png(1, 1))
-    s = run_batch(ctx, [step("read", path=f"image-{i}.png") for i in range(8)],
-                  ARQAN_IMAGES="on")
+    picture = ctx.work / "picture.png"
+    picture.write_bytes(png(1, 1))
+    write_image_mcp(ctx, env={"MCP_TEST_IMAGE": str(picture),
+                              "MCP_TEST_IMAGE_COUNT": "4"})
+    s = run_batch(ctx, [step("demo_picture"), step("demo_picture")],
+                  ARQAN_IMAGES="on", ARQAN_MCP="on")
     messages = ctx.mock.requests[-1]["messages"]
     images = [b for m in messages if isinstance(m.get("content"), list)
               for b in m["content"] if b["type"] == "image_url"]
@@ -701,7 +704,7 @@ def test_batch_image_results_survive_session_replay(ctx):
     s.submit("/exit")
     s.wait_exit()
 
-    resumed = ctx.spawn(ARQAN_IMAGES="on")
+    resumed = ctx.spawn(ARQAN_IMAGES="on", ARQAN_MCP="on")
     resumed.submit("/resume")
     resumed.wait_text("pick a session")
     resumed.key("enter")

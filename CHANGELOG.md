@@ -67,6 +67,11 @@
   `read` with `internet_search`, give `page_fetch` a `query`, and, in the
   main prompts, delegate research that needs several searches and pages to
   `task`.
+- `read` returns at most 4 images per model response, `batch` steps
+  included, the same limit as attachments and MCP calls. In build mode with
+  `bash`, the prompt and the refusal tell the model to combine several
+  images into one downscaled image, and to crop a large image to the part
+  it needs.
 - With `permissions = "free"` in build mode, a read-only shell command no
   longer runs under Landlock. Free asks for nothing, so the sandbox
   protected nothing and only broke commands that write a cache or temporary

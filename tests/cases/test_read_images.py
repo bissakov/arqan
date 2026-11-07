@@ -229,3 +229,93 @@ def test_read_image_missing_sidecar(ctx):
     for url, (kind, data) in zip(urls, formats()[1:]):
         assert url.startswith(f"data:image/{kind};base64,"), url[:80]
         assert base64.b64decode(url.split(",", 1)[1]) == data
+
+
+COMBINE_RULE = ("- To compare several images, combine them into one "
+                "downscaled image and read that; to see detail in a large "
+                "image, crop the part you need first\n")
+READ_LIMIT = "4 images were already read in this response"
+COMBINE_HINT = "; combine the rest into one image and read that"
+
+
+def read_many(ctx, count, rounds=1, **env):
+    calls = []
+    for i in range(count):
+        path = f"shot{i}.png"
+        (ctx.work / path).write_bytes(png(4 + i, 3))
+        calls.append("tool=read:" + json.dumps({"path": path}))
+    ctx.scenario(",".join(calls) + f",tool_rounds={rounds},final_text=inspected")
+    s = ctx.spawn(**env)
+    s.submit("inspect the images")
+    s.wait_text("inspected")
+    s.wait_turn_done()
+    body = ctx.mock.requests[-1]
+    results = [m["content"] for m in body["messages"] if m["role"] == "tool"]
+    return body, results
+
+
+def test_read_images_limit_per_response(ctx):
+    body, results = read_many(ctx, 5)
+    assert len(openai_images(body)) == 4, results
+    assert all("Image #" in r for r in results[:4]), results
+    assert results[4] == "ERROR: " + READ_LIMIT + COMBINE_HINT, results
+
+
+def test_read_images_limit_resets_each_response(ctx):
+    body, results = read_many(ctx, 4, rounds=2)
+    assert len(results) == 8, results
+    assert all("Image #" in r for r in results), results
+    assert len(openai_images(body)) == 8
+
+
+def test_read_images_limit_counts_batch_steps(ctx):
+    steps = []
+    for i in range(5):
+        path = f"shot{i}.png"
+        (ctx.work / path).write_bytes(png(4 + i, 3))
+        steps.append({"tool": "read", "args": {"path": path}})
+    ctx.scenario("tool=batch:" + json.dumps({"steps": steps})
+                 + ",final_text=inspected")
+    s = ctx.spawn()
+    s.submit("inspect the images")
+    s.wait_text("inspected")
+    s.wait_turn_done()
+    body = ctx.mock.requests[-1]
+    assert len(openai_images(body)) == 4
+    assert READ_LIMIT + COMBINE_HINT in ctx.mock.tool_results()[-1]
+
+
+def test_read_images_limit_plan_mode_names_no_combining(ctx):
+    body, results = read_many(ctx, 5, ARQAN_MODE="plan")
+    assert len(openai_images(body)) == 4
+    assert results[4] == "ERROR: " + READ_LIMIT, results
+
+
+def test_read_images_limit_without_bash_names_no_combining(ctx):
+    body, results = read_many(ctx, 5, args=["--disable-tools", "bash"])
+    assert len(openai_images(body)) == 4
+    assert results[4] == "ERROR: " + READ_LIMIT, results
+
+
+def system_prompt(ctx, **env):
+    from .test_prompt import model_view
+
+    content, _ = model_view(ctx, **env)
+    return content
+
+
+def test_read_images_prompt_names_combining(ctx):
+    assert COMBINE_RULE in system_prompt(ctx)
+
+
+def test_read_images_prompt_rule_needs_images(ctx):
+    assert COMBINE_RULE not in system_prompt(ctx, ARQAN_IMAGES="off")
+
+
+def test_read_images_prompt_rule_needs_bash(ctx):
+    prompt = system_prompt(ctx, args=["--disable-tools", "bash"])
+    assert COMBINE_RULE not in prompt
+
+
+def test_read_images_prompt_rule_not_in_plan_mode(ctx):
+    assert COMBINE_RULE not in system_prompt(ctx, ARQAN_MODE="plan")
