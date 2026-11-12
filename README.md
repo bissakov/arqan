@@ -320,7 +320,7 @@ that others can write to.
 | `raw_markdown` | `false` | No Markdown or syntax highlighting |
 | `show_ignored` | `false` | Offer files that `.gitignore` and `.ignore` exclude |
 | `show_instructions` | `false` | Show the system prompt and `AGENTS.md` in the transcript |
-| `status_fields` | `2047` | Status line fields, as a bit mask; set it with `/statusline` |
+| `status_fields` | `4095` | Status line fields, as a bit mask; set it with `/statusline` |
 | `theme` | `dark` | `dark`, `light`, `kanagawa-wave`, `kanagawa-dragon`, `kanagawa-lotus`, or a theme in `themes/<name>.toml` under the config directory |
 
 ### System prompt and AGENTS.md

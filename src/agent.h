@@ -221,7 +221,7 @@ _Static_assert((AGENT_MAX_IMAGE_BYTES + 2) / 3 * 4 + 1024
 
 #define AGENT_WEB_USER_AGENT \
     "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0"
-#define AGENT_STATUS_FIELDS 11
+#define AGENT_STATUS_FIELDS 12
 
 // ---- arenas -------------------------------------------------------------
 typedef struct {
@@ -2199,6 +2199,7 @@ typedef struct {
     b8 armed;
     b8 warm;
     f64 last_request_s;
+    b8 cached;
 } CacheGuard;
 
 Str cache_cause_name(CacheCause cause);
@@ -2267,6 +2268,7 @@ typedef enum {
     TUI_STATUS_COPY,
     TUI_STATUS_PERMISSIONS,
     TUI_STATUS_TODO,
+    TUI_STATUS_CACHE,
     TUI_STATUS_N
 } TuiStatusItem;
 
@@ -2392,6 +2394,7 @@ void tui_stop(void);
 void tui_set_status(const char *status);
 void tui_set_context(size_t tokens, b8 known, b8 exact, size_t window);
 void tui_set_todo(size_t done, size_t total);
+void tui_set_cache_window(f64 opened_s);
 void tui_clear(void);
 
 void tui_clear_transcript(void);
