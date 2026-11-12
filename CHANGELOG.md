@@ -51,6 +51,13 @@
   `#version`, types such as `vec3` and function calls get colours; GLSL
   words such as `in`, `out` and `uniform` stay plain.
 - Python stub files (`.pyi`) get Python highlighting.
+- The status line counts down the 5-minute prompt cache window, as
+  `cache 4:59`. The count starts when a request is sent, once the provider
+  has reported cache tokens. The field turns the warning colour in the last
+  minute and shows `cache expired` when the window closes, after which the
+  next message rebuilds the cache. Hide it with `/statusline`.
+  `status_fields` now defaults to `4095`; a mask saved earlier leaves the
+  field off.
 
 ### Changed
 

@@ -87,6 +87,8 @@ typedef struct {
     b8 context_exact;
     size_t context_window;
     size_t todo_done, todo_total;
+    f64 cache_opened_s;
+    i64 cache_painted_s;
     b8 status_visible[TUI_STATUS_N];
     char status[32];
 
@@ -3105,6 +3107,63 @@ static Str format_context_size(char *buf, size_t cap) {
     return (Str){buf, len};
 }
 
+#ifdef AGENT_TESTING
+static f64 cache_window_ttl_s(void) {
+    static f64 ttl_s = -1.0;
+    if (ttl_s < 0.0) {
+        ttl_s = AGENT_CACHE_TTL_S;
+        const char *value = getenv(AGENT_ENV_PREFIX "TEST_CACHE_TTL_MS");
+        b8 ok = false;
+        i64 ms = value && *value ? str_int(str_c(value), &ok) : 0;
+        if (ok && ms > 0 && ms <= (i64)(AGENT_CACHE_TTL_S * 1000.0))
+            ttl_s = (f64)ms / 1000.0;
+    }
+    return ttl_s;
+}
+#else
+#define cache_window_ttl_s() AGENT_CACHE_TTL_S
+#endif
+
+static b8 cache_window_open(void) {
+    return g_tui.status_visible[TUI_STATUS_CACHE] && g_tui.cache_opened_s > 0.0;
+}
+
+static f64 cache_window_left(void) {
+    return g_tui.cache_opened_s + cache_window_ttl_s() - agent_now_seconds();
+}
+
+/* INVARIANT: -1 hides the field and 0 means expired. Seconds round up, so 0
+ * shows only once the window has closed. */
+static i64 cache_window_shown_s(void) {
+    if (!cache_window_open()) return -1;
+    f64 left = cache_window_left();
+    if (left <= 0.0) return 0;
+    i64 whole = (i64)left;
+    return (f64)whole < left ? whole + 1 : whole;
+}
+
+static i32 cache_window_tick_ms(void) {
+    if (!cache_window_open()) return -1;
+    f64 left = cache_window_left();
+    if (left <= 0.0) return -1;
+    return (i32)((left - (f64)(i64)left) * 1000.0) + 1;
+}
+
+static Str format_cache_window(char *buf, size_t cap, i64 shown_s) {
+    i32 written = shown_s > 0 ? snprintf(buf, cap, "cache %lld:%02lld",
+                                         (long long)(shown_s / 60),
+                                         (long long)(shown_s % 60))
+                              : snprintf(buf, cap, "cache expired");
+    size_t len = written > 0 ? (size_t)written : 0;
+    if (len >= cap) len = cap ? cap - 1 : 0;
+    return (Str){buf, len};
+}
+
+static ThemeSlot cache_window_slot(i64 shown_s) {
+    if (shown_s == 0) return THEME_MUTED;
+    return shown_s <= 60 ? THEME_WARNING : THEME_TEXT;
+}
+
 void tui_batch_begin(void) {
     g_paint.batch = true;
 }
@@ -3417,6 +3476,9 @@ static void repaint(void) {
         hash_add(status_hash, &g_tui.todo_done, sizeof g_tui.todo_done);
     status_hash =
         hash_add(status_hash, &g_tui.todo_total, sizeof g_tui.todo_total);
+    i64 cache_shown_s = cache_window_shown_s();
+    g_tui.cache_painted_s = cache_shown_s;
+    status_hash = hash_add(status_hash, &cache_shown_s, sizeof cache_shown_s);
     status_hash = hash_add(status_hash, g_tui.status_visible,
                            sizeof g_tui.status_visible);
     status_hash = hash_add(status_hash, &cols, sizeof cols);
@@ -3505,6 +3567,13 @@ static void repaint(void) {
         if (g_tui.status_visible[TUI_STATUS_CONTEXT])
             put_status_field(context, theme_sgr(THEME_TEXT), body_cols, &used,
                              &have_field);
+        if (cache_shown_s >= 0) {
+            char cache_buf[32];
+            put_status_field(
+                format_cache_window(cache_buf, sizeof cache_buf, cache_shown_s),
+                theme_sgr(cache_window_slot(cache_shown_s)), body_cols, &used,
+                &have_field);
+        }
         if (copied && g_tui.status_visible[TUI_STATUS_COPY])
             put_status_field(STR("copied"), theme_sgr(THEME_SUCCESS), body_cols,
                              &used, &have_field);
@@ -3858,6 +3927,12 @@ void tui_set_todo(size_t done, size_t total) {
     if (g_tui.todo_done == done && g_tui.todo_total == total) return;
     g_tui.todo_done = done;
     g_tui.todo_total = total;
+    repaint();
+}
+
+void tui_set_cache_window(f64 opened_s) {
+    if (g_tui.cache_opened_s == opened_s) return;
+    g_tui.cache_opened_s = opened_s;
     repaint();
 }
 
@@ -7223,8 +7298,27 @@ void tui_set_tick(b8 (*fn)(void *ud), void *ud) {
 #define TUI_TICK_MS 100
 
 static void tick_until_input(void) {
-    if (!g_tick.fn || g_input.pushed || input_buffered()) return;
-    while (g_tick.fn(g_tick.ud) && !input_ready(TUI_TICK_MS)) {}
+    for (;;) {
+        if (g_input.pushed || input_buffered()) return;
+        b8 tasks = g_tick.fn && g_tick.fn(g_tick.ud);
+        i32 wait_ms = cache_window_tick_ms();
+        if (tasks && (wait_ms < 0 || wait_ms > TUI_TICK_MS))
+            wait_ms = TUI_TICK_MS;
+        if (wait_ms < 0) return;
+        if (!tasks) idle_beacon();
+        struct pollfd pfd = {STDIN_FILENO, POLLIN, 0};
+        i32 rc = poll(&pfd, 1, wait_ms);
+        if (rc > 0) return;
+        if (rc < 0 && !g_winch) {
+            if (errno == EINTR) {
+                g_input.pushback = KEY_INTERRUPT;
+                g_input.pushed = true;
+            }
+            return;
+        }
+        if (g_winch || cache_window_shown_s() != g_tui.cache_painted_s)
+            repaint();
+    }
 }
 
 static void busy_submit(void) {

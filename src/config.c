@@ -19,7 +19,7 @@ typedef struct {
 
 #define CONF_TEXT2(x) #x
 #define CONF_TEXT(x)  CONF_TEXT2(x)
-_Static_assert(AGENT_STATUS_FIELDS == 11, "the status_fields default is 2047");
+_Static_assert(AGENT_STATUS_FIELDS == 12, "the status_fields default is 4095");
 
 static const ConfSpec k_conf[CONF_N] = {
 
@@ -60,7 +60,7 @@ static const ConfSpec k_conf[CONF_N] = {
     [CONF_SHOW_INSTRUCTIONS] = {"show_instructions", "false", NULL, CV_BOOL, 0,
                                 0, 0, true},
     [CONF_WRAP] = {"wrap", "word", "word,justified", CV_ENUM, 0, 0, 0, true},
-    [CONF_STATUS_FIELDS] = {"status_fields", "2047", NULL, CV_NUM, 0, 2047, 0,
+    [CONF_STATUS_FIELDS] = {"status_fields", "4095", NULL, CV_NUM, 0, 4095, 0,
                             true},
     [CONF_THEME] = {"theme", "dark", NULL, CV_STR, 0, 0, AGENT_MAX_THEME_NAME,
                     true},
