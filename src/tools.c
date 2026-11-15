@@ -3391,7 +3391,10 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         "including the findings, list, draft or code it refers to, what "
         "each option does and what follows from each. Repeat what an "
         "earlier reply said instead of referring to it; never write \"the "
-        "options above\" or \"as discussed\". Keep each option label short "
+        "options above\" or \"as discussed\". Write the question in "
+        "Markdown: short paragraphs separated by blank lines, a list for "
+        "findings or steps, and the question last, on its own line. Keep "
+        "each option label short "
         "and put its consequences in its detail. Mark the one you "
         "recommend; the user may also answer in their own words. Write the "
         "question and options in the third person, naming \"the agent\" "
@@ -3401,7 +3404,8 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
         TOOL_APPROVAL_NONE,
         "{\"type\":\"object\",\"properties\":{\"question\":{\"type\":"
         "\"string\",\"description\":\"self-contained: all the context "
-        "needed to answer, repeated from earlier replies\"},"
+        "needed to answer, repeated from earlier replies; Markdown in short "
+        "paragraphs and lists, the question last\"},"
         "\"options\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"label\":{\"type\":\"string\"},\"detail\":{\"type\":\"string\"},\"recommended\":{\"type\":\"boolean\"}},\"required\":[\"label\"]}}},\"required\":[\"question\",\"options\"]}",
         tool_agent_only);
     ADD("submit_plan", "Hand the finished plan to the user to approve.",
