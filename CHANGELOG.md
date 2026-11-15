@@ -64,6 +64,8 @@
 - An `ask_user` question renders as Markdown, so bold, code, lists and
   tables show as they do in a reply. Rows of a question that wrap keep the
   block's gutter.
+- `ask_user` asks the model to write a question in short paragraphs and
+  lists, with the question itself last, instead of one long paragraph.
 - Pages that `page_fetch` or `internet_search` fetched are kept for 15
   minutes, so the next page of one, or a `query` on it, reads the copy on
   disk instead of downloading and parsing the page again. Up to 16 pages

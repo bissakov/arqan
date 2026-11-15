@@ -120,6 +120,25 @@ def test_ask_user_asks_for_a_self_contained_question(ctx):
     assert "in a reply or in the question itself" not in system, system
 
 
+def test_ask_user_asks_for_paragraphs_and_lists(ctx):
+    """One long paragraph is hard to read, so the tool asks for short
+    paragraphs and lists, with the question last."""
+    ctx.scenario("text=ok")
+    s = ctx.spawn()
+    s.submit("hello")
+    s.wait_turn_done()
+
+    tool = next(t["function"] for t in ctx.mock.requests[-1]["tools"]
+                if t["function"]["name"] == "ask_user")
+    for text in (tool["description"],
+                 tool["parameters"]["properties"]["question"]["description"]):
+        assert "short paragraphs" in text, text
+        assert "question last" in text, text
+    assert "a list for findings" in tool["description"], tool["description"]
+    assert "lists" in tool["parameters"]["properties"]["question"][
+        "description"], tool
+
+
 def test_one_shot_plan_prompt_does_not_ask(ctx):
     """ask_user is not offered without a terminal, so nothing tells the
     model to call it."""
