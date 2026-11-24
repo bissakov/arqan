@@ -24,7 +24,7 @@ def test_modern_stdio_server_needs_no_handshake(ctx):
     """server/discover answers, so no initialize is sent."""
     log = ctx.tmp / "mcp.log"
     write_era_mcp(ctx, "modern", log=log)
-    ctx.scenario('tool=demo_echo:{"text":"ping"},final_text=done')
+    ctx.scenario('tool=mcp__demo__echo:{"text":"ping"},final_text=done')
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("say ping")
     s.wait_text("done")
@@ -62,7 +62,7 @@ def test_modern_http_server_mirrors_the_body_in_headers(ctx):
     log = ctx.tmp / "http.log"
     url = start_http_server(ctx, era="modern", log=log)
     write_url_mcp(ctx, url)
-    ctx.scenario('tool=demo_echo:{"text":"ping"},final_text=done')
+    ctx.scenario('tool=mcp__demo__echo:{"text":"ping"},final_text=done')
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("say ping")
     s.wait_text("done")
@@ -89,7 +89,7 @@ def test_modern_http_server_gets_no_session_header(ctx):
 
     posts = [json.loads(l) for l in log.read_text().splitlines() if l.strip()]
     assert all(p.get("session") is None for p in posts if "raw" in p), posts
-    assert not [n for n in tool_names(ctx.mock.requests[-1]) if n == "demo_boom"]
+    assert not [n for n in tool_names(ctx.mock.requests[-1]) if n == "mcp__demo__boom"]
 
 
 def test_modern_http_tool_parameters_become_headers(ctx):
@@ -98,7 +98,7 @@ def test_modern_http_tool_parameters_become_headers(ctx):
     url = start_http_server(ctx, mode="headers", era="modern", log=log)
     write_url_mcp(ctx, url)
     ctx.scenario(
-        'tool=demo_headed:{"region":" padded ","count":7,'
+        'tool=mcp__demo__headed:{"region":" padded ","count":7,'
         '"nested":{"trace":true}},final_text=done'
     )
     s = ctx.spawn(ARQAN_MCP="on")
@@ -125,14 +125,14 @@ def test_modern_http_drops_a_tool_with_an_invalid_header_schema(ctx):
     s.wait_text("zebra")
     s.wait_turn_done()
 
-    assert "demo_invalid_header" not in tool_names(ctx.mock.requests[-1])
+    assert "mcp__demo__invalid_header" not in tool_names(ctx.mock.requests[-1])
 
 
 def test_a_server_that_lists_only_an_older_version_gets_initialize(ctx):
     """Any handshake-era version in supported means fall back."""
     log = ctx.tmp / "mcp.log"
     write_era_mcp(ctx, "old-only", log=log)
-    ctx.scenario('tool=demo_echo:{"text":"ping"},final_text=done')
+    ctx.scenario('tool=mcp__demo__echo:{"text":"ping"},final_text=done')
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("say ping")
     s.wait_text("done")
@@ -162,7 +162,7 @@ def test_an_unknown_initialize_version_fails_the_server(ctx):
     s.wait_turn_done()
 
     assert not [n for n in tool_names(ctx.mock.requests[-1])
-                if n.startswith("demo_")]
+                if n.startswith("mcp__demo__")]
     s.send("/mcp\r")
     s.wait_text("failed")
     assert "1999-01-01" in s.text(), s.text()
@@ -172,7 +172,7 @@ def test_http_probe_refused_with_method_not_found_falls_back(ctx):
     """A 400 carrying -32601 is a server that predates server/discover."""
     url = start_http_server(ctx, extra=["--reject-status", "400"])
     write_url_mcp(ctx, url)
-    ctx.scenario('tool=demo_echo:{"text":"ping"},final_text=done')
+    ctx.scenario('tool=mcp__demo__echo:{"text":"ping"},final_text=done')
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("say ping")
     s.wait_text("done")

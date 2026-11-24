@@ -77,13 +77,13 @@ def test_http_server_registers_and_calls(ctx):
     log = ctx.tmp / "http.log"
     url = start_http_server(ctx, log=log)
     write_url_mcp(ctx, url)
-    ctx.scenario('tool=demo_echo:{"text":"ping"},final_text=done')
+    ctx.scenario('tool=mcp__demo__echo:{"text":"ping"},final_text=done')
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("say ping")
     s.wait_text("done")
     s.wait_turn_done()
 
-    assert "demo_echo" in tool_names(ctx.mock.requests[-1])
+    assert "mcp__demo__echo" in tool_names(ctx.mock.requests[-1])
     assert ctx.mock.tool_results() == ["echo: ping"], ctx.mock.tool_results()
     seen = [json.loads(l) for l in log.read_text().splitlines() if l.strip()]
     accepts = {r.get("accept") for r in seen if r.get("accept")}
@@ -94,7 +94,7 @@ def test_http_server_over_sse(ctx):
     """A reply streamed as SSE is read to the event that carries the id."""
     url = start_http_server(ctx, sse=True)
     write_url_mcp(ctx, url)
-    ctx.scenario('tool=demo_echo:{"text":"ping"},final_text=done')
+    ctx.scenario('tool=mcp__demo__echo:{"text":"ping"},final_text=done')
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("say ping")
     s.wait_text("done")
@@ -108,7 +108,7 @@ def test_http_session_id_is_carried(ctx):
     log = ctx.tmp / "http.log"
     url = start_http_server(ctx, session=True, log=log)
     write_url_mcp(ctx, url)
-    ctx.scenario('tool=demo_echo:{"text":"ping"},final_text=done')
+    ctx.scenario('tool=mcp__demo__echo:{"text":"ping"},final_text=done')
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("say ping")
     s.wait_text("done")
@@ -243,7 +243,7 @@ def test_http_expired_session_is_started_again(ctx):
     log = ctx.tmp / "http.log"
     url = start_http_server(ctx, session=True, expire=True, log=log)
     write_url_mcp(ctx, url)
-    ctx.scenario('tool=demo_echo:{"text":"ping"},final_text=done')
+    ctx.scenario('tool=mcp__demo__echo:{"text":"ping"},final_text=done')
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("say ping")
     s.wait_text("done")

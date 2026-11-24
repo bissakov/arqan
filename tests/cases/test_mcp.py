@@ -41,7 +41,7 @@ def test_mcp_is_off_by_default(ctx):
     s.wait_turn_done()
 
     names = tool_names(ctx.mock.requests[-1])
-    assert not [n for n in names if n.startswith("demo_")], names
+    assert not [n for n in names if n.startswith("mcp__demo__")], names
     assert "MCP" not in ctx.mock.requests[-1]["messages"][0]["content"]
 
 
@@ -55,29 +55,29 @@ def test_mcp_tools_register_on_the_first_turn(ctx):
     s.wait_turn_done()
 
     names = tool_names(ctx.mock.requests[-1])
-    assert "demo_echo" in names, names
-    assert "demo_boom" in names, names
+    assert "mcp__demo__echo" in names, names
+    assert "mcp__demo__boom" in names, names
     system = ctx.mock.requests[-1]["messages"][0]["content"]
-    assert "<server>_<tool>" in system, system
+    assert "mcp__<server>__<tool>" in system, system
 
 
 def test_mcp_tool_call_round_trip(ctx):
     """The model calls an MCP tool and its text comes back as the result."""
     write_mcp(ctx)
-    ctx.scenario('tool=demo_echo:{"text":"ping"},final_text=done')
+    ctx.scenario('tool=mcp__demo__echo:{"text":"ping"},final_text=done')
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("say ping")
     s.wait_text("done")
     s.wait_turn_done()
 
     assert ctx.mock.tool_results() == ["echo: ping"], ctx.mock.tool_results()
-    assert "demo_echo" in s.text(), s.text()
+    assert "mcp__demo__echo" in s.text(), s.text()
 
 
 def test_mcp_error_result_is_reported(ctx):
     """isError comes back as a failed tool call, not as content."""
     write_mcp(ctx)
-    ctx.scenario("tool=demo_boom:{},final_text=done")
+    ctx.scenario("tool=mcp__demo__boom:{},final_text=done")
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("break it")
     s.wait_text("done")
@@ -90,7 +90,7 @@ def test_mcp_error_result_is_reported(ctx):
 def test_mcp_large_result_is_paged(ctx):
     """A result over the tool limit is cut and the rest goes to a spill file."""
     write_mcp(ctx)
-    ctx.scenario("tool=demo_big:{},final_text=done")
+    ctx.scenario("tool=mcp__demo__big:{},final_text=done")
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("give me a lot")
     s.wait_text("done")
@@ -105,7 +105,7 @@ def test_mcp_large_result_is_paged(ctx):
 def test_mcp_image_block_is_named_not_passed(ctx):
     """An image block is described in the result; no image reaches the model."""
     write_mcp(ctx)
-    ctx.scenario("tool=demo_picture:{},final_text=done")
+    ctx.scenario("tool=mcp__demo__picture:{},final_text=done")
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("show me")
     s.wait_text("done")
@@ -127,8 +127,9 @@ def test_mcp_bad_tool_definitions_are_dropped(ctx):
     s.wait_turn_done()
 
     names = tool_names(ctx.mock.requests[-1])
-    assert "demo_echo" in names, names
-    assert [n for n in names if n.startswith("demo_")] == ["demo_echo"], names
+    assert "mcp__demo__echo" in names, names
+    demo = [n for n in names if n.startswith("mcp__demo__")]
+    assert demo == ["mcp__demo__echo"], names
 
 
 def test_mcp_tool_limit_holds(ctx):
@@ -140,7 +141,8 @@ def test_mcp_tool_limit_holds(ctx):
     s.wait_text("zebra")
     s.wait_turn_done()
 
-    names = [n for n in tool_names(ctx.mock.requests[-1]) if n.startswith("demo_")]
+    names = [n for n in tool_names(ctx.mock.requests[-1])
+             if n.startswith("mcp__demo__")]
     assert len(names) == 32, len(names)
 
 
@@ -156,7 +158,7 @@ def test_mcp_dead_server_is_reported_once(ctx):
     s.wait_turn_done()
 
     names = tool_names(ctx.mock.requests[-1])
-    assert not [n for n in names if n.startswith("demo_")], names
+    assert not [n for n in names if n.startswith("mcp__demo__")], names
     assert len(ctx.mock.requests) == 2, len(ctx.mock.requests)
     s.send("/mcp\r")
     s.wait_text("failed")
@@ -192,14 +194,14 @@ def test_mcp_tool_can_be_disabled(ctx):
     """disable_tools takes the prefixed name and the tool never appears."""
     write_mcp(ctx)
     ctx.scenario("text=zebra")
-    s = ctx.spawn(ARQAN_MCP="on", ARQAN_DISABLE_TOOLS="demo_echo")
+    s = ctx.spawn(ARQAN_MCP="on", ARQAN_DISABLE_TOOLS="mcp__demo__echo")
     s.submit("hello")
     s.wait_text("zebra")
     s.wait_turn_done()
 
     names = tool_names(ctx.mock.requests[-1])
-    assert "demo_echo" not in names, names
-    assert "demo_boom" in names, names
+    assert "mcp__demo__echo" not in names, names
+    assert "mcp__demo__boom" in names, names
 
 
 def test_mcp_env_and_cwd_reach_the_child(ctx):
@@ -215,7 +217,7 @@ def test_mcp_env_and_cwd_reach_the_child(ctx):
     (ctx.xdg / "arqan" / "mcp.json").write_text(
         json.dumps({"servers": {"demo": entry}})
     )
-    ctx.scenario('tool=demo_echo:{"text":"ping"},final_text=done')
+    ctx.scenario('tool=mcp__demo__echo:{"text":"ping"},final_text=done')
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("say ping")
     s.wait_text("done")
@@ -258,7 +260,7 @@ def test_mcp_server_gets_no_api_key_unless_named(ctx):
 def test_mcp_call_is_refused_when_the_server_dies(ctx):
     """A server that exits during a call fails the call and stays down."""
     write_mcp(ctx, mode="die-on-call")
-    ctx.scenario("tool=demo_echo:{},final_text=done")
+    ctx.scenario("tool=mcp__demo__echo:{},final_text=done")
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("say ping")
     s.wait_text("done")
@@ -271,7 +273,7 @@ def test_mcp_call_is_refused_when_the_server_dies(ctx):
 def test_mcp_call_denied_at_the_prompt(ctx):
     """Under ask, a no stops the call and the model is told."""
     write_mcp(ctx)
-    ctx.scenario('tool=demo_echo:{"text":"ping"},final_text=done')
+    ctx.scenario('tool=mcp__demo__echo:{"text":"ping"},final_text=done')
     s = ctx.spawn(ARQAN_MCP="on", ARQAN_PERMISSIONS="ask")
     s.submit("say ping")
     s.wait_text("allow MCP tool?")
@@ -286,7 +288,7 @@ def test_mcp_call_denied_at_the_prompt(ctx):
 def test_mcp_call_approved_at_the_prompt(ctx):
     """Under ask, a yes runs the call and its text comes back."""
     write_mcp(ctx)
-    ctx.scenario('tool=demo_echo:{"text":"ping"},final_text=done')
+    ctx.scenario('tool=mcp__demo__echo:{"text":"ping"},final_text=done')
     s = ctx.spawn(ARQAN_MCP="on", ARQAN_PERMISSIONS="ask")
     s.submit("say ping")
     s.wait_text("allow MCP tool?")
@@ -307,7 +309,7 @@ def test_mcp_tools_are_absent_in_plan_mode(ctx):
     s.wait_turn_done()
 
     names = tool_names(ctx.mock.requests[-1])
-    assert not [n for n in names if n.startswith("demo_")], names
+    assert not [n for n in names if n.startswith("mcp__demo__")], names
 
 
 def test_mcp_server_added_mid_session_is_picked_up(ctx):
@@ -324,13 +326,13 @@ def test_mcp_server_added_mid_session_is_picked_up(ctx):
     s.wait_turn_done()
 
     names = tool_names(ctx.mock.requests[-1])
-    assert "demo_echo" in names, names
+    assert "mcp__demo__echo" in names, names
 
 
 def test_mcp_one_shot_run_uses_a_server(ctx):
     """A non-interactive run starts the server and calls its tool."""
     write_mcp(ctx)
-    ctx.scenario('tool=demo_echo:{"text":"ping"},final_text=done')
+    ctx.scenario('tool=mcp__demo__echo:{"text":"ping"},final_text=done')
     out = ctx.run_cli("-p", "say ping", ARQAN_MCP="on")
     assert "done" in out.stdout, out.stdout
     assert ctx.mock.tool_results() == ["echo: ping"], ctx.mock.tool_results()
@@ -349,7 +351,7 @@ def test_project_server_waits_for_approval(ctx):
     s.wait_turn_done()
 
     names = tool_names(ctx.mock.requests[-1])
-    assert not [n for n in names if n.startswith("demo_")], names
+    assert not [n for n in names if n.startswith("mcp__demo__")], names
     s.send("/mcp\r")
     s.wait_text("waiting for approval")
     assert "mcpserver.py" in s.text(), s.text()
@@ -366,7 +368,7 @@ def test_project_server_runs_once_approved(ctx):
     s.wait_text("zebra")
     s.wait_turn_done()
 
-    assert "demo_echo" in tool_names(ctx.mock.requests[-1])
+    assert "mcp__demo__echo" in tool_names(ctx.mock.requests[-1])
     state = ctx.settings(ctx.state_file())
     section = [k for k in state if k.startswith("mcp.")]
     assert section, state
@@ -386,7 +388,7 @@ def test_approval_is_remembered_next_session(ctx):
     s.submit("hello")
     s.wait_text("zebra")
     s.wait_turn_done()
-    assert "demo_echo" in tool_names(ctx.mock.requests[-1])
+    assert "mcp__demo__echo" in tool_names(ctx.mock.requests[-1])
 
 
 def test_edited_project_command_asks_again(ctx):
@@ -439,7 +441,7 @@ def test_reject_forgets_the_approval(ctx):
     s.submit("hello")
     s.wait_text("zebra")
     s.wait_turn_done()
-    assert "demo_echo" in tool_names(ctx.mock.requests[-1])
+    assert "mcp__demo__echo" in tool_names(ctx.mock.requests[-1])
 
     s.send("/mcp reject demo\r")
     s.wait_text("rejected")
@@ -465,7 +467,7 @@ def test_project_literal_env_is_refused(ctx):
     s.wait_text("zebra")
     s.wait_turn_done()
 
-    assert "demo_echo" in tool_names(ctx.mock.requests[-1])
+    assert "mcp__demo__echo" in tool_names(ctx.mock.requests[-1])
     assert not log.exists()
 
 
@@ -479,7 +481,7 @@ def test_user_config_wins_over_a_project_file(ctx):
     s.wait_text("zebra")
     s.wait_turn_done()
 
-    assert "demo_echo" in tool_names(ctx.mock.requests[-1])
+    assert "mcp__demo__echo" in tool_names(ctx.mock.requests[-1])
 
 
 def test_mcp_restart_reloads_the_tool_list(ctx):
@@ -490,14 +492,15 @@ def test_mcp_restart_reloads_the_tool_list(ctx):
     s.submit("hello")
     s.wait_text("zebra")
     s.wait_turn_done()
-    assert "demo_echo" in tool_names(ctx.mock.requests[-1])
+    assert "mcp__demo__echo" in tool_names(ctx.mock.requests[-1])
 
     s.send("/mcp restart demo\r")
     s.wait_text("restarted with 5 tools")
     s.submit("again")
     s.wait_turn_done()
 
-    names = [n for n in tool_names(ctx.mock.requests[-1]) if n.startswith("demo_")]
+    names = [n for n in tool_names(ctx.mock.requests[-1])
+             if n.startswith("mcp__demo__")]
     assert len(names) == 5, names
 
 
@@ -509,7 +512,7 @@ def test_mcp_disable_takes_the_tools_away(ctx):
     s.submit("hello")
     s.wait_text("zebra")
     s.wait_turn_done()
-    assert "demo_echo" in tool_names(ctx.mock.requests[-1])
+    assert "mcp__demo__echo" in tool_names(ctx.mock.requests[-1])
 
     s.send("/mcp disable demo\r")
     s.wait_text("off for this session")
@@ -559,7 +562,7 @@ def test_a_request_from_the_server_is_answered_not_taken_as_the_reply(ctx):
     log = ctx.tmp / "mcp.log"
     write_mcp(ctx, mode="ping-first", args=[SERVER, "--mode", "ping-first",
                                             "--log", str(log)])
-    ctx.scenario('tool=demo_echo:{"text":"ping"},final_text=done')
+    ctx.scenario('tool=mcp__demo__echo:{"text":"ping"},final_text=done')
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("say ping")
     s.wait_text("done")
@@ -575,10 +578,10 @@ def test_an_interrupted_call_tells_the_server(ctx):
     """Ctrl-C during a call sends notifications/cancelled for that request."""
     log = ctx.tmp / "mcp.log"
     write_mcp(ctx, args=[SERVER, "--log", str(log)])
-    ctx.scenario('tool=demo_slow:{"ms":1500},final_text=done')
+    ctx.scenario('tool=mcp__demo__slow:{"ms":1500},final_text=done')
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("wait")
-    s.wait_text("demo_slow")
+    s.wait_text("mcp__demo__slow")
     s.key("ctrl-c")
     s.wait_turn_done()
 
@@ -597,7 +600,7 @@ def test_an_interrupted_call_tells_the_server(ctx):
 def test_resource_blocks_in_a_result_are_passed_on_as_text(ctx):
     """An embedded text resource is kept and a link is named, not dropped."""
     write_mcp(ctx, mode="links", args=[SERVER, "--mode", "links", "--extras"])
-    ctx.scenario("tool=demo_linked:{},final_text=done")
+    ctx.scenario("tool=mcp__demo__linked:{},final_text=done")
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("link")
     s.wait_text("done")
@@ -605,7 +608,7 @@ def test_resource_blocks_in_a_result_are_passed_on_as_text(ctx):
 
     result = ctx.mock.tool_results()[0]
     assert "demo://notes" in result, result
-    assert "mcp_read can read it" in result, result
+    assert "ReadMcpResourceTool can read it" in result, result
     assert "inline words" in result, result
     assert "not passed on" not in result, result
 
@@ -621,7 +624,7 @@ def test_an_edited_entry_is_restarted_with_its_new_tools(ctx):
     s.submit("hello")
     s.wait_text("zebra")
     s.wait_turn_done()
-    assert "demo_echo" in tool_names(ctx.mock.requests[-1])
+    assert "mcp__demo__echo" in tool_names(ctx.mock.requests[-1])
 
     entry = {"command": sys.executable, "args": [SERVER, "--mode", "headers"]}
     p.write_text(json.dumps({"servers": {"demo": entry}}, indent=4))
@@ -629,8 +632,8 @@ def test_an_edited_entry_is_restarted_with_its_new_tools(ctx):
     s.wait_turn_done()
 
     names = [n for n in tool_names(ctx.mock.requests[-1])
-             if n.startswith("demo_")]
-    assert names == ["demo_headed"], names
+             if n.startswith("mcp__demo__")]
+    assert names == ["mcp__demo__headed"], names
 
 
 def test_a_removed_entry_takes_its_tools_away(ctx):
@@ -647,7 +650,7 @@ def test_a_removed_entry_takes_its_tools_away(ctx):
     s.wait_turn_done()
 
     names = tool_names(ctx.mock.requests[-1])
-    assert not [n for n in names if n.startswith("demo_")], names
+    assert not [n for n in names if n.startswith("mcp__demo__")], names
     s.send("/mcp\r")
     s.wait_text("no longer in mcp.json")
 
@@ -669,7 +672,7 @@ def test_an_untouched_entry_keeps_running_across_an_edit(ctx):
     s.wait_turn_done()
 
     names = tool_names(ctx.mock.requests[-1])
-    assert "demo_echo" in names and "other_echo" in names, names
+    assert "mcp__demo__echo" in names and "mcp__other__echo" in names, names
     lines = [json.loads(l) for l in log.read_text().splitlines() if l]
     hellos = [m for m in lines if m.get("method") == "initialize"]
     assert len(hellos) == 1, lines
@@ -680,7 +683,7 @@ def test_telemetry_keeps_server_names_and_messages_out(ctx):
     from .test_telemetry import body, events
 
     write_mcp(ctx, name="secretname", mode="bad")
-    ctx.scenario('tool=secretname_echo:{"secretkey":"x"},final_text=done')
+    ctx.scenario('tool=mcp__secretname__echo:{"secretkey":"x"},final_text=done')
     s = ctx.spawn(ARQAN_MCP="on")
     s.settings_toggle("Telemetry")
     s.submit("go")

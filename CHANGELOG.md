@@ -61,6 +61,12 @@
 
 ### Changed
 
+- MCP tools are named as in Claude Code: `mcp__<server>__<tool>` instead
+  of `<server>_<tool>`, and `ListMcpResourcesTool` and
+  `ReadMcpResourceTool` instead of `mcp_read`. Update `disable_tools`
+  entries that name MCP tools.
+- Connecting an MCP server no longer prints lines in the transcript. `/mcp`
+  shows its status and tool count.
 - An `ask_user` question renders as Markdown, so bold, code, lists and
   tables show as they do in a reply. Rows of a question that wrap keep the
   block's gutter.
@@ -101,6 +107,10 @@
 
 ### Fixed
 
+- With a Claude subscription, every request failed with "You're out of
+  extra usage" when an MCP server offered resources. Anthropic treats a
+  request that offers a tool named `mcp_` followed by a letter or digit,
+  such as `mcp_read`, as third-party use.
 - A session with many large screenshots no longer fails every request with
   `arena OOM` and `request too large for the scratch arena`, which also
   made `/compact` and resuming fail. A request now carries only the newest

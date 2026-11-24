@@ -502,7 +502,7 @@ def test_batch_reads_outside_the_project_require_approval(ctx):
 
 def test_batch_mcp_children_use_the_normal_registry(ctx):
     write_mcp(ctx)
-    run_batch(ctx, [step("demo_echo", text="ping"), step("demo_echo", text="pong")],
+    run_batch(ctx, [step("mcp__demo__echo", text="ping"), step("mcp__demo__echo", text="pong")],
               ARQAN_MCP="on")
     out = result(ctx)
     assert out["status"] == "completed", out
@@ -511,7 +511,7 @@ def test_batch_mcp_children_use_the_normal_registry(ctx):
 
 def test_batch_mcp_errors_stop_later_steps(ctx):
     write_mcp(ctx)
-    run_batch(ctx, [step("demo_boom"), step("write", path="after.txt", content="never")],
+    run_batch(ctx, [step("mcp__demo__boom"), step("write", path="after.txt", content="never")],
               ARQAN_MCP="on")
     out = result(ctx)
     assert out["status"] == "stopped", out
@@ -695,7 +695,7 @@ def test_batch_image_results_survive_session_replay(ctx):
     picture.write_bytes(png(1, 1))
     write_image_mcp(ctx, env={"MCP_TEST_IMAGE": str(picture),
                               "MCP_TEST_IMAGE_COUNT": "4"})
-    s = run_batch(ctx, [step("demo_picture"), step("demo_picture")],
+    s = run_batch(ctx, [step("mcp__demo__picture"), step("mcp__demo__picture")],
                   ARQAN_IMAGES="on", ARQAN_MCP="on")
     messages = ctx.mock.requests[-1]["messages"]
     images = [b for m in messages if isinstance(m.get("content"), list)
