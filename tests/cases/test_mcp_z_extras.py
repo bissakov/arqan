@@ -1,10 +1,13 @@
 """MCP resources as a tool, and MCP prompts through /mcp."""
 
 import json
+import re
 import sys
 from pathlib import Path
 
 SERVER = str(Path(__file__).resolve().parents[1] / "harness" / "mcpserver.py")
+LIST = "ListMcpResourcesTool"
+READ = "ReadMcpResourceTool"
 
 
 def write_extras_mcp(ctx, name="demo", era="legacy"):
@@ -22,26 +25,82 @@ def tool_names(request):
     return [t["function"]["name"] for t in request.get("tools", [])]
 
 
-def test_a_server_with_resources_gets_a_resources_tool(ctx):
-    """The capability adds one tool, and no uri lists what is on offer."""
+def test_a_server_with_resources_gets_the_resource_tools(ctx):
+    """The capability adds a list and a read tool, and the list shows uris."""
     write_extras_mcp(ctx)
-    ctx.scenario("tool=mcp_read:{},final_text=listed")
+    ctx.scenario(f"tool={LIST}:{{}},final_text=listed")
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("what is there")
     s.wait_text("listed")
     s.wait_turn_done()
 
-    assert "mcp_read" in tool_names(ctx.mock.requests[-1])
+    names = tool_names(ctx.mock.requests[-1])
+    assert LIST in names and READ in names, names
     out = ctx.mock.tool_results()[0]
     assert "demo://notes" in out, out
     assert "text/plain" in out, out
+
+
+def test_no_mcp_tool_name_starts_with_mcp_and_one_underscore(ctx):
+    """Anthropic bills a subscription request with such a name as extra usage."""
+    write_extras_mcp(ctx)
+    ctx.scenario("text=zebra")
+    s = ctx.spawn(ARQAN_MCP="on")
+    s.submit("hello")
+    s.wait_text("zebra")
+    s.wait_turn_done()
+
+    names = tool_names(ctx.mock.requests[-1])
+    assert "mcp__demo__echo" in names, names
+    assert not [n for n in names if re.match(r"mcp_[A-Za-z0-9]", n)], names
+
+
+def test_a_server_that_connects_prints_nothing_in_the_transcript(ctx):
+    """/mcp shows the status and tool count; a connect adds no info line."""
+    write_extras_mcp(ctx)
+    ctx.scenario("text=zebra")
+    s = ctx.spawn(ARQAN_MCP="on")
+    s.submit("hello")
+    s.wait_text("zebra")
+    s.wait_turn_done()
+
+    assert "mcp__demo__echo" in tool_names(ctx.mock.requests[-1])
+    assert "[info:" not in s.text(), s.text()
+
+
+def test_listing_resources_refuses_a_uri(ctx):
+    """A uri belongs to the read tool, and the error names it."""
+    write_extras_mcp(ctx)
+    ctx.scenario(
+        f'tool={LIST}:{{"server":"demo","uri":"demo://notes"}},final_text=done'
+    )
+    s = ctx.spawn(ARQAN_MCP="on")
+    s.submit("list")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    out = ctx.mock.tool_results()[0]
+    assert READ in out and "buy milk" not in out, out
+
+
+def test_reading_a_resource_needs_a_uri(ctx):
+    """The read tool does not fall back to listing."""
+    write_extras_mcp(ctx)
+    ctx.scenario(f'tool={READ}:{{"server":"demo"}},final_text=done')
+    s = ctx.spawn(ARQAN_MCP="on")
+    s.submit("read")
+    s.wait_text("done")
+    s.wait_turn_done()
+
+    out = ctx.mock.tool_results()[0]
+    assert "server and uri are both required" in out, out
 
 
 def test_reading_a_resource_returns_its_text(ctx):
     """A uri reads that one resource."""
     write_extras_mcp(ctx)
     ctx.scenario(
-        'tool=mcp_read:{"server":"demo","uri":"demo://notes"},final_text=read'
+        f'tool={READ}:{{"server":"demo","uri":"demo://notes"}},final_text=read'
     )
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("read the notes")
@@ -55,7 +114,7 @@ def test_a_binary_resource_is_named_not_passed_on(ctx):
     """A blob is named in the result instead of being sent to the model."""
     write_extras_mcp(ctx)
     ctx.scenario(
-        'tool=mcp_read:{"server":"demo","uri":"demo://logo"},final_text=read'
+        f'tool={READ}:{{"server":"demo","uri":"demo://logo"}},final_text=read'
     )
     s = ctx.spawn(ARQAN_MCP="on")
     s.submit("read the logo")
@@ -81,19 +140,21 @@ def test_a_server_without_resources_gets_no_such_tool(ctx):
     s.wait_text("zebra")
     s.wait_turn_done()
 
-    assert "mcp_read" not in tool_names(ctx.mock.requests[-1])
+    names = tool_names(ctx.mock.requests[-1])
+    assert LIST not in names and READ not in names, names
 
 
-def test_mcp_read_can_be_disabled_before_the_server_connects(ctx):
-    """disable_tools accepts the dynamic resource tool name at startup."""
+def test_resource_tools_can_be_disabled_before_the_server_connects(ctx):
+    """disable_tools accepts the dynamic resource tool names at startup."""
     write_extras_mcp(ctx)
     ctx.scenario("text=zebra")
-    s = ctx.spawn(ARQAN_MCP="on", ARQAN_DISABLE_TOOLS="mcp_read")
+    s = ctx.spawn(ARQAN_MCP="on", ARQAN_DISABLE_TOOLS=f"{LIST},{READ}")
     s.submit("hello")
     s.wait_text("zebra")
     s.wait_turn_done()
 
-    assert "mcp_read" not in tool_names(ctx.mock.requests[-1])
+    names = tool_names(ctx.mock.requests[-1])
+    assert LIST not in names and READ not in names, names
 
 
 def test_mcp_prompts_lists_what_a_server_offers(ctx):

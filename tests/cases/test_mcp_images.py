@@ -23,7 +23,7 @@ def setup_image(ctx, size=0, count=1):
     path.write_bytes(data)
     write_mcp(ctx, env={"MCP_TEST_IMAGE": str(path),
                        "MCP_TEST_IMAGE_COUNT": str(count)})
-    ctx.scenario("tool=demo_picture:{},final_text=done")
+    ctx.scenario("tool=mcp__demo__picture:{},final_text=done")
     return data
 
 
@@ -121,7 +121,7 @@ def test_mcp_image_overflow_reused_between_servers(ctx):
     conf["servers"]["other"] = dict(conf["servers"]["demo"])
     path.write_text(json.dumps(conf))
     s, _ = run_image(ctx)
-    ctx.scenario("tool=other_picture:{},final_text=second")
+    ctx.scenario("tool=mcp__other__picture:{},final_text=second")
     s.submit("another")
     s.wait_text("second")
     s.wait_turn_done()
@@ -144,7 +144,7 @@ def test_mcp_image_http_sse(ctx):
 
 def test_mcp_images_follow_all_parallel_tool_results(ctx):
     setup_image(ctx)
-    ctx.scenario("tool=demo_picture:{},tool=demo_echo:{\"text\":\"hello\"},"
+    ctx.scenario("tool=mcp__demo__picture:{},tool=mcp__demo__echo:{\"text\":\"hello\"},"
                  "final_text=done")
     _, body = run_image(ctx)
     messages = body["messages"]
@@ -173,7 +173,7 @@ def test_mcp_image_resumed_with_images_off(ctx):
 def test_mcp_images_from_old_rounds_are_not_replayed(ctx):
     setup_image(ctx)
     (ctx.work / "result.png").write_bytes(png(1000, 1000))
-    ctx.scenario("tool=demo_picture:{},tool_rounds=9,final_text=done")
+    ctx.scenario("tool=mcp__demo__picture:{},tool_rounds=9,final_text=done")
     s = windowed(ctx, window=500, ARQAN_MCP="on")
     s.submit("show me")
     s.wait_text("done")
@@ -207,7 +207,7 @@ def test_mcp_failed_large_reply_releases_shared_buffer(ctx):
     path.write_text(json.dumps(conf))
     s, body = run_image(ctx)
     assert "cannot be parsed" in body["messages"][-1]["content"]
-    ctx.scenario("tool=other_picture:{},final_text=second")
+    ctx.scenario("tool=mcp__other__picture:{},final_text=second")
     s.submit("another")
     s.wait_text("second")
     s.wait_turn_done()
