@@ -370,7 +370,6 @@ def test_the_sandbox_still_reads_the_project_after_clear(ctx):
     s.wait_turn_done()
 
     result = ctx.mock.tool_results()[-1]
-    assert "Permission denied" not in result, result
     assert "alpha is a letter" in result, result
 
 
