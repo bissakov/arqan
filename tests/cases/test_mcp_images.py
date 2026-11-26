@@ -214,3 +214,48 @@ def test_mcp_failed_large_reply_releases_shared_buffer(ctx):
     urls = openai_images(ctx.mock.requests[-1])
     assert len(urls) == 1, ctx.mock.tool_results()
     assert base64.b64decode(urls[0].split(",", 1)[1]) == data
+
+
+def mcp_tools(body):
+    return [t for t in body.get("tools", [])
+            if t["function"]["name"].startswith("mcp__")]
+
+
+def invalid_spot(raw):
+    try:
+        json.loads(raw)
+    except json.JSONDecodeError as e:
+        return repr(raw[max(0, e.pos - 80):e.pos + 40])
+    return "valid"
+
+
+def test_mcp_tools_survive_clear_and_a_large_image(ctx):
+    """A server that connected before /clear keeps its tools intact while
+    the new conversation fills the session memory."""
+    write_mcp(ctx)
+    ctx.scenario("text=one")
+    s = ctx.spawn(ARQAN_MCP="on")
+    s.submit("first")
+    s.wait_text("one")
+    s.wait_turn_done()
+    before = mcp_tools(ctx.mock.requests[-1])
+    assert before
+
+    s.submit("/clear")
+    s.wait_for(lambda t: "one" not in t.text(), "transcript to clear")
+
+    data = png(4, 3) + b"\x00" * (1 << 20)
+    (ctx.work / "big.png").write_bytes(data)
+    ctx.scenario('tool=read:{"path":"big.png"},final_text=two')
+    sent = len(ctx.mock.requests)
+    s.submit("second")
+    s.wait_for(lambda _: len(ctx.mock.requests) >= sent + 2,
+               "the request that carries the image")
+
+    body = ctx.mock.requests[sent + 1]
+    assert ctx.mock.bad_utf8 == [], f"{len(ctx.mock.bad_utf8)} non-UTF-8 bodies"
+    assert "_raw" not in body, invalid_spot(body["_raw"])
+    assert mcp_tools(body) == before
+    assert base64.b64decode(openai_images(body)[0].split(",", 1)[1]) == data
+    s.wait_text("two")
+    s.wait_turn_done()
