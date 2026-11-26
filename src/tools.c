@@ -647,16 +647,20 @@ static void shell_kill(pid_t pid, b8 reaped, i32 sig) {
  * <linux/landlock.h>. The release image, Debian 11, has neither that header
  * nor the syscall numbers in its libc. The kernel keeps this ABI stable. */
 
-#define SANDBOX_MAX_PATHS 96
+#define SANDBOX_MAX_PATHS   96
+#define SANDBOX_STORE_BYTES (64u << 10)
 
+/* NOTE: the paths live in store, not an arena, because the list is built on
+ * the first sandboxed command and must outlive a session reset. */
 static struct {
     b8 probed;
     b8 prepared;
     b8 listed;
     i32 abi;
-    Arena *persist;
     size_t n;
+    size_t used;
     const char *read[SANDBOX_MAX_PATHS];
+    char store[SANDBOX_STORE_BYTES];
 } g_sandbox;
 
 #if defined(__linux__) && !defined(SYS_landlock_create_ruleset)           \
@@ -820,9 +824,12 @@ static b8 sandbox_allow(Str path) {
                   SANDBOX_MAX_PATHS, (i32)path.n, path.p);
         return true;
     }
-    Str copy = str_dup(g_sandbox.persist, path);
-    if (!copy.p) return false;
-    g_sandbox.read[g_sandbox.n++] = copy.p;
+    if (path.n >= sizeof g_sandbox.store - g_sandbox.used) return false;
+    char *copy = g_sandbox.store + g_sandbox.used;
+    memcpy(copy, path.p, path.n);
+    copy[path.n] = '\0';
+    g_sandbox.used += path.n + 1;
+    g_sandbox.read[g_sandbox.n++] = copy;
     return true;
 }
 
@@ -901,7 +908,7 @@ static const char *const k_sandbox_system[] = {
 };
 
 static void sandbox_prepare(Arena *scratch) {
-    if (g_sandbox.prepared || !g_sandbox.persist || sandbox_abi() < 1) return;
+    if (g_sandbox.prepared || sandbox_abi() < 1) return;
     g_sandbox.prepared = true;
     b8 ok = sandbox_allow(g_tools.policy.root) && sandbox_allow_git(scratch);
     for (size_t i = 0; i < sizeof k_sandbox_system / sizeof *k_sandbox_system;
@@ -933,7 +940,7 @@ static void sandbox_prepare(Arena *scratch) {
     g_sandbox.listed = ok;
     if (!ok)
         agent_log(AGENT_LOG_WARN,
-                  "out of memory for the sandbox read list; read-only "
+                  "the sandbox read list is out of room; read-only "
                   "commands run with only writes denied");
 }
 
@@ -3161,7 +3168,6 @@ void tools_init(ToolRegistry *r, Arena *persist, Arena *scratch,
     char root[PATH_MAX];
     g_tools.policy.root =
         realpath(".", root) ? str_dup(persist, str_c(root)) : (Str){0};
-    g_sandbox.persist = persist;
     if (!r->name || !r->desc || !r->desc_sub || !r->brief || !r->schema
         || !r->batch_schema || !r->run || !r->modes || !r->approval
         || !r->source || !r->ext || !r->off) {
