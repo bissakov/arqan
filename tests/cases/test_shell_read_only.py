@@ -19,6 +19,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .test_image import png
+
 
 def bash(command: str, description: str = "look") -> str:
     return "tool=bash:" + json.dumps({"command": command, "description": description})
@@ -342,6 +344,33 @@ def test_a_link_out_of_the_project_is_not_followed_under_the_sandbox(ctx):
 
 SPILLING_SORT = "sort -S 1K -T . big.txt | tail -n 1"
 LISTS_TOOLS = "Available tools:\n{tools}"
+
+
+def test_the_sandbox_still_reads_the_project_after_clear(ctx):
+    """The read list is built on the first sandboxed command and must
+    survive /clear while the new conversation fills the session memory."""
+    if not landlock_available():
+        return
+    a_small_tree(ctx)
+    ctx.scenario(bash("cat notes.txt") + ",final_text=one")
+    s = ctx.spawn(ARQAN_PERMISSIONS="ask")
+    s.submit("read the notes")
+    s.wait_text("one")
+    s.wait_turn_done()
+    assert "alpha is a letter" in ctx.mock.tool_results()[0]
+
+    s.submit("/clear")
+    s.wait_for(lambda t: "one" not in t.text(), "transcript to clear")
+
+    (ctx.work / "big.png").write_bytes(png(4, 3) + b"\x00" * (1 << 20))
+    ctx.scenario('tool=read:{"path":"big.png"},' + bash("cat notes.txt")
+                 + ",final_text=two")
+    s.submit("again")
+    s.wait_text("two")
+    s.wait_turn_done()
+
+    result = ctx.mock.tool_results()[-1]
+    assert "alpha is a letter" in result, result
 
 
 def a_big_file(ctx):

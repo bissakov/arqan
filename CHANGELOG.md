@@ -111,6 +111,9 @@
   could let the new conversation overwrite the tools of a connected MCP
   server, often with image data. Every request then failed, for example
   with `Invalid JSON` from the provider, until arqan restarted.
+- After clearing, resuming or compacting a session, or starting one from a
+  plan, read-only commands could fail under the Landlock sandbox, even
+  `cat` on a project file, until arqan restarted.
 - With a Claude subscription, every request failed with "You're out of
   extra usage" when an MCP server offered resources. Anthropic treats a
   request that offers a tool named `mcp_` followed by a letter or digit,
