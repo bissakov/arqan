@@ -112,6 +112,10 @@ typedef struct {
     size_t n;
 
     ToolRegistry *reg;
+    /* INVARIANT: mem is carved from persist before the session mark, so a
+     * session reset never frees it. Anything a server or the registry keeps
+     * past one session lives here, not in persist. */
+    Arena mem;
     Arena *persist;
     b8 enabled;
     b8 reaper;
@@ -867,6 +871,11 @@ void mcp_init(ToolRegistry *r, Arena *persist, Arena *scratch, b8 enabled,
               i32 timeout_ms, Str disable_tools) {
     g_mcp.reg = r;
     g_mcp.persist = persist;
+    g_mcp.mem = (Arena){0};
+    if (enabled) {
+        void *mem = arena_alloc(persist, AGENT_MCP_ARENA_BYTES, 64);
+        if (mem) arena_init(&g_mcp.mem, mem, AGENT_MCP_ARENA_BYTES);
+    }
     g_mcp.enabled = enabled;
     g_mcp.timeout_ms = timeout_ms > 0 ? timeout_ms : AGENT_MCP_TIMEOUT_MS;
     g_mcp.disable = disable_tools;
@@ -936,7 +945,7 @@ static char **mcp_child_env(McpServer *s) {
     if (!s->env_n) return base;
     size_t have = 0;
     while (have < MCP_MAX_ENVP && base[have]) have++;
-    char **envp = arena_new(g_mcp.persist, char *, have + s->env_n + 1);
+    char **envp = arena_new(&g_mcp.mem, char *, have + s->env_n + 1);
     if (!envp) return base;
     size_t n = 0;
     for (size_t i = 0; i < have; i++) {
@@ -960,7 +969,6 @@ static b8 mcp_spawn(McpServer *s) {
     for (size_t i = 0; i < s->argv_n; i++)
         argv[i] = s->argv_store + s->argv_at[i];
     argv[s->argv_n] = NULL;
-    char **envp = mcp_child_env(s);
 
     i32 to_child[2], from_child[2];
     if (!pipe_cloexec(to_child)) {
@@ -973,7 +981,10 @@ static b8 mcp_spawn(McpServer *s) {
         mcp_fail(s, "pipe failed");
         return false;
     }
+    size_t envp_mark = g_mcp.mem.off;
+    char **envp = mcp_child_env(s);
     pid_t pid = fork();
+    g_mcp.mem.off = envp_mark;
     if (pid < 0) {
         close(to_child[0]);
         close(to_child[1]);
@@ -1004,7 +1015,7 @@ static b8 mcp_spawn(McpServer *s) {
     s->out_fd = from_child[0];
     i32 flags = fcntl(s->in_fd, F_GETFL, 0);
     if (flags >= 0) fcntl(s->in_fd, F_SETFL, flags | O_NONBLOCK);
-    if (!s->buf) s->buf = arena_alloc(g_mcp.persist, AGENT_MCP_MSG_BYTES, 1);
+    if (!s->buf) s->buf = arena_alloc(&g_mcp.mem, AGENT_MCP_MSG_BYTES, 1);
     if (!s->buf) {
         mcp_fail(s, "out of memory for the read buffer");
         return false;
@@ -1125,7 +1136,7 @@ static b8 mcp_line_grow(McpServer *s, char *err, size_t err_cap) {
         return false;
     }
     if (!g_mcp.large)
-        g_mcp.large = arena_alloc(g_mcp.persist, AGENT_MCP_LARGE_MSG_BYTES, 1);
+        g_mcp.large = arena_alloc(&g_mcp.mem, AGENT_MCP_LARGE_MSG_BYTES, 1);
     if (!g_mcp.large) {
         snprintf(err, err_cap, "out of memory for a reply over %u bytes",
                  (unsigned)AGENT_MCP_MSG_BYTES);
@@ -1829,9 +1840,9 @@ static b8 mcp_register_tool(McpServer *s, const JVal *tool) {
         return false;
     }
 
-    size_t mark = g_mcp.persist->off;
+    size_t mark = g_mcp.mem.off;
     Buf full;
-    buf_init(&full, g_mcp.persist,
+    buf_init(&full, &g_mcp.mem,
              STR(MCP_TOOL_PREFIX).n + s->name_n + STR(MCP_TOOL_SEPARATOR).n
                  + name.n);
     buf_puts(&full, STR(MCP_TOOL_PREFIX));
@@ -1875,7 +1886,7 @@ static b8 mcp_register_tool(McpServer *s, const JVal *tool) {
         }
     }
     Buf sb;
-    buf_init(&sb, g_mcp.persist, 512);
+    buf_init(&sb, &g_mcp.mem, 512);
     json_write(&sb, schema);
     if (!buf_ok(&sb)) goto drop;
     Str schema_text = buf_finish(&sb);
@@ -1893,7 +1904,7 @@ static b8 mcp_register_tool(McpServer *s, const JVal *tool) {
     if (!desc.n) desc = json_str(tool, STR("title"));
     desc = mcp_trim_utf8(desc, AGENT_MCP_DESC_BYTES);
     Buf db;
-    buf_init(&db, g_mcp.persist, desc.n + s->name_n + 96);
+    buf_init(&db, &g_mcp.mem, desc.n + s->name_n + 96);
     buf_puts(&db, desc);
     if (desc.n) buf_putc(&db, ' ');
     buf_putf(&db,
@@ -1903,7 +1914,7 @@ static b8 mcp_register_tool(McpServer *s, const JVal *tool) {
     if (!buf_ok(&db)) goto drop;
 
     Buf bb;
-    buf_init(&bb, g_mcp.persist, s->name_n + 32);
+    buf_init(&bb, &g_mcp.mem, s->name_n + 32);
     buf_putf(&bb, "From the %.*s MCP server", (i32)s->name_n, s->name);
     if (!buf_ok(&bb)) goto drop;
 
@@ -1915,7 +1926,7 @@ static b8 mcp_register_tool(McpServer *s, const JVal *tool) {
     return true;
 
 drop:
-    g_mcp.persist->off = mark;
+    g_mcp.mem.off = mark;
     return false;
 }
 

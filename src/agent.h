@@ -207,6 +207,10 @@ _Static_assert((AGENT_MAX_IMAGE_BYTES + 2) / 3 * 4 + 1024
 #define AGENT_MCP_SESSION_BYTES     128
 #define AGENT_MCP_VERSION_BYTES     32
 #define AGENT_MCP_HTTP_BYTES        AGENT_MCP_LARGE_MSG_BYTES
+#define AGENT_MCP_TOOL_STORE_BYTES  (2u << 20)
+#define AGENT_MCP_ARENA_BYTES                                                \
+    (AGENT_MCP_LARGE_MSG_BYTES + AGENT_MAX_MCP_SERVERS * AGENT_MCP_MSG_BYTES \
+     + AGENT_MCP_TOOL_STORE_BYTES)
 
 #define AGENT_MAX_CONTEXT_WINDOW         ((size_t)1 << 31)
 #define AGENT_WEB_BODY_BYTES             (2u << 20)
