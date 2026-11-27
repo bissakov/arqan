@@ -61,6 +61,8 @@
 
 ### Changed
 
+- A `job` call in the transcript shows the description of the `bash` call
+  or `batch` step that started the job, also in a resumed session.
 - MCP tools are named as in Claude Code: `mcp__<server>__<tool>` instead
   of `<server>_<tool>`, and `ListMcpResourcesTool` and
   `ReadMcpResourceTool` instead of `mcp_read`. Update `disable_tools`
