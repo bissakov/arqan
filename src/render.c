@@ -329,6 +329,84 @@ static void render_todo_call(Str args, Arena *scratch, const Conv *c,
     }
 }
 
+#define R_BATCH_JOB_TAIL 256
+
+static Str without_notes(Str result) {
+    return todo_note_strip(jobs_note_strip(progress_note_strip(result)));
+}
+
+static u64 leading_job_id(Str s) {
+    u64 id = 0;
+    size_t i = 0;
+    for (; i < s.n && i < 10 && s.p[i] >= '0' && s.p[i] <= '9'; i++)
+        id = id * 10 + (u64)(s.p[i] - '0');
+    return i && id <= UINT32_MAX ? id : 0;
+}
+
+/* NOTE: a batch stops at the step that becomes a job, so that step's row,
+ * and its job_id, ends the batch result. */
+static u64 detached_job_id(Str result, b8 batch) {
+    result = without_notes(result);
+    if (batch) {
+        Str mark = STR("\"job_id\":");
+        Str tail = str_drop(result, result.n > R_BATCH_JOB_TAIL
+                                        ? result.n - R_BATCH_JOB_TAIL
+                                        : 0);
+        for (size_t i = 0; i + mark.n <= tail.n; i++)
+            if (str_starts(str_drop(tail, i), mark))
+                return leading_job_id(str_drop(tail, i + mark.n));
+        return 0;
+    }
+    Str mark = STR("[still running as job ");
+    while (result.n && result.p[result.n - 1] == '\n') result.n--;
+    size_t at = result.n;
+    while (at && result.p[at - 1] != '\n') at--;
+    Str last = str_drop(result, at);
+    return str_starts(last, mark) ? leading_job_id(str_drop(last, mark.n)) : 0;
+}
+
+static Str batch_job_description(Str args, Str result, u64 job_id,
+                                 Arena *scratch) {
+    const JVal *rows =
+        json_get(json_parse(scratch, without_notes(result)), STR("steps"));
+    if (!rows || rows->type != J_ARR) return (Str){0};
+    for (size_t i = 0; i < rows->u.arr.n; i++) {
+        const JVal *row = &rows->u.arr.items[i];
+        const JVal *v = json_get(row, STR("job_id"));
+        if (!v || v->type != J_NUM || v->u.n < 1 || (u64)v->u.n != job_id
+            || !str_eq(json_str(row, STR("tool")), STR("bash")))
+            continue;
+        const JVal *steps = json_get(json_parse(scratch, args), STR("steps"));
+        if (!steps || steps->type != J_ARR || i >= steps->u.arr.n)
+            return (Str){0};
+        return json_str(json_get(&steps->u.arr.items[i], STR("args")),
+                        STR("description"));
+    }
+    return (Str){0};
+}
+
+/* INVARIANT: job ids rise within one process, so the first earlier job with
+ * a lower id ends the search. Past it lies an older process's job table. */
+static Str job_description(const Conv *c, size_t slot, u64 job_id,
+                           Arena *scratch) {
+    if (!c || !job_id || slot == CONV_NONE || slot > c->n) return (Str){0};
+    for (size_t i = slot; i-- > 0;) {
+        if (!conv_is_call(c, i)) continue;
+        b8 bash = str_eq(c->tool_name[i], STR("bash"));
+        if (!bash && !str_eq(c->tool_name[i], STR("batch"))) continue;
+        size_t at = conv_result_slot(c, i);
+        if (at == CONV_NONE) continue;
+        u64 started = detached_job_id(c->text[at], !bash);
+        if (!started || started > job_id) continue;
+        if (started < job_id) break;
+        return bash ? json_str(json_parse(scratch, c->text[i]),
+                               STR("description"))
+                    : batch_job_description(c->text[i], c->text[at], job_id,
+                                            scratch);
+    }
+    return (Str){0};
+}
+
 static void render_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
                         const Conv *c, size_t slot, Str result) {
     b8 unapplied = render_unapplied(name, result);
@@ -385,6 +463,7 @@ static void render_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
         query.n && (str_eq(name, STR("find")) || str_eq(name, STR("grep")));
 
     char job_buf[40];
+    Str job_desc = {0};
     if (str_eq(name, STR("job"))) {
         const JVal *v = json_get(j, STR("id"));
         Str action = json_str(j, STR("action"));
@@ -401,6 +480,10 @@ static void render_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
             target =
                 (Str){job_buf, (size_t)n < sizeof job_buf ? (size_t)n
                                                           : sizeof job_buf - 1};
+        size_t desc_off = 0;
+        str_line(str_trim(job_description(c, slot, job_id, scratch)), &desc_off,
+                 &job_desc);
+        job_desc = str_trim(job_desc);
     }
     size_t cmd_off = 0;
     b8 target_cmd = !path.n && cmd.n;
@@ -483,6 +566,10 @@ static void render_call(Str name, Str args, Arena *scratch, u32 id, b8 expanded,
         }
         if (shown.n < target.n) target_sink(STR(" ..."));
         if (search) target_sink(STR("\""));
+    }
+    if (job_desc.n) {
+        tui_write_dim(STR(" \u00b7 "));
+        write_clipped(job_desc, R_TARGET_BYTES, write_shell_description);
     }
     if (shell_desc.n) {
         size_t line_off = 0;

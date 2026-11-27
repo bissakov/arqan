@@ -137,6 +137,81 @@ def test_killing_a_job_stops_its_work(ctx):
     assert not (ctx.work / "never.txt").exists(), "the killed job ran on"
 
 
+def test_a_job_call_is_named_by_the_command_that_started_it(ctx):
+    """The job header repeats the description of the bash call that started
+    the job. It comes from the conversation, so a resumed session shows it."""
+    started = "bash:" + json.dumps({"command": "sleep 0.6; echo built",
+                                    "description": "build the docs"})
+    ctx.scenario(
+        "tool=" + started + ",tool=" + job(id=1, action="poll")
+        + ",tool=" + job(id=1) + ",tool=" + job(id=7) + ",final_text=followed"
+    )
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="200")
+    s.submit("run something slow")
+    s.wait_text("followed")
+    s.wait_turn_done()
+
+    named = ["\u25c6  job poll 1 \u00b7 build the docs",
+             "\u25c6  job 1 \u00b7 build the docs"]
+    for header in named:
+        assert header in s.text(), s.text()
+    assert "\u25c6  job 7" in s.text(), s.text()
+    assert "job 7 \u00b7" not in s.text(), s.text()
+
+    s.submit("/exit")
+    s.wait_exit()
+    resumed = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_RESUME_LAST="true")
+    resumed.wait_text("followed")
+    for header in named:
+        assert header in resumed.text(), resumed.text()
+
+
+def test_a_job_started_in_a_batch_is_named_by_its_step(ctx):
+    """A bash step of a batch can detach too; its description names the job."""
+    steps = [{"tool": "bash", "args": {"command": "sleep 0.6; echo built",
+                                       "description": "build in a batch"}}]
+    ctx.scenario(
+        "tool=batch:" + json.dumps({"steps": steps}) + ",tool=" + job(id=1)
+        + ",final_text=followed"
+    )
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="200")
+    s.submit("run something slow")
+    s.wait_text("followed")
+    s.wait_turn_done()
+
+    assert '"job_id":1' in results(ctx)[0], results(ctx)[0]
+    assert "\u25c6  job 1 \u00b7 build in a batch" in s.text(), s.text()
+
+
+def test_a_job_id_from_before_a_resume_takes_no_name(ctx):
+    """Job ids restart with the process, so an id this process never started
+    does not take the description of an older process's job."""
+    def started(description):
+        return "bash:" + json.dumps({"command": "sleep 0.6",
+                                     "description": description})
+
+    ctx.scenario("tool=" + started("first build") + ",tool="
+                 + started("second build") + ",final_text=started")
+    s = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="200")
+    s.submit("start two builds")
+    s.wait_text("started")
+    s.wait_turn_done()
+    s.submit("/exit")
+    s.wait_exit()
+
+    ctx.scenario("tool=" + started("third build") + ",tool=" + job(id=2)
+                 + ",final_text=checked")
+    resumed = ctx.spawn(TMPDIR=str(ctx.work), ARQAN_SHELL_TIMEOUT_MS="200",
+                        ARQAN_RESUME_LAST="true")
+    resumed.wait_text("started")
+    resumed.submit("check the second build")
+    resumed.wait_text("checked")
+    resumed.wait_turn_done()
+
+    assert "\u25c6  job 2" in resumed.text(), resumed.text()
+    assert "job 2 \u00b7" not in resumed.text(), resumed.text()
+
+
 def test_listing_and_unknown_ids(ctx):
     """A session with no jobs says so; an id it never had is an error."""
     ctx.scenario("tool=" + job() + ",tool=" + job(id=9) + ",final_text=looked")
