@@ -884,6 +884,54 @@ def test_ask_user_timeout_note_is_a_row_of_the_settings_screen(ctx):
                "ask_timeout_note in the state file")
 
 
+def test_ask_user_wait_is_a_row_of_the_settings_screen(ctx):
+    """The row steps the wait, remembers it, and the next question uses it."""
+    ctx.scenario(
+        ask(
+            "Which storage?",
+            [
+                {"label": "sqlite", "detail": "one file"},
+                {"label": "postgres", "detail": "a server", "recommended": True},
+            ],
+        )
+        + ",final_text=noted"
+    )
+    s = ctx.spawn()
+    s.open_settings().settings_select("Auto-answer after")
+    assert re.search(r"Auto-answer after\s+3 min", s.text()), s.text()
+
+    s.key("right").sync()
+    s.wait_for(lambda t: re.search(r"Auto-answer after\s+5 min", t.text()),
+               "the auto-answer row reading five minutes")
+    wait_until(lambda: ctx.state().get("ask_timeout_ms") == "300000",
+               "ask_timeout_ms in the state file")
+
+    for _ in range(4):
+        s.key("left").sync()
+    s.wait_for(lambda t: re.search(r"Auto-answer after\s+off", t.text()),
+               "the auto-answer row reading off")
+    s.key("left").sync()
+    assert re.search(r"Auto-answer after\s+off", s.text()), \
+        "the floor holds rather than wrapping"
+    wait_until(lambda: ctx.state().get("ask_timeout_ms") == "0",
+               "ask_timeout_ms of zero in the state file")
+
+    s.key("right").sync()
+    s.wait_for(lambda t: re.search(r"Auto-answer after\s+1 min", t.text()),
+               "the auto-answer row reading one minute")
+    s.key("esc")
+    s.wait_gone("Auto-answer after")
+
+    to_plan(s)
+    s.submit("plan the storage")
+    s.wait_status("pick an answer")
+    assert "no answer in 60s picks the recommended option" in s.text(), \
+        s.text()
+    s.key("enter")
+    s.wait_text("noted")
+    s.wait_turn_done()
+
+
 def test_ask_user_without_a_recommendation_waits(ctx):
     """With nothing to fall back on the question keeps the keyboard."""
     ctx.scenario(

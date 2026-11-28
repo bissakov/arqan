@@ -4,6 +4,9 @@
 
 ### Added
 
+- An "Auto-answer after" row in `/settings` sets how long a question with a
+  recommended answer waits before it takes that answer: off, or 1, 2, 3, 5,
+  10, 15, 30 or 60 minutes. The choice is remembered as `ask_timeout_ms`.
 - `ask_timeout_note = false`, or the "Flag auto-answers" row in `/settings`,
   drops the note that tells the model a timeout picked the answer to a
   question. The note is on by default. A project config file may not set it.
