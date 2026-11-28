@@ -773,6 +773,7 @@ typedef enum {
     CONF_SMALL_PROVIDER,
     CONF_AUTO_TITLE,
     CONF_ASK_TIMEOUT_MS,
+    CONF_ASK_TIMEOUT_NOTE,
     CONF_SHELL_TIMEOUT_MS,
     CONF_IMAGES,
     CONF_IMAGE_BUDGET_MB,
@@ -937,6 +938,7 @@ typedef struct {
     i32 mcp_timeout_ms;
 
     i32 ask_timeout_ms;
+    b8 ask_timeout_note;
 
     i32 shell_timeout_ms;
 

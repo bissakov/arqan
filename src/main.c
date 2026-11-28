@@ -834,7 +834,8 @@ static Str ask_user_answer(Agent *ag, Str args) {
         return buf_ok(&b) ? buf_finish(&b) : (Str){0};
     }
     if (pick < n) {
-        if (!expired) return str_dup(ag->persist, items[pick].name);
+        if (!expired || !ag->cfg->ask_timeout_note)
+            return str_dup(ag->persist, items[pick].name);
 
         Buf b;
         buf_init(&b, ag->persist, items[pick].name.n + 160);
@@ -4549,6 +4550,7 @@ enum {
     SET_COMPACT_MODEL,
     SET_CACHE_GUARD,
     SET_SUBAGENTS,
+    SET_ASK_TIMEOUT_NOTE,
     SET_SUBAGENT_MODEL,
     SET_SUBAGENT_TASKS,
     SET_SUBAGENT_SLICE
@@ -4873,6 +4875,11 @@ static size_t settings_build(void *ud) {
     rows[n++] = (TuiCmd){
         setting_check(rows_arena, cfg->subagents, STR("Subagents")),
         STR("Offer the task tool, which delegates a read-only investigation")};
+    kind[n] = SET_ASK_TIMEOUT_NOTE;
+    rows[n++] =
+        (TuiCmd){setting_check(rows_arena, cfg->ask_timeout_note,
+                               STR("Flag auto-answers")),
+                 STR("Tell the model when a timeout picked the answer")};
 
     for (size_t i = 0; i < reg->n && n + 11 < SET_MAX_ROWS; i++) {
         if (!tools_can_disable(reg, i)) continue;
@@ -5089,6 +5096,11 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
         case SET_AUTO_TITLE:
             cfg->auto_title = !cfg->auto_title;
             remember_ui_bool(scratch, CONF_AUTO_TITLE, cfg->auto_title);
+            break;
+        case SET_ASK_TIMEOUT_NOTE:
+            cfg->ask_timeout_note = !cfg->ask_timeout_note;
+            remember_ui_bool(scratch, CONF_ASK_TIMEOUT_NOTE,
+                             cfg->ask_timeout_note);
             break;
         case SET_RESUME_LAST:
             cfg->resume_last = !cfg->resume_last;

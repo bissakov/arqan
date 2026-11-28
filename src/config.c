@@ -93,6 +93,8 @@ static const ConfSpec k_conf[CONF_N] = {
     [CONF_AUTO_TITLE] = {"auto_title", "true", NULL, CV_BOOL, 0, 0, 0, true},
     [CONF_ASK_TIMEOUT_MS] = {"ask_timeout_ms", CONF_TEXT(AGENT_ASK_TIMEOUT_MS),
                              NULL, CV_NUM, 0, 24 * 60 * 60 * 1000, 0, false},
+    [CONF_ASK_TIMEOUT_NOTE] = {"ask_timeout_note", "true", NULL, CV_BOOL, 0, 0,
+                               0, false},
     [CONF_SHELL_TIMEOUT_MS] = {"shell_timeout_ms",
                                CONF_TEXT(AGENT_SHELL_TIMEOUT_MS), NULL, CV_NUM,
                                0, AGENT_JOB_WAIT_MAX_MS, 0, false},
@@ -508,6 +510,7 @@ b8 config_load(Config *c, const Conf *conf, Arena *persist) {
     c->stream_timeout_ms = (i32)conf_num(conf, CONF_STREAM_TIMEOUT_MS);
     c->auto_title = conf_bool(conf, CONF_AUTO_TITLE);
     c->ask_timeout_ms = (i32)conf_num(conf, CONF_ASK_TIMEOUT_MS);
+    c->ask_timeout_note = conf_bool(conf, CONF_ASK_TIMEOUT_NOTE);
     c->shell_timeout_ms = (i32)conf_num(conf, CONF_SHELL_TIMEOUT_MS);
     c->images = !str_eq(conf_str(conf, CONF_IMAGES), STR("off"));
     c->image_budget = (size_t)conf_num(conf, CONF_IMAGE_BUDGET_MB) << 20;
