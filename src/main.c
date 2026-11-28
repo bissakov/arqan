@@ -4551,11 +4551,12 @@ enum {
     SET_CACHE_GUARD,
     SET_SUBAGENTS,
     SET_ASK_TIMEOUT_NOTE,
+    SET_ASK_TIMEOUT,
     SET_SUBAGENT_MODEL,
     SET_SUBAGENT_TASKS,
     SET_SUBAGENT_SLICE
 };
-#define SET_MAX_ROWS (26 + AGENT_MAX_TOOLS)
+#define SET_MAX_ROWS (27 + AGENT_MAX_TOOLS)
 
 static Str setting_label(Arena *a, Str label, const char *box) {
     Buf b;
@@ -4765,6 +4766,30 @@ static i32 task_limit_step(i32 cur, i32 dir) {
     return next > AGENT_MAX_TASKS ? AGENT_MAX_TASKS : next;
 }
 
+static const i32 g_ask_wait_steps[] = {0,      60000,  120000,  180000, 300000,
+                                       600000, 900000, 1800000, 3600000};
+
+static i32 ask_wait_step(i32 cur, i32 dir) {
+    size_t n = sizeof g_ask_wait_steps / sizeof g_ask_wait_steps[0];
+    if (dir > 0) {
+        for (size_t i = 0; i < n; i++)
+            if (g_ask_wait_steps[i] > cur) return g_ask_wait_steps[i];
+        return cur;
+    }
+    for (size_t i = n; i-- > 0;)
+        if (g_ask_wait_steps[i] < cur) return g_ask_wait_steps[i];
+    return g_ask_wait_steps[0];
+}
+
+static void ask_wait_text(i32 ms, char *out, size_t cap) {
+    if (ms <= 0)
+        snprintf(out, cap, "off");
+    else if (ms % 60000 == 0)
+        snprintf(out, cap, "%d min", ms / 60000);
+    else
+        snprintf(out, cap, "%ds", ms / 1000 > 0 ? ms / 1000 : 1);
+}
+
 #define SET_MAX_OPTIONS 64
 static size_t list_options(Str list, Str *out, size_t max) {
     size_t n = 0, off = 0;
@@ -4881,7 +4906,7 @@ static size_t settings_build(void *ud) {
                                STR("Flag auto-answers")),
                  STR("Tell the model when a timeout picked the answer")};
 
-    for (size_t i = 0; i < reg->n && n + 11 < SET_MAX_ROWS; i++) {
+    for (size_t i = 0; i < reg->n && n + 12 < SET_MAX_ROWS; i++) {
         if (!tools_can_disable(reg, i)) continue;
         kind[n] = SET_TOOL;
         v->tool[n] = i;
@@ -4963,6 +4988,11 @@ static size_t settings_build(void *ud) {
     kind[n] = SET_SUBAGENT_SLICE;
     rows[n++] = (TuiCmd){setting_value(rows_arena, STR("Delegate slice")),
                          str_dup(rows_arena, str_c(slice))};
+    char ask_wait[32];
+    ask_wait_text(cfg->ask_timeout_ms, ask_wait, sizeof ask_wait);
+    kind[n] = SET_ASK_TIMEOUT;
+    rows[n++] = (TuiCmd){setting_value(rows_arena, STR("Auto-answer after")),
+                         str_dup(rows_arena, str_c(ask_wait))};
 
     Str opt[SET_MAX_OPTIONS];
     if (cfg->reasoning_efforts.n && n < SET_MAX_ROWS) {
@@ -5102,6 +5132,13 @@ static void settings_apply(SettingsView *v, size_t row, i32 delta) {
             remember_ui_bool(scratch, CONF_ASK_TIMEOUT_NOTE,
                              cfg->ask_timeout_note);
             break;
+        case SET_ASK_TIMEOUT: {
+            cfg->ask_timeout_ms = ask_wait_step(cfg->ask_timeout_ms, delta);
+            char value[16];
+            snprintf(value, sizeof value, "%d", cfg->ask_timeout_ms);
+            remember_ui(scratch, CONF_ASK_TIMEOUT_MS, str_c(value));
+            break;
+        }
         case SET_RESUME_LAST:
             cfg->resume_last = !cfg->resume_last;
             remember_ui_bool(scratch, CONF_RESUME_LAST, cfg->resume_last);
