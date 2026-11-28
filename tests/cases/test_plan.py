@@ -4,6 +4,8 @@ import json
 import re
 import time
 
+from tests.context import wait_until
+
 PLAN = "## Steps\n\n1. Read the file\n2. Change the line"
 
 
@@ -845,6 +847,41 @@ def test_ask_user_answers_itself_when_nobody_answers(ctx):
     assert len(results) == 1, results
     assert results[0].startswith("postgres"), results[0]
     assert "recommended option was taken automatically" in results[0], results[0]
+
+
+def test_ask_user_timeout_note_can_be_turned_off(ctx):
+    """With the note off, a timed-out answer reads like any other."""
+    ctx.scenario(
+        ask(
+            "Which storage?",
+            [
+                {"label": "sqlite", "detail": "one file"},
+                {"label": "postgres", "detail": "a server", "recommended": True},
+            ],
+        )
+        + ",final_text=noted"
+    )
+    s = ctx.spawn(ARQAN_ASK_TIMEOUT_MS=1000, ARQAN_ASK_TIMEOUT_NOTE="false")
+    to_plan(s)
+    s.submit("plan the storage")
+    s.wait_status("pick an answer")
+    assert "no answer in 1s picks the recommended option" in s.text(), s.text()
+
+    s.wait_text("noted")
+    s.wait_turn_done()
+    assert ctx.mock.tool_results() == ["postgres"], ctx.mock.tool_results()
+
+
+def test_ask_user_timeout_note_is_a_row_of_the_settings_screen(ctx):
+    """The box is on by default and the choice is remembered."""
+    s = ctx.spawn()
+    s.open_settings().settings_select("Flag auto-answers")
+    assert "[x] Flag auto-answers" in s.popup_selected(), s.text()
+
+    s.key("space").sync()
+    s.wait_text("[ ] Flag auto-answers")
+    wait_until(lambda: ctx.state().get("ask_timeout_note") == "false",
+               "ask_timeout_note in the state file")
 
 
 def test_ask_user_without_a_recommendation_waits(ctx):

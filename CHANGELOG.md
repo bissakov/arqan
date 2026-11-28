@@ -4,6 +4,9 @@
 
 ### Added
 
+- `ask_timeout_note = false`, or the "Flag auto-answers" row in `/settings`,
+  drops the note that tells the model a timeout picked the answer to a
+  question. The note is on by default. A project config file may not set it.
 - `read` opens PDF files and returns the text of their pages, with a
   `--- page N of M ---` line before each, and pages through it with
   `offset` and `limit` like a text file. The text comes from arqan's own
